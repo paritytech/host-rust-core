@@ -17,6 +17,8 @@ uniffi = { workspace = true, optional = true }
 zeroize = { version = "1", default-features = false, features = ["derive"] }
 
 [features]
+# In-memory `MockPlatform` for tests and host simulators.
+mock = []
 # FFI derives on the review types consumed by native hosts.
 uniffi = ["dep:uniffi", "truapi/uniffi"]
 
