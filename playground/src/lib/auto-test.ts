@@ -21,8 +21,12 @@ const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
 
 // Services skipped wholesale in the diagnosis until hosts wire them up.
 const SKIPPED_SERVICES = new Set(["Chat", "Coin Payment", "Payment"]);
-// Individual methods skipped while the host surface is intentionally deferred.
-const SKIPPED_METHODS = new Set(["Account/create_account_proof"]);
+// Individual methods skipped when Diagnosis cannot establish their prerequisite.
+const SKIPPED_REASON: Record<string, string> = {
+  "Account/create_account_proof": "host surface intentionally deferred",
+  "Chain/stop_transaction":
+    "requires an operation id from a live transaction broadcast",
+};
 // Methods that trigger a host permission/signing prompt, so they need the
 // longer signing-class timeout to allow for the user to respond.
 const LONG_TIMEOUT_METHODS = new Set([
@@ -69,10 +73,11 @@ async function runOne({
     });
     return;
   }
-  if (SKIPPED_METHODS.has(id)) {
+  const skippedReason = SKIPPED_REASON[id];
+  if (skippedReason) {
     onUpdate(id, {
       status: "skipped",
-      output: "host surface intentionally deferred",
+      output: skippedReason,
     });
     return;
   }

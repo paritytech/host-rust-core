@@ -49,33 +49,29 @@ export function renderReportMarkdown(
   const mode = meta.mode ?? detectHostMode();
   let pass = 0;
   let fail = 0;
+  let skipped = 0;
   const rows: string[] = [];
   for (const svc of services) {
     for (const m of svc.methods) {
       const id = `${svc.name}/${m.name}`;
       const entry = results[id];
       const status = entry?.status ?? "idle";
-      // Skipped methods are reported as failed so every truapi method stays in
-      // the compatibility matrix (the aggregator keeps only ✅/❌ cells); the
-      // reason the method was skipped travels in the Details column.
-      const reportStatus = status === "skipped" ? "fail" : status;
-      if (reportStatus === "pass") pass++;
-      else if (reportStatus === "fail") fail++;
+      if (status === "pass") pass++;
+      else if (status === "fail") fail++;
+      else if (status === "skipped") skipped++;
       // The issue-URL variant drops success-row details (bulky response
-      // payloads) to keep the URL under GitHub's length limit; failures keep
-      // their (short) details.
+      // payloads) to keep the URL under GitHub's length limit; failures and
+      // intentional skips keep their (short) details.
       const detail =
-        meta.dropSuccessDetails && reportStatus === "pass"
-          ? ""
-          : detailCell(entry);
-      rows.push(`| \`${id}\` | ${ICON[reportStatus]} | ${detail} |`);
+        meta.dropSuccessDetails && status === "pass" ? "" : detailCell(entry);
+      rows.push(`| \`${id}\` | ${ICON[status]} | ${detail} |`);
     }
   }
 
   const lines: string[] = [];
   lines.push(`## Truapi ${mode} Diagnosis`);
   lines.push("");
-  lines.push(`**${pass} success · ${fail} failed**`);
+  lines.push(`**${pass} success · ${fail} failed · ${skipped} skipped**`);
   lines.push("");
   lines.push("| Method | Status | Details |");
   lines.push("| --- | --- | --- |");
