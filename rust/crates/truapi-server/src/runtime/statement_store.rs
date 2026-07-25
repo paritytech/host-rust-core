@@ -12,11 +12,13 @@ use super::{
 };
 use crate::host_logic::product_account::derive_product_public_key;
 use crate::host_logic::statement_store::{
-    MAX_MATCH_ALL_TOPICS, MAX_MATCH_ANY_TOPICS, TopicFilterKind, decode_signed_statement,
-    parse_new_statements_result, sign_statement_fields, signed_statement_to_scale,
-    statement_fields_from_v01, statement_proof_to_v01, unsigned_statement_signing_payload,
+    MAX_MATCH_ALL_TOPICS, MAX_MATCH_ANY_TOPICS, TopicFilterKind, current_unix_secs,
+    decode_signed_statement, parse_new_statements_result, sign_statement_fields,
+    signed_statement_to_scale, statement_fields_from_v01, statement_proof_to_v01,
+    unsigned_statement_signing_payload,
 };
 
+use parity_scale_codec::Encode;
 use serde_json::Value;
 use subxt_rpcs::client::RpcSubscription;
 use tracing::instrument;
@@ -32,6 +34,9 @@ use truapi::versioned::statement_store::{
     RemoteStatementStoreSubscribeRequest,
 };
 use truapi::{CallContext, CallError, Subscription};
+
+const DEFAULT_EXPIRY_SECS: u64 = 3_600;
+const MAX_PREPARED_STATEMENTS: usize = 64;
 
 impl StatementStore for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "statement_store.subscribe"))]
@@ -142,11 +147,15 @@ impl StatementStore for ProductRuntimeHost {
             }),
         )
         .await?;
-        let statement = signed_statement_to_scale(statement).map_err(|reason| {
-            CallError::Domain(RemoteStatementStoreSubmitError::V1(v01::GenericError {
-                reason,
-            }))
-        })?;
+        let proof_key = statement.proof.encode();
+        let statement = match self.take_prepared_statement(&proof_key) {
+            Some(prepared) => prepared,
+            None => signed_statement_to_scale(statement).map_err(|reason| {
+                CallError::Domain(RemoteStatementStoreSubmitError::V1(v01::GenericError {
+                    reason,
+                }))
+            })?,
+        };
         self.statement_store_rpc()
             .submit(statement, "statement-store")
             .await
@@ -277,7 +286,8 @@ impl ProductRuntimeHost {
             product_account_id.derivation_index,
         )
         .map_err(|err| StatementProofFailure::UnableToSign(err.to_string()))?;
-        let fields = statement_fields_from_v01(statement)
+        let (statement, supplied_expiry) = with_default_expiry(statement);
+        let fields = statement_fields_from_v01(statement.clone())
             .map_err(StatementProofFailure::InvalidStatement)?;
         let payload = unsigned_statement_signing_payload(fields)
             .map_err(StatementProofFailure::UnableToSign)?;
@@ -293,7 +303,14 @@ impl ProductRuntimeHost {
         )
         .await
         .map_err(statement_authority_failure)?;
-        Ok(v01::StatementProof::Sr25519 { signature, signer })
+        let proof = v01::StatementProof::Sr25519 { signature, signer };
+        if supplied_expiry {
+            let prepared =
+                signed_statement_to_scale(statement_with_proof(statement, proof.clone()))
+                    .map_err(StatementProofFailure::UnableToSign)?;
+            self.remember_prepared_statement(proof.encode(), prepared);
+        }
+        Ok(proof)
     }
 
     async fn create_authorized_statement_proof(
@@ -313,27 +330,75 @@ impl ProductRuntimeHost {
         )
         .await
         .map_err(statement_authority_failure)?;
-        create_statement_proof_with_key(statement, &allowance)
+        let (proof, prepared) = create_statement_proof_with_key(statement, &allowance)?;
+        if let Some(prepared) = prepared {
+            self.remember_prepared_statement(proof.encode(), prepared);
+        }
+        Ok(proof)
+    }
+
+    fn remember_prepared_statement(&self, proof: Vec<u8>, statement: Vec<u8>) {
+        let mut prepared = self
+            .prepared_statements
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if prepared.len() >= MAX_PREPARED_STATEMENTS {
+            prepared.clear();
+        }
+        prepared.insert(proof, statement);
+    }
+
+    fn take_prepared_statement(&self, proof: &[u8]) -> Option<Vec<u8>> {
+        self.prepared_statements
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(proof)
     }
 }
 
 fn create_statement_proof_with_key(
     statement: v01::Statement,
     key: &StatementStoreAllowanceKey,
-) -> Result<v01::StatementProof, StatementProofFailure> {
+) -> Result<(v01::StatementProof, Option<Vec<u8>>), StatementProofFailure> {
+    let (statement, supplied_expiry) = with_default_expiry(statement);
     let fields =
         statement_fields_from_v01(statement).map_err(StatementProofFailure::InvalidStatement)?;
     let signed = sign_statement_fields(key.secret, key.public_key, fields)
         .map_err(StatementProofFailure::UnableToSign)?;
-    signed
-        .into_iter()
+    let proof = signed
+        .iter()
         .find_map(|field| match field {
             crate::host_logic::statement_store::StatementField::Proof(proof) => {
-                Some(statement_proof_to_v01(proof))
+                Some(statement_proof_to_v01(proof.clone()))
             }
             _ => None,
         })
-        .ok_or_else(|| StatementProofFailure::UnableToSign("missing proof".to_string()))
+        .ok_or_else(|| StatementProofFailure::UnableToSign("missing proof".to_string()))?;
+    let prepared = supplied_expiry.then(|| signed.encode());
+    Ok((proof, prepared))
+}
+
+fn with_default_expiry(mut statement: v01::Statement) -> (v01::Statement, bool) {
+    let supplied_expiry = statement.expiry.is_none();
+    if supplied_expiry {
+        let expires_at = (current_unix_secs() + DEFAULT_EXPIRY_SECS) as u32;
+        statement.expiry = Some((expires_at as u64) << 32);
+    }
+    (statement, supplied_expiry)
+}
+
+fn statement_with_proof(
+    statement: v01::Statement,
+    proof: v01::StatementProof,
+) -> v01::SignedStatement {
+    v01::SignedStatement {
+        proof,
+        decryption_key: statement.decryption_key,
+        expiry: statement.expiry,
+        channel: statement.channel,
+        topics: statement.topics,
+        data: statement.data,
+    }
 }
 
 enum StatementProofFailure {
@@ -601,6 +666,62 @@ mod tests {
             crate::host_logic::statement_store::decode_signed_statement(&statement).unwrap(),
             signed_statement([7; 32])
         );
+    }
+
+    #[test]
+    fn statement_store_submit_uses_host_expiry_when_request_omits_it() {
+        let platform = Arc::new(StubPlatform {
+            rpc_responses: vec![r#"{"jsonrpc":"2.0","id":"truapi:1","result":"0xok"}"#.to_string()],
+            ..Default::default()
+        });
+        let services = RuntimeServices::new(platform.clone(), [0; 32], [0xbb; 32], test_spawner());
+        let signing_host = SigningHostRole::new(platform.clone());
+        futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let host = ProductRuntimeHost::from_services(
+            services,
+            signing_host,
+            ProductContext::new("myapp.dot".to_string()).expect("valid product id"),
+        );
+        let mut unsigned = statement();
+        unsigned.expiry = None;
+        let proof_request = RemoteStatementStoreCreateProofRequest::V1(
+            v01::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("myapp.dot", 0),
+                statement: unsigned.clone(),
+            },
+        );
+        let proof_response = futures::executor::block_on(StatementStore::create_proof(
+            &host,
+            &CallContext::default(),
+            proof_request,
+        ))
+        .unwrap();
+        let RemoteStatementStoreCreateProofResponse::V1(proof_response) = proof_response;
+        let submit_request = RemoteStatementStoreSubmitRequest::V1(statement_with_proof(
+            unsigned,
+            proof_response.proof,
+        ));
+
+        futures::executor::block_on(StatementStore::submit(
+            &host,
+            &CallContext::with_request_id("submit-default-expiry".to_string()),
+            submit_request,
+        ))
+        .unwrap();
+
+        let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
+        let request: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
+        let statement_hex = request["params"][0].as_str().unwrap();
+        let statement =
+            hex::decode(statement_hex.strip_prefix("0x").unwrap_or(statement_hex)).unwrap();
+        let submitted =
+            crate::host_logic::statement_store::decode_signed_statement(&statement).unwrap();
+        let expiry = submitted.expiry.expect("host supplies a default expiry");
+        let expires_at = expiry >> 32;
+        let now = current_unix_secs();
+        assert!(expires_at >= now + DEFAULT_EXPIRY_SECS - 1);
+        assert!(expires_at <= now + DEFAULT_EXPIRY_SECS);
     }
 
     #[test]

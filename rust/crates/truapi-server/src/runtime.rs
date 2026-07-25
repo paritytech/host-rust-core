@@ -28,7 +28,8 @@ mod statement_store_rpc;
 
 use core::future::Future;
 use core::time::Duration;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
@@ -287,6 +288,9 @@ pub struct ProductRuntimeHost {
     /// Stable per-product-runtime id used to scope long-lived chain follow
     /// operation ids within one shared host runtime.
     core_instance: u64,
+    /// Chain-ready statements whose one-hour expiry was supplied by the host,
+    /// keyed by the proof returned to the product.
+    prepared_statements: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl ProductRuntimeHost {
@@ -302,6 +306,7 @@ impl ProductRuntimeHost {
             authority,
             product,
             core_instance,
+            prepared_statements: Mutex::new(HashMap::new()),
         }
     }
 
@@ -391,6 +396,7 @@ impl ProductRuntimeHost {
             authority: pairing_host.clone(),
             product,
             core_instance,
+            prepared_statements: Mutex::new(HashMap::new()),
         };
         (host, pairing_host)
     }
