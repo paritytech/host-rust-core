@@ -23,6 +23,7 @@ playground/                Next.js interactive playground; deploys to truapi-pla
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
+scripts/battery.sh         run the generated battery against both headless CLI host roles
 ```
 
 ### Crate + binding invariants

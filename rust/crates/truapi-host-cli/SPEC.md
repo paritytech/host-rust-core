@@ -667,7 +667,10 @@ The top-level `--script` option does not update remembered `/script` state.
 | `preimage-smoke.ts` | Exercise Bulletin preimage submission and lookup. |
 
 `battery.ts` writes to `explorer/diagnosis-reports/<role>-cli.md` unless
-`TRUAPI_BATTERY_REPORT_PATH` overrides the destination. Its custom reporter
+`TRUAPI_BATTERY_REPORT_PATH` overrides the destination. `scripts/battery.sh` in
+the repository root produces both reports in one invocation: it runs the direct
+signing-host phase, then starts a pairing host and answers its emitted link
+with a second signing host so the paired phase can complete. Its custom reporter
 uses terminal color when stdout is a TTY or `FORCE_COLOR` is nonzero, unless
 `NO_COLOR` exists.
 
@@ -1527,7 +1530,7 @@ The implementation is covered by:
 - `truapi-server` runtime, protocol, cryptographic vector, and integration
   tests;
 - script-runner/Bun diagnosis tests;
-- paired and direct `battery.ts` runs; and
+- paired and direct `battery.ts` runs, both driven by `scripts/battery.sh`; and
 - checked-in compatibility reports:
   - `explorer/diagnosis-reports/pairing-host-cli.md`
   - `explorer/diagnosis-reports/signing-host-cli.md`

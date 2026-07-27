@@ -245,28 +245,46 @@ Five scripts ship under `js/scripts/`:
   the role-specific report under `explorer/diagnosis-reports/`, and exits
   nonzero if any example fails. A paired run writes `pairing-host-cli.md`; a
   direct signing-host run writes `signing-host-cli.md`. Override the artifact
-  path with `TRUAPI_BATTERY_REPORT_PATH`. Run the complete generated Playground
-  surface directly against the signing host:
+  path with `TRUAPI_BATTERY_REPORT_PATH`.
+
+  `scripts/battery.sh` at the repo root is the supported entry point. It
+  prepares the codegen output and playground dependencies the battery imports,
+  builds the host from source, and produces both reports in one invocation: the
+  direct signing-host phase, then the paired phase, where it starts a pairing
+  host, reads the `polkadotapp://pair?...` link out of its transcript, and
+  answers it with a second signing host so the battery can complete:
 
   ```bash
-  target/debug/truapi-host signing-host \
-    --product-id truapi-playground.dot \
-    --script rust/crates/truapi-host-cli/js/scripts/battery.ts \
-    --auto-accept
+  scripts/battery.sh                    # both phases
+  scripts/battery.sh --signing-host     # direct phase only
+  scripts/battery.sh --pairing-host     # paired phase only
+  scripts/battery.sh --release          # release binary
+  scripts/battery.sh -- --network foo   # arguments after `--` go to both hosts
   ```
 
-  To exercise the paired topology, run the same script with `pairing-host`,
-  then answer its emitted link from a second terminal:
+  `BATTERY_PHASE_TIMEOUT` (default 900s) bounds each phase and
+  `BATTERY_PAIRING_TIMEOUT` (default 120s) bounds the wait for the pairing link.
+  Per-phase host transcripts land in `target/battery/`.
+
+  The paired phase gives its pairing host a throwaway `--base-path` under
+  `target/battery/pairing-host-state`, so it performs a real handshake on every
+  run. A pairing host that restores an earlier session reports
+  `AlreadyConnected` and then fails every remote example, because the signing
+  host that session was paired with is no longer running. The signing host keeps
+  the default base path and reuses its attested account.
+
+  To drive the paired topology by hand instead, start the pairing host and
+  answer its emitted link from a second terminal:
 
   ```bash
   # Terminal 1
-  target/debug/truapi-host pairing-host \
+  cargo run -p truapi-host-cli -- pairing-host \
     --product-id truapi-playground.dot \
     --script rust/crates/truapi-host-cli/js/scripts/battery.ts \
     --auto-accept
 
   # Terminal 2
-  target/debug/truapi-host signing-host \
+  cargo run -p truapi-host-cli -- signing-host \
     --deeplink '<pairing link>' \
     --auto-accept
   ```
@@ -284,7 +302,8 @@ live routing enabled, `Chain/stop_transaction` uses host-owned operation ids and
 treats already-finished provider operations as stopped. `Preimage/*` also uses
 the real Bulletin Next chain and asks the signing host to claim People-chain
 long-term storage before returning the product-scoped Bulletin allowance key.
-It needs the playground's deps (`cd playground && bun install`). Repeated live
+It needs the playground's deps (`cd playground && yarn install --frozen-lockfile`;
+bun does not resolve the `link:` dependency on `@parity/truapi`). Repeated live
 runs can exhaust the signer's per-period Statement Store or Bulletin allocation
 slots; the signing host rotates auto-managed signer accounts when Statement
 Store slots are exhausted.

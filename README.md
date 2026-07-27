@@ -68,6 +68,7 @@ playground/                Interactive Next.js playground (truapi-playground.dot
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
+scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
 
 ### JS Host SDKs
@@ -112,6 +113,18 @@ the signing host also provides `/pair` and a non-interactive `exec` form for
 automation. See the
 [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup,
 controls, and examples.
+
+`scripts/battery.sh` drives that CLI from source over every code-generated
+example and writes both committed compatibility reports:
+`explorer/diagnosis-reports/signing-host-cli.md` from a direct signing-host run,
+and `pairing-host-cli.md` from a pairing host that the script pairs with a
+signing host it starts itself.
+
+```bash
+scripts/battery.sh                  # both phases
+scripts/battery.sh --signing-host   # direct phase only
+scripts/battery.sh --pairing-host   # paired phase only
+```
 
 To run the playground locally:
 
