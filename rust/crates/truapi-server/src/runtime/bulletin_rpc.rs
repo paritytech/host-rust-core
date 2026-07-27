@@ -52,10 +52,7 @@ const MAX_IDENTICAL_BROADCASTS: usize = 2;
 /// in the end-to-end submit timeout for one refresh and retry.
 const ALLOWANCE_DRY_RUN_PROPAGATION_WINDOW: Duration = Duration::from_secs(18);
 /// Bound each wait for a newer best block while allowance state propagates.
-#[cfg(not(test))]
 const ALLOWANCE_DRY_RUN_BLOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
-#[cfg(test)]
-const ALLOWANCE_DRY_RUN_BLOCK_WAIT_TIMEOUT: Duration = Duration::from_millis(25);
 /// Finalized blocks to inspect for the already-broadcast transaction after
 /// the watch is interrupted (for example when `chainHead_follow` emits a
 /// `stop` event mid-submission).
@@ -228,7 +225,10 @@ pub(crate) struct BulletinRpc {
     /// Last phase entered, for timeout reasons.
     phase: StdMutex<SubmissionPhase>,
     /// Wall-clock budget for allowance propagation to reach the dry-run view.
-    propagation_window: Duration,
+    allowance_propagation_window: Duration,
+    /// Bound on each wait for a newer best block while allowance state
+    /// propagates.
+    allowance_block_wait_timeout: Duration,
 }
 
 impl BulletinRpc {
@@ -239,7 +239,8 @@ impl BulletinRpc {
             genesis_hash,
             submit_lock: futures::lock::Mutex::new(()),
             phase: StdMutex::new(SubmissionPhase::Connect),
-            propagation_window: ALLOWANCE_DRY_RUN_PROPAGATION_WINDOW,
+            allowance_propagation_window: ALLOWANCE_DRY_RUN_PROPAGATION_WINDOW,
+            allowance_block_wait_timeout: ALLOWANCE_DRY_RUN_BLOCK_WAIT_TIMEOUT,
         }
     }
 
@@ -247,8 +248,16 @@ impl BulletinRpc {
     /// run exercise both the "keep polling" and "window elapsed" paths without
     /// depending on real block cadence.
     #[cfg(test)]
-    fn with_propagation_window(mut self, window: Duration) -> Self {
-        self.propagation_window = window;
+    fn with_allowance_propagation_window(mut self, window: Duration) -> Self {
+        self.allowance_propagation_window = window;
+        self
+    }
+
+    /// Override the per-block allowance wait. Test-only: keeps scripted runs
+    /// that never produce a newer block from waiting out the real timeout.
+    #[cfg(test)]
+    fn with_allowance_block_wait_timeout(mut self, timeout: Duration) -> Self {
+        self.allowance_block_wait_timeout = timeout;
         self
     }
 
@@ -417,11 +426,12 @@ impl BulletinRpc {
                 DryRunStatus::AllowanceRejected => {
                     let started = allowance_rejection_started.get_or_insert_with(Instant::now);
                     let elapsed = started.elapsed();
-                    if elapsed >= self.propagation_window {
+                    if elapsed >= self.allowance_propagation_window {
                         warn!(
                             rejections = allowance_rejections + 1,
                             elapsed_ms = elapsed.as_millis(),
-                            propagation_window_ms = self.propagation_window.as_millis(),
+                            allowance_propagation_window_ms =
+                                self.allowance_propagation_window.as_millis(),
                             stop = "propagation-window",
                             "Bulletin allowance remained unavailable to dry-run"
                         );
@@ -433,13 +443,14 @@ impl BulletinRpc {
                     warn!(
                         attempt = allowance_rejections,
                         elapsed_ms = elapsed.as_millis(),
-                        propagation_window_ms = self.propagation_window.as_millis(),
-                        block_wait_timeout_ms = ALLOWANCE_DRY_RUN_BLOCK_WAIT_TIMEOUT.as_millis(),
+                        allowance_propagation_window_ms =
+                            self.allowance_propagation_window.as_millis(),
+                        block_wait_timeout_ms = self.allowance_block_wait_timeout.as_millis(),
                         "Bulletin allowance not visible to dry-run yet; rebuilding at next block"
                     );
                     block = match next_best_block(
                         best_blocks,
-                        ALLOWANCE_DRY_RUN_BLOCK_WAIT_TIMEOUT,
+                        self.allowance_block_wait_timeout,
                         SubmissionPhase::DryRun,
                     )
                     .await
@@ -1458,6 +1469,7 @@ mod tests {
                 ChainRuntime::new(provider, thread_per_subscription_spawner()),
                 [0x42; 32],
             )
+            .with_allowance_block_wait_timeout(Duration::from_millis(25))
         }
 
         #[test]
@@ -1847,13 +1859,13 @@ mod tests {
             // A zero-length window makes the first rejection exceed the budget
             // immediately, so a never-propagating allowance is treated as real
             // after one dry-run rather than looping until the outer deadline.
-            let provider = Arc::new(BulletinScriptedProvider::new([]).with_validation_outcomes(
-                [ValidationOutcome::AllowanceRejected; 4],
-                true,
-            ));
+            let provider = Arc::new(
+                BulletinScriptedProvider::new([])
+                    .with_validation_outcomes([ValidationOutcome::AllowanceRejected; 4], true),
+            );
             let error = futures::executor::block_on(
                 rpc(provider.clone())
-                    .with_propagation_window(Duration::ZERO)
+                    .with_allowance_propagation_window(Duration::ZERO)
                     .submit_preimage(
                         &CallContext::default(),
                         Instant::now() + Duration::from_secs(2),
