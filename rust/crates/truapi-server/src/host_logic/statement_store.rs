@@ -19,11 +19,11 @@ pub use rpc::{
 };
 pub(crate) use statement::current_unix_secs;
 pub use statement::{
-    StatementField, StatementProof, VerifiedStatementData, build_signed_session_request_statement,
-    build_signed_statement, decode_signed_statement, decode_statement_data,
-    decode_verified_statement_data, hex_topic, sign_statement_fields, signed_statement_to_scale,
-    statement_expiry_elapsed, statement_fields_from_v01, statement_proof_to_v01,
-    statement_public_key_from_secret, statement_signing_payload,
+    StatementField, StatementProof, StatementSigningPayloadError, VerifiedStatementData,
+    build_signed_session_request_statement, build_signed_statement, decode_signed_statement,
+    decode_statement_data, decode_verified_statement_data, hex_topic, sign_statement_fields,
+    signed_statement_to_scale, statement_expiry_elapsed, statement_fields_from_v01,
+    statement_proof_to_v01, statement_public_key_from_secret, statement_signing_payload,
     unsigned_statement_signing_payload, validate_unsigned_statement_signing_payload,
 };
 

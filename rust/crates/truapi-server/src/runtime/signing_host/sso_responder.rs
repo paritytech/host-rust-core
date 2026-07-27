@@ -24,6 +24,8 @@ use truapi_platform::{
 };
 
 use super::SigningHost;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::ProductAccountError;
@@ -49,12 +51,17 @@ use crate::host_logic::statement_store::{
     validate_unsigned_statement_signing_payload,
 };
 use crate::runtime::authority::{
-    AccountAliasAuthorityRequest, CreateProofAuthorityRequest, CreateTransactionAuthorityRequest,
-    ProductAuthority, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    AccountAliasAuthorityRequest, AuthorityError, CreateProofAuthorityRequest,
+    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    SignRawAuthorityRequest,
 };
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::fresh_statement_expiry;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
 /// Domain label for the responder's persistent P-256 encryption key.
 const SSO_ENCRYPTION_KEY_LABEL: &[u8] = b"sso-encryption";
@@ -112,6 +119,78 @@ pub enum ResponderExit {
     SubscriptionEnded,
 }
 
+/// Failure while deriving or allocating a Statement Store/Bulletin allowance.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum AllowanceAllocationError {
+    /// Signing host session or authority state was unavailable.
+    #[error("{0}")]
+    Authority(AuthorityError),
+    /// Product-account key derivation failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    ProductAccount(ProductAccountError),
+    /// Chain state, metadata, ring, slot, proof, or extrinsic allocation failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    StatementAllowance(#[from] StatementAllowanceError),
+    /// Runtime service could not open the required Statement Store RPC client.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    StatementStoreRpcClient(#[from] StatementStoreRpcClientError),
+    /// Runtime service could not open the required Bulletin RPC client.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{context}: {source}")]
+    BulletinRpcClient {
+        /// Client context.
+        context: &'static str,
+        /// Chain runtime failure.
+        #[source]
+        source: RuntimeFailure,
+    },
+    /// Allocation helper is unavailable for this target.
+    #[cfg(target_arch = "wasm32")]
+    #[error("signing host: {resource} allowance allocation is native-only")]
+    NativeOnly {
+        /// Resource name.
+        resource: &'static str,
+    },
+    /// System time cannot be converted into a UNIX timestamp.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("system clock before UNIX epoch")]
+    SystemClockBeforeUnixEpoch,
+    /// The signing account is not in the required LitePeople ring.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("signing account is not a LitePeople ring member; cannot grant {resource} allowance")]
+    MissingLitePeopleMembership {
+        /// Resource name.
+        resource: &'static str,
+    },
+}
+
+impl From<AuthorityError> for AllowanceAllocationError {
+    fn from(err: AuthorityError) -> Self {
+        Self::Authority(err)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<ProductAccountError> for AllowanceAllocationError {
+    fn from(err: ProductAccountError) -> Self {
+        Self::ProductAccount(err)
+    }
+}
+
+impl AllowanceAllocationError {
+    pub(super) fn into_authority_error(self) -> AuthorityError {
+        match self {
+            Self::Authority(err) => err,
+            other => AuthorityError::Unavailable {
+                reason: other.to_string(),
+            },
+        }
+    }
+}
+
 /// Answer `deeplink` and serve the resulting SSO session until it ends.
 #[instrument(skip_all, fields(runtime.method = "sso_responder.respond_to_pairing"))]
 pub(crate) async fn respond_to_pairing(
@@ -119,7 +198,8 @@ pub(crate) async fn respond_to_pairing(
     signing_host: Arc<SigningHost>,
     deeplink: &str,
 ) -> Result<ResponderExit, String> {
-    let VersionedHandshakeProposal::V2(proposal) = decode_pairing_deeplink(deeplink)?;
+    let VersionedHandshakeProposal::V2(proposal) =
+        decode_pairing_deeplink(deeplink).map_err(|err| err.to_string())?;
     let entropy = signing_host
         .root_entropy()
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
@@ -185,7 +265,8 @@ async fn serve_session(
     let rpc_client = services
         .statement_store
         .client("sso-responder session")
-        .await?;
+        .await
+        .map_err(|err| err.to_string())?;
     let mut subscription =
         statement_store_rpc::subscribe_match_all(&rpc_client, &[session.session_id_peer])
             .await
@@ -708,7 +789,8 @@ async fn resource_allocation_response(
         };
         match outcome {
             Ok(outcome) => outcomes.push(outcome),
-            Err(reason) => {
+            Err(err) => {
+                let reason = err.to_string();
                 warn!(%reason, "resource allocation item failed");
                 item_failures.push(reason);
                 outcomes.push(SsoAllocationOutcome::NotAvailable);
@@ -740,16 +822,15 @@ pub(super) async fn allocate_statement_store_allowance(
     signing_host: &SigningHost,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
         self, RegistrationParams, fetch_chain_state, fetch_metadata, find_including_ring,
         register_statement_account,
     };
 
-    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
+    let entropy = signing_host.root_entropy()?;
     let allowance =
-        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])
-            .map_err(product_account_error)?;
+        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
     let target = allowance.public.to_bytes();
     let bandersnatch = statement_allowance::bandersnatch_entropy(&entropy);
     let rpc = statement_allowance::rpc::RpcClient::new(
@@ -763,9 +844,8 @@ pub(super) async fn allocate_statement_store_allowance(
     let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
     let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
         .await?
-        .ok_or_else(|| {
-            "signing account is not a LitePeople ring member; cannot grant statement-store allowance"
-                .to_string()
+        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+            resource: "statement-store",
         })?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let outcome = register_statement_account(
@@ -812,15 +892,14 @@ pub(super) async fn allocate_bulletin_allowance(
     signing_host: &SigningHost,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
         self, claim_long_term_storage, fetch_bulletin_allowance, fetch_chain_state, fetch_metadata,
         find_including_ring, wait_bulletin_authorization,
     };
 
-    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
-    let allowance = derive_sr25519_hard_path(&entropy, &["allowance", "bulletin", product_id])
-        .map_err(product_account_error)?;
+    let entropy = signing_host.root_entropy()?;
+    let allowance = derive_sr25519_hard_path(&entropy, &["allowance", "bulletin", product_id])?;
     let target = allowance.public.to_bytes();
 
     let bulletin_rpc = statement_allowance::rpc::RpcClient::new(
@@ -828,7 +907,10 @@ pub(super) async fn allocate_bulletin_allowance(
             .bulletin
             .client("bulletin allowance")
             .await
-            .map_err(|err| err.reason())?,
+            .map_err(|source| AllowanceAllocationError::BulletinRpcClient {
+                context: "bulletin allowance client",
+                source,
+            })?,
     );
     let current_allowance = fetch_bulletin_allowance(&bulletin_rpc, &target).await?;
     if matches!(policy, OnExistingAllowancePolicy::Ignore)
@@ -849,9 +931,8 @@ pub(super) async fn allocate_bulletin_allowance(
     let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
     let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
         .await?
-        .ok_or_else(|| {
-            "signing account is not a LitePeople ring member; cannot grant Bulletin allowance"
-                .to_string()
+        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+            resource: "Bulletin",
         })?;
     let period_duration = statement_allowance::slot::long_term_storage_period_duration(&metadata)?;
     let period = statement_allowance::slot::current_long_term_storage_period(
@@ -903,8 +984,10 @@ pub(super) async fn allocate_statement_store_allowance(
     _signing_host: &SigningHost,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
-    Err("signing host: statement-store allowance allocation is native-only".to_string())
+) -> Result<Vec<u8>, AllowanceAllocationError> {
+    Err(AllowanceAllocationError::NativeOnly {
+        resource: "statement-store",
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -913,21 +996,18 @@ pub(super) async fn allocate_bulletin_allowance(
     _signing_host: &SigningHost,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
-    Err("signing host: Bulletin allowance allocation is native-only".to_string())
+) -> Result<Vec<u8>, AllowanceAllocationError> {
+    Err(AllowanceAllocationError::NativeOnly {
+        resource: "Bulletin",
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn current_unix_secs() -> Result<u64, String> {
+fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .map_err(|_| "system clock before UNIX epoch".to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn product_account_error(err: ProductAccountError) -> String {
-    err.to_string()
+        .map_err(|_| AllowanceAllocationError::SystemClockBeforeUnixEpoch)
 }
 
 /// Confirm and serve a payload or raw signing request.
@@ -1023,7 +1103,7 @@ async fn statement_store_product_sign_response(
     signing_host: &Arc<SigningHost>,
     request: messages::StatementStoreProductSignRequest,
 ) -> Result<Vec<u8>, String> {
-    validate_unsigned_statement_signing_payload(&request.payload)?;
+    validate_unsigned_statement_signing_payload(&request.payload).map_err(|err| err.to_string())?;
     confirm(
         services,
         UserConfirmationReview::StatementStoreProductSign(StatementStoreProductSignReview {

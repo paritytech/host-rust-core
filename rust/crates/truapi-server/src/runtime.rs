@@ -622,7 +622,7 @@ async fn account_access_authorization(
     services: &RuntimeServices,
     requesting_product_id: &str,
     target_product_id: &str,
-) -> Result<PermissionAuthorizationStatus, String> {
+) -> Result<PermissionAuthorizationStatus, AccountAccessAuthorizationError> {
     if requesting_product_id == target_product_id {
         return Ok(PermissionAuthorizationStatus::Authorized);
     }
@@ -638,7 +638,7 @@ async fn account_access_authorization(
     let cached = service
         .authorization_status(&request)
         .await
-        .map_err(|err| format!("permission storage failed: {err:?}"))?;
+        .map_err(AccountAccessAuthorizationError::PermissionStorage)?;
     if cached != PermissionAuthorizationStatus::NotDetermined {
         return Ok(cached);
     }
@@ -650,7 +650,7 @@ async fn account_access_authorization(
             target_product_id: target_product_id.to_string(),
         }))
         .await
-        .map_err(|err| format!("account access confirmation failed: {err:?}"))?;
+        .map_err(AccountAccessAuthorizationError::Confirmation)?;
     let status = if confirmed {
         PermissionAuthorizationStatus::Authorized
     } else {
@@ -659,8 +659,16 @@ async fn account_access_authorization(
     service
         .set_authorization_status(&request, status)
         .await
-        .map_err(|err| format!("permission storage failed: {err:?}"))?;
+        .map_err(AccountAccessAuthorizationError::PermissionStorage)?;
     Ok(status)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum AccountAccessAuthorizationError {
+    #[error("permission storage failed: {0:?}")]
+    PermissionStorage(v01::GenericError),
+    #[error("account access confirmation failed: {0:?}")]
+    Confirmation(v01::GenericError),
 }
 
 fn parse_legacy_signer_hex(signer: &str) -> Option<[u8; 32]> {
@@ -893,7 +901,11 @@ impl Account for ProductRuntimeHost {
                         v01::HostAccountGetError::Rejected,
                     )));
                 }
-                Err(reason) => return Err(CallError::HostFailure { reason }),
+                Err(err) => {
+                    return Err(CallError::HostFailure {
+                        reason: err.to_string(),
+                    });
+                }
             }
         }
 
