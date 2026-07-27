@@ -1,3 +1,6 @@
+//! Wasm-target vectors pinning product-account derivation and SSO pairing
+//! crypto (P-256 ECDH, HKDF, AES-GCM) to the values dotli produces.
+
 #![cfg(target_arch = "wasm32")]
 
 use aes_gcm::aead::{Aead, KeyInit};
@@ -60,6 +63,7 @@ fn runtime_config() -> PairingHostConfig {
             version: Some("192.32".to_string()),
         },
         [0xa2; 32],
+        [0xbb; 32],
         "polkadotapp".to_string(),
     )
     .expect("test runtime config is valid")

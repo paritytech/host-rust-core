@@ -6,27 +6,29 @@
 //! `ProductAccountId` shape:
 //! <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L66-L128>
 
-use blake2_rfc::blake2b::blake2b;
 use parity_scale_codec::Encode;
 use schnorrkel::derive::{ChainCode, Derivation};
 use schnorrkel::{ExpansionMode, Keypair, PublicKey};
+use std::str::FromStr;
 use thiserror::Error;
 
 const JUNCTION_ID_LEN: usize = 32;
 const PRODUCT_JUNCTION: &str = "product";
-const SS58_PREFIX: &[u8] = b"SS58PRE";
-const SUBSTRATE_GENERIC_SS58_PREFIX: u8 = 42;
 
 /// Substrate sr25519 signing-context string, shared by every sr25519 signature
 /// the core produces (statement store, product raw signing).
 pub(crate) const SR25519_SIGNING_CONTEXT: &[u8] = b"substrate";
 
+/// Error deriving product accounts or keys.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProductAccountError {
+    /// Root public key bytes are not a valid sr25519 point.
     #[error("invalid sr25519 root public key")]
     InvalidRootPublicKey,
+    /// All-digit junction strings encode as `u64`, and this one overflows it.
     #[error("numeric derivation junction is outside u64 range")]
     NumericJunctionOutOfRange,
+    /// Entropy bytes could not be expanded into a mini secret.
     #[error("invalid BIP-39 entropy: {0}")]
     InvalidEntropy(String),
 }
@@ -86,18 +88,17 @@ pub fn derive_product_public_key(
 }
 
 /// Encode a product account public key as a generic Substrate SS58 address.
+///
+/// Delegates to subxt's `AccountId32` Display, which is the generic-substrate
+/// prefix-42 SS58-check encoding host-spec C.6 mandates; the test vector
+/// below pins the format against drift.
 pub fn product_public_key_to_address(public_key: [u8; 32]) -> String {
-    let mut payload = Vec::with_capacity(35);
-    payload.push(SUBSTRATE_GENERIC_SS58_PREFIX);
-    payload.extend_from_slice(&public_key);
+    subxt::utils::AccountId32(public_key).to_string()
+}
 
-    let mut checksum_input = Vec::with_capacity(SS58_PREFIX.len() + payload.len());
-    checksum_input.extend_from_slice(SS58_PREFIX);
-    checksum_input.extend_from_slice(&payload);
-    let checksum = blake2b(64, &[], &checksum_input);
-    payload.extend_from_slice(&checksum.as_bytes()[..2]);
-
-    bs58::encode(payload).into_string()
+/// Decode a Substrate SS58 account address into its raw public key.
+pub fn public_key_from_address(address: &str) -> Option<[u8; 32]> {
+    Some(subxt::utils::AccountId32::from_str(address).ok()?.0)
 }
 
 /// Create a Substrate soft-derivation chain code for one junction.
@@ -112,8 +113,7 @@ fn create_chain_code(code: &str) -> Result<[u8; 32], ProductAccountError> {
 
     let mut chain_code = [0u8; JUNCTION_ID_LEN];
     if encoded.len() > JUNCTION_ID_LEN {
-        let hash = blake2b(JUNCTION_ID_LEN, &[], &encoded);
-        chain_code.copy_from_slice(hash.as_bytes());
+        chain_code = sp_crypto_hashing::blake2_256(&encoded);
     } else {
         chain_code[..encoded.len()].copy_from_slice(&encoded);
     }
@@ -169,6 +169,15 @@ mod tests {
             product_public_key_to_address(derived),
             "5CyFsdhwjXy7wWpDEM6isungQ3LfGnu9UXkt7paBQ6DYRxk1"
         );
+    }
+
+    #[test]
+    fn ss58_address_round_trips_to_public_key() {
+        let derived = derive_product_public_key(ROOT_PUBLIC_KEY, "myapp.dot", 0).unwrap();
+        let address = product_public_key_to_address(derived);
+
+        assert_eq!(public_key_from_address(&address), Some(derived));
+        assert_eq!(public_key_from_address("not-an-address"), None);
     }
 
     #[test]

@@ -81,11 +81,13 @@ impl Drop for AbandonedPairingGuard {
     }
 }
 
+/// One pairing (login) attempt driven on behalf of a pairing host.
 pub(super) struct SsoPairingFlow<'a> {
     host: &'a PairingHost,
 }
 
 impl<'a> SsoPairingFlow<'a> {
+    /// Bind a pairing attempt to its host.
     pub(super) fn new(host: &'a PairingHost) -> Self {
         Self { host }
     }
@@ -138,7 +140,12 @@ impl<'a> SsoPairingFlow<'a> {
         };
 
         match self
-            .run_pairing_flow(&bootstrap, cancel_rx, last_processed_statement)
+            .run_pairing_flow(
+                &bootstrap,
+                cancel_rx,
+                pairing_epoch,
+                last_processed_statement,
+            )
             .await
         {
             Ok(outcome @ SsoPairingOutcome::Cancelled) => {
@@ -174,6 +181,7 @@ impl<'a> SsoPairingFlow<'a> {
         &self,
         bootstrap: &PairingBootstrap,
         cancel_rx: oneshot::Receiver<()>,
+        pairing_epoch: u64,
         last_processed_statement: Option<Vec<u8>>,
     ) -> Result<SsoPairingOutcome, String> {
         let mut cancel = cancel_rx.fuse();
@@ -202,6 +210,10 @@ impl<'a> SsoPairingFlow<'a> {
             bootstrap.topic,
             bootstrap.encryption_secret_key,
             last_processed_statement,
+            PairingProgressObserver {
+                auth_state: &self.host.auth_state,
+                pairing_epoch,
+            },
             self.host.spawner.clone(),
         )
         .fuse();
@@ -344,15 +356,20 @@ struct PairingSuccess {
     success: v2::Success,
 }
 
-impl PairingSuccess {
+enum PairingProgress {
+    Pending,
+    Success(Box<PairingSuccess>),
+}
+
+impl PairingProgress {
     /// Decode one retained statement-store response for the current pairing
-    /// topic. `Ok(None)` means the wallet has not produced a final response for
-    /// this statement yet; wallet failure statuses are surfaced as `Err`.
+    /// topic. Authenticated pending statuses remain non-terminal; wallet
+    /// failure statuses are surfaced as `Err`.
     #[instrument(skip_all, fields(runtime.method = "sso.pairing.decode_statement"))]
     fn from_v2_statement(
         statement: &[u8],
         core_encryption_secret_key: [u8; 32],
-    ) -> Result<Option<Self>, String> {
+    ) -> Result<Self, String> {
         let verified =
             decode_verified_statement_data(statement, None).map_err(|err| err.to_string())?;
         let VersionedHandshakeResponse::V2 {
@@ -364,13 +381,30 @@ impl PairingSuccess {
             public_key,
             &encrypted_message,
         )? {
-            v2::EncryptedResponse::Pending(_) => Ok(None),
+            v2::EncryptedResponse::Pending(_) => Ok(Self::Pending),
             v2::EncryptedResponse::Failed(reason) => Err(reason),
-            v2::EncryptedResponse::Success(success) => Ok(Some(Self {
-                statement: statement.to_vec(),
-                peer_statement_account_id: verified.signer,
-                success: *success,
-            })),
+            v2::EncryptedResponse::Success(success) => {
+                Ok(Self::Success(Box::new(PairingSuccess {
+                    statement: statement.to_vec(),
+                    peer_statement_account_id: verified.signer,
+                    success: *success,
+                })))
+            }
+        }
+    }
+}
+
+struct PairingProgressObserver<'a> {
+    auth_state: &'a AuthStateMachine,
+    pairing_epoch: u64,
+}
+
+impl PairingProgressObserver<'_> {
+    fn observe(&self, progress: PairingProgress) -> Option<PairingSuccess> {
+        self.auth_state.authentication_started(self.pairing_epoch);
+        match progress {
+            PairingProgress::Pending => None,
+            PairingProgress::Success(success) => Some(*success),
         }
     }
 }
@@ -382,6 +416,7 @@ async fn wait_for_v2_pairing_success(
     topic: [u8; 32],
     core_encryption_secret_key: [u8; 32],
     last_processed_statement: Option<Vec<u8>>,
+    progress_observer: PairingProgressObserver<'_>,
     spawner: Spawner,
 ) -> Result<PairingSuccess, String> {
     let (query_tx, mut query_rx) = mpsc::unbounded();
@@ -395,18 +430,22 @@ async fn wait_for_v2_pairing_success(
                     return Err("pairing statement-store live subscription ended".to_string());
                 };
                 let value = item.map_err(|err| format!("pairing statement-store live error: {err}"))?;
-                if let Some(success) = handle_v2_pairing_result(
+                if let Some(progress) = handle_v2_pairing_result(
                     &value,
                     core_encryption_secret_key,
                     last_processed_statement.as_deref(),
-                )? {
+                )?
+                    && let Some(success) = progress_observer.observe(progress)
+                {
                     return Ok(success);
                 }
             }
             query = query_rx.next().fuse() => {
                 query_active = false;
                 if let Some(query) = query
-                    && let Some(success) = query? {
+                    && let Some(progress) = query?
+                    && let Some(success) = progress_observer.observe(progress)
+                {
                     return Ok(success);
                 }
             }
@@ -442,7 +481,7 @@ async fn run_pairing_snapshot_query(
     topic: [u8; 32],
     core_encryption_secret_key: [u8; 32],
     last_processed_statement: Option<Vec<u8>>,
-) -> Result<Option<PairingSuccess>, String> {
+) -> Result<Option<PairingProgress>, String> {
     let topics = [topic];
     let mut subscription = statement_store_rpc::subscribe_match_all(&rpc_client, &topics)
         .await
@@ -456,12 +495,12 @@ async fn run_pairing_snapshot_query(
                     return Ok(None);
                 };
                 let value = item.map_err(|err| format!("pairing statement-store query item failed: {err}"))?;
-                if let Some(success) = handle_v2_pairing_result(
+                if let Some(progress) = handle_v2_pairing_result(
                     &value,
                     core_encryption_secret_key,
                     last_processed_statement.as_deref(),
                 )? {
-                    return Ok(Some(success));
+                    return Ok(Some(progress));
                 }
                 let page = parse_new_statements_result("query".to_string(), &value)
                     .map_err(|err| err.to_string())?;
@@ -480,21 +519,21 @@ fn handle_v2_pairing_result(
     value: &Value,
     core_encryption_secret_key: [u8; 32],
     last_processed_statement: Option<&[u8]>,
-) -> Result<Option<PairingSuccess>, String> {
+) -> Result<Option<PairingProgress>, String> {
     let page =
         parse_new_statements_result("pairing".to_string(), value).map_err(|err| err.to_string())?;
+    let mut pending = false;
     for statement in page.statements {
         if last_processed_statement == Some(statement.as_slice()) {
             continue;
         }
-        if let Some(success) =
-            PairingSuccess::from_v2_statement(&statement, core_encryption_secret_key)?
-        {
-            return Ok(Some(success));
+        match PairingProgress::from_v2_statement(&statement, core_encryption_secret_key)? {
+            PairingProgress::Pending => pending = true,
+            success @ PairingProgress::Success(_) => return Ok(Some(success)),
         }
     }
 
-    Ok(None)
+    Ok(pending.then_some(PairingProgress::Pending))
 }
 
 #[cfg(test)]
@@ -536,7 +575,7 @@ mod tests {
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
         cancel_on_pairing(&platform, pairing_host);
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
 
@@ -575,7 +614,7 @@ mod tests {
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
         cancel_on_pairing(&platform, pairing_host);
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
 
         let first = futures::executor::block_on(host.request_login(&cx, request.clone())).unwrap();
@@ -640,7 +679,7 @@ mod tests {
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
         cancel_on_pairing(&platform, pairing_host);
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
 
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
@@ -701,7 +740,7 @@ mod tests {
             ..Default::default()
         });
         let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let err = futures::executor::block_on(host.request_login(&cx, request)).unwrap_err();
 
@@ -756,7 +795,7 @@ mod tests {
             )
         );
 
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
 
@@ -795,10 +834,11 @@ mod tests {
             .auth_states
             .lock()
             .expect("auth state list mutex poisoned");
-        assert_eq!(auth_states.len(), 2, "states: {auth_states:?}");
+        assert_eq!(auth_states.len(), 3, "states: {auth_states:?}");
         assert!(matches!(&auth_states[0], AuthState::Pairing { .. }));
+        assert_eq!(auth_states[1], AuthState::Authenticating);
         assert_eq!(
-            auth_states[1],
+            auth_states[2],
             AuthState::Connected(connected_session_ui_info(&session))
         );
         drop(auth_states);
@@ -824,6 +864,42 @@ mod tests {
     }
 
     #[test]
+    fn request_login_enters_authenticating_on_pending_wallet_response() {
+        let platform = Arc::new(StubPlatform {
+            pairing_pending_response: true,
+            ..Default::default()
+        });
+        let (host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let cancel_host = pairing_host.clone();
+        *platform
+            .on_auth_state
+            .lock()
+            .expect("auth state hook mutex poisoned") = Some(Arc::new(move |state| {
+            if matches!(state, AuthState::Authenticating) {
+                cancel_host.cancel_login();
+            }
+        }));
+
+        let cx = CallContext::default();
+        let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
+        let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
+
+        assert_eq!(
+            response,
+            HostRequestLoginResponse::V1(v01::HostRequestLoginResponse::Rejected)
+        );
+        let auth_states = platform
+            .auth_states
+            .lock()
+            .expect("auth state list mutex poisoned");
+        assert_eq!(auth_states.len(), 3, "states: {auth_states:?}");
+        assert!(matches!(auth_states[0], AuthState::Pairing { .. }));
+        assert_eq!(auth_states[1], AuthState::Authenticating);
+        assert_eq!(auth_states[2], AuthState::Disconnected);
+    }
+
+    #[test]
     fn request_login_surfaces_wallet_failure_status() {
         let session_writes = Arc::new(Mutex::new(Vec::new()));
         let platform = Arc::new(StubPlatform {
@@ -836,7 +912,7 @@ mod tests {
             runtime_config("myapp.dot"),
             test_spawner(),
         );
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let err = futures::executor::block_on(host.request_login(&cx, request)).unwrap_err();
 
@@ -886,7 +962,7 @@ mod tests {
             cancel_host.cancel_login();
         }));
 
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
 
@@ -931,7 +1007,7 @@ mod tests {
             }
         }));
 
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
 
@@ -946,7 +1022,8 @@ mod tests {
             .lock()
             .expect("auth state list mutex poisoned");
         assert!(matches!(&auth_states[0], AuthState::Pairing { .. }));
-        assert!(matches!(&auth_states[1], AuthState::Connected(_)));
+        assert_eq!(auth_states[1], AuthState::Authenticating);
+        assert!(matches!(&auth_states[2], AuthState::Connected(_)));
     }
 
     /// Pairing success must also be decoded from a snapshot query page, not only
@@ -969,7 +1046,7 @@ mod tests {
             futures::executor::block_on(platform.connect(host_config.people_chain_genesis_hash))
                 .unwrap();
         let rpc_client = RpcClient::new(HostRpcClient::new(Arc::from(connection), test_spawner()));
-        let success = futures::executor::block_on(run_pairing_snapshot_query(
+        let progress = futures::executor::block_on(run_pairing_snapshot_query(
             rpc_client,
             bootstrap.topic,
             bootstrap.encryption_secret_key,
@@ -977,6 +1054,9 @@ mod tests {
         ))
         .unwrap()
         .expect("snapshot query should return pairing success");
+        let PairingProgress::Success(success) = progress else {
+            panic!("snapshot query should return final pairing success");
+        };
 
         assert_eq!(
             success.peer_statement_account_id,
@@ -1024,6 +1104,9 @@ mod tests {
         let accepted = handle_v2_pairing_result(&page, bootstrap.encryption_secret_key, None)
             .unwrap()
             .expect("unmarked statement should be accepted");
+        let PairingProgress::Success(accepted) = accepted else {
+            panic!("unmarked statement should contain final pairing success");
+        };
         assert_eq!(
             accepted.peer_statement_account_id,
             peer_statement_keypair().1
@@ -1037,7 +1120,7 @@ mod tests {
             ..Default::default()
         });
         let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let err = futures::executor::block_on(host.request_login(&cx, request)).unwrap_err();
 
@@ -1064,7 +1147,7 @@ mod tests {
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let mut first_login = Box::pin(host.request_login(&cx, request.clone()));
         let waker = futures::task::noop_waker();
         let mut task_cx = Context::from_waker(&waker);
@@ -1093,7 +1176,7 @@ mod tests {
         );
 
         cancel_on_pairing(&platform, pairing_host);
-        let second_cx = CallContext::new();
+        let second_cx = CallContext::default();
         let mut second_login = Box::pin(host.request_login(&second_cx, request));
         let second = match second_login.as_mut().poll(&mut task_cx) {
             Poll::Ready(result) => result.expect("second login should complete after cancellation"),
@@ -1118,7 +1201,7 @@ mod tests {
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
         cancel_on_pairing(&platform, pairing_host);
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
 
@@ -1141,7 +1224,7 @@ mod tests {
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
         cancel_on_pairing(&platform, pairing_host);
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
 
@@ -1163,7 +1246,7 @@ mod tests {
             ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
         let host = Arc::new(host);
         cancel_on_pairing(&platform, pairing_host);
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
 
@@ -1178,7 +1261,7 @@ mod tests {
     fn request_login_returns_already_connected_when_session_exists() {
         let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
         host.test_session_state().set_session(session_info());
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = HostRequestLoginRequest::V1(v01::HostRequestLoginRequest { reason: None });
         let response = futures::executor::block_on(host.request_login(&cx, request)).unwrap();
         assert_eq!(

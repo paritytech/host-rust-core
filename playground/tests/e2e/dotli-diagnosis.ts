@@ -23,12 +23,16 @@ import {
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../../..");
 const playgroundRoot = resolve(repoRoot, "playground");
-const dotliRoot = resolve(repoRoot, "hosts/dotli");
+const dotliRoot = resolve(
+  process.env.E2E_DOTLI_ROOT ?? resolve(repoRoot, "hosts/dotli"),
+);
 const outputDir = resolve(playgroundRoot, "test-results/e2e-dotli");
 const screenshotsDir = resolve(outputDir, "screenshots");
 
 const hostPort = process.env.E2E_DOTLI_HOST_PORT ?? process.env.PORT ?? "5173";
 const playgroundPort = process.env.E2E_DOTLI_PLAYGROUND_PORT ?? "3000";
+const hostNetworks =
+  process.env.E2E_DOTLI_NETWORKS ?? "paseo-next-v2,previewnet";
 const headless = process.env.HEADED === "1" ? false : true;
 const slowMo = process.env.SLOWMO ? Number(process.env.SLOWMO) : 0;
 const smokeOnly = process.env.E2E_DOTLI_SMOKE === "1";
@@ -41,6 +45,13 @@ const loginUserBadgeTimeoutMs = Number(
 const botToken = readEnv("SIGNER_BOT_SVC_TOKEN");
 const botBase = process.env.SIGNER_BOT_BASE_URL ?? defaultBotBase;
 const botNetwork = process.env.SIGNER_BOT_NETWORK ?? defaultBotNetwork;
+const botUsername = process.env.SIGNER_BOT_USERNAME;
+const allowedFailures = new Set(
+  (process.env.E2E_DOTLI_ALLOWED_FAILURES ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean),
+);
 
 const serverProcesses: ChildProcess[] = [];
 const pageErrors: string[] = [];
@@ -198,6 +209,7 @@ async function startLocalStack(): Promise<void> {
   await assertPortsFree();
   startServer("dotli", "bun", ["run", "preview:debug"], dotliRoot, {
     PORT: hostPort,
+    VITE_NETWORKS: hostNetworks,
   });
   startServer("playground", "yarn", ["dev"], playgroundRoot, {
     PORT: playgroundPort,
@@ -247,10 +259,12 @@ async function openLoginQr(page: Page): Promise<string> {
   return await extractQrPayload(page, "#auth-modal-qr canvas");
 }
 
-async function signInWithBot(page: Page): Promise<PairResult> {
+async function signInWithBot(
+  page: Page,
+  username = botUsername ?? generateUsername(),
+): Promise<PairResult> {
   const { token, base, network } = requireBotEnv();
   const handshake = await openLoginQr(page);
-  const username = generateUsername();
   console.log(`[e2e-dotli] pairing signer-bot user ${username}`);
   const result = await pair(base, token, {
     handshake,
@@ -412,6 +426,30 @@ async function drainHostModals(page: Page, timeoutMs: number): Promise<void> {
       await page.waitForTimeout(250);
     }
   }
+  // A method can leave a modal stuck mid-flow (e.g. a remote signing that
+  // never resolves). Cancel it so the report stays reachable; the method
+  // already recorded its own failure.
+  await dismissStuckHostModal(page);
+}
+
+async function dismissStuckHostModal(page: Page): Promise<void> {
+  const buttons = page.locator(".signing-modal-backdrop button");
+  const count = await buttons.count().catch(() => 0);
+  for (let index = 0; index < count; index++) {
+    const button = buttons.nth(index);
+    const visible = await button.isVisible({ timeout: 100 }).catch(() => false);
+    const enabled = await button.isEnabled({ timeout: 100 }).catch(() => false);
+    if (!visible || !enabled) {
+      continue;
+    }
+    const label = (await button.innerText().catch(() => "")).trim();
+    if (label !== "Cancel" && label !== "Reject") {
+      continue;
+    }
+    console.warn(`[e2e-dotli] dismissing stuck host modal via: ${label}`);
+    await button.click({ timeout: 2_000 }).catch(() => {});
+    return;
+  }
 }
 
 async function acceptVisibleHostModal(page: Page): Promise<boolean> {
@@ -472,7 +510,10 @@ async function waitForPlaygroundE2EHook(page: Page): Promise<void> {
   });
 }
 
-async function assertHostSignOutAndReconnect(page: Page): Promise<PairResult> {
+async function assertHostSignOutAndReconnect(
+  page: Page,
+  previous: PairResult,
+): Promise<PairResult> {
   console.log("[e2e-dotli] validating host sign-out");
   await signOutIfNeeded(page);
   await page
@@ -481,13 +522,18 @@ async function assertHostSignOutAndReconnect(page: Page): Promise<PairResult> {
   await captureStep(page, "signed-out");
 
   console.log("[e2e-dotli] validating signer reconnect");
-  return await signInWithBot(page);
+  const reconnected = await signInWithBot(page, previous.user.username);
+  if (reconnected.user.publicKeyHex !== previous.user.publicKeyHex) {
+    throw new Error("signer reconnect returned a different account");
+  }
+  return reconnected;
 }
 
 async function runDiagnosis(page: Page): Promise<{
   summary: string;
   report: string;
   copyReportClicked: boolean;
+  failedMethods: string[];
 }> {
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -510,6 +556,7 @@ async function runDiagnosisOnce(page: Page): Promise<{
   summary: string;
   report: string;
   copyReportClicked: boolean;
+  failedMethods: string[];
 }> {
   const frame = await findPlaygroundFrame(page);
   await captureStep(page, "diagnosis-ready");
@@ -531,10 +578,18 @@ async function runDiagnosisOnce(page: Page): Promise<{
   if (report.trim().length === 0) {
     throw new Error("diagnosis report markdown is empty");
   }
+  // Skipped methods render as failed (and appear failed in the matrix), but they
+  // are intentional gaps — exclude them from the CI hard-fail gate so only
+  // genuine failures fail the run.
+  const failedMethods = await frame
+    .locator(
+      '[data-testid="diagnosis-row"][data-status="fail"]:not([data-skipped="true"]) .diag__name',
+    )
+    .allInnerTexts();
 
   await frame.locator('[data-testid="diagnosis-copy-report"]').click();
 
-  return { summary, report, copyReportClicked: true };
+  return { summary, report, copyReportClicked: true, failedMethods };
 }
 
 async function waitForDiagnosisReportReady(frame: Frame): Promise<void> {
@@ -586,6 +641,12 @@ function isFrameDetachedError(error: unknown): boolean {
 async function main(): Promise<void> {
   mkdirSync(outputDir, { recursive: true });
   mkdirSync(screenshotsDir, { recursive: true });
+  console.log(`[e2e-dotli] host checkout=${dotliRoot}`);
+  if (allowedFailures.size > 0) {
+    console.log(
+      `[e2e-dotli] allowed failures=${[...allowedFailures].join(", ")}`,
+    );
+  }
   if (!smokeOnly) {
     const { base, network } = requireBotEnv();
     console.log(`[e2e-dotli] bot=${base} network=${network}`);
@@ -682,6 +743,7 @@ async function main(): Promise<void> {
         `${JSON.stringify(
           {
             mode: "smoke",
+            hostCheckout: dotliRoot,
             handshakePrefix: handshake.slice(0, 32),
             pageErrors,
             browserLogs,
@@ -701,16 +763,27 @@ async function main(): Promise<void> {
     pairResult = await signInWithBot(page);
     const stopClicker = startHostModalClicker(page);
     try {
-      const { summary, report, copyReportClicked } = await runDiagnosis(page);
+      const { summary, report, copyReportClicked, failedMethods } =
+        await runDiagnosis(page);
       const reportPath = resolve(outputDir, "diagnosis-report.md");
       writeFileSync(reportPath, report);
-      pairResult = await assertHostSignOutAndReconnect(page);
+      pairResult = await assertHostSignOutAndReconnect(page, pairResult);
+      const allowedFailedMethods = failedMethods.filter((method) =>
+        allowedFailures.has(method),
+      );
+      const unexpectedFailedMethods = failedMethods.filter(
+        (method) => !allowedFailures.has(method),
+      );
       const metadataPath = resolve(outputDir, "diagnosis-run.json");
       writeFileSync(
         metadataPath,
         `${JSON.stringify(
           {
             summary,
+            failedMethods,
+            allowedFailedMethods,
+            unexpectedFailedMethods,
+            hostCheckout: dotliRoot,
             reportPath,
             copyReportClicked,
             screenshots,
@@ -726,6 +799,16 @@ async function main(): Promise<void> {
       );
       console.log(`[e2e-dotli] diagnosis complete: ${summary}`);
       console.log(`[e2e-dotli] report: ${reportPath}`);
+      if (allowedFailedMethods.length > 0) {
+        console.warn(
+          `[e2e-dotli] allowed failures observed: ${allowedFailedMethods.join(", ")}`,
+        );
+      }
+      if (unexpectedFailedMethods.length > 0) {
+        throw new Error(
+          `diagnosis reported unexpected failed methods: ${unexpectedFailedMethods.join(", ")}`,
+        );
+      }
       if (pageErrors.length > 0) {
         throw new Error(`browser page errors occurred: ${pageErrors.length}`);
       }

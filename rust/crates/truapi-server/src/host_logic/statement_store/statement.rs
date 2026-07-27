@@ -1,8 +1,9 @@
 use parity_scale_codec::{Compact, Decode, Encode};
-use schnorrkel::{PublicKey, SecretKey, Signature};
+use schnorrkel::{PublicKey, Signature};
 use truapi::v01;
 
 use super::StatementStoreParseError;
+use crate::host_logic::extrinsic::sr25519_secret_from_bytes;
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 use crate::host_logic::session::SsoSessionInfo;
 
@@ -31,21 +32,34 @@ pub struct VerifiedStatementData {
 /// <https://github.com/paritytech/polkadot-sdk/blob/7d525248d594c79dcc5e30217becbd56d2fcda40/substrate/primitives/statement-store/src/lib.rs#L260-L289>
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum StatementProof {
+    /// Statement signed with an sr25519 key.
     Sr25519 {
+        /// Signature over the sorted non-proof fields.
         signature: [u8; 64],
+        /// sr25519 public key that produced the signature.
         signer: [u8; 32],
     },
+    /// Statement signed with an ed25519 key.
     Ed25519 {
+        /// Signature over the sorted non-proof fields.
         signature: [u8; 64],
+        /// ed25519 public key that produced the signature.
         signer: [u8; 32],
     },
+    /// Statement signed with an ECDSA secp256k1 key.
     Ecdsa {
+        /// Signature over the sorted non-proof fields.
         signature: [u8; 65],
+        /// Compressed secp256k1 public key that produced the signature.
         signer: [u8; 33],
     },
+    /// Statement anchored by a pallet-statement chain event instead of a signature.
     OnChain {
+        /// Account that submitted the statement on chain.
         who: [u8; 32],
+        /// Block containing the statement event.
         block_hash: [u8; 32],
+        /// Event index within that block.
         event: u64,
     },
 }
@@ -56,14 +70,23 @@ pub enum StatementProof {
 /// <https://github.com/paritytech/polkadot-sdk/blob/f2f3aa6a8fda8ea52282da9711b3c5da4ba82529/substrate/primitives/statement-store/src/lib.rs#L314-L337>
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum StatementField {
+    /// Authenticity proof over the other fields.
     Proof(StatementProof),
+    /// Identifier of the key able to decrypt the `Data` field.
     DecryptionKey([u8; 32]),
+    /// Expiry, unix seconds in the upper 32 bits.
     Expiry(u64),
+    /// Per-signer channel; the store keeps one live statement per channel.
     Channel([u8; 32]),
+    /// First matching topic.
     Topic1([u8; 32]),
+    /// Second matching topic.
     Topic2([u8; 32]),
+    /// Third matching topic.
     Topic3([u8; 32]),
+    /// Fourth matching topic.
     Topic4([u8; 32]),
+    /// Statement payload bytes.
     Data(Vec<u8>),
 }
 
@@ -175,7 +198,8 @@ pub fn sign_statement_fields(
     }
     fields.sort_by_key(statement_field_sort_index);
 
-    let secret = statement_secret_key_from_bytes(ss_secret)?;
+    let secret = sr25519_secret_from_bytes(&ss_secret)
+        .map_err(|reason| format!("invalid ss_secret: {reason}"))?;
     let public = secret.to_public();
     if public.to_bytes() != expected_public_key {
         return Err("ss_secret does not match session statement public key".to_string());
@@ -197,19 +221,9 @@ pub fn sign_statement_fields(
 
 /// Derive the sr25519 public key for a 64-byte statement-store secret.
 pub fn statement_public_key_from_secret(ss_secret: [u8; 64]) -> Result<[u8; 32], String> {
-    let secret = statement_secret_key_from_bytes(ss_secret)?;
+    let secret = sr25519_secret_from_bytes(&ss_secret)
+        .map_err(|reason| format!("invalid ss_secret: {reason}"))?;
     Ok(secret.to_public().to_bytes())
-}
-
-fn statement_secret_key_from_bytes(ss_secret: [u8; 64]) -> Result<SecretKey, String> {
-    // Rust-generated session keys use schnorrkel's canonical scalar bytes.
-    // Legacy JS signers may send scure/ed25519-style scalar bytes instead.
-    match SecretKey::from_bytes(&ss_secret) {
-        Ok(secret) => Ok(secret),
-        Err(canonical_error) => SecretKey::from_ed25519_bytes(&ss_secret).map_err(|ed_error| {
-            format!("invalid ss_secret: canonical={canonical_error}; ed25519={ed_error}")
-        }),
-    }
 }
 
 /// Build the statement proof payload for unsigned fields.

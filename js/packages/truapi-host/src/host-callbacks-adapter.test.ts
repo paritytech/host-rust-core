@@ -12,7 +12,7 @@ import {
   RemotePermissionResponse,
   ThemeVariant,
 } from "@parity/truapi";
-import type { HostSignPayloadData } from "@parity/truapi";
+import type { GenericError, HostSignPayloadData } from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "./generated/host-callbacks-adapter.js";
 import {
@@ -31,6 +31,14 @@ const GENESIS = `0x${"11".repeat(32)}` as `0x${string}`;
 const PRODUCT_ACCOUNT = {
   dotNsIdentifier: "playground.dot",
   derivationIndex: 0,
+};
+const PROOF_CONTEXT = {
+  productId: "playground.dot",
+  suffix: "0x00" as const,
+};
+const RING_LOCATION = {
+  chainId: GENESIS,
+  junctions: [{ tag: "PalletInstance" as const, value: 67 }],
 };
 const SIGN_PAYLOAD: HostSignPayloadData = {
   blockHash: GENESIS,
@@ -186,8 +194,16 @@ describe("createWasmRawCallbacks", () => {
                 );
               case "AccountAlias":
                 return (
-                  review.value.requestingProductId === "playground.dot" &&
-                  review.value.targetProductId === "wallet.dot"
+                  review.value.callingProductId === "playground.dot" &&
+                  review.value.context.productId === "playground.dot" &&
+                  review.value.ringLocation.junctions[0]?.tag ===
+                    "PalletInstance"
+                );
+              case "CreateProof":
+                return (
+                  review.value.callingProductId === "playground.dot" &&
+                  review.value.context.suffix === "0x00" &&
+                  review.value.message[0] === 7
                 );
               case "AccountAccess":
                 return (
@@ -208,10 +224,6 @@ describe("createWasmRawCallbacks", () => {
           },
         },
         preimage: {
-          submitPreimage: async (value) => {
-            calls.push(["submitPreimage", [...value]]);
-            return new Uint8Array([7, 8, 9]);
-          },
           lookupPreimage: (key) => {
             calls.push(["lookupPreimage", [...key]]);
             return preimages();
@@ -290,8 +302,22 @@ describe("createWasmRawCallbacks", () => {
         UserConfirmationReview.enc({
           tag: "AccountAlias",
           value: {
-            requestingProductId: "playground.dot",
-            targetProductId: "wallet.dot",
+            callingProductId: "playground.dot",
+            context: PROOF_CONTEXT,
+            ringLocation: RING_LOCATION,
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      await raw.confirmUserAction?.(
+        UserConfirmationReview.enc({
+          tag: "CreateProof",
+          value: {
+            callingProductId: "playground.dot",
+            context: PROOF_CONTEXT,
+            ringLocation: RING_LOCATION,
+            message: new Uint8Array([7, 8]),
           },
         }),
       ),
@@ -325,9 +351,6 @@ describe("createWasmRawCallbacks", () => {
         }),
       ),
     ).toBe(true);
-    expect(await raw.submitPreimage!(new Uint8Array([6]))).toEqual(
-      new Uint8Array([7, 8, 9]),
-    );
 
     await settle();
 
@@ -341,7 +364,6 @@ describe("createWasmRawCallbacks", () => {
       ["writeCoreStorage", { tag: "AuthSession", value: undefined }, [3, 2, 1]],
       ["clearCoreStorage", { tag: "AuthSession", value: undefined }],
       ["confirmUserAction:PreimageSubmit", 42n],
-      ["submitPreimage", [6]],
     ]);
 
     disposePreimages?.();

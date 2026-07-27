@@ -30,10 +30,10 @@ use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey};
 use sha2::Sha256;
 use truapi::v01;
-use truapi::versioned::account::HostAccountGetAliasRequest;
+use truapi::versioned::account::{HostAccountCreateProofRequest, HostAccountGetAliasRequest};
 use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest;
 use truapi_platform::{
-    AccountAccessReview, AuthPresenter, AuthState, BulletinAllowanceSigner, ChainProvider,
+    AccountAccessReview, AuthPresenter, AuthState, ChainProvider,
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
     JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
     PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
@@ -72,6 +72,8 @@ pub(crate) struct StubPlatform {
     pub(crate) remote_permission_denied: bool,
     pub(crate) account_alias_confirmed: bool,
     pub(crate) account_alias_error: Option<&'static str>,
+    pub(crate) create_proof_confirmed: bool,
+    pub(crate) create_proof_error: Option<&'static str>,
     pub(crate) account_access_confirmed: bool,
     pub(crate) account_access_error: Option<&'static str>,
     pub(crate) account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
@@ -96,14 +98,13 @@ pub(crate) struct StubPlatform {
     /// Invoked after each recorded auth state, outside any stub lock, so a
     /// test can react to a transition (e.g. cancel the login it observes).
     pub(crate) on_auth_state: Arc<Mutex<Option<AuthStateHook>>>,
-    /// Set when a `chain_connect_pending` connect future is dropped, which is
-    /// how a dropped login flow manifests on the stub.
-    pub(crate) pending_connect_dropped: Arc<AtomicBool>,
     /// When true, `subscribe_theme` returns a never-ending stream.
     pub(crate) theme_stream_pending: bool,
     /// Set when the pending theme stream is dropped.
     pub(crate) theme_stream_dropped: Arc<AtomicBool>,
     pub(crate) pairing_success_response: bool,
+    /// Deliver an authenticated wallet pending status and then stay open.
+    pub(crate) pairing_pending_response: bool,
     /// Deliver a wallet failure status on the pairing subscription.
     pub(crate) pairing_failure_response: bool,
     /// Deliver the pairing success statement only through a snapshot
@@ -115,33 +116,30 @@ pub(crate) struct StubPlatform {
     pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
     pub(crate) rpc_responses: Vec<String>,
     pub(crate) sso_response_script: Option<SsoResponseScript>,
+    /// When set, `connect` fails with this reason.
     pub(crate) chain_connect_error: Option<&'static str>,
+    /// When true, `connect` stays pending forever.
     pub(crate) chain_connect_pending: bool,
-    pub(crate) preimage_submits: Arc<Mutex<Vec<Vec<u8>>>>,
-    pub(crate) preimage_submit_allowance_public_keys: Arc<Mutex<Vec<Vec<u8>>>>,
-    pub(crate) preimage_submit_signatures: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// Set when a `chain_connect_pending` connect future is dropped.
+    pub(crate) pending_connect_dropped: Arc<AtomicBool>,
+    /// Value returned by `lookup_preimage`, if any. Tests set this to a
+    /// forged value to exercise the in-core integrity check.
+    pub(crate) preimage_lookup_value: Option<Vec<u8>>,
     pub(crate) local_storage: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     /// When set, product/core storage reads fail with this reason.
     pub(crate) local_storage_error: Option<&'static str>,
 }
 
+/// Scripted peer behavior for the recording connection's SSO exchange.
 #[derive(Clone)]
 pub(crate) enum SsoResponseScript {
+    /// Peer acknowledges the request and replies with `response`.
     Success {
         session: SessionInfo,
         response: RemoteMessage,
     },
-    PeerDisconnect {
-        session: SessionInfo,
-    },
-}
-
-struct DropFlagGuard(Arc<AtomicBool>);
-
-impl Drop for DropFlagGuard {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
-    }
+    /// Peer acknowledges the request and then sends `Disconnected`.
+    PeerDisconnect { session: SessionInfo },
 }
 
 struct PendingThemeStream {
@@ -193,6 +191,7 @@ pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductCon
             },
             PlatformInfo::default(),
             [0; 32],
+            [0xbb; 32],
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),
@@ -493,6 +492,7 @@ pub(crate) fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 65
     )
 }
 
+/// Signed wallet handshake statement answering `deeplink` with pairing success.
 pub(crate) fn wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
@@ -501,6 +501,15 @@ pub(crate) fn wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
     )
 }
 
+fn pending_wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
+    wallet_handshake_statement_with_response(
+        deeplink,
+        pairing::v2::EncryptedResponse::Pending(pairing::v2::Status::AllowanceAllocation),
+        0x43,
+    )
+}
+
+/// Signed wallet handshake statement answering `deeplink` with failure `reason`.
 pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
@@ -586,6 +595,24 @@ pub(crate) fn sign_response_message(
     }
 }
 
+/// SSO legacy-account raw signing response for the given request id.
+pub(crate) fn sign_raw_legacy_response_message(
+    message_id: &str,
+    signature: Vec<u8>,
+) -> crate::host_logic::sso::messages::RemoteMessage {
+    crate::host_logic::sso::messages::RemoteMessage {
+        message_id: format!("wallet-{message_id}"),
+        data: crate::host_logic::sso::messages::RemoteMessageData::V1(
+            crate::host_logic::sso::messages::v1::RemoteMessage::SignRawLegacyResponse(
+                crate::host_logic::sso::messages::SignRawLegacyResponse {
+                    responding_to: message_id.to_string(),
+                    signature: Ok(signature),
+                },
+            ),
+        ),
+    }
+}
+
 /// Product account id fixture for `identifier` and derivation slot.
 pub(crate) fn account_id(identifier: &str, derivation_index: u32) -> v01::ProductAccountId {
     v01::ProductAccountId {
@@ -594,18 +621,44 @@ pub(crate) fn account_id(identifier: &str, derivation_index: u32) -> v01::Produc
     }
 }
 
-/// Account-alias request fixture for a product identifier.
-pub(crate) fn account_alias_request(identifier: &str) -> HostAccountGetAliasRequest {
-    HostAccountGetAliasRequest::V1(v01::HostAccountGetAliasRequest {
-        product_account_id: account_id(identifier, 0),
-    })
-}
-
 /// Raw signing payload fixture.
 pub(crate) fn raw_payload() -> v01::RawPayload {
     v01::RawPayload::Bytes {
         bytes: b"hello".to_vec(),
     }
+}
+
+/// Product-scoped proof context fixture for `product_id`.
+pub(crate) fn product_proof_context(product_id: &str) -> v01::ProductProofContext {
+    v01::ProductProofContext {
+        product_id: product_id.to_string(),
+        suffix: vec![7],
+    }
+}
+
+/// Ring-location fixture addressing a single pallet-instance ring.
+pub(crate) fn ring_location_fixture() -> v01::RingLocation {
+    v01::RingLocation {
+        chain_id: [1; 32],
+        junctions: vec![v01::RingLocationJunction::PalletInstance(42)],
+    }
+}
+
+/// Contextual-alias request fixture for `product_id`.
+pub(crate) fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequest {
+    HostAccountGetAliasRequest::V1(v01::HostAccountGetAliasRequest {
+        context: product_proof_context(product_id),
+        ring_location: ring_location_fixture(),
+    })
+}
+
+/// Ring-VRF proof request fixture for `product_id`.
+pub(crate) fn create_proof_request(product_id: &str) -> HostAccountCreateProofRequest {
+    HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
+        context: product_proof_context(product_id),
+        ring_location: ring_location_fixture(),
+        message: vec![4, 5, 6],
+    })
 }
 
 /// Structured signing payload fixture.
@@ -873,6 +926,7 @@ struct RecordingConnection {
     sso_response_script: Option<SsoResponseScript>,
     auth_states: Arc<Mutex<Vec<AuthState>>>,
     pairing_success_response: bool,
+    pairing_pending_response: bool,
     pairing_failure_response: bool,
     pairing_success_via_query: bool,
 }
@@ -912,6 +966,9 @@ fn retarget_sso_response(mut response: RemoteMessage, message_id: &str) -> Remot
             response.responding_to = message_id.to_string();
         }
         RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofResponse(response)) => {
             response.responding_to = message_id.to_string();
         }
         RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(response)) => {
@@ -1103,6 +1160,38 @@ impl JsonRpcConnection for RecordingConnection {
                 }
             }));
         }
+        if self.pairing_pending_response {
+            let auth_states = self.auth_states.clone();
+            let sent = self.sent.clone();
+            return Box::pin(stream::unfold(0, move |state| {
+                let auth_states = auth_states.clone();
+                let sent = sent.clone();
+                async move {
+                    match state {
+                        0 => {
+                            let id = wait_for_statement_subscribe_id(sent.clone(), 0).await;
+                            Some((subscribe_ack_frame(&id, "pairing-sub"), 1))
+                        }
+                        1 => {
+                            for _ in 0..100 {
+                                if let Some(deeplink) = first_pairing_deeplink(&auth_states) {
+                                    return Some((
+                                        new_statements_frame(
+                                            "pairing-sub",
+                                            vec![pending_wallet_handshake_statement(&deeplink)],
+                                        ),
+                                        2,
+                                    ));
+                                }
+                                futures_timer::Delay::new(Duration::from_millis(1)).await;
+                            }
+                            panic!("pairing deeplink was not presented");
+                        }
+                        _ => futures::future::pending().await,
+                    }
+                }
+            }));
+        }
         if self.pairing_success_response {
             let auth_states = self.auth_states.clone();
             let sent = self.sent.clone();
@@ -1187,6 +1276,15 @@ fn json_rpc_id(frame: &str) -> Option<String> {
     }
 }
 
+/// Sets its flag when dropped, marking a cancelled pending operation.
+struct DropFlagGuard(Arc<AtomicBool>);
+
+impl Drop for DropFlagGuard {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[truapi_platform::async_trait]
 impl ChainProvider for StubPlatform {
     async fn connect(
@@ -1208,6 +1306,7 @@ impl ChainProvider for StubPlatform {
             sso_response_script: self.sso_response_script.clone(),
             auth_states: self.auth_states.clone(),
             pairing_success_response: self.pairing_success_response,
+            pairing_pending_response: self.pairing_pending_response,
             pairing_failure_response: self.pairing_failure_response,
             pairing_success_via_query: self.pairing_success_via_query,
         }))
@@ -1248,6 +1347,9 @@ impl UserConfirmation for StubPlatform {
             ),
             UserConfirmationReview::AccountAlias(_) => {
                 (self.account_alias_error, self.account_alias_confirmed)
+            }
+            UserConfirmationReview::CreateProof(_) => {
+                (self.create_proof_error, self.create_proof_confirmed)
             }
             UserConfirmationReview::AccountAccess(review) => {
                 self.account_access_reviews
@@ -1292,32 +1394,11 @@ impl ThemeHost for StubPlatform {
 
 #[truapi_platform::async_trait]
 impl PreimageHost for StubPlatform {
-    async fn submit_preimage(
-        &self,
-        value: Vec<u8>,
-        bulletin_allowance_signer: BulletinAllowanceSigner,
-    ) -> Result<Vec<u8>, v01::PreimageSubmitError> {
-        self.preimage_submits
-            .lock()
-            .expect("preimage submit list mutex poisoned")
-            .push(value.clone());
-        self.preimage_submit_allowance_public_keys
-            .lock()
-            .expect("preimage allowance public key list mutex poisoned")
-            .push(bulletin_allowance_signer.public_key().to_vec());
-        let signature = bulletin_allowance_signer
-            .sign(b"preimage-submit-test")
-            .map_err(|err| v01::PreimageSubmitError::Unknown { reason: err.reason })?;
-        self.preimage_submit_signatures
-            .lock()
-            .expect("preimage allowance signature list mutex poisoned")
-            .push(signature.to_vec());
-        Ok(value)
-    }
     fn lookup_preimage(
         &self,
         _key: Vec<u8>,
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, v01::GenericError>> {
-        Box::pin(stream::once(async { Ok(Some(vec![9, 8, 7])) }))
+        let value = self.preimage_lookup_value.clone();
+        Box::pin(stream::once(async move { Ok(value) }))
     }
 }

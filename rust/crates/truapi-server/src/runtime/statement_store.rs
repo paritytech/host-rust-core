@@ -345,7 +345,7 @@ enum StatementProofFailure {
 fn statement_authority_failure(err: AuthorityError) -> StatementProofFailure {
     match err {
         AuthorityError::Disconnected => StatementProofFailure::NoSession,
-        err => StatementProofFailure::UnableToSign(err.reason()),
+        err => StatementProofFailure::UnableToSign(err.to_string()),
     }
 }
 
@@ -419,7 +419,7 @@ mod tests {
 
     fn signing_host_runtime(product_id: &str) -> (ProductRuntimeHost, Arc<SigningHostRole>) {
         let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
-        let services = RuntimeServices::new(platform.clone(), [0; 32], test_spawner());
+        let services = RuntimeServices::new(platform.clone(), [0; 32], [0xbb; 32], test_spawner());
         let signing_host = SigningHostRole::new(platform);
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
@@ -436,7 +436,7 @@ mod tests {
         let host =
             ProductRuntimeHost::new(stub_platform(), runtime_config("myapp.dot"), test_spawner());
         host.test_session_state().set_session(sso_session_info());
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = RemoteStatementStoreCreateProofRequest::V1(
             v01::RemoteStatementStoreCreateProofRequest {
                 product_account_id: account_id("myapp.dot", 0),
@@ -463,7 +463,7 @@ mod tests {
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
         let product_keypair = derive_product_keypair(&root, "myapp.dot", 0).unwrap();
         let expected_signer = product_keypair.public.to_bytes();
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = RemoteStatementStoreCreateProofRequest::V1(
             v01::RemoteStatementStoreCreateProofRequest {
                 product_account_id: account_id("myapp.dot", 0),
@@ -487,7 +487,7 @@ mod tests {
         let host =
             ProductRuntimeHost::new(stub_platform(), runtime_config("myapp.dot"), test_spawner());
         host.test_session_state().set_session(sso_session_info());
-        let cx = CallContext::new();
+        let cx = CallContext::default();
         let request = RemoteStatementStoreCreateProofRequest::V1(
             v01::RemoteStatementStoreCreateProofRequest {
                 product_account_id: account_id("other.dot", 0),
@@ -850,9 +850,7 @@ mod tests {
             panic!("expected statement-store subscribe domain error");
         };
         assert!(
-            reason
-                .reason
-                .contains("statement-store connect failed: GenericError"),
+            reason.reason.contains("statement-store connect failed:"),
             "unexpected reason: {}",
             reason.reason
         );

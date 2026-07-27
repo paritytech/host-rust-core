@@ -5,24 +5,53 @@
 //! without knowing where the key material lives.
 
 use async_trait::async_trait;
-use core::fmt;
-use core::time::Duration;
 use std::sync::Arc;
 use truapi::latest::{
-    HostAccountGetAliasResponse, HostCreateTransactionResponse,
-    HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
-    HostSignPayloadRequest, HostSignPayloadResponse, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
-    ProductAccountId, ProductAccountTxPayload,
+    AccountId, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
+    HostCreateTransactionResponse, HostRequestResourceAllocationRequest,
+    HostRequestResourceAllocationResponse, HostSignPayloadRequest, HostSignPayloadResponse,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, ProductAccountId,
+    ProductAccountTxPayload, ProductProofContext, RingLocation,
 };
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, CancellationReason};
-use truapi_platform::{BulletinAllowanceKeyError, ProductContext};
-
-pub(crate) use truapi_platform::BulletinAllowanceKey;
+use truapi_platform::ProductContext;
 
 use crate::host_logic::session::{SessionInfo, SessionState};
+use crate::host_logic::sso::messages::RingVrfError;
 use crate::host_logic::statement_store::statement_public_key_from_secret;
+
+/// Secret key allocated for Bulletin preimage submission.
+///
+/// The core is the sole holder: the secret never crosses the host boundary.
+/// Zeroized on drop, and its `Debug` redacts the material.
+#[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
+pub(crate) struct BulletinAllowanceKey {
+    #[debug("\"<redacted>\"")]
+    secret: [u8; 64],
+}
+
+impl BulletinAllowanceKey {
+    /// Wrap a 64-byte sr25519 secret; other lengths are `Unavailable`.
+    pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
+        let secret: [u8; 64] =
+            secret
+                .try_into()
+                .map_err(|secret: Vec<u8>| AuthorityError::Unavailable {
+                    reason: format!(
+                        "bulletin allowance key must be 64 bytes, got {}",
+                        secret.len()
+                    ),
+                })?;
+        Ok(Self { secret })
+    }
+
+    /// Raw secret for the in-core Bulletin signer.
+    pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
+        &self.secret
+    }
+}
 
 /// Snapshot of an account-authority session selected by the authority.
 ///
@@ -44,6 +73,7 @@ pub(crate) struct AuthoritySession {
 }
 
 impl AuthoritySession {
+    /// Project the neutral snapshot out of a concrete session.
     pub(crate) fn from_session_info(info: &SessionInfo, validation_id: Vec<u8>) -> Self {
         Self {
             public_key: info.public_key,
@@ -52,6 +82,18 @@ impl AuthoritySession {
             full_username: info.full_username.clone(),
             validation_id,
         }
+    }
+
+    /// Preferred display username: full over lite, skipping empty values.
+    pub(crate) fn primary_username(&self) -> Option<&str> {
+        self.full_username
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.lite_username
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+            })
     }
 }
 
@@ -70,66 +112,44 @@ pub(crate) enum AuthorityError {
     /// The authority cannot service the request.
     #[display("{reason}")]
     Unavailable { reason: String },
+    /// The authority cannot service this request shape (e.g. an unsupported
+    /// transaction-extension version).
+    #[display("{reason}")]
+    NotSupported { reason: String },
     /// Catch-all authority failure.
     #[display("{reason}")]
     Unknown { reason: String },
 }
 
-impl AuthorityError {
-    pub(crate) fn reason(self) -> String {
-        self.to_string()
-    }
-}
-
-impl From<BulletinAllowanceKeyError> for AuthorityError {
-    fn from(err: BulletinAllowanceKeyError) -> Self {
-        AuthorityError::Unavailable {
-            reason: err.to_string(),
+impl From<AuthorityError> for RingVrfError {
+    fn from(err: AuthorityError) -> Self {
+        match err {
+            AuthorityError::Rejected => RingVrfError::Rejected,
+            other => RingVrfError::Unknown {
+                reason: other.to_string(),
+            },
         }
     }
 }
 
 /// Cancellation cause for an account-authority call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[display(
+    "Account authority request {reason}{}",
+    if request_id.is_empty() { String::new() } else { format!(" for {request_id}") }
+)]
 pub(crate) struct AuthorityCancelError {
     request_id: String,
     reason: CancellationReason,
 }
 
 impl AuthorityCancelError {
+    /// Cancellation attributed to the request it interrupted.
     pub(crate) fn new(request_id: &str, reason: CancellationReason) -> Self {
         Self {
             request_id: request_id.to_string(),
             reason,
         }
-    }
-}
-
-impl fmt::Display for AuthorityCancelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let request = if self.request_id.is_empty() {
-            String::new()
-        } else {
-            format!(" for {}", self.request_id)
-        };
-        match &self.reason {
-            CancellationReason::Cancelled => {
-                write!(f, "Account authority request cancelled{request}")
-            }
-            CancellationReason::TimedOut { timeout } => write!(
-                f,
-                "Account authority request timed out after {}{request}",
-                format_timeout_duration(*timeout)
-            ),
-        }
-    }
-}
-
-fn format_timeout_duration(duration: Duration) -> String {
-    if duration.subsec_millis() == 0 {
-        format!("{}s", duration.as_secs())
-    } else {
-        format!("{}ms", duration.as_millis())
     }
 }
 
@@ -152,10 +172,10 @@ pub(crate) enum SignPayloadAuthorityRequest {
 pub(crate) enum SignRawAuthorityRequest {
     /// Sign raw data with a product-derived account.
     Product(HostSignRawRequest),
-    /// Sign raw data through the legacy-account API using the product slot-zero account.
+    /// Sign raw data through the legacy-account API.
     LegacyAccount {
-        /// Product slot-zero account that backs the validated legacy signer.
-        product_account: ProductAccountId,
+        /// Account selected by the product and validated against the session.
+        account: AccountId,
         /// Original legacy-account request.
         request: HostSignRawWithLegacyAccountRequest,
     },
@@ -175,14 +195,42 @@ pub(crate) enum CreateTransactionAuthorityRequest {
     },
 }
 
+/// Contextual-alias request forwarded to the account authority (RFC 0004).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AccountAliasAuthorityRequest {
+    /// Calling product, so the Account Holder can scope context derivation.
+    pub calling_product_id: String,
+    /// Product-scoped context the derived alias is bound to.
+    pub context: ProductProofContext,
+    /// Ring whose member key the Account Holder selects.
+    pub ring_location: RingLocation,
+}
+
+/// Ring-VRF proof request forwarded to the account authority (RFC 0004).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CreateProofAuthorityRequest {
+    /// Calling product, so the Account Holder can scope context derivation.
+    pub calling_product_id: String,
+    /// Product-scoped context the derived alias is bound to.
+    pub context: ProductProofContext,
+    /// Ring whose member key the Account Holder selects.
+    pub ring_location: RingLocation,
+    /// Opaque message bound into the proof.
+    pub message: Vec<u8>,
+}
+
 /// Statement-store allowance signing material held by the authority layer.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct StatementStoreAllowanceKey {
+    /// sr25519 secret used to sign allowance statements.
     pub(crate) secret: [u8; 64],
+    /// Public key derived from `secret`.
     pub(crate) public_key: [u8; 32],
 }
 
 impl StatementStoreAllowanceKey {
+    /// Wrap a 64-byte sr25519 secret and derive its public key; other lengths
+    /// are `Unavailable`.
     pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
         let secret: [u8; 64] =
             secret
@@ -224,6 +272,12 @@ pub(crate) trait ProductAuthority: Send + Sync {
     /// Disconnect the current account-authority session.
     async fn disconnect(&self);
 
+    /// Refresh identity fields for the current session if the authority can do
+    /// so without user interaction.
+    async fn refresh_session_identity(&self) -> Option<AuthoritySession> {
+        self.current_session()
+    }
+
     /// Sign a SCALE transaction payload for a product account.
     async fn sign_payload(
         &self,
@@ -248,14 +302,27 @@ pub(crate) trait ProductAuthority: Send + Sync {
         request: CreateTransactionAuthorityRequest,
     ) -> Result<HostCreateTransactionResponse, AuthorityError>;
 
-    /// Request an alias proof for a product account in another product context.
+    /// Derive a product-scoped contextual alias for a ring (RFC 0004).
+    ///
+    /// The Account Holder selects the member key for `ring_location` and derives
+    /// the alias bound to `context`; `create_proof` derives the same alias.
     async fn account_alias(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        product_account_id: ProductAccountId,
-        requesting_product_id: String,
-    ) -> Result<HostAccountGetAliasResponse, AuthorityError>;
+        request: AccountAliasAuthorityRequest,
+    ) -> Result<HostAccountGetAliasResponse, RingVrfError>;
+
+    /// Create a ring-VRF proof bound to a context and message (RFC 0004).
+    ///
+    /// Uses the same ring resolution and member-key selection as `account_alias`,
+    /// so the returned `contextual_alias` matches that method's output.
+    async fn create_proof(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: CreateProofAuthorityRequest,
+    ) -> Result<HostAccountCreateProofResponse, RingVrfError>;
 
     /// Ask the account authority to allocate product-scoped resources.
     async fn allocate_resources(
@@ -276,6 +343,18 @@ pub(crate) trait ProductAuthority: Send + Sync {
 
     /// Return Bulletin allowance key material for the calling product.
     async fn bulletin_allowance_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<BulletinAllowanceKey, AuthorityError>;
+
+    /// Evict any cached Bulletin allowance key for the product and allocate a
+    /// fresh one, increasing the existing allowance.
+    ///
+    /// Called after a submission is rejected for an exhausted/missing
+    /// allowance, where reusing the cached key would loop forever.
+    async fn refresh_bulletin_allowance_key(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,

@@ -80,6 +80,7 @@ impl PairingHostRuntime {
         let services = RuntimeServices::new(
             platform.clone(),
             config.people_chain_genesis_hash,
+            config.bulletin_chain_genesis_hash,
             spawner.clone(),
         );
         let pairing_host = PairingHostRole::new(services.clone(), config);
@@ -200,8 +201,12 @@ impl SigningHostRuntime {
         P: Platform + 'static,
     {
         let platform: Arc<dyn Platform> = platform;
-        let services =
-            RuntimeServices::new(platform.clone(), config.people_chain_genesis_hash, spawner);
+        let services = RuntimeServices::new(
+            platform.clone(),
+            config.people_chain_genesis_hash,
+            config.bulletin_chain_genesis_hash,
+            spawner,
+        );
         let signing_host = SigningHostRole::new(platform);
         Self {
             services,
@@ -244,7 +249,7 @@ impl SigningHostRuntime {
             .activate_local_session(secret)
             .await
             .map_err(|err| v01::GenericError {
-                reason: err.reason(),
+                reason: err.to_string(),
             })
     }
 }

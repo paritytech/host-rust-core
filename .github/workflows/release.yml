@@ -32,58 +32,104 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Resolve target packages
         id: version
+        env:
+          RELEASE_COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
         run: |
           set -euo pipefail
-          packages=(
-            "@parity/truapi js/packages/truapi"
-            "@parity/truapi-host js/packages/truapi-host"
-            "@parity/truapi-provider js/packages/truapi-provider"
-          )
-          pending="$(mktemp)"
-          for entry in "${packages[@]}"; do
-            name="${entry%% *}"
-            path="${entry#* }"
+          subject="${RELEASE_COMMIT_MESSAGE%%$'\n'*}"
+          # Squash merges append " (#<pr>)" to the pull request title.
+          subject="${subject% (#*)}"
+          release="${subject#release: }"
+          packages=""
+          seen_names="|"
+
+          IFS=',' read -ra targets <<< "${release}"
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "::error::Release subject does not declare a package and version: ${subject}"
+            exit 1
+          fi
+          for target in "${targets[@]}"; do
+            # Trim whitespace around comma-separated targets.
+            target="${target#"${target%%[![:space:]]*}"}"
+            target="${target%"${target##*[![:space:]]}"}"
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+              echo "::error::Unsupported release target '${target}' in subject: ${subject}"
+              exit 1
+            fi
+            name="${BASH_REMATCH[1]}"
+            declared_version="${BASH_REMATCH[2]}"
+
+            if [[ "${seen_names}" == *"|${name}|"* ]]; then
+              echo "::error::Release subject lists ${name} more than once."
+              exit 1
+            fi
+            seen_names+="${name}|"
+
+            case "${name}" in
+              @parity/truapi) path="js/packages/truapi" ;;
+              @parity/truapi-host) path="js/packages/truapi-host" ;;
+            esac
+
             version="$(jq -r '.version' "${path}/package.json")"
+            if [ "${declared_version}" != "${version}" ]; then
+              echo "::error::Release subject declares ${name} ${declared_version}, but ${path}/package.json is ${version}."
+              exit 1
+            fi
+
             tag="${name}@${version}"
             if npm_status="$(npm view "${tag}" version --registry=https://registry.npmjs.org 2>&1)"; then
-              echo "Package ${tag} already exists on npm; skipping ${name}."
+              echo "Package ${tag} already exists on npm; skipping."
             elif grep -Eq 'E404|404 Not Found' <<< "${npm_status}"; then
               echo "Publishing ${tag}."
-              echo "${name}|${path}|${version}|${tag}" >> "${pending}"
+              packages+="${name}|${path}|${version}|${tag}"$'\n'
             else
               echo "${npm_status}" >&2
               exit 1
             fi
           done
-          if [ -s "${pending}" ]; then
+
+          if [ -z "${packages}" ]; then
+            echo "All requested packages already exist on npm; nothing to publish."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
             echo "proceed=true" >> "$GITHUB_OUTPUT"
             {
               echo "packages<<EOF"
-              cat "${pending}"
+              printf '%s' "${packages}"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
-          else
-            echo "No unpublished package tags found."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify release manifests
+        if: steps.version.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          npm run check-release-versions
+          remaining_changesets="$(find .changeset -maxdepth 1 -type f -name '*.md' -print)"
+          if [ -n "${remaining_changesets}" ]; then
+            echo "::error::Release commit still contains unconsumed changesets. Run npm run version-packages."
+            echo "${remaining_changesets}"
+            exit 1
           fi
 
       - if: steps.version.outputs.proceed == 'true'
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
           toolchain: nightly
+          components: rustfmt
 
       - if: steps.version.outputs.proceed == 'true'
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
@@ -98,7 +144,7 @@ jobs:
         run: npm ci
 
       - name: Install wasm-pack
-        if: steps.version.outputs.proceed == 'true' && (contains(steps.version.outputs.packages, '@parity/truapi-host|') || contains(steps.version.outputs.packages, '@parity/truapi-provider|'))
+        if: steps.version.outputs.proceed == 'true' && contains(steps.version.outputs.packages, '@parity/truapi-host|')
         run: cargo install wasm-pack --version 0.14.0 --locked
 
       - name: Build packages
@@ -109,9 +155,6 @@ jobs:
           if grep -q '^@parity/truapi-host|' <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"; then
             npm run build --prefix js/packages/truapi-host
             npm run build:wasm --prefix js/packages/truapi-host
-          fi
-          if grep -q '^@parity/truapi-provider|' <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"; then
-            npm run build:wasm --prefix js/packages/truapi-provider
           fi
         env:
           STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
@@ -153,25 +196,20 @@ jobs:
       - name: Create release tags
         if: steps.version.outputs.proceed == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
           STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
         run: |
           set -euo pipefail
-          auth_header="AUTHORIZATION: bearer ${GITHUB_TOKEN}"
-          push_refs=()
           while IFS='|' read -r name path version tag; do
-            if git -c http.extraheader="${auth_header}" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
               echo "Tag ${tag} already exists; skipping create."
               continue
             fi
-            git tag --force "${tag}" "${RELEASE_SHA}"
-            push_refs+=("refs/tags/${tag}:refs/tags/${tag}")
+            gh api --method POST "repos/${{ github.repository }}/git/refs" \
+              -f ref="refs/tags/${tag}" \
+              -f sha="${RELEASE_SHA}"
           done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
-
-          if [ "${#push_refs[@]}" -gt 0 ]; then
-            git -c http.extraheader="${auth_header}" push origin "${push_refs[@]}"
-          fi
 
       - name: Create GitHub Release
         if: steps.version.outputs.proceed == 'true'

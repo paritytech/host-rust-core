@@ -15,7 +15,9 @@ import {
   HostSignRawWithLegacyAccountRequest,
   LegacyAccountTxPayload,
   ProductAccountTxPayload,
+  ProductProofContext,
   RemotePermissionRequest,
+  RingLocation,
 } from "@parity/truapi";
 
 import type {
@@ -30,11 +32,6 @@ import type {
   Result,
   ThemeVariant,
 } from "@parity/truapi";
-
-export interface BulletinAllowanceSigner {
-  publicKey: Uint8Array;
-  sign(input: Uint8Array): Promise<Uint8Array>;
-}
 
 /**
  * Review shown before a product asks to access another product account.
@@ -52,18 +49,23 @@ export interface AccountAccessReview {
 }
 
 /**
- * Review shown before a product asks to alias another product account.
+ * Review shown before a product derives a contextual alias (RFC 0004).
  */
 export interface AccountAliasReview {
   /**
-   * Product currently handling the request.
+   * Product requesting the alias.
    */
-  requestingProductId: string;
+  callingProductId: string;
 
   /**
-   * Product whose account is being requested.
+   * Product-scoped context the alias is bound to.
    */
-  targetProductId: string;
+  context: ProductProofContext;
+
+  /**
+   * Ring the alias is derived against.
+   */
+  ringLocation: RingLocation;
 }
 
 /**
@@ -89,7 +91,13 @@ export type AuthState =
   /**
    * The last login attempt failed; show the reason and offer a retry.
    */
-  | { tag: "LoginFailed"; value: { reason: string } };
+  | { tag: "LoginFailed"; value: { reason: string } }
+  /**
+   * The wallet accepted the pairing request and the core is resolving and
+   * persisting the session. Hosts should replace the pairing QR with an
+   * in-progress presentation until a terminal state is emitted.
+   */
+  | { tag: "Authenticating"; value?: undefined };
 
 /**
  * Core-owned host-private storage slots. Products never address these slots;
@@ -122,6 +130,31 @@ export type CoreStorageKey =
    * Last processed SSO pairing response statement for the pairing device.
    */
   | { tag: "LastProcessedPairingStatement"; value?: undefined };
+
+/**
+ * Review shown before a product creates a ring-VRF proof (RFC 0004).
+ */
+export interface CreateProofReview {
+  /**
+   * Product requesting the proof.
+   */
+  callingProductId: string;
+
+  /**
+   * Product-scoped context the proof's alias is bound to.
+   */
+  context: ProductProofContext;
+
+  /**
+   * Ring the proof is generated against.
+   */
+  ringLocation: RingLocation;
+
+  /**
+   * Opaque message bound into the proof.
+   */
+  message: Uint8Array;
+}
 
 /**
  * Review shown before a transaction-creation request is sent to the paired wallet.
@@ -254,9 +287,13 @@ export type UserConfirmationReview =
    */
   | { tag: "CreateTransaction"; value: CreateTransactionReview }
   /**
-   * Allow a product to request another product account alias.
+   * Allow a product to derive a contextual alias for a ring.
    */
   | { tag: "AccountAlias"; value: AccountAliasReview }
+  /**
+   * Allow a product to create a ring-VRF proof for a ring.
+   */
+  | { tag: "CreateProof"; value: CreateProofReview }
   /**
    * Allow a product to learn the user's primary identity.
    */
@@ -286,13 +323,14 @@ export const AccountAccessReview: S.Codec<AccountAccessReview> = S.lazy(
 );
 
 /**
- * Review shown before a product asks to alias another product account.
+ * Review shown before a product derives a contextual alias (RFC 0004).
  */
 export const AccountAliasReview: S.Codec<AccountAliasReview> = S.lazy(
   (): S.Codec<AccountAliasReview> =>
     S.Struct({
-      requestingProductId: S.str,
-      targetProductId: S.str,
+      callingProductId: S.str,
+      context: ProductProofContext,
+      ringLocation: RingLocation,
     }) as S.Codec<AccountAliasReview>,
 );
 
@@ -308,6 +346,7 @@ export const AuthState: S.Codec<AuthState> = S.lazy(
       Pairing: S.Struct({ deeplink: S.str }) as S.Codec<{ deeplink: string }>,
       Connected: SessionUiInfo,
       LoginFailed: S.Struct({ reason: S.str }) as S.Codec<{ reason: string }>,
+      Authenticating: S._void,
     }),
 );
 
@@ -335,6 +374,19 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
       }>,
       LastProcessedPairingStatement: S._void,
     }),
+);
+
+/**
+ * Review shown before a product creates a ring-VRF proof (RFC 0004).
+ */
+export const CreateProofReview: S.Codec<CreateProofReview> = S.lazy(
+  (): S.Codec<CreateProofReview> =>
+    S.Struct({
+      callingProductId: S.str,
+      context: ProductProofContext,
+      ringLocation: RingLocation,
+      message: S.Bytes(),
+    }) as S.Codec<CreateProofReview>,
 );
 
 /**
@@ -437,6 +489,7 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
       SignRaw: SignRawReview,
       CreateTransaction: CreateTransactionReview,
       AccountAlias: AccountAliasReview,
+      CreateProof: CreateProofReview,
       IdentityDisclosure: IdentityDisclosureReview,
       ResourceAllocation: HostRequestResourceAllocationRequest,
       PreimageSubmit: PreimageSubmitReview,
@@ -639,18 +692,11 @@ export interface Permissions {
 }
 
 /**
- * Host preimage backend. The core owns wire mapping and subscription
- * lifecycle; the host owns the selected backend.
+ * Host preimage backend. The core builds, signs, and submits the Bulletin
+ * `TransactionStorage.store` transaction itself; the host only owns preimage
+ * content retrieval (P2P/IPFS lookup).
  */
 export interface PreimageHost {
-  /**
-   * Submit the preimage and return its key.
-   */
-  submitPreimage?(
-    value: Uint8Array,
-    bulletinAllowanceSigner: BulletinAllowanceSigner,
-  ): Promise<Uint8Array>;
-
   /**
    * Emits current value/miss immediately, then future updates.
    */

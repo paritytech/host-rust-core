@@ -111,6 +111,9 @@ make check    # full suite: build, fmt, clippy, test, TS tests, playground build
 make wasm     # rebuild truapi-server WASM artifacts under js/packages/truapi-host/dist/wasm/
 ```
 
+CI regenerates the shared bindings before building and testing both npm
+packages, so generated client and host callback changes are checked together.
+
 To run the playground locally:
 
 ```bash
@@ -130,6 +133,7 @@ make playground   # rebuild the playground against the refreshed snapshot
 ```
 
 This repopulates the ignored generated TS under `js/packages/truapi/`, including the playground metadata.
+`make dev` and `make e2e-dotli` run this generation step unconditionally before starting their local stacks.
 
 ## Protocol versions
 
@@ -146,7 +150,8 @@ Pushes to `main` build and deploy:
 
 ## Release
 
-See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship a new `@parity/truapi` version to npm.
+See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
+`@parity/truapi`, `@parity/truapi-host`, or both packages to npm.
 
 ## Contributing
 

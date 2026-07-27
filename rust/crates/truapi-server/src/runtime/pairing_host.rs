@@ -15,9 +15,10 @@ use sso_channel::SsoDisconnectMonitor;
 use super::allowances::{self, AllowanceCacheKey, AllowanceResource};
 use super::auth_state::AuthStateMachine;
 use super::authority::{
-    AuthorityError, AuthoritySession, BulletinAllowanceKey, CreateTransactionAuthorityRequest,
-    ProductAuthority, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
-    StatementStoreAllowanceKey, authority_session, require_current_session,
+    AccountAliasAuthorityRequest, AuthorityError, AuthoritySession, BulletinAllowanceKey,
+    CreateProofAuthorityRequest, CreateTransactionAuthorityRequest, ProductAuthority,
+    SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
+    authority_session, require_current_session,
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
@@ -29,10 +30,11 @@ use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::entropy::derive_product_entropy_from_source;
 use crate::host_logic::session::{SessionInfo, SessionState, encode_persisted_session};
 use crate::host_logic::session_store::SessionStoreChangeNotifier;
+use crate::host_logic::sso::messages::RingVrfError;
 use crate::subscription::Spawner;
 
 use futures::StreamExt;
-use tracing::instrument;
+use tracing::{instrument, warn};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
 use truapi_platform::{CoreStorageKey, PairingHostConfig, Platform, ProductContext};
@@ -40,16 +42,22 @@ use truapi_platform::{CoreStorageKey, PairingHostConfig, Platform, ProductContex
 /// Distinguishes all remote authority request entrypoints by wire label.
 #[derive(Clone, Copy, Debug, derive_more::Display)]
 pub(super) enum AuthorityRequestKind {
+    /// `sign_payload` with a product account.
     #[display("sign-payload")]
     SignPayload,
+    /// `sign_raw` with a product account.
     #[display("sign-raw")]
     SignRaw,
+    /// `create_transaction` with a product account.
     #[display("create-transaction")]
     CreateTransaction,
+    /// `sign_payload` through the legacy-account API.
     #[display("legacy-sign-payload")]
     LegacySignPayload,
+    /// `sign_raw` through the legacy-account API.
     #[display("legacy-sign-raw")]
     LegacySignRaw,
+    /// `create_transaction` through the legacy-account API.
     #[display("legacy-create-transaction")]
     LegacyCreateTransaction,
 }
@@ -116,13 +124,18 @@ impl Drop for LoginInFlightOwner<'_> {
 
 /// Remote account authority for a pairing host.
 pub(crate) struct PairingHost {
+    /// Host platform backing all syscalls.
     pub(super) platform: Arc<dyn Platform>,
+    /// Pairing configuration supplied by the embedding host.
     pub(super) host_config: PairingHostConfig,
+    /// Shared chain runtime, used to resolve session identity.
     pub(super) chain: ChainRuntime,
     /// Active inter-host session with a signing host.
     session_state: Arc<SessionState>,
     session_store_changes: Arc<SessionStoreChangeNotifier>,
+    /// Core-owned auth-state machine emitting to the host.
     pub(super) auth_state: AuthStateMachine,
+    /// People-chain statement store RPC client.
     pub(super) statement_store: StatementStoreRpc,
     session_disconnects: Arc<SessionDisconnects>,
     disconnect_monitor: Mutex<Option<SsoDisconnectMonitor>>,
@@ -132,10 +145,12 @@ pub(crate) struct PairingHost {
     bulletin_allowances: Mutex<HashMap<AllowanceCacheKey, BulletinAllowanceKey>>,
     /// Self-reference captured by the spawned disconnect-monitor task.
     weak_self: Weak<PairingHost>,
+    /// Task spawner for background monitors.
     pub(super) spawner: Spawner,
 }
 
 impl PairingHost {
+    /// Build a pairing host over the shared runtime services.
     pub(crate) fn new(services: Arc<RuntimeServices>, host_config: PairingHostConfig) -> Arc<Self> {
         let platform = services.platform.clone();
         let auth_state = AuthStateMachine::new(platform.clone());
@@ -158,19 +173,24 @@ impl PairingHost {
         })
     }
 
+    /// Shared session holder for connection-status subscriptions.
     pub(crate) fn session_state(&self) -> Arc<SessionState> {
         self.session_state.clone()
     }
 
+    /// Signal that the persisted auth session may have changed; the sync task
+    /// re-reads it.
     pub(crate) fn notify_session_store_changed(&self) {
         self.session_store_changes.notify();
     }
 
+    /// Test hook for [`Self::start_session_store_sync`].
     #[cfg(test)]
     pub(crate) fn start_session_store_sync_for_tests(self: Arc<Self>, spawner: Spawner) {
         self.start_session_store_sync(spawner);
     }
 
+    /// Test alias for [`Self::start_remote_monitor_for_current_session`].
     #[cfg(test)]
     pub(crate) fn start_session_supervision_for_current_session(&self) {
         self.start_remote_monitor_for_current_session();
@@ -180,6 +200,7 @@ impl PairingHost {
         self.session_state.current().as_ref().map(authority_session)
     }
 
+    /// Start the disconnect monitor when a session is already active.
     #[cfg(test)]
     pub(crate) fn start_remote_monitor_for_current_session(&self) {
         if let Some(session) = self.session_state.current() {
@@ -187,6 +208,8 @@ impl PairingHost {
         }
     }
 
+    /// Spawn the background task that re-reads the persisted auth session on
+    /// every change notification and reconciles the in-memory session.
     #[instrument(skip_all, fields(runtime.method = "session_store.sync"))]
     pub(crate) fn start_session_store_sync(self: Arc<Self>, spawner: Spawner) {
         let pairing_host = Arc::downgrade(&self);
@@ -346,6 +369,7 @@ impl PairingHost {
         }
     }
 
+    /// Invalidate in-flight login attempts and emit the cancelled auth state.
     #[instrument(skip_all, fields(runtime.method = "account.cancel_login"))]
     pub(crate) fn cancel_login(&self) {
         self.invalidate_login_attempts();
@@ -461,6 +485,72 @@ impl PairingHost {
         require_current_session(&self.session_state, session)
     }
 
+    async fn refresh_current_session_identity(&self) -> Option<AuthoritySession> {
+        let current = self.session_state.current()?;
+        if current.has_username() || self.host_config.people_chain_genesis_hash == [0; 32] {
+            return Some(authority_session(&current));
+        }
+
+        let resolved = resolve_session_identity_with_chain(
+            &self.chain,
+            self.host_config.people_chain_genesis_hash,
+            current.clone(),
+        )
+        .await;
+        if !resolved.has_username() || resolved == current {
+            return self.current_session();
+        }
+
+        if !self
+            .session_state
+            .replace_session_if_current(&current, resolved.clone())
+        {
+            return self.current_session();
+        }
+        self.auth_state
+            .connected(&connected_session_ui_info(&resolved));
+
+        if let Err(err) = self
+            .platform
+            .write_core_storage(
+                CoreStorageKey::AuthSession,
+                encode_persisted_session(&resolved),
+            )
+            .await
+        {
+            warn!(reason = %err.reason, "refreshed session identity persist failed");
+        }
+
+        match self.session_state.current() {
+            Some(live) if live != resolved => {
+                if let Err(err) = self
+                    .platform
+                    .write_core_storage(
+                        CoreStorageKey::AuthSession,
+                        encode_persisted_session(&live),
+                    )
+                    .await
+                {
+                    warn!(reason = %err.reason, "live session identity persist repair failed");
+                }
+                Some(authority_session(&live))
+            }
+            None => {
+                if let Err(err) = self
+                    .platform
+                    .clear_core_storage(CoreStorageKey::AuthSession)
+                    .await
+                {
+                    warn!(reason = %err.reason, "cleared session identity persist repair failed");
+                }
+                None
+            }
+            _ => Some(authority_session(&resolved)),
+        }
+    }
+
+    /// Persist and memory-cache a freshly allocated statement-store allowance
+    /// key.
     pub(super) async fn cache_statement_store_allowance_key(
         &self,
         session: &SessionInfo,
@@ -495,6 +585,8 @@ impl PairingHost {
         Ok(())
     }
 
+    /// Cached statement-store allowance key for the product, falling back to
+    /// persisted storage.
     pub(super) async fn cached_statement_store_allowance_key(
         &self,
         session: &SessionInfo,
@@ -526,6 +618,7 @@ impl PairingHost {
         Ok(Some(allowance))
     }
 
+    /// Persist and memory-cache a freshly allocated Bulletin allowance key.
     pub(super) async fn cache_bulletin_allowance_key(
         &self,
         session: &SessionInfo,
@@ -559,6 +652,8 @@ impl PairingHost {
         Ok(())
     }
 
+    /// Cached Bulletin allowance key for the product, falling back to
+    /// persisted storage.
     pub(super) async fn cached_bulletin_allowance_key(
         &self,
         session: &SessionInfo,
@@ -589,6 +684,28 @@ impl PairingHost {
         Ok(Some(allowance))
     }
 
+    /// Drop the cached and persisted Bulletin allowance key for one product.
+    pub(super) async fn evict_bulletin_allowance_key(
+        &self,
+        session: &SessionInfo,
+        product_id: &str,
+    ) -> Result<(), AuthorityError> {
+        let cache_key = AllowanceCacheKey::new(session, product_id, AllowanceResource::Bulletin)?;
+        self.bulletin_allowances
+            .lock()
+            .expect("bulletin allowance cache mutex poisoned")
+            .remove(&cache_key);
+        allowances::remove_allowance_key(
+            &*self.platform,
+            session,
+            product_id,
+            AllowanceResource::Bulletin,
+        )
+        .await
+    }
+
+    /// Drop memory-cached statement-store allowance keys, scoped to `session`
+    /// when given, otherwise all.
     pub(super) fn clear_statement_store_allowance_keys(&self, session: Option<&SessionInfo>) {
         let mut allowances = self
             .statement_store_allowances
@@ -605,6 +722,8 @@ impl PairingHost {
         allowances.retain(|key, _| !key.is_for_session(session_key));
     }
 
+    /// Drop memory-cached Bulletin allowance keys, scoped to `session` when
+    /// given, otherwise all.
     pub(super) fn clear_bulletin_allowance_keys(&self, session: Option<&SessionInfo>) {
         let mut allowances = self
             .bulletin_allowances
@@ -655,12 +774,20 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        product_account_id: v01::ProductAccountId,
-        requesting_product_id: String,
-    ) -> Result<v01::HostAccountGetAliasResponse, AuthorityError> {
+        request: AccountAliasAuthorityRequest,
+    ) -> Result<v01::ContextualAlias, RingVrfError> {
         let session = self.current_private_session(session)?;
-        self.remote_account_alias(cx, &session, product_account_id, requesting_product_id)
-            .await
+        self.remote_account_alias(cx, &session, request).await
+    }
+
+    async fn create_proof(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: CreateProofAuthorityRequest,
+    ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
+        let session = self.current_private_session(session)?;
+        self.remote_create_proof(cx, &session, request).await
     }
 
     async fn allocate_resources(
@@ -694,6 +821,17 @@ impl PairingHost {
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         let session = self.current_private_session(session)?;
         self.remote_bulletin_allowance_key(cx, &session, product_id)
+            .await
+    }
+
+    async fn refresh_bulletin_allowance_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<BulletinAllowanceKey, AuthorityError> {
+        let session = self.current_private_session(session)?;
+        self.remote_refresh_bulletin_allowance_key(cx, &session, product_id)
             .await
     }
 
@@ -769,6 +907,10 @@ impl ProductAuthority for PairingHost {
         PairingHost::disconnect(self).await;
     }
 
+    async fn refresh_session_identity(&self) -> Option<AuthoritySession> {
+        self.refresh_current_session_identity().await
+    }
+
     async fn sign_payload(
         &self,
         cx: &CallContext,
@@ -800,11 +942,18 @@ impl ProductAuthority for PairingHost {
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
-        product_account_id: v01::ProductAccountId,
-        requesting_product_id: String,
-    ) -> Result<v01::HostAccountGetAliasResponse, AuthorityError> {
-        PairingHost::account_alias(self, cx, session, product_account_id, requesting_product_id)
-            .await
+        request: AccountAliasAuthorityRequest,
+    ) -> Result<v01::ContextualAlias, RingVrfError> {
+        PairingHost::account_alias(self, cx, session, request).await
+    }
+
+    async fn create_proof(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: CreateProofAuthorityRequest,
+    ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
+        PairingHost::create_proof(self, cx, session, request).await
     }
 
     async fn allocate_resources(
@@ -833,6 +982,15 @@ impl ProductAuthority for PairingHost {
         product_id: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         PairingHost::bulletin_allowance_key(self, cx, session, product_id).await
+    }
+
+    async fn refresh_bulletin_allowance_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<BulletinAllowanceKey, AuthorityError> {
+        PairingHost::refresh_bulletin_allowance_key(self, cx, session, product_id).await
     }
 
     async fn sign_statement_store_product_payload(
