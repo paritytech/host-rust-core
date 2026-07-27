@@ -1,5 +1,18 @@
 # @parity/truapi-host
 
+## 0.2.1
+
+### Patch Changes
+
+- Update the WASM host runtime so Bulletin preimage submission survives
+  `chainHead_follow` interruptions without double-storing: an interrupted watch
+  re-checks finalized blocks for the already-broadcast transaction before any
+  retry, retries re-broadcast the identical signed bytes instead of re-signing
+  with a fresh nonce, and a bounced re-broadcast surfaces as
+  inclusion-unverified rather than a failure. Allowance propagation waits are
+  now bounded by wall-clock time instead of a best-block count, keeping the
+  budget stable across changes in Bulletin's block cadence.
+
 ## 0.2.0
 
 ### Minor Changes
