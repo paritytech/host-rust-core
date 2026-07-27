@@ -362,9 +362,19 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
     ///
+    /// const broadcast = await truapi.chain.broadcastTransaction({
+    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   transaction: "0x",
+    /// });
+    /// assert(broadcast.isOk(), "broadcastTransaction failed:", broadcast);
+    /// assert(
+    ///   broadcast.value.operationId,
+    ///   "broadcastTransaction returned no operation id",
+    /// );
+    ///
     /// const result = await truapi.chain.stopTransaction({
     ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
-    ///   operationId: "op-id",
+    ///   operationId: broadcast.value.operationId,
     /// });
     /// assert(result.isOk(), "stopTransaction failed:", result);
     /// console.log("transaction broadcast stopped");
