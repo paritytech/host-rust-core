@@ -35,10 +35,15 @@ use subxt::tx::{
 use tracing::{instrument, warn};
 use truapi::CallContext;
 
-/// Retry once when a broadcast or its reported inclusion cannot be verified
-/// after a successful dry-run. This covers the post-allocation propagation
-/// window where RPC views can briefly disagree about the transaction.
+/// Rebuild, re-sign, and retry once when the node definitively rejects a
+/// broadcast (`invalid`/`dropped`): nothing was included, so a fresh signing
+/// cannot double-store.
 const SUBMIT_ATTEMPTS: usize = 2;
+/// Times the same signed bytes are broadcast at most: the initial submission
+/// plus one re-broadcast after a watch that ended without a verdict. The
+/// identical transaction can be included at most once, so re-broadcasting it
+/// can never double-store the preimage.
+const MAX_IDENTICAL_BROADCASTS: usize = 2;
 /// Number of newer best blocks to try before treating a dry-run allowance
 /// rejection as real. Three blocks are about 18 seconds on Bulletin and leave
 /// room in the end-to-end submit timeout for one refresh and retry.
@@ -137,6 +142,15 @@ pub(crate) enum BulletinSubmitError {
     /// Inclusion events contained no explicit dispatch outcome.
     #[display("inclusion unverified: included block reported no dispatch outcome")]
     DispatchOutcomeMissing,
+    /// The re-broadcast of the already-signed transaction was rejected by
+    /// the node, which usually means the first broadcast consumed the nonce
+    /// by landing beyond the inclusion re-check's reach. Fail-closed: the
+    /// dispatch outcome is unknown.
+    #[display("inclusion unverified: re-broadcast rejected: {reason}")]
+    RebroadcastRejected {
+        #[error(not(source))]
+        reason: String,
+    },
     /// The Subxt best-block stream ended without reporting an error.
     #[display("Bulletin best-block stream ended")]
     BestBlockStreamEnded,
@@ -155,22 +169,13 @@ pub(crate) enum AllowanceRejectionPhase {
 }
 
 impl BulletinSubmitError {
-    /// Whether the watch died without learning the transaction's fate:
-    /// progress updates stopped (for example `chainHead_follow` emitted
-    /// `stop`), as opposed to the node definitively reporting the
-    /// transaction invalid or dropped.
-    fn is_watch_interrupted(&self) -> bool {
+    /// Post-broadcast failure that leaves the transaction's fate unknown:
+    /// the watch died without a verdict (for example `chainHead_follow`
+    /// emitted `stop`) or a reported inclusion could not be verified, as
+    /// opposed to the node definitively rejecting the transaction.
+    fn is_broadcast_outcome_unknown(&self, phase: SubmissionPhase) -> bool {
         match self {
-            Self::Subxt(error) => {
-                matches!(error.as_ref(), subxt::Error::TransactionProgressError(_))
-            }
-            _ => false,
-        }
-    }
-
-    fn is_retryable_submission_uncertain(&self, phase: SubmissionPhase) -> bool {
-        match self {
-            Self::Subxt(_) if phase == SubmissionPhase::Watch => true,
+            Self::Subxt(_) if phase == SubmissionPhase::Watch => !self.is_node_rejection(),
             Self::Subxt(error) if phase == SubmissionPhase::Events => matches!(
                 error.as_ref(),
                 subxt::Error::TransactionEventsError(
@@ -179,6 +184,34 @@ impl BulletinSubmitError {
             ),
             _ => false,
         }
+    }
+
+    /// The node definitively rejected the transaction (`invalid` or
+    /// `dropped`) instead of losing track of it: nothing was included, so
+    /// rebuilding and re-signing at a fresh block cannot double-store.
+    fn is_node_rejection(&self) -> bool {
+        matches!(
+            self,
+            Self::Subxt(error) if matches!(
+                error.as_ref(),
+                subxt::Error::TransactionStatusError(
+                    TransactionStatusError::Invalid(_) | TransactionStatusError::Dropped(_)
+                )
+            )
+        )
+    }
+
+    /// The node reported the transaction invalid mid-watch. On a
+    /// re-broadcast this is the expected bounce when the first broadcast
+    /// already consumed the nonce.
+    fn is_invalid_verdict(&self) -> bool {
+        matches!(
+            self,
+            Self::Subxt(error) if matches!(
+                error.as_ref(),
+                subxt::Error::TransactionStatusError(TransactionStatusError::Invalid(_))
+            )
+        )
     }
 }
 
@@ -246,14 +279,11 @@ impl BulletinRpc {
                 _ = cancelled => Err(BulletinSubmitError::Cancelled),
             };
             match result {
-                Err(err)
-                    if attempt < SUBMIT_ATTEMPTS
-                        && err.is_retryable_submission_uncertain(self.current_phase()) =>
-                {
+                Err(err) if attempt < SUBMIT_ATTEMPTS && err.is_node_rejection() => {
                     warn!(
                         attempt,
                         reason = %err,
-                        "Bulletin preimage broadcast not included; retrying"
+                        "Bulletin broadcast rejected by the node; rebuilding and retrying"
                     );
                 }
                 result => return result,
@@ -289,28 +319,51 @@ impl BulletinRpc {
         drop(best_blocks);
 
         self.enter_phase(SubmissionPhase::Watch);
-        match watch_until_included(&signed).await {
-            Ok(in_block) => {
-                self.enter_phase(SubmissionPhase::Events);
-                require_dispatch_success(&in_block).await?;
-            }
-            Err(watch_error) => {
-                // An interrupted watch (for example `chainHead_follow`
-                // emitting `stop`) says nothing about the already-broadcast
-                // transaction. Look for it in the next finalized blocks
-                // before failing: when it is on chain, re-broadcasting
-                // would only double-store the preimage.
-                if !watch_error.is_watch_interrupted() {
-                    return Err(watch_error);
-                }
-                match finalized_inclusion_outcome(&client, &signed).await {
-                    Some(outcome) => {
-                        self.enter_phase(SubmissionPhase::Events);
-                        outcome?;
+        let mut broadcasts: usize = 1;
+        loop {
+            let (error, phase) = match watch_until_included(&signed).await {
+                Ok(in_block) => {
+                    self.enter_phase(SubmissionPhase::Events);
+                    match require_dispatch_success(&in_block).await {
+                        Ok(()) => break,
+                        Err(error) => (error, SubmissionPhase::Events),
                     }
-                    None => return Err(watch_error),
                 }
+                Err(error) => (error, SubmissionPhase::Watch),
+            };
+
+            // A bounced re-broadcast usually means the first broadcast
+            // consumed the nonce, i.e. the transaction landed beyond the
+            // re-check's reach.
+            let rebroadcast_bounced = broadcasts > 1 && error.is_invalid_verdict();
+            if !error.is_broadcast_outcome_unknown(phase) && !rebroadcast_bounced {
+                return Err(error);
             }
+
+            // The already-broadcast transaction may be on chain even though
+            // the watch lost track of it; prefer its real dispatch outcome
+            // over any retry.
+            if let Some(outcome) = finalized_inclusion_outcome(&client, &signed).await {
+                self.enter_phase(SubmissionPhase::Events);
+                outcome?;
+                break;
+            }
+
+            if rebroadcast_bounced {
+                return Err(BulletinSubmitError::RebroadcastRejected {
+                    reason: error.to_string(),
+                });
+            }
+            if broadcasts >= MAX_IDENTICAL_BROADCASTS {
+                return Err(error);
+            }
+            broadcasts += 1;
+            warn!(
+                broadcasts,
+                reason = %error,
+                "Bulletin watch lost the transaction; re-broadcasting the identical bytes"
+            );
+            self.enter_phase(SubmissionPhase::Watch);
         }
 
         Ok(key.to_vec())
@@ -508,12 +561,12 @@ async fn watch_until_included(
 }
 
 /// Look for the already-broadcast transaction in the next few finalized
-/// blocks after an interrupted watch and classify its dispatch outcome from
-/// the inclusion block's events.
+/// blocks once the watch has lost track of it and classify its dispatch
+/// outcome from the inclusion block's events.
 ///
 /// `None` means the transaction was not seen (or the scan itself failed);
-/// the caller keeps the interrupted-watch error and its retry semantics. A
-/// found transaction always yields a definitive outcome, never a retry.
+/// the caller keeps the watch's error and its retry semantics. A found
+/// transaction always yields a definitive outcome, never a retry.
 ///
 /// Coverage is bounded by the `chainHead` backend: header/body lookups only
 /// work for blocks pinned by the follow subscription, so the scan sees the
@@ -688,25 +741,32 @@ mod tests {
     }
 
     #[test]
-    fn retries_only_uncertain_watch_phase_submissions() {
-        let unverified = BulletinSubmitError::Subxt(Box::new(
+    fn classifies_post_broadcast_errors() {
+        let invalid = BulletinSubmitError::Subxt(Box::new(
             TransactionStatusError::Invalid("bad nonce".to_string()).into(),
         ));
-        assert!(unverified.is_retryable_submission_uncertain(SubmissionPhase::Watch));
-        assert!(!unverified.is_retryable_submission_uncertain(SubmissionPhase::Events));
+        assert!(invalid.is_node_rejection());
+        assert!(invalid.is_invalid_verdict());
+        assert!(!invalid.is_broadcast_outcome_unknown(SubmissionPhase::Watch));
 
-        assert!(
-            !BulletinSubmitError::Timeout {
-                phase: SubmissionPhase::Watch
-            }
-            .is_retryable_submission_uncertain(SubmissionPhase::Watch)
-        );
-        assert!(
-            !BulletinSubmitError::Timeout {
-                phase: SubmissionPhase::DryRun
-            }
-            .is_retryable_submission_uncertain(SubmissionPhase::DryRun)
-        );
+        let dropped = BulletinSubmitError::Subxt(Box::new(
+            TransactionStatusError::Dropped("pool full".to_string()).into(),
+        ));
+        assert!(dropped.is_node_rejection());
+        assert!(!dropped.is_invalid_verdict());
+        assert!(!dropped.is_broadcast_outcome_unknown(SubmissionPhase::Watch));
+
+        let interrupted = BulletinSubmitError::Subxt(Box::new(
+            TransactionProgressError::UnexpectedEndOfTransactionStatusStream.into(),
+        ));
+        assert!(interrupted.is_broadcast_outcome_unknown(SubmissionPhase::Watch));
+        assert!(!interrupted.is_node_rejection());
+
+        let node_error = BulletinSubmitError::Subxt(Box::new(
+            TransactionStatusError::Error("node error".to_string()).into(),
+        ));
+        assert!(node_error.is_broadcast_outcome_unknown(SubmissionPhase::Watch));
+        assert!(!node_error.is_node_rejection());
 
         let inconsistent_inclusion = BulletinSubmitError::Subxt(Box::new(
             TransactionEventsError::CannotFindTransactionInBlock {
@@ -715,8 +775,15 @@ mod tests {
             }
             .into(),
         ));
-        assert!(inconsistent_inclusion.is_retryable_submission_uncertain(SubmissionPhase::Events));
-        assert!(!inconsistent_inclusion.is_retryable_submission_uncertain(SubmissionPhase::DryRun));
+        assert!(inconsistent_inclusion.is_broadcast_outcome_unknown(SubmissionPhase::Events));
+        assert!(!inconsistent_inclusion.is_broadcast_outcome_unknown(SubmissionPhase::DryRun));
+
+        assert!(
+            !BulletinSubmitError::Timeout {
+                phase: SubmissionPhase::Watch
+            }
+            .is_broadcast_outcome_unknown(SubmissionPhase::Watch)
+        );
     }
 
     /// Decode a `DispatchError::Module` for the named error variant out of
@@ -802,6 +869,13 @@ mod tests {
             .to_string(),
             "subxt: The transaction is not valid: bad nonce"
         );
+        assert_eq!(
+            BulletinSubmitError::RebroadcastRejected {
+                reason: "stale".to_string()
+            }
+            .to_string(),
+            "inclusion unverified: re-broadcast rejected: stale"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -835,6 +909,7 @@ mod tests {
             Included,
             IncludedWithMissingBody,
             Invalid,
+            InvalidWithMissingBody,
             Dropped,
             FollowStop,
             FollowStopWithMissingBody,
@@ -933,6 +1008,21 @@ mod tests {
                             == Some(method)
                     })
                     .count()
+            }
+
+            fn submitted_transactions(&self) -> Vec<String> {
+                self.sent
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|request| {
+                        let value: JsonValue = serde_json::from_str(request).ok()?;
+                        (value.get("method").and_then(JsonValue::as_str)
+                            == Some("transactionWatch_v1_submitAndWatch"))
+                        .then(|| value["params"][0].as_str().map(ToOwned::to_owned))
+                        .flatten()
+                    })
+                    .collect()
             }
 
             fn runtime_call_count(&self, runtime_method: &str) -> usize {
@@ -1101,7 +1191,11 @@ mod tests {
                                 "block": {"hash": INCLUDED_HASH, "index": "0"}
                             })
                         }
-                        TransactionOutcome::Invalid => {
+                        TransactionOutcome::Invalid
+                        | TransactionOutcome::InvalidWithMissingBody => {
+                            if matches!(outcome, TransactionOutcome::InvalidWithMissingBody) {
+                                state.omit_transaction_from_next_body = true;
+                            }
                             json!({"event": "invalid", "error": "scripted invalid"})
                         }
                         TransactionOutcome::Dropped => {
@@ -1376,7 +1470,7 @@ mod tests {
         }
 
         #[test]
-        fn submit_preimage_retries_uncertain_broadcast_once() {
+        fn submit_preimage_rebuilds_once_after_node_rejection() {
             let provider = Arc::new(BulletinScriptedProvider::new([
                 TransactionOutcome::Dropped,
                 TransactionOutcome::Included,
@@ -1398,10 +1492,9 @@ mod tests {
         }
 
         #[test]
-        fn submit_preimage_retries_inconsistent_inclusion_once() {
+        fn submit_preimage_recovers_inconsistent_inclusion_via_recheck() {
             let provider = Arc::new(BulletinScriptedProvider::new([
                 TransactionOutcome::IncludedWithMissingBody,
-                TransactionOutcome::Included,
             ]));
             let value = b"scripted bulletin inconsistent inclusion";
             let result = futures::executor::block_on(rpc(provider.clone()).submit_preimage(
@@ -1413,9 +1506,11 @@ mod tests {
             .unwrap();
 
             assert_eq!(result, preimage_key(value));
+            // The reported inclusion block was inconsistent, but the re-check
+            // finds the transaction on chain: no re-broadcast happens.
             assert_eq!(
                 provider.method_count("transactionWatch_v1_submitAndWatch"),
-                2
+                1
             );
             assert_eq!(provider.method_count("chainHead_v1_body"), 2);
         }
@@ -1488,6 +1583,59 @@ mod tests {
             .unwrap();
 
             assert_eq!(result, preimage_key(value));
+            let submitted = provider.submitted_transactions();
+            assert_eq!(submitted.len(), 2);
+            // The retry re-broadcasts the identical signed bytes; a fresh
+            // signing could double-store if the first broadcast landed.
+            assert_eq!(submitted[0], submitted[1]);
+        }
+
+        #[test]
+        fn submit_preimage_recovers_inclusion_when_rebroadcast_bounces() {
+            let provider = Arc::new(BulletinScriptedProvider::new([
+                TransactionOutcome::FollowStopWithMissingBody,
+                TransactionOutcome::Invalid,
+            ]));
+            let value = b"scripted bounced rebroadcast recovery";
+            let result = futures::executor::block_on(rpc(provider.clone()).submit_preimage(
+                &CallContext::default(),
+                Instant::now() + Duration::from_secs(2),
+                &allowance_fixture(),
+                value,
+            ))
+            .unwrap();
+
+            assert_eq!(result, preimage_key(value));
+            // The bounce triggers one more re-check, which finds the first
+            // broadcast on chain; the invalid verdict never surfaces.
+            assert_eq!(
+                provider.method_count("transactionWatch_v1_submitAndWatch"),
+                2
+            );
+        }
+
+        #[test]
+        fn submit_preimage_reports_unverified_when_rebroadcast_bounces_unseen() {
+            let provider = Arc::new(BulletinScriptedProvider::new([
+                TransactionOutcome::FollowStopWithMissingBody,
+                TransactionOutcome::InvalidWithMissingBody,
+            ]));
+            let error = futures::executor::block_on(rpc(provider.clone()).submit_preimage(
+                &CallContext::default(),
+                Instant::now() + Duration::from_secs(2),
+                &allowance_fixture(),
+                b"scripted bounced rebroadcast unseen",
+            ))
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                BulletinSubmitError::RebroadcastRejected { .. }
+            ));
+            assert!(error.to_string().starts_with("inclusion unverified"));
+            // A bounced re-broadcast must never trigger a rebuilt signing:
+            // the first broadcast may be on chain out of the re-check's
+            // reach, and a fresh nonce would double-store.
             assert_eq!(
                 provider.method_count("transactionWatch_v1_submitAndWatch"),
                 2
