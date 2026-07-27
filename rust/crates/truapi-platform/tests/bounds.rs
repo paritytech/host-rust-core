@@ -40,7 +40,7 @@ fn runtime_config_validation_cases() {
             host_name: "Polkadot Web",
             host_icon: Some("/dotli.png"),
             expected: Err(RuntimeConfigValidationError::InvalidHostIcon {
-                reason: "relative URL without a base".to_string(),
+                source: url::ParseError::RelativeUrlWithoutBase,
             }),
         },
         TestCase {

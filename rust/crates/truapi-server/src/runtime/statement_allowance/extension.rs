@@ -20,9 +20,113 @@ use frame_metadata::RuntimeMetadataPrefixed;
 use parity_scale_codec::{Compact, Decode, Encode};
 use scale_info::form::PortableForm;
 use scale_info::{PortableRegistry, TypeDef, TypeDefPrimitive, TypeDefVariant};
+use thiserror::Error;
+
+use super::StatementAllowanceError;
 
 /// Signed-extension identifier that carries the `AsResources` authorization.
 pub const AS_RESOURCES: &str = "AsResources";
+
+/// Error while decoding runtime metadata or resolving allowance-specific
+/// metadata entries.
+#[derive(Debug, Error)]
+pub enum MetadataError {
+    /// `state_getMetadata` did not return a hex string.
+    #[error("state_getMetadata returned non-string")]
+    MetadataResultNotString,
+    /// Metadata hex payload was invalid.
+    #[error("metadata hex: {0}")]
+    MetadataHex(#[source] hex::FromHexError),
+    /// Opaque metadata wrapper could not be decoded.
+    #[error("opaque metadata: {0}")]
+    OpaqueMetadata(#[source] parity_scale_codec::Error),
+    /// Runtime metadata prefix could not be decoded.
+    #[error("metadata decode failed: {0}")]
+    Decode(#[source] parity_scale_codec::Error),
+    /// Runtime metadata version is not supported by this encoder.
+    #[error("unsupported metadata version {version}")]
+    UnsupportedVersion {
+        /// Runtime metadata version.
+        version: u32,
+    },
+    /// Pallet has no call enum.
+    #[error("pallet `{pallet}` has no calls in metadata")]
+    MissingPalletCalls {
+        /// Pallet name.
+        pallet: String,
+    },
+    /// Named pallet call was not found.
+    #[error("call `{pallet}.{call}` not found in metadata")]
+    MissingCall {
+        /// Pallet name.
+        pallet: String,
+        /// Call name.
+        call: String,
+    },
+    /// `AsResources` extension is absent from metadata.
+    #[error("{AS_RESOURCES} extension not found in metadata")]
+    MissingAsResourcesExtension,
+    /// `AsResources` extra type did not contain the expected `Option`.
+    #[error("{AS_RESOURCES} extra is not an Option")]
+    AsResourcesExtraNotOption,
+    /// Named `AsResourcesInfo` variant was not found.
+    #[error("AsResourcesInfo::{variant} not found in metadata")]
+    MissingAsResourcesInfoVariant {
+        /// Variant name.
+        variant: String,
+    },
+    /// Named `AsResourcesInfo` variant did not carry a membership collection.
+    #[error("AsResourcesInfo::{variant} carries no MembershipCollection field")]
+    MissingMembershipCollection {
+        /// Variant name.
+        variant: String,
+    },
+    /// `MembershipCollection::LitePeople` variant was not found.
+    #[error("MembershipCollection::LitePeople not found in metadata")]
+    MissingLitePeopleCollection,
+    /// Type id did not resolve in the portable registry.
+    #[error("unknown type id {type_id}")]
+    UnknownTypeId {
+        /// Missing type id.
+        type_id: u32,
+    },
+    /// Type id did not resolve to an enum.
+    #[error("type {type_id} is not an enum")]
+    TypeNotEnum {
+        /// Type id.
+        type_id: u32,
+    },
+    /// Type id did not resolve to a composite.
+    #[error("type {type_id} is not a composite")]
+    TypeNotComposite {
+        /// Type id.
+        type_id: u32,
+    },
+    /// Composite type had the wrong field count.
+    #[error("type {type_id} has {actual} fields, expected 1")]
+    CompositeFieldCount {
+        /// Type id.
+        type_id: u32,
+        /// Actual field count.
+        actual: usize,
+    },
+    /// Storage value type was missing from metadata.
+    #[error("{pallet}.{entry} type not in metadata")]
+    MissingStorageType {
+        /// Pallet name.
+        pallet: &'static str,
+        /// Storage entry name.
+        entry: &'static str,
+    },
+    /// Pallet constant was missing from metadata.
+    #[error("{pallet}.{constant} constant missing")]
+    MissingConstant {
+        /// Pallet name.
+        pallet: &'static str,
+        /// Constant name.
+        constant: &'static str,
+    },
+}
 
 /// Chain state needed to fill the standard signed extensions.
 #[derive(Debug, Clone, Copy)]
@@ -162,14 +266,19 @@ impl Metadata {
     /// Decode `state_getMetadata` bytes (a `RuntimeMetadataPrefixed`, V14
     /// through V16) into the ordered signed-extension defs, type registry,
     /// storage value types, constants, and call enums.
-    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let prefixed = RuntimeMetadataPrefixed::decode(&mut &bytes[..])
-            .map_err(|err| format!("metadata decode failed: {err}"))?;
+    pub fn decode(bytes: &[u8]) -> Result<Self, StatementAllowanceError> {
+        let prefixed =
+            RuntimeMetadataPrefixed::decode(&mut &bytes[..]).map_err(MetadataError::Decode)?;
         let (extensions, registry, storage_values, constants, calls) = match prefixed.1 {
             RuntimeMetadata::V14(m) => collect_metadata!(m, frame_metadata::v14::StorageEntryType),
             RuntimeMetadata::V15(m) => collect_metadata!(m, frame_metadata::v15::StorageEntryType),
             RuntimeMetadata::V16(m) => collect_metadata_v16!(m),
-            other => return Err(format!("unsupported metadata version {}", other.version())),
+            other => {
+                return Err(MetadataError::UnsupportedVersion {
+                    version: other.version(),
+                }
+                .into());
+            }
         };
         Ok(Self {
             extensions,
@@ -201,30 +310,42 @@ impl Metadata {
 
     /// Resolve `pallet::call` by name to its `[pallet_index, call_index]`
     /// dispatch bytes.
-    pub fn call_indices(&self, pallet: &str, call: &str) -> Result<[u8; 2], String> {
-        let (pallet_index, call_type) = self
-            .calls
-            .get(pallet)
-            .copied()
-            .ok_or_else(|| format!("pallet `{pallet}` has no calls in metadata"))?;
+    pub fn call_indices(
+        &self,
+        pallet: &str,
+        call: &str,
+    ) -> Result<[u8; 2], StatementAllowanceError> {
+        let (pallet_index, call_type) =
+            self.calls
+                .get(pallet)
+                .copied()
+                .ok_or_else(|| MetadataError::MissingPalletCalls {
+                    pallet: pallet.to_string(),
+                })?;
         let variants = self.resolve_variant(call_type)?;
         let variant = variants
             .variants
             .iter()
             .find(|v| v.name == call)
-            .ok_or_else(|| format!("call `{pallet}.{call}` not found in metadata"))?;
+            .ok_or_else(|| MetadataError::MissingCall {
+                pallet: pallet.to_string(),
+                call: call.to_string(),
+            })?;
         Ok([pallet_index, variant.index])
     }
 
     /// Resolve `AsResourcesInfo::<info_variant>` and the
     /// `MembershipCollection::LitePeople` index it carries, by name, from the
     /// `AsResources` extension type.
-    pub fn as_resources_variant_indices(&self, info_variant: &str) -> Result<(u8, u8), String> {
+    pub fn as_resources_variant_indices(
+        &self,
+        info_variant: &str,
+    ) -> Result<(u8, u8), StatementAllowanceError> {
         let ext = self
             .extensions
             .iter()
             .find(|e| e.identifier == AS_RESOURCES)
-            .ok_or_else(|| format!("{AS_RESOURCES} extension not found in metadata"))?;
+            .ok_or(MetadataError::MissingAsResourcesExtension)?;
         // extra = `AsResources(Option<AsResourcesInfo>)`, with or without the
         // struct wrapper.
         let option_type = match &self.resolve_type(ext.extra_type)?.type_def {
@@ -240,13 +361,15 @@ impl Metadata {
                 [field] => Some(field.ty.id),
                 _ => None,
             })
-            .ok_or_else(|| format!("{AS_RESOURCES} extra is not an Option"))?;
+            .ok_or(MetadataError::AsResourcesExtraNotOption)?;
         let variant = self
             .resolve_variant(info_type)?
             .variants
             .iter()
             .find(|v| v.name == info_variant)
-            .ok_or_else(|| format!("AsResourcesInfo::{info_variant} not found in metadata"))?;
+            .ok_or_else(|| MetadataError::MissingAsResourcesInfoVariant {
+                variant: info_variant.to_string(),
+            })?;
         let collection_type = variant
             .fields
             .iter()
@@ -257,44 +380,51 @@ impl Metadata {
                     ty.path.segments.last().map(String::as_str) == Some("MembershipCollection")
                 })
             })
-            .ok_or_else(|| {
-                format!("AsResourcesInfo::{info_variant} carries no MembershipCollection field")
+            .ok_or_else(|| MetadataError::MissingMembershipCollection {
+                variant: info_variant.to_string(),
             })?;
         let lite_people = self
             .resolve_variant(collection_type)?
             .variants
             .iter()
             .find(|v| v.name == "LitePeople")
-            .ok_or_else(|| "MembershipCollection::LitePeople not found in metadata".to_string())?;
+            .ok_or(MetadataError::MissingLitePeopleCollection)?;
         Ok((variant.index, lite_people.index))
     }
 
     /// Resolve a type id in the registry.
-    fn resolve_type(&self, type_id: u32) -> Result<&scale_info::Type<PortableForm>, String> {
+    fn resolve_type(
+        &self,
+        type_id: u32,
+    ) -> Result<&scale_info::Type<PortableForm>, StatementAllowanceError> {
         self.registry
             .resolve(type_id)
-            .ok_or_else(|| format!("unknown type id {type_id}"))
+            .ok_or(MetadataError::UnknownTypeId { type_id }.into())
     }
 
     /// Resolve `type_id` as an enum definition.
-    fn resolve_variant(&self, type_id: u32) -> Result<&TypeDefVariant<PortableForm>, String> {
+    fn resolve_variant(
+        &self,
+        type_id: u32,
+    ) -> Result<&TypeDefVariant<PortableForm>, StatementAllowanceError> {
         match &self.resolve_type(type_id)?.type_def {
             TypeDef::Variant(variant) => Ok(variant),
-            _ => Err(format!("type {type_id} is not an enum")),
+            _ => Err(MetadataError::TypeNotEnum { type_id }.into()),
         }
     }
 
     /// The field type of a one-field composite.
-    fn single_field_type(&self, type_id: u32) -> Result<u32, String> {
+    fn single_field_type(&self, type_id: u32) -> Result<u32, StatementAllowanceError> {
         let TypeDef::Composite(composite) = &self.resolve_type(type_id)?.type_def else {
-            return Err(format!("type {type_id} is not a composite"));
+            return Err(MetadataError::TypeNotComposite { type_id }.into());
         };
         match composite.fields.as_slice() {
             [field] => Ok(field.ty.id),
-            fields => Err(format!(
-                "type {type_id} has {} fields, expected 1",
-                fields.len()
-            )),
+            fields => Err(MetadataError::CompositeFieldCount {
+                type_id,
+                actual: fields.len(),
+            }
+            .into()),
         }
     }
 
@@ -417,12 +547,12 @@ pub fn build_proof_message(
     metadata: &Metadata,
     call_data: &[u8],
     state: &ChainState,
-) -> Result<[u8; 32], String> {
+) -> Result<[u8; 32], StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
     let tail_start = metadata
         .as_resources_index()
         .map(|i| i + 1)
-        .ok_or_else(|| format!("{AS_RESOURCES} extension not found in metadata"))?;
+        .ok_or(MetadataError::MissingAsResourcesExtension)?;
     let tail = &all[tail_start..];
 
     let mut payload = Vec::with_capacity(1 + call_data.len());
@@ -444,7 +574,7 @@ pub fn blake2b256(message: &[u8]) -> [u8; 32] {
         .hash(message)
         .as_bytes()
         .try_into()
-        .expect("BLAKE2b-256 returns 32 bytes")
+        .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed")
 }
 
 #[cfg(test)]
