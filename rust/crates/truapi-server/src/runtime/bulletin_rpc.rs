@@ -44,10 +44,13 @@ const SUBMIT_ATTEMPTS: usize = 2;
 /// identical transaction can be included at most once, so re-broadcasting it
 /// can never double-store the preimage.
 const MAX_IDENTICAL_BROADCASTS: usize = 2;
-/// Number of newer best blocks to try before treating a dry-run allowance
-/// rejection as real. Three blocks are about 18 seconds on Bulletin and leave
-/// room in the end-to-end submit timeout for one refresh and retry.
-const ALLOWANCE_DRY_RUN_PROPAGATION_BLOCKS: usize = 3;
+/// Wall-clock window to keep re-checking whether a freshly-claimed allowance
+/// has propagated to the dry-run view before treating the rejection as real.
+/// Bounding by elapsed time rather than a best-block count keeps the intended
+/// ~18s budget stable across changes in Bulletin's block cadence (a fixed
+/// count silently shrank the budget when block time dropped), and leaves room
+/// in the end-to-end submit timeout for one refresh and retry.
+const ALLOWANCE_DRY_RUN_PROPAGATION_WINDOW: Duration = Duration::from_secs(18);
 /// Bound each wait for a newer best block while allowance state propagates.
 #[cfg(not(test))]
 const ALLOWANCE_DRY_RUN_BLOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -224,6 +227,8 @@ pub(crate) struct BulletinRpc {
     submit_lock: futures::lock::Mutex<()>,
     /// Last phase entered, for timeout reasons.
     phase: StdMutex<SubmissionPhase>,
+    /// Wall-clock budget for allowance propagation to reach the dry-run view.
+    propagation_window: Duration,
 }
 
 impl BulletinRpc {
@@ -234,7 +239,17 @@ impl BulletinRpc {
             genesis_hash,
             submit_lock: futures::lock::Mutex::new(()),
             phase: StdMutex::new(SubmissionPhase::Connect),
+            propagation_window: ALLOWANCE_DRY_RUN_PROPAGATION_WINDOW,
         }
+    }
+
+    /// Override the allowance-propagation window. Test-only: lets a scripted
+    /// run exercise both the "keep polling" and "window elapsed" paths without
+    /// depending on real block cadence.
+    #[cfg(test)]
+    fn with_propagation_window(mut self, window: Duration) -> Self {
+        self.propagation_window = window;
+        self
     }
 
     /// Submit `value` as a Bulletin preimage signed by `allowance`, returning
@@ -402,11 +417,12 @@ impl BulletinRpc {
                 DryRunStatus::AllowanceRejected => {
                     let started = allowance_rejection_started.get_or_insert_with(Instant::now);
                     let elapsed = started.elapsed();
-                    if allowance_rejections >= ALLOWANCE_DRY_RUN_PROPAGATION_BLOCKS {
+                    if elapsed >= self.propagation_window {
                         warn!(
                             rejections = allowance_rejections + 1,
                             elapsed_ms = elapsed.as_millis(),
-                            stop = "block-limit",
+                            propagation_window_ms = self.propagation_window.as_millis(),
+                            stop = "propagation-window",
                             "Bulletin allowance remained unavailable to dry-run"
                         );
                         return Err(BulletinSubmitError::AllowanceRejected {
@@ -417,6 +433,7 @@ impl BulletinRpc {
                     warn!(
                         attempt = allowance_rejections,
                         elapsed_ms = elapsed.as_millis(),
+                        propagation_window_ms = self.propagation_window.as_millis(),
                         block_wait_timeout_ms = ALLOWANCE_DRY_RUN_BLOCK_WAIT_TIMEOUT.as_millis(),
                         "Bulletin allowance not visible to dry-run yet; rebuilding at next block"
                     );
@@ -1789,17 +1806,61 @@ mod tests {
         }
 
         #[test]
-        fn dry_run_propagation_stops_after_the_block_limit() {
+        fn dry_run_keeps_polling_past_the_old_block_count_while_blocks_are_fast() {
+            // Regression: Bulletin's best-block cadence dropped, so a
+            // fixed-count propagation budget (3 blocks) collapsed from the
+            // intended ~18s to ~3s and gave up before a freshly-claimed
+            // allowance became visible to the dry-run. The wait is now bound
+            // by wall-clock, so a rapid stream of rejections keeps polling
+            // until the allowance propagates.
+            // Six is well past the old three-block give-up cap.
+            let rejections_past_old_limit = 6;
+            let mut validation_outcomes =
+                vec![ValidationOutcome::AllowanceRejected; rejections_past_old_limit];
+            validation_outcomes.push(ValidationOutcome::Valid);
+            let provider = Arc::new(
+                BulletinScriptedProvider::new([TransactionOutcome::Included])
+                    .with_validation_outcomes(validation_outcomes, true),
+            );
+            let value = b"scripted fast-block allowance propagation";
+            let result = futures::executor::block_on(rpc(provider.clone()).submit_preimage(
+                &CallContext::default(),
+                Instant::now() + Duration::from_secs(30),
+                &allowance_fixture(),
+                value,
+            ))
+            .unwrap();
+
+            assert_eq!(result, preimage_key(value));
+            assert_eq!(
+                provider.runtime_call_count("TaggedTransactionQueue_validate_transaction"),
+                rejections_past_old_limit + 1
+            );
+            assert_eq!(
+                provider.method_count("transactionWatch_v1_submitAndWatch"),
+                1
+            );
+        }
+
+        #[test]
+        fn dry_run_propagation_stops_once_the_wall_clock_window_elapses() {
+            // A zero-length window makes the first rejection exceed the budget
+            // immediately, so a never-propagating allowance is treated as real
+            // after one dry-run rather than looping until the outer deadline.
             let provider = Arc::new(BulletinScriptedProvider::new([]).with_validation_outcomes(
-                [ValidationOutcome::AllowanceRejected; ALLOWANCE_DRY_RUN_PROPAGATION_BLOCKS + 1],
+                [ValidationOutcome::AllowanceRejected; 4],
                 true,
             ));
-            let error = futures::executor::block_on(rpc(provider.clone()).submit_preimage(
-                &CallContext::default(),
-                Instant::now() + Duration::from_secs(2),
-                &allowance_fixture(),
-                b"scripted propagation block limit",
-            ))
+            let error = futures::executor::block_on(
+                rpc(provider.clone())
+                    .with_propagation_window(Duration::ZERO)
+                    .submit_preimage(
+                        &CallContext::default(),
+                        Instant::now() + Duration::from_secs(2),
+                        &allowance_fixture(),
+                        b"scripted propagation window elapsed",
+                    ),
+            )
             .unwrap_err();
 
             assert!(matches!(
@@ -1810,7 +1871,7 @@ mod tests {
             ));
             assert_eq!(
                 provider.runtime_call_count("TaggedTransactionQueue_validate_transaction"),
-                ALLOWANCE_DRY_RUN_PROPAGATION_BLOCKS + 1
+                1
             );
             assert_eq!(
                 provider.method_count("transactionWatch_v1_submitAndWatch"),
