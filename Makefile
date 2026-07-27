@@ -50,6 +50,11 @@ build: ## Build the Rust workspace and the TypeScript client.
 	cd $(HOST_WASM_PKG) && npm run build
 
 headless: ## Build the truapi-host CLI and generated TypeScript client.
+	# The client build shells out to tsc, which `ensure-generated.sh` looks for at
+	# the root or in the package. Install workspace deps when neither is present so
+	# this target works on a checkout that has not run `make setup`.
+	@[ -x node_modules/.bin/tsc ] || [ -x $(TRUAPI_PKG)/node_modules/.bin/tsc ] \
+		|| npm ci --ignore-scripts
 	cargo build -p truapi-host-cli
 	cd $(TRUAPI_PKG) && npm run build
 
