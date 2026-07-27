@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,8 +22,11 @@ const ACCOUNT_STORE_FILE: &str = "accounts.json";
 const ACCOUNT_STORE_LOCK_FILE: &str = "accounts.json.lock";
 const DEFAULT_USERNAME_PREFIX: &str = "headless";
 
+/// Placeholder rendered by `Debug` in place of secret material.
+const REDACTED: &str = "<redacted>";
+
 /// Signer material selected for a signing-host session.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedSigner {
     /// BIP-39 entropy backing the selected signer account.
     pub entropy: Vec<u8>,
@@ -34,8 +38,20 @@ pub struct ResolvedSigner {
     pub auto_managed: bool,
 }
 
+impl fmt::Debug for ResolvedSigner {
+    /// Redacts `entropy` so signer material cannot reach a log or error string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolvedSigner")
+            .field("entropy", &REDACTED)
+            .field("account_name", &self.account_name)
+            .field("lite_username", &self.lite_username)
+            .field("auto_managed", &self.auto_managed)
+            .finish()
+    }
+}
+
 /// Inputs for resolving a signing-host account.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolveSignerConfig<'a> {
     /// Directory containing the local account store.
     pub base_path: &'a Path,
@@ -49,8 +65,21 @@ pub struct ResolveSignerConfig<'a> {
     pub lite_username_prefix: Option<String>,
 }
 
+impl fmt::Debug for ResolveSignerConfig<'_> {
+    /// Redacts `mnemonic` while keeping the non-secret resolution inputs.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolveSignerConfig")
+            .field("base_path", &self.base_path)
+            .field("network", &self.network)
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| REDACTED))
+            .field("account", &self.account)
+            .field("lite_username_prefix", &self.lite_username_prefix)
+            .finish()
+    }
+}
+
 /// Stored signer account record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AccountRecord {
     /// Stable local account name, for example `auto-1`.
     pub name: String,
@@ -71,6 +100,27 @@ pub struct AccountRecord {
     pub attested: bool,
     #[serde(default)]
     exhausted_statement_periods: BTreeSet<u32>,
+}
+
+impl fmt::Debug for AccountRecord {
+    /// Redacts `mnemonic`. `AccountStoreData` and `AccountStore` render records
+    /// through this impl, so neither can print stored signer material either.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountRecord")
+            .field("name", &self.name)
+            .field("network", &self.network)
+            .field("mnemonic", &REDACTED)
+            .field("lite_username", &self.lite_username)
+            .field("public_key_hex", &self.public_key_hex)
+            .field("address", &self.address)
+            .field("created_at_unix", &self.created_at_unix)
+            .field("attested", &self.attested)
+            .field(
+                "exhausted_statement_periods",
+                &self.exhausted_statement_periods,
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -614,6 +664,45 @@ mod tests {
             attested,
             exhausted_statement_periods: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn debug_output_redacts_signer_secrets() {
+        let signer = ResolvedSigner {
+            entropy: vec![0xab; 32],
+            account_name: Some("auto-1".to_string()),
+            lite_username: None,
+            auto_managed: true,
+        };
+        let rendered = format!("{signer:?}");
+        assert!(
+            !rendered.contains("171"),
+            "entropy bytes leaked: {rendered}"
+        );
+        assert!(rendered.contains(REDACTED));
+        assert!(rendered.contains("auto-1"), "non-secret fields dropped");
+
+        let config = ResolveSignerConfig {
+            base_path: Path::new("/tmp"),
+            network: crate::network::Network::PaseoNextV2.config(),
+            mnemonic: Some(MNEMONIC.to_string()),
+            account: None,
+            lite_username_prefix: None,
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");
+        assert!(rendered.contains(REDACTED));
+
+        // AccountStoreData renders records through AccountRecord's impl, so the
+        // whole store is covered by redacting the record.
+        let mut store = AccountStore {
+            path: PathBuf::from("accounts.json"),
+            data: AccountStoreData::default(),
+        };
+        store.upsert(record("auto-1", "paseo-next-v2", true));
+        let rendered = format!("{:?}", store.data);
+        assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");
+        assert!(rendered.contains(REDACTED));
     }
 
     #[test]
