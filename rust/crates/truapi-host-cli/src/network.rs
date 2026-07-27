@@ -1,6 +1,11 @@
 use clap::ValueEnum;
 
 /// Supported live network presets for the headless hosts.
+///
+/// Every preset must be a test network. The CLI account store keeps BIP-39
+/// mnemonics in plaintext (`accounts.rs`), which is only acceptable for
+/// disposable test identities, so adding a production preset means reworking
+/// that storage first. The `every_preset_is_a_test_network` test enforces it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum Network {
     #[value(name = "paseo-next-v2")]
@@ -91,5 +96,36 @@ const fn hex_nibble(c: u8) -> u8 {
         b'0'..=b'9' => c - b'0',
         b'a'..=b'f' => c - b'a' + 10,
         _ => panic!("invalid hex digit in genesis literal"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards the invariant documented on [`Network`]: the plaintext mnemonic
+    /// store is only safe for disposable identities, so no preset may point at a
+    /// production network. If this fails because a real network was added,
+    /// rework the account store rather than relaxing the assertion.
+    #[test]
+    fn every_preset_is_a_test_network() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let mut routes = vec![
+                config.identity_backend_base,
+                config.people_ws,
+                config.bulletin_ws,
+            ];
+            routes.extend(config.live_chain_endpoints.iter().map(|chain| chain.ws));
+
+            for route in routes {
+                assert!(
+                    route.contains("paseo") || route.contains("testnet"),
+                    "preset `{}` routes to a host that is not a recognised test \
+                     network: {route}",
+                    config.id,
+                );
+            }
+        }
     }
 }
