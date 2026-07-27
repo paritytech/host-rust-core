@@ -5,21 +5,50 @@
 //! in the LitePeople ring, bound to a slot `context` and the extrinsic proof
 //! `message`. Mirrors signing-bot `ring-proof.ts` `oneShotProof`.
 
+use thiserror::Error;
+use verifiable::Error as VerifiableError;
 use verifiable::GenerateVerifiable;
 use verifiable::ring::RingDomainSize;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
+use super::StatementAllowanceError;
+
 /// A single-context ring-VRF signature is exactly 785 bytes.
 pub const RING_VRF_PROOF_LEN: usize = 785;
 
+/// Error while constructing a ring-VRF allowance proof.
+#[derive(Debug, Error)]
+pub enum ProofError {
+    /// On-chain ring exponent does not map to a supported proof domain.
+    #[error("unsupported ring exponent {exponent}")]
+    UnsupportedRingExponent {
+        /// Ring exponent.
+        exponent: u8,
+    },
+    /// Prover could not open the ring for the member key.
+    #[error("ring-VRF open failed: {0:?}")]
+    OpenFailed(VerifiableError),
+    /// Prover could not create the proof.
+    #[error("ring-VRF create failed: {0:?}")]
+    CreateFailed(VerifiableError),
+    /// Proof encoded to an unexpected length.
+    #[error("ring-VRF proof is {actual} bytes, expected {expected}")]
+    InvalidProofLength {
+        /// Actual byte length.
+        actual: usize,
+        /// Expected byte length.
+        expected: usize,
+    },
+}
+
 /// Map an on-chain `RingExponent` (9 / 10 / 14) to the FFT domain size
 /// (power = exponent + 2).
-pub fn domain_for_ring_exponent(exponent: u8) -> Result<RingDomainSize, String> {
+pub fn domain_for_ring_exponent(exponent: u8) -> Result<RingDomainSize, StatementAllowanceError> {
     match exponent {
         9 => Ok(RingDomainSize::Domain11),
         10 => Ok(RingDomainSize::Domain12),
         14 => Ok(RingDomainSize::Domain16),
-        other => Err(format!("unsupported ring exponent {other}")),
+        other => Err(ProofError::UnsupportedRingExponent { exponent: other }.into()),
     }
 }
 
@@ -40,19 +69,20 @@ pub fn ring_vrf_proof(
     members: &[[u8; 32]],
     context: &[u8],
     message: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let secret = BandersnatchVrfVerifiable::new_secret(entropy);
     let member = BandersnatchVrfVerifiable::member_from_secret(&secret);
     let commitment = BandersnatchVrfVerifiable::open(domain, &member, members.iter().copied())
-        .map_err(|err| format!("ring-VRF open failed: {err:?}"))?;
+        .map_err(ProofError::OpenFailed)?;
     let (proof, _alias) = BandersnatchVrfVerifiable::create(commitment, &secret, context, message)
-        .map_err(|err| format!("ring-VRF create failed: {err:?}"))?;
+        .map_err(ProofError::CreateFailed)?;
     let bytes = proof.into_inner();
     if bytes.len() != RING_VRF_PROOF_LEN {
-        return Err(format!(
-            "ring-VRF proof is {} bytes, expected {RING_VRF_PROOF_LEN}",
-            bytes.len()
-        ));
+        return Err(ProofError::InvalidProofLength {
+            actual: bytes.len(),
+            expected: RING_VRF_PROOF_LEN,
+        }
+        .into());
     }
     Ok(bytes)
 }
@@ -106,6 +136,9 @@ mod tests {
             &[0x42; 32],
         )
         .unwrap_err();
-        assert!(err.contains("open failed"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("open failed"),
+            "unexpected error: {err}"
+        );
     }
 }
