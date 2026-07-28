@@ -21,8 +21,6 @@ interface Row {
   service: string;
   method: string;
   status: TestStatus;
-  // A skipped method is displayed as failed; this flags it so the e2e gate can
-  // tell an intentional skip apart from a genuine failure.
   skipped: boolean;
   output?: string;
 }
@@ -47,27 +45,25 @@ export function DiagnosisView({
   const [copied, setCopied] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const { rows, hasResults, passCount, failCount } = useMemo(() => {
+  const { rows, hasResults, passCount, failCount, skipCount } = useMemo(() => {
     const out: Row[] = [];
     let pass = 0;
     let fail = 0;
+    let skipped = 0;
     for (const svc of services) {
       for (const m of svc.methods) {
         const id = `${svc.name}/${m.name}`;
         const entry = testResults[id];
-        const rawStatus = entry?.status ?? "idle";
-        // Skipped methods are shown as failed (their skip reason is the detail)
-        // so the view stays a pass/fail summary and every method is accounted
-        // for — matching the compatibility matrix.
-        const status = rawStatus === "skipped" ? "fail" : rawStatus;
+        const status = entry?.status ?? "idle";
         if (status === "pass") pass++;
         else if (status === "fail") fail++;
+        else if (status === "skipped") skipped++;
         out.push({
           id,
           service: svc.name,
           method: m.name,
           status,
-          skipped: rawStatus === "skipped",
+          skipped: status === "skipped",
           output: entry?.output,
         });
       }
@@ -77,6 +73,7 @@ export function DiagnosisView({
       hasResults: Object.keys(testResults).length > 0,
       passCount: pass,
       failCount: fail,
+      skipCount: skipped,
     };
   }, [services, testResults]);
 
@@ -176,7 +173,7 @@ export function DiagnosisView({
             data-testid="diagnosis-summary"
             data-has-fail={!isRunning && failCount > 0}
           >
-            {passCount} success · {failCount} failed
+            {passCount} success · {failCount} failed · {skipCount} skipped
           </span>
         )}
         {hasResults && !isRunning && (
