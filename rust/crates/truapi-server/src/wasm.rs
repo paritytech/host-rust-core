@@ -505,8 +505,8 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
             "runtimeConfig.{} must not be empty",
             runtime_config_field_to_js(field)
         )),
-        RuntimeConfigValidationError::InvalidHostIcon { reason } => JsValue::from_str(&format!(
-            "runtimeConfig.host.icon must be an absolute HTTPS URL: {reason}"
+        RuntimeConfigValidationError::InvalidHostIcon { source } => JsValue::from_str(&format!(
+            "runtimeConfig.host.icon must be an absolute HTTPS URL: {source}"
         )),
         RuntimeConfigValidationError::InsecureHostIcon { scheme } => JsValue::from_str(&format!(
             "runtimeConfig.host.icon must use https scheme, got {scheme:?}"
