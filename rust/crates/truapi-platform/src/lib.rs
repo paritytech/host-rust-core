@@ -16,13 +16,12 @@ use unicode_normalization::UnicodeNormalization;
 pub use async_trait::async_trait;
 
 use truapi::latest::{
-    GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
+    AllocatableResource, GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
     HostNavigateToError, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostRequestResourceAllocationRequest, HostSignPayloadRequest,
-    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermissionRequest,
+    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
+    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
     RemotePermissionResponse, RingLocation, ThemeVariant,
 };
 use url::Url;
@@ -116,10 +115,8 @@ impl HostRuntimeConfig {
     ) -> Result<Self, RuntimeConfigValidationError> {
         require_non_empty("host_info.name", &host_info.name)?;
         if let Some(icon) = &host_info.icon {
-            let parsed =
-                Url::parse(icon).map_err(|err| RuntimeConfigValidationError::InvalidHostIcon {
-                    reason: err.to_string(),
-                })?;
+            let parsed = Url::parse(icon)
+                .map_err(|source| RuntimeConfigValidationError::InvalidHostIcon { source })?;
             if parsed.scheme() != "https" {
                 return Err(RuntimeConfigValidationError::InsecureHostIcon {
                     scheme: parsed.scheme().to_string(),
@@ -227,10 +224,10 @@ pub enum RuntimeConfigValidationError {
         field: &'static str,
     },
     /// Host icon URL could not be parsed as an absolute HTTPS URL.
-    #[display("host_info.icon must be an absolute HTTPS URL: {reason}")]
+    #[display("host_info.icon must be an absolute HTTPS URL: {source}")]
     InvalidHostIcon {
-        /// Parse failure reason.
-        reason: String,
+        /// Parse failure.
+        source: url::ParseError,
     },
     /// Host icon URL used a non-HTTPS scheme.
     #[display("host_info.icon must use https scheme, got {scheme:?}")]
@@ -323,6 +320,11 @@ pub enum PermissionAuthorizationRequest {
     Remote(RemotePermissionRequest),
     /// Product-scoped permission to disclose the user's primary identity.
     IdentityDisclosure,
+    /// Product-scoped permission to access another product's account context.
+    AccountAccess {
+        /// Product whose account context may be accessed.
+        target_product_id: String,
+    },
 }
 
 /// Authorization status for a permission request.
@@ -455,6 +457,180 @@ pub enum CoreStorageKey {
     LastProcessedPairingStatement,
 }
 
+impl CoreStorageKey {
+    /// Persisted authorization key for one product-scoped device permission.
+    pub fn device_permission_authorization(
+        product_id: &str,
+        permission: &HostDevicePermissionRequest,
+    ) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::Device(*permission),
+        }
+    }
+
+    /// Persisted authorization key for one product-scoped remote permission.
+    pub fn remote_permission_authorization(
+        product_id: &str,
+        request: &RemotePermissionRequest,
+    ) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::Remote(canonical_remote_request(request)),
+        }
+    }
+
+    /// Persisted authorization key for product-scoped identity disclosure.
+    pub fn identity_disclosure_authorization(product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::IdentityDisclosure,
+        }
+    }
+
+    /// Persisted authorization key for one product accessing another product's
+    /// account context.
+    pub fn account_access_authorization(product_id: &str, target_product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::AccountAccess {
+                target_product_id: target_product_id.to_string(),
+            },
+        }
+    }
+}
+
+fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissionRequest {
+    let permission = match &request.permission {
+        RemotePermission::Remote { domains } => {
+            // DNS domains are case-insensitive, so a logically-identical bundle
+            // requested with different casing or duplicate entries must
+            // canonicalize to one key (no spurious re-prompt).
+            let mut canonical: Vec<String> = domains
+                .iter()
+                .map(|domain| domain.to_ascii_lowercase())
+                .collect();
+            canonical.sort();
+            canonical.dedup();
+            RemotePermission::Remote { domains: canonical }
+        }
+        other => other.clone(),
+    };
+    RemotePermissionRequest { permission }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_authorization_keys_separate_product_and_request_variants() {
+        let camera = CoreStorageKey::device_permission_authorization(
+            "product.dot",
+            &HostDevicePermissionRequest::Camera,
+        );
+        let other_product = CoreStorageKey::device_permission_authorization(
+            "other.dot",
+            &HostDevicePermissionRequest::Camera,
+        );
+        let remote = CoreStorageKey::remote_permission_authorization(
+            "product.dot",
+            &RemotePermissionRequest {
+                permission: RemotePermission::ChainSubmit,
+            },
+        );
+        let identity = CoreStorageKey::identity_disclosure_authorization("product.dot");
+        let other_product_identity = CoreStorageKey::identity_disclosure_authorization("other.dot");
+        let account_access =
+            CoreStorageKey::account_access_authorization("product.dot", "target.dot");
+        let other_target = CoreStorageKey::account_access_authorization("product.dot", "other.dot");
+
+        assert_ne!(camera, other_product);
+        assert_ne!(camera, remote);
+        assert_ne!(camera, identity);
+        assert_ne!(remote, identity);
+        assert_ne!(identity, other_product_identity);
+        assert_ne!(account_access, other_target);
+        assert_ne!(account_access, camera);
+    }
+
+    #[test]
+    fn remote_permission_authorization_key_canonicalizes_domain_sets() {
+        let unsorted = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["b.example.com".into(), "a.example.com".into()],
+            },
+        };
+        let sorted = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["a.example.com".into(), "b.example.com".into()],
+            },
+        };
+        assert_eq!(
+            CoreStorageKey::remote_permission_authorization("product.dot", &unsorted),
+            CoreStorageKey::remote_permission_authorization("product.dot", &sorted)
+        );
+
+        let mixed = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["Example.COM".into(), "a.com".into(), "a.com".into()],
+            },
+        };
+        let canonical = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["a.com".into(), "example.com".into()],
+            },
+        };
+        assert_eq!(
+            CoreStorageKey::remote_permission_authorization("product.dot", &mixed),
+            CoreStorageKey::remote_permission_authorization("product.dot", &canonical)
+        );
+    }
+
+    #[test]
+    fn remote_permission_authorization_key_handles_separator_chars_in_domains() {
+        // Domain strings containing separator-looking text must not be able to
+        // forge a key that matches an unrelated permission.
+        let injecting = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["a|b".into(), "c,d".into(), "remote:web-rtc".into()],
+            },
+        };
+        let benign_same_set = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["x".into(), "y".into(), "z".into()],
+            },
+        };
+        let injecting_key =
+            CoreStorageKey::remote_permission_authorization("product.dot", &injecting);
+        let benign_key =
+            CoreStorageKey::remote_permission_authorization("product.dot", &benign_same_set);
+        assert_ne!(injecting_key, benign_key);
+
+        // The injecting permission must also be distinct from the `WebRtc`
+        // variant it tries to impersonate via crafted strings.
+        let webrtc = RemotePermissionRequest {
+            permission: RemotePermission::WebRtc,
+        };
+        assert_ne!(
+            injecting_key,
+            CoreStorageKey::remote_permission_authorization("product.dot", &webrtc)
+        );
+
+        // Re-ordering the same domains still collapses to a single key
+        // (canonicalization is order-independent).
+        let injecting_reordered = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["remote:web-rtc".into(), "c,d".into(), "a|b".into()],
+            },
+        };
+        assert_eq!(
+            injecting_key,
+            CoreStorageKey::remote_permission_authorization("product.dot", &injecting_reordered)
+        );
+    }
+}
+
 /// Host-private persistence for core-owned state.
 #[async_trait]
 pub trait CoreStorage: Send + Sync {
@@ -543,6 +719,18 @@ pub enum SignRawReview {
     LegacyAccount(HostSignRawWithLegacyAccountRequest),
 }
 
+/// Review shown before a product account signs a Statement Store proof
+/// payload. Distinct from raw-message signing: the payload is the exact
+/// unsigned statement, signed as-is (no `<Bytes>` envelope), so the host must
+/// not present it with the raw-signing convention.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct StatementStoreProductSignReview {
+    /// Product account that will sign the statement payload.
+    pub account: ProductAccountId,
+    /// Exact unsigned statement payload to be signed.
+    pub payload: Vec<u8>,
+}
+
 /// Review shown before a transaction-creation request is sent to the paired wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum CreateTransactionReview {
@@ -576,6 +764,17 @@ pub struct CreateProofReview {
     pub message: Vec<u8>,
 }
 
+/// Review shown before allocating resources for a product. Names the
+/// beneficiary product so the user knows which product receives the
+/// (signing-capable) allowance key they are approving.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ResourceAllocationReview {
+    /// Product the allocation is requested for.
+    pub calling_product_id: String,
+    /// Resources to allocate.
+    pub resources: Vec<AllocatableResource>,
+}
+
 /// Review shown before a product asks to access another product account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct AccountAccessReview {
@@ -607,6 +806,8 @@ pub enum UserConfirmationReview {
     SignPayload(SignPayloadReview),
     /// Sign raw bytes with a product or legacy account.
     SignRaw(SignRawReview),
+    /// Sign a Statement Store proof payload with a product account.
+    StatementStoreProductSign(StatementStoreProductSignReview),
     /// Create a transaction with a product or legacy account.
     CreateTransaction(CreateTransactionReview),
     /// Allow a product to derive a contextual alias for a ring.
@@ -616,7 +817,7 @@ pub enum UserConfirmationReview {
     /// Allow a product to learn the user's primary identity.
     IdentityDisclosure(IdentityDisclosureReview),
     /// Allocate resources for the requesting product.
-    ResourceAllocation(HostRequestResourceAllocationRequest),
+    ResourceAllocation(ResourceAllocationReview),
     /// Submit a preimage to the host-selected backend.
     PreimageSubmit(PreimageSubmitReview),
     /// Allow a product to access another product account.

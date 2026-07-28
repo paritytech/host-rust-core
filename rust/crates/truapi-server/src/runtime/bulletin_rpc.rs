@@ -244,6 +244,18 @@ impl BulletinRpc {
         }
     }
 
+    /// Open a raw RPC client over the configured Bulletin chain.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn client(
+        &self,
+        label: &'static str,
+    ) -> Result<subxt_rpcs::RpcClient, RuntimeFailure> {
+        self.chain
+            .rpc_client(label, &self.genesis_hash)
+            .await
+            .map(subxt_rpcs::RpcClient::new)
+    }
+
     /// Override the allowance-propagation window. Test-only: lets a scripted
     /// run exercise both the "keep polling" and "window elapsed" paths without
     /// depending on real block cadence.
