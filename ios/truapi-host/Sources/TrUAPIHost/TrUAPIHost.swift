@@ -242,15 +242,16 @@ public protocol HostCoreStorageBackend: AnyObject, Sendable {
 /// granted flag.
 ///
 /// Threading: the Rust core invokes every callback on a background thread it
-/// owns, never the main thread. UI-decision callbacks
-/// (``navigateTo(url:)``, ``devicePermission(request:)``,
-/// ``remotePermission(request:)``, and ``confirmUserAction(review:)``) each
-/// run on their own thread from a blocking pool, so an implementation may
-/// safely block its calling thread (e.g. with `DispatchQueue.main.sync` or a
-/// semaphore) until the user decides; other TrUAPI traffic keeps flowing. The
-/// remaining callbacks (auth state, storage, session, chain, feature, theme,
-/// preimage lookups) run inline on the dispatcher thread and must return
-/// promptly without blocking.
+/// owns, never the main thread. These six each run on their own thread from a
+/// blocking pool, so an implementation may safely block its calling thread
+/// (e.g. with `DispatchQueue.main.sync` or a semaphore) until the user
+/// decides; other TrUAPI traffic keeps flowing: ``navigateTo(url:)``,
+/// ``pushNotification(payload:)``, ``devicePermission(request:)``,
+/// ``remotePermission(request:)``, ``featureSupported(request:)``, and
+/// ``confirmUserAction(review:)``.
+/// The remaining callbacks (auth state, storage, core storage, chain, theme,
+/// preimage lookups, and ``cancelNotification(id:)``) run inline on the
+/// dispatcher thread and must return promptly without blocking.
 /// Any UI work MUST still hop to the main thread, e.g.
 /// `await MainActor.run { ... }` or `DispatchQueue.main.async { ... }`. Calling
 /// UIKit/WebKit off the main thread is undefined behaviour.

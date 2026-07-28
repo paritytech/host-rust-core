@@ -385,16 +385,18 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback is invoked on a background thread
-/// owned by the Rust core, never the host's main/UI thread. UI-decision
-/// callbacks (`navigate_to`, `device_permission`, `remote_permission`, and
-/// the `confirm_*` family) run on the tokio blocking pool, so an
-/// implementation may block its calling thread until the user decides
-/// without stalling concurrent dispatches. All other callbacks run inline on
-/// the dispatcher thread and must return promptly; in particular
-/// `auth_state_changed` should only hand the state to the host UI thread,
-/// never wait for the user. As the one exception to the background-thread
-/// rule, `auth_state_changed` can also arrive synchronously on whichever
-/// thread calls `NativeTrUApiCore::cancel_login`.
+/// owned by the Rust core, never the host's main/UI thread.
+///
+/// These six run on the tokio blocking pool, so an implementation may block
+/// its calling thread until the user decides without stalling concurrent
+/// dispatches: `navigate_to`, `push_notification`, `device_permission`,
+/// `remote_permission`, `feature_supported`, and `confirm_user_action`.
+///
+/// Every other callback runs inline on the dispatcher thread and must return
+/// promptly — including `cancel_notification`, which is the one
+/// notification-side callback that is *not* on the blocking pool. In
+/// particular `auth_state_changed` should only hand the state to the host UI
+/// thread, never wait for the user.
 #[uniffi::export(callback_interface)]
 pub trait HostCallbacks: Send + Sync {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.

@@ -42,14 +42,15 @@ Both return a `Bool` granted flag. SCALE decoding for the UI prompt is done by t
 > **Threading:** the Rust core invokes every `HostBridge` callback on a
 > background thread it owns, never the main thread. Hop to the main thread
 > (`DispatchQueue.main` / `MainActor`) before touching UIKit, WebKit, or the
-> `WKWebView`. UI-decision callbacks (`navigateTo`, `devicePermission`,
-> `remotePermission`, `confirmUserAction`, `submitPreimage`) each run on
-> their own blocking-pool thread, so it is safe to use
-> `DispatchQueue.main.sync` (or a semaphore) to present the prompt on the
-> main thread and block the calling thread until the user decides; other
-> TrUAPI traffic keeps flowing while you wait. The remaining callbacks (auth
-> state, storage, core storage, chain, feature, theme, preimage lookups) run
-> inline on the dispatcher thread and must return promptly without blocking.
+> `WKWebView`. Six callbacks each run on their own blocking-pool thread, so it
+> is safe to use `DispatchQueue.main.sync` (or a semaphore) to present the
+> prompt on the main thread and block the calling thread until the user
+> decides; other TrUAPI traffic keeps flowing while you wait:
+> `navigateTo`, `pushNotification`, `devicePermission`, `remotePermission`,
+> `featureSupported`, and `confirmUserAction`. The remaining callbacks (auth
+> state, storage, core storage, chain, theme, preimage lookups, and
+> `cancelNotification`) run inline on the dispatcher thread and must return
+> promptly without blocking.
 
 ```swift
 import Foundation
