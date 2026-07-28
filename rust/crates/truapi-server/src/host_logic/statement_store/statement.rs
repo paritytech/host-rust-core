@@ -459,6 +459,39 @@ fn push_unsigned_statement_topic(
     Ok(())
 }
 
+/// Statement time-to-live stamped by the host when a product statement omits
+/// its expiry field. Deployed statement stores treat an absent expiry as
+/// already elapsed and refuse the statement.
+pub const DEFAULT_STATEMENT_TTL_SECS: u64 = 3600;
+
+/// Return `statement` with an expiry stamped when the product omitted one.
+///
+/// The expiry field carries unix seconds in its upper 32 bits and the
+/// logical statement priority in its lower 32 bits; a host-stamped expiry
+/// uses priority zero.
+pub fn with_default_expiry(mut statement: v01::Statement, now_unix_secs: u64) -> v01::Statement {
+    if statement.expiry.is_none() {
+        statement.expiry = Some((now_unix_secs + DEFAULT_STATEMENT_TTL_SECS) << 32);
+    }
+    statement
+}
+
+/// Attach `proof` to a statement, producing the signed shape the statement
+/// store accepts.
+pub fn signed_statement_with_proof(
+    statement: v01::Statement,
+    proof: v01::StatementProof,
+) -> v01::SignedStatement {
+    v01::SignedStatement {
+        proof,
+        decryption_key: statement.decryption_key,
+        expiry: statement.expiry,
+        channel: statement.channel,
+        topics: statement.topics,
+        data: statement.data,
+    }
+}
+
 /// Convert a public v01 statement into SCALE statement fields.
 pub fn statement_fields_from_v01(statement: v01::Statement) -> Result<Vec<StatementField>, String> {
     let mut fields = Vec::new();

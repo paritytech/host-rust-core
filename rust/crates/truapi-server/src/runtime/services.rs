@@ -24,6 +24,10 @@ const PREIMAGE_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Store catches up.
 const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
 
+/// Upper bound on host-assembled statements retained between proof creation
+/// and submission.
+const PREPARED_STATEMENT_MAX_ENTRIES: usize = 16;
+
 /// Infrastructure shared by all product runtimes created from one host role.
 pub(crate) struct RuntimeServices {
     /// Host platform backing all syscalls.
@@ -40,6 +44,9 @@ pub(crate) struct RuntimeServices {
     /// Confirmed submissions served to new subscriptions until the remote
     /// Statement Store reports them.
     statement_cache: Mutex<StatementCache>,
+    /// Host-assembled signed statements retained between proof creation and
+    /// submission, keyed by their proof.
+    prepared_statements: Mutex<PreparedStatementCache>,
     /// Task spawner for background runtime work.
     pub(crate) spawner: Spawner,
     next_core_instance: AtomicU64,
@@ -69,6 +76,7 @@ impl RuntimeServices {
             bulletin,
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
+            prepared_statements: Mutex::new(PreparedStatementCache::default()),
             spawner,
             next_core_instance: AtomicU64::new(1),
         })
@@ -122,6 +130,25 @@ impl RuntimeServices {
             .lock()
             .expect("statement cache mutex poisoned")
             .remove_all(statements);
+    }
+
+    /// Retain a host-assembled signed statement for its upcoming submission.
+    pub(crate) fn retain_prepared_statement(&self, statement: latest::SignedStatement) {
+        self.prepared_statements
+            .lock()
+            .expect("prepared statement mutex poisoned")
+            .insert(statement);
+    }
+
+    /// Return the host-assembled statement carrying `proof`, if retained.
+    pub(crate) fn prepared_statement(
+        &self,
+        proof: &latest::StatementProof,
+    ) -> Option<latest::SignedStatement> {
+        self.prepared_statements
+            .lock()
+            .expect("prepared statement mutex poisoned")
+            .get(proof)
     }
 }
 
@@ -206,6 +233,35 @@ impl StatementCache {
     fn remove_all(&mut self, statements: &[latest::SignedStatement]) {
         self.entries
             .retain(|cached| !statements.iter().any(|visible| visible == cached));
+    }
+}
+
+/// Entry-bounded, insertion-ordered bridge from proof creation to submission.
+#[derive(Default)]
+struct PreparedStatementCache {
+    entries: VecDeque<latest::SignedStatement>,
+}
+
+impl PreparedStatementCache {
+    fn insert(&mut self, statement: latest::SignedStatement) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|existing| existing.proof == statement.proof)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push_back(statement);
+        while self.entries.len() > PREPARED_STATEMENT_MAX_ENTRIES {
+            self.entries.pop_front();
+        }
+    }
+
+    fn get(&self, proof: &latest::StatementProof) -> Option<latest::SignedStatement> {
+        self.entries
+            .iter()
+            .find(|statement| &statement.proof == proof)
+            .cloned()
     }
 }
 

@@ -64,6 +64,9 @@ use crate::subscription::Spawner;
 
 const FOLLOW_METHOD: &str = "remote_chain_head_follow";
 
+/// Upper bound on retained product follow-id alias bindings per connection.
+const MAX_FOLLOW_ALIASES: usize = 128;
+
 struct TruapiRpcConfig;
 
 impl RpcConfig for TruapiRpcConfig {
@@ -741,10 +744,13 @@ impl ChainRuntime {
         local_follow_id: String,
         with_runtime: bool,
     ) -> Result<String, RuntimeFailure> {
+        let follow_key = connection
+            .resolve_follow_key(&local_follow_id)
+            .unwrap_or(local_follow_id);
         let remote_follow_id = connection
-            .require_remote_follow(method, local_follow_id.clone())
+            .require_remote_follow(method, follow_key.clone())
             .await?;
-        if with_runtime && !connection.follow_with_runtime(&local_follow_id) {
+        if with_runtime && !connection.follow_with_runtime(&follow_key) {
             return Err(RuntimeFailure::host_failure(
                 method,
                 "follow subscription was created without runtime metadata",
@@ -772,6 +778,12 @@ struct ChainConnection {
     genesis_hash: Vec<u8>,
     follows: Mutex<HashMap<String, FollowState>>,
     follow_setups: Mutex<HashMap<String, FollowSetup>>,
+    /// Product-chosen follow subscription ids bound to a follow key; see
+    /// [`Self::resolve_follow_key`].
+    follow_aliases: Mutex<HashMap<String, String>>,
+    /// Monotonic creation order for follows, so alias binding can prefer the
+    /// session's most recent follow.
+    follow_sequence: AtomicU64,
     /// Cached Subxt bundle setup tagged with its generation, so invalidation
     /// (on setup failure or backend-driver exit) can never evict a newer
     /// rebuild.
@@ -790,6 +802,8 @@ impl ChainConnection {
             genesis_hash,
             follows: Mutex::new(HashMap::new()),
             follow_setups: Mutex::new(HashMap::new()),
+            follow_aliases: Mutex::new(HashMap::new()),
+            follow_sequence: AtomicU64::new(0),
             subxt_connection_setup: Mutex::new(None),
             subxt_connection_generation: AtomicU64::new(0),
         })
@@ -924,6 +938,7 @@ impl ChainConnection {
                 follow.cancelled = cancelled;
             }
             None => {
+                let sequence = self.follow_sequence.fetch_add(1, Ordering::Relaxed);
                 follows.insert(
                     local_follow_id.to_string(),
                     FollowState {
@@ -932,6 +947,7 @@ impl ChainConnection {
                         abort: None,
                         sender,
                         cancelled,
+                        sequence,
                     },
                 );
             }
@@ -943,6 +959,47 @@ impl ChainConnection {
             Some(follow) => follow.cancelled.load(Ordering::SeqCst),
             None => true,
         }
+    }
+
+    /// Resolve a session-scoped follow id to the key of one of the session's
+    /// active follows.
+    ///
+    /// Product SDKs identify follows in chainHead operations with their own
+    /// opaque subscription id rather than echoing the follow subscribe
+    /// request id, so an unknown id is treated as an alias and bound to the
+    /// session's most recent unaliased follow. Ids never resolve across
+    /// session scopes (the `cN:` prefix added by the runtime host).
+    fn resolve_follow_key(&self, session_scoped_id: &str) -> Option<String> {
+        let follows = self.follows.lock().unwrap();
+        if follows.contains_key(session_scoped_id) {
+            return Some(session_scoped_id.to_string());
+        }
+        let mut aliases = self.follow_aliases.lock().unwrap();
+        if let Some(target) = aliases.get(session_scoped_id) {
+            if follows.contains_key(target) {
+                return Some(target.clone());
+            }
+            aliases.remove(session_scoped_id);
+        }
+        let scope_end = session_scoped_id.find(':')? + 1;
+        let scope = &session_scoped_id[..scope_end];
+        let candidate = follows
+            .iter()
+            .filter(|(key, follow)| {
+                key.starts_with(scope) && !follow.cancelled.load(Ordering::SeqCst)
+            })
+            .max_by_key(|(key, follow)| {
+                let unaliased = !aliases.values().any(|target| target == *key);
+                (unaliased, follow.sequence)
+            })
+            .map(|(key, _)| key.clone())?;
+        if aliases.len() >= MAX_FOLLOW_ALIASES {
+            aliases.retain(|_, target| follows.contains_key(target));
+        }
+        if aliases.len() < MAX_FOLLOW_ALIASES {
+            aliases.insert(session_scoped_id.to_string(), candidate.clone());
+        }
+        Some(candidate)
     }
 
     /// Issue `chainHead_v1_follow` exactly once per local follow id and return
@@ -1118,11 +1175,20 @@ impl ChainConnection {
         {
             abort.abort();
         }
+        self.remove_follow_aliases(local_follow_id);
     }
 
     fn remove_follow_without_abort(&self, local_follow_id: &str) {
         self.follow_setups.lock().unwrap().remove(local_follow_id);
         self.follows.lock().unwrap().remove(local_follow_id);
+        self.remove_follow_aliases(local_follow_id);
+    }
+
+    fn remove_follow_aliases(&self, local_follow_id: &str) {
+        self.follow_aliases
+            .lock()
+            .unwrap()
+            .retain(|_, target| target != local_follow_id);
     }
 
     fn unfollow(&self, local_follow_id: &str) {
@@ -1165,6 +1231,8 @@ struct FollowState {
     /// local follow stream.
     sender: mpsc::UnboundedSender<RemoteChainHeadFollowItem>,
     cancelled: Arc<AtomicBool>,
+    /// Creation order on this connection; newer follows win alias binding.
+    sequence: u64,
 }
 
 /// Subscription wrapper that runs an `on_drop` cleanup when the stream is
@@ -2019,6 +2087,103 @@ mod tests {
             err.reason(),
         );
         assert!(provider.sent.lock().unwrap().is_empty());
+    }
+
+    /// papi-based product SDKs name follows in chainHead operations with a
+    /// provider-synthetic id ("follow_0"), never the follow subscribe request
+    /// id. The connection must bind such an id to the session's active follow
+    /// instead of rejecting the operation.
+    #[test]
+    fn header_request_binds_product_follow_alias_within_session() {
+        let provider = Arc::new(ScriptedProvider::new(|request| {
+            let id = extract_id(request).unwrap();
+            if request.contains("chainHead_v1_follow") {
+                Some(format!(
+                    r#"{{"jsonrpc":"2.0","id":"{id}","result":"REMOTE-FOLLOW"}}"#
+                ))
+            } else if request.contains("chainHead_v1_header") {
+                Some(format!(
+                    r#"{{"jsonrpc":"2.0","id":"{id}","result":"0xdeadbeef"}}"#
+                ))
+            } else {
+                None
+            }
+        }));
+        let runtime = ChainRuntime::new(provider.clone(), spawner_for_tests());
+        let _follow_stream = runtime.remote_chain_head_follow(
+            "c1:follow-req".to_string(),
+            RemoteChainHeadFollowRequest {
+                genesis_hash: vec![0u8; 32],
+                with_runtime: false,
+            },
+        );
+        wait_for_sent(&provider, |sent| {
+            sent.iter()
+                .any(|request| request.contains("chainHead_v1_follow"))
+        });
+
+        for _ in 0..2 {
+            let response = futures::executor::block_on(runtime.remote_chain_head_header(
+                RemoteChainHeadHeaderRequest {
+                    genesis_hash: vec![0u8; 32],
+                    follow_subscription_id: "c1:follow_0".to_string(),
+                    hash: vec![1u8; 32],
+                },
+            ))
+            .expect("aliased header request succeeds");
+            assert_eq!(response.header, Some(vec![0xde, 0xad, 0xbe, 0xef]));
+        }
+
+        let sent = provider.sent.lock().unwrap().clone();
+        let follows = sent
+            .iter()
+            .filter(|request| request.contains("chainHead_v1_follow"))
+            .count();
+        assert_eq!(follows, 1, "alias must reuse the session follow: {sent:?}");
+        for request in sent
+            .iter()
+            .filter(|request| request.contains("chainHead_v1_header"))
+        {
+            let request: Value = serde_json::from_str(request).expect("json request");
+            assert_eq!(request["params"][0].as_str(), Some("REMOTE-FOLLOW"));
+        }
+    }
+
+    /// A product-chosen follow id never resolves to another session's follow.
+    #[test]
+    fn header_request_rejects_product_follow_alias_across_sessions() {
+        let provider = Arc::new(ScriptedProvider::new(|request| {
+            let id = extract_id(request).unwrap();
+            request
+                .contains("chainHead_v1_follow")
+                .then(|| format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":"REMOTE-FOLLOW"}}"#))
+        }));
+        let runtime = ChainRuntime::new(provider.clone(), spawner_for_tests());
+        let _follow_stream = runtime.remote_chain_head_follow(
+            "c1:follow-req".to_string(),
+            RemoteChainHeadFollowRequest {
+                genesis_hash: vec![0u8; 32],
+                with_runtime: false,
+            },
+        );
+        wait_for_sent(&provider, |sent| {
+            sent.iter()
+                .any(|request| request.contains("chainHead_v1_follow"))
+        });
+
+        let err = futures::executor::block_on(runtime.remote_chain_head_header(
+            RemoteChainHeadHeaderRequest {
+                genesis_hash: vec![0u8; 32],
+                follow_subscription_id: "c2:follow_0".to_string(),
+                hash: vec![1u8; 32],
+            },
+        ))
+        .expect_err("cross-session alias must not resolve");
+        assert!(
+            err.reason().contains("unknown follow subscription id"),
+            "unexpected error: {}",
+            err.reason(),
+        );
     }
 
     /// Two concurrent calls for the same chain must share one provider

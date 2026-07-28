@@ -14,9 +14,10 @@ use super::{
 };
 use crate::host_logic::product_account::derive_product_public_key;
 use crate::host_logic::statement_store::{
-    MAX_MATCH_ALL_TOPICS, MAX_MATCH_ANY_TOPICS, TopicFilterKind, decode_signed_statement,
-    parse_new_statements_result, sign_statement_fields, signed_statement_to_scale,
-    statement_fields_from_v01, statement_proof_to_v01, unsigned_statement_signing_payload,
+    MAX_MATCH_ALL_TOPICS, MAX_MATCH_ANY_TOPICS, TopicFilterKind, current_unix_secs,
+    decode_signed_statement, parse_new_statements_result, sign_statement_fields,
+    signed_statement_to_scale, signed_statement_with_proof, statement_fields_from_v01,
+    statement_proof_to_v01, unsigned_statement_signing_payload, with_default_expiry,
 };
 
 use serde_json::Value;
@@ -177,6 +178,14 @@ impl StatementStore for ProductRuntimeHost {
             }),
         )
         .await?;
+        // Products assemble the submitted statement from their own pre-proof
+        // copy, which lacks host-stamped fields such as the default expiry.
+        // Prefer the exact statement the host assembled and signed at proof
+        // time so the submitted bytes match the proof's signature material.
+        let statement = self
+            .services
+            .prepared_statement(&statement.proof)
+            .unwrap_or(statement);
         let encoded = signed_statement_to_scale(statement.clone()).map_err(|reason| {
             CallError::Domain(RemoteStatementStoreSubmitError::V1(latest::GenericError {
                 reason,
@@ -314,7 +323,8 @@ impl ProductRuntimeHost {
             product_account_id.derivation_index,
         )
         .map_err(|err| StatementProofFailure::UnableToSign(err.to_string()))?;
-        let fields = statement_fields_from_v01(statement)
+        let statement = with_default_expiry(statement, current_unix_secs());
+        let fields = statement_fields_from_v01(statement.clone())
             .map_err(StatementProofFailure::InvalidStatement)?;
         let payload = unsigned_statement_signing_payload(fields)
             .map_err(StatementProofFailure::UnableToSign)?;
@@ -330,7 +340,10 @@ impl ProductRuntimeHost {
         )
         .await
         .map_err(statement_authority_failure)?;
-        Ok(latest::StatementProof::Sr25519 { signature, signer })
+        let proof = latest::StatementProof::Sr25519 { signature, signer };
+        self.services
+            .retain_prepared_statement(signed_statement_with_proof(statement, proof.clone()));
+        Ok(proof)
     }
 
     async fn create_authorized_statement_proof(
@@ -350,7 +363,11 @@ impl ProductRuntimeHost {
         )
         .await
         .map_err(statement_authority_failure)?;
-        create_statement_proof_with_key(statement, &allowance)
+        let statement = with_default_expiry(statement, current_unix_secs());
+        let proof = create_statement_proof_with_key(statement.clone(), &allowance)?;
+        self.services
+            .retain_prepared_statement(signed_statement_with_proof(statement, proof.clone()));
+        Ok(proof)
     }
 }
 
@@ -519,6 +536,134 @@ mod tests {
         };
         assert_eq!(signer, expected_signer);
         assert_sr25519_signature(signer, signature, &payload);
+    }
+
+    fn statement_without_proof(signed: &latest::SignedStatement) -> latest::Statement {
+        latest::Statement {
+            proof: None,
+            decryption_key: signed.decryption_key,
+            expiry: signed.expiry,
+            channel: signed.channel,
+            topics: signed.topics.clone(),
+            data: signed.data.clone(),
+        }
+    }
+
+    /// Products routinely omit the expiry field and expect the host to stamp
+    /// it; deployed statement stores refuse expiry-less statements as already
+    /// elapsed. The stamped statement is what the proof must sign.
+    #[test]
+    fn statement_store_create_proof_stamps_missing_expiry_and_retains_statement() {
+        let (host, _signing_host) = signing_host_runtime("myapp.dot");
+        let mut expiry_less = statement();
+        expiry_less.expiry = None;
+        let cx = CallContext::default();
+        let request = RemoteStatementStoreCreateProofRequest::V1(
+            latest::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("myapp.dot", 0),
+                statement: expiry_less,
+            },
+        );
+
+        let response =
+            futures::executor::block_on(StatementStore::create_proof(&host, &cx, request)).unwrap();
+
+        let RemoteStatementStoreCreateProofResponse::V1(inner) = response;
+        let prepared = host
+            .services
+            .prepared_statement(&inner.proof)
+            .expect("host retains the assembled statement");
+        let expiry = prepared.expiry.expect("host stamps the missing expiry");
+        assert!(
+            !crate::host_logic::statement_store::statement_expiry_elapsed(
+                expiry,
+                crate::host_logic::statement_store::current_unix_secs(),
+            ),
+            "stamped expiry must lie in the future"
+        );
+        assert_eq!(expiry & 0xffff_ffff, 0, "host-stamped priority is zero");
+        let latest::StatementProof::Sr25519 { signer, signature } = inner.proof else {
+            panic!("expected sr25519 statement proof");
+        };
+        assert_sr25519_signature(
+            signer,
+            signature,
+            &statement_payload(statement_without_proof(&prepared)),
+        );
+    }
+
+    /// Submission must post the host-assembled statement retained at proof
+    /// time, not the product's re-assembly, so the submitted bytes carry the
+    /// stamped expiry the proof signed.
+    #[test]
+    fn statement_store_submit_prefers_host_assembled_statement() {
+        let platform: Arc<StubPlatform> = Arc::new(StubPlatform {
+            rpc_responses: vec![
+                r#"{"jsonrpc":"2.0","id":"truapi:1","result":{"status":"new"}}"#.to_string(),
+            ],
+            ..Default::default()
+        });
+        let services = RuntimeServices::new(platform.clone(), [0; 32], [0xbb; 32], test_spawner());
+        let signing_host = SigningHostRole::new(services.clone());
+        futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let host = ProductRuntimeHost::from_services(
+            services,
+            signing_host,
+            ProductContext::new("myapp.dot".to_string()).expect("valid product id"),
+        );
+        let mut expiry_less = statement();
+        expiry_less.expiry = None;
+        let cx = CallContext::default();
+        let request = RemoteStatementStoreCreateProofRequest::V1(
+            latest::RemoteStatementStoreCreateProofRequest {
+                product_account_id: account_id("myapp.dot", 0),
+                statement: expiry_less.clone(),
+            },
+        );
+        let response =
+            futures::executor::block_on(StatementStore::create_proof(&host, &cx, request)).unwrap();
+        let RemoteStatementStoreCreateProofResponse::V1(inner) = response;
+        let prepared = host
+            .services
+            .prepared_statement(&inner.proof)
+            .expect("host retains the assembled statement");
+
+        // The product re-assembles from its own pre-proof copy: no expiry.
+        let submitted = latest::SignedStatement {
+            proof: inner.proof,
+            decryption_key: expiry_less.decryption_key,
+            expiry: None,
+            channel: expiry_less.channel,
+            topics: expiry_less.topics.clone(),
+            data: expiry_less.data.clone(),
+        };
+        let cx = CallContext::with_request_id("submit-1".to_string());
+        futures::executor::block_on(StatementStore::submit(
+            &host,
+            &cx,
+            RemoteStatementStoreSubmitRequest::V1(submitted),
+        ))
+        .unwrap();
+
+        let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
+        assert_eq!(sent.len(), 1);
+        let request: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
+        assert_eq!(request["method"], "statement_submit");
+        let statement_hex = request["params"][0].as_str().unwrap();
+        let statement_bytes =
+            hex::decode(statement_hex.strip_prefix("0x").unwrap_or(statement_hex)).unwrap();
+        assert_eq!(
+            crate::host_logic::statement_store::decode_signed_statement(&statement_bytes).unwrap(),
+            prepared,
+            "the submitted bytes are the host-assembled statement"
+        );
+        assert_eq!(
+            host.services
+                .cached_statements(TopicFilterKind::MatchAll, &[prepared.topics[0]]),
+            vec![prepared],
+            "read-after-write bridge serves the statement the store accepted"
+        );
     }
 
     #[test]
