@@ -1,11 +1,12 @@
 //! UniFFI-facing native bridge. Exposes [`NativeTrUApiCore`] and the
 //! [`HostCallbacks`] callback interface that iOS and Android call into.
 //!
-//! The native side builds a [`CallbackPlatform`] that adapts every
+//! The native side builds a `CallbackPlatform` that adapts every
 //! [`truapi_platform::Platform`] trait to a corresponding callback. The
-//! resulting platform is fed into [`TrUApiCore::from_platform_with_config`] so the rest
-//! of the dispatcher pipeline behaves identically to the WS-bridge and wasm
-//! flavors.
+//! resulting platform is fed into [`SigningHostRuntime`] so the rest of the
+//! dispatcher pipeline behaves identically to the WS-bridge and wasm flavors.
+//! A native host therefore owns the signer: there is no pairing flow here, and
+//! the pairing-host-only entry points are inert.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -464,7 +465,7 @@ pub trait HostCallbacks: Send + Sync {
     fn current_theme(&self) -> Result<HostTheme, HostRejection>;
 
     /// Answer a feature-support query. `request` is the SCALE-encoded
-    /// [`HostFeatureSupportedRequest`].
+    /// `HostFeatureSupportedRequest`.
     fn feature_supported(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
 
     /// Read a value from the host's scoped key-value store.
@@ -506,17 +507,23 @@ impl NativeTrUApiCore {
     }
 
     /// Notify this core that host-global session storage changed outside a
-    /// direct core write/clear. Native hosts call this after cross-process or
-    /// platform storage notifications so the core re-reads `CoreStorage`.
+    /// direct core write/clear.
+    ///
+    /// **Inert on a native host.** A signing host owns the active session in
+    /// memory, so there is no session-store sync loop to wake. Retained so
+    /// hosts written against the pairing-host surface still link.
     pub fn notify_session_store_changed(&self) {
         // Signing hosts own the active local session in memory. There is no
         // pairing-host session-store sync loop to notify.
     }
 
-    /// Cancel any in-flight `request_login` pairing (e.g. the user dismissed
-    /// the pairing UI). The host receives a `Disconnected` auth state
-    /// immediately and the pending login resolves to `Rejected`. A no-op
-    /// when no login is in progress.
+    /// Cancel an in-flight pairing login.
+    ///
+    /// **Inert on a native host.** The native bridge runs a signing host, which
+    /// has no pairing flow to cancel: `request_login` resolves against the
+    /// locally activated session instead. Calling this emits no auth state and
+    /// changes nothing. Retained so hosts written against the pairing-host
+    /// surface still link.
     pub fn cancel_login(&self) {
         // Signing hosts do not perform SSO pairing when products call
         // request_login; a locally activated session returns AlreadyConnected.
