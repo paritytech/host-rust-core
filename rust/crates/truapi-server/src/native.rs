@@ -353,9 +353,11 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             RuntimeConfigValidationError::EmptyField { field } => Self::EmptyField {
                 field: field.to_string(),
             },
-            RuntimeConfigValidationError::InvalidHostIcon { reason } => {
-                Self::InvalidHostIcon { reason }
-            }
+            // `url::ParseError` cannot cross the UniFFI boundary, so the native
+            // error keeps a rendered string.
+            RuntimeConfigValidationError::InvalidHostIcon { source } => Self::InvalidHostIcon {
+                reason: source.to_string(),
+            },
             RuntimeConfigValidationError::InsecureHostIcon { scheme } => {
                 Self::InsecureHostIcon { scheme }
             }

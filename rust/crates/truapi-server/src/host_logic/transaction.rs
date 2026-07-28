@@ -9,17 +9,44 @@
 
 use parity_scale_codec::Encode;
 use sp_crypto_hashing::blake2_256;
+use thiserror::Error;
 use truapi::latest::{HostSignPayloadData, TxPayloadExtension};
 
 /// Preimages longer than this are hashed before signing.
 const MAX_SIGNED_PREIMAGE_LEN: usize = 256;
+
+/// Error assembling a Substrate extrinsic signing preimage.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ExtrinsicPayloadError {
+    /// Payload lists a signed extension this host cannot encode from
+    /// `HostSignPayloadData`.
+    #[error(
+        "unsupported signed extension `{id}`: its encoded fields are not present in HostSignPayloadData"
+    )]
+    UnsupportedSignedExtension {
+        /// Extension identifier from `signed_extensions`.
+        id: String,
+    },
+    /// `CheckMetadataHash.mode` is SCALE-encoded as a single byte.
+    #[error("CheckMetadataHash mode {mode} does not fit in a u8")]
+    MetadataHashModeOutOfRange {
+        /// Supplied mode value.
+        mode: u32,
+    },
+    /// `CheckMetadataHash.metadata_hash` must be exactly 32 bytes when present.
+    #[error("CheckMetadataHash metadata hash is {len} bytes, expected 32")]
+    InvalidMetadataHashLength {
+        /// Supplied metadata hash length.
+        len: usize,
+    },
+}
 
 /// Encode the standard signed extensions in the order declared by the target
 /// runtime. Unknown extensions are rejected because this wire payload has no
 /// field carrying their extra or implicit bytes.
 pub(crate) fn extrinsic_payload_extensions(
     payload: &HostSignPayloadData,
-) -> Result<Vec<TxPayloadExtension>, String> {
+) -> Result<Vec<TxPayloadExtension>, ExtrinsicPayloadError> {
     payload
         .signed_extensions
         .iter()
@@ -42,28 +69,23 @@ pub(crate) fn extrinsic_payload_extensions(
                 }
                 "CheckMetadataHash" => {
                     let mode = payload.mode.unwrap_or(0);
-                    let mode = u8::try_from(mode).map_err(|_| {
-                        format!("CheckMetadataHash mode {mode} does not fit in a u8")
-                    })?;
+                    let mode = u8::try_from(mode)
+                        .map_err(|_| ExtrinsicPayloadError::MetadataHashModeOutOfRange { mode })?;
                     let metadata_hash = payload
                         .metadata_hash
                         .as_deref()
                         .map(|hash| {
                             <[u8; 32]>::try_from(hash).map_err(|_| {
-                                format!(
-                                    "CheckMetadataHash metadata hash is {} bytes, expected 32",
-                                    hash.len()
-                                )
+                                ExtrinsicPayloadError::InvalidMetadataHashLength { len: hash.len() }
                             })
                         })
                         .transpose()?;
                     (mode.encode(), metadata_hash.encode())
                 }
                 unsupported => {
-                    return Err(format!(
-                        "unsupported signed extension `{unsupported}`: its encoded fields are not \
-                         present in HostSignPayloadData"
-                    ));
+                    return Err(ExtrinsicPayloadError::UnsupportedSignedExtension {
+                        id: unsupported.to_string(),
+                    });
                 }
             };
             Ok(TxPayloadExtension {
@@ -78,7 +100,9 @@ pub(crate) fn extrinsic_payload_extensions(
 /// Signing preimage for an extrinsic payload:
 /// `method ++ Σextension.extra ++ Σextension.additional_signed`, with both
 /// extension sequences following the declared runtime order.
-pub fn extrinsic_payload_preimage(payload: &HostSignPayloadData) -> Result<Vec<u8>, String> {
+pub fn extrinsic_payload_preimage(
+    payload: &HostSignPayloadData,
+) -> Result<Vec<u8>, ExtrinsicPayloadError> {
     let extensions = extrinsic_payload_extensions(payload)?;
 
     let mut preimage = Vec::new();
@@ -242,11 +266,9 @@ mod tests {
 
         assert_eq!(
             extrinsic_payload_preimage(&payload),
-            Err(
-                "unsupported signed extension `CustomExtension`: its encoded fields are not \
-                 present in HostSignPayloadData"
-                    .to_string()
-            )
+            Err(ExtrinsicPayloadError::UnsupportedSignedExtension {
+                id: "CustomExtension".to_string()
+            })
         );
     }
 
@@ -258,7 +280,7 @@ mod tests {
 
         assert_eq!(
             extrinsic_payload_preimage(&payload),
-            Err("CheckMetadataHash mode 256 does not fit in a u8".to_string())
+            Err(ExtrinsicPayloadError::MetadataHashModeOutOfRange { mode: 256 })
         );
     }
 
@@ -270,7 +292,7 @@ mod tests {
 
         assert_eq!(
             extrinsic_payload_preimage(&payload),
-            Err("CheckMetadataHash metadata hash is 31 bytes, expected 32".to_string())
+            Err(ExtrinsicPayloadError::InvalidMetadataHashLength { len: 31 })
         );
     }
 

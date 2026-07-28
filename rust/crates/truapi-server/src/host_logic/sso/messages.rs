@@ -1053,7 +1053,7 @@ mod tests {
     fn raw_sign_request_uses_remote_message_variant_indices() {
         let message = sign_raw_message(
             "m1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Bytes {
                     bytes: vec![0xde, 0xad],
@@ -1294,7 +1294,7 @@ mod tests {
 
     #[test]
     fn option_bool_matches_host_papp_option_bool_encoding() {
-        let mut request = truapi::v01::HostSignPayloadRequest {
+        let mut request = truapi::latest::HostSignPayloadRequest {
             account: account(),
             payload: HostSignPayloadData {
                 block_hash: vec![],
@@ -1361,7 +1361,7 @@ mod tests {
         let session = session();
         let remote_message = sign_raw_message(
             "remote-1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Payload {
                     payload: "<Bytes>hello</Bytes>".to_string(),
@@ -1401,7 +1401,7 @@ mod tests {
         let session = session();
         let remote_message = sign_raw_message(
             "remote-1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Payload {
                     payload: "<Bytes>hello</Bytes>".to_string(),
@@ -1477,7 +1477,7 @@ mod tests {
         let (host_session, responder_session) = host_and_responder_sessions();
         let request = sign_raw_message(
             "remote-1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Payload {
                     payload: "<Bytes>hello</Bytes>".to_string(),

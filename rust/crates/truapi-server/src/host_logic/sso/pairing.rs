@@ -19,7 +19,7 @@ use p256::ecdh::diffie_hellman;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{PublicKey, SecretKey};
 use parity_scale_codec::{Decode, Encode};
-use schnorrkel::{ExpansionMode, MiniSecretKey};
+use schnorrkel::{ExpansionMode, MiniSecretKey, SignatureError};
 use sha2::Sha256;
 use thiserror::Error;
 use truapi_platform::PairingHostConfig;
@@ -70,12 +70,29 @@ pub struct PairingDeviceIdentity {
 /// Errors that can occur while generating pairing bootstrap material.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PairingBootstrapError {
-    /// The platform randomness source or sr25519 key expansion failed.
+    /// The platform randomness source failed.
     #[error("failed to generate random pairing material: {0}")]
-    Random(String),
+    Random(#[source] getrandom::Error),
+    /// The generated sr25519 seed could not be expanded.
+    #[error("failed to expand sr25519 pairing key: {0:?}")]
+    Sr25519Key(SignatureError),
     /// No valid P-256 secret was found within the attempt budget.
     #[error("failed to generate P-256 pairing key")]
     InvalidP256Secret,
+}
+
+/// Error while decoding a pairing deeplink or bare handshake payload.
+#[derive(Debug, Error)]
+pub enum PairingDeeplinkDecodeError {
+    /// The `handshake` payload is not valid hex.
+    #[error("invalid pairing deeplink hex: {0}")]
+    InvalidHex(#[source] hex::FromHexError),
+    /// The decoded bytes are not a valid handshake proposal.
+    #[error("invalid pairing handshake proposal: {0}")]
+    InvalidHandshakeProposal(#[source] parity_scale_codec::Error),
+    /// The proposal decoded successfully but extra bytes remained.
+    #[error("invalid pairing handshake proposal: trailing bytes")]
+    TrailingBytes,
 }
 
 /// Versioned SCALE payload embedded in the pairing deeplink.
@@ -135,18 +152,20 @@ pub enum SsoStatementData {
 
 /// Decode a pairing deeplink (or its bare handshake hex) into the advertised
 /// handshake proposal. Inverse of [`build_pairing_deeplink`].
-pub fn decode_pairing_deeplink(deeplink: &str) -> Result<VersionedHandshakeProposal, String> {
+pub fn decode_pairing_deeplink(
+    deeplink: &str,
+) -> Result<VersionedHandshakeProposal, PairingDeeplinkDecodeError> {
     let hex_payload = match deeplink.split_once("?handshake=") {
         Some((_, hex_payload)) => hex_payload,
         None => deeplink,
     };
-    let encoded = hex::decode(hex_payload.trim())
-        .map_err(|err| format!("invalid pairing deeplink hex: {err}"))?;
+    let encoded =
+        hex::decode(hex_payload.trim()).map_err(PairingDeeplinkDecodeError::InvalidHex)?;
     let mut input = encoded.as_slice();
     let proposal = VersionedHandshakeProposal::decode(&mut input)
-        .map_err(|err| format!("invalid pairing handshake proposal: {err}"))?;
+        .map_err(PairingDeeplinkDecodeError::InvalidHandshakeProposal)?;
     if !input.is_empty() {
-        return Err("invalid pairing handshake proposal: trailing bytes".to_string());
+        return Err(PairingDeeplinkDecodeError::TrailingBytes);
     }
     Ok(proposal)
 }
@@ -479,7 +498,7 @@ fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
         .hash(message)
         .as_bytes()
         .try_into()
-        .expect("BLAKE2b-256 returns 32 bytes")
+        .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed")
 }
 
 /// Create one-shot pairing bootstrap material from runtime config.
@@ -592,10 +611,9 @@ pub fn bootstrap_topic(
 
 fn generate_statement_store_keypair() -> Result<([u8; 64], [u8; 32]), PairingBootstrapError> {
     let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed)
-        .map_err(|err| PairingBootstrapError::Random(err.to_string()))?;
-    let mini_secret = MiniSecretKey::from_bytes(&seed)
-        .map_err(|err| PairingBootstrapError::Random(err.to_string()))?;
+    getrandom::getrandom(&mut seed).map_err(PairingBootstrapError::Random)?;
+    let mini_secret =
+        MiniSecretKey::from_bytes(&seed).map_err(PairingBootstrapError::Sr25519Key)?;
     let keypair = mini_secret.expand_to_keypair(ExpansionMode::Ed25519);
     Ok((keypair.secret.to_bytes(), keypair.public.to_bytes()))
 }
@@ -603,8 +621,7 @@ fn generate_statement_store_keypair() -> Result<([u8; 64], [u8; 32]), PairingBoo
 fn generate_p256_keypair() -> Result<([u8; 32], [u8; 65]), PairingBootstrapError> {
     for _ in 0..MAX_P256_SECRET_ATTEMPTS {
         let mut candidate = [0u8; 32];
-        getrandom::getrandom(&mut candidate)
-            .map_err(|err| PairingBootstrapError::Random(err.to_string()))?;
+        getrandom::getrandom(&mut candidate).map_err(PairingBootstrapError::Random)?;
         let Ok(secret) = SecretKey::from_slice(&candidate) else {
             continue;
         };
@@ -861,7 +878,11 @@ mod tests {
 
         let err = decode_pairing_deeplink(&format!("{deeplink}00")).unwrap_err();
 
-        assert_eq!(err, "invalid pairing handshake proposal: trailing bytes");
+        assert!(matches!(err, PairingDeeplinkDecodeError::TrailingBytes));
+        assert_eq!(
+            err.to_string(),
+            "invalid pairing handshake proposal: trailing bytes"
+        );
     }
 
     #[test]

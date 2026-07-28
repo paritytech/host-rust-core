@@ -365,7 +365,11 @@ impl ProductAuthority for SigningHost {
                 PermissionAuthorizationStatus::Denied
                 | PermissionAuthorizationStatus::NotDetermined,
             ) => return Err(RingVrfError::Rejected),
-            Err(reason) => return Err(RingVrfError::Unknown { reason }),
+            Err(err) => {
+                return Err(RingVrfError::Unknown {
+                    reason: err.to_string(),
+                });
+            }
         }
         let collection = self.ring_resolver.validate(&request.ring_location).await?;
         let context = context_bytes(&request.context);
@@ -475,7 +479,7 @@ impl ProductAuthority for SigningHost {
             OnExistingAllowancePolicy::Ignore,
         )
         .await
-        .map_err(allocation_authority_error)?;
+        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)?;
         StatementStoreAllowanceKey::from_secret_bytes(secret)
     }
 
@@ -493,7 +497,7 @@ impl ProductAuthority for SigningHost {
             OnExistingAllowancePolicy::Ignore,
         )
         .await
-        .map_err(allocation_authority_error)?;
+        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)?;
         BulletinAllowanceKey::from_secret_bytes(secret)
     }
 
@@ -511,7 +515,7 @@ impl ProductAuthority for SigningHost {
             OnExistingAllowancePolicy::Increase,
         )
         .await
-        .map_err(allocation_authority_error)?;
+        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)?;
         BulletinAllowanceKey::from_secret_bytes(secret)
     }
 
@@ -558,8 +562,9 @@ fn sign_extrinsic_payload(
             ),
         });
     }
-    let preimage = extrinsic_payload_preimage(&payload)
-        .map_err(|reason| AuthorityError::Unknown { reason })?;
+    let preimage = extrinsic_payload_preimage(&payload).map_err(|err| AuthorityError::Unknown {
+        reason: err.to_string(),
+    })?;
     let raw_signature = keypair
         .secret
         .sign_simple(SR25519_SIGNING_CONTEXT, &preimage, &keypair.public)
@@ -585,10 +590,6 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
     AuthorityError::Unavailable {
         reason: err.to_string(),
     }
-}
-
-fn allocation_authority_error(reason: String) -> AuthorityError {
-    AuthorityError::Unavailable { reason }
 }
 
 /// Assemble and sign a transaction locally from caller-supplied, pre-encoded
