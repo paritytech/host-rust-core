@@ -540,7 +540,7 @@ impl CoreStorageKey {
     ) -> Self {
         Self::PermissionAuthorization {
             product_id: product_id.to_string(),
-            request: PermissionAuthorizationRequest::Device(permission.clone()),
+            request: PermissionAuthorizationRequest::Device(*permission),
         }
     }
 
