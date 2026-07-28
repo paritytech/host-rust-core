@@ -23,6 +23,11 @@ use crate::host_logic::product_account::{
 use crate::host_logic::sso::pairing::{PairingBootstrapError, derive_p256_keypair_from_entropy};
 
 /// sr25519 proof-of-ownership message prefix (exact bytes; one space).
+///
+/// Canonical People Lite runtime source:
+/// <https://github.com/paritytech/individuality/blob/c3ec60ab934d1a64e4f27d1776a598e839819720/pallets/people-lite/src/lib.rs#L69>
+///
+/// The pallet verifies `MSG_PREFIX || candidate || ring_vrf_key`.
 const REGISTER_PREFIX: &[u8] = b"pop:people-lite:register using";
 /// Domain label for the P-256 identifier key advertised to the backend.
 const IDENTIFIER_KEY_LABEL: &[u8] = b"chat-encryption";
