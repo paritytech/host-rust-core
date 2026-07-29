@@ -33,6 +33,10 @@ confidence-threshold = 0.8
 exceptions = [
     { name = "smoldot", allow = ["GPL-3.0-or-later WITH Classpath-exception-2.0"] },
     { name = "smoldot-light", allow = ["GPL-3.0-or-later WITH Classpath-exception-2.0"] },
+    # Ring-VRF implementation shared with the Individuality runtimes and Nova.
+    # The Classpath exception permits linking it without changing this crate's
+    # MIT outbound licence.
+    { name = "verifiable", allow = ["GPL-3.0-or-later WITH Classpath-exception-2.0"] },
     { name = "uniffi", allow = ["MPL-2.0"] },
     { name = "uniffi_bindgen", allow = ["MPL-2.0"] },
     { name = "uniffi_checksum_derive", allow = ["MPL-2.0"] },

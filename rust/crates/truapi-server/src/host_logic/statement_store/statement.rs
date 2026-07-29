@@ -1,11 +1,38 @@
 use parity_scale_codec::{Compact, Decode, Encode};
 use schnorrkel::{PublicKey, Signature};
+use thiserror::Error;
 use truapi::v01;
 
 use super::StatementStoreParseError;
 use crate::host_logic::extrinsic::sr25519_secret_from_bytes;
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 use crate::host_logic::session::SsoSessionInfo;
+
+/// Error validating an exact unsigned statement-store signing payload.
+#[derive(Debug, Error)]
+pub enum StatementSigningPayloadError {
+    /// Payload bytes are not a sequence of SCALE statement fields.
+    #[error("invalid statement signing payload: {0}")]
+    InvalidScale(#[source] parity_scale_codec::Error),
+    /// Payload contains no fields.
+    #[error("statement signing payload has no fields")]
+    Empty,
+    /// Payload contains a proof field, but only unsigned payloads are accepted.
+    #[error("statement signing payload must not include proof")]
+    ContainsProof,
+    /// Payload contains the same singleton field more than once.
+    #[error("statement signing payload has duplicate {field}")]
+    DuplicateField {
+        /// Duplicated field name.
+        field: &'static str,
+    },
+    /// Topic fields are not Topic1, Topic2, ... without gaps.
+    #[error("statement signing payload topics are not contiguous")]
+    NonContiguousTopics,
+    /// Payload decodes to a statement but is not the canonical field encoding.
+    #[error("statement signing payload is not canonical")]
+    NonCanonical,
+}
 
 /// Verified statement payload plus the sr25519 signer recovered from proof.
 ///
@@ -240,6 +267,31 @@ pub fn unsigned_statement_signing_payload(
     statement_signing_payload(&fields)
 }
 
+/// Validate an exact unsigned statement signing payload.
+///
+/// Statement proof signing intentionally signs the encoded statement fields
+/// without the surrounding SCALE vector length. Accept only payloads that
+/// round-trip from the public unsigned statement shape, so a paired peer cannot
+/// reuse the statement-signing path as a generic product-account signing oracle.
+pub fn validate_unsigned_statement_signing_payload(
+    payload: &[u8],
+) -> Result<(), StatementSigningPayloadError> {
+    let fields = decode_unsigned_statement_signing_payload_fields(payload)?;
+    if fields.is_empty() {
+        return Err(StatementSigningPayloadError::Empty);
+    }
+    let statement = unsigned_statement_from_fields(fields)?;
+    let fields = statement_fields_from_v01(statement)
+        .expect("unsigned_statement_from_fields emits at most four topics and no proof; qed");
+    let canonical = unsigned_statement_signing_payload(fields).expect(
+        "statement_fields_from_v01 emitted unsigned fields, and SCALE vector encoding is decodable; qed",
+    );
+    if canonical != payload {
+        return Err(StatementSigningPayloadError::NonCanonical);
+    }
+    Ok(())
+}
+
 /// Build the statement signing payload from sorted fields.
 pub fn statement_signing_payload(fields: &[StatementField]) -> Result<Vec<u8>, String> {
     let encoded = fields.to_vec().encode();
@@ -248,6 +300,19 @@ pub fn statement_signing_payload(fields: &[StatementField]) -> Result<Vec<u8>, S
         Decode::decode(&mut input).map_err(|err| format!("invalid statement vector: {err}"))?;
     let compact_len = encoded.len() - input.len();
     Ok(encoded[compact_len..].to_vec())
+}
+
+fn decode_unsigned_statement_signing_payload_fields(
+    mut input: &[u8],
+) -> Result<Vec<StatementField>, StatementSigningPayloadError> {
+    let mut fields = Vec::new();
+    while !input.is_empty() {
+        fields.push(
+            StatementField::decode(&mut input)
+                .map_err(StatementSigningPayloadError::InvalidScale)?,
+        );
+    }
+    Ok(fields)
 }
 
 fn decode_statement_fields(
@@ -327,6 +392,71 @@ fn verify_statement_proof(
             ))
         })?;
     Ok(signer)
+}
+
+fn unsigned_statement_from_fields(
+    fields: Vec<StatementField>,
+) -> Result<v01::Statement, StatementSigningPayloadError> {
+    let mut decryption_key = None;
+    let mut expiry = None;
+    let mut channel = None;
+    let mut topics = Vec::new();
+    let mut data = None;
+
+    for field in fields {
+        match field {
+            StatementField::Proof(_) => {
+                return Err(StatementSigningPayloadError::ContainsProof);
+            }
+            StatementField::DecryptionKey(value) => {
+                if decryption_key.replace(value).is_some() {
+                    return Err(StatementSigningPayloadError::DuplicateField {
+                        field: "decryption key",
+                    });
+                }
+            }
+            StatementField::Expiry(value) => {
+                if expiry.replace(value).is_some() {
+                    return Err(StatementSigningPayloadError::DuplicateField { field: "expiry" });
+                }
+            }
+            StatementField::Channel(value) => {
+                if channel.replace(value).is_some() {
+                    return Err(StatementSigningPayloadError::DuplicateField { field: "channel" });
+                }
+            }
+            StatementField::Topic1(value) => push_unsigned_statement_topic(&mut topics, 0, value)?,
+            StatementField::Topic2(value) => push_unsigned_statement_topic(&mut topics, 1, value)?,
+            StatementField::Topic3(value) => push_unsigned_statement_topic(&mut topics, 2, value)?,
+            StatementField::Topic4(value) => push_unsigned_statement_topic(&mut topics, 3, value)?,
+            StatementField::Data(value) => {
+                if data.replace(value).is_some() {
+                    return Err(StatementSigningPayloadError::DuplicateField { field: "data" });
+                }
+            }
+        }
+    }
+
+    Ok(v01::Statement {
+        proof: None,
+        decryption_key,
+        expiry,
+        channel,
+        topics,
+        data,
+    })
+}
+
+fn push_unsigned_statement_topic(
+    topics: &mut Vec<[u8; 32]>,
+    expected_index: usize,
+    value: [u8; 32],
+) -> Result<(), StatementSigningPayloadError> {
+    if topics.len() != expected_index {
+        return Err(StatementSigningPayloadError::NonContiguousTopics);
+    }
+    topics.push(value);
+    Ok(())
 }
 
 /// Convert a public v01 statement into SCALE statement fields.
@@ -636,6 +766,61 @@ mod tests {
 
         assert_eq!(encoded[0], 16);
         assert_eq!(statement_signing_payload(&fields).unwrap(), encoded[1..]);
+    }
+
+    #[test]
+    fn validates_unsigned_statement_signing_payload() {
+        let payload = unsigned_statement_signing_payload(vec![
+            StatementField::Expiry(42),
+            StatementField::Topic1([1; 32]),
+            StatementField::Topic2([2; 32]),
+            StatementField::Data(vec![0xde, 0xad]),
+        ])
+        .unwrap();
+
+        validate_unsigned_statement_signing_payload(&payload).unwrap();
+    }
+
+    #[test]
+    fn unsigned_statement_signing_payload_rejects_transaction_preimage() {
+        let tx_preimage = vec![0x00, 0x00, 0x01, 0x02, 0x03];
+
+        let err = validate_unsigned_statement_signing_payload(&tx_preimage).unwrap_err();
+
+        assert!(matches!(err, StatementSigningPayloadError::InvalidScale(_)));
+        assert!(
+            err.to_string()
+                .contains("invalid statement signing payload")
+        );
+    }
+
+    #[test]
+    fn unsigned_statement_signing_payload_rejects_proof_field() {
+        let payload =
+            statement_signing_payload(&[StatementField::Proof(StatementProof::Sr25519 {
+                signature: [1; 64],
+                signer: [2; 32],
+            })])
+            .unwrap();
+
+        assert!(matches!(
+            validate_unsigned_statement_signing_payload(&payload).unwrap_err(),
+            StatementSigningPayloadError::ContainsProof
+        ));
+    }
+
+    #[test]
+    fn unsigned_statement_signing_payload_rejects_non_contiguous_topics() {
+        let payload = statement_signing_payload(&[
+            StatementField::Topic1([1; 32]),
+            StatementField::Topic3([3; 32]),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            validate_unsigned_statement_signing_payload(&payload).unwrap_err(),
+            StatementSigningPayloadError::NonContiguousTopics
+        ));
     }
 
     #[test]

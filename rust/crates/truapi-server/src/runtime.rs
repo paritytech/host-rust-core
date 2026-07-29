@@ -22,6 +22,9 @@ mod signing_host;
 pub(crate) mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
 pub(crate) mod sso_remote;
+/// Native Statement Store and Bulletin allowance allocation.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
 pub(crate) mod statement_store;
 mod statement_store_rpc;
@@ -52,7 +55,10 @@ pub(crate) use authority::{BulletinAllowanceKey, ProductAuthority};
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use services::RuntimeServices;
-pub(crate) use signing_host::{LocalActivation, SigningHost as SigningHostRole};
+pub use signing_host::ResponderExit;
+pub(crate) use signing_host::{
+    LocalActivation, SigningHost as SigningHostRole, respond_to_pairing,
+};
 
 use authority::{
     AccountAliasAuthorityRequest, AuthorityCancelError, AuthorityError, AuthoritySession,
@@ -63,12 +69,11 @@ use authority::{
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use parity_scale_codec::Encode;
-use tracing::{info, instrument, warn};
+use tracing::{debug, instrument, warn};
 use truapi::api::{
     Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Notifications, Payment, Permissions,
     Preimage, ResourceAllocation, Signing, System, Theme,
 };
-use truapi::v01;
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
@@ -143,12 +148,13 @@ use truapi::versioned::system::{
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
 use truapi::{CallContext, CallError, CancellationReason, Subscription};
+use truapi::{latest, v01};
 #[cfg(test)]
 use truapi_platform::Platform;
 use truapi_platform::{
-    AccountAccessReview, AccountAliasReview, CreateProofReview, CreateTransactionReview,
-    IdentityDisclosureReview, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
-    PreimageSubmitReview, ProductContext, SessionUiInfo, SignPayloadReview, SignRawReview,
+    AccountAccessReview, CreateTransactionReview, IdentityDisclosureReview,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
+    ProductContext, ResourceAllocationReview, SessionUiInfo, SignPayloadReview, SignRawReview,
     UserConfirmationReview, normalize_product_identifier,
 };
 
@@ -612,6 +618,59 @@ impl ProductRuntimeHost {
     }
 }
 
+async fn account_access_authorization(
+    services: &RuntimeServices,
+    requesting_product_id: &str,
+    target_product_id: &str,
+) -> Result<PermissionAuthorizationStatus, AccountAccessAuthorizationError> {
+    if requesting_product_id == target_product_id {
+        return Ok(PermissionAuthorizationStatus::Authorized);
+    }
+
+    let request = PermissionAuthorizationRequest::AccountAccess {
+        target_product_id: target_product_id.to_string(),
+    };
+    let service = PermissionsService::new(
+        services.platform.as_ref(),
+        services.platform.as_ref(),
+        requesting_product_id,
+    );
+    let cached = service
+        .authorization_status(&request)
+        .await
+        .map_err(AccountAccessAuthorizationError::PermissionStorage)?;
+    if cached != PermissionAuthorizationStatus::NotDetermined {
+        return Ok(cached);
+    }
+
+    let confirmed = services
+        .platform
+        .confirm_user_action(UserConfirmationReview::AccountAccess(AccountAccessReview {
+            requesting_product_id: requesting_product_id.to_string(),
+            target_product_id: target_product_id.to_string(),
+        }))
+        .await
+        .map_err(AccountAccessAuthorizationError::Confirmation)?;
+    let status = if confirmed {
+        PermissionAuthorizationStatus::Authorized
+    } else {
+        PermissionAuthorizationStatus::Denied
+    };
+    service
+        .set_authorization_status(&request, status)
+        .await
+        .map_err(AccountAccessAuthorizationError::PermissionStorage)?;
+    Ok(status)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum AccountAccessAuthorizationError {
+    #[error("permission storage failed: {0:?}")]
+    PermissionStorage(v01::GenericError),
+    #[error("account access confirmation failed: {0:?}")]
+    Confirmation(v01::GenericError),
+}
+
 fn parse_legacy_signer_hex(signer: &str) -> Option<[u8; 32]> {
     let raw = signer
         .strip_prefix("0x")
@@ -642,6 +701,7 @@ fn runtime_failure_to_call_error<E>(failure: RuntimeFailure) -> CallError<E> {
 // System
 // ---------------------------------------------------------------------------
 
+#[truapi::async_trait]
 impl System for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "system.feature_supported"))]
     async fn feature_supported(
@@ -691,6 +751,7 @@ impl System for ProductRuntimeHost {
 // Permissions
 // ---------------------------------------------------------------------------
 
+#[truapi::async_trait]
 impl Permissions for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "permissions.request_device_permission"))]
     async fn request_device_permission(
@@ -747,6 +808,7 @@ impl Permissions for ProductRuntimeHost {
 // LocalStorage
 // ---------------------------------------------------------------------------
 
+#[truapi::async_trait]
 impl LocalStorage for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "local_storage.read"))]
     async fn read(
@@ -804,6 +866,7 @@ impl LocalStorage for ProductRuntimeHost {
 // Account-management flows live in the Rust core itself, backed by the shared
 // session state and, for alias/proof/login success paths, the SSO service.
 
+#[truapi::async_trait]
 impl Account for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "account.get_account"))]
     async fn get_account(
@@ -826,21 +889,27 @@ impl Account for ProductRuntimeHost {
 
         let product_id = self.product_id();
         if product_account_id.dot_ns_identifier != product_id {
-            let confirmed = self
-                .services
-                .platform
-                .confirm_user_action(UserConfirmationReview::AccountAccess(AccountAccessReview {
-                    requesting_product_id: product_id,
-                    target_product_id: product_account_id.dot_ns_identifier.clone(),
-                }))
-                .await
-                .map_err(|err| CallError::HostFailure {
-                    reason: format!("account access confirmation failed: {err:?}"),
-                })?;
-            if !confirmed {
-                return Err(CallError::Domain(HostAccountGetError::V1(
-                    v01::HostAccountGetError::Rejected,
-                )));
+            match account_access_authorization(
+                &self.services,
+                &product_id,
+                &product_account_id.dot_ns_identifier,
+            )
+            .await
+            {
+                Ok(PermissionAuthorizationStatus::Authorized) => {}
+                Ok(
+                    PermissionAuthorizationStatus::Denied
+                    | PermissionAuthorizationStatus::NotDetermined,
+                ) => {
+                    return Err(CallError::Domain(HostAccountGetError::V1(
+                        v01::HostAccountGetError::Rejected,
+                    )));
+                }
+                Err(err) => {
+                    return Err(CallError::HostFailure {
+                        reason: err.to_string(),
+                    });
+                }
             }
         }
 
@@ -880,24 +949,6 @@ impl Account for ProductRuntimeHost {
         };
 
         let calling_product_id = self.product_id();
-        let confirmed = self
-            .services
-            .platform
-            .confirm_user_action(UserConfirmationReview::AccountAlias(AccountAliasReview {
-                calling_product_id: calling_product_id.clone(),
-                context: context.clone(),
-                ring_location: ring_location.clone(),
-            }))
-            .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("account alias confirmation failed: {err:?}"),
-            })?;
-        if !confirmed {
-            return Err(CallError::Domain(HostAccountGetAliasError::V1(
-                v01::HostAccountGetAliasError::Rejected,
-            )));
-        }
-
         let cx = remote_authority_context(cx);
         remote_authority_call(
             &cx,
@@ -935,25 +986,6 @@ impl Account for ProductRuntimeHost {
         };
 
         let calling_product_id = self.product_id();
-        let confirmed = self
-            .services
-            .platform
-            .confirm_user_action(UserConfirmationReview::CreateProof(CreateProofReview {
-                calling_product_id: calling_product_id.clone(),
-                context: context.clone(),
-                ring_location: ring_location.clone(),
-                message: message.clone(),
-            }))
-            .await
-            .map_err(|err| CallError::HostFailure {
-                reason: format!("ring-VRF proof confirmation failed: {err:?}"),
-            })?;
-        if !confirmed {
-            return Err(CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::Rejected,
-            )));
-        }
-
         let cx = remote_authority_context(cx);
         remote_authority_call(
             &cx,
@@ -981,33 +1013,10 @@ impl Account for ProductRuntimeHost {
         _cx: &CallContext,
         _request: HostGetLegacyAccountsRequest,
     ) -> Result<HostGetLegacyAccountsResponse, CallError<HostGetLegacyAccountsError>> {
-        let Some(session) = self.authority.current_session() else {
-            return Ok(HostGetLegacyAccountsResponse::V1(
-                v01::HostGetLegacyAccountsResponse { accounts: vec![] },
-            ));
-        };
-
-        let product_id = self.product_id();
-
-        let public_key =
-            derive_product_public_key(session.public_key, &product_id, 0).map_err(|err| {
-                CallError::Domain(HostGetLegacyAccountsError::V1(
-                    v01::HostAccountGetError::Unknown {
-                        reason: err.to_string(),
-                    },
-                ))
-            })?;
-
+        // Match the mobile hosts: compatibility signing accounts may be
+        // addressed explicitly, but are not enumerated.
         Ok(HostGetLegacyAccountsResponse::V1(
-            v01::HostGetLegacyAccountsResponse {
-                accounts: vec![v01::LegacyAccount {
-                    public_key: public_key.to_vec(),
-                    // TODO(#266): gate this legacy display name on
-                    // IdentityDisclosure while keeping the public key for
-                    // compatibility.
-                    name: session.lite_username.clone(),
-                }],
-            },
+            latest::HostGetLegacyAccountsResponse { accounts: vec![] },
         ))
     }
 
@@ -1138,6 +1147,7 @@ fn transaction_call_error<E>(
     }))
 }
 
+#[truapi::async_trait]
 impl Signing for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "signing.sign_payload"))]
     async fn sign_payload(
@@ -1145,7 +1155,7 @@ impl Signing for ProductRuntimeHost {
         cx: &CallContext,
         request: HostSignPayloadRequest,
     ) -> Result<HostSignPayloadResponse, CallError<HostSignPayloadError>> {
-        info!("sign_payload: requesting signing-host signature");
+        debug!("sign_payload: requesting signing-host signature");
         let HostSignPayloadRequest::V1(mut inner) = request;
         inner.account = Self::normalize_product_account_id(inner.account).map_err(|()| {
             CallError::Domain(HostSignPayloadError::V1(
@@ -1198,7 +1208,7 @@ impl Signing for ProductRuntimeHost {
         cx: &CallContext,
         request: HostSignRawRequest,
     ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
-        info!("sign_raw: requesting signing-host signature");
+        debug!("sign_raw: requesting signing-host signature");
         let HostSignRawRequest::V1(mut inner) = request;
         inner.account = Self::normalize_product_account_id(inner.account).map_err(|()| {
             CallError::Domain(HostSignRawError::V1(
@@ -1251,7 +1261,7 @@ impl Signing for ProductRuntimeHost {
         cx: &CallContext,
         request: HostCreateTransactionRequest,
     ) -> Result<HostCreateTransactionResponse, CallError<HostCreateTransactionError>> {
-        info!("create_transaction: requesting signing-host signature");
+        debug!("create_transaction: requesting signing-host signature");
         let HostCreateTransactionRequest::V1(mut inner) = request;
         inner.signer = Self::normalize_product_account_id(inner.signer).map_err(|()| {
             CallError::Domain(HostCreateTransactionError::V1(
@@ -1457,15 +1467,6 @@ impl Signing for ProductRuntimeHost {
                     },
                 ))
             })?;
-        if !matches!(signer, LegacySigner::Product) {
-            return Err(CallError::Domain(
-                HostCreateTransactionWithLegacyAccountError::V1(
-                    v01::HostCreateTransactionError::Unknown {
-                        reason: LEGACY_PRODUCT_ACCOUNT_MISMATCH_REASON.to_string(),
-                    },
-                ),
-            ));
-        }
         self.require_chain_submit(HostCreateTransactionWithLegacyAccountError::V1(
             v01::HostCreateTransactionError::PermissionDenied,
         ))
@@ -1488,19 +1489,20 @@ impl Signing for ProductRuntimeHost {
             ));
         }
         let cx = remote_authority_context(cx);
+        let authority_request = match signer {
+            LegacySigner::Product => CreateTransactionAuthorityRequest::LegacyAccount {
+                product_account: v01::ProductAccountId {
+                    dot_ns_identifier: self.product_id(),
+                    derivation_index: 0,
+                },
+                request: inner,
+            },
+            LegacySigner::Identity(_) => CreateTransactionAuthorityRequest::IdentityAccount(inner),
+        };
         remote_authority_call(
             &cx,
-            self.authority.create_transaction(
-                &cx,
-                &session,
-                CreateTransactionAuthorityRequest::LegacyAccount {
-                    product_account: v01::ProductAccountId {
-                        dot_ns_identifier: self.product_id(),
-                        derivation_index: 0,
-                    },
-                    request: inner,
-                },
-            ),
+            self.authority
+                .create_transaction(&cx, &session, authority_request),
         )
         .await
         .map(|response| {
@@ -1527,6 +1529,7 @@ impl Signing for ProductRuntimeHost {
 // translated into `RemoteChainHeadFollowItem` items on the subscription
 // stream.
 
+#[truapi::async_trait]
 impl Chain for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "chain.follow_head_subscribe"))]
     async fn follow_head_subscribe(
@@ -1735,9 +1738,9 @@ impl Chain for ProductRuntimeHost {
     ) -> Result<RemoteChainTransactionStopResponse, CallError<RemoteChainTransactionStopError>>
     {
         let RemoteChainTransactionStopRequest::V1(inner) = request;
-        // We intentionally forward the provider operation id here. Transaction
-        // operation ids are node-assigned and short-lived, so cross-product
-        // collision or guessing is not worth local id indirection yet.
+        // ChainRuntime resolves this product-visible host handle to the
+        // provider's short-lived operation id and makes stopping an operation
+        // that completed between broadcast and stop idempotent.
         self.services
             .chain
             .remote_chain_transaction_stop(inner)
@@ -1758,8 +1761,11 @@ impl Chain for ProductRuntimeHost {
 
 const PAYMENTS_NOT_IMPLEMENTED: &str = "Payments are not supported in dot.li";
 
+#[truapi::async_trait]
 impl Chat for ProductRuntimeHost {}
+#[truapi::async_trait]
 impl CoinPayment for ProductRuntimeHost {}
+#[truapi::async_trait]
 impl Payment for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "payment.balance_subscribe"))]
     async fn balance_subscribe(
@@ -1818,6 +1824,7 @@ impl Payment for ProductRuntimeHost {
     }
 }
 
+#[truapi::async_trait]
 impl ResourceAllocation for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "resource_allocation.request"))]
     async fn request(
@@ -1838,7 +1845,12 @@ impl ResourceAllocation for ProductRuntimeHost {
         let confirmed = self
             .services
             .platform
-            .confirm_user_action(UserConfirmationReview::ResourceAllocation(inner.clone()))
+            .confirm_user_action(UserConfirmationReview::ResourceAllocation(
+                ResourceAllocationReview {
+                    calling_product_id: self.product_id(),
+                    resources: inner.resources.clone(),
+                },
+            ))
             .await
             .map_err(|err| CallError::HostFailure {
                 reason: format!("resource allocation confirmation failed: {err:?}"),
@@ -1874,6 +1886,7 @@ impl ResourceAllocation for ProductRuntimeHost {
 // Entropy
 // ---------------------------------------------------------------------------
 
+#[truapi::async_trait]
 impl Entropy for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "entropy.derive"))]
     async fn derive(
@@ -1910,6 +1923,7 @@ impl Entropy for ProductRuntimeHost {
 // Preimage
 // ---------------------------------------------------------------------------
 
+#[truapi::async_trait]
 impl Preimage for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "preimage.lookup_subscribe"))]
     async fn lookup_subscribe(
@@ -2022,7 +2036,7 @@ impl Preimage for ProductRuntimeHost {
                 .bulletin_allowance_key(&authority_cx, &session, self.product_id()),
         )
         .await
-        .map_err(|err| preimage_submit_error(err.to_string()))?;
+        .map_err(|err| preimage_submit_error(bulletin_allowance_error_reason(err)))?;
 
         let key = match bulletin
             .submit_preimage(cx, submission_deadline, &allowance, &value)
@@ -2047,7 +2061,7 @@ impl Preimage for ProductRuntimeHost {
                     ),
                 )
                 .await
-                .map_err(|err| preimage_submit_error(err.to_string()))?;
+                .map_err(|err| preimage_submit_error(bulletin_allowance_error_reason(err)))?;
                 bulletin
                     .submit_preimage(cx, submission_deadline, &allowance, &value)
                     .await
@@ -2079,10 +2093,23 @@ fn preimage_submit_error(reason: String) -> CallError<RemotePreimageSubmitError>
     ))
 }
 
+fn bulletin_allowance_error_reason(err: AuthorityError) -> String {
+    match err {
+        AuthorityError::Rejected => {
+            "Bulletin allowance allocation was rejected by the signing host".to_string()
+        }
+        AuthorityError::Disconnected => {
+            "Signing host disconnected while allocating Bulletin allowance".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Theme
 // ---------------------------------------------------------------------------
 
+#[truapi::async_trait]
 impl Theme for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "theme.subscribe"))]
     async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostThemeSubscribeItem> {
@@ -2107,6 +2134,7 @@ impl Theme for ProductRuntimeHost {
 
 // `Notifications` delegates to the platform so hosts can own scheduling and
 // cancellation while the core preserves the typed TrUAPI wire shape.
+#[truapi::async_trait]
 impl Notifications for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "notifications.send_push_notification"))]
     async fn send_push_notification(
@@ -2166,6 +2194,14 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "{message}");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn preimage_reports_bulletin_allocation_rejection_with_context() {
+        assert_eq!(
+            bulletin_allowance_error_reason(AuthorityError::Rejected),
+            "Bulletin allowance allocation was rejected by the signing host"
+        );
     }
 
     fn recorded_rpc_methods(sent_rpc: &Mutex<Vec<String>>) -> Vec<String> {
@@ -2534,28 +2570,9 @@ mod tests {
     }
 
     #[test]
-    fn get_account_alias_rejected_when_user_declines() {
-        let host =
-            ProductRuntimeHost::new(stub_platform(), runtime_config("myapp.dot"), test_spawner());
-        host.test_session_state().set_session(sso_session_info());
-        let cx = CallContext::default();
-        let err = futures::executor::block_on(
-            host.get_account_alias(&cx, account_alias_request("myapp.dot")),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            CallError::Domain(HostAccountGetAliasError::V1(
-                v01::HostAccountGetAliasError::Rejected
-            ))
-        ));
-    }
-
-    #[test]
-    fn get_account_alias_returns_sso_alias() {
+    fn get_account_alias_forwards_without_pairing_host_confirmation() {
         let session = sso_session_info();
         let platform = Arc::new(StubPlatform {
-            account_alias_confirmed: true,
             sso_response_script: Some(sso_success_response_script(
                 &session,
                 RemoteMessage {
@@ -2618,7 +2635,6 @@ mod tests {
     fn create_account_proof_returns_sso_proof() {
         let session = sso_session_info();
         let platform = Arc::new(StubPlatform {
-            create_proof_confirmed: true,
             sso_response_script: Some(sso_success_response_script(
                 &session,
                 RemoteMessage {
@@ -2670,7 +2686,6 @@ mod tests {
     fn create_account_proof_maps_not_member_error() {
         let session = sso_session_info();
         let platform = Arc::new(StubPlatform {
-            create_proof_confirmed: true,
             sso_response_script: Some(sso_success_response_script(
                 &session,
                 RemoteMessage {
@@ -2705,7 +2720,7 @@ mod tests {
     }
 
     #[test]
-    fn get_legacy_accounts_returns_derived_slot_zero_when_connected() {
+    fn get_legacy_accounts_returns_empty_when_connected() {
         let host = ProductRuntimeHost::new(
             stub_platform(),
             runtime_config("localhost:3000"),
@@ -2718,12 +2733,7 @@ mod tests {
         )
         .unwrap();
         let HostGetLegacyAccountsResponse::V1(inner) = response;
-        assert_eq!(inner.accounts.len(), 1);
-        assert_eq!(inner.accounts[0].name.as_deref(), Some("alice"));
-        assert_eq!(
-            hex::encode(&inner.accounts[0].public_key),
-            "1c822b488297fde8c60d9cbc5585839f70a69fb2c5c69daa66b6043c75184467"
-        );
+        assert!(inner.accounts.is_empty());
     }
 
     #[test]
@@ -3858,13 +3868,34 @@ mod tests {
     }
 
     #[test]
-    fn legacy_create_transaction_rejects_identity_account() {
-        let session = session_info();
+    fn legacy_create_transaction_accepts_identity_account_then_routes_legacy_request() {
+        let session = sso_session_info();
         let identity = session.identity_account_id.unwrap();
-        let host =
-            ProductRuntimeHost::new(stub_platform(), runtime_config("myapp.dot"), test_spawner());
-        host.test_session_state().set_session(session);
-        let cx = CallContext::default();
+        let platform = Arc::new(StubPlatform {
+            create_transaction_confirmed: true,
+            sso_response_script: Some(sso_success_response_script(
+                &session,
+                crate::host_logic::sso::messages::RemoteMessage {
+                    message_id: "wallet-identity-create-tx-1".to_string(),
+                    data: crate::host_logic::sso::messages::RemoteMessageData::V1(
+                        crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionResponse(
+                            crate::host_logic::sso::messages::CreateTransactionResponse {
+                                responding_to: "identity-create-tx-1".to_string(),
+                                signed_transaction: Ok(vec![0xca, 0xfe]),
+                            },
+                        ),
+                    ),
+                },
+            )),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        host.test_session_state().set_session(session.clone());
+        let cx = CallContext::with_request_id("identity-create-tx-1".to_string());
         let request =
             HostCreateTransactionWithLegacyAccountRequest::V1(v01::LegacyAccountTxPayload {
                 signer: identity,
@@ -3874,16 +3905,24 @@ mod tests {
                 tx_ext_version: 0,
             });
 
-        let err =
+        let response =
             futures::executor::block_on(host.create_transaction_with_legacy_account(&cx, request))
-                .unwrap_err();
+                .unwrap();
 
-        match err {
-            CallError::Domain(HostCreateTransactionWithLegacyAccountError::V1(
-                v01::HostCreateTransactionError::Unknown { reason },
-            )) => assert_eq!(reason, LEGACY_PRODUCT_ACCOUNT_MISMATCH_REASON),
-            other => panic!("expected identity account rejection, got {other:?}"),
-        }
+        let HostCreateTransactionWithLegacyAccountResponse::V1(inner) = response;
+        assert_eq!(inner.transaction, vec![0xca, 0xfe]);
+        let message = submitted_remote_message(&platform, &session);
+        let crate::host_logic::sso::messages::RemoteMessageData::V1(
+            crate::host_logic::sso::messages::v1::RemoteMessage::CreateTransactionLegacyRequest(
+                request,
+            ),
+        ) = message.data
+        else {
+            panic!("expected identity transaction request");
+        };
+        let crate::host_logic::sso::messages::CreateTransactionLegacyPayload::V1(payload) =
+            request.payload;
+        assert_eq!(payload.signer, identity);
     }
 
     #[test]

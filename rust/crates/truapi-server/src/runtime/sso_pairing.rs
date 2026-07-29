@@ -191,7 +191,7 @@ impl<'a> SsoPairingFlow<'a> {
 
         let rpc_client = futures::select! {
             _ = cancel => return Ok(SsoPairingOutcome::Cancelled),
-            connect_result = statement_store_connect => connect_result?,
+            connect_result = statement_store_connect => connect_result.map_err(|err| err.to_string())?,
         };
         let subscribe_client = rpc_client.clone();
         let live_topics = [bootstrap.topic];

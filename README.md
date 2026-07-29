@@ -54,12 +54,12 @@ See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full 
 
 ```
 rust/crates/
-  truapi/                Rust trait and type definitions (v01, v02)
+  truapi/                Rust traits, versioned envelopes, and latest payload re-exports
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         #[wire(id = N)] proc-macro
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
   truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
-  truapi-server/         Rust runtime that hosts implement: dispatcher, frames, SCALE, WASM surface
+  truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
@@ -67,8 +67,12 @@ js/packages/
                           `/worker-runtime`
   truapi-provider/         @parity/truapi-provider: WASM ChainProvider backends
                           (embedded smoldot light client + remote WebSocket RPC)
+ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
+hosts/ios/                 polkadot-app-ios-v2, vendored as a submodule (build/test against the core)
+hosts/android/             polkadot-app-android-v2, vendored as a submodule (build/test against the core)
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 ```
