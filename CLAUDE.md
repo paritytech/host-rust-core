@@ -210,6 +210,13 @@ job warns and skips dotli e2e rather than failing unrelated PR checks. With
 dotli access but without `SIGNER_BOT_SVC_TOKEN`, CI runs the no-phone smoke
 path only.
 
+`hosts/android` is likewise private, so the `android-parity` CI job needs
+`ANDROID_CHECKOUT_TOKEN`. Because `make check-android-parity` succeeds when the
+submodule is absent, the job is gated at the job level on that token being
+present: an unavailable token reports the job as skipped instead of passing,
+so a run that verified nothing never reads as coverage. Secrets are not
+available to fork PRs, so parity is unverified there by construction.
+
 A useful no-phone smoke assertion is:
 
 ```bash

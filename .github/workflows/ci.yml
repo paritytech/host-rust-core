@@ -15,8 +15,10 @@ permissions:
   contents: read
 
 jobs:
-  # Gates the macOS-only iOS job, which bills at 10x a Linux runner. Everything
-  # else runs unconditionally.
+  # Gates the macOS-only iOS job. Actions is free for public repos, so this is
+  # not about billing: the org-wide cap on concurrent macOS jobs is far lower
+  # than the Linux cap, so every macOS run we skip is queue time returned to
+  # the rest of the org. Everything else runs unconditionally.
   changes:
     name: Detect mobile-affecting changes
     runs-on: ubuntu-latest
@@ -363,6 +365,63 @@ jobs:
       - name: Build the iOS host package
         run: make ios-build
 
+  # hosts/android is a private repo, so checking it out needs a token. The
+  # secrets context is not available in a job-level `if`, so the availability of
+  # that token is resolved here and consumed as an output. This exists so an
+  # absent token reports the parity job as *skipped* rather than passed: `make
+  # check-android-parity` succeeds when the submodule is missing, which would
+  # otherwise read as verified coverage.
+  android-secret:
+    name: Probe hosts/android checkout token
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.probe.outputs.available }}
+    steps:
+      - id: probe
+        env:
+          TOKEN: ${{ secrets.ANDROID_CHECKOUT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TOKEN:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANDROID_CHECKOUT_TOKEN is unavailable (fork PR, or the secret is not configured). The Android shell parity check will be skipped, so drift between the canonical shell and the vendored copy is NOT verified on this run."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  android-parity:
+    name: Android shell parity
+    runs-on: ubuntu-latest
+    needs: android-secret
+    if: needs.android-secret.outputs.available == 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out hosts/android
+        env:
+          TOKEN: ${{ secrets.ANDROID_CHECKOUT_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global \
+            url."https://x-access-token:${TOKEN}@github.com/".insteadOf \
+            "https://github.com/"
+          git submodule update --init --depth 1 hosts/android
+
+      - name: Verify the vendored shell matches the canonical one
+        run: |
+          set -euo pipefail
+          # The Makefile skips (and succeeds) when the vendored copy is absent.
+          # Having got this far we expect it to exist, so treat absence as a
+          # failure instead of inheriting that skip.
+          vendored=hosts/android/bindings/truapi-host/src/main/kotlin/io/parity/truapi/TrUAPIHost.kt
+          if [ ! -f "$vendored" ]; then
+            echo "::error::hosts/android was checked out but $vendored is missing; the parity check cannot run."
+            exit 1
+          fi
+          make check-android-parity
+
   e2e:
     name: E2E (playground inside dotli)
     # Temporarily disabled while the dotli playground smoke test is stabilized.
@@ -436,6 +495,8 @@ jobs:
         explorer,
         android,
         ios,
+        android-secret,
+        android-parity,
         e2e,
       ]
     steps:
@@ -452,6 +513,8 @@ jobs:
             "${{ needs.explorer.result }}"
             "${{ needs.android.result }}"
             "${{ needs.ios.result }}"
+            "${{ needs.android-secret.result }}"
+            "${{ needs.android-parity.result }}"
             "${{ needs.e2e.result }}"
           )
           for r in "${results[@]}"; do

@@ -106,8 +106,25 @@ make check    # full suite: build, fmt, clippy, test, TS tests, playground build
 make wasm     # rebuild truapi-server WASM artifacts under js/packages/truapi-host/dist/wasm/
 ```
 
+To build the mobile host packages, which compile the UniFFI bindings generated
+from `truapi-server`:
+
+```bash
+make android-build  # Kotlin bindings, then assemble + lint the AAR (JDK 17 + Android SDK)
+make ios-build      # Swift bindings, then build the Swift package (Swift toolchain)
+```
+
 CI regenerates the shared bindings before building and testing both npm
 packages, so generated client and host callback changes are checked together.
+It also builds both mobile host packages: Android on every run, and iOS only
+when `ios/`, `rust/`, the cargo manifests, or the `Makefile` change, since the
+cap on concurrent macOS jobs is shared across the organisation.
+
+The Android shell parity check (`make check-android-parity`) compares the
+canonical `android/truapi-host` shell against the copy vendored in the app.
+`hosts/android` is a private repo, so CI runs that check only when the
+`ANDROID_CHECKOUT_TOKEN` secret is available; without it the job reports as
+skipped rather than passing, because the check cannot verify anything.
 
 To run the playground locally:
 
