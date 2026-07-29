@@ -11,15 +11,23 @@
 //! paired host resolves the username from `Resources.Consumers[that account]`.
 
 use parity_scale_codec::{Decode, Encode};
+use thiserror::Error;
+use verifiable::Error as VerifiableError;
 use verifiable::GenerateVerifiable;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use crate::host_logic::product_account::{
-    SR25519_SIGNING_CONTEXT, derive_sr25519_hard_path, product_public_key_to_address,
+    ProductAccountError, SR25519_SIGNING_CONTEXT, derive_sr25519_hard_path,
+    product_public_key_to_address,
 };
-use crate::host_logic::sso::pairing::derive_p256_keypair_from_entropy;
+use crate::host_logic::sso::pairing::{PairingBootstrapError, derive_p256_keypair_from_entropy};
 
 /// sr25519 proof-of-ownership message prefix (exact bytes; one space).
+///
+/// Canonical People Lite runtime source:
+/// <https://github.com/paritytech/individuality/blob/c3ec60ab934d1a64e4f27d1776a598e839819720/pallets/people-lite/src/lib.rs#L69>
+///
+/// The pallet verifies `MSG_PREFIX || candidate || ring_vrf_key`.
 const REGISTER_PREFIX: &[u8] = b"pop:people-lite:register using";
 /// Domain label for the P-256 identifier key advertised to the backend.
 const IDENTIFIER_KEY_LABEL: &[u8] = b"chat-encryption";
@@ -55,17 +63,30 @@ pub struct LiteRegistration {
     pub consumer_registration_signature: [u8; 64],
 }
 
+/// Error while building lite-person registration parameters.
+#[derive(Debug, Error)]
+pub enum LiteRegistrationError {
+    /// Candidate statement-account derivation failed.
+    #[error("//wallet//sso derivation failed: {0}")]
+    CandidateDerivation(#[from] ProductAccountError),
+    /// Ring-VRF proof-of-ownership failed.
+    #[error("ring-VRF proof-of-ownership failed: {0:?}")]
+    ProofOfOwnership(VerifiableError),
+    /// P-256 identifier key derivation failed.
+    #[error("identifier key derivation failed: {0}")]
+    IdentifierKey(#[from] PairingBootstrapError),
+}
+
 /// Build the lite-person registration parameters for `username_base`
 /// (6+ lowercase letters, no digit suffix) against the backend `verifier`.
 pub fn build_lite_registration(
     entropy: &[u8],
     verifier_account_id: [u8; 32],
     username_base: &str,
-) -> Result<LiteRegistration, String> {
+) -> Result<LiteRegistration, LiteRegistrationError> {
     // The candidate is the `//wallet//sso` statement account, matching the
     // account the SSO responder presents as `identity_account_id`.
-    let candidate = derive_sr25519_hard_path(entropy, &["wallet", "sso"])
-        .map_err(|err| format!("//wallet//sso derivation failed: {err}"))?;
+    let candidate = derive_sr25519_hard_path(entropy, &["wallet", "sso"])?;
     let candidate_public_key = candidate.public.to_bytes();
 
     let vrf_entropy = blake2b256(entropy);
@@ -82,11 +103,10 @@ pub fn build_lite_registration(
         .sign_simple(SR25519_SIGNING_CONTEXT, &proof_message, &candidate.public)
         .to_bytes();
     let proof_of_ownership = BandersnatchVrfVerifiable::sign(&vrf_secret, &proof_message)
-        .map_err(|err| format!("ring-VRF proof-of-ownership failed: {err:?}"))?;
+        .map_err(LiteRegistrationError::ProofOfOwnership)?;
 
     let (_identifier_secret, identifier_key) =
-        derive_p256_keypair_from_entropy(entropy, IDENTIFIER_KEY_LABEL)
-            .map_err(|err| format!("identifier key derivation failed: {err}"))?;
+        derive_p256_keypair_from_entropy(entropy, IDENTIFIER_KEY_LABEL)?;
 
     let consumer_message = ConsumerRegistrationSigningPayload {
         account: candidate_public_key,
@@ -122,7 +142,7 @@ fn blake2b256(message: &[u8]) -> [u8; 32] {
         .hash(message)
         .as_bytes()
         .try_into()
-        .expect("BLAKE2b-256 returns 32 bytes")
+        .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed")
 }
 
 #[cfg(test)]

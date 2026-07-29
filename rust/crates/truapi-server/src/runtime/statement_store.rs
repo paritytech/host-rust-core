@@ -35,6 +35,7 @@ use truapi::versioned::statement_store::{
 };
 use truapi::{CallContext, CallError, Subscription};
 
+#[truapi::async_trait]
 impl StatementStore for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "statement_store.subscribe"))]
     async fn subscribe(
@@ -59,7 +60,9 @@ impl StatementStore for ProductRuntimeHost {
             .await
             .map_err(|reason| {
                 CallError::Domain(RemoteStatementStoreSubscribeError::V1(
-                    latest::GenericError { reason },
+                    latest::GenericError {
+                        reason: reason.to_string(),
+                    },
                 ))
             })?;
         let subscription = statement_store_rpc::subscribe(&rpc_client, kind, &topics)

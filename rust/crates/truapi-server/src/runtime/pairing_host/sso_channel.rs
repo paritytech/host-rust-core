@@ -207,7 +207,11 @@ impl PairingHost {
             fresh_statement_expiry(),
         )
         .map_err(SsoRemoteResponseError::Failure)?;
-        let rpc_client = self.statement_store.client("SSO statement-store").await?;
+        let rpc_client = self
+            .statement_store
+            .client("SSO statement-store")
+            .await
+            .map_err(|err| SsoRemoteResponseError::Failure(err.to_string()))?;
         let own_subscription = subscribe_statement_topic(&rpc_client, sso.session_id_own)
             .await
             .map_err(|err| {
@@ -696,7 +700,10 @@ async fn wait_for_sso_peer_disconnect(
     statement_store: StatementStoreRpc,
     session: SsoSessionInfo,
 ) -> Result<(), String> {
-    let rpc_client = statement_store.client("SSO disconnect monitor").await?;
+    let rpc_client = statement_store
+        .client("SSO disconnect monitor")
+        .await
+        .map_err(|err| err.to_string())?;
     let mut subscription =
         statement_store_rpc::subscribe_match_all(&rpc_client, &[session.session_id_peer])
             .await

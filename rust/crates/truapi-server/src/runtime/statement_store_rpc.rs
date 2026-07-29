@@ -13,7 +13,9 @@ use serde_json::{Value, json};
 
 use subxt_rpcs::RpcClient;
 use subxt_rpcs::client::{RpcSubscription, rpc_params};
+use thiserror::Error;
 use tracing::warn;
+use truapi::latest::GenericError;
 use truapi_platform::{JsonRpcConnection, Platform};
 
 use crate::host_logic::statement_store::{
@@ -25,6 +27,19 @@ use crate::subscription::Spawner;
 
 const SSO_NO_ALLOWANCE_RETRY_ATTEMPTS: usize = 5;
 const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Error opening a statement-store RPC client over the host platform.
+#[derive(Debug, Error)]
+pub(crate) enum StatementStoreRpcClientError {
+    /// The host failed to open a People-chain JSON-RPC connection.
+    #[error("{label} connect failed: {error:?}")]
+    Connect {
+        /// Operation label requesting the connection.
+        label: &'static str,
+        /// Host platform error.
+        error: GenericError,
+    },
+}
 
 /// People-chain statement-store RPC client factory.
 #[derive(Clone)]
@@ -50,7 +65,10 @@ impl StatementStoreRpc {
 
     /// Open a statement-store RPC client over the host-provided People-chain
     /// connection.
-    pub(super) async fn client(&self, label: &'static str) -> Result<RpcClient, String> {
+    pub(super) async fn client(
+        &self,
+        label: &'static str,
+    ) -> Result<RpcClient, StatementStoreRpcClientError> {
         let connection = self.connect(label).await?;
         Ok(RpcClient::new(HostRpcClient::new(
             connection,
@@ -64,7 +82,7 @@ impl StatementStoreRpc {
         statement: Vec<u8>,
         label: &'static str,
     ) -> Result<(), String> {
-        let rpc_client = self.client(label).await?;
+        let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
         submit(&rpc_client, statement).await
     }
 
@@ -76,7 +94,7 @@ impl StatementStoreRpc {
         statement: Vec<u8>,
         label: &'static str,
     ) -> Result<(), String> {
-        let rpc_client = self.client(label).await?;
+        let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
         submit_sso(&rpc_client, statement, label).await
     }
 
@@ -86,7 +104,7 @@ impl StatementStoreRpc {
         statement: Vec<u8>,
         label: &'static str,
     ) -> Result<(), String> {
-        let connection = self.connect(label).await?;
+        let connection = self.connect(label).await.map_err(|err| err.to_string())?;
         HostRpcClient::new(connection, self.spawner.clone())
             .send_fire_and_forget(
                 SUBMIT_STATEMENT_METHOD,
@@ -95,12 +113,15 @@ impl StatementStoreRpc {
             .map_err(rpc_error_message)
     }
 
-    async fn connect(&self, label: &'static str) -> Result<Arc<dyn JsonRpcConnection>, String> {
+    async fn connect(
+        &self,
+        label: &'static str,
+    ) -> Result<Arc<dyn JsonRpcConnection>, StatementStoreRpcClientError> {
         self.platform
             .connect(self.people_chain_genesis_hash)
             .await
             .map(Arc::from)
-            .map_err(|err| format!("{label} connect failed: {err:?}"))
+            .map_err(|error| StatementStoreRpcClientError::Connect { label, error })
     }
 }
 

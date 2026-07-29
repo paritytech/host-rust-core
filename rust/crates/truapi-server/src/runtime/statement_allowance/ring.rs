@@ -7,9 +7,43 @@
 use parity_scale_codec::{Compact, Decode};
 use scale_decode::DecodeAsType;
 use sp_crypto_hashing::{blake2_128, twox_64, twox_128};
+use thiserror::Error;
 
-use super::extension::Metadata;
+use super::StatementAllowanceError;
+use super::extension::{Metadata, MetadataError};
 use super::rpc::RpcClient;
+
+/// Error while reading or decoding LitePeople ring storage.
+#[derive(Debug, Error)]
+pub enum RingError {
+    /// Current ring index storage failed to decode.
+    #[error("ring index: {0}")]
+    RingIndex(#[source] parity_scale_codec::Error),
+    /// LitePeople collection info was absent.
+    #[error("Members.Collections[LitePeople] missing")]
+    LitePeopleCollectionMissing,
+    /// Metadata-aware storage decode failed.
+    #[error("{context}: {source}")]
+    DecodeAsType {
+        /// Decode context.
+        context: &'static str,
+        /// Metadata-aware decode failure.
+        #[source]
+        source: scale_decode::Error,
+    },
+    /// Ring key page compact length failed to decode.
+    #[error("ring keys len: {0}")]
+    RingKeysLen(#[source] parity_scale_codec::Error),
+    /// Ring key page did not contain all advertised members.
+    #[error("ring keys page truncated")]
+    RingKeysPageTruncated,
+    /// Ring status did not contain the included field.
+    #[error("ring status truncated before included field")]
+    RingStatusTruncated,
+    /// Ring status included field failed to decode.
+    #[error("ring status: {0}")]
+    RingStatus(#[source] parity_scale_codec::Error),
+}
 
 /// LitePeople collection identifier: ASCII, exactly 32 bytes.
 const LITE_PEOPLE_IDENTIFIER: &[u8; 32] = b"pop:polkadot.network/people-lite";
@@ -125,27 +159,22 @@ fn twox_64_concat(x: &[u8]) -> Vec<u8> {
 
 /// Read the current LitePeople ring index at the current best block
 /// (absent => 0).
-pub async fn read_current_ring_index(rpc: &RpcClient) -> Result<u32, String> {
-    decode_ring_index(
-        rpc.get_storage(&current_ring_index_key())
-            .await
-            .map_err(|e| e.to_string())?,
-    )
+pub async fn read_current_ring_index(rpc: &RpcClient) -> Result<u32, StatementAllowanceError> {
+    decode_ring_index(rpc.get_storage(&current_ring_index_key()).await?)
 }
 
 /// Read the current LitePeople ring index pinned to block `at` (absent => 0).
-pub async fn read_current_ring_index_at(rpc: &RpcClient, at: &str) -> Result<u32, String> {
-    decode_ring_index(
-        rpc.get_storage_at(&current_ring_index_key(), at)
-            .await
-            .map_err(|e| e.to_string())?,
-    )
+pub async fn read_current_ring_index_at(
+    rpc: &RpcClient,
+    at: &str,
+) -> Result<u32, StatementAllowanceError> {
+    decode_ring_index(rpc.get_storage_at(&current_ring_index_key(), at).await?)
 }
 
 /// Decode a `CurrentRingIndex` storage value (absent => 0).
-fn decode_ring_index(bytes: Option<Vec<u8>>) -> Result<u32, String> {
+fn decode_ring_index(bytes: Option<Vec<u8>>) -> Result<u32, StatementAllowanceError> {
     match bytes {
-        Some(bytes) => u32::decode(&mut &bytes[..]).map_err(|e| format!("ring index: {e}")),
+        Some(bytes) => u32::decode(&mut &bytes[..]).map_err(|err| RingError::RingIndex(err).into()),
         None => Ok(0),
     }
 }
@@ -157,19 +186,27 @@ pub async fn read_ring_exponent(
     rpc: &RpcClient,
     metadata: &Metadata,
     at: &str,
-) -> Result<u8, String> {
+) -> Result<u8, StatementAllowanceError> {
     let collection = rpc
         .get_storage_at(&collections_key(), at)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Members.Collections[LitePeople] missing".to_string())?;
+        .await?
+        .ok_or(RingError::LitePeopleCollectionMissing)?;
     let value_type = metadata
         .storage_value_type("Members", "Collections")
-        .ok_or_else(|| "Members.Collections type not in metadata".to_string())?;
+        .ok_or(MetadataError::MissingStorageType {
+            pallet: "Members",
+            entry: "Collections",
+        })?;
     let mut input = collection.as_slice();
     CollectionInfo::decode_as_type(&mut input, value_type, metadata.registry())
         .map(|collection| collection.ring_size.exponent())
-        .map_err(|err| format!("Members.Collections: {err}"))
+        .map_err(|err| {
+            RingError::DecodeAsType {
+                context: "Members.Collections",
+                source: err,
+            }
+            .into()
+        })
 }
 
 /// Read the members of `ring_index`, sliced to the baked-in `included`
@@ -179,20 +216,18 @@ pub async fn read_ring_members_at(
     rpc: &RpcClient,
     ring_index: u32,
     at: &str,
-) -> Result<Vec<[u8; 32]>, String> {
+) -> Result<Vec<[u8; 32]>, StatementAllowanceError> {
     // 1. Page through RingKeys collecting raw 32-byte members.
     let mut members = Vec::new();
     for page in 0.. {
         let Some(bytes) = rpc
             .get_storage_at(&ring_keys_key(ring_index, page), at)
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
         else {
             break;
         };
         let mut cursor = &bytes[..];
-        let Compact(len) =
-            Compact::<u32>::decode(&mut cursor).map_err(|e| format!("ring keys len: {e}"))?;
+        let Compact(len) = Compact::<u32>::decode(&mut cursor).map_err(RingError::RingKeysLen)?;
         if len == 0 {
             break;
         }
@@ -200,9 +235,9 @@ pub async fn read_ring_members_at(
             let start = i * MEMBER_LEN;
             let member: [u8; 32] = cursor
                 .get(start..start + MEMBER_LEN)
-                .ok_or_else(|| "ring keys page truncated".to_string())?
+                .ok_or(RingError::RingKeysPageTruncated)?
                 .try_into()
-                .expect("slice is 32 bytes");
+                .expect("range end uses start + MEMBER_LEN where MEMBER_LEN is 32; qed");
             members.push(member);
         }
     }
@@ -210,15 +245,11 @@ pub async fn read_ring_members_at(
     // 2. Slice to the baked-in `included` prefix (absent status => all included).
     if let Some(status) = rpc
         .get_storage_at(&ring_keys_status_key(ring_index), at)
-        .await
-        .map_err(|e| e.to_string())?
+        .await?
     {
         // RingStatus = { total: u32 LE, included: u32 LE, .. }.
-        let included_bytes = status
-            .get(4..)
-            .ok_or_else(|| "ring status truncated before included field".to_string())?;
-        let included =
-            u32::decode(&mut &included_bytes[..]).map_err(|e| format!("ring status: {e}"))?;
+        let included_bytes = status.get(4..).ok_or(RingError::RingStatusTruncated)?;
+        let included = u32::decode(&mut &included_bytes[..]).map_err(RingError::RingStatus)?;
         members.truncate(included as usize);
     }
 
@@ -232,20 +263,25 @@ pub async fn read_ring_revision(
     metadata: &Metadata,
     ring_index: u32,
     at: &str,
-) -> Result<u32, String> {
-    match rpc
-        .get_storage_at(&ring_root_key(ring_index), at)
-        .await
-        .map_err(|e| e.to_string())?
-    {
+) -> Result<u32, StatementAllowanceError> {
+    match rpc.get_storage_at(&ring_root_key(ring_index), at).await? {
         Some(bytes) => {
-            let value_type = metadata
-                .storage_value_type("Members", "Root")
-                .ok_or_else(|| "Members.Root type not in metadata".to_string())?;
+            let value_type = metadata.storage_value_type("Members", "Root").ok_or(
+                MetadataError::MissingStorageType {
+                    pallet: "Members",
+                    entry: "Root",
+                },
+            )?;
             let mut input = bytes.as_slice();
             RingRoot::decode_as_type(&mut input, value_type, metadata.registry())
                 .map(|root| root.revision)
-                .map_err(|err| format!("ring revision: {err}"))
+                .map_err(|err| {
+                    RingError::DecodeAsType {
+                        context: "ring revision",
+                        source: err,
+                    }
+                    .into()
+                })
         }
         None => Ok(0),
     }
@@ -271,8 +307,9 @@ mod tests {
             .id;
         let registry: scale_info::PortableRegistry = registry.into();
         let encoded = source.encode();
-        Target::decode_as_type(&mut encoded.as_slice(), type_id, &registry)
-            .expect("metadata-aware partial decode succeeds")
+        Target::decode_as_type(&mut encoded.as_slice(), type_id, &registry).expect(
+            "source metadata is registered and target projection matches by field name; qed",
+        )
     }
 
     #[test]
