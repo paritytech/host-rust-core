@@ -102,10 +102,11 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         DispatchQueue.main.sync { /* show prompt; */ false }
     }
 
-    // Core-owned auth state stream: render `.pairing` as the pairing QR
-    // sheet, `.connected`/`.disconnected` as the account badge, and
-    // `.loginFailed` as a retryable error. When the user closes the pairing
-    // sheet, report it with `core.cancelLogin()`.
+    // Core-owned auth state stream: render `.connected`/`.disconnected` as the
+    // account badge and `.loginFailed` as a retryable error. This core is a
+    // signing host — it owns the signer and never pairs — so `.pairing` and
+    // `.authenticating` are not emitted and `core.cancelLogin()` is inert.
+    // Activate the session with `core.activateLocalSession(secret:...)`.
     func authStateChanged(state: AuthState) {
         DispatchQueue.main.async { /* render the state */ }
     }

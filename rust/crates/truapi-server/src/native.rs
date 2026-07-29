@@ -491,6 +491,11 @@ pub struct NativeTrUApiCore {
 #[uniffi::export]
 impl NativeTrUApiCore {
     /// Construct the core with explicit product and pairing runtime config.
+    ///
+    /// When `runtime_config` carries `local_session_secret`, the session is
+    /// activated before this returns, so construction blocks the calling thread
+    /// on the same key derivation as [`Self::activate_local_session`]. Prefer
+    /// constructing off the host's main/UI thread.
     #[uniffi::constructor]
     pub fn with_runtime_config(
         callbacks: Box<dyn HostCallbacks>,
@@ -502,6 +507,9 @@ impl NativeTrUApiCore {
     /// Core-owned logout/disconnect. Best-effort notifies the SSO peer when
     /// the session has channel material, then clears in-memory and persisted
     /// session state.
+    ///
+    /// Blocks the calling thread until the disconnect completes, so call it off
+    /// the host's main/UI thread.
     pub fn disconnect(&self) {
         futures::executor::block_on(self.runtime.disconnect_session());
     }
@@ -531,6 +539,9 @@ impl NativeTrUApiCore {
 
     /// Read a stored permission authorization status without prompting.
     /// `payload` is a SCALE-encoded `PermissionAuthorizationRequest`.
+    ///
+    /// Blocks the calling thread on the storage read, so call it off the host's
+    /// main/UI thread.
     pub fn permission_authorization_status(
         &self,
         payload: Vec<u8>,
@@ -544,6 +555,9 @@ impl NativeTrUApiCore {
     /// Update a stored permission authorization status. Passing
     /// `.notDetermined` clears the stored value so the next product request
     /// prompts again.
+    ///
+    /// Blocks the calling thread on the storage write, so call it off the host's
+    /// main/UI thread.
     pub fn set_permission_authorization_status(
         &self,
         payload: Vec<u8>,
@@ -559,6 +573,9 @@ impl NativeTrUApiCore {
 
     /// Activate or replace the local signing-host session from host-held
     /// secret material (raw BIP-39 entropy).
+    ///
+    /// Blocks the calling thread while the session is derived (PBKDF2, 2048
+    /// rounds), so call it off the host's main/UI thread.
     pub fn activate_local_session(
         &self,
         secret: Vec<u8>,
