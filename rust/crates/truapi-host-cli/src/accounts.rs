@@ -135,6 +135,19 @@ pub struct AccountStore {
     data: AccountStoreData,
 }
 
+/// Cross-process guard over the account store, held for the whole
+/// provisioning flow so a concurrent instance cannot interleave writes.
+///
+/// The guard is taken with a *non-blocking* `try_lock_exclusive`. A blocking
+/// `lock_exclusive` here would be a blocking syscall inside async code, and it
+/// is held across `attest_record` and `wait_for_ring_membership`, which poll for
+/// up to ~80s (`attestation.rs` and `wait_for_ring_membership` both retry 10x
+/// with 4s sleeps, on top of 30s HTTP timeouts). That combination has two
+/// failure modes: a second instance waits the full provisioning window with no
+/// output, and — once as many waiters as tokio worker threads are parked in the
+/// syscall — the holder's timer can never be polled, so it never releases and
+/// the wait never ends. Refusing immediately makes the contention visible and
+/// keeps the runtime schedulable.
 struct AccountStoreLock {
     file: fs::File,
 }
@@ -150,8 +163,14 @@ impl AccountStoreLock {
             .write(true)
             .open(&path)
             .with_context(|| format!("open lock {}", path.display()))?;
-        file.lock_exclusive()
-            .with_context(|| format!("lock {}", path.display()))?;
+        file.try_lock_exclusive().map_err(|err| {
+            anyhow::anyhow!(
+                "another truapi-host is using the account store at {} \
+                 ({err}); wait for it to finish or pass a different \
+                 --account-base-path",
+                base_path.display()
+            )
+        })?;
         Ok(Self { file })
     }
 }
@@ -758,6 +777,31 @@ mod tests {
             Some("auto-1")
         );
         assert!(!temp_path(&dir.path().join(ACCOUNT_STORE_FILE)).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_second_store_lock_is_refused_rather_than_waited_on() -> Result<()> {
+        let dir = tempdir()?;
+        let held = AccountStoreLock::acquire(dir.path())?;
+
+        // With a blocking `lock_exclusive` this call parks the calling thread
+        // for as long as the first guard lives — inside async code that is up
+        // to the whole ~80s provisioning window, and it deadlocks outright once
+        // every tokio worker is parked here. It must fail fast instead.
+        let err = match AccountStoreLock::acquire(dir.path()) {
+            Ok(_) => panic!("a second exclusive lock must be refused"),
+            Err(err) => err,
+        };
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("another truapi-host is using the account store"),
+            "unexpected error: {message}"
+        );
+
+        // Releasing the first guard makes the store available again.
+        drop(held);
+        let _reacquired = AccountStoreLock::acquire(dir.path())?;
         Ok(())
     }
 
