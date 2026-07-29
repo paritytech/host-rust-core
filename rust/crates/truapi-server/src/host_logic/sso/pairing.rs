@@ -12,8 +12,8 @@
 //! handshake codec:
 //! <https://github.com/paritytech/triangle-js-sdks/blob/afb26e2c78bf1134886c1248c1bf2b6b4dc1fce9/packages/host-papp/src/sso/auth/scale/handshakeV2.ts>
 
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use p256::ecdh::diffie_hellman;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
@@ -190,7 +190,7 @@ pub fn encrypt_v2_handshake_response(
     let mut encrypted_message = nonce.to_vec();
     encrypted_message.extend(
         cipher
-            .encrypt(Nonce::from_slice(&nonce), response.encode().as_slice())
+            .encrypt((&nonce).into(), response.encode().as_slice())
             .map_err(|err| format!("failed to encrypt SSO handshake response: {err}"))?,
     );
     Ok(VersionedHandshakeResponse::V2 {
@@ -377,7 +377,7 @@ pub fn encrypt_session_statement_data_with_nonce(
     let mut encrypted = nonce.to_vec();
     encrypted.extend(
         cipher
-            .encrypt(Nonce::from_slice(&nonce), data.encode().as_slice())
+            .encrypt((&nonce).into(), data.encode().as_slice())
             .map_err(|err| format!("failed to encrypt SSO statement data: {err}"))?,
     );
     Ok(encrypted)
@@ -434,10 +434,13 @@ fn decrypt_aes_gcm_with_key(
         return Err(format!("encrypted SSO {label} is too short"));
     }
     let (nonce, ciphertext) = encrypted_message.split_at(AES_GCM_NONCE_LEN);
+    let nonce: &[u8; AES_GCM_NONCE_LEN] = nonce
+        .try_into()
+        .expect("nonce slice has the checked fixed length");
     let cipher = Aes256Gcm::new_from_slice(&aes_key)
         .map_err(|err| format!("failed to initialize AES-GCM: {err}"))?;
     cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(nonce.into(), ciphertext)
         .map_err(|err| format!("failed to decrypt SSO {label}: {err}"))
 }
 
@@ -632,8 +635,7 @@ fn generate_p256_keypair() -> Result<([u8; 32], [u8; 65]), PairingBootstrapError
         }
         let mut encryption_public_key = [0u8; 65];
         encryption_public_key.copy_from_slice(public);
-        let mut encryption_secret_key = [0u8; 32];
-        encryption_secret_key.copy_from_slice(secret.to_bytes().as_slice());
+        let encryption_secret_key = secret.to_bytes().into();
         return Ok((encryption_secret_key, encryption_public_key));
     }
 
@@ -783,7 +785,7 @@ mod tests {
         let mut encrypted = nonce.to_vec();
         encrypted.extend(
             cipher
-                .encrypt(Nonce::from_slice(&nonce), sensitive.encode().as_slice())
+                .encrypt((&nonce).into(), sensitive.encode().as_slice())
                 .unwrap(),
         );
 

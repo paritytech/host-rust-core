@@ -17,8 +17,8 @@ use crate::subscription::Spawner;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::subscription::thread_per_subscription_spawner;
 
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use futures::Stream;
 use futures::stream::{self, BoxStream};
 use hkdf::Hkdf;
@@ -567,7 +567,7 @@ fn wallet_handshake_statement_with_response(
     let mut encrypted_message = nonce.to_vec();
     encrypted_message.extend(
         cipher
-            .encrypt(Nonce::from_slice(&nonce), answer.encode().as_slice())
+            .encrypt((&nonce).into(), answer.encode().as_slice())
             .unwrap(),
     );
     let handshake = pairing::VersionedHandshakeResponse::V2 {
