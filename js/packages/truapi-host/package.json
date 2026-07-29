@@ -1,6 +1,6 @@
 {
   "name": "@parity/truapi-host",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "WASM-backed TrUAPI host runtime: embeds the Rust core, with web iframe and Web Worker entry points",
   "license": "MIT",
   "author": "Parity Technologies <admin@parity.io>",

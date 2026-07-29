@@ -16,6 +16,7 @@ use crate::wire;
 use crate::{CallContext, CallError};
 
 /// Signing operations.
+#[crate::async_trait]
 pub trait Signing: Send + Sync {
     /// Construct a signed transaction for a product account.
     ///
@@ -50,11 +51,13 @@ pub trait Signing: Send + Sync {
     /// ```ts
     /// import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
     ///
-    /// const accountsResult = await truapi.account.getLegacyAccounts();
-    /// assert(accountsResult.isOk(), "getLegacyAccounts failed:", accountsResult);
-    /// const legacyAccount = accountsResult.value.accounts[0];
-    /// assert(legacyAccount, "no legacy accounts available");
-    /// console.log("selected legacy account:", legacyAccount);
+    /// const accountResult = await truapi.account.getAccount({
+    ///   productAccountId: {
+    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///   },
+    /// });
+    /// assert(accountResult.isOk(), "getAccount failed:", accountResult);
     ///
     /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
@@ -68,7 +71,7 @@ pub trait Signing: Send + Sync {
     ///
     /// const result = await truapi.signing.createTransactionWithLegacyAccount({
     ///   ...payload.value,
-    ///   signer: legacyAccount.publicKey,
+    ///   signer: accountResult.value.account.publicKey,
     /// });
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
     /// console.log("transaction created:", result.value);
@@ -116,13 +119,16 @@ pub trait Signing: Send + Sync {
     /// ```ts
     /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
     ///
-    /// const accountsResult = await truapi.account.getLegacyAccounts();
-    /// assert(accountsResult.isOk(), "getLegacyAccounts failed:", accountsResult);
-    /// const legacyAccount = accountsResult.value.accounts[0];
-    /// assert(legacyAccount, "no legacy accounts available");
+    /// const accountResult = await truapi.account.getAccount({
+    ///   productAccountId: {
+    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///   },
+    /// });
+    /// assert(accountResult.isOk(), "getAccount failed:", accountResult);
     ///
     /// const result = await truapi.signing.signPayloadWithLegacyAccount({
-    ///   signer: legacyAccount.publicKey,
+    ///   signer: accountResult.value.account.publicKey,
     ///   payload: {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
