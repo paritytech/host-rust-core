@@ -32,13 +32,13 @@ import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_server.HostTheme
-import uniffi.truapi_server.NativeTrUApiCore
-import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDeeplinkScheme
 import uniffi.truapi_server.NativePermissionAuthorizationStatus
-import uniffi.truapi_server.NativeRuntimeConfig as UniFfiNativeRuntimeConfig
 import uniffi.truapi_server.NativeRuntimeConfigException
+import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
+import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDeeplinkScheme
+import uniffi.truapi_server.NativeRuntimeConfig as UniFfiNativeRuntimeConfig
 
 /** Package metadata. */
 object TrUAPIHost {
@@ -180,13 +180,14 @@ interface HostCoreStorage {
  * the user's decision as a `Boolean`.
  *
  * Threading: the Rust core invokes every callback on a background thread it
- * owns, never the UI (main) thread. UI-decision callbacks ([navigateTo],
- * [devicePermission], [remotePermission], and [confirmUserAction]) each run on
- * their own thread from a blocking pool, so an implementation may safely block
- * its calling thread (e.g. with a `CountDownLatch`) until the user decides;
- * other TrUAPI traffic keeps flowing. The remaining callbacks (auth state,
- * storage, core storage, chain, feature, theme, preimage lookups) run inline on
- * the dispatcher thread and must return promptly without blocking. Any UI work
+ * owns, never the UI (main) thread. These six each run on their own thread from
+ * a blocking pool, so an implementation may safely block its calling thread
+ * (e.g. with a `CountDownLatch`) until the user decides; other TrUAPI traffic
+ * keeps flowing: [navigateTo], [pushNotification], [devicePermission],
+ * [remotePermission], [featureSupported], and [confirmUserAction]. The
+ * remaining callbacks (auth state, storage, core storage, chain, theme,
+ * preimage lookups, and [cancelNotification]) run inline on the dispatcher
+ * thread and must return promptly without blocking. Any UI work
  * MUST still be marshalled onto the main thread, e.g. with
  * `Handler(Looper.getMainLooper()).post { ... }` or a `CoroutineScope` bound to
  * `Dispatchers.Main`. Touching views or the `WebView` directly from a callback
