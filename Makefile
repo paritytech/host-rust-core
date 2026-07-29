@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli headless install matrix explorer
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi ios-build uniffi-kotlin android-jni android-build android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli matrix explorer
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -97,6 +97,9 @@ uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
 	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap \
 		ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
 
+ios-build: uniffi ## Generate Swift bindings, then build the iOS host package (needs a Swift toolchain).
+	swift build --package-path ios/truapi-host
+
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 
 uniffi-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-server cdylib.
@@ -119,8 +122,11 @@ android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs 
 		-o $(ANDROID_JNILIBS) \
 		build --release -p truapi-server --features ws-bridge
 
-android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
-	gradle :truapi-host:publishReleasePublicationToMavenLocal
+android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs JDK 17 + Android SDK). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
+	./gradlew :truapi-host:publishReleasePublicationToMavenLocal
+
+android-build: uniffi-kotlin ## Generate Kotlin bindings, then build and lint the AAR (needs JDK 17 + Android SDK).
+	./gradlew :truapi-host:assembleRelease :truapi-host:lintRelease
 
 test: ## Run Rust + TypeScript client tests.
 	cargo test --workspace
