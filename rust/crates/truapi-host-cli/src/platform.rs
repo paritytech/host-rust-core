@@ -214,7 +214,8 @@ impl CliPlatform {
         let Some(scope) = &self.pairing_scope else {
             return Ok(());
         };
-        crate::sessions::validate_name(user_id)?;
+        let user_id = pairing_storage_name(user_id);
+        let user_id = user_id.as_ref();
         let target_state = scope.network_dir.join(format!("{user_id}_pairing_host"));
         let current_state = self
             .state_dir
@@ -1074,6 +1075,26 @@ fn load_hex_key_map(path: &Path) -> HashMap<Vec<u8>, Vec<u8>> {
         .collect()
 }
 
+/// Directory-safe name for one paired identity's storage namespace.
+///
+/// The connected id is whatever the People-chain identity yields: a lite username
+/// when there is one, otherwise the free-form `full_username`. Only the former is
+/// guaranteed to satisfy [`crate::sessions::validate_name`], so a display name
+/// like `"Tarik Gul"` is rejected on both the space and the capitals.
+///
+/// Rejecting cannot mean "keep the previous namespace mounted" — that serves one
+/// identity out of another's `state_dir`, core storage and product KV. So an
+/// unusable id is replaced by the hex SHA-256 of its bytes, which isolates the
+/// session regardless of what the chain returns. Hex is `[0-9a-f]`, so the derived
+/// name is itself a legal session name and survives the `validate_name` check on
+/// the read path in [`read_current_pairing_user`].
+fn pairing_storage_name(user_id: &str) -> std::borrow::Cow<'_, str> {
+    if crate::sessions::validate_name(user_id).is_ok() {
+        return std::borrow::Cow::Borrowed(user_id);
+    }
+    std::borrow::Cow::Owned(hex::encode(Sha256::digest(user_id.as_bytes())))
+}
+
 const CURRENT_PAIRING_USER_FILE: &str = "current-user";
 
 fn read_current_pairing_user(bootstrap_dir: &Path) -> Option<String> {
@@ -1110,6 +1131,104 @@ fn save_hex_key_map(path: &Path, values: &HashMap<Vec<u8>, Vec<u8>>) -> Result<(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// A user id `validate_name` rejects must not leave the previous identity's
+    /// storage mounted. `storage_user_id` falls back to `full_username`, a
+    /// free-form People-chain display name, and `validate_name` rejects uppercase,
+    /// spaces and non-ASCII — so `"Tarik Gul"` reaches this path.
+    #[test]
+    fn a_rejected_user_id_does_not_leave_the_previous_users_storage_mounted() {
+        let dir = tempdir().expect("tempdir");
+        let network_dir = dir.path().join("paseo");
+        std::fs::create_dir_all(&network_dir).expect("network dir");
+
+        let platform = CliPlatform::new(
+            "",
+            &[],
+            Some(CliStoragePaths::pairing(network_dir.clone())),
+            ApprovalPolicy::AutoAccept,
+            None,
+        );
+
+        // First identity: a valid lite username.
+        platform
+            .switch_pairing_user_storage("alice")
+            .expect("switch to alice");
+        let alice_dir = platform.state_dir().expect("alice state dir");
+        assert!(
+            alice_dir.ends_with("alice_pairing_host"),
+            "unexpected dir: {}",
+            alice_dir.display()
+        );
+
+        // Second identity arrives with a display name validate_name rejects. It
+        // must still get its own namespace rather than inheriting alice's.
+        platform
+            .switch_pairing_user_storage("Tarik Gul")
+            .expect("an unusable id must still isolate, not fail");
+
+        let after = platform.state_dir().expect("state dir after");
+        assert_ne!(
+            after,
+            alice_dir,
+            "the rejected identity is still mounted on alice's storage at {}",
+            after.display()
+        );
+
+        // The derived name is the hex digest of the raw id, and is itself a legal
+        // session name so the persisted pointer survives a restart.
+        let expected = format!("{}_pairing_host", pairing_storage_name("Tarik Gul"));
+        assert!(
+            after.ends_with(&expected),
+            "expected a derived namespace, got {}",
+            after.display()
+        );
+        assert!(crate::sessions::validate_name(&pairing_storage_name("Tarik Gul")).is_ok());
+    }
+
+    /// The same thing through the lifecycle the core actually drives:
+    /// `AuthPresenter::auth_state_changed` with a `Connected` state. That path
+    /// only logs a `warn!` on failure, so a rejected id silently inherits the
+    /// previous identity's namespace.
+    #[test]
+    fn auth_state_changed_does_not_inherit_storage_on_a_rejected_username() {
+        use truapi_platform::AuthPresenter;
+
+        let dir = tempdir().expect("tempdir");
+        let network_dir = dir.path().join("paseo");
+        std::fs::create_dir_all(&network_dir).expect("network dir");
+
+        let platform = CliPlatform::new(
+            "",
+            &[],
+            Some(CliStoragePaths::pairing(network_dir)),
+            ApprovalPolicy::AutoAccept,
+            None,
+        );
+
+        let connect = |lite: Option<&str>, full: Option<&str>| {
+            AuthState::Connected(SessionUiInfo {
+                lite_username: lite.map(str::to_string),
+                full_username: full.map(str::to_string),
+                ..SessionUiInfo::default()
+            })
+        };
+
+        platform.auth_state_changed(connect(Some("alice"), None));
+        let alice_dir = platform.state_dir().expect("alice state dir");
+        assert!(alice_dir.ends_with("alice_pairing_host"));
+
+        // No lite username, so storage_user_id falls back to full_username.
+        platform.auth_state_changed(connect(None, Some("Tarik Gul")));
+
+        let after = platform.state_dir().expect("state dir after");
+        assert_ne!(
+            after,
+            alice_dir,
+            "second identity is serving out of alice's storage at {}",
+            after.display()
+        );
+    }
 
     /// One undecodable value in `core-storage.json` must not cost the host the
     /// entries it never touched. Before the file was moved aside, a real
