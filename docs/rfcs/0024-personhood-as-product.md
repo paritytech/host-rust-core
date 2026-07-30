@@ -330,18 +330,6 @@ AutoSigning {
 }
 ```
 
-No registry snapshot travels with the grant: the Host accumulates registrations as it serves them and receives the rest through prefetch. With this granted, a remote Host serves `create_account_proof`, `get_account_alias`, and `ring_vrf_sign` — including a foreign product's — without touching the phone. **The grant comes from the key owner, not the caller**: a proof against `peopl.dot`'s key is served locally only because `peopl.dot` granted AutoSigning.
-
-### Migration and compatibility
-
-Nothing here ships with production consumers. `create_account_proof` (wire `request_id` 26) and `get_account_alias` (wire 24) have no external callers, so the leading `key_handle` is added in place rather than behind a new protocol version; their request types gain a field with wire ids unchanged. The three new methods — `register_ring_vrf_key`, `list_ring_vrf_keys`, `ring_vrf_sign` — take fresh append-only ids. `get_account` (wire 22) keeps its signature — a previously-rejected input becoming conditionally accepted is purely additive.
-
-`create_transaction` (wire 30) is untouched: it keeps `signer: ProductAccountId` and every existing payload type.
-
-In the Accounts Protocol: three new message pairs, a field on each existing ring VRF request, and one field on `AutoSigning` — all breaking at the SCALE layer, landing together with RFC-0022. `WorkerIncludes.onLoad` is additive.
-
-The compiled-in ring identities and `PersonKey { Full, Lite }` are removed once the personhood product registers, and are **not** retained as a fallback: a silent fallback to a compiled-in key would resurrect the coupling this RFC removes and mask registry-sync bugs as working proofs.
-
 ## Drawbacks
 
 - **Removing the fallback makes personhood installable, and therefore missing.** A user without the product installed has no people key at all, so coinage unload and PGAS allowance stop working until they install it. Intended, but a real regression in default capability.
