@@ -9,7 +9,7 @@
 // promise exits non-zero, so `truapi-host pairing-host --script …` is the test.
 //
 // Env (set by the Rust CLI):
-//   TRUAPI_FRAME_URL   ws:// URL of the pairing host's frame server
+//   TRUAPI_FRAME_URL   ws+unix: or ws:// endpoint of the host frame server
 //   TRUAPI_PRODUCT_ID  product id the host serves (scopes storage etc.)
 //   TRUAPI_SCRIPT      absolute path to the user script
 import { pathToFileURL } from "node:url";

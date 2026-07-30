@@ -28,8 +28,6 @@ describe("signing-host CLI pairing", () => {
         "paseo-next-v2",
         "--base-path",
         "/repo/.e2e-dotli/signing-host",
-        "--frame-listen",
-        "127.0.0.1:0",
         "--auto-accept",
         "--lite-username-prefix",
         "dotlitest",

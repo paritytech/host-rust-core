@@ -228,7 +228,7 @@ truapi-host pairing-host [options]
 | --- | --- | --- |
 | `--script <path>` | none | Run one JS/TS product script and exit with its status. |
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
-| `--frame-listen <socket>` | `127.0.0.1:9955` | Product WebSocket listener. Port `0` selects an available port. |
+| `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
 | `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
@@ -269,7 +269,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
 | `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
-| `--frame-listen <socket>` | `127.0.0.1:9956` | Direct product WebSocket listener. Port `0` is allowed. |
+| `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
 `HOST_CLI_SIGNER_MNEMONIC` supplies `--mnemonic` when the option is omitted.
@@ -551,7 +551,8 @@ A product script is a JavaScript or TypeScript ES module executed by Bun.
 Before importing it, the runner:
 
 1. reads its required environment;
-2. opens the product-frame WebSocket, with a 15-second connection timeout;
+2. opens the product-frame WebSocket over its Unix or TCP endpoint, with a
+   15-second connection timeout;
 3. creates the public `@parity/truapi` client;
 4. injects the script globals; and
 5. imports the absolute script URL.
@@ -590,7 +591,7 @@ The Rust parent sets:
 
 | Variable | Meaning |
 | --- | --- |
-| `TRUAPI_FRAME_URL` | Bound product-frame WebSocket URL. |
+| `TRUAPI_FRAME_URL` | Bound product-frame endpoint: `ws+unix:/path` by default or `ws://address` in TCP mode. |
 | `TRUAPI_PRODUCT_ID` | Normalized active product id. |
 | `TRUAPI_SCRIPT` | Canonical absolute script path. |
 | `TRUAPI_CLI_HOST_ROLE` | `pairing-host` or `signing-host`. |
@@ -1334,7 +1335,7 @@ Representative output:
 
 ```text
 • Listening for product frames
-  ws://127.0.0.1:<port>
+  ws+unix:/tmp/truapi-host-…/frames.sock
 ✓ Paired
 ✓ Signing host ready
 ◌ Script running
@@ -1342,6 +1343,8 @@ Representative output:
 ```
 
 The same `SystemEvent` presentation code supplies plain and TUI wording.
+Passing `--frame-listen 127.0.0.1:0` instead reports
+`ws://127.0.0.1:<allocated-port>`.
 
 ### 18.2 Lifecycle events
 

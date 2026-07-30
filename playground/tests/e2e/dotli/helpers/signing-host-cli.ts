@@ -37,8 +37,6 @@ export function signingHostPairArgs(
     config.network,
     "--base-path",
     config.basePath,
-    "--frame-listen",
-    "127.0.0.1:0",
     "--auto-accept",
   ];
   if (config.liteUsernamePrefix !== undefined) {

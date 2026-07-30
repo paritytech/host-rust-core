@@ -53,10 +53,6 @@ use crate::terminal_ui::{
 /// Default product served by the pairing host's frame endpoint. Product ids
 /// must be a `.dot` name or a `localhost` identifier (host-spec product id).
 const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
-/// Default product-frame address for the pairing host.
-const DEFAULT_PAIRING_FRAME_LISTEN: &str = "127.0.0.1:9955";
-/// Default product-frame address for the signing host.
-const DEFAULT_SIGNING_FRAME_LISTEN: &str = "127.0.0.1:9956";
 /// Deeplink scheme advertised by the pairing host.
 const DEEPLINK_SCHEME: &str = "polkadotapp";
 
@@ -191,9 +187,10 @@ struct PairingHostArgs {
     /// Product id the host serves; scopes storage and product accounts.
     #[arg(long = "product-id", default_value = DEFAULT_PRODUCT_ID)]
     product_id: String,
-    /// Address to serve product frames on.
-    #[arg(long, default_value = DEFAULT_PAIRING_FRAME_LISTEN)]
-    frame_listen: SocketAddr,
+    /// TCP address to serve product WebSocket frames on. When omitted, use a
+    /// private per-process Unix-domain socket.
+    #[arg(long)]
+    frame_listen: Option<SocketAddr>,
     /// Root directory for CLI-managed host state.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
@@ -238,9 +235,10 @@ struct SigningHostArgs {
     /// Network preset that supplies all RPC/backend/genesis config.
     #[arg(long, value_enum, default_value = "paseo-next-v2")]
     network: Network,
-    /// Address to serve product frames on when running scripts.
-    #[arg(long, default_value = DEFAULT_SIGNING_FRAME_LISTEN)]
-    frame_listen: SocketAddr,
+    /// TCP address to serve product WebSocket frames on. When omitted, use a
+    /// private per-process Unix-domain socket.
+    #[arg(long)]
+    frame_listen: Option<SocketAddr>,
     /// Approve every confirmation without prompting on the CLI.
     #[arg(long)]
     auto_accept: bool,
@@ -512,8 +510,8 @@ async fn run_pairing_host(
     let storage_platform = platform.clone();
     let pairing_runtime = Arc::new(PairingHostRuntime::new(platform, config, tokio_spawner()));
 
-    let listener = frame_server::bind(args.frame_listen).await?;
-    let frame_url = format!("ws://{}", listener.local_addr()?);
+    let frame_server = frame_server::bind(args.frame_listen).await?;
+    let frame_url = frame_server.endpoint().to_string();
     terminal_ui::output_event(SystemEvent::FramesListening {
         url: frame_url.clone(),
     });
@@ -522,7 +520,7 @@ async fn run_pairing_host(
     if let Some(script) = args.script {
         let script_product_id = product_id.clone();
         let script_frame_url = frame_url.clone();
-        let status = with_frame_server(runtime_for_frames, product, listener, async move {
+        let status = with_frame_server(runtime_for_frames, product, frame_server, async move {
             script_runner::run(
                 &script_frame_url,
                 &script_product_id,
@@ -538,17 +536,22 @@ async fn run_pairing_host(
     }
 
     let terminal_ui = terminal_ui.context("interactive terminal was not initialized")?;
-    with_frame_server(runtime_for_frames, product.clone(), listener, async move {
-        pairing_interactive_loop(
-            frame_url,
-            product,
-            pairing_runtime,
-            storage_platform,
-            terminal_ui,
-            log_controller,
-        )
-        .await
-    })
+    with_frame_server(
+        runtime_for_frames,
+        product.clone(),
+        frame_server,
+        async move {
+            pairing_interactive_loop(
+                frame_url,
+                product,
+                pairing_runtime,
+                storage_platform,
+                terminal_ui,
+                log_controller,
+            )
+            .await
+        },
+    )
     .await
 }
 
@@ -603,8 +606,8 @@ async fn run_signing_host(
         ui_handle.clone(),
     )
     .await?;
-    let listener = frame_server::bind(args.frame_listen).await?;
-    let frame_url = format!("ws://{}", listener.local_addr()?);
+    let frame_server = frame_server::bind(args.frame_listen).await?;
+    let frame_url = frame_server.endpoint().to_string();
     terminal_ui::output_event(SystemEvent::FramesListening {
         url: frame_url.clone(),
     });
@@ -616,7 +619,7 @@ async fn run_signing_host(
         let script_product_id = product_id.clone();
         let script_frame_url = frame_url.clone();
         let initial_deeplink = args.deeplink.clone();
-        let status = with_frame_server(runtime_for_frames, product, listener, async move {
+        let status = with_frame_server(runtime_for_frames, product, frame_server, async move {
             let mut responder = None;
             if let Some(deeplink) = initial_deeplink {
                 prepare_pairing_response(&mut session, &deeplink).await?;
@@ -653,51 +656,61 @@ async fn run_signing_host(
 
     let initial_deeplink = args.deeplink.clone();
     if let Some(command) = exec_command {
-        return with_frame_server(runtime_for_frames, product.clone(), listener, async move {
-            let responder = if let Some(deeplink) = initial_deeplink {
-                prepare_pairing_response(&mut session, &deeplink).await?;
-                let runtime = session.runtime.clone();
-                Some(tokio::spawn(async move {
-                    match runtime.respond_to_pairing(&deeplink).await {
-                        Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
-                            outcome: format!("{exit:?}"),
-                        }),
-                        Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
-                            reason: err.reason,
-                        }),
-                    }
-                }))
-            } else {
-                None
-            };
-            let result = execute_non_interactive_command(
-                &mut session,
-                &frame_url,
-                &product,
-                command,
-                &log_controller,
-            )
-            .await;
-            if let Some(responder) = responder {
-                responder.abort();
-            }
-            result
-        })
+        return with_frame_server(
+            runtime_for_frames,
+            product.clone(),
+            frame_server,
+            async move {
+                let responder = if let Some(deeplink) = initial_deeplink {
+                    prepare_pairing_response(&mut session, &deeplink).await?;
+                    let runtime = session.runtime.clone();
+                    Some(tokio::spawn(async move {
+                        match runtime.respond_to_pairing(&deeplink).await {
+                            Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
+                                outcome: format!("{exit:?}"),
+                            }),
+                            Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
+                                reason: err.reason,
+                            }),
+                        }
+                    }))
+                } else {
+                    None
+                };
+                let result = execute_non_interactive_command(
+                    &mut session,
+                    &frame_url,
+                    &product,
+                    command,
+                    &log_controller,
+                )
+                .await;
+                if let Some(responder) = responder {
+                    responder.abort();
+                }
+                result
+            },
+        )
         .await;
     }
 
     let terminal_ui = terminal_ui.context("interactive terminal was not initialized")?;
-    with_frame_server(runtime_for_frames, product.clone(), listener, async move {
-        signing_interactive_loop(
-            &mut session,
-            frame_url,
-            product,
-            initial_deeplink,
-            terminal_ui,
-            log_controller,
-        )
-        .await
-    })
+    with_frame_server(
+        runtime_for_frames,
+        product.clone(),
+        frame_server,
+        async move {
+            signing_interactive_loop(
+                &mut session,
+                frame_url,
+                product,
+                initial_deeplink,
+                terminal_ui,
+                log_controller,
+            )
+            .await
+        },
+    )
     .await
 }
 
@@ -925,13 +938,13 @@ fn invalid_invocation(error: impl fmt::Display) -> ! {
 async fn with_frame_server<T, Fut>(
     runtime: Arc<dyn frame_server::ProductRuntimeFactory>,
     product: Arc<frame_server::ProductSelection>,
-    listener: tokio::net::TcpListener,
+    frame_server: frame_server::BoundFrameServer,
     body: Fut,
 ) -> Result<T>
 where
     Fut: Future<Output = Result<T>>,
 {
-    let server = tokio::spawn(frame_server::accept_loop(runtime, product, listener));
+    let server = tokio::spawn(frame_server::accept_loop(runtime, product, frame_server));
     let result = body.await;
     server.abort();
     result
@@ -1969,6 +1982,26 @@ mod cli_tests {
             panic!("expected exec action");
         };
         assert_eq!(command, "/help");
+        assert_eq!(args.frame_listen, None);
+    }
+
+    #[test]
+    fn frame_listen_explicitly_selects_tcp_websockets() {
+        let cli = Cli::try_parse_from([
+            "truapi-host",
+            "pairing-host",
+            "--frame-listen",
+            "127.0.0.1:0",
+        ])
+        .expect("explicit TCP frame listener should parse");
+        let Command::PairingHost(args) = cli.command else {
+            panic!("expected pairing-host command");
+        };
+
+        assert_eq!(
+            args.frame_listen,
+            Some("127.0.0.1:0".parse().expect("valid socket address"))
+        );
     }
 
     #[test]

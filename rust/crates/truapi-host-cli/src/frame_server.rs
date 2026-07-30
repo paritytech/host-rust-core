@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -136,11 +139,70 @@ impl FrameSink for WsFrameSink {
     }
 }
 
-/// Bind the product-frame listener on `addr`.
-pub async fn bind(addr: SocketAddr) -> Result<TcpListener> {
-    TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("frame server failed to bind {addr}"))
+/// Bound product-frame endpoint. The temporary-directory guard keeps a Unix
+/// socket alive for exactly as long as its listener.
+pub struct BoundFrameServer {
+    listener: FrameListener,
+    endpoint: String,
+    #[cfg(unix)]
+    socket_directory: Option<tempfile::TempDir>,
+}
+
+enum FrameListener {
+    Tcp(TcpListener),
+    #[cfg(unix)]
+    Unix(UnixListener),
+}
+
+impl BoundFrameServer {
+    /// Endpoint passed to the bundled product runner and shown in the CLI.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+}
+
+/// Bind an explicit TCP WebSocket listener, or a private per-process Unix
+/// socket when no TCP address was requested.
+pub async fn bind(addr: Option<SocketAddr>) -> Result<BoundFrameServer> {
+    if let Some(addr) = addr {
+        let listener = TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("frame server failed to bind {addr}"))?;
+        let endpoint = format!("ws://{}", listener.local_addr()?);
+        return Ok(BoundFrameServer {
+            listener: FrameListener::Tcp(listener),
+            endpoint,
+            #[cfg(unix)]
+            socket_directory: None,
+        });
+    }
+    bind_unix()
+}
+
+#[cfg(unix)]
+fn bind_unix() -> Result<BoundFrameServer> {
+    let socket_directory = tempfile::Builder::new()
+        .prefix("truapi-host-")
+        .tempdir()
+        .context("create temporary product-frame socket directory")?;
+    let socket_path = socket_directory.path().join("frames.sock");
+    let socket_path_text = socket_path
+        .to_str()
+        .context("product-frame Unix socket path is not valid UTF-8")?;
+    let listener = UnixListener::bind(&socket_path)
+        .with_context(|| format!("frame server failed to bind {}", socket_path.display()))?;
+    Ok(BoundFrameServer {
+        listener: FrameListener::Unix(listener),
+        endpoint: format!("ws+unix:{socket_path_text}"),
+        socket_directory: Some(socket_directory),
+    })
+}
+
+#[cfg(not(unix))]
+fn bind_unix() -> Result<BoundFrameServer> {
+    anyhow::bail!(
+        "Unix-domain product sockets are unavailable on this platform; pass --frame-listen <address>"
+    )
 }
 
 /// Accept product-frame connections on `listener` for `product_id` until
@@ -152,11 +214,25 @@ pub async fn bind(addr: SocketAddr) -> Result<TcpListener> {
 pub async fn accept_loop(
     runtime: Arc<dyn ProductRuntimeFactory>,
     product: Arc<ProductSelection>,
+    frame_server: BoundFrameServer,
+) -> Result<()> {
+    let product_id = product.current();
+    let endpoint = frame_server.endpoint.clone();
+    debug!(%endpoint, %product_id, "product frame server listening");
+    #[cfg(unix)]
+    let _socket_directory = frame_server.socket_directory;
+    match frame_server.listener {
+        FrameListener::Tcp(listener) => accept_tcp_loop(runtime, product, listener).await,
+        #[cfg(unix)]
+        FrameListener::Unix(listener) => accept_unix_loop(runtime, product, listener).await,
+    }
+}
+
+async fn accept_tcp_loop(
+    runtime: Arc<dyn ProductRuntimeFactory>,
+    product: Arc<ProductSelection>,
     listener: TcpListener,
 ) -> Result<()> {
-    let bound = listener.local_addr()?;
-    let product_id = product.current();
-    debug!(%bound, %product_id, "product frame server listening");
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -180,11 +256,38 @@ pub async fn accept_loop(
     }
 }
 
-async fn serve_connection(
+#[cfg(unix)]
+async fn accept_unix_loop(
+    runtime: Arc<dyn ProductRuntimeFactory>,
+    product: Arc<ProductSelection>,
+    listener: UnixListener,
+) -> Result<()> {
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(err) => {
+                warn!(%err, "product frame accept failed");
+                continue;
+            }
+        };
+        let runtime = runtime.clone();
+        let product = product.clone();
+        tokio::spawn(async move {
+            if let Err(err) = serve_connection(runtime, product, stream).await {
+                debug!(?peer, %err, "frame connection ended");
+            }
+        });
+    }
+}
+
+async fn serve_connection<S>(
     runtime: Arc<dyn ProductRuntimeFactory>,
     selected_product: Arc<ProductSelection>,
-    stream: TcpStream,
-) -> Result<()> {
+    stream: S,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     // Subscribe before resolving the runtime so a concurrent replacement can
     // only cause an extra reconnect, never leave a connection on stale state.
     let mut reset = runtime.connection_reset();
@@ -253,6 +356,8 @@ async fn connection_reset(reset: &mut Option<watch::Receiver<u64>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::client_async;
 
     #[test]
     fn product_selection_validates_and_normalizes_ids() -> Result<()> {
@@ -276,6 +381,62 @@ mod tests {
         assert_eq!(connection.borrow().product_id, "second.dot");
         assert!(!product.select("SECOND.DOT".to_string())?);
         assert!(!connection.has_changed()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_tcp_listener_reports_the_actual_bound_port() -> Result<()> {
+        let server = bind(Some("127.0.0.1:0".parse()?)).await?;
+
+        assert!(server.endpoint().starts_with("ws://127.0.0.1:"));
+        assert!(!server.endpoint().ends_with(":0"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_unix_listener_carries_websocket_frames_and_cleans_up() -> Result<()> {
+        use tokio::net::UnixStream;
+
+        let server = bind(None).await?;
+        let socket_path = server
+            .endpoint()
+            .strip_prefix("ws+unix:")
+            .expect("Unix endpoint prefix");
+        let socket_path = std::path::PathBuf::from(socket_path);
+        let socket_directory = socket_path
+            .parent()
+            .expect("socket has a parent directory")
+            .to_path_buf();
+        assert!(socket_path.exists());
+
+        let FrameListener::Unix(listener) = &server.listener else {
+            panic!("default listener must be Unix");
+        };
+        let server_exchange = async {
+            let (stream, _) = listener.accept().await?;
+            let mut websocket = accept_async(stream).await?;
+            let message = websocket
+                .next()
+                .await
+                .context("client closed before sending")??;
+            websocket.send(message).await?;
+            Ok::<(), anyhow::Error>(())
+        };
+        let client_exchange = async {
+            let stream = UnixStream::connect(&socket_path).await?;
+            let (mut websocket, _) = client_async("ws://localhost/", stream).await?;
+            websocket.send(Message::Binary(vec![1, 2, 3, 4])).await?;
+            assert_eq!(
+                websocket.next().await.context("server did not echo")??,
+                Message::Binary(vec![1, 2, 3, 4])
+            );
+            Ok::<(), anyhow::Error>(())
+        };
+        tokio::try_join!(server_exchange, client_exchange)?;
+
+        drop(server);
+        assert!(!socket_directory.exists());
         Ok(())
     }
 }

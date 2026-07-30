@@ -36,6 +36,11 @@ make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
 
+Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
+default, so starting either host does not reserve a TCP port. Pass
+`--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
+this is required for browser clients, which cannot open filesystem sockets.
+
 The signing host opens an interactive terminal where you can paste a pairing
 link, type `/pair <link>`, run `/script`, or use `/help` to discover the
 available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
@@ -105,18 +110,16 @@ Non-interactive `--script` and `exec` runs use the same sentence-case event
 copy and status symbols without the full-screen chrome. This keeps captured
 logs readable while pairing URLs remain directly extractable by automation.
 `/copy` copies readable transcript text without UI chrome or complete pairing
-links. Captured script output is plain text: Chalk sees piped stdout, and the
-host strips terminal control sequences before adding child output to the
-transcript. Raw ANSI styling such as bold is therefore not rendered in the
-full-screen UI.
+links. Captured script output is plain text: the host strips terminal control
+sequences before adding child output to the transcript. Raw ANSI styling such
+as bold is therefore not rendered in the full-screen UI.
 
 Bare `/script` reopens the last script recorded for the active session,
 including a path previously selected with `/script <path>`. If that file is
 missing or the session has no script yet, it creates a durable Bun TypeScript
-file under the active host state's `scripts/` directory. Its starter imports
-`chalk` to demonstrate that scripts can import npm packages directly and let
-Bun install missing dependencies automatically, then calls
-`truapi.account.getUserId()`.
+file under the active host state's `scripts/` directory. The dependency-free
+starter uses ANSI colors and calls `truapi.account.getUserId()`. Scripts opened
+from an npm project can import packages installed by that project.
 The TUI temporarily yields the terminal to `$VISUAL`, then `$EDITOR`, or
 `vi` when neither is set. After the editor exits successfully, the TUI is
 restored and the saved script runs through the public frame endpoint. Editor
@@ -180,8 +183,8 @@ one-shot mode remains supported.
 ## Writing a product script
 
 A product script is top-level JavaScript or TypeScript (an ES module) run by
-Bun. It can import npm dependencies directly; Bun installs missing packages
-automatically. The runner injects three globals before running it:
+Bun. It can import npm dependencies available beside the script or in a parent
+project. The runner injects three globals before running it:
 
 - **`truapi`** — the `@parity/truapi` client connected to the pairing host and
   scoped to the host's `--product-id`. Call `truapi.account.requestLogin(...)`,
@@ -382,7 +385,9 @@ truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 
 Both hosts take `--network` (default `paseo-next-v2`). The network preset owns
 the identity backend URL, People RPC, Bulletin RPC, and genesis hashes; there is
-no public `--statement-store` flag.
+no public `--statement-store` flag. Both also accept `--frame-listen <address>`
+to opt into a TCP product-frame WebSocket; without it, the CLI creates and
+cleans up a unique temporary Unix socket.
 
 ## Scope / gaps
 

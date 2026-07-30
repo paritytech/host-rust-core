@@ -25,8 +25,11 @@ fn interactive_mode_rejects_non_tty_stdio_with_usage_exit() {
 fn exec_help_is_plain_and_exits_successfully() {
     let base_path =
         std::env::temp_dir().join(format!("truapi-host-cli-exec-help-{}", std::process::id()));
-    let output = command()
-        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+    let mut invocation = command();
+    invocation.arg("signing-host");
+    #[cfg(not(unix))]
+    invocation.args(["--frame-listen", "127.0.0.1:0"]);
+    let output = invocation
         .arg("--base-path")
         .arg(&base_path)
         .args(["exec", "/help"])
@@ -41,6 +44,8 @@ fn exec_help_is_plain_and_exits_successfully() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("/copy"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/product"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session"));
+    #[cfg(unix)]
+    assert!(String::from_utf8_lossy(&output.stdout).contains("ws+unix:"));
     assert!(!output.stdout.contains(&0x1b));
     assert!(!output.stderr.contains(&0x1b));
 }

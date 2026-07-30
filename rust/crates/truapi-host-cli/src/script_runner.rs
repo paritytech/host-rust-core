@@ -38,16 +38,18 @@ impl ScriptHostRole {
 
 const SCRATCH_TEMPLATE: &str = r#"#!/usr/bin/env bun
 
-// Import any npm package you need - Bun installs missing dependencies automatically.
-import chalk from "chalk";
+// Scripts can use packages installed next to the script or in a parent project.
+const cyanBold = "\u001b[1;36m";
+const green = "\u001b[32m";
+const reset = "\u001b[0m";
 
-console.log(chalk.cyan.bold("\n🚀 TrUAPI script\n"));
+console.log(`${cyanBold}\n🚀 TrUAPI script\n${reset}`);
 
 const result = await truapi.account.getUserId();
 if (!result.isOk()) {
   throw new Error(`getUserId failed: ${JSON.stringify(result.error)}`);
 }
-console.log(chalk.green("user id:"), result.value);
+console.log(`${green}user id:${reset}`, result.value);
 "#;
 
 /// Locate `js/runner.ts`, shipped alongside the crate.
@@ -227,14 +229,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scratch_script_starts_as_a_bun_script_with_dependency_examples() -> Result<()> {
+    fn scratch_script_starts_as_a_bun_script_with_dependency_free_example() -> Result<()> {
         let temporary = tempfile::tempdir()?;
 
         let script = create_scratch_script(temporary.path())?;
         let contents = fs::read_to_string(script)?;
 
         assert!(contents.starts_with("#!/usr/bin/env bun\n"));
-        assert!(contents.contains("import chalk from \"chalk\";"));
+        assert!(!contents.contains("from \"chalk\""));
         assert!(contents.contains("truapi.account.getUserId()"));
         assert_eq!(contents, SCRATCH_TEMPLATE);
         Ok(())

@@ -141,9 +141,9 @@ pub struct Completion {
 }
 
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
-    ("/pair ", "answer a Polkadot Mobile pairing URL"),
+    ("/pair", "answer a Polkadot Mobile pairing URL"),
     ("/script", "edit the last or run an existing product script"),
-    ("/log ", "set error, warn, info, debug, or trace"),
+    ("/log", "set error, warn, info, debug, or trace"),
     ("/product", "show or switch the active product"),
     ("/session", "show or switch the active session"),
     ("/help", "show commands and keyboard shortcuts"),
@@ -156,12 +156,20 @@ const PAIRING_COMMANDS: &[(&str, &str)] = &[
     ("/script", "edit the last or run an existing product script"),
     ("/login", "pair with a signing host"),
     ("/logout", "disconnect and reset pairing keys"),
-    ("/log ", "set error, warn, info, debug, or trace"),
+    ("/log", "set error, warn, info, debug, or trace"),
     ("/product", "show or switch the active product"),
     ("/help", "show commands and keyboard shortcuts"),
     ("/clear", "clear the visible transcript"),
     ("/copy", "copy the transcript to the clipboard"),
     ("/quit", "shut down the pairing host"),
+];
+
+const LOG_ARGUMENTS: &[(&str, &str)] = &[
+    ("error", "show only errors"),
+    ("warn", "show warnings and errors"),
+    ("info", "show informational host activity"),
+    ("debug", "show detailed host activity"),
+    ("trace", "show all host and protocol activity"),
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -178,6 +186,9 @@ fn completions_for_scope(
 ) -> Vec<Completion> {
     if let Some(path) = input.strip_prefix("/script ") {
         return path_completions(path);
+    }
+    if let Some(prefix) = input.strip_prefix("/log ") {
+        return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
     }
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/session ")
@@ -216,6 +227,24 @@ fn completions_for_scope(
         .filter(|(command, _)| command.trim_end().starts_with(input))
         .map(|(command, description)| Completion {
             value: (*command).to_string(),
+            description,
+        })
+        .collect()
+}
+
+fn fixed_argument_completions(
+    command: &str,
+    prefix: &str,
+    arguments: &[(&str, &'static str)],
+) -> Vec<Completion> {
+    if prefix.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    arguments
+        .iter()
+        .filter(|(argument, _)| argument.starts_with(prefix))
+        .map(|(argument, description)| Completion {
+            value: format!("{command} {argument}"),
             description,
         })
         .collect()
@@ -689,5 +718,39 @@ mod tests {
                 .iter()
                 .any(|command| command.starts_with("/session"))
         );
+    }
+
+    #[test]
+    fn log_completion_offers_levels_after_command_for_both_hosts() {
+        for scope in [CommandScope::SigningHost, CommandScope::PairingHost] {
+            let root_matches = completions_for_scope("/log", &[], scope);
+            assert_eq!(
+                root_matches
+                    .iter()
+                    .filter(|completion| completion.value == "/log")
+                    .count(),
+                1
+            );
+            assert!(
+                !root_matches
+                    .iter()
+                    .any(|completion| completion.value.starts_with("/log "))
+            );
+
+            let argument_matches = completions_for_scope("/log ", &[], scope);
+            assert_eq!(
+                argument_matches
+                    .into_iter()
+                    .map(|completion| completion.value)
+                    .collect::<Vec<_>>(),
+                [
+                    "/log error",
+                    "/log warn",
+                    "/log info",
+                    "/log debug",
+                    "/log trace",
+                ]
+            );
+        }
     }
 }
