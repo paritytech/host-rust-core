@@ -1,19 +1,27 @@
 # @parity/truapi-provider
 
-Network provider backends for the TrUAPI `ChainProvider` contract, compiled to
-WebAssembly for browser hosts. It embeds a [smoldot](https://github.com/smol-dot/smoldot)
-light client and a remote WebSocket JSON-RPC backend behind one API, and bundles
-the chain-spec catalog so a host can `connect(genesisHash)` without shipping its
-own specs.
+Network transport for the TrUAPI `ChainProvider` contract: an embedded
+[smoldot](https://github.com/smol-dot/smoldot) light client, or a remote
+WebSocket JSON-RPC node, behind one API. This is the WebAssembly build, for
+browser and desktop (webview) hosts. Android and iOS hosts use the same Rust
+crate natively over UniFFI, so network access works the same everywhere.
 
-It is the browser counterpart to the native (iOS/Android) provider that the same
-crate exposes over UniFFI, so chain access behaves identically across hosts.
+You connect to a network by its genesis hash, and everything else is handled for
+you: the bundled catalog provides the spec and relay wiring, so clients never
+ship or refresh specs of their own. One light client is shared across all
+connections, and its synced state is saved between runs, so the next launch
+resumes where it left off instead of syncing from scratch.
 
 ## Usage
 
-The bundle is `wasm-bindgen` glue plus a `.wasm` binary. Instantiate the module
-once per page/worker, then open a connection per genesis hash. Connections share
-the single embedded light client.
+Build a provider, connect to a network by its genesis hash, and exchange JSON-RPC
+request and response strings over the connection. Every connection shares the one
+embedded light client.
+
+#### Web (JavaScript)
+
+The published package is `wasm-bindgen` glue plus a `.wasm` binary. Instantiate
+the module once per page or worker.
 
 ```js
 import init, { ChainProviderBuilder } from "@parity/truapi-provider";
@@ -21,21 +29,45 @@ import wasmUrl from "@parity/truapi-provider/truapi_provider_bg.wasm?url";
 
 await init({ module_or_path: wasmUrl });
 
-// A bundled network is resolved from the genesis hash alone (relay wiring and
-// statement-store placement come from the catalog); no per-chain registration.
 const provider = new ChainProviderBuilder().build();
-const connection = await provider.connect("0x77af…");
+const connection = await provider.connect("0x77af…"); // genesis hash
 
-connection.send(
-  '{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}',
-);
+connection.send('{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}');
 const response = await connection.nextResponse(); // undefined once closed
 connection.close();
 ```
 
-Add a remote node instead of the light client with
-`builder.addRpcChain(genesisHash, "wss://node.example")`, or a light client for
-an unbundled chain with `builder.addLightChain(genesisHash, specification)`.
+#### Android (Kotlin)
+
+Native targets deliver responses to a listener instead of a pull loop, and take
+the genesis hash as 32 raw bytes.
+
+```kotlin
+val provider = ChainProvider()
+
+val connection = provider.connect(genesisHash, object : ChainMessageListener {
+    override fun onMessage(message: String) { /* JSON-RPC response */ }
+    override fun onClosed() {}
+})
+
+connection.send("""{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}""")
+connection.close()
+```
+
+#### iOS (Swift)
+
+```swift
+let provider = ChainProvider()
+
+final class Responses: ChainMessageListener {
+    func onMessage(message: String) { /* JSON-RPC response */ }
+    func onClosed() {}
+}
+
+let connection = try provider.connect(genesisHash: genesis, listener: Responses())
+connection.send(request: #"{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}"#)
+connection.close()
+```
 
 ## Building
 
@@ -48,20 +80,6 @@ npm run build:wasm      # wasm-pack --target web, features "js networks"
 `wasm-pack` is required (`cargo install wasm-pack`). Set `TRUAPI_WASM_PROFILE=dev`
 for a fast unoptimized build. The repo's `make wasm` target rebuilds this bundle
 alongside the host runtime.
-
-## Publishing
-
-Publishing goes through `paritytech/npm_publish_automation`, so no local npm
-token is needed:
-
-- **Stable release** — a `release:`-prefixed commit on `main` triggers
-  [`release.yml`](../../../.github/workflows/release.yml), which publishes the
-  committed version to `latest`.
-- **Dev snapshot** — run the [`Dev publish`](../../../.github/workflows/dev-publish.yml)
-  workflow (`workflow_dispatch`, optional `npm_tag_suffix`). It stamps a unique
-  `<next-patch>-dev-<YYYYMMDD>[-suffix].<N>` version and publishes it under a
-  `dev-<YYYYMMDD>[-suffix]` dist-tag, so `latest` is never moved. Consumers pin
-  the exact version it prints.
 
 ## License
 
