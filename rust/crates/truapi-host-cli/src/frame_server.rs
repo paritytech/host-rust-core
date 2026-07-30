@@ -7,6 +7,7 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -18,6 +19,15 @@ use tracing::{debug, warn};
 use truapi_server::{
     FrameSink, PairingHostRuntime, ProductContext, ProductRuntime, SigningHostRuntime,
 };
+
+/// Pause after a failed `accept()` before trying again.
+///
+/// A failed accept leaves the peer in the listener's queue, so the listener stays
+/// readable and an immediate retry fails the same way. Without a pause that is a
+/// full-CPU loop emitting one warning per iteration. The errors that reach here
+/// are either process-wide (`EMFILE`/`ENFILE`) or per-connection and transient
+/// (`ECONNABORTED`); neither clears faster for being retried in a tight loop.
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Process-local product selection shared by the command loop and frame server.
 pub struct ProductSelection {
@@ -151,7 +161,12 @@ pub async fn accept_loop(
         let (stream, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(err) => {
-                warn!(%err, "product frame accept failed");
+                warn!(
+                    %err,
+                    retry_in = ?ACCEPT_RETRY_DELAY,
+                    "product frame accept failed"
+                );
+                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
                 continue;
             }
         };
