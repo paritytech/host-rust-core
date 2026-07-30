@@ -382,24 +382,6 @@ The compiled-in ring identities and `PersonKey { Full, Lite }` are removed once 
 - **The silent happy path depends on the manifest RFC**: until the allowlist exists, each cross-product call in the alias flow produces a one-time prompt.
 - **The key handle overloads `ProductAccountId`**, which now names both an sr25519 product account and a ring VRF slot in a different tree at the same `(product, index)`.
 
-## Testing, Security, and Privacy
-
-**Testing.**
-
-- *Registry authority.* A Host holding domain entropy must refuse to derive an unregistered index — the most important negative test here, since it is what keeps the phone's inventory truthful.
-- *Determinism.* For a fixed `(key_handle, context, ring)`, `get_account_alias` and the `contextual_alias` inside `create_account_proof` must agree across Hosts and across the proxied and AutoSigning-local paths; a locally-derived proof and a phone-produced one must be indistinguishable to a verifier.
-- *Ring binding.* A handle registered for ring X, called with ring Y, returns `KeyNotInRing`.
-- *Proof scope.* Foreign `key_handle` **and** foreign `context` returns `ForeignKeyInForeignContext`, with the other three combinations unaffected. Assert the absence of a proof, not just the error code.
-- *Alias target.* An alias signer whose `set_alias` names anything other than the context's alias account returns `AliasTargetMismatch` — including when the target is the caller's own account, the case that motivated the rule. An unrecognized call shape under an alias signer must fail closed.
-- *Fire-and-forget mirroring.* A registration served locally under AutoSigning must reach the phone, and re-notifying an entry it already holds must be a no-op.
-- *Background availability.* Registration answered on the foreground, hot-window, and cold paths plus the degrade, fitting the smallest headless budget.
-- *Provider contention.* Two products registering for the same well-known ring must not silently change the designated provider.
-- *Context construction.* The on-chain score constant must equal `product_context_bytes` for the personhood product's score context — what keeps the two schemes from diverging again.
-
-**Security.** Products never receive member secrets; `RingVrfPublicKey` is the only key material crossing the TrUAPI boundary, and only under the owner's disclosure decision. Nor do they receive a proof usable blindly against a context they do not own, which is what makes the *binding* of an alias structurally protected rather than only permission-gated: the proof stays inside the Host and the `set_alias` target is checked where it is produced. Cross-product product-account signing remains permission-gated and out of scope here. AutoSigning with ring VRF entropy makes the Host a custodian of the material behind personhood proofs — RFC-0010's custody obligations at a higher blast radius, which Account Holders MUST present distinctly in the authorization UI.
-
-**Privacy.** Anonymized listing is the default cross-product shape specifically so discovery does not distribute public keys, a member public key being linkable across every ring it appears in. Contexts remain product-scoped, so RFC-0004's unlinkability guarantee is unchanged — a foreign context is reachable only under a deliberate grant. Well-known contexts are enumerable by construction, which is not a regression: an alias is computable only with the member secret.
-
 ## Alternatives
 
 - **Per-flow host callbacks instead of a registration call** — a Host call per internal flow with a product-supplied handler. Rejected: a new bidirectional contract for every internal feature the Host ever adds, coupled release cycles, and it hands the product flows (slot-table bookkeeping, claim budgets) RFC-0010 put on the Account Holder.
