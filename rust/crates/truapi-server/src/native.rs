@@ -382,28 +382,29 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 
 /// Callback surface that iOS and Android implement.
 ///
-/// Threading contract: every callback is invoked on a background thread
-/// owned by the Rust core, never the host's main/UI thread. UI-decision
-/// callbacks (`navigate_to`, `device_permission`, `remote_permission`, and
-/// the `confirm_*` family) run on the tokio blocking pool, so an
-/// implementation may block its calling thread until the user decides
-/// without stalling concurrent dispatches. All other callbacks run inline on
-/// the dispatcher thread and must return promptly; in particular
-/// `auth_state_changed` should only hand the state to the host UI thread,
-/// never wait for the user. As the one exception to the background-thread
-/// rule, `auth_state_changed` can also arrive synchronously on whichever
-/// thread calls `NativeTrUApiCore::cancel_login`.
-#[uniffi::export(callback_interface)]
+/// Threading contract: async callbacks (`navigate_to`, `push_notification`,
+/// `device_permission`, `remote_permission`, `feature_supported`,
+/// `confirm_user_action`, `lookup_preimage`) are awaited by the core —
+/// implementations hop to the main thread for any UI and may take
+/// arbitrarily long; dropping the returned future cancels the foreign task.
+/// The remaining sync callbacks run inline on the dispatcher thread and must
+/// return promptly; in particular `auth_state_changed` should only hand the
+/// state to the host UI thread, never wait for the user. As the one
+/// exception to the background-thread rule, `auth_state_changed` can also
+/// arrive synchronously on whichever thread calls
+/// `NativeTrUApiCore::cancel_login`.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
 pub trait HostCallbacks: Send + Sync {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.
     fn on_core_log(&self, marker: String, detail: String);
 
     /// Open a URL in the system browser.
-    fn navigate_to(&self, url: String) -> Result<(), HostNavigateRejection>;
+    async fn navigate_to(&self, url: String) -> Result<(), HostNavigateRejection>;
 
     /// Deliver a push notification. The payload is the SCALE-encoded
     /// [`v01::HostPushNotificationRequest`].
-    fn push_notification(&self, payload: Vec<u8>) -> Result<u32, HostRejection>;
+    async fn push_notification(&self, payload: Vec<u8>) -> Result<u32, HostRejection>;
 
     /// Cancel a notification by id.
     fn cancel_notification(&self, id: u32) -> Result<(), HostRejection>;
@@ -412,11 +413,11 @@ pub trait HostCallbacks: Send + Sync {
     /// `request` is the SCALE-encoded
     /// [`v01::HostDevicePermissionRequest`]; the host returns whether the
     /// permission was granted.
-    fn device_permission(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
+    async fn device_permission(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
 
     /// Prompt the user for a remote (product-scoped) permission bundle.
     /// `request` is the SCALE-encoded [`v01::RemotePermissionRequest`].
-    fn remote_permission(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
+    async fn remote_permission(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
 
     /// Observe an auth state change. Emitted only when the state actually
     /// changes, in transition order: render `Pairing` as the pairing QR UI,
@@ -449,11 +450,11 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Confirm one user-reviewed core action. `review` is a SCALE-encoded
     /// [`UserConfirmationReview`].
-    fn confirm_user_action(&self, review: Vec<u8>) -> Result<bool, HostRejection>;
+    async fn confirm_user_action(&self, review: Vec<u8>) -> Result<bool, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
     /// current item in its subscription stream.
-    fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
+    async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
 
     /// Current host theme. The native shim emits this as the current item in
     /// its subscription stream.
@@ -461,7 +462,7 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Answer a feature-support query. `request` is the SCALE-encoded
     /// [`HostFeatureSupportedRequest`].
-    fn feature_supported(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
+    async fn feature_supported(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
 
     /// Read a value from the host's scoped key-value store.
     fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
@@ -488,7 +489,7 @@ impl NativeTrUApiCore {
     /// Construct the core with explicit product and pairing runtime config.
     #[uniffi::constructor]
     pub fn with_runtime_config(
-        callbacks: Box<dyn HostCallbacks>,
+        callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeRuntimeConfig,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         native_core_from_platform_config(callbacks, runtime_config.try_into()?)
@@ -602,11 +603,10 @@ fn decode_permission_authorization_request(
 }
 
 fn native_core_from_platform_config(
-    callbacks: Box<dyn HostCallbacks>,
+    callbacks: Arc<dyn HostCallbacks>,
     runtime_config: NativeResolvedRuntimeConfig,
 ) -> Result<Arc<NativeTrUApiCore>, NativeRuntimeConfigError> {
     crate::logging::init();
-    let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
     callbacks.on_core_log(
         "truapi.native.core.boot".to_string(),
         "core ready".to_string(),
@@ -707,29 +707,6 @@ struct CallbackPlatform {
     events: Arc<NativeEventBus>,
 }
 
-/// Run a host callback that may block awaiting a user decision.
-///
-/// UI-decision callbacks are allowed to block their calling thread until the
-/// user decides. Running them inline would occupy a WS-bridge async worker and
-/// concurrent decisions could exhaust the dispatch pool (or deadlock if the
-/// decision UI itself issues a TrUAPI call), so inside a tokio runtime the
-/// callback is moved to the blocking pool. Outside a tokio context the
-/// callback runs inline.
-async fn run_blocking_callback<T, F>(callback: F) -> T
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    #[cfg(feature = "ws-bridge")]
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        return handle
-            .spawn_blocking(callback)
-            .await
-            .expect("blocking host callback panicked");
-    }
-    callback()
-}
-
 #[derive(Default)]
 struct NativeEventBus {
     theme_changes: Mutex<Vec<mpsc::UnboundedSender<Result<v01::ThemeVariant, v01::GenericError>>>>,
@@ -762,17 +739,16 @@ impl NativeEventBus {
             .retain(|tx| tx.unbounded_send(Ok(theme)).is_ok());
     }
 
-    fn subscribe_preimage(
+    fn subscribe_preimage_changes(
         &self,
         key: Vec<u8>,
-        current: Result<Option<Vec<u8>>, v01::GenericError>,
-    ) -> BoxStream<'static, Result<Option<Vec<u8>>, v01::GenericError>> {
+    ) -> mpsc::UnboundedReceiver<Result<Option<Vec<u8>>, v01::GenericError>> {
         let (tx, rx) = mpsc::unbounded();
         self.preimage_changes
             .lock()
             .expect("native preimage subscribers mutex poisoned")
             .push(PreimageSubscription { key, tx });
-        stream::once(async move { current }).chain(rx).boxed()
+        rx
     }
 
     fn notify_preimage_changed(&self, key: &[u8], value: Option<Vec<u8>>) {
@@ -824,10 +800,7 @@ impl Navigation for CallbackPlatform {
             "truapi.native.callback.navigate_to".to_string(),
             url.clone(),
         );
-        let callbacks = self.callbacks.clone();
-        run_blocking_callback(move || callbacks.navigate_to(url))
-            .await
-            .map_err(Into::into)
+        self.callbacks.navigate_to(url).await.map_err(Into::into)
     }
 }
 
@@ -842,9 +815,10 @@ impl Notifications for CallbackPlatform {
             notification.text.clone(),
         );
 
-        let callbacks = self.callbacks.clone();
         let payload = notification.encode();
-        let id = run_blocking_callback(move || callbacks.push_notification(payload))
+        let id = self
+            .callbacks
+            .push_notification(payload)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostPushNotificationResponse { id })
@@ -872,9 +846,10 @@ impl Permissions for CallbackPlatform {
             format!("{request}"),
         );
 
-        let callbacks = self.callbacks.clone();
         let payload = request.encode();
-        let granted = run_blocking_callback(move || callbacks.device_permission(payload))
+        let granted = self
+            .callbacks
+            .device_permission(payload)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostDevicePermissionResponse { granted })
@@ -889,9 +864,10 @@ impl Permissions for CallbackPlatform {
             format!("{request}"),
         );
 
-        let callbacks = self.callbacks.clone();
         let payload = request.encode();
-        let granted = run_blocking_callback(move || callbacks.remote_permission(payload))
+        let granted = self
+            .callbacks
+            .remote_permission(payload)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::RemotePermissionResponse { granted })
@@ -909,9 +885,10 @@ impl Features for CallbackPlatform {
             format!("{request:?}"),
         );
 
-        let callbacks = self.callbacks.clone();
         let payload = request.encode();
-        let supported = run_blocking_callback(move || callbacks.feature_supported(payload))
+        let supported = self
+            .callbacks
+            .feature_supported(payload)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostFeatureSupportedResponse { supported })
@@ -1068,9 +1045,9 @@ impl UserConfirmation for CallbackPlatform {
             "truapi.native.callback.confirm_user_action".to_string(),
             String::new(),
         );
-        let callbacks = self.callbacks.clone();
         let payload = review.encode();
-        run_blocking_callback(move || callbacks.confirm_user_action(payload))
+        self.callbacks
+            .confirm_user_action(payload)
             .await
             .map_err(v01::GenericError::from)
     }
@@ -1092,11 +1069,17 @@ impl PreimageHost for CallbackPlatform {
         &self,
         key: Vec<u8>,
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, v01::GenericError>> {
-        let current = self
-            .callbacks
-            .lookup_preimage(key.clone())
-            .map_err(v01::GenericError::from);
-        self.events.subscribe_preimage(key, current)
+        // Register the change receiver first so no event between the lookup
+        // and the subscription is lost, then await the current value lazily.
+        let rx = self.events.subscribe_preimage_changes(key.clone());
+        let callbacks = self.callbacks.clone();
+        let current = async move {
+            callbacks
+                .lookup_preimage(key)
+                .await
+                .map_err(v01::GenericError::from)
+        };
+        stream::once(current).chain(rx).boxed()
     }
 }
 
@@ -1130,21 +1113,22 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl HostCallbacks for EventCallbacks {
         fn on_core_log(&self, _marker: String, _detail: String) {}
-        fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+        async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
             Ok(())
         }
-        fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
+        async fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
             Ok(0)
         }
         fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
             Ok(())
         }
-        fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
             Ok(false)
         }
-        fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
             Ok(false)
         }
         fn auth_state_changed(&self, state: AuthState) {
@@ -1183,10 +1167,10 @@ mod tests {
                 .push(connection_id);
             Ok(())
         }
-        fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
             Ok(false)
         }
-        fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+        async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
             Ok(self
                 .preimages
                 .lock()
@@ -1198,7 +1182,7 @@ mod tests {
         fn current_theme(&self) -> Result<HostTheme, HostRejection> {
             Ok(*self.theme.lock().expect("theme mutex poisoned"))
         }
-        fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
             Ok(false)
         }
         fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, HostStorageError> {
@@ -1421,21 +1405,22 @@ mod tests {
     #[test]
     fn start_ws_bridge_twice_returns_already_running() {
         struct Noop;
+        #[async_trait::async_trait]
         impl HostCallbacks for Noop {
             fn on_core_log(&self, _marker: String, _detail: String) {}
-            fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+            async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
-            fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
+            async fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
                 Ok(0)
             }
             fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
                 Ok(false)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
@@ -1465,16 +1450,16 @@ mod tests {
             fn chain_close(&self, _connection_id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            fn lookup_preimage(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            async fn lookup_preimage(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
             fn current_theme(&self) -> Result<HostTheme, HostRejection> {
                 Ok(HostTheme::Light)
             }
-            fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
                 Ok(false)
             }
             fn local_storage_read(
@@ -1496,7 +1481,7 @@ mod tests {
         }
 
         let core = NativeTrUApiCore::with_runtime_config(
-            Box::new(Noop),
+            Arc::new(Noop),
             NativeRuntimeConfig {
                 host_icon: Some("https://dot.li/dotli.png".to_string()),
                 ..native_runtime_config("dotli.dot")
@@ -1534,18 +1519,19 @@ mod tests {
             release: Mutex<std::sync::mpsc::Receiver<()>>,
         }
 
+        #[async_trait::async_trait]
         impl HostCallbacks for GatedPermissionCallbacks {
             fn on_core_log(&self, _marker: String, _detail: String) {}
-            fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+            async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
-            fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
+            async fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
                 Ok(0)
             }
             fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
@@ -1554,7 +1540,7 @@ mod tests {
                     .expect("release signal");
                 Ok(true)
             }
-            fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
                 Ok(false)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
@@ -1584,16 +1570,16 @@ mod tests {
             fn chain_close(&self, _connection_id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            fn lookup_preimage(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            async fn lookup_preimage(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
             fn current_theme(&self) -> Result<HostTheme, HostRejection> {
                 Ok(HostTheme::Light)
             }
-            fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
                 Ok(true)
             }
             fn local_storage_read(
@@ -1617,7 +1603,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let permission_entered = Arc::new(AtomicBool::new(false));
         let core = NativeTrUApiCore::with_runtime_config(
-            Box::new(GatedPermissionCallbacks {
+            Arc::new(GatedPermissionCallbacks {
                 permission_entered: permission_entered.clone(),
                 release: Mutex::new(release_rx),
             }),

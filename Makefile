@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi dotli-link dev dev-bootstrap dev-link-check e2e-dotli matrix explorer
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi dotli-link dev dev-bootstrap dev-link-check e2e-dotli matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -186,3 +186,25 @@ matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-repo
 
 explorer: ## Run the explorer dev server standalone at http://localhost:5181.
 	cd $(EXPLORER) && npx vite --base / --port 5181
+
+IOS_DEVICE_TARGET := aarch64-apple-ios
+IOS_SIM_TARGET := aarch64-apple-ios-sim
+XCFRAMEWORK_OUT := target/truapi_server.xcframework
+XCFRAMEWORK_HEADERS := target/xcframework-headers
+
+xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator.
+	rustup target add $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
+	$(CARGO) build -p truapi-server --release \
+		--features ws-bridge --target $(IOS_DEVICE_TARGET)
+	$(CARGO) build -p truapi-server --release \
+		--features ws-bridge --target $(IOS_SIM_TARGET)
+	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
+	mkdir -p $(XCFRAMEWORK_HEADERS)
+	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
+	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
+	xcodebuild -create-xcframework \
+		-library target/$(IOS_DEVICE_TARGET)/release/libtruapi_server.a \
+		-headers $(XCFRAMEWORK_HEADERS) \
+		-library target/$(IOS_SIM_TARGET)/release/libtruapi_server.a \
+		-headers $(XCFRAMEWORK_HEADERS) \
+		-output $(XCFRAMEWORK_OUT)
