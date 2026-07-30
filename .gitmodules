@@ -6,3 +6,7 @@
 	path = hosts/ios
 	url = https://github.com/paritytech/polkadot-app-ios-v2
 	branch = codex/truapi-rust-core
+[submodule "hosts/android"]
+	path = hosts/android
+	url = https://github.com/paritytech/polkadot-app-android-v2
+	branch = tg/truapi-rust-core

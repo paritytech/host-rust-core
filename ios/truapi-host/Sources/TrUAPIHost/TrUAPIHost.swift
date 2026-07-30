@@ -251,10 +251,10 @@ public final class TrUAPIHostCore {
         inner.disconnect()
     }
 
-    /// Cancel any in-flight login pairing (e.g. the user dismissed the
-    /// pairing UI). The bridge receives a `.disconnected` auth state
-    /// immediately and the pending login resolves as rejected. A no-op when
-    /// no login is in progress.
+    /// Cancel an in-flight pairing login.
+    ///
+    /// Inert on a native host: the core is a signing host with no pairing flow
+    /// to cancel, so calling this emits no auth state and changes nothing.
     public func cancelLogin() {
         inner.cancelLogin()
     }

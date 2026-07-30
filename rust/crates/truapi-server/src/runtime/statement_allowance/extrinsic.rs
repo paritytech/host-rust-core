@@ -6,7 +6,8 @@
 
 use parity_scale_codec::{Decode, Encode};
 
-use super::extension::{ChainState, Metadata};
+use super::StatementAllowanceError;
+use super::extension::{ChainState, Metadata, MetadataError};
 
 /// General-transaction preamble byte: `0b01` (General) | version 5.
 const GENERAL_V5_PREAMBLE: u8 = 0x45;
@@ -52,7 +53,7 @@ pub fn build_set_statement_store_account_call(
     period: u32,
     seq: u32,
     target: &[u8; 32],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let indices = metadata.call_indices("Resources", "set_statement_store_account")?;
     let mut call = Vec::with_capacity(2 + 4 + 4 + 32);
     call.extend_from_slice(&indices);
@@ -73,7 +74,7 @@ pub fn build_claim_long_term_storage_call(
     period: u32,
     counter: u8,
     account_id: &[u8; 32],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let indices = metadata.call_indices("Resources", "claim_long_term_storage")?;
     let mut call = Vec::with_capacity(2 + 4 + 1 + 32);
     call.extend_from_slice(&indices);
@@ -93,7 +94,7 @@ pub fn build_as_resources_extra(
     metadata: &Metadata,
     proof: &[u8],
     ring_index: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let (info_index, lite_people) =
         metadata.as_resources_variant_indices("RegisterStatementStoreAllowance")?;
     let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 1);
@@ -116,7 +117,7 @@ pub fn build_long_term_storage_extra(
     proof: &[u8],
     ring_index: u32,
     revision: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let (info_index, lite_people) =
         metadata.as_resources_variant_indices("ClaimLongTermStorage")?;
     let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 4 + 1);
@@ -139,11 +140,11 @@ pub fn build_unsigned_extrinsic(
     state: &ChainState,
     call_data: &[u8],
     as_resources_extra: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
     let as_resources_index = metadata
         .as_resources_index()
-        .ok_or_else(|| "AsResources extension not found in metadata".to_string())?;
+        .ok_or(MetadataError::MissingAsResourcesExtension)?;
 
     let mut body = vec![GENERAL_V5_PREAMBLE, EXTENSION_VERSION];
     for (i, ext) in all.iter().enumerate() {

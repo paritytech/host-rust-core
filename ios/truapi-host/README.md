@@ -6,11 +6,10 @@
 
 The public surface lives in [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift):
 
-- `HostBridge` - callback bundle the embedding app implements. Split into device permissions, remote permissions, navigation, push, feature support, and scoped storage.
-- `HostStorageBackend` - product-scoped read/write/clear protocol the host backs with its own persistence.
-- `HostCoreStorageBackend` - core-owned read/write/clear protocol for auth session, pairing identity, and persisted permission decisions.
-- `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, and native change notifications for core storage, theme, and preimage updates.
+- `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the callbacks alive for the lifetime of the core and exposes the localhost WebSocket bridge, session controls, and native change notifications for theme, preimage, and chain updates.
 - `LocalhostBridgeBootstrap` - helper that produces a JS snippet publishing the WS bridge endpoint to the product page so it can dial back in.
+
+The embedding app implements the UniFFI-generated `HostCallbacks` protocol directly (defined in `Sources/TrUAPIHost/truapi_server.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, and feature support. UI-decision callbacks are `async` and awaited by the Rust core.
 
 The generated UniFFI bindings live alongside the shell in `Sources/TrUAPIHost/truapi_server.swift` and the C header / module map in `Sources/truapi_serverFFI/include/`. They are ignored build outputs; regenerate them before building or publishing the Swift package.
 
@@ -26,11 +25,11 @@ TrUAPIHostCore.startWsBridge()
   → Rust dispatcher
 ```
 
-The product running in the `WKWebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, confirmations, preimage, theme, `featureSupported`, `storage`) reach the embedder through `HostBridge`.
+The product running in the `WKWebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, confirmations, preimage, theme, `featureSupported`, `storage`) reach the embedder through `HostCallbacks`.
 
 ## Permissions split
 
-The core's `Permissions` platform trait has two methods, and so does the bridge:
+The core's `Permissions` platform trait has two methods, and so does `HostCallbacks`:
 
 - `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a SCALE-encoded `v01::HostDevicePermissionRequest`.
 - `remotePermission(request:)` - per-product capability bundles. `request` is a SCALE-encoded `v01::RemotePermissionRequest`.
@@ -39,50 +38,37 @@ Both return a `Bool` granted flag. SCALE decoding for the UI prompt is done by t
 
 ## Example
 
-> **Threading:** the Rust core invokes every `HostBridge` callback on a
+> **Threading:** the Rust core invokes every `HostCallbacks` method on a
 > background thread it owns, never the main thread. Hop to the main thread
-> (`DispatchQueue.main` / `MainActor`) before touching UIKit, WebKit, or the
-> `WKWebView`. UI-decision callbacks (`navigateTo`, `devicePermission`,
-> `remotePermission`, `confirmUserAction`, `submitPreimage`) each run on
-> their own blocking-pool thread, so it is safe to use
-> `DispatchQueue.main.sync` (or a semaphore) to present the prompt on the
-> main thread and block the calling thread until the user decides; other
-> TrUAPI traffic keeps flowing while you wait. The remaining callbacks (auth
-> state, storage, core storage, chain, feature, theme, preimage lookups) run
-> inline on the dispatcher thread and must return promptly without blocking.
+> (`MainActor` / `DispatchQueue.main`) before touching UIKit, WebKit, or the
+> `WKWebView`. The `async` callbacks (`navigateTo`, `pushNotification`,
+> `devicePermission`, `remotePermission`, `featureSupported`,
+> `confirmUserAction`, `lookupPreimage`) are awaited by the core, so an
+> implementation may suspend for as long as the user takes to decide (e.g.
+> `await MainActor.run { ... }` or an `withCheckedContinuation` around a
+> prompt); other TrUAPI traffic keeps flowing while you wait. The remaining
+> sync callbacks (auth state, storage, core storage, chain, theme,
+> `cancelNotification`) run inline on the dispatcher thread and must return
+> promptly without blocking.
 
 ```swift
 import Foundation
 import WebKit
 import TrUAPIHost
 
-final class MyStorage: HostStorageBackend, @unchecked Sendable {
-    private var map: [String: Data] = [:]
-    func read(key: String) throws -> Data? { map[key] }
-    func write(key: String, value: Data) throws { map[key] = value }
-    func clear(key: String) throws { map.removeValue(forKey: key) }
-}
+final class MyCallbacks: HostCallbacks, @unchecked Sendable {
+    private var storage: [String: Data] = [:]
+    private var coreStorage: [Data: Data] = [:]
 
-final class MyCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
-    private var map: [Data: Data] = [:]
-    func read(key: Data) throws -> Data? { map[key] }
-    func write(key: Data, value: Data) throws { map[key] = value }
-    func clear(key: Data) throws { map.removeValue(forKey: key) }
-}
+    func onCoreLog(marker: String, detail: String) { /* log */ }
 
-final class MyBridge: HostBridge, @unchecked Sendable {
-    let storage: HostStorageBackend = MyStorage()
-    let coreStorage: HostCoreStorageBackend = MyCoreStorage()
-
-    // Callbacks arrive on background threads, never the main thread.
-    // Hop to the main thread before touching UIKit/WebKit.
-    func navigateTo(url: String) throws {
-        DispatchQueue.main.async { /* UIApplication.shared.open(...) */ }
+    func navigateTo(url: String) async throws {
+        await MainActor.run { /* UIApplication.shared.open(...) */ }
     }
 
-    func pushNotification(payload: Data) throws -> UInt32 {
+    func pushNotification(payload: Data) async throws -> UInt32 {
         let id: UInt32 = 1
-        DispatchQueue.main.async { /* schedule notification */ }
+        await MainActor.run { /* schedule notification */ }
         return id
     }
 
@@ -90,26 +76,28 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         DispatchQueue.main.async { /* cancel notification */ }
     }
 
-    func devicePermission(request: Data) throws -> Bool {
-        // Called on a blocking-pool thread; present synchronously on the main
-        // thread and return the decision. Blocking here does not stall other
-        // TrUAPI traffic.
-        DispatchQueue.main.sync { /* show prompt; */ false }
+    func devicePermission(request: Data) async throws -> Bool {
+        // Awaited by the core: present the prompt and suspend until the user
+        // decides. Other TrUAPI traffic keeps flowing while suspended.
+        await MainActor.run { /* show prompt; */ false }
     }
 
-    func remotePermission(request: Data) throws -> Bool {
-        DispatchQueue.main.sync { /* show prompt; */ false }
+    func remotePermission(request: Data) async throws -> Bool {
+        await MainActor.run { /* show prompt; */ false }
     }
 
-    // Core-owned auth state stream: render `.pairing` as the pairing QR
-    // sheet, `.connected`/`.disconnected` as the account badge, and
-    // `.loginFailed` as a retryable error. When the user closes the pairing
-    // sheet, report it with `core.cancelLogin()`.
+    // Core-owned auth state stream: render `.connected`/`.disconnected` as the
+    // account badge and `.loginFailed` as a retryable error. This core is a
+    // signing host — it owns the signer and never pairs — so `.pairing` and
+    // `.authenticating` are not emitted and `core.cancelLogin()` is inert.
+    // Activate the session with `core.activateLocalSession(secret:...)`.
     func authStateChanged(state: AuthState) {
         DispatchQueue.main.async { /* render the state */ }
     }
 
-    func featureSupported(request: Data) throws -> Bool { false }
+    func coreStorageRead(key: Data) throws -> Data? { coreStorage[key] }
+    func coreStorageWrite(key: Data, value: Data) throws { coreStorage[key] = value }
+    func coreStorageClear(key: Data) throws { coreStorage.removeValue(forKey: key) }
 
     func chainConnect(genesisHash: Data) throws -> UInt32? {
         let id: UInt32 = 1
@@ -125,25 +113,36 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         /* close host connection */
     }
 
-    func confirmUserAction(review: Data) throws -> Bool {
-        DispatchQueue.main.sync { /* render decoded UserConfirmationReview; */ false }
+    func confirmUserAction(review: Data) async throws -> Bool {
+        await MainActor.run { /* render decoded UserConfirmationReview; */ false }
     }
+
+    func lookupPreimage(key: Data) async throws -> Data? { nil }
+
+    func currentTheme() throws -> HostTheme { .dark }
+
+    func featureSupported(request: Data) async throws -> Bool { false }
+
+    func localStorageRead(key: String) throws -> Data? { storage[key] }
+    func localStorageWrite(key: String, value: Data) throws { storage[key] = value }
+    func localStorageClear(key: String) throws { storage.removeValue(forKey: key) }
 }
 
-let bridge = MyBridge()
+let callbacks = MyCallbacks()
 let runtimeConfig = RuntimeConfig(
     productId: "my-product.dot",
     hostName: "My Host",
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),
+    bulletinChainGenesisHash: Data(repeating: 0, count: 32),
     pairingDeeplinkScheme: .polkadotApp
 )
-let core = try TrUAPIHostCore(bridge: bridge, runtimeConfig: runtimeConfig)
+let core = try TrUAPIHostCore(callbacks: callbacks, runtimeConfig: runtimeConfig)
+try core.activateLocalSession(secret: entropyBytes, liteUsername: nil)
 let endpoint = try core.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates
 // after their immediate current item.
-core.notifySessionStoreChanged()
 core.notifyThemeChanged(theme: .dark)
 core.notifyPreimageChanged(key: preimageKey, value: preimageBytesOrNil)
 core.notifyChainResponse(connectionId: chainConnectionId, json: jsonRpcResponse)
