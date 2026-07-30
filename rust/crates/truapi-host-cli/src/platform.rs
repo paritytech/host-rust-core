@@ -973,12 +973,39 @@ fn product_storage_path(directory: &Path, product_id: &str) -> PathBuf {
     directory.join(format!("{slug}--{}.json", hex::encode(digest)))
 }
 
+/// Extension appended to a storage file that could not be read, so its contents
+/// survive for manual recovery.
+const UNREADABLE_SUFFIX: &str = "unreadable";
+
+/// Load a storage file, treating an unreadable one as empty.
+///
+/// `read_string_map` collects into a `Result`, so one undecodable value fails the
+/// whole file. Returning an empty map on that would be silently destructive: the
+/// caller's next write persists the empty map over the file, taking every intact
+/// entry with it — including keys this run never touched. So the file is first
+/// moved aside to `<name>.unreadable`, which keeps the data recoverable and makes
+/// the warning actionable.
 fn load_string_map(path: &Path) -> HashMap<String, Vec<u8>> {
     match read_string_map(path) {
         Ok(values) => values,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
         Err(err) => {
-            tracing::warn!(path = %path.display(), %err, "could not read CLI storage");
+            let preserved = path.with_extension(UNREADABLE_SUFFIX);
+            match fs::rename(path, &preserved) {
+                Ok(()) => tracing::warn!(
+                    path = %path.display(),
+                    preserved = %preserved.display(),
+                    %err,
+                    "could not read CLI storage; moved it aside and started empty"
+                ),
+                Err(rename_err) => tracing::warn!(
+                    path = %path.display(),
+                    %err,
+                    %rename_err,
+                    "could not read CLI storage, and could not move it aside; \
+                     the next write will overwrite it"
+                ),
+            }
             HashMap::new()
         }
     }
@@ -1083,6 +1110,121 @@ fn save_hex_key_map(path: &Path, values: &HashMap<Vec<u8>, Vec<u8>>) -> Result<(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// One undecodable value in `core-storage.json` must not cost the host the
+    /// entries it never touched. Before the file was moved aside, a real
+    /// `CliPlatform` discarded `PairingDeviceIdentity` and then overwrote it on
+    /// the next unrelated write.
+    ///
+    /// Keys on disk are hex of the SCALE-encoded `CoreStorageKey`, so
+    /// `AuthSession` is `00` and `PairingDeviceIdentity` is `01`.
+    #[tokio::test]
+    async fn cli_platform_preserves_unreadable_core_storage() {
+        use truapi_platform::CoreStorage;
+
+        let dir = tempdir().expect("tempdir");
+        let state_dir = dir.path().join("state");
+        let product_dir = dir.path().join("products");
+        std::fs::create_dir_all(&state_dir).expect("state dir");
+        let core_path = state_dir.join("core-storage.json");
+
+        std::fs::write(
+            &core_path,
+            r#"{"values":{"00":"cafebabe","01":"deadbeef","ff":"zzzz"}}"#,
+        )
+        .expect("seed core storage");
+
+        let platform = CliPlatform::new(
+            "",
+            &[],
+            Some(CliStoragePaths::new(state_dir, product_dir)),
+            ApprovalPolicy::AutoAccept,
+            None,
+        );
+
+        // Nothing loaded: the good entries went with the bad one.
+        assert_eq!(
+            platform
+                .read_core_storage(CoreStorageKey::AuthSession)
+                .await
+                .expect("read"),
+            None,
+            "AuthSession should have loaded but the file was discarded"
+        );
+        assert_eq!(
+            platform
+                .read_core_storage(CoreStorageKey::PairingDeviceIdentity)
+                .await
+                .expect("read"),
+            None
+        );
+
+        // The host writes one unrelated key. That persists the whole map.
+        platform
+            .write_core_storage(CoreStorageKey::AuthSession, vec![0x42])
+            .await
+            .expect("write");
+
+        let after = std::fs::read_to_string(&core_path).expect("read back");
+        assert!(
+            after.contains("42"),
+            "the new AuthSession value should be persisted: {after}"
+        );
+
+        // The unreadable original is preserved beside it, so nothing is lost.
+        let preserved = std::fs::read_to_string(core_path.with_extension(UNREADABLE_SUFFIX))
+            .expect("the unreadable file should have been moved aside");
+        assert!(
+            preserved.contains("deadbeef") && preserved.contains("cafebabe"),
+            "the moved-aside file should still hold the original entries: {preserved}"
+        );
+    }
+
+    /// `read_string_map` collects into a `Result`, so one undecodable value fails
+    /// the whole file and the load yields nothing. That is survivable only
+    /// because the file is moved aside first — otherwise the next write persists
+    /// the empty map over it and every intact entry is gone.
+    #[test]
+    fn an_unreadable_storage_file_is_moved_aside_before_the_next_write() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("core-storage.json");
+
+        // Two entries the host cares about, plus one whose value is not hex.
+        let raw = r#"{"values":{
+            "6175746853657373696f6e":"cafebabe",
+            "70616972696e674964656e74697479":"deadbeef",
+            "62726f6b656e":"zzzz"
+        }}"#;
+        std::fs::write(&path, raw).expect("seed");
+
+        // The two good entries are readable in isolation, so nothing about them
+        // is malformed — they are collateral.
+        assert!(raw.contains("cafebabe") && raw.contains("deadbeef"));
+
+        // Load: everything is dropped, not just the bad entry.
+        let loaded = load_hex_key_map(&path);
+        assert!(
+            loaded.is_empty(),
+            "expected the whole file to be discarded, got {} entries",
+            loaded.len()
+        );
+
+        // A later write persists the empty map plus whatever is new. The original
+        // is no longer at `path`, so this must not be able to destroy it.
+        let mut next: HashMap<Vec<u8>, Vec<u8>> = loaded;
+        next.insert(b"fresh".to_vec(), b"\x01".to_vec());
+        save_hex_key_map(&path, &next).expect("save");
+
+        let after = std::fs::read_to_string(&path).expect("read back");
+        assert!(after.contains(&hex::encode(b"fresh")));
+
+        let preserved = std::fs::read_to_string(path.with_extension(UNREADABLE_SUFFIX))
+            .expect("the unreadable file should have been moved aside");
+        assert!(
+            preserved.contains("cafebabe") && preserved.contains("deadbeef"),
+            "the moved-aside file should still hold the original entries: {preserved}"
+        );
+    }
 
     fn test_storage_paths(root: &Path, session: &str) -> CliStoragePaths {
         CliStoragePaths::new(root.to_path_buf(), root.join("storage").join(session))
