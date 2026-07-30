@@ -1188,10 +1188,14 @@ mod tests {
 
     /// The same thing through the lifecycle the core actually drives:
     /// `AuthPresenter::auth_state_changed` with a `Connected` state. That path
-    /// only logs a `warn!` on failure, so a rejected id silently inherits the
-    /// previous identity's namespace.
-    #[test]
-    fn auth_state_changed_does_not_inherit_storage_on_a_rejected_username() {
+    /// only logs a `warn!` on failure, so a rejected id used to silently inherit
+    /// the previous identity's namespace.
+    ///
+    /// Asserts the isolation itself, not just that the paths differ: a value
+    /// written while alice is connected must not be readable by the next
+    /// identity.
+    #[tokio::test]
+    async fn auth_state_changed_does_not_inherit_storage_on_a_rejected_username() {
         use truapi_platform::AuthPresenter;
 
         let dir = tempdir().expect("tempdir");
@@ -1218,6 +1222,19 @@ mod tests {
         let alice_dir = platform.state_dir().expect("alice state dir");
         assert!(alice_dir.ends_with("alice_pairing_host"));
 
+        // Alice's product KV. `switch_pairing_user_storage` intentionally carries
+        // the transient pairing keys (AuthSession, PairingDeviceIdentity,
+        // LastProcessedPairingStatement) across namespaces, because the core
+        // writes a session before it knows the username. Product KV is the state
+        // the comment there promises stays with its own user, so that is what
+        // isolation is asserted on.
+        let alice_key =
+            ProductStorageKey::new("demo-product.dot", "secret").expect("product storage key");
+        platform
+            .write(alice_key.encode(), b"alice-only".to_vec())
+            .await
+            .expect("alice product write");
+
         // No lite username, so storage_user_id falls back to full_username.
         platform.auth_state_changed(connect(None, Some("Tarik Gul")));
 
@@ -1227,6 +1244,13 @@ mod tests {
             alice_dir,
             "second identity is serving out of alice's storage at {}",
             after.display()
+        );
+
+        // The isolation that matters: alice's product KV is not visible.
+        assert_eq!(
+            platform.read(alice_key.encode()).await.expect("read"),
+            None,
+            "the second identity can read alice's product storage"
         );
     }
 
