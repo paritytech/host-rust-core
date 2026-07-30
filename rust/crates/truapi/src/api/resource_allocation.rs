@@ -23,17 +23,17 @@ pub trait ResourceAllocation: Send + Sync {
     /// });
     /// assert(result.isOk(), "request failed:", result);
     /// assert(result.value.outcomes.length === 4, "missing allocation outcomes:", result.value);
-    /// // Statement Store and Bulletin back this example's storage APIs.
+    /// // Statement Store, Bulletin, and smart-contract PGAS are implemented
+    /// // by signing hosts.
     /// assert(
-    ///   result.value.outcomes.slice(0, 2).every((outcome) => outcome === "Allocated"),
-    ///   "statement-store or bulletin allowance was not allocated:",
+    ///   result.value.outcomes.slice(0, 3).every((outcome) => outcome === "Allocated"),
+    ///   "an allowance was not allocated:",
     ///   result.value,
     /// );
-    /// // Smart-contract allowance and auto-signing are host capabilities:
-    /// // unsupported hosts report NotAvailable rather than rejecting the request.
+    /// // Auto-signing remains an optional host capability.
     /// assert(
-    ///   result.value.outcomes.slice(2).every((outcome) => outcome !== "Rejected"),
-    ///   "an optional allocation was rejected:",
+    ///   result.value.outcomes[3] !== "Rejected",
+    ///   "auto-signing allocation was rejected:",
     ///   result.value,
     /// );
     /// console.log("resource allocation outcomes:", result.value.outcomes);

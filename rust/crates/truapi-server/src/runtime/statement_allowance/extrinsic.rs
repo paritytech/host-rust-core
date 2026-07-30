@@ -141,15 +141,35 @@ pub fn build_unsigned_extrinsic(
     call_data: &[u8],
     as_resources_extra: &[u8],
 ) -> Result<Vec<u8>, StatementAllowanceError> {
+    build_unsigned_extrinsic_with_extra(
+        metadata,
+        state,
+        call_data,
+        super::extension::AS_RESOURCES,
+        as_resources_extra,
+    )
+}
+
+/// Assemble an unsigned General (v5) extrinsic with one transaction
+/// extension's explicit bytes replaced by `extension_extra`.
+pub fn build_unsigned_extrinsic_with_extra(
+    metadata: &Metadata,
+    state: &ChainState,
+    call_data: &[u8],
+    extension_identifier: &str,
+    extension_extra: &[u8],
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
-    let as_resources_index = metadata
-        .as_resources_index()
-        .ok_or(MetadataError::MissingAsResourcesExtension)?;
+    let extension_index = metadata
+        .extension_index(extension_identifier)
+        .ok_or_else(|| MetadataError::MissingExtension {
+            identifier: extension_identifier.to_string(),
+        })?;
 
     let mut body = vec![GENERAL_V5_PREAMBLE, EXTENSION_VERSION];
     for (i, ext) in all.iter().enumerate() {
-        if i == as_resources_index {
-            body.extend_from_slice(as_resources_extra);
+        if i == extension_index {
+            body.extend_from_slice(extension_extra);
         } else {
             body.extend_from_slice(&ext.extra);
         }

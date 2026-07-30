@@ -28,6 +28,15 @@
 | `Chat/post_message` | ❌ | postMessage failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
 | `Chat/action_subscribe` | ❌ | no elements in sequence |
 | `Chat/custom_message_render_subscribe` | ❌ | timed out after 10s |
+| `Coin Payment/create_purse` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/query_purse` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/rebalance_purse` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/delete_purse` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/create_receivable` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/create_cheque` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/deposit` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/refund` | ❌ | Coin Payment service not yet wired up by hosts |
+| `Coin Payment/listen_for_payment` | ❌ | Coin Payment service not yet wired up by hosts |
 | `Entropy/derive` | ✅ |  |
 | `Local Storage/read` | ✅ |  |
 | `Local Storage/write` | ✅ |  |
@@ -42,17 +51,17 @@
 | `Permissions/request_remote_permission` | ✅ |  |
 | `Preimage/lookup_subscribe` | ✅ |  |
 | `Preimage/submit` | ✅ |  |
-| `Resource Allocation/request` | ✅ |  |
+| `Resource Allocation/request` | ✅ | resource allocation outcomes: [ "Allocated", "Allocated", "Allocated", "NotAvailable" ] |
 | `Signing/create_transaction` | ✅ |  |
 | `Signing/create_transaction_with_legacy_account` | ❌ | createTransactionWithLegacyAccount failed: { "error": { "tag": "Unknown", "value": { "reason": "Account can't be derived from product account id" } } } |
-| `Signing/sign_raw_with_legacy_account` | ❌ | signRawWithLegacyAccount failed: { "error": { "tag": "Unknown", "value": { "reason": "Account can't be derived from product account id" } } } |
+| `Signing/sign_raw_with_legacy_account` | ✅ |  |
 | `Signing/sign_payload_with_legacy_account` | ❌ | signPayloadWithLegacyAccount failed: { "error": { "tag": "Unknown", "value": { "reason": "Account can't be derived from product account id" } } } |
 | `Signing/sign_raw` | ✅ |  |
 | `Signing/sign_payload` | ✅ |  |
 | `Statement Store/subscribe` | ✅ |  |
-| `Statement Store/create_proof` | ✅ |  |
+| `Statement Store/create_proof` | ❌ | StatementStoreProductSign confirmation failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
 | `Statement Store/submit` | ✅ |  |
-| `Statement Store/create_proof_authorized` | ❌ | createProof failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
+| `Statement Store/create_proof_authorized` | ✅ |  |
 | `System/handshake` | ✅ |  |
 | `System/feature_supported` | ✅ |  |
 | `System/navigate_to` | ✅ |  |

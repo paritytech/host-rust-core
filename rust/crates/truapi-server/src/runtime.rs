@@ -15,6 +15,9 @@ mod authority;
 pub(crate) mod bulletin_rpc;
 mod identity;
 mod pairing_host;
+/// Native Asset Hub PGAS allowance allocation.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod pgas_allowance;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;
 mod signing_host;

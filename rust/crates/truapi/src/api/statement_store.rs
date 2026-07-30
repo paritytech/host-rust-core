@@ -68,8 +68,9 @@ pub trait StatementStore: Send + Sync {
     ///
     /// **Deprecated:** use [`create_proof_authorized`](Self::create_proof_authorized)
     /// instead, which uses a pre-allocated allowance account and does not
-    /// require a per-call signing prompt. Pairing hosts may reject this method
-    /// when their signing channel cannot sign statement proof payloads exactly.
+    /// require a per-call signing prompt. Pairing hosts forward this method to
+    /// the signing host as a `StatementStoreProductSign` review so the exact
+    /// unsigned statement is approved and signed without a `<Bytes>` envelope.
     ///
     /// ```ts
     /// // Expiry packs a Unix-seconds timestamp in the high 32 bits; a day out
@@ -85,11 +86,12 @@ pub trait StatementStore: Send + Sync {
     ///   },
     ///   statement,
     /// });
-    /// if (result.isErr()) {
-    ///   console.log("deprecated createProof unavailable:", result.error);
-    /// } else {
-    ///   console.log("proof created:", result.value);
-    /// }
+    /// assert(
+    ///   result.isOk(),
+    ///   "StatementStoreProductSign confirmation failed:",
+    ///   result,
+    /// );
+    /// console.log("proof created:", result.value);
     /// ```
     #[wire(request_id = 60)]
     async fn create_proof(

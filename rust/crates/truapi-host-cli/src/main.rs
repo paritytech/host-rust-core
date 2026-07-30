@@ -12,6 +12,9 @@
 mod accounts;
 mod attestation;
 mod chain;
+mod chat_requests;
+mod coinage_balance;
+mod coinage_top_up;
 mod frame_server;
 mod network;
 mod platform;
@@ -718,6 +721,7 @@ struct SigningHostSession {
     runtime: Arc<SigningHostRuntime>,
     runtime_factory: Arc<frame_server::SwitchableSigningRuntime>,
     responder: Option<tokio::task::JoinHandle<()>>,
+    chat_request_monitor: Option<tokio::task::JoinHandle<()>>,
     signer: Option<ResolvedSigner>,
     cached_user_id: Option<String>,
     last_script: Option<PathBuf>,
@@ -764,7 +768,7 @@ async fn start_signing_host(
     {
         profile = Some(catalog.promote_to_user(current, user_id)?);
     }
-    let signer = profile
+    let mut signer = profile
         .as_ref()
         .map(|profile| {
             accounts::resolve_cached_signer(
@@ -790,6 +794,25 @@ async fn start_signing_host(
             .profile(DEFAULT_SESSION_NAME)
             .expect("default session profile is valid")
     });
+    if signer.is_none() && mnemonic.is_some() {
+        let mut explicit_signer = accounts::resolve_signer(ResolveSignerConfig {
+            base_path: &storage_profile.account_base_path,
+            network,
+            mnemonic: mnemonic.clone(),
+            account: None,
+            lite_username_prefix: None,
+        })
+        .await?;
+        match attestation::registered_lite_username(network.people_ws, &explicit_signer.entropy)
+            .await
+        {
+            Ok(user_id) => explicit_signer.lite_username = Some(user_id),
+            Err(error) => {
+                tracing::warn!(%error, "explicit signer has no resolvable People-chain username")
+            }
+        }
+        signer = Some(explicit_signer);
+    }
     let approval = approval_policy(args.auto_accept);
     let runtime = build_signing_runtime(
         network,
@@ -814,8 +837,10 @@ async fn start_signing_host(
             .map_err(|error| {
                 anyhow::anyhow!("failed to activate cached session: {}", error.reason)
             })?;
-        if let (Some(profile), Some(user_id)) = (&profile, &cached_signer.lite_username) {
-            catalog.store_user_id(profile, user_id)?;
+        if let Some(user_id) = &cached_signer.lite_username {
+            if let Some(profile) = &profile {
+                catalog.store_user_id(profile, user_id)?;
+            }
             cached_user_id = Some(user_id.clone());
             if let Some(ui) = &ui {
                 ui.connection(user_id.clone());
@@ -838,10 +863,11 @@ async fn start_signing_host(
         ui.event(SystemEvent::SigningHostNeedsSession);
     }
 
-    Ok(SigningHostSession {
+    let mut session = SigningHostSession {
         runtime,
         runtime_factory,
         responder: None,
+        chat_request_monitor: None,
         signer,
         cached_user_id,
         last_script,
@@ -853,7 +879,9 @@ async fn start_signing_host(
         lite_username_prefix: normalized(args.lite_username_prefix.clone()),
         approval,
         ui,
-    })
+    };
+    restart_chat_request_monitor(&mut session)?;
+    Ok(session)
 }
 
 fn build_signing_runtime(
@@ -875,6 +903,7 @@ fn build_signing_runtime(
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.asset_hub_genesis,
     )
     .context("invalid signing host config")?;
     Ok(Arc::new(SigningHostRuntime::new(
@@ -888,6 +917,9 @@ impl Drop for SigningHostSession {
     fn drop(&mut self) {
         if let Some(responder) = self.responder.take() {
             responder.abort();
+        }
+        if let Some(monitor) = self.chat_request_monitor.take() {
+            monitor.abort();
         }
     }
 }
@@ -1034,14 +1066,45 @@ async fn activate_current_signer(session: &mut SigningHostSession) -> Result<()>
         .activate_local_session_with_identity(signer.entropy.clone(), signer.lite_username.clone())
         .await
         .map_err(|err| anyhow::anyhow!("failed to activate local session: {}", err.reason))?;
-    if let (Some(profile), Some(user_id)) = (&session.profile, &signer.lite_username) {
-        session.catalog.store_user_id(profile, user_id)?;
+    if let Some(user_id) = &signer.lite_username {
+        if let Some(profile) = &session.profile {
+            session.catalog.store_user_id(profile, user_id)?;
+        }
         session.cached_user_id = Some(user_id.clone());
         if let Some(ui) = &session.ui {
             ui.connection(user_id.clone());
         }
     }
     terminal_ui::output_event(SystemEvent::SigningHostReady);
+    restart_chat_request_monitor(session)?;
+    Ok(())
+}
+
+fn restart_chat_request_monitor(session: &mut SigningHostSession) -> Result<()> {
+    if let Some(monitor) = session.chat_request_monitor.take() {
+        monitor.abort();
+    }
+    let Some(signer) = &session.signer else {
+        return Ok(());
+    };
+    let state_directory = session
+        .profile
+        .as_ref()
+        .map(|profile| profile.path.clone())
+        .or_else(|| {
+            session
+                .catalog
+                .profile(DEFAULT_SESSION_NAME)
+                .ok()
+                .map(|profile| profile.path)
+        });
+    let network = session.network;
+    let entropy = signer.entropy.clone();
+    session.chat_request_monitor = Some(tokio::spawn(chat_requests::monitor(
+        network,
+        entropy,
+        state_directory,
+    )));
     Ok(())
 }
 
@@ -1276,6 +1339,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
     session.signer = Some(signer);
     session.last_script = last_script;
     session.profile = Some(profile);
+    restart_chat_request_monitor(session)?;
     if let Some(ui) = &session.ui {
         let current_name = session
             .profile
@@ -1494,7 +1558,10 @@ async fn pairing_interactive_loop(
                     Err(error) => ui.error(error.to_string()),
                 }
             }
-            ShellCommand::Pair(_) | ShellCommand::Session(_) => {
+            ShellCommand::Pair(_)
+            | ShellCommand::Balance { .. }
+            | ShellCommand::TopUp
+            | ShellCommand::Session(_) => {
                 ui.error("command is only available on the signing host");
             }
         }
@@ -1723,6 +1790,10 @@ async fn execute_interactive_operation(
 ) -> Result<()> {
     match command {
         ShellCommand::Pair(deeplink) => start_deeplink_responder(session, deeplink).await?,
+        ShellCommand::Balance { verbose, recover } => {
+            show_balance(session, verbose, recover).await?
+        }
+        ShellCommand::TopUp => top_up_balance(session).await?,
         ShellCommand::Script(Some(script)) => {
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
             let script =
@@ -1768,6 +1839,10 @@ async fn execute_non_interactive_command(
 ) -> Result<()> {
     match command {
         ShellCommand::Pair(deeplink) => respond_to_deeplink(session, deeplink).await?,
+        ShellCommand::Balance { verbose, recover } => {
+            show_balance(session, verbose, recover).await?
+        }
+        ShellCommand::TopUp => top_up_balance(session).await?,
         ShellCommand::Script(script) => {
             let script = match script {
                 Some(script) => {
@@ -1826,6 +1901,124 @@ async fn execute_non_interactive_command(
             switch_session(session, name).await?;
         }
     }
+    Ok(())
+}
+
+async fn show_balance(
+    session: &mut SigningHostSession,
+    verbose: bool,
+    recover: bool,
+) -> Result<()> {
+    ensure_signer(session).await?;
+    terminal_ui::update_activity(
+        "balance",
+        if recover {
+            "Recovering CASH balance"
+        } else {
+            "Reading CASH balance"
+        },
+        Some(
+            if recover {
+                "Scanning the next private-balance range at the latest finalized block"
+            } else {
+                "Scanning Coinage at the latest finalized block"
+            }
+            .to_string(),
+        ),
+        ActivityState::Running,
+    );
+    let signer = session
+        .signer
+        .as_ref()
+        .context("signer was not initialized")?;
+    let session_path = session
+        .profile
+        .as_ref()
+        .map(|profile| profile.path.as_path());
+    let (balance, details) = if recover {
+        let discovery = coinage_balance::recover(
+            session.network.people_ws,
+            &signer.entropy,
+            session_path,
+            verbose,
+        )
+        .await?;
+        let details = if verbose {
+            discovery.verbose_lines()
+        } else {
+            Vec::new()
+        };
+        (discovery.balance, details)
+    } else if verbose {
+        let discovery =
+            coinage_balance::inspect(session.network.people_ws, &signer.entropy, session_path)
+                .await?;
+        let details = discovery.verbose_lines();
+        (discovery.balance, details)
+    } else {
+        (
+            coinage_balance::read(session.network.people_ws, &signer.entropy, session_path).await?,
+            Vec::new(),
+        )
+    };
+    terminal_ui::output_event(SystemEvent::Balance {
+        total: balance.total,
+        on_hold: balance.on_hold,
+        details,
+    });
+    Ok(())
+}
+
+async fn top_up_balance(session: &mut SigningHostSession) -> Result<()> {
+    ensure_signer(session).await?;
+    let authorizer = coinage_top_up::ValueTransferAuthorizer::from_environment()?;
+    terminal_ui::update_activity(
+        "top-up",
+        "Topping up CASH",
+        Some("Preparing 5.00 from the testnet faucet".to_string()),
+        ActivityState::Running,
+    );
+    let signer = session
+        .signer
+        .as_ref()
+        .context("signer was not initialized")?;
+    let session_path = session
+        .profile
+        .as_ref()
+        .map(|profile| profile.path.as_path());
+    let discovery =
+        coinage_balance::discover(session.network.people_ws, &signer.entropy, session_path).await?;
+    terminal_ui::update_activity(
+        "top-up",
+        "Topping up CASH",
+        Some("Funding a temporary holder and loading vouchers".to_string()),
+        ActivityState::Running,
+    );
+    let result = coinage_top_up::submit(
+        session.network.people_ws,
+        &signer.entropy,
+        discovery.next_voucher_index,
+        &authorizer,
+    )
+    .await?;
+    let allocated_vouchers = result
+        .vouchers
+        .iter()
+        .map(|voucher| {
+            (
+                voucher.index,
+                voucher.exponent,
+                voucher.allocated_at_unix_ms,
+                voucher.ready_at_unix_ms,
+            )
+        })
+        .collect::<Vec<_>>();
+    coinage_balance::record_allocated_vouchers(session_path, &signer.entropy, &allocated_vouchers)
+        .context("top-up finalized but its voucher inventory could not be persisted")?;
+    terminal_ui::output_event(SystemEvent::TopUp {
+        amount: result.amount,
+        vouchers: result.vouchers.len(),
+    });
     Ok(())
 }
 

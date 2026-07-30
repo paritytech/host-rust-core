@@ -107,11 +107,11 @@ impl<'a> SsoPairingFlow<'a> {
             read_last_processed_pairing_statement(self.host.platform.as_ref())
                 .await
                 .map_err(|reason| self.fail_before_pairing(reason))?;
-        // Pairing success statements are retained by statement-store. Reusing a
-        // previous pairing identity means reusing its topic, where the only
-        // retained response may be the last processed success. Rotate before
-        // presenting QR so every explicit login waits on a fresh wallet scan.
-        if reused_identity {
+        // Pairing success statements are retained by statement-store. Reuse a
+        // successfully processed identity so reconnects can reuse the existing
+        // device allowance, but rotate abandoned identities that have no
+        // processed statement marker.
+        if reused_identity && last_processed_statement.is_none() {
             debug!("regenerating stored pairing device identity");
             pairing_identity = create_fresh_pairing_device_identity(self.host.platform.as_ref())
                 .await
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn request_login_regenerates_marked_stored_pairing_device_identity() {
+    fn request_login_reuses_marked_stored_pairing_device_identity() {
         let platform = stub_platform();
         let identity = generate_pairing_device_identity().unwrap();
         platform
@@ -698,7 +698,7 @@ mod tests {
                 _ => None,
             })
             .expect("pairing state should be emitted");
-        assert_ne!(
+        assert_eq!(
             pairing_device_from_deeplink(&deeplink),
             (
                 identity.statement_store_public_key,
@@ -713,7 +713,7 @@ mod tests {
                 .contains_key(&core_storage_test_key(
                     CoreStorageKey::PairingDeviceIdentity
                 )),
-            "cancelled pairing keeps the rotated identity; the next login rotates again"
+            "cancelled pairing keeps the marked identity for reconnect reuse"
         );
     }
 

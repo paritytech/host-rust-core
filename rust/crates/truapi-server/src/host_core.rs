@@ -248,7 +248,8 @@ impl SigningHostRuntime {
             config.bulletin_chain_genesis_hash,
             spawner,
         );
-        let signing_host = SigningHostRole::new(services.clone());
+        let signing_host =
+            SigningHostRole::new(services.clone(), config.asset_hub_chain_genesis_hash);
         Self {
             services,
             signing_host,

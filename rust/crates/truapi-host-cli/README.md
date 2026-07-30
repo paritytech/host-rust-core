@@ -62,6 +62,10 @@ Commands always start with `/`:
 | Command | Result |
 | --- | --- |
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
+| `/balance` | Show the active signing wallet's CASH balance and any amount on hold. |
+| `/balance --verbose` | Add finalized per-coin and per-voucher derivation, value, lifecycle, privacy, age, and recycler-ring details. |
+| `/balance --recover` | Scan the next unexplored private Coinage ranges, persist discoveries, and show the restored balance. |
+| `/top-up` | Add 5.00 CASH through the iOS-compatible testnet faucet flow (signing host). |
 | `/script` | Reopen the session's last TypeScript scratch script (or create one), then run it. |
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
 | `/login` | Start pairing for the selected product and copy its deeplink to the clipboard. |
@@ -76,6 +80,46 @@ Commands always start with `/`:
 | `/clear` | Clear the visible transcript. |
 | `/copy` | Copy the retained transcript to the system clipboard. |
 | `/quit` | Shut down cleanly. |
+
+`/balance` is signing-host only and does not use a product permission. It
+derives the same Coinage coin and voucher keys as the iOS Cash modality, reads
+them at one finalized People-chain block, and prints the total with two decimal
+places. The `on hold` line is omitted when it is zero. Persistent sessions keep
+signer-scoped Coinage inventories in `coinage-balance-scan.json`, including
+the highest discovered derivation indices and known vouchers. No mnemonic or
+entropy is cached. Each balance read reconciles that inventory against chain
+state; a locally known voucher is retained when the chain cannot rediscover
+it, while an observed unload marker excludes it from the total.
+`/balance --verbose` lists the full local inventory plus its latest
+chain-verifiable lifecycle and recycler-ring state. Vouchers allocated by this
+host also retain their allocation and randomized `ready at` timestamps;
+historical timestamps cannot be recovered for vouchers first found on chain.
+`/balance --recover` is the headless equivalent of iOS's manual **Update**
+action. The first balance scan records how far coin and voucher recovery
+looked. Each recovery invocation starts after those horizons, continues until
+four consecutive empty 500-index batches, persists the new horizons even when
+nothing is found, and then shows the reconciled balance. Run it repeatedly
+until the balance stops changing. Add `--verbose` in either order to inspect
+the recovered inventory.
+
+`/top-up` is signing-host only and is intended for the configured test network.
+Like the iOS Cash top-up, it sends 5.00 of the underlying test asset from the
+built-in faucet to a fresh temporary account, then converts that asset into
+wallet-owned Coinage vouchers. The temporary secret exists only for the
+operation and is never printed or persisted. Successfully allocated vouchers
+are added to the active profile's local inventory before the command reports
+success. Protected-asset transfers require the same 32-byte Ed25519
+authorization seed injected into iOS builds: set
+`HOST_CLI_VALUE_TRANSFER_AUTH_KEY` (or `W3S_AUTH_KEY`) to its hex value.
+
+While a signer is active, the signing host also watches the same account-scoped
+contact-request topic as the iOS app. A valid request is decrypted, checked
+against the sender's People identity and inner sr25519 proof, and accepted
+automatically with an iOS-compatible `chatAccepted` message. The terminal shows
+the detected username and whether acceptance succeeded. Accepted request ids
+are retained in bounded per-account state so restarting the CLI does not send
+duplicate acknowledgements. This wallet-level handshake does not implement the
+product-facing TrUAPI Chat service or store subsequent chat messages.
 
 Typing `/` opens autocomplete. Up/Down selects a completion; with the menu
 closed it navigates process-local command history. Tab inserts a completion,

@@ -307,13 +307,38 @@ terminals. The signing host:
 Signer provisioning is otherwise lazy. Merely starting the UI, using `/help`,
 using `/product`, or inspecting sessions does not create a new account.
 
-### 6.3 One-shot `--script`
+### 6.3 Incoming iOS contact requests
+
+Every active signer runs an account-scoped contact-request monitor against the
+People-chain Statement Store. It mirrors the iOS wallet flow:
+
+1. resolve either a CLI `//wallet//sso` identity or an existing iOS
+   `//wallet` identity by matching its People-chain identifier key;
+2. subscribe to
+   `blake2_256(SCALE(Data("chat-request"), Data(identity account)))`;
+3. decode and decrypt the ephemeral-P256 request envelope;
+4. verify the inner sr25519 proof over the request and recipient account;
+5. resolve the sender's `Resources.Consumers` record and validate the V2
+   device-to-identity proof when present;
+6. reuse or allocate the signer's Statement Store allowance; and
+7. submit an encrypted identity-lane MessageExchange `chatAccepted` message.
+
+Acceptance is automatic and independent of the product approval policy. The
+TUI reports detection, success, or submission failure. Invalid, undecryptable,
+or unregistered requests are ignored with a debug log. The subscription
+reconnects after transport failure.
+
+This is wallet contact-handshake compatibility only. The CLI does not persist a
+contact database, render welcome messages, exchange subsequent chat messages,
+or implement the generated product-facing TrUAPI Chat methods.
+
+### 6.4 One-shot `--script`
 
 The host binds its product listener, optionally starts a background responder
 for `--deeplink`, ensures and activates a signer, runs Bun with inherited stdio,
 aborts the responder after the script, and exits with the child status.
 
-### 6.4 `signing-host exec`
+### 6.5 `signing-host exec`
 
 ```sh
 truapi-host signing-host [parent options] exec '<slash-command>'
@@ -387,6 +412,10 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/login` | yes | no | Start or join pairing for the current product and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
+| `/balance` | no | yes | Read the active wallet's finalized Coinage total and amount on hold. |
+| `/balance --verbose` | no | yes | Include finalized per-item derivation, denomination, value, lifecycle, privacy, age, and recycler-ring details. |
+| `/balance --recover` | no | yes | Advance the private Coinage recovery horizons, persist newly found items, and render the reconciled balance. |
+| `/top-up` | no | yes | Add 5.00 CASH using the configured testnet faucet and Coinage voucher loader. |
 | `/product` | yes | yes | Print the current product id. |
 | `/product <id>` | yes | yes | Switch product and reset product connections. |
 | `/session` | no | yes | Show current session, user, and path. |
@@ -401,6 +430,47 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 The shared parser recognizes every command, then the active role rejects
 commands it cannot execute. `/pair` performs a fast prefix check; the Rust core
 then fully decodes and validates the V2 handshake.
+
+`/balance` is wallet-scoped rather than product-scoped and requires no Payment
+permission. It derives `//pps//coin//<index>` and
+`//pps//ring-vrf//<index>`, queries Coinage and Members against one finalized
+People-chain block, and formats the underlying asset at two decimal places.
+Available coins and non-unloaded vouchers contribute to the total. Coins at or
+past age 14 plus onboarding or suspended vouchers contribute to `on hold`.
+After the known index range, discovery stops after four consecutive empty
+500-index batches. A persistent session atomically caches signer-scoped
+high-water marks and voucher inventories. Chain observations update that
+inventory but do not discard locally known vouchers that are temporarily
+undiscoverable. A retained voucher remains in the total using its last known
+state; a directly observed `RecyclersUnloaded` marker excludes it. Version 1
+high-water-only caches migrate to the first signer that opens the profile.
+Ephemeral mnemonic sessions do not write this cache.
+The `--verbose` form renders every locally known item and its latest
+chain-verifiable state. Vouchers allocated by `/top-up` include the same
+wallet-local allocation and randomized readiness metadata used by mobile
+wallets. Chain-recovered vouchers have no historical timestamps.
+The `--recover` form mirrors the iOS balance notification's manual **Update**
+action. Coin and voucher scan horizons are stored independently per signer.
+Recovery begins after the prior horizon and continues until four consecutive
+empty 500-index batches; discoveries reset the empty-batch counter. The last
+queried indices are persisted even when no items are found, so each repeated
+invocation explores a later range. `--recover` and `--verbose` may be combined
+in either order.
+
+`/top-up` mirrors the iOS testnet Cash flow. It transfers 5.00 of
+`Coinage.UnderlyingAssetId` from the built-in faucet into a fresh temporary
+sr25519 account, decomposes the amount into runtime-supported denominations,
+and calls `Coinage.load_recycler_with_external_asset_unpaid_batch`. Voucher
+ownership proofs use consecutive wallet `//pps//ring-vrf//<index>` keys. The
+load is signed by the temporary holder with
+`AsCoinage::InfallibleUnpaidSigned`; the temporary secret is memory-only.
+After both transactions finalize, the allocated voucher indices,
+denominations, allocation times, and randomized readiness times are persisted
+in the active signer inventory before success is reported.
+The protected-asset transfer also carries `AuthorizeValueTransfer(Some(...))`,
+signed with the 32-byte Ed25519 seed from
+`HOST_CLI_VALUE_TRANSFER_AUTH_KEY` or the iOS-compatible `W3S_AUTH_KEY`.
+The command fails before discovery or submission when neither variable is set.
 
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
@@ -904,6 +974,7 @@ The layout may contain compatibility paths as well as identity-owned paths:
     signing-host/
       current-session
       session.json                    # default/bootstrap metadata, when used
+      accepted-chat-requests-<account>.json
       core-storage.json               # default/bootstrap core state
       scripts/
       storage/
@@ -923,6 +994,7 @@ The layout may contain compatibility paths as well as identity-owned paths:
       accounts.json
       accounts.json.lock
       session.json
+      accepted-chat-requests-<account>.json
       core-storage.json
       scripts/
       storage/
@@ -1158,7 +1230,7 @@ surface.
 | Statement Store | Real subscribe, proof, authorized proof, and submit over People. |
 | System | Handshake, feature query, and no-op navigation. |
 | Theme | One `Dark` subscription value. |
-| Chat | Typed unavailable/empty-subscription behavior. |
+| Chat | Product methods remain typed unavailable/empty; the separate wallet contact-request handshake is active. |
 | Coin Payment | Typed unavailable/interrupted-subscription behavior. |
 | Payment | Typed unsupported/interrupted-subscription behavior. |
 
@@ -1357,6 +1429,7 @@ The CLI exposes events for:
 - product connection reset after session/profile replacement;
 - LitePeople ring discovery;
 - wallet and device allowance preparation/results;
+- incoming wallet chat-request detection/acceptance/failure;
 - notification scheduling/delivery/cancellation;
 - pairing link/authentication/connection/disconnection/failure;
 - script start/exit;
@@ -1490,6 +1563,8 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
+| `HOST_CLI_VALUE_TRANSFER_AUTH_KEY` | Hex-encoded 32-byte Ed25519 seed authorizing testnet protected-asset transfers. |
+| `W3S_AUTH_KEY` | iOS-compatible fallback for `HOST_CLI_VALUE_TRANSFER_AUTH_KEY`. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |

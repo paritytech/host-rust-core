@@ -27,6 +27,9 @@ impl Network {
                 bulletin_genesis: hex_literal_genesis(
                     "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
                 ),
+                asset_hub_genesis: hex_literal_genesis(
+                    "bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f",
+                ),
                 live_chain_endpoints: PASEO_NEXT_V2_CHAIN_ENDPOINTS,
             },
         }
@@ -39,7 +42,7 @@ const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
             "bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f",
         ),
         ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-        required_for_host: false,
+        required_for_host: true,
     },
     ChainEndpoint {
         genesis: hex_literal_genesis(
@@ -67,6 +70,7 @@ pub struct NetworkConfig {
     pub bulletin_ws: &'static str,
     pub people_genesis: [u8; 32],
     pub bulletin_genesis: [u8; 32],
+    pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
 }
 

@@ -239,6 +239,8 @@ pub struct NativeRuntimeConfig {
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
+    /// Asset Hub genesis hash. Must be exactly 32 bytes.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
     /// Optional local signing-host secret material (raw BIP-39 entropy).
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
@@ -273,6 +275,12 @@ pub enum NativeRuntimeConfigError {
     /// Bulletin-chain genesis hash was not exactly 32 bytes.
     #[error("bulletin_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
     InvalidBulletinChainGenesisHash {
+        /// Supplied byte length.
+        actual: u64,
+    },
+    /// Asset Hub genesis hash was not exactly 32 bytes.
+    #[error("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
+    InvalidAssetHubChainGenesisHash {
         /// Supplied byte length.
         actual: u64,
     },
@@ -324,6 +332,12 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
                     actual: config.bulletin_chain_genesis_hash.len() as u64,
                 }
             })?;
+        let asset_hub_chain_genesis_hash =
+            <[u8; 32]>::try_from(config.asset_hub_chain_genesis_hash.as_slice()).map_err(|_| {
+                NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash {
+                    actual: config.asset_hub_chain_genesis_hash.len() as u64,
+                }
+            })?;
         let product =
             ProductContext::new(config.product_id).map_err(NativeRuntimeConfigError::from)?;
         let signing = SigningHostConfig::new(
@@ -338,6 +352,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
             },
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
         )?;
         Ok(Self {
             signing,
@@ -1264,6 +1279,7 @@ mod tests {
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
+            asset_hub_chain_genesis_hash: vec![0xcc; 32],
             local_session_secret: None,
             local_session_lite_username: None,
             pairing_deeplink_scheme: NativePairingDeeplinkScheme::PolkadotApp,
@@ -1396,6 +1412,20 @@ mod tests {
         assert!(matches!(
             err,
             NativeRuntimeConfigError::InvalidPeopleChainGenesisHash { actual: 31 }
+        ));
+    }
+
+    #[test]
+    fn runtime_config_rejects_wrong_size_asset_hub_genesis_hash() {
+        let err = NativeResolvedRuntimeConfig::try_from(NativeRuntimeConfig {
+            asset_hub_chain_genesis_hash: vec![0; 31],
+            ..native_runtime_config("app.dot")
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash { actual: 31 }
         ));
     }
 

@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn required_bulletin_route_is_enabled_without_optional_live_chains() {
+    fn required_host_routes_are_enabled_without_optional_live_chains() {
         let network = Network::PaseoNextV2.config();
         let provider = WsChainProvider::with_live_chain_routing(
             network.people_ws,
@@ -216,25 +216,29 @@ mod tests {
             provider.url_for(&network.bulletin_genesis),
             network.bulletin_ws
         );
+        let asset_hub = network
+            .live_chain_endpoints
+            .iter()
+            .find(|endpoint| endpoint.genesis == network.asset_hub_genesis)
+            .expect("Asset Hub endpoint");
+        assert_eq!(provider.url_for(&network.asset_hub_genesis), asset_hub.ws);
         assert_eq!(provider.url_for(&network.people_genesis), network.people_ws);
-        assert_eq!(
-            provider.url_for(&network.live_chain_endpoints[0].genesis),
-            network.people_ws
-        );
     }
 
     #[test]
     fn optional_live_chain_routes_are_enabled_by_the_test_switch() {
         let network = Network::PaseoNextV2.config();
-        let provider = WsChainProvider::with_live_chain_routing(
-            network.people_ws,
-            network.live_chain_endpoints,
-            true,
-        );
+        let optional = ChainEndpoint {
+            genesis: [0xdd; 32],
+            ws: "wss://optional.invalid",
+            required_for_host: false,
+        };
+        let disabled =
+            WsChainProvider::with_live_chain_routing(network.people_ws, &[optional], false);
+        assert_eq!(disabled.url_for(&optional.genesis), network.people_ws);
 
-        assert_eq!(
-            provider.url_for(&network.live_chain_endpoints[0].genesis),
-            network.live_chain_endpoints[0].ws
-        );
+        let provider =
+            WsChainProvider::with_live_chain_routing(network.people_ws, &[optional], true);
+        assert_eq!(provider.url_for(&optional.genesis), optional.ws);
     }
 }

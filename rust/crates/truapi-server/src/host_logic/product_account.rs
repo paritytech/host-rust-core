@@ -119,7 +119,7 @@ pub fn derive_sr25519_hard_path(
 }
 
 /// Create a Substrate soft-derivation chain code for one junction.
-fn create_chain_code(code: &str) -> Result<[u8; 32], ProductAccountError> {
+pub(super) fn create_chain_code(code: &str) -> Result<[u8; 32], ProductAccountError> {
     let encoded = if !code.is_empty() && code.bytes().all(|byte| byte.is_ascii_digit()) {
         code.parse::<u64>()
             .map_err(|_| ProductAccountError::NumericJunctionOutOfRange)?

@@ -33,6 +33,10 @@ pub enum SessionCommand {
 pub enum ShellCommand {
     /// Answer a Polkadot Mobile pairing deeplink.
     Pair(String),
+    /// Show the active wallet's Coinage CASH balance.
+    Balance { verbose: bool, recover: bool },
+    /// Add 5.00 test CASH using the configured iOS-compatible faucet.
+    TopUp,
     /// Edit the remembered product script, or run an explicit one, through the
     /// public frame endpoint.
     Script(Option<PathBuf>),
@@ -85,6 +89,8 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             }
             Ok(ShellCommand::Script(Some(PathBuf::from(argument))))
         }
+        "/balance" => parse_balance_arguments(argument),
+        "/top-up" => no_argument(name, argument, ShellCommand::TopUp),
         "/help" => no_argument(name, argument, ShellCommand::Help),
         "/clear" => no_argument(name, argument, ShellCommand::Clear),
         "/copy" => no_argument(name, argument, ShellCommand::Copy),
@@ -142,6 +148,8 @@ pub struct Completion {
 
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
     ("/pair", "answer a Polkadot Mobile pairing URL"),
+    ("/balance", "show the active wallet's CASH balance"),
+    ("/top-up", "add 5.00 CASH from the testnet faucet"),
     ("/script", "edit the last or run an existing product script"),
     ("/log", "set error, warn, info, debug, or trace"),
     ("/product", "show or switch the active product"),
@@ -162,6 +170,11 @@ const PAIRING_COMMANDS: &[(&str, &str)] = &[
     ("/clear", "clear the visible transcript"),
     ("/copy", "copy the transcript to the clipboard"),
     ("/quit", "shut down the pairing host"),
+];
+
+const BALANCE_ARGUMENTS: &[(&str, &str)] = &[
+    ("--verbose", "show finalized coin and voucher details"),
+    ("--recover", "scan the next private-balance recovery range"),
 ];
 
 const LOG_ARGUMENTS: &[(&str, &str)] = &[
@@ -189,6 +202,11 @@ fn completions_for_scope(
     }
     if let Some(prefix) = input.strip_prefix("/log ") {
         return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
+    }
+    if scope == CommandScope::SigningHost
+        && let Some(prefix) = input.strip_prefix("/balance ")
+    {
+        return balance_argument_completions(prefix);
     }
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/session ")
@@ -227,6 +245,58 @@ fn completions_for_scope(
         .filter(|(command, _)| command.trim_end().starts_with(input))
         .map(|(command, description)| Completion {
             value: (*command).to_string(),
+            description,
+        })
+        .collect()
+}
+
+fn parse_balance_arguments(argument: &str) -> Result<ShellCommand, String> {
+    let mut verbose = false;
+    let mut recover = false;
+    for flag in argument.split_whitespace() {
+        match flag {
+            "--verbose" if !verbose => verbose = true,
+            "--recover" if !recover => recover = true,
+            _ => return Err("usage: /balance [--verbose] [--recover]".to_string()),
+        }
+    }
+    Ok(ShellCommand::Balance { verbose, recover })
+}
+
+fn balance_argument_completions(prefix: &str) -> Vec<Completion> {
+    let trailing_space = prefix.ends_with(char::is_whitespace);
+    let mut tokens = prefix.split_whitespace().collect::<Vec<_>>();
+    let partial = if trailing_space {
+        ""
+    } else {
+        tokens.pop().unwrap_or_default()
+    };
+    if tokens
+        .iter()
+        .any(|token| !BALANCE_ARGUMENTS.iter().any(|(flag, _)| flag == token))
+        || tokens.iter().any(|token| {
+            tokens
+                .iter()
+                .filter(|candidate| *candidate == token)
+                .count()
+                > 1
+        })
+    {
+        return Vec::new();
+    }
+
+    BALANCE_ARGUMENTS
+        .iter()
+        .filter(|(flag, _)| !tokens.contains(flag) && flag.starts_with(partial))
+        .map(|(flag, description)| Completion {
+            value: format!(
+                "/balance {}{}",
+                tokens
+                    .iter()
+                    .map(|token| format!("{token} "))
+                    .collect::<String>(),
+                flag
+            ),
             description,
         })
         .collect()
@@ -524,6 +594,10 @@ pub fn parse_approval(input: &str) -> Option<bool> {
 /// Text displayed by `/help` in either presentation mode.
 pub const HELP_TEXT: &str = "\
 /pair <url>             answer a Polkadot Mobile pairing URL
+/balance                show the active wallet's CASH balance
+/balance --verbose      include finalized coin and voucher details
+/balance --recover      scan the next private-balance recovery range
+/top-up                 add 5.00 CASH from the testnet faucet
 /script                 edit and run the session's last Bun TypeScript script
 /script <path>          run an existing JS/TS product script with Bun
 /log <level>            set error, warn, info, debug, or trace
@@ -576,6 +650,35 @@ mod tests {
             ))))
         );
         assert_eq!(parse_command("/script"), Ok(ShellCommand::Script(None)));
+        assert_eq!(
+            parse_command("/balance"),
+            Ok(ShellCommand::Balance {
+                verbose: false,
+                recover: false,
+            })
+        );
+        assert_eq!(
+            parse_command("/balance --verbose"),
+            Ok(ShellCommand::Balance {
+                verbose: true,
+                recover: false,
+            })
+        );
+        assert_eq!(
+            parse_command("/balance --recover"),
+            Ok(ShellCommand::Balance {
+                verbose: false,
+                recover: true,
+            })
+        );
+        assert_eq!(
+            parse_command("/balance --recover --verbose"),
+            Ok(ShellCommand::Balance {
+                verbose: true,
+                recover: true,
+            })
+        );
+        assert_eq!(parse_command("/top-up"), Ok(ShellCommand::TopUp));
         assert_eq!(parse_command("/login"), Ok(ShellCommand::Login));
         assert_eq!(parse_command("/logout"), Ok(ShellCommand::Logout));
         assert_eq!(
@@ -614,6 +717,12 @@ mod tests {
         );
         assert!(parse_command("/whoami").is_err());
         assert!(parse_command("/copy now").is_err());
+        assert_eq!(
+            parse_command("/balance now").unwrap_err(),
+            "usage: /balance [--verbose] [--recover]"
+        );
+        assert!(parse_command("/balance --recover --recover").is_err());
+        assert!(parse_command("/top-up now").is_err());
         assert!(parse_command("/login now").is_err());
         assert!(parse_command("/logout now").is_err());
         assert!(parse_command("/pair https://example.com").is_err());
@@ -712,12 +821,43 @@ mod tests {
         assert!(commands.contains(&"/logout".to_string()));
         assert!(commands.contains(&"/product".to_string()));
         assert!(commands.contains(&"/copy".to_string()));
+        assert!(!commands.contains(&"/balance".to_string()));
+        assert!(!commands.contains(&"/top-up".to_string()));
         assert!(!commands.iter().any(|command| command.starts_with("/pair")));
         assert!(
             !commands
                 .iter()
                 .any(|command| command.starts_with("/session"))
         );
+    }
+
+    #[test]
+    fn signing_host_completion_offers_balance() {
+        let matches = completions_for_scope("/bal", &[], CommandScope::SigningHost);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].value, "/balance");
+    }
+
+    #[test]
+    fn signing_host_completion_offers_balance_option_after_command() {
+        let matches = completions_for_scope("/balance ", &[], CommandScope::SigningHost);
+
+        assert_eq!(
+            matches
+                .iter()
+                .map(|completion| completion.value.as_str())
+                .collect::<Vec<_>>(),
+            ["/balance --verbose", "/balance --recover"]
+        );
+    }
+
+    #[test]
+    fn signing_host_completion_offers_the_remaining_balance_option() {
+        let matches = completions_for_scope("/balance --verbose ", &[], CommandScope::SigningHost);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].value, "/balance --verbose --recover");
     }
 
     #[test]
@@ -752,5 +892,13 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn signing_host_completion_offers_top_up() {
+        let matches = completions_for_scope("/top", &[], CommandScope::SigningHost);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].value, "/top-up");
     }
 }

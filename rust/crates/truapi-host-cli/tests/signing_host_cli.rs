@@ -41,6 +41,7 @@ fn exec_help_is_plain_and_exits_successfully() {
     assert!(output.status.success());
     assert!(!String::from_utf8_lossy(&output.stdout).contains("/whoami"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/script"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/balance"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/copy"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/product"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session"));
