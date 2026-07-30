@@ -127,6 +127,25 @@ pub enum SystemEvent {
         ring_index: u32,
         members: usize,
     },
+    Balance {
+        total: String,
+        on_hold: Option<String>,
+        details: Vec<String>,
+    },
+    TopUp {
+        amount: String,
+        vouchers: usize,
+    },
+    ChatRequestDetected {
+        username: String,
+    },
+    ChatRequestAccepted {
+        username: String,
+    },
+    ChatRequestFailed {
+        username: String,
+        reason: String,
+    },
     AllowanceChecking {
         target: String,
     },
@@ -1296,6 +1315,46 @@ impl App {
                 NoticeTone::Success,
                 "LitePeople ring ready".to_string(),
                 Some(format!("Ring {ring_index} · {members} members")),
+            ),
+            SystemEvent::Balance {
+                total,
+                on_hold,
+                details,
+            } => {
+                let mut detail = on_hold
+                    .map(|amount| format!("{amount} on hold"))
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                detail.extend(details);
+                self.activity(
+                    "balance".to_string(),
+                    format!("CASH {total}"),
+                    (!detail.is_empty()).then(|| detail.join("\n")),
+                    ActivityState::Succeeded,
+                );
+            }
+            SystemEvent::TopUp { amount, vouchers } => self.activity(
+                "top-up".to_string(),
+                format!("CASH topped up {amount}"),
+                Some(format!("{vouchers} vouchers added")),
+                ActivityState::Succeeded,
+            ),
+            SystemEvent::ChatRequestDetected { username } => self.start_activity(
+                format!("chat-request:{username}"),
+                format!("Chat request from {username}"),
+                Some("Accepting automatically".to_string()),
+            ),
+            SystemEvent::ChatRequestAccepted { username } => self.activity(
+                format!("chat-request:{username}"),
+                format!("Accepted chat request from {username}"),
+                None,
+                ActivityState::Succeeded,
+            ),
+            SystemEvent::ChatRequestFailed { username, reason } => self.activity(
+                format!("chat-request:{username}"),
+                format!("Could not accept chat request from {username}"),
+                Some(reason),
+                ActivityState::Failed,
             ),
             SystemEvent::AllowanceChecking { target } => self.start_activity(
                 format!("allowance:{target}"),
@@ -2717,6 +2776,17 @@ mod tests {
         assert!(
             completions[visible]
                 .iter()
+                .any(|completion| completion.value == "/top-up")
+        );
+
+        let last_visible = completion_window(
+            completions.len(),
+            completions.len() - 1,
+            MAX_VISIBLE_COMPLETIONS,
+        );
+        assert!(
+            completions[last_visible]
+                .iter()
                 .any(|completion| completion.value == "/copy")
         );
 
@@ -2739,17 +2809,17 @@ mod tests {
             .lines()
             .find(|line| line.contains("edit the last"))
             .context("render script completion")?;
-        let clear = screen
+        let top_up = screen
             .lines()
-            .find(|line| line.contains("clear the visible"))
-            .context("render clear completion")?;
+            .find(|line| line.contains("add 5.00"))
+            .context("render top-up completion")?;
 
         let column = |line: &str, description: &str| {
             line.find(description)
                 .map(|index| text_display_width(&line[..index]))
         };
         assert_eq!(column(deeplink, "answer"), column(script, "edit"));
-        assert_eq!(column(script, "edit"), column(clear, "clear the visible"));
+        assert_eq!(column(script, "edit"), column(top_up, "add 5.00"));
         Ok(())
     }
 
@@ -2887,6 +2957,70 @@ mod tests {
             app.transcript_text(),
             "• Listening for product frames\n  ws://127.0.0.1:9956"
         );
+    }
+
+    #[test]
+    fn balance_event_shares_cash_copy_between_renderers() {
+        let event = SystemEvent::Balance {
+            total: "12.50".to_string(),
+            on_hold: Some("0.32".to_string()),
+            details: Vec::new(),
+        };
+        assert_eq!(event.human(), "✓ CASH 12.50\n  0.32 on hold");
+
+        let mut app = test_app();
+        app.handle_system_event(event);
+        assert_eq!(app.transcript_text(), "✓ CASH 12.50\n  0.32 on hold");
+    }
+
+    #[test]
+    fn verbose_balance_event_renders_every_detail_line() {
+        let event = SystemEvent::Balance {
+            total: "5.00".to_string(),
+            on_hold: None,
+            details: vec![
+                "Coins (0)".to_string(),
+                "  none".to_string(),
+                "Vouchers (1)".to_string(),
+                "  #0 · 2^8 · 2.56 CASH · in recycler · full · ring 4 (10/12 included)".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            event.human(),
+            "✓ CASH 5.00\n  Coins (0)\n    none\n  Vouchers (1)\n    #0 · 2^8 · 2.56 CASH · in recycler · full · ring 4 (10/12 included)"
+        );
+    }
+
+    #[test]
+    fn top_up_event_shares_cash_copy_between_renderers() {
+        let event = SystemEvent::TopUp {
+            amount: "5.00".to_string(),
+            vouchers: 6,
+        };
+        assert_eq!(event.human(), "✓ CASH topped up 5.00\n  6 vouchers added");
+
+        let mut app = test_app();
+        app.handle_system_event(event);
+        assert_eq!(
+            app.transcript_text(),
+            "✓ CASH topped up 5.00\n  6 vouchers added"
+        );
+    }
+
+    #[test]
+    fn chat_request_acceptance_replaces_detection_activity() {
+        let mut app = test_app();
+        app.handle_system_event(SystemEvent::ChatRequestDetected {
+            username: "alice.42".to_string(),
+        });
+        app.handle_system_event(SystemEvent::ChatRequestAccepted {
+            username: "alice.42".to_string(),
+        });
+
+        let transcript = app.transcript_text();
+        assert!(transcript.contains("Accepted chat request from alice.42"));
+        assert!(!transcript.contains("Accepting automatically"));
     }
 
     #[test]

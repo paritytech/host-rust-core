@@ -59,7 +59,7 @@
 | `Signing/sign_raw` | ✅ |  |
 | `Signing/sign_payload` | ✅ |  |
 | `Statement Store/subscribe` | ✅ |  |
-| `Statement Store/create_proof` | ✅ |  |
+| `Statement Store/create_proof` | ❌ | StatementStoreProductSign confirmation failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
 | `Statement Store/submit` | ✅ |  |
 | `Statement Store/create_proof_authorized` | ✅ |  |
 | `System/handshake` | ✅ |  |

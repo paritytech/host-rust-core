@@ -50,11 +50,15 @@ use crate::host_logic::statement_store::{
     build_signed_statement, parse_new_statements_result,
     validate_unsigned_statement_signing_payload,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::host_rpc_client::HostRpcClient;
 use crate::runtime::authority::{
     AccountAliasAuthorityRequest, AuthorityError, CreateProofAuthorityRequest,
     CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
     SignRawAuthorityRequest,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::pgas_allowance::PgasAllowanceError;
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::fresh_statement_expiry;
 #[cfg(not(target_arch = "wasm32"))]
@@ -133,6 +137,10 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementAllowance(#[from] StatementAllowanceError),
+    /// Asset Hub PGAS slot selection or claim failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    PgasAllowance(#[from] PgasAllowanceError),
     /// Runtime service could not open the required Statement Store RPC client.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
@@ -146,6 +154,13 @@ pub(super) enum AllowanceAllocationError {
         /// Chain runtime failure.
         #[source]
         source: RuntimeFailure,
+    },
+    /// Runtime service could not open the configured Asset Hub RPC client.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("Asset Hub allowance client: {reason}")]
+    AssetHubRpcClient {
+        /// Platform connection failure.
+        reason: String,
     },
     /// Allocation helper is unavailable for this target.
     #[cfg(target_arch = "wasm32")]
@@ -784,8 +799,19 @@ async fn resource_allocation_response(
                     slot_account_key,
                 })
             }),
-            SsoAllocatableResource::SmartContractAllowance(_)
-            | SsoAllocatableResource::AutoSigning => Ok(SsoAllocationOutcome::NotAvailable),
+            SsoAllocatableResource::SmartContractAllowance(index) => {
+                allocate_smart_contract_allowance(
+                    services,
+                    signing_host,
+                    &request.calling_product_id,
+                    index,
+                )
+                .await
+                .map(|_| {
+                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::SmartContractAllowance)
+                })
+            }
+            SsoAllocatableResource::AutoSigning => Ok(SsoAllocationOutcome::NotAvailable),
         };
         match outcome {
             Ok(outcome) => outcomes.push(outcome),
@@ -978,6 +1004,73 @@ pub(super) async fn allocate_bulletin_allowance(
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) async fn allocate_smart_contract_allowance(
+    services: &Arc<RuntimeServices>,
+    signing_host: &SigningHost,
+    product_id: &str,
+    derivation_index: u32,
+) -> Result<(), AllowanceAllocationError> {
+    use crate::runtime::pgas_allowance;
+    use crate::runtime::statement_allowance::{
+        self, fetch_chain_state, fetch_metadata, find_including_ring,
+    };
+
+    let entropy = signing_host.root_entropy()?;
+    let target = signing_host
+        .product_keypair(&api::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index,
+        })?
+        .public
+        .to_bytes();
+    let asset_hub_connection = services
+        .platform
+        .connect(signing_host.asset_hub_chain_genesis_hash)
+        .await
+        .map_err(|error| AllowanceAllocationError::AssetHubRpcClient {
+            reason: error.reason,
+        })?;
+    let asset_hub_rpc = statement_allowance::rpc::RpcClient::new(subxt_rpcs::RpcClient::new(
+        HostRpcClient::new(Arc::from(asset_hub_connection), services.spawner.clone()),
+    ));
+    let asset_hub_metadata = fetch_metadata(&asset_hub_rpc).await?;
+    let asset_hub_state = fetch_chain_state(&asset_hub_rpc).await?;
+
+    let people_rpc = statement_allowance::rpc::RpcClient::new(
+        services.statement_store.client("PGAS allowance").await?,
+    );
+    let people_metadata = fetch_metadata(&people_rpc).await?;
+    let bandersnatch = statement_allowance::bandersnatch_entropy(&entropy);
+    let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
+    let ring = find_including_ring(&people_rpc, &people_metadata, bandersnatch, current)
+        .await?
+        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+            resource: "smart-contract",
+        })?;
+    let outcome = pgas_allowance::claim_pgas(
+        &asset_hub_rpc,
+        &asset_hub_metadata,
+        &asset_hub_state,
+        &people_rpc,
+        &people_metadata,
+        bandersnatch,
+        &target,
+        &ring,
+    )
+    .await?;
+    debug!(
+        %product_id,
+        derivation_index,
+        block_hash = %outcome.block_hash,
+        day = outcome.day,
+        slot_index = outcome.slot_index,
+        ring_index = outcome.ring_index,
+        "claimed smart-contract PGAS allowance"
+    );
+    Ok(())
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn allocate_statement_store_allowance(
     _services: &Arc<RuntimeServices>,
@@ -999,6 +1092,18 @@ pub(super) async fn allocate_bulletin_allowance(
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     Err(AllowanceAllocationError::NativeOnly {
         resource: "Bulletin",
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn allocate_smart_contract_allowance(
+    _services: &Arc<RuntimeServices>,
+    _signing_host: &SigningHost,
+    _product_id: &str,
+    _derivation_index: u32,
+) -> Result<(), AllowanceAllocationError> {
+    Err(AllowanceAllocationError::NativeOnly {
+        resource: "smart-contract",
     })
 }
 
@@ -1240,6 +1345,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
         )
         .expect("signing host config is valid");
         let services = RuntimeServices::new(
@@ -1248,7 +1354,7 @@ mod tests {
             config.bulletin_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHost::new(services.clone());
+        let signing_host = SigningHost::new(services.clone(), config.asset_hub_chain_genesis_hash);
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         (services, signing_host)

@@ -835,6 +835,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4440,6 +4449,7 @@ dependencies = [
  "futures",
  "hex",
  "impl-serde",
+ "jsonrpsee",
  "keccak-hash",
  "parity-scale-codec",
  "primitive-types",
@@ -4462,6 +4472,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "wasm-bindgen-futures",
  "web-time",
 ]
 
@@ -5041,6 +5052,7 @@ dependencies = [
  "arboard",
  "async-trait",
  "bip39",
+ "chrono",
  "clap",
  "crossterm",
  "fs2",
@@ -5048,13 +5060,19 @@ dependencies = [
  "futures-util",
  "hex",
  "parity-scale-codec",
+ "rand 0.8.7",
  "ratatui",
+ "rayon",
  "reqwest",
  "rustls",
+ "scale-decode",
+ "schnorrkel",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "shlex 1.3.0",
+ "sp-crypto-hashing",
+ "subxt",
  "subxt-rpcs",
  "tempfile",
  "tokio",

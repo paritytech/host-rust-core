@@ -66,6 +66,36 @@ pub enum MetadataError {
     /// `AsResources` extension is absent from metadata.
     #[error("{AS_RESOURCES} extension not found in metadata")]
     MissingAsResourcesExtension,
+    /// A requested transaction extension is absent from metadata.
+    #[error("{identifier} extension not found in metadata")]
+    MissingExtension {
+        /// Runtime metadata identifier.
+        identifier: String,
+    },
+    /// A transaction extension's extra did not contain the expected `Option`.
+    #[error("{identifier} extension extra is not an Option")]
+    ExtensionExtraNotOption {
+        /// Runtime metadata identifier.
+        identifier: String,
+    },
+    /// A named transaction-extension authorization variant was absent.
+    #[error("{identifier} extension variant {variant} not found in metadata")]
+    MissingExtensionVariant {
+        /// Runtime metadata identifier.
+        identifier: String,
+        /// Authorization variant name.
+        variant: String,
+    },
+    /// No field on an authorization variant carried the requested enum variant.
+    #[error("{identifier} extension variant {info_variant} has no field variant {field_variant}")]
+    MissingExtensionFieldVariant {
+        /// Runtime metadata identifier.
+        identifier: String,
+        /// Authorization variant name.
+        info_variant: String,
+        /// Nested field variant name.
+        field_variant: String,
+    },
     /// `AsResources` extra type did not contain the expected `Option`.
     #[error("{AS_RESOURCES} extra is not an Option")]
     AsResourcesExtraNotOption,
@@ -442,6 +472,150 @@ impl Metadata {
             .collect()
     }
 
+    /// Encode every transaction extension, replacing one extension's `extra`
+    /// bytes with caller-supplied SCALE.
+    ///
+    /// This is used by signed flows such as Coinage, where the normal
+    /// metadata-shaped default is `None` but one transaction must carry a
+    /// runtime authorization value.
+    pub fn encode_signed_extensions_with_extra(
+        &self,
+        state: &ChainState,
+        identifier: &str,
+        extra: Vec<u8>,
+    ) -> Result<Vec<EncodedExtension>, MetadataError> {
+        let mut encoded = self.encode_signed_extensions(state);
+        self.replace_signed_extension_extra(&mut encoded, identifier, extra)?;
+        Ok(encoded)
+    }
+
+    /// Replace one already-encoded extension's explicit bytes.
+    pub fn replace_signed_extension_extra(
+        &self,
+        encoded: &mut [EncodedExtension],
+        identifier: &str,
+        extra: Vec<u8>,
+    ) -> Result<(), MetadataError> {
+        let index =
+            self.extension_index(identifier)
+                .ok_or_else(|| MetadataError::MissingExtension {
+                    identifier: identifier.to_string(),
+                })?;
+        encoded[index].extra = extra;
+        Ok(())
+    }
+
+    /// Position of a transaction extension in the runtime's implication
+    /// pipeline.
+    pub fn extension_index(&self, identifier: &str) -> Option<usize> {
+        self.extensions
+            .iter()
+            .position(|extension| extension.identifier == identifier)
+    }
+
+    /// Resolve the enum index of a named authorization carried by an
+    /// extension shaped as `Wrapper(Option<Info>)`.
+    pub fn extension_info_variant_index(
+        &self,
+        identifier: &str,
+        variant: &str,
+    ) -> Result<u8, StatementAllowanceError> {
+        let extension = self
+            .extensions
+            .iter()
+            .find(|extension| extension.identifier == identifier)
+            .ok_or_else(|| MetadataError::MissingExtension {
+                identifier: identifier.to_string(),
+            })?;
+        let option_type = match &self.resolve_type(extension.extra_type)?.type_def {
+            TypeDef::Composite(_) => self.single_field_type(extension.extra_type)?,
+            _ => extension.extra_type,
+        };
+        let info_type = self
+            .resolve_variant(option_type)?
+            .variants
+            .iter()
+            .find(|candidate| candidate.name == "Some")
+            .and_then(|some| match some.fields.as_slice() {
+                [field] => Some(field.ty.id),
+                _ => None,
+            })
+            .ok_or_else(|| MetadataError::ExtensionExtraNotOption {
+                identifier: identifier.to_string(),
+            })?;
+        self.resolve_variant(info_type)?
+            .variants
+            .iter()
+            .find(|candidate| candidate.name == variant)
+            .map(|candidate| candidate.index)
+            .ok_or_else(|| {
+                MetadataError::MissingExtensionVariant {
+                    identifier: identifier.to_string(),
+                    variant: variant.to_string(),
+                }
+                .into()
+            })
+    }
+
+    /// Resolve both an extension authorization variant and a nested enum field
+    /// variant by name from `Wrapper(Option<Info>)`.
+    pub fn extension_info_and_field_variant_indices(
+        &self,
+        identifier: &str,
+        info_variant: &str,
+        field_variant: &str,
+    ) -> Result<(u8, u8), StatementAllowanceError> {
+        let extension = self
+            .extensions
+            .iter()
+            .find(|extension| extension.identifier == identifier)
+            .ok_or_else(|| MetadataError::MissingExtension {
+                identifier: identifier.to_string(),
+            })?;
+        let option_type = match &self.resolve_type(extension.extra_type)?.type_def {
+            TypeDef::Composite(_) => self.single_field_type(extension.extra_type)?,
+            _ => extension.extra_type,
+        };
+        let info_type = self
+            .resolve_variant(option_type)?
+            .variants
+            .iter()
+            .find(|candidate| candidate.name == "Some")
+            .and_then(|some| match some.fields.as_slice() {
+                [field] => Some(field.ty.id),
+                _ => None,
+            })
+            .ok_or_else(|| MetadataError::ExtensionExtraNotOption {
+                identifier: identifier.to_string(),
+            })?;
+        let info = self
+            .resolve_variant(info_type)?
+            .variants
+            .iter()
+            .find(|candidate| candidate.name == info_variant)
+            .ok_or_else(|| MetadataError::MissingExtensionVariant {
+                identifier: identifier.to_string(),
+                variant: info_variant.to_string(),
+            })?;
+        let nested = info
+            .fields
+            .iter()
+            .filter_map(|field| self.resolve_variant(field.ty.id).ok())
+            .find_map(|variants| {
+                variants
+                    .variants
+                    .iter()
+                    .find(|candidate| candidate.name == field_variant)
+                    .map(|candidate| candidate.index)
+            })
+            .ok_or_else(|| MetadataError::MissingExtensionFieldVariant {
+                identifier: identifier.to_string(),
+                info_variant: info_variant.to_string(),
+                field_variant: field_variant.to_string(),
+            })?;
+        Ok((info.index, nested))
+    }
+
     /// The signed-extension identifiers, in metadata order.
     #[cfg(test)]
     pub fn extension_ids(&self) -> Vec<&str> {
@@ -548,11 +722,24 @@ pub fn build_proof_message(
     call_data: &[u8],
     state: &ChainState,
 ) -> Result<[u8; 32], StatementAllowanceError> {
+    build_proof_message_after_extension(metadata, call_data, state, AS_RESOURCES)
+}
+
+/// Build the inherited-implication proof message using transaction extensions
+/// strictly after `identifier`.
+pub fn build_proof_message_after_extension(
+    metadata: &Metadata,
+    call_data: &[u8],
+    state: &ChainState,
+    identifier: &str,
+) -> Result<[u8; 32], StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
     let tail_start = metadata
-        .as_resources_index()
+        .extension_index(identifier)
         .map(|i| i + 1)
-        .ok_or(MetadataError::MissingAsResourcesExtension)?;
+        .ok_or_else(|| MetadataError::MissingExtension {
+            identifier: identifier.to_string(),
+        })?;
     let tail = &all[tail_start..];
 
     let mut payload = Vec::with_capacity(1 + call_data.len());

@@ -67,13 +67,18 @@ pub(crate) struct SigningHost {
     session_state: Arc<SessionState>,
     auth_state: AuthStateMachine,
     ring_resolver: Arc<dyn RingResolver>,
+    /// Asset Hub receiving smart-contract (PGAS) allowance claims.
+    asset_hub_chain_genesis_hash: [u8; 32],
     /// Root BIP-39 entropy held only while a session is active.
     root_entropy: Mutex<Option<Zeroizing<Vec<u8>>>>,
 }
 
 impl SigningHost {
     /// Build a signing host with no active session.
-    pub(crate) fn new(services: Arc<RuntimeServices>) -> Arc<Self> {
+    pub(crate) fn new(
+        services: Arc<RuntimeServices>,
+        asset_hub_chain_genesis_hash: [u8; 32],
+    ) -> Arc<Self> {
         let platform = services.platform.clone();
         let ring_resolver = ChainRingResolver::new(services.chain.clone());
         Arc::new(Self {
@@ -82,6 +87,7 @@ impl SigningHost {
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform),
             ring_resolver,
+            asset_hub_chain_genesis_hash,
             root_entropy: Mutex::new(None),
         })
     }
@@ -103,6 +109,7 @@ impl SigningHost {
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform),
             ring_resolver,
+            asset_hub_chain_genesis_hash: [0; 32],
             root_entropy: Mutex::new(None),
         })
     }
@@ -451,8 +458,17 @@ impl ProductAuthority for SigningHost {
                     .await
                     .map(|_| v01::AllocationOutcome::Allocated)
                 }
-                v01::AllocatableResource::SmartContractAllowance(_)
-                | v01::AllocatableResource::AutoSigning => Ok(v01::AllocationOutcome::NotAvailable),
+                v01::AllocatableResource::SmartContractAllowance(index) => {
+                    sso_responder::allocate_smart_contract_allowance(
+                        &self.services,
+                        self,
+                        &product_id,
+                        index,
+                    )
+                    .await
+                    .map(|_| v01::AllocationOutcome::Allocated)
+                }
+                v01::AllocatableResource::AutoSigning => Ok(v01::AllocationOutcome::NotAvailable),
             };
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),
@@ -726,6 +742,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
         )
         .expect("signing host config is valid");
         let services = RuntimeServices::new(
@@ -734,7 +751,8 @@ mod tests {
             config.bulletin_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHostRole::new(services.clone());
+        let signing_host =
+            SigningHostRole::new(services.clone(), config.asset_hub_chain_genesis_hash);
         (services, signing_host)
     }
 
@@ -1467,7 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_allocation_handles_empty_and_optional_resource_batches() {
+    fn direct_allocation_handles_empty_and_auto_signing_batches() {
         let (_services, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation");
@@ -1488,19 +1506,44 @@ mod tests {
             &session,
             "myapp.dot".to_string(),
             v01::HostRequestResourceAllocationRequest {
-                resources: vec![
-                    v01::AllocatableResource::SmartContractAllowance(0),
-                    v01::AllocatableResource::AutoSigning,
-                ],
+                resources: vec![v01::AllocatableResource::AutoSigning],
             },
         ))
         .expect("optional allocation succeeds");
         assert_eq!(
             optional.outcomes,
-            vec![
-                v01::AllocationOutcome::NotAvailable,
-                v01::AllocationOutcome::NotAvailable,
-            ]
+            vec![v01::AllocationOutcome::NotAvailable]
+        );
+    }
+
+    #[test]
+    fn direct_smart_contract_allocation_uses_asset_hub() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform {
+            chain_connect_error: Some("asset hub unavailable"),
+            ..StubPlatform::default()
+        });
+        let services = RuntimeServices::new(
+            platform,
+            [0; 32],
+            [0xbb; 32],
+            crate::test_support::test_spawner(),
+        );
+        let authority = SigningHostRole::new(services, [0xcc; 32]);
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let session = authority.current_session().expect("connected");
+        let response = futures::executor::block_on(authority.allocate_resources(
+            &CallContext::default(),
+            &session,
+            "myapp.dot".to_string(),
+            v01::HostRequestResourceAllocationRequest {
+                resources: vec![v01::AllocatableResource::SmartContractAllowance(0)],
+            },
+        ))
+        .expect("item failure is represented as an allocation outcome");
+        assert_eq!(
+            response.outcomes,
+            vec![v01::AllocationOutcome::NotAvailable],
         );
     }
 }

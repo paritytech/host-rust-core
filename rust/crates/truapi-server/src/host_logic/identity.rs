@@ -14,6 +14,8 @@ use sp_crypto_hashing::{blake2_128, twox_128};
 /// Username fields read from a People-chain `Resources.Consumers` record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeopleIdentity {
+    /// SEC1-uncompressed P-256 public key used for identity-chat encryption.
+    pub identifier_key: [u8; 65],
     /// Lite username; `None` when the record stores an empty string.
     pub lite_username: Option<String>,
     /// Full username, when the account has registered one.
@@ -56,6 +58,7 @@ pub fn decode_people_identity(value: &[u8]) -> Result<PeopleIdentity, String> {
         .transpose()?
         .flatten();
     Ok(PeopleIdentity {
+        identifier_key: decoded.identifier_key,
         lite_username,
         full_username,
     })
@@ -100,6 +103,7 @@ mod tests {
 
         let decoded = decode_people_identity(&value).expect("identity should decode");
 
+        assert_eq!(decoded.identifier_key, [0x04; 65]);
         assert_eq!(decoded.full_username.as_deref(), Some("Alice Smith"));
         assert_eq!(decoded.lite_username.as_deref(), Some("alice.01"));
     }

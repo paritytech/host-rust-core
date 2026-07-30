@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 use subxt_rpcs::client::{RpcClient, rpc_params};
 use tracing::{debug, warn};
 use truapi_server::host_logic::attestation::build_lite_registration;
+use truapi_server::host_logic::chat::{ChatIdentity, derive_chat_identities};
 use truapi_server::host_logic::identity::{
-    decode_people_identity, resources_consumers_storage_key,
+    PeopleIdentity, decode_people_identity, resources_consumers_storage_key,
 };
 use truapi_server::host_logic::product_account::{
     derive_root_keypair_from_entropy, derive_sr25519_hard_path, product_public_key_to_address,
@@ -102,20 +103,61 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
 /// the final `name.discriminator` assigned by the People chain. Reading the
 /// consumer record repairs those records without re-attesting the account.
 pub async fn registered_lite_username(people_ws: &str, entropy: &[u8]) -> Result<String> {
-    let wallet_sso = derive_sr25519_hard_path(entropy, &["wallet", "sso"])
-        .map_err(|err| anyhow::anyhow!("//wallet//sso derivation failed: {err}"))?;
+    registered_chat_identity(people_ws, entropy)
+        .await?
+        .people
+        .lite_username
+        .context("registered People-chain identity has no Lite username")
+}
+
+/// Active signer identity whose statement and encryption keys match its
+/// People-chain consumer record.
+pub struct RegisteredChatIdentity {
+    pub chat: ChatIdentity,
+    pub people: PeopleIdentity,
+}
+
+/// Resolve either a CLI `//wallet//sso` identity or an existing iOS
+/// `//wallet` identity, rejecting records whose identifier key does not match
+/// the locally-derived chat key.
+pub async fn registered_chat_identity(
+    people_ws: &str,
+    entropy: &[u8],
+) -> Result<RegisteredChatIdentity> {
+    for chat in derive_chat_identities(entropy).map_err(anyhow::Error::msg)? {
+        let storage_key = format!(
+            "0x{}",
+            hex::encode(resources_consumers_storage_key(&chat.statement_account_id))
+        );
+        let Some(value) = query_storage(people_ws, &storage_key).await? else {
+            continue;
+        };
+        let people = decode_identity_hex(&value)?;
+        if people.identifier_key != chat.encryption_public_key {
+            debug!(
+                account = %product_public_key_to_address(chat.statement_account_id),
+                "People identity chat key does not match local derivation"
+            );
+            continue;
+        }
+        return Ok(RegisteredChatIdentity { chat, people });
+    }
+    bail!("signer has no matching Resources.Consumers chat identity")
+}
+
+/// Resolve one People identity by its raw account id.
+pub async fn people_identity(
+    people_ws: &str,
+    account_id: [u8; 32],
+) -> Result<truapi_server::host_logic::identity::PeopleIdentity> {
     let storage_key = format!(
         "0x{}",
-        hex::encode(resources_consumers_storage_key(
-            &wallet_sso.public.to_bytes()
-        ))
+        hex::encode(resources_consumers_storage_key(&account_id))
     );
     let value = query_storage(people_ws, &storage_key)
         .await?
-        .context("attested signer has no Resources.Consumers record")?;
-    decode_identity_hex(&value)?
-        .lite_username
-        .context("registered People-chain identity has no Lite username")
+        .context("chat requester has no Resources.Consumers record")?;
+    decode_identity_hex(&value)
 }
 
 /// Probe the People chain for which derivation of `entropy` (bare root,
