@@ -156,8 +156,8 @@ use truapi_platform::Platform;
 use truapi_platform::{
     AccountAccessReview, CreateTransactionReview, IdentityDisclosureReview,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
-    ProductContext, ResourceAllocationReview, SessionUiInfo, SignPayloadReview, SignRawReview,
-    UserConfirmationReview, normalize_product_identifier,
+    ProductContext, ProductStorageKey, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
+    SignRawReview, UserConfirmationReview, normalize_product_identifier,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -449,7 +449,9 @@ impl ProductRuntimeHost {
     }
 
     fn product_storage_key(&self, key: String) -> String {
-        product_storage_key(self.product.product_id.as_str(), &key)
+        ProductStorageKey::new(self.product.product_id.as_str(), key)
+            .expect("product runtime context was already validated")
+            .encode()
     }
 
     fn follow_id(&self, id: &str) -> String {
@@ -682,15 +684,6 @@ fn parse_legacy_signer_hex(signer: &str) -> Option<[u8; 32]> {
         return None;
     }
     hex::decode(raw).ok()?.try_into().ok()
-}
-
-fn product_storage_key(product_id: &str, key: &str) -> String {
-    format!(
-        "truapi:product-storage:v1:{}:{}:{}",
-        product_id.len(),
-        product_id,
-        key
-    )
 }
 
 fn runtime_failure_to_call_error<E>(failure: RuntimeFailure) -> CallError<E> {
@@ -4356,6 +4349,42 @@ mod tests {
             message.data,
             RemoteMessageData::V1(v1::RemoteMessage::Disconnected)
         ));
+    }
+
+    #[test]
+    fn pairing_logout_clears_session_and_bootstrap_identity() {
+        let platform = Arc::new(StubPlatform::default());
+        let (host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        host.test_session_state().set_session(sso_session_info());
+        {
+            let mut storage = platform
+                .local_storage
+                .lock()
+                .expect("local storage mutex poisoned");
+            storage.insert(
+                core_storage_test_key(CoreStorageKey::PairingDeviceIdentity),
+                vec![1, 2, 3],
+            );
+            storage.insert(
+                core_storage_test_key(CoreStorageKey::LastProcessedPairingStatement),
+                vec![4, 5, 6],
+            );
+        }
+
+        futures::executor::block_on(pairing_host.logout_and_reset_pairing()).unwrap();
+
+        assert!(host.test_session_state().current().is_none());
+        let storage = platform
+            .local_storage
+            .lock()
+            .expect("local storage mutex poisoned");
+        assert!(!storage.contains_key(&core_storage_test_key(
+            CoreStorageKey::PairingDeviceIdentity
+        )));
+        assert!(!storage.contains_key(&core_storage_test_key(
+            CoreStorageKey::LastProcessedPairingStatement
+        )));
     }
 
     #[test]
