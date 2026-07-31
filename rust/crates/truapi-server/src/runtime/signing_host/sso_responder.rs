@@ -810,7 +810,7 @@ fn public_allocatable_resource(resource: &SsoAllocatableResource) -> api::Alloca
         }
         SsoAllocatableResource::BulletinAllowance => api::AllocatableResource::BulletinAllowance,
         SsoAllocatableResource::SmartContractAllowance(index) => {
-            api::AllocatableResource::SmartContractAllowance(*index)
+            api::AllocatableResource::SmartContractAllowance(index.clone())
         }
         SsoAllocatableResource::AutoSigning => api::AllocatableResource::AutoSigning,
     }
@@ -1225,7 +1225,7 @@ mod tests {
     fn product_account(product_id: &str) -> api::ProductAccountId {
         api::ProductAccountId {
             dot_ns_identifier: product_id.to_string(),
-            derivation_index: 0,
+            derivation_index: api::DerivationIndex::Left(0),
         }
     }
 
@@ -1350,7 +1350,7 @@ mod tests {
                 calling_product_id: "myapp.dot".to_string(),
                 context: api::ProductProofContext {
                     product_id: "other.dot".to_string(),
-                    suffix: vec![],
+                    suffix: api::DerivationIndex::Left(0),
                 },
                 ring_location: api::RingLocation {
                     chain_id: [0; 32],

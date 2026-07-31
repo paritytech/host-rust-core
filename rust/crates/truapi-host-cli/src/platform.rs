@@ -1493,7 +1493,7 @@ mod tests {
             truapi_platform::StatementStoreProductSignReview {
                 account: api::ProductAccountId {
                     dot_ns_identifier: "myapp.dot".to_string(),
-                    derivation_index: 0,
+                    derivation_index: api::DerivationIndex::Left(0),
                 },
                 payload: vec![0x42; 128],
             },
