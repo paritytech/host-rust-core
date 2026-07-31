@@ -121,6 +121,10 @@ pub struct WireAttrs {
     pub interrupt_id: Option<u8>,
     /// Subscription item frame discriminant.
     pub receive_id: Option<u8>,
+    /// Whether the method's payloads carry key material or bearer secrets.
+    /// Marked by `#[wire(..., sensitive)]`; propagated into the generated
+    /// `SENSITIVE_FRAME_IDS` set so the wire debugger never decodes these frames.
+    pub sensitive: bool,
 }
 
 /// Wire-shape classification of a trait method.
@@ -819,6 +823,14 @@ fn extract_wire_attrs(docs: &str) -> WireAttrs {
         if line.starts_with("@wire_host_initiated") {
             attrs.host_initiated = true;
         }
+        if line.starts_with("@wire_sensitive=") {
+            attrs.sensitive = line
+                .trim_end()
+                .strip_prefix("@wire_sensitive=")
+                .and_then(|value| value.parse::<bool>().ok())
+                .unwrap_or(false);
+            continue;
+        }
         for (needle, target) in [
             ("@wire_request_id=", &mut attrs.request_id),
             ("@wire_response_id=", &mut attrs.response_id),
@@ -1484,7 +1496,7 @@ mod tests {
 
     #[test]
     fn clean_docs_strips_wire_markers() {
-        let docs = "Trait summary.\n\n@wire_request_id=7\n@service_required_execution=Chat\n";
+        let docs = "Trait summary.\n\n@wire_request_id=7\n@wire_sensitive=true\n@service_required_execution=Chat\n";
 
         assert_eq!(clean_docs(Some(docs)).as_deref(), Some("Trait summary."));
     }
@@ -1500,6 +1512,18 @@ mod tests {
 
         assert_eq!(trait_def.required_execution(), Some("Chat"));
         assert_eq!(trait_def.public_docs().as_deref(), Some("Chat operations."));
+    }
+
+    #[test]
+    fn extract_wire_attrs_reads_sensitive_flag() {
+        let sensitive = extract_wire_attrs("@wire_request_id=114\n@wire_sensitive=true");
+        assert_eq!(sensitive.request_id, Some(114));
+        assert!(sensitive.sensitive);
+
+        // Absent marker ⇒ not sensitive (the default for every unmarked method).
+        let plain = extract_wire_attrs("@wire_request_id=22");
+        assert_eq!(plain.request_id, Some(22));
+        assert!(!plain.sensitive);
     }
 
     #[test]

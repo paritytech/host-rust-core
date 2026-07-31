@@ -158,6 +158,7 @@ mod tests {
                 stop_id: None,
                 interrupt_id: None,
                 receive_id: None,
+                sensitive: false,
             },
             docs: None,
         }
@@ -180,6 +181,7 @@ mod tests {
                 stop_id: None,
                 interrupt_id: None,
                 receive_id: None,
+                sensitive: false,
             },
             docs: None,
         }
