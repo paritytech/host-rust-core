@@ -17,9 +17,10 @@ use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
 use crate::host_logic::sso::messages::{
     OnExistingAllowancePolicy, RemoteMessage, RemoteMessageData, RingVrfError,
     SsoAllocatedResource, SsoAllocationOutcome, SsoRemoteResponse, SsoSessionStatement,
-    alias_request_message, build_outgoing_request_statement, create_transaction_message,
-    decode_sso_session_statement, proof_request_message, resource_allocation_message,
-    sign_payload_message, sign_raw_legacy_message, sign_raw_message, v1,
+    alias_request_message, build_outgoing_request_statement, create_transaction_legacy_message,
+    create_transaction_message, decode_sso_session_statement, proof_request_message,
+    resource_allocation_message, sign_payload_message, sign_raw_legacy_message, sign_raw_message,
+    v1,
 };
 use crate::host_logic::statement_store::parse_new_statements_result;
 
@@ -89,6 +90,9 @@ impl PairingHost {
             .take();
     }
 
+    /// Watch the session's topics for a peer disconnect statement, replacing
+    /// any monitor for a different session. No-op when one is already running
+    /// for this session.
     pub(super) fn start_disconnect_monitor(&self, session: &SessionInfo) {
         let Some(sso) = session.sso.clone() else {
             self.stop_disconnect_monitor();
@@ -203,7 +207,11 @@ impl PairingHost {
             fresh_statement_expiry(),
         )
         .map_err(SsoRemoteResponseError::Failure)?;
-        let rpc_client = self.statement_store.client("SSO statement-store").await?;
+        let rpc_client = self
+            .statement_store
+            .client("SSO statement-store")
+            .await
+            .map_err(|err| SsoRemoteResponseError::Failure(err.to_string()))?;
         let own_subscription = subscribe_statement_topic(&rpc_client, sso.session_id_own)
             .await
             .map_err(|err| {
@@ -224,7 +232,7 @@ impl PairingHost {
             if !session_matches_key(&session_state, key) {
                 return Err(SsoRemoteResponseError::LocalDisconnected);
             }
-            statement_store_rpc::submit(&submit_client, statement)
+            statement_store_rpc::submit_sso(&submit_client, statement, "pairing-host request")
                 .await
                 .map_err(|err| {
                     SsoRemoteResponseError::Failure(format!("SSO statement submit failed: {err}"))
@@ -260,6 +268,7 @@ impl PairingHost {
         result
     }
 
+    /// Forward a payload-signing request to the paired signing host.
     pub(super) async fn remote_sign_payload(
         &self,
         cx: &CallContext,
@@ -284,6 +293,7 @@ impl PairingHost {
             .map_err(remote_authority_error)
     }
 
+    /// Forward a raw-signing request to the paired signing host.
     pub(super) async fn remote_sign_raw(
         &self,
         cx: &CallContext,
@@ -326,6 +336,7 @@ impl PairingHost {
         }
     }
 
+    /// Forward a transaction-creation request to the paired signing host.
     pub(super) async fn remote_create_transaction(
         &self,
         cx: &CallContext,
@@ -334,20 +345,27 @@ impl PairingHost {
     ) -> Result<latest::HostCreateTransactionResponse, AuthorityError> {
         let action = AuthorityRequestKind::from(&request);
         let message_id = sso_message_id();
-        let request = match request {
-            CreateTransactionAuthorityRequest::Product(request) => request,
+        let message = match request {
+            CreateTransactionAuthorityRequest::Product(request) => {
+                create_transaction_message(message_id, request)
+            }
             CreateTransactionAuthorityRequest::LegacyAccount {
                 product_account,
                 request,
-            } => latest::ProductAccountTxPayload {
-                signer: product_account,
-                genesis_hash: request.genesis_hash,
-                call_data: request.call_data,
-                extensions: request.extensions,
-                tx_ext_version: request.tx_ext_version,
-            },
+            } => create_transaction_message(
+                message_id,
+                latest::ProductAccountTxPayload {
+                    signer: product_account,
+                    genesis_hash: request.genesis_hash,
+                    call_data: request.call_data,
+                    extensions: request.extensions,
+                    tx_ext_version: request.tx_ext_version,
+                },
+            ),
+            CreateTransactionAuthorityRequest::IdentityAccount(request) => {
+                create_transaction_legacy_message(message_id, request)
+            }
         };
-        let message = create_transaction_message(message_id, request);
         let response = self
             .submit_remote_message(cx, session, RemoteAction::Signing(action), message)
             .await
@@ -363,6 +381,7 @@ impl PairingHost {
             .map_err(remote_authority_error)
     }
 
+    /// Forward a contextual-alias request to the paired signing host.
     pub(super) async fn remote_account_alias(
         &self,
         cx: &CallContext,
@@ -388,6 +407,7 @@ impl PairingHost {
         response.payload
     }
 
+    /// Forward a ring-VRF proof request to the paired signing host.
     pub(super) async fn remote_create_proof(
         &self,
         cx: &CallContext,
@@ -414,6 +434,8 @@ impl PairingHost {
         response.payload
     }
 
+    /// Ask the paired signing host to allocate product resources, caching any
+    /// returned allowance keys.
     pub(super) async fn remote_allocate_resources(
         &self,
         cx: &CallContext,
@@ -445,6 +467,8 @@ impl PairingHost {
         })
     }
 
+    /// Statement-store allowance key for the product, served from the cache
+    /// or allocated by the paired signing host.
     pub(super) async fn remote_statement_store_allowance_key(
         &self,
         cx: &CallContext,
@@ -500,6 +524,8 @@ impl PairingHost {
         }
     }
 
+    /// Bulletin allowance key for the product, served from the cache or
+    /// allocated by the paired signing host.
     pub(super) async fn remote_bulletin_allowance_key(
         &self,
         cx: &CallContext,
@@ -553,6 +579,8 @@ impl PairingHost {
         }
     }
 
+    /// Evict the cached Bulletin allowance key and allocate a fresh one with
+    /// an increased allowance.
     pub(super) async fn remote_refresh_bulletin_allowance_key(
         &self,
         cx: &CallContext,
@@ -672,7 +700,10 @@ async fn wait_for_sso_peer_disconnect(
     statement_store: StatementStoreRpc,
     session: SsoSessionInfo,
 ) -> Result<(), String> {
-    let rpc_client = statement_store.client("SSO disconnect monitor").await?;
+    let rpc_client = statement_store
+        .client("SSO disconnect monitor")
+        .await
+        .map_err(|err| err.to_string())?;
     let mut subscription =
         statement_store_rpc::subscribe_match_all(&rpc_client, &[session.session_id_peer])
             .await

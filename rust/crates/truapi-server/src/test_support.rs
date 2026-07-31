@@ -17,8 +17,8 @@ use crate::subscription::Spawner;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::subscription::thread_per_subscription_spawner;
 
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use futures::Stream;
 use futures::stream::{self, BoxStream};
 use hkdf::Hkdf;
@@ -37,8 +37,8 @@ use truapi_platform::{
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
     JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
     PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
-    ProductContext, ProductStorage as PlatformProductStorage, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    ProductContext, ProductStorage as PlatformProductStorage, ResourceAllocationReview,
+    StatementStoreProductSignReview, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 
 /// Test spawner that matches the current target.
@@ -84,10 +84,15 @@ pub(crate) struct StubPlatform {
     pub(crate) sign_payload_error: Option<&'static str>,
     pub(crate) sign_raw_confirmed: bool,
     pub(crate) sign_raw_error: Option<&'static str>,
+    /// Every `StatementStoreProductSign` review passed to `confirm_user_action`, in order.
+    pub(crate) statement_store_product_sign_reviews:
+        Arc<Mutex<Vec<StatementStoreProductSignReview>>>,
     pub(crate) create_transaction_confirmed: bool,
     pub(crate) create_transaction_error: Option<&'static str>,
     pub(crate) resource_allocation_confirmed: bool,
     pub(crate) resource_allocation_error: Option<&'static str>,
+    /// Every `ResourceAllocation` review passed to `confirm_user_action`, in order.
+    pub(crate) resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
     pub(crate) session_blob: Option<Vec<u8>>,
     pub(crate) session_error: Option<&'static str>,
     pub(crate) session_clears: Arc<Mutex<usize>>,
@@ -130,15 +135,16 @@ pub(crate) struct StubPlatform {
     pub(crate) local_storage_error: Option<&'static str>,
 }
 
+/// Scripted peer behavior for the recording connection's SSO exchange.
 #[derive(Clone)]
 pub(crate) enum SsoResponseScript {
+    /// Peer acknowledges the request and replies with `response`.
     Success {
         session: SessionInfo,
         response: RemoteMessage,
     },
-    PeerDisconnect {
-        session: SessionInfo,
-    },
+    /// Peer acknowledges the request and then sends `Disconnected`.
+    PeerDisconnect { session: SessionInfo },
 }
 
 struct PendingThemeStream {
@@ -424,10 +430,12 @@ pub(crate) fn subscribe_ack_frame(request_id: &str, subscription_id: &str) -> St
 }
 
 fn statement_submit_ack_frame(request_id: &str) -> String {
+    // Mirror the real `statement_submit` result shape (`SubmitResult`); `submit`
+    // treats only `new`/`known` as accepted.
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,
-        "result": "0xok",
+        "result": { "status": "new" },
     })
     .to_string()
 }
@@ -491,6 +499,7 @@ pub(crate) fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 65
     )
 }
 
+/// Signed wallet handshake statement answering `deeplink` with pairing success.
 pub(crate) fn wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
@@ -507,6 +516,7 @@ fn pending_wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
     )
 }
 
+/// Signed wallet handshake statement answering `deeplink` with failure `reason`.
 pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
@@ -557,7 +567,7 @@ fn wallet_handshake_statement_with_response(
     let mut encrypted_message = nonce.to_vec();
     encrypted_message.extend(
         cipher
-            .encrypt(Nonce::from_slice(&nonce), answer.encode().as_slice())
+            .encrypt((&nonce).into(), answer.encode().as_slice())
             .unwrap(),
     );
     let handshake = pairing::VersionedHandshakeResponse::V2 {
@@ -1338,6 +1348,13 @@ impl UserConfirmation for StubPlatform {
                 (self.sign_payload_error, self.sign_payload_confirmed)
             }
             UserConfirmationReview::SignRaw(_) => (self.sign_raw_error, self.sign_raw_confirmed),
+            UserConfirmationReview::StatementStoreProductSign(review) => {
+                self.statement_store_product_sign_reviews
+                    .lock()
+                    .expect("statement store product sign review list mutex poisoned")
+                    .push(review);
+                (self.sign_raw_error, self.sign_raw_confirmed)
+            }
             UserConfirmationReview::CreateTransaction(_) => (
                 self.create_transaction_error,
                 self.create_transaction_confirmed,
@@ -1363,10 +1380,16 @@ impl UserConfirmation for StubPlatform {
                     self.identity_disclosure_confirmed,
                 )
             }
-            UserConfirmationReview::ResourceAllocation(_) => (
-                self.resource_allocation_error,
-                self.resource_allocation_confirmed,
-            ),
+            UserConfirmationReview::ResourceAllocation(review) => {
+                self.resource_allocation_reviews
+                    .lock()
+                    .expect("resource allocation review list mutex poisoned")
+                    .push(review);
+                (
+                    self.resource_allocation_error,
+                    self.resource_allocation_confirmed,
+                )
+            }
             UserConfirmationReview::PreimageSubmit(_) => (None, true),
         };
         if let Some(reason) = error {

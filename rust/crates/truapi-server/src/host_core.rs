@@ -26,8 +26,8 @@ use truapi_platform::{
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::runtime::{
-    LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, RuntimeServices,
-    SigningHostRole,
+    LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
+    RuntimeServices, SigningHostRole, respond_to_pairing,
 };
 use crate::subscription::Spawner;
 use crate::transport::Transport;
@@ -118,6 +118,33 @@ impl PairingHostRuntime {
         self.pairing_host.disconnect().await;
     }
 
+    /// Log out and discard the old pairing keypair.
+    ///
+    /// The next product login request generates a fresh pairing identity and
+    /// presents a new deeplink suitable for another signing host.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.logout"))]
+    pub async fn logout(&self) -> Result<(), v01::GenericError> {
+        self.pairing_host
+            .logout_and_reset_pairing()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Start or join the pairing-host login flow for one product.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.login", %product_id))]
+    pub async fn login(
+        &self,
+        product_id: &str,
+    ) -> Result<v01::HostRequestLoginResponse, v01::GenericError> {
+        let product = product_context(product_id)?;
+        match self.pairing_host.request_login(&product).await {
+            Ok(truapi::versioned::account::HostRequestLoginResponse::V1(response)) => Ok(response),
+            Err(error) => Err(v01::GenericError {
+                reason: pairing_login_error_reason(error),
+            }),
+        }
+    }
+
     /// Cancel an in-flight SSO pairing request. A no-op when no pairing is
     /// active.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.cancel_pairing"))]
@@ -170,6 +197,20 @@ impl PairingHostRuntime {
     }
 }
 
+fn pairing_login_error_reason(
+    error: truapi::CallError<truapi::versioned::account::HostRequestLoginError>,
+) -> String {
+    match error {
+        truapi::CallError::Domain(truapi::versioned::account::HostRequestLoginError::V1(
+            v01::HostRequestLoginError::Unknown { reason },
+        ))
+        | truapi::CallError::HostFailure { reason }
+        | truapi::CallError::MalformedFrame { reason } => reason,
+        truapi::CallError::Denied => "login denied".to_string(),
+        truapi::CallError::Unsupported => "login unsupported".to_string(),
+    }
+}
+
 impl PairingHostAdmin for PairingHostRuntime {
     fn cancel_pairing(&self) {
         PairingHostRuntime::cancel_pairing(self);
@@ -185,9 +226,9 @@ impl PairingHostAdmin for PairingHostRuntime {
 /// Owns the shared services plus signing-host state. There is no pairing flow,
 /// so pairing cancellation is not present here.
 ///
-/// Raw-bytes signing and product entropy are implemented; extrinsic-payload
-/// signing, transaction construction, ring-VRF aliases, and resource allocation
-/// return an `Unavailable` error pending chain-metadata and on-chain support.
+/// Raw-bytes and extrinsic-payload signing, v4 transaction construction, and
+/// product entropy are implemented; native signing hosts can also serve
+/// ring-VRF aliases and on-chain resource allocation.
 pub struct SigningHostRuntime {
     services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHostRole>,
@@ -207,7 +248,7 @@ impl SigningHostRuntime {
             config.bulletin_chain_genesis_hash,
             spawner,
         );
-        let signing_host = SigningHostRole::new(platform);
+        let signing_host = SigningHostRole::new(services.clone());
         Self {
             services,
             signing_host,
@@ -249,8 +290,36 @@ impl SigningHostRuntime {
             .activate_local_session(secret)
             .await
             .map_err(|err| v01::GenericError {
-                reason: err.reason(),
+                reason: err.to_string(),
             })
+    }
+
+    /// Activate a wallet-local session from host-held secret material and
+    /// attach known identity metadata.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.activate_local_session_with_identity"))]
+    pub async fn activate_local_session_with_identity(
+        &self,
+        secret: Vec<u8>,
+        lite_username: Option<String>,
+    ) -> Result<(), v01::GenericError> {
+        self.signing_host
+            .activate_local_session_with_identity(secret, lite_username)
+            .await
+            .map_err(|err| v01::GenericError {
+                reason: err.to_string(),
+            })
+    }
+
+    /// Answer a pairing host's handshake deeplink and serve the resulting SSO
+    /// session until it ends.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.respond_to_pairing"))]
+    pub async fn respond_to_pairing(
+        &self,
+        deeplink: &str,
+    ) -> Result<ResponderExit, v01::GenericError> {
+        respond_to_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
     }
 }
 
@@ -550,6 +619,25 @@ mod tests {
                 .expect("recording sink mutex poisoned")
                 .push(frame);
         }
+    }
+
+    fn assert_send<T: Send>(_: T) {}
+
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn product_runtime_and_dispatch_future_are_send() {
+        assert_send_sync::<ProductRuntime>();
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+
+        assert_send(runtime.receive_frame(Vec::new()));
     }
 
     #[test]

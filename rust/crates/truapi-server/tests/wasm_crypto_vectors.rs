@@ -1,7 +1,10 @@
+//! Wasm-target vectors pinning product-account derivation and SSO pairing
+//! crypto (P-256 ECDH, HKDF, AES-GCM) to the values dotli produces.
+
 #![cfg(target_arch = "wasm32")]
 
+use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use p256::SecretKey;
 use p256::ecdh::diffie_hellman;
@@ -181,7 +184,7 @@ fn p256_hkdf_aes_gcm_vectors_work_on_wasm() {
     let mut encrypted = nonce.to_vec();
     encrypted.extend(
         cipher
-            .encrypt(Nonce::from_slice(&nonce), sensitive.encode().as_slice())
+            .encrypt((&nonce).into(), sensitive.encode().as_slice())
             .unwrap(),
     );
 

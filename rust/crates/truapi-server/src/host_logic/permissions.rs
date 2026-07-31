@@ -14,7 +14,7 @@
 use parity_scale_codec::{Decode, Encode};
 
 use truapi::latest::{
-    GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse, RemotePermission,
+    GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
     RemotePermissionRequest, RemotePermissionResponse,
 };
 use truapi_platform::{
@@ -78,7 +78,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         authorization_status(
             self.storage,
-            device_core_storage_key(self.product_id, permission),
+            CoreStorageKey::device_permission_authorization(self.product_id, permission),
         )
         .await
     }
@@ -91,7 +91,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         authorization_status(
             self.storage,
-            remote_core_storage_key(self.product_id, request),
+            CoreStorageKey::remote_permission_authorization(self.product_id, request),
         )
         .await
     }
@@ -110,7 +110,17 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             PermissionAuthorizationRequest::IdentityDisclosure => {
                 authorization_status(
                     self.storage,
-                    identity_disclosure_core_storage_key(self.product_id),
+                    CoreStorageKey::identity_disclosure_authorization(self.product_id),
+                )
+                .await
+            }
+            PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
+                authorization_status(
+                    self.storage,
+                    CoreStorageKey::account_access_authorization(
+                        self.product_id,
+                        target_product_id,
+                    ),
                 )
                 .await
             }
@@ -141,13 +151,16 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<(), GenericError> {
         let key = match request {
             PermissionAuthorizationRequest::Device(permission) => {
-                device_core_storage_key(self.product_id, permission)
+                CoreStorageKey::device_permission_authorization(self.product_id, permission)
             }
             PermissionAuthorizationRequest::Remote(request) => {
-                remote_core_storage_key(self.product_id, request)
+                CoreStorageKey::remote_permission_authorization(self.product_id, request)
             }
             PermissionAuthorizationRequest::IdentityDisclosure => {
-                identity_disclosure_core_storage_key(self.product_id)
+                CoreStorageKey::identity_disclosure_authorization(self.product_id)
+            }
+            PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
+                CoreStorageKey::account_access_authorization(self.product_id, target_product_id)
             }
         };
         set_authorization_status(self.storage, key, status).await
@@ -159,7 +172,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         &self,
         permission: HostDevicePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        let key = device_core_storage_key(self.product_id, &permission);
+        let key = CoreStorageKey::device_permission_authorization(self.product_id, &permission);
         if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
             return Ok(cached.into());
         }
@@ -179,7 +192,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         &self,
         request: RemotePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        let key = remote_core_storage_key(self.product_id, &request);
+        let key = CoreStorageKey::remote_permission_authorization(self.product_id, &request);
         if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
             return Ok(cached.into());
         }
@@ -244,53 +257,13 @@ fn status_into_stored(status: PermissionAuthorizationStatus) -> Option<StoredAut
     }
 }
 
-fn device_core_storage_key(
-    product_id: &str,
-    permission: &HostDevicePermissionRequest,
-) -> CoreStorageKey {
-    CoreStorageKey::PermissionAuthorization {
-        product_id: product_id.to_string(),
-        request: PermissionAuthorizationRequest::Device(*permission),
-    }
-}
-
-fn remote_core_storage_key(product_id: &str, request: &RemotePermissionRequest) -> CoreStorageKey {
-    CoreStorageKey::PermissionAuthorization {
-        product_id: product_id.to_string(),
-        request: PermissionAuthorizationRequest::Remote(canonical_remote_request(request)),
-    }
-}
-
-fn identity_disclosure_core_storage_key(product_id: &str) -> CoreStorageKey {
-    CoreStorageKey::PermissionAuthorization {
-        product_id: product_id.to_string(),
-        request: PermissionAuthorizationRequest::IdentityDisclosure,
-    }
-}
-
-fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissionRequest {
-    let permission = match &request.permission {
-        RemotePermission::Remote { domains } => {
-            // DNS domains are case-insensitive, so a logically-identical bundle
-            // requested with different casing or duplicate entries must
-            // canonicalize to one key (no spurious re-prompt).
-            let mut canonical: Vec<String> =
-                domains.iter().map(|d| d.to_ascii_lowercase()).collect();
-            canonical.sort();
-            canonical.dedup();
-            RemotePermission::Remote { domains: canonical }
-        }
-        other => other.clone(),
-    };
-    RemotePermissionRequest { permission }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::lock::Mutex;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use truapi::latest::RemotePermission;
     use truapi::v01;
     use truapi::v01::GenericError;
 
@@ -372,101 +345,6 @@ mod tests {
                 .expect("ScriptedPrompt ran out of remote answers");
             Ok(v01::RemotePermissionResponse { granted })
         }
-    }
-
-    #[test]
-    fn core_storage_key_separates_product_device_and_remote_variants() {
-        let camera = device_core_storage_key("product.dot", &HostDevicePermissionRequest::Camera);
-        let other_product =
-            device_core_storage_key("other.dot", &HostDevicePermissionRequest::Camera);
-        let remote = remote_core_storage_key(
-            "product.dot",
-            &RemotePermissionRequest {
-                permission: RemotePermission::ChainSubmit,
-            },
-        );
-        let identity = identity_disclosure_core_storage_key("product.dot");
-        let other_product_identity = identity_disclosure_core_storage_key("other.dot");
-
-        assert_ne!(camera, other_product);
-        assert_ne!(camera, remote);
-        assert_ne!(camera, identity);
-        assert_ne!(remote, identity);
-        assert_ne!(identity, other_product_identity);
-    }
-
-    #[test]
-    fn remote_core_storage_key_canonicalizes_domain_sets() {
-        let unsorted = RemotePermissionRequest {
-            permission: RemotePermission::Remote {
-                domains: vec!["b.example.com".into(), "a.example.com".into()],
-            },
-        };
-        let sorted = RemotePermissionRequest {
-            permission: RemotePermission::Remote {
-                domains: vec!["a.example.com".into(), "b.example.com".into()],
-            },
-        };
-        assert_eq!(
-            remote_core_storage_key("product.dot", &unsorted),
-            remote_core_storage_key("product.dot", &sorted)
-        );
-
-        let mixed = RemotePermissionRequest {
-            permission: RemotePermission::Remote {
-                domains: vec!["Example.COM".into(), "a.com".into(), "a.com".into()],
-            },
-        };
-        let canonical = RemotePermissionRequest {
-            permission: RemotePermission::Remote {
-                domains: vec!["a.com".into(), "example.com".into()],
-            },
-        };
-        assert_eq!(
-            remote_core_storage_key("product.dot", &mixed),
-            remote_core_storage_key("product.dot", &canonical)
-        );
-    }
-
-    #[test]
-    fn remote_core_storage_key_handles_separator_chars_in_domains() {
-        // Domain strings containing separator-looking text must not be able to
-        // forge a key that matches an unrelated permission.
-        let injecting = RemotePermissionRequest {
-            permission: RemotePermission::Remote {
-                domains: vec!["a|b".into(), "c,d".into(), "remote:web-rtc".into()],
-            },
-        };
-        let benign_same_set = RemotePermissionRequest {
-            permission: RemotePermission::Remote {
-                domains: vec!["x".into(), "y".into(), "z".into()],
-            },
-        };
-        let injecting_key = remote_core_storage_key("product.dot", &injecting);
-        let benign_key = remote_core_storage_key("product.dot", &benign_same_set);
-        assert_ne!(injecting_key, benign_key);
-
-        // The injecting permission must also be distinct from the `WebRtc`
-        // variant it tries to impersonate via crafted strings.
-        let webrtc = RemotePermissionRequest {
-            permission: RemotePermission::WebRtc,
-        };
-        assert_ne!(
-            injecting_key,
-            remote_core_storage_key("product.dot", &webrtc)
-        );
-
-        // Re-ordering the same domains still collapses to a single key
-        // (canonicalization is order-independent).
-        let injecting_reordered = RemotePermissionRequest {
-            permission: RemotePermission::Remote {
-                domains: vec!["remote:web-rtc".into(), "c,d".into(), "a|b".into()],
-            },
-        };
-        assert_eq!(
-            injecting_key,
-            remote_core_storage_key("product.dot", &injecting_reordered)
-        );
     }
 
     #[test]
@@ -638,6 +516,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn account_access_authorization_is_scoped_by_requester_and_target() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let request = PermissionAuthorizationRequest::AccountAccess {
+            target_product_id: "target.dot".to_string(),
+        };
+
+        futures::executor::block_on(
+            service.set_authorization_status(&request, PermissionAuthorizationStatus::Authorized),
+        )
+        .unwrap();
+        assert_eq!(
+            futures::executor::block_on(service.authorization_status(&request)).unwrap(),
+            PermissionAuthorizationStatus::Authorized
+        );
+        assert_eq!(
+            futures::executor::block_on(service.authorization_status(
+                &PermissionAuthorizationRequest::AccountAccess {
+                    target_product_id: "other.dot".to_string(),
+                }
+            ))
+            .unwrap(),
+            PermissionAuthorizationStatus::NotDetermined
+        );
+
+        let other_product_service = PermissionsService::new(&storage, &prompt, "other.dot");
+        assert_eq!(
+            futures::executor::block_on(other_product_service.authorization_status(&request))
+                .unwrap(),
+            PermissionAuthorizationStatus::NotDetermined
+        );
+    }
+
     /// Prompt callback that always errors, to exercise the transient-failure
     /// path (fail closed for the current call, but do not persist the error).
     struct FailingPrompt;
@@ -716,7 +629,10 @@ mod tests {
         let storage = MemStorage::default();
         // Write garbage bytes under the canonical key.
         futures::executor::block_on(storage.write_core_storage(
-            device_core_storage_key("product.dot", &HostDevicePermissionRequest::Camera),
+            CoreStorageKey::device_permission_authorization(
+                "product.dot",
+                &HostDevicePermissionRequest::Camera,
+            ),
             vec![0xff, 0xfe, 0xfd],
         ))
         .unwrap();

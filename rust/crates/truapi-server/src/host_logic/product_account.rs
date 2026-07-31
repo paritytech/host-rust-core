@@ -19,12 +19,16 @@ const PRODUCT_JUNCTION: &str = "product";
 /// the core produces (statement store, product raw signing).
 pub(crate) const SR25519_SIGNING_CONTEXT: &[u8] = b"substrate";
 
+/// Error deriving product accounts or keys.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProductAccountError {
+    /// Root public key bytes are not a valid sr25519 point.
     #[error("invalid sr25519 root public key")]
     InvalidRootPublicKey,
+    /// All-digit junction strings encode as `u64`, and this one overflows it.
     #[error("numeric derivation junction is outside u64 range")]
     NumericJunctionOutOfRange,
+    /// Entropy bytes could not be expanded into a mini secret.
     #[error("invalid BIP-39 entropy: {0}")]
     InvalidEntropy(String),
 }
@@ -95,6 +99,23 @@ pub fn product_public_key_to_address(public_key: [u8; 32]) -> String {
 /// Decode a Substrate SS58 account address into its raw public key.
 pub fn public_key_from_address(address: &str) -> Option<[u8; 32]> {
     Some(subxt::utils::AccountId32::from_str(address).ok()?.0)
+}
+
+/// Derive an sr25519 keypair down a path of hard string junctions from the
+/// canonical BIP-39 root key.
+pub fn derive_sr25519_hard_path(
+    entropy: &[u8],
+    junctions: &[&str],
+) -> Result<Keypair, ProductAccountError> {
+    let mut keypair = derive_root_keypair_from_entropy(entropy)?;
+    for junction in junctions {
+        let chain_code = ChainCode(create_chain_code(junction)?);
+        let (mini_secret, _) = keypair
+            .secret
+            .hard_derive_mini_secret_key(Some(chain_code), b"");
+        keypair = mini_secret.expand_to_keypair(ExpansionMode::Ed25519);
+    }
+    Ok(keypair)
 }
 
 /// Create a Substrate soft-derivation chain code for one junction.
