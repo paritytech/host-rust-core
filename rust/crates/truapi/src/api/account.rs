@@ -136,7 +136,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.signVrf({
     ///   account: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: 0,
+    ///     derivationIndex: { tag: "Left", value: 0 },
     ///   },
     ///   transcriptLabel: "0x706f703a61697264726f70",
     ///   items: [
