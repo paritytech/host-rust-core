@@ -37,6 +37,10 @@ exceptions = [
     # The Classpath exception permits linking it without changing this crate's
     # MIT outbound licence.
     { name = "verifiable", allow = ["GPL-3.0-or-later WITH Classpath-exception-2.0"] },
+    # Windows clipboard support reached through the host CLI's terminal UI.
+    # BSL-1.0 is permissive, but scope it so it cannot spread to other crates.
+    { name = "clipboard-win", allow = ["BSL-1.0"] },
+    { name = "error-code", allow = ["BSL-1.0"] },
     { name = "uniffi", allow = ["MPL-2.0"] },
     { name = "uniffi_bindgen", allow = ["MPL-2.0"] },
     { name = "uniffi_checksum_derive", allow = ["MPL-2.0"] },

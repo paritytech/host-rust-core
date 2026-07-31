@@ -23,9 +23,9 @@
 
 use parity_scale_codec::{Decode, Encode, OptionBool};
 use truapi::latest::{
-    AccountId, AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
-    LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
-    RawPayload, RingLocation,
+    AccountId, AllocatableResource, DerivationIndex, HostAccountCreateProofResponse,
+    HostAccountGetAliasResponse, LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RawPayload, RingLocation,
 };
 
 use crate::host_logic::session::SsoSessionInfo;
@@ -413,9 +413,9 @@ pub enum SsoAllocatableResource {
     StatementStoreAllowance,
     /// Bulletin chain slot allowance for the product's allowance account.
     BulletinAllowance,
-    /// Pre-warmed PGAS balance for the smart-contract account at the given
+    /// Pre-warmed PGAS balance for the product account selected by this
     /// derivation index.
-    SmartContractAllowance(u32),
+    SmartContractAllowance(DerivationIndex),
     /// Transfer of the product subtree key so the host can sign locally.
     AutoSigning,
 }
@@ -479,8 +479,6 @@ pub enum SsoAllocatedResource {
     SmartContractAllowance,
     /// Auto-signing material for the product subtree.
     AutoSigning {
-        /// Secret component of the per-product soft-derivation path.
-        product_derivation_secret: String,
         /// Private key of the product subtree root.
         product_root_private_key: Vec<u8>,
     },
@@ -1002,7 +1000,7 @@ mod tests {
     fn account() -> ProductAccountId {
         ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
-            derivation_index: 7,
+            derivation_index: DerivationIndex::Left(7),
         }
     }
 
@@ -1090,10 +1088,10 @@ mod tests {
     }
 
     #[test]
-    fn ring_vrf_messages_match_host_papp_0_8_11_fixtures() {
+    fn ring_vrf_messages_wire_shape_pin() {
         let context = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: vec![0, 1, 2, 3],
+            suffix: DerivationIndex::Left(0),
         };
         let ring_location = RingLocation {
             chain_id: [0x11; 32],
@@ -1116,6 +1114,19 @@ mod tests {
             ring_location,
             b"vote".to_vec(),
         );
+
+        assert_host_papp_0_8_11_fixture(
+            alias,
+            "0x1c6d2d616c69617300032863616c6c65722e646f7428766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f70",
+        );
+        assert_host_papp_0_8_11_fixture(
+            proof,
+            "0x1c6d2d70726f6f66000c2863616c6c65722e646f7428766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f7010766f7465",
+        );
+    }
+
+    #[test]
+    fn ring_vrf_response_messages_match_host_papp_0_8_11_fixtures() {
         let contextual_alias = HostAccountGetAliasResponse {
             context: [0x22; 32],
             alias: vec![0x33, 0x44],
@@ -1145,14 +1156,6 @@ mod tests {
         };
 
         assert_host_papp_0_8_11_fixture(
-            alias,
-            "0x1c6d2d616c69617300032863616c6c65722e646f7428766f74696e672e646f7410000102031111111111111111111111111111111111111111111111111111111111111111080043010c706f70",
-        );
-        assert_host_papp_0_8_11_fixture(
-            proof,
-            "0x1c6d2d70726f6f66000c2863616c6c65722e646f7428766f74696e672e646f7410000102031111111111111111111111111111111111111111111111111111111111111111080043010c706f7010766f7465",
-        );
-        assert_host_papp_0_8_11_fixture(
             alias_response,
             "0x1c722d616c69617300041c6d2d616c696173002222222222222222222222222222222222222222222222222222222222222222083344",
         );
@@ -1174,14 +1177,14 @@ mod tests {
     }
 
     #[test]
-    fn resource_allocation_message_matches_host_papp_0_8_11_fixture() {
+    fn resource_allocation_message_wire_shape_pin() {
         let message = resource_allocation_message(
             "m-resource".to_string(),
             "truapi-playground.dot".to_string(),
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
-                AllocatableResource::SmartContractAllowance(9),
+                AllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
                 AllocatableResource::AutoSigning,
             ],
             OnExistingAllowancePolicy::Increase,
@@ -1189,18 +1192,18 @@ mod tests {
 
         assert_host_papp_0_8_11_fixture(
             message,
-            "0x286d2d7265736f757263650005547472756170692d706c617967726f756e642e646f7410000102090000000301",
+            "0x286d2d7265736f757263650005547472756170692d706c617967726f756e642e646f741000010200090000000301",
         );
     }
 
     #[test]
-    fn create_transaction_message_matches_host_papp_0_8_11_fixture() {
+    fn create_transaction_message_wire_shape_pin() {
         let message = create_transaction_message(
             "m-product-tx".to_string(),
             ProductAccountTxPayload {
                 signer: ProductAccountId {
                     dot_ns_identifier: "truapi-playground.dot".to_string(),
-                    derivation_index: 0,
+                    derivation_index: DerivationIndex::Left(0),
                 },
                 genesis_hash: sequential_bytes(32),
                 call_data: vec![0, 0],
@@ -1215,18 +1218,18 @@ mod tests {
 
         assert_host_papp_0_8_11_fixture(
             message,
-            "0x306d2d70726f647563742d7478000700547472756170692d706c617967726f756e642e646f7400000000202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
+            "0x306d2d70726f647563742d7478000700547472756170692d706c617967726f756e642e646f740000000000202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
         );
     }
 
     #[test]
-    fn playground_create_transaction_message_matches_host_papp_0_8_11_fixture() {
+    fn playground_create_transaction_message_wire_shape_pin() {
         let message = create_transaction_message(
             "create-transaction-1".to_string(),
             ProductAccountTxPayload {
                 signer: ProductAccountId {
                     dot_ns_identifier: "truapi-playground.dot".to_string(),
-                    derivation_index: 0,
+                    derivation_index: DerivationIndex::Left(0),
                 },
                 genesis_hash: [
                     0xbf, 0x04, 0x88, 0xdb, 0xe9, 0xda, 0xa1, 0xde, 0x1c, 0x08, 0xc5, 0xf7, 0x43,
@@ -1241,7 +1244,7 @@ mod tests {
 
         assert_host_papp_0_8_11_fixture(
             message,
-            "0x506372656174652d7472616e73616374696f6e2d31000700547472756170692d706c617967726f756e642e646f7400000000bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f0800000000",
+            "0x506372656174652d7472616e73616374696f6e2d31000700547472756170692d706c617967726f756e642e646f740000000000bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f0800000000",
         );
     }
 
@@ -1333,7 +1336,7 @@ mod tests {
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
-                AllocatableResource::SmartContractAllowance(9),
+                AllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
                 AllocatableResource::AutoSigning,
             ],
             OnExistingAllowancePolicy::Increase,
@@ -1349,7 +1352,7 @@ mod tests {
             vec![
                 SsoAllocatableResource::StatementStoreAllowance,
                 SsoAllocatableResource::BulletinAllowance,
-                SsoAllocatableResource::SmartContractAllowance(9),
+                SsoAllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
                 SsoAllocatableResource::AutoSigning,
             ]
         );
