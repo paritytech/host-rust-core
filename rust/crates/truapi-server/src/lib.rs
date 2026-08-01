@@ -21,6 +21,7 @@ pub(crate) mod host_core;
 pub mod host_logic;
 pub(crate) mod host_rpc_client;
 pub mod logging;
+pub mod middleware;
 pub(crate) mod runtime;
 pub mod subscription;
 pub mod transport;
@@ -36,12 +37,15 @@ pub mod ws_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod native_renderer;
+
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
 pub use host_core::{
-    FrameSink, HostAdmin, PairingHostRuntime, ProductRuntime, ProductRuntimeError,
-    SigningHostRuntime,
+    FrameSink, HostAdmin, PairingHostRuntime, ProductRuntime, ProductRuntimeControl,
+    ProductRuntimeError, SigningHostRuntime,
 };
 pub use runtime::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
@@ -56,6 +60,9 @@ pub use ws_bridge::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_renderer::*;
 
 #[cfg(target_arch = "wasm32")]
 pub use wasm::*;

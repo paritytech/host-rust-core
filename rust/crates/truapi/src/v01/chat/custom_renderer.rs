@@ -309,14 +309,30 @@ pub enum CustomRendererNode {
     TextField(Component<TextFieldProps>),
 }
 
-/// Subscribe payload identifying the chat message to render. The host responds
-/// with a stream of [`CustomRendererNode`] trees describing the rendered UI.
+/// Values sent by a product on its custom-message renderer request stream.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct ProductChatCustomMessageRenderSubscribeRequest {
-    /// Message identifier.
+pub enum ProductChatCustomMessageRenderSubscribeRequest {
+    /// Replace the native tree for an active render instance.
+    Update {
+        /// Identifier supplied by the host in the corresponding render item.
+        message_id: String,
+        /// Complete replacement tree produced by the product renderer.
+        node: CustomRendererNode,
+    },
+    /// Report that the product cannot render one requested message.
+    Failed {
+        /// Identifier supplied by the host in the corresponding render item.
+        message_id: String,
+    },
+}
+
+/// Custom-message render work sent by the host to the product.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ProductChatCustomMessageRenderSubscribeItem {
+    /// Stable identifier used to correlate updates and widget actions.
     pub message_id: String,
-    /// Application-defined message type.
+    /// Product-defined discriminator used to select a renderer.
     pub message_type: String,
-    /// Binary payload.
+    /// Stored product-defined message payload.
     pub payload: Vec<u8>,
 }

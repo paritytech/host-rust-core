@@ -106,6 +106,16 @@ export interface ObservableLike<Item, Reason = never> {
 }
 
 /**
+ * Minimal write-only stream used by generated paired-stream APIs.
+ **/
+export interface SubjectLike<Item> {
+  /**
+   * Send one item on the active paired stream.
+   **/
+  next(value: Item): void;
+}
+
+/**
  * Numeric frame ids for a one-shot request method.
  **/
 export interface RequestFrameIds {
@@ -197,6 +207,18 @@ export interface SubscribeRawParams {
 }
 
 /**
+ * Options accepted when sending a value on an active subscription.
+ **/
+export interface SendSubscriptionItemParams {
+  /** Wire discriminants for the subscription method. **/
+  ids: SubscriptionFrameIds;
+  /** Transport-assigned id returned by `subscribeRaw`. **/
+  subscriptionId: string;
+  /** SCALE-encoded stream item. **/
+  payload: Uint8Array;
+}
+
+/**
  * Byte-level transport used by generated client stubs.
  **/
 export interface TrUApiTransport {
@@ -218,6 +240,11 @@ export interface TrUApiTransport {
    * Start a subscription and return a handle that can stop it.
    **/
   subscribeRaw(params: SubscribeRawParams): Subscription;
+
+  /**
+   * Send one `_receive` value on an active paired subscription.
+   **/
+  sendSubscriptionItem(params: SendSubscriptionItemParams): void;
 
   /**
    * Tear down the transport and release the listeners it registered on the

@@ -11,6 +11,7 @@ use crate::wire;
 use crate::{CallContext, CallError, Subscription};
 
 /// Chat room, bot, and message APIs.
+#[crate::service(required_execution = Chat)]
 #[crate::async_trait]
 pub trait Chat: Send + Sync {
     /// Create a chat room.
@@ -105,31 +106,27 @@ pub trait Chat: Send + Sync {
         Subscription::empty()
     }
 
-    /// Subscribe to custom message render requests from the host. Each
-    /// emitted item is a [`CustomRendererNode`](crate::v01::CustomRendererNode)
-    /// tree describing the rendered UI.
+    /// Open the paired custom-message renderer streams.
+    ///
+    /// The product subscribes to the returned stream for render work and
+    /// publishes replacement trees through `requests`.
     ///
     /// ```ts
-    /// import { firstValueFrom, from } from "rxjs";
-    ///
-    /// const item = await firstValueFrom(
-    ///   from(
-    ///     truapi.chat.customMessageRenderSubscribe({
-    ///       request: {
-    ///         messageId: "msg-1",
-    ///         messageType: "custom-render-demo",
-    ///         payload: "0x",
-    ///       },
-    ///     }),
-    ///   ),
-    /// );
-    /// console.log("render request received:", item);
+    /// const renderer = truapi.chat.customMessageRenderSubscribe();
+    /// renderer.responses.subscribe({
+    ///   next(item) {
+    ///     renderer.requests.next({
+    ///       tag: "Failed",
+    ///       value: { messageId: item.messageId },
+    ///     });
+    ///   },
+    /// });
     /// ```
     #[wire(start_id = 52)]
     async fn custom_message_render_subscribe(
         &self,
         _cx: &CallContext,
-        _request: ProductChatCustomMessageRenderSubscribeRequest,
+        _requests: Subscription<ProductChatCustomMessageRenderSubscribeRequest>,
     ) -> Subscription<ProductChatCustomMessageRenderSubscribeItem> {
         Subscription::empty()
     }

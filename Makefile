@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli headless install matrix explorer
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli headless install matrix explorer
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -41,6 +41,7 @@ setup: ## First-time setup: submodules, JS dependencies, generated artifacts.
 	# that only exist after codegen.sh, which also builds the packages.
 	npm ci --ignore-scripts
 	./scripts/codegen.sh
+	$(MAKE) uniffi
 	cd $(PLAYGROUND) && yarn install --frozen-lockfile
 	cd $(DOTLI) && bun install --frozen-lockfile
 	$(MAKE) dotli-link
@@ -102,6 +103,75 @@ uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
 		ios/truapi-host/Sources/truapi_serverFFI/include/truapi_serverFFI.h
 	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap \
 		ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
+
+IOS_HOST := hosts/ios
+IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
+IOS_SIMULATOR_TARGET ?= aarch64-apple-ios-sim
+IOS_CONFIGURATION ?= Debug
+IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
+IOS_BUNDLE ?= io.pcf.polkadotapp.develop
+IOS_GOOGLE_SERVICE_PLIST ?= $(IOS_HOST)/polkadot-app/GoogleService/GoogleService-Info-Release.plist
+IOS_PRODUCT_HOST ?= truapi-playground.dot
+IOS_PRODUCT_URL ?= http://localhost:3100
+IOS_CHAT_PRODUCT_DIR ?= playground
+IOS_CHAT_PRODUCT_HOST ?= truapi-playground.dot
+IOS_CHAT_PRODUCT_NAME ?= TrUAPI Playground
+IOS_CHAT_PRODUCT_URL ?= http://127.0.0.1:3100
+IOS_HOST_PLAYGROUND_DIR ?= ../host-playground
+IOS_HOST_PLAYGROUND_HOST ?= host-playground.dot
+IOS_HOST_PLAYGROUND_NAME ?= Host Playground
+IOS_HOST_PLAYGROUND_URL ?= http://127.0.0.1:3101
+IOS_APP := $(abspath $(IOS_DERIVED_DATA)/Build/Products/$(IOS_CONFIGURATION)-iphonesimulator/polkadot-app.app)
+
+ios-build: uniffi ## Build matching Rust/Swift bindings and the TestFlight-configured iOS simulator app.
+	git submodule update --init --recursive $(IOS_HOST)
+	rustup target add $(IOS_SIMULATOR_TARGET)
+	$(CARGO) build -p truapi-server --release --features ws-bridge \
+		--target $(IOS_SIMULATOR_TARGET)
+	cd $(IOS_HOST) && RUN_IN_CI=true xcodebuild \
+		-project polkadot-app.xcodeproj \
+		-scheme polkadot-app \
+		-configuration $(IOS_CONFIGURATION) \
+		-destination 'generic/platform=iOS Simulator' \
+		-derivedDataPath $(abspath $(IOS_DERIVED_DATA)) \
+		ARCHS=arm64 \
+		ONLY_ACTIVE_ARCH=YES \
+		TRUAPI_SWIFT_FLAGS='$(IOS_SWIFT_FLAGS)' \
+		build
+	cp "$(IOS_GOOGLE_SERVICE_PLIST)" "$(IOS_APP)/GoogleService-Info.plist"
+	codesign --force --sign - "$(IOS_APP)"
+
+ios-run: ios-build ## Build and launch the local TrUAPI playground in an iPhone simulator.
+	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
+	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
+	TRUAPI_IOS_E2E_PRODUCT_HOST="$(IOS_PRODUCT_HOST)" \
+	TRUAPI_IOS_E2E_PRODUCT_URL="$(IOS_PRODUCT_URL)" \
+	node scripts/launch-ios-playground.mjs
+
+ios-chat-run: ios-build ## Verify concurrent TrUAPI Playground App + Chat executions in an iPhone simulator.
+	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
+	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(IOS_CHAT_PRODUCT_DIR)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST="$(IOS_CHAT_PRODUCT_HOST)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_CHAT_PRODUCT_NAME)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_CHAT_PRODUCT_URL)" \
+	node scripts/launch-ios-chat-playground.mjs
+
+ios-chat-host-playground-run: ios-build ## Verify Host Playground Chat through the workspace-linked TrUAPI client.
+	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
+	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(abspath $(IOS_HOST_PLAYGROUND_DIR))" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST="$(IOS_HOST_PLAYGROUND_HOST)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_HOST_PLAYGROUND_NAME)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_HOST_PLAYGROUND_URL)" \
+	TRUAPI_IOS_E2E_CHAT_ROOM_ID="host-playground-room" \
+	TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE="" \
+	TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER="0" \
+	TRUAPI_IOS_E2E_CHAT_SCREENSHOT="artifacts/host-playground-chat.png" \
+	TRUAPI_IOS_E2E_CHAT_TRUAPI_DIR="$(abspath js/packages/truapi)" \
+	node scripts/launch-ios-chat-playground.mjs
+
+ios-chat-all: ios-chat-run ios-chat-host-playground-run ## Run both local iOS Chat playground integrations.
 
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 

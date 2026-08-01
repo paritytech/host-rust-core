@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use convert_case::{Case, Casing};
-use indoc::{formatdoc, writedoc};
+use indoc::{formatdoc, indoc, writedoc};
 
 use crate::rustdoc::*;
 
@@ -696,7 +696,7 @@ fn wire_ids_for_method(trait_def: &TraitDef, method: &MethodDef) -> Result<Expan
                 response_id,
             })
         }
-        MethodKind::Subscription | MethodKind::ResultSubscription => {
+        MethodKind::Subscription | MethodKind::ResultSubscription | MethodKind::StreamPair => {
             if wire.request_id.is_some() || wire.response_id.is_some() {
                 bail!(
                     "method `{}::{}` is a subscription and must not use request wire ids",
@@ -936,12 +936,12 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         import * as S from '../scale.js';
         import type {{ HexString }} from '../scale.js';
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ ObservableLike, Observer, Subscription, SubscriptionFrameIds, TrUApiTransport }} from '../transport.js';
+        import type {{ ObservableLike, Observer, SubjectLike, Subscription, SubscriptionFrameIds, TrUApiTransport }} from '../transport.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
         export {{ ResultAsync, SubscriptionError }};
-        export type {{ ObservableLike, Observer, Result, Subscription, TrUApiTransport }};
+        export type {{ ObservableLike, Observer, Result, SubjectLike, Subscription, TrUApiTransport }};
         export const TRUAPI_VERSION = {target_version} as const;
         export const TRUAPI_CODEC_VERSION = {codec_version} as const;
 
@@ -955,6 +955,7 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
     )
     .unwrap();
     write_observable_helper(&mut out);
+    write_stream_pair_helper(&mut out);
 
     let ctx = codec_context(&[]);
     let wrappers = collect_versioned_wrappers(api);
@@ -967,7 +968,8 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
             continue;
         }
 
-        write_jsdoc(&mut out, "", trait_def.docs.as_deref());
+        let public_docs = trait_def.public_docs();
+        write_jsdoc(&mut out, "", public_docs.as_deref());
         writedoc!(
             out,
             "
@@ -1140,6 +1142,79 @@ fn write_observable_helper(out: &mut String) {
         "#
     )
     .unwrap();
+}
+
+fn write_stream_pair_helper(out: &mut String) {
+    out.push_str(indoc! {
+        r#"
+        function createStreamPair<Request, Item>({
+          transport,
+          ids,
+          payload,
+          encodeRequest,
+          decodeItem,
+        }: {
+          transport: TrUApiTransport;
+          ids: SubscriptionFrameIds;
+          payload: Uint8Array;
+          encodeRequest: (request: Request) => Uint8Array;
+          decodeItem: (payload: Uint8Array) => Item;
+        }): { requests: SubjectLike<Request>; responses: ObservableLike<Item> } {
+          let active: Subscription | undefined;
+          const source = createObservable<Item>({ transport, ids, payload, decodeItem });
+          const responses: ObservableLike<Item> = {
+            subscribe(observer: Partial<Observer<Item>> = {}): Subscription {
+              if (active) throw new Error("paired stream already has an active subscriber");
+              let terminated = false;
+              const subscription = source.subscribe({
+                next(value) {
+                  observer.next?.(value);
+                },
+                error(error) {
+                  terminated = true;
+                  active = undefined;
+                  observer.error?.(error);
+                },
+                complete() {
+                  terminated = true;
+                  active = undefined;
+                  observer.complete?.();
+                },
+              });
+              if (!terminated) active = subscription;
+              return {
+                get subscriptionId() {
+                  return subscription.subscriptionId;
+                },
+                unsubscribe() {
+                  subscription.unsubscribe();
+                  if (active === subscription) active = undefined;
+                },
+              };
+            },
+            [OBSERVABLE_INTEROP as typeof Symbol.observable]() {
+              return responses;
+            },
+          };
+          return {
+            requests: {
+              next(request) {
+                if (!active?.subscriptionId) {
+                  throw new Error("subscribe to responses before sending paired-stream requests");
+                }
+                transport.sendSubscriptionItem({
+                  ids,
+                  subscriptionId: active.subscriptionId,
+                  payload: encodeRequest(request),
+                });
+              },
+            },
+            responses,
+          };
+        }
+
+        "#
+    });
 }
 
 fn included_methods<'a>(
@@ -1414,7 +1489,12 @@ fn emit_method(
     let ts_method_name = to_camel_case(&strip_prefix(&method.name));
     let wire_const = wire_const_name(&trait_def.name, &method.name);
     let wire_version = method_wire_version(method, wrappers, target_version)?;
-    let payload = emit_payload(&method.params, wrappers, ctx, wire_version)?;
+    let payload_params = if matches!(method.kind, MethodKind::StreamPair) {
+        &[][..]
+    } else {
+        method.params.as_slice()
+    };
+    let payload = emit_payload(payload_params, wrappers, ctx, wire_version)?;
     write_jsdoc(out, "  ", method.docs.as_deref());
 
     match (&method.kind, &method.return_type) {
@@ -1505,6 +1585,29 @@ fn emit_method(
                 wire_version,
             )?;
         }
+        (MethodKind::StreamPair, ReturnType::Subscription(item)) => {
+            let request = method
+                .params
+                .first()
+                .and_then(|param| subscription_item_type(&param.type_ref))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "stream pair `{}` has no Subscription<T> parameter",
+                        method.name
+                    )
+                })?;
+            let request = emit_response(request, wrappers, ctx, wire_version)?;
+            let response = emit_response(item, wrappers, ctx, wire_version)?;
+            emit_stream_pair_method(
+                out,
+                &ts_method_name,
+                &wire_const,
+                &payload,
+                &request,
+                &response,
+                wire_version,
+            )?;
+        }
         (kind, return_type) => {
             bail!(
                 "Generator internal mismatch for method `{}`: kind {:?} does not match return type {:?}",
@@ -1515,6 +1618,65 @@ fn emit_method(
         }
     }
 
+    Ok(())
+}
+
+fn emit_stream_pair_method(
+    out: &mut String,
+    ts_method_name: &str,
+    wire_const: &str,
+    payload: &PayloadEmission,
+    request: &ResponseEmission,
+    response: &ResponseEmission,
+    wire_version: Option<u32>,
+) -> Result<()> {
+    let request_value = wire_version.map_or_else(
+        || "request".to_string(),
+        |version| format!("{{ tag: \"V{version}\", value: request }}"),
+    );
+    let item_value = if let Some(version) = wire_version {
+        versioned_value_expr(
+            &format!("{}.dec(payload)", response.wire_codec_expr),
+            &response.wire_type_ts,
+            &response.inner_type_ts,
+            version,
+        )
+    } else {
+        format!("{}.dec(payload)", response.wire_codec_expr)
+    };
+    writedoc!(
+        out,
+        "
+          {ts_method_name}(): {{
+            requests: SubjectLike<{request_type}>;
+            responses: ObservableLike<{response_type}>;
+          }} {{
+            return createStreamPair<{request_type}, {response_type}>({{
+              transport: this.transport,
+              ids: W.{wire_const},
+        ",
+        request_type = request.inner_type_ts,
+        response_type = response.inner_type_ts,
+    )
+    .unwrap();
+    write_payload_field(
+        out,
+        "      ",
+        &payload.wire_codec_expr,
+        payload.wire_version,
+        &payload.value_expr,
+    );
+    writedoc!(
+        out,
+        "
+              encodeRequest: (request) => {codec}.enc({request_value}),
+              decodeItem: (payload) => {item_value},
+            }});
+          }}
+        ",
+        codec = request.wire_codec_expr,
+    )
+    .unwrap();
     Ok(())
 }
 
@@ -2468,6 +2630,28 @@ mod tests {
         }
     }
 
+    fn stream_pair_method_with_wrappers(
+        name: &str,
+        wire_id: Option<u8>,
+        request: &str,
+        item: &str,
+    ) -> MethodDef {
+        MethodDef {
+            name: name.to_string(),
+            kind: MethodKind::StreamPair,
+            params: vec![ParamDef {
+                name: "requests".to_string(),
+                type_ref: TypeRef::Named {
+                    name: "Subscription".to_string(),
+                    args: vec![named_type(request)],
+                },
+            }],
+            return_type: ReturnType::Subscription(named_type(item)),
+            wire: subscription_wire(wire_id),
+            docs: None,
+        }
+    }
+
     fn versioned_tuple_wrapper_variants(name: &str, variants: &[(u32, &str)]) -> TypeDef {
         TypeDef {
             name: name.to_string(),
@@ -2823,6 +3007,35 @@ mod tests {
         assert!(source.contains("legacyCall("));
         assert!(!source.contains("FutureOnlyClient"));
         assert!(!source.contains("futureCall("));
+    }
+
+    #[test]
+    fn generate_client_emits_subject_and_observable_for_stream_pair() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Chat".to_string(),
+                module_path: Vec::new(),
+                methods: vec![stream_pair_method_with_wrappers(
+                    "custom_message_render_subscribe",
+                    Some(52),
+                    "RendererRequest",
+                    "RendererItem",
+                )],
+                docs: None,
+            }],
+            public_trait_order: vec!["Chat".to_string()],
+            types: vec![
+                versioned_tuple_wrapper_variants("RendererRequest", &[(1, "RendererRequestV1")]),
+                versioned_tuple_wrapper_variants("RendererItem", &[(1, "RendererItemV1")]),
+            ],
+        };
+
+        let source = generate_client(&api, 1, 1).expect("generate paired-stream client");
+
+        assert!(source.contains("requests: SubjectLike<T.RendererRequestV1>"));
+        assert!(source.contains("responses: ObservableLike<T.RendererItemV1>"));
+        assert!(source.contains("return createStreamPair<T.RendererRequestV1, T.RendererItemV1>"));
+        assert!(source.contains("transport.sendSubscriptionItem({"));
     }
 
     #[test]

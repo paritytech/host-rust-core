@@ -99,7 +99,7 @@ fn method_entry(trait_def: &TraitDef, method: &MethodDef) -> Result<MethodEntry>
                 response_id,
             }))
         }
-        MethodKind::Subscription | MethodKind::ResultSubscription => {
+        MethodKind::Subscription | MethodKind::ResultSubscription | MethodKind::StreamPair => {
             if wire.request_id.is_some() || wire.response_id.is_some() {
                 bail!(
                     "method `{}::{}` is a subscription and must not use request wire ids",

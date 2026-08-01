@@ -10,6 +10,7 @@ lerna-debug.log*
 # Build artifacts
 node_modules
 target
+/artifacts/
 
 # Gradle (Android workspace at repo root)
 /.gradle/

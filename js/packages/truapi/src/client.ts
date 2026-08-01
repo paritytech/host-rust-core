@@ -6,6 +6,7 @@ import {
   type ProtocolMessage,
   type RequestFrameIds,
   type RequestParams,
+  type SendSubscriptionItemParams,
   type SubscriptionFrameIds,
   type SubscribeRawParams,
   type Subscription,
@@ -410,6 +411,26 @@ export function createTransport(
           }
         },
       };
+    },
+    /**
+     * Send one value on the product-to-host half of a paired subscription.
+     */
+    sendSubscriptionItem({
+      ids,
+      subscriptionId,
+      payload,
+    }: SendSubscriptionItemParams) {
+      const subscription = subscriptions.get(subscriptionId);
+      if (!subscription || subscription.ids.receive !== ids.receive) {
+        throw new Error("paired subscription is not active");
+      }
+      send({
+        requestId: subscriptionId,
+        payload: {
+          id: ids.receive,
+          value: payload,
+        },
+      });
     },
     /**
      * Close this transport and detach its provider listeners.

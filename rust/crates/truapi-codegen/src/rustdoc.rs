@@ -70,8 +70,21 @@ pub struct TraitDef {
     pub module_path: Vec<String>,
     /// Methods declared on the trait, in declaration order.
     pub methods: Vec<MethodDef>,
-    /// Rustdoc comment on the trait, with hidden codegen markers stripped.
+    /// Rustdoc comment on the trait. Service markers are retained for codegen.
     pub docs: Option<String>,
+}
+
+impl TraitDef {
+    /// Required trusted execution kind declared by `#[truapi::service]`.
+    pub fn required_execution(&self) -> Option<&str> {
+        let docs = self.docs.as_deref()?;
+        extract_marker_value(docs, "@service_required_execution=")
+    }
+
+    /// User-facing trait documentation with codegen markers removed.
+    pub fn public_docs(&self) -> Option<String> {
+        clean_docs(self.docs.as_deref())
+    }
 }
 
 /// Trait method extracted from rustdoc, including its wire ids.
@@ -117,6 +130,8 @@ pub enum MethodKind {
     Subscription,
     /// One request, a stream of `Result<item, err>` items.
     ResultSubscription,
+    /// A product-to-host request stream paired with a host-to-product item stream.
+    StreamPair,
 }
 
 /// Trait method parameter (name + type).
@@ -630,7 +645,7 @@ fn extract_trait(
         name,
         module_path,
         methods,
-        docs: clean_docs(item.docs.as_deref()),
+        docs: item.docs.clone(),
     })
 }
 
@@ -653,7 +668,7 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
     let output = unwrap_future_output(raw_output)
         .with_context(|| format!("Method `{name}` has an invalid Future return type"))?;
 
-    let (kind, return_type) = if is_result_subscription_return(output) {
+    let (mut kind, return_type) = if is_result_subscription_return(output) {
         (
             MethodKind::ResultSubscription,
             ReturnType::ResultSubscription {
@@ -739,6 +754,13 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
         );
     }
 
+    if matches!(kind, MethodKind::Subscription)
+        && params.len() == 1
+        && subscription_item_type(&params[0].type_ref).is_some()
+    {
+        kind = MethodKind::StreamPair;
+    }
+
     let wire = item
         .docs
         .as_deref()
@@ -775,7 +797,24 @@ pub fn clean_docs(docs: Option<&str>) -> Option<String> {
 
 fn is_codegen_doc_marker(line: &str) -> bool {
     let line = line.trim_start();
-    line.starts_with("@wire_")
+    line.starts_with("@wire_") || line.starts_with("@service_")
+}
+
+fn extract_marker_value<'a>(docs: &'a str, marker: &str) -> Option<&'a str> {
+    docs.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix(marker)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
+}
+
+/// Return the item type carried by a `Subscription<T>` parameter.
+pub fn subscription_item_type(ty: &TypeRef) -> Option<&TypeRef> {
+    match ty {
+        TypeRef::Named { name, args } if name == "Subscription" && args.len() == 1 => args.first(),
+        _ => None,
+    }
 }
 
 /// Extracts `@wire_<name>_id=N` markers from a doc comment block. Annotated
@@ -1450,9 +1489,22 @@ mod tests {
 
     #[test]
     fn clean_docs_strips_wire_markers() {
-        let docs = "Trait summary.\n\n@wire_request_id=7\n";
+        let docs = "Trait summary.\n\n@wire_request_id=7\n@service_required_execution=Chat\n";
 
         assert_eq!(clean_docs(Some(docs)).as_deref(), Some("Trait summary."));
+    }
+
+    #[test]
+    fn trait_exposes_required_execution_without_leaking_marker() {
+        let trait_def = TraitDef {
+            name: "Chat".into(),
+            module_path: Vec::new(),
+            methods: Vec::new(),
+            docs: Some("Chat operations.\n\n@service_required_execution=Chat".into()),
+        };
+
+        assert_eq!(trait_def.required_execution(), Some("Chat"));
+        assert_eq!(trait_def.public_docs().as_deref(), Some("Chat operations."));
     }
 
     #[test]

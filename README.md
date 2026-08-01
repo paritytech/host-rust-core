@@ -139,6 +139,62 @@ yarn dev
 
 Open `https://dot.li/localhost:3000` inside the Polkadot Desktop Host. See [`playground/README.md`](playground/README.md) for deployment.
 
+To build the iOS host and open the playground in Simulator:
+
+```bash
+make ios-run
+```
+
+The target regenerates the UniFFI Swift bindings, builds the matching Rust
+simulator library, and builds the `hosts/ios` app with the Nightly feature
+flags and release Firebase app used by the Nightly TestFlight build. Native
+Chat and the Paseo chain catalog come from the same Nightly Remote Config as
+TestFlight. The executable keeps the development bundle and app-group identity
+so Simulator can reuse its already registered wallet; keychain data cannot be
+transferred to the production bundle. The simulator also adds the
+`IOS_PASEO_E2E` conveniences needed to start on the real `browse.dot` Browse tab
+and activate the embedded signing host. Embedded product host sessions use the
+same Paseo People and Bulletin chains selected by the Nightly app
+configuration. The launcher starts the playground at `http://localhost:3100`
+when needed and uses that local source only after Browse opens
+`truapi-playground.dot`. It refuses to launch if the local URL belongs to a
+different app. Override the product, URL, or simulator with `IOS_PRODUCT_HOST`,
+`IOS_PRODUCT_URL`, or `TRUAPI_IOS_E2E_DEVICE`. The simulator launch reuses the
+wallet and registered username already stored by the iOS app. Opening a product
+activates the embedded `truapi-host` signing-host session from that wallet; it
+does not provision or pair a signer-bot user.
+
+To exercise the shared-core Chat path with the first-party TrUAPI Playground
+worker, build and serve the local product, install its worker into the
+simulator app's product storage, and launch both executables:
+
+```bash
+make ios-chat-run
+```
+
+The launcher fails unless both the `App` and `Chat` WebSocket connections open,
+the worker completes all six Chat API checks, a typed custom-renderer update
+reaches the native widget, and a new SCALE-encoded `Echo: hello` reply reaches
+CoreData. The worker receives `!echo hello` through `chat_action_subscribe` and
+persists the reply through the Rust `ChatPlatform` adapter while the SPA uses
+its separate connection to the same process runtime. Both executables build
+against the workspace-linked `@parity/truapi`. Override the product source,
+identity, SPA URL, room, input, or expected reply with
+`IOS_CHAT_PRODUCT_DIR`, `IOS_CHAT_PRODUCT_HOST`, `IOS_CHAT_PRODUCT_URL`,
+`TRUAPI_IOS_E2E_CHAT_ROOM_ID`, `TRUAPI_IOS_E2E_CHAT_MESSAGE`, or
+`TRUAPI_IOS_E2E_CHAT_EXPECTED_REPLY`.
+
+The same harness can run the legacy Product SDK worker from the sibling
+`host-playground` checkout. This target builds the current TrUAPI client, links
+it over Host Playground's transitive `@parity/truapi`, then builds and runs
+that product:
+
+```bash
+make ios-chat-host-playground-run
+```
+
+Run both integrations with one iOS build using `make ios-chat-all`.
+
 ## Regenerate the TypeScript client
 
 When the Rust trait surface changes:

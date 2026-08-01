@@ -14,6 +14,11 @@ The playground is an interactive reference for the TrUAPI: every method grouped 
 - **Auto-test view**: runs every method and reports pass / fail in one pass.
 - **Diagnosis view**: runs the full surface and produces a copy-pasteable markdown report per host. The explorer's Compatibility page aggregates those into a cross-host matrix. See [Diagnosis](#diagnosis).
 - **Wiring status**: methods that are not yet bound are flagged "Not supported" so you can see protocol coverage at a glance.
+- **Chat worker**: the same build emits `out/worker/index.js`, which exercises
+  every generated Chat method. It verifies room creation, the intentionally
+  unavailable bot registration call, room-list updates, text and custom
+  messages, actions, and the paired custom-renderer streams before answering
+  `!echo <message>`.
 
 ## Local development
 
@@ -29,6 +34,10 @@ https://dot.li/localhost:3000
 ```
 
 The app needs a host to connect to. Opening it directly in a regular browser will not work.
+
+`yarn build` produces both the static SPA under `out/` and its Chat executable
+at `out/worker/index.js`. Both resolve `@parity/truapi` from the linked
+workspace package in `../js/packages/truapi`.
 
 ## Adding a method
 

@@ -88,7 +88,8 @@ impl TrUApiCore {
         spawner: Spawner,
         session_state: Arc<SessionState>,
     ) -> Self {
-        let mut dispatcher = Dispatcher::new(spawner);
+        let execution_kind = runtime.execution_kind();
+        let mut dispatcher = Dispatcher::for_execution(spawner, execution_kind);
         dispatcher::register(&mut dispatcher, runtime);
         Self {
             dispatcher,

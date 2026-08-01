@@ -47,6 +47,28 @@ pub mod latest {
     /// Ring VRF proof creation result.
     pub type HostAccountCreateProofResponse =
         LatestOf<versioned::account::HostAccountCreateProofResponse>;
+    /// Chat action delivered from the native host to a product worker.
+    pub type HostChatActionSubscribeItem = LatestOf<versioned::chat::HostChatActionSubscribeItem>;
+    /// Native chat room creation request.
+    pub type HostChatCreateRoomRequest = LatestOf<versioned::chat::HostChatCreateRoomRequest>;
+    /// Native chat room creation result.
+    pub type HostChatCreateRoomResponse = LatestOf<versioned::chat::HostChatCreateRoomResponse>;
+    /// Native chat room creation failure.
+    pub type HostChatCreateRoomError = LatestOf<versioned::chat::HostChatCreateRoomError>;
+    /// Current native room list for a product.
+    pub type HostChatListSubscribeItem = LatestOf<versioned::chat::HostChatListSubscribeItem>;
+    /// Native chat message posting request.
+    pub type HostChatPostMessageRequest = LatestOf<versioned::chat::HostChatPostMessageRequest>;
+    /// Native chat message posting result.
+    pub type HostChatPostMessageResponse = LatestOf<versioned::chat::HostChatPostMessageResponse>;
+    /// Native chat message posting failure.
+    pub type HostChatPostMessageError = LatestOf<versioned::chat::HostChatPostMessageError>;
+    /// Product-to-host custom renderer update.
+    pub type ProductChatCustomMessageRenderSubscribeRequest =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderSubscribeRequest>;
+    /// Host-to-product custom render work item.
+    pub type ProductChatCustomMessageRenderSubscribeItem =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderSubscribeItem>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
@@ -124,7 +146,7 @@ pub mod latest {
     pub type RemotePermissionResponse = LatestOf<versioned::permissions::RemotePermissionResponse>;
 }
 
-pub use truapi_macros::wire;
+pub use truapi_macros::{service, wire};
 
 /// Per-message id carried from the transport frame.
 pub type RequestId = String;

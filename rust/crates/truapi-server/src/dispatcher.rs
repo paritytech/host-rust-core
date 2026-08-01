@@ -14,7 +14,10 @@ use tracing::instrument;
 
 use crate::frame::{Payload, ProtocolMessage};
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds};
-use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
+use crate::middleware::execution::ExecutionFilter;
+use crate::subscription::{
+    Spawner, SubscriptionManager, SubscriptionRequestStream, SubscriptionStream,
+};
 use crate::transport::Transport;
 
 /// A handler for a request-response method. TrUAPI service traits require
@@ -35,6 +38,17 @@ pub type SubscriptionHandler = Arc<
         + Sync,
 >;
 
+/// Handler for a paired request and response subscription.
+pub type StreamPairHandler = Arc<
+    dyn Fn(
+            String,
+            Vec<u8>,
+            SubscriptionRequestStream,
+        ) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
+        + Send
+        + Sync,
+>;
+
 /// A registered request handler plus the discriminants it replies on.
 pub struct RequestEntry {
     ids: RequestFrameIds,
@@ -47,24 +61,80 @@ pub struct SubscriptionEntry {
     handler: SubscriptionHandler,
 }
 
+/// A registered paired-stream handler plus its frame discriminants.
+pub struct StreamPairEntry {
+    ids: SubscriptionFrameIds,
+    handler: StreamPairHandler,
+}
+
 /// Routes incoming protocol messages to registered handlers, keyed on the
 /// numeric wire discriminant.
 pub struct Dispatcher {
     by_request: HashMap<u8, RequestEntry>,
     by_start: HashMap<u8, SubscriptionEntry>,
+    by_pair_start: HashMap<u8, StreamPairEntry>,
+    pair_receive_ids: HashSet<u8>,
     stop_ids: HashSet<u8>,
     subscriptions: SubscriptionManager,
+    execution: ExecutionFilter,
 }
 
 impl Dispatcher {
     /// Construct a dispatcher whose subscriptions are driven on `spawner`.
     pub fn new(spawner: Spawner) -> Self {
+        Self::with_execution_filter(spawner, ExecutionFilter::unrestricted())
+    }
+
+    /// Construct a dispatcher bound to a trusted executable kind.
+    pub fn for_execution(
+        spawner: Spawner,
+        execution: truapi_platform::ProductExecutionKind,
+    ) -> Self {
+        Self::with_execution_filter(spawner, ExecutionFilter::for_execution(execution))
+    }
+
+    fn with_execution_filter(spawner: Spawner, execution: ExecutionFilter) -> Self {
         Self {
             by_request: HashMap::new(),
             by_start: HashMap::new(),
+            by_pair_start: HashMap::new(),
+            pair_receive_ids: HashSet::new(),
             stop_ids: HashSet::new(),
             subscriptions: SubscriptionManager::new(spawner),
+            execution,
         }
+    }
+
+    /// Return whether this connection may access a service execution kind.
+    pub fn allows_execution(&self, required: truapi_platform::ProductExecutionKind) -> bool {
+        self.execution.allows(required)
+    }
+
+    /// Register a paired request/response stream handler.
+    pub fn on_stream_pair<F>(
+        &mut self,
+        ids: SubscriptionFrameIds,
+        handler: F,
+    ) -> Option<StreamPairEntry>
+    where
+        F: Fn(
+                String,
+                Vec<u8>,
+                SubscriptionRequestStream,
+            ) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.stop_ids.insert(ids.stop_id);
+        self.pair_receive_ids.insert(ids.receive_id);
+        self.by_pair_start.insert(
+            ids.start_id,
+            StreamPairEntry {
+                ids,
+                handler: Arc::new(handler),
+            },
+        )
     }
 
     /// Register a request-response handler, keyed on `ids.request_id`. Returns
@@ -130,6 +200,32 @@ impl Dispatcher {
                     value,
                 },
             });
+        } else if let Some(entry) = self.by_pair_start.get(&id) {
+            let (token, requests) = self
+                .subscriptions
+                .reserve_pair(message.request_id.clone(), entry.ids.receive_id);
+            let request_id = message.request_id.clone();
+            match (entry.handler)(request_id, message.payload.value, requests).await {
+                Ok(stream) => {
+                    self.subscriptions.activate(
+                        token,
+                        entry.ids.receive_id,
+                        entry.ids.interrupt_id,
+                        stream,
+                        transport,
+                    );
+                }
+                Err(err_bytes) => {
+                    self.subscriptions.cancel_reservation(token);
+                    transport.send(ProtocolMessage {
+                        request_id: message.request_id,
+                        payload: Payload {
+                            id: entry.ids.interrupt_id,
+                            value: err_bytes,
+                        },
+                    });
+                }
+            }
         } else if let Some(entry) = self.by_start.get(&id) {
             // Reserve the slot before awaiting the handler so a `_stop`
             // arriving while the handler resolves cancels the pending
@@ -157,6 +253,9 @@ impl Dispatcher {
                     });
                 }
             }
+        } else if self.pair_receive_ids.contains(&id) {
+            self.subscriptions
+                .handle_request(&message.request_id, id, message.payload.value);
         } else if self.stop_ids.contains(&id) {
             self.subscriptions.handle_stop(&message.request_id);
         }
@@ -173,6 +272,7 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
     use std::sync::Mutex;
 
     fn test_spawner() -> Spawner {
@@ -274,5 +374,59 @@ mod tests {
             prev.is_some(),
             "second registration must return the previous handler"
         );
+    }
+
+    #[test]
+    fn paired_subscription_routes_product_values_to_its_request_stream() {
+        let mut dispatcher = Dispatcher::new(test_spawner());
+        let ids = SubscriptionFrameIds {
+            start_id: 200,
+            stop_id: 201,
+            interrupt_id: 202,
+            receive_id: 203,
+        };
+        dispatcher.on_stream_pair(ids, |_request_id, _bytes, requests| {
+            Box::pin(async move {
+                Ok(
+                    Box::pin(requests.map(crate::subscription::SubscriptionOutput::Item))
+                        as SubscriptionStream,
+                )
+            })
+        });
+        let transport = Arc::new(RecordingTransport::default());
+
+        futures::executor::block_on(
+            dispatcher.dispatch(make_frame(ids.start_id, Vec::new()), transport.clone()),
+        );
+        futures::executor::block_on(
+            dispatcher.dispatch(make_frame(ids.receive_id, vec![7, 8, 9]), transport.clone()),
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let sent = transport.sent();
+            if let Some(frame) = sent.first() {
+                assert_eq!(frame.request_id, "p:1");
+                assert_eq!(frame.payload.id, ids.receive_id);
+                assert_eq!(frame.payload.value, vec![7, 8, 9]);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "paired request was not delivered"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn execution_filter_is_bound_to_the_connection() {
+        let app =
+            Dispatcher::for_execution(test_spawner(), truapi_platform::ProductExecutionKind::App);
+        let chat =
+            Dispatcher::for_execution(test_spawner(), truapi_platform::ProductExecutionKind::Chat);
+
+        assert!(!app.allows_execution(truapi_platform::ProductExecutionKind::Chat));
+        assert!(chat.allows_execution(truapi_platform::ProductExecutionKind::Chat));
     }
 }

@@ -16,13 +16,16 @@ use unicode_normalization::UnicodeNormalization;
 pub use async_trait::async_trait;
 
 use truapi::latest::{
-    AllocatableResource, GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
-    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostNavigateToError, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RemotePermissionResponse, RingLocation, ThemeVariant,
+    AllocatableResource, GenericError, HostChatCreateRoomError, HostChatCreateRoomRequest,
+    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
+    HostChatPostMessageRequest, HostChatPostMessageResponse, HostDevicePermissionRequest,
+    HostDevicePermissionResponse, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
+    HostLocalStorageReadError, HostNavigateToError, HostPushNotificationRequest,
+    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
+    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
+    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
+    ThemeVariant,
 };
 use url::Url;
 
@@ -84,6 +87,20 @@ pub struct ProductContext {
     /// Host-spec C.7 defines accepted product id forms:
     /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L109-L128>
     pub product_id: String,
+    /// Trusted kind of executable attached to this connection by the host.
+    pub execution_kind: ProductExecutionKind,
+}
+
+/// Trusted kind of product executable attached to a TrUAPI connection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProductExecutionKind {
+    /// Visible application entrypoint such as `app/index.html`.
+    #[default]
+    App,
+    /// Host-embedded product widget entrypoint.
+    Widget,
+    /// Headless worker executable that provides the Chat modality.
+    Chat,
 }
 
 /// Host metadata.
@@ -177,8 +194,17 @@ impl ProductContext {
     /// Build a product context, validating fields whose representation cannot
     /// be made invalid by Rust types alone.
     pub fn new(product_id: String) -> Result<Self, RuntimeConfigValidationError> {
+        Self::new_with_execution(product_id, ProductExecutionKind::App)
+    }
+
+    /// Build a product context for a host-selected executable kind.
+    pub fn new_with_execution(
+        product_id: String,
+        execution_kind: ProductExecutionKind,
+    ) -> Result<Self, RuntimeConfigValidationError> {
         Ok(Self {
             product_id: normalize_product_identifier(&product_id)?,
+            execution_kind,
         })
     }
 }
@@ -925,6 +951,30 @@ pub trait PreimageHost: Send + Sync {
         &self,
         key: Vec<u8>,
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, GenericError>>;
+}
+
+/// Optional native chat storage and UI adapter used by Chat executions.
+#[async_trait]
+pub trait ChatPlatform: Send + Sync {
+    /// Create or resolve a product-scoped native chat room.
+    async fn create_room(
+        &self,
+        product: &ProductContext,
+        request: HostChatCreateRoomRequest,
+    ) -> Result<HostChatCreateRoomResponse, HostChatCreateRoomError>;
+
+    /// Persist a product-authored message in a native chat room.
+    async fn post_message(
+        &self,
+        product: &ProductContext,
+        request: HostChatPostMessageRequest,
+    ) -> Result<HostChatPostMessageResponse, HostChatPostMessageError>;
+
+    /// Emit the current product-scoped room list and later replacements.
+    fn subscribe_rooms(
+        &self,
+        product: &ProductContext,
+    ) -> BoxStream<'static, HostChatListSubscribeItem>;
 }
 
 /// Combined platform interface. A host must provide all capability traits.

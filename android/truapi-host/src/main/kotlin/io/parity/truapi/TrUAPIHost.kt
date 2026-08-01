@@ -32,7 +32,10 @@ import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_server.HostTheme
+import uniffi.truapi_server.NativeChatRoom
+import uniffi.truapi_server.NativeChatRoomRegistrationStatus
 import uniffi.truapi_server.NativePermissionAuthorizationStatus
+import uniffi.truapi_server.NativeProductExecutionKind
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.WsBridgeEndpoint
@@ -57,6 +60,20 @@ enum class PairingDeeplinkScheme {
         }
 }
 
+/** Trusted kind of executable attached to a product connection. */
+enum class ProductExecutionKind {
+    APP,
+    WIDGET,
+    CHAT;
+
+    internal fun toNative(): NativeProductExecutionKind =
+        when (this) {
+            APP -> NativeProductExecutionKind.APP
+            WIDGET -> NativeProductExecutionKind.WIDGET
+            CHAT -> NativeProductExecutionKind.CHAT
+        }
+}
+
 /**
  * Static product and pairing config supplied before the Rust core handles
  * product calls. One core instance represents one product identity.
@@ -69,6 +86,7 @@ enum class PairingDeeplinkScheme {
  */
 data class RuntimeConfig(
     val productId: String,
+    val executionKind: ProductExecutionKind = ProductExecutionKind.APP,
     val hostName: String,
     val hostIcon: String? = null,
     val hostVersion: String? = null,
@@ -83,6 +101,7 @@ data class RuntimeConfig(
     internal fun toNative(): UniFfiNativeRuntimeConfig =
         UniFfiNativeRuntimeConfig(
             productId = productId,
+            executionKind = executionKind.toNative(),
             hostName = hostName,
             hostIcon = hostIcon,
             hostVersion = hostVersion,
@@ -99,6 +118,7 @@ data class RuntimeConfig(
         if (this === other) return true
         if (other !is RuntimeConfig) return false
         return productId == other.productId &&
+            executionKind == other.executionKind &&
             hostName == other.hostName &&
             hostIcon == other.hostIcon &&
             hostVersion == other.hostVersion &&
@@ -116,6 +136,7 @@ data class RuntimeConfig(
 
     override fun hashCode(): Int {
         var result = productId.hashCode()
+        result = 31 * result + executionKind.hashCode()
         result = 31 * result + hostName.hashCode()
         result = 31 * result + (hostIcon?.hashCode() ?: 0)
         result = 31 * result + (hostVersion?.hashCode() ?: 0)
@@ -354,6 +375,28 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override fun localStorageClear(key: String) =
         bridge.storage.clear(key)
+
+    override fun chatSupported(): Boolean = false
+
+    override fun chatCreateRoom(
+        roomId: String,
+        name: String,
+        icon: String,
+    ): NativeChatRoomRegistrationStatus = throw chatUnavailable()
+
+    override fun chatPostTextMessage(roomId: String, text: String): String =
+        throw chatUnavailable()
+
+    override fun chatPostCustomMessage(
+        roomId: String,
+        messageType: String,
+        payload: ByteArray,
+    ): String = throw chatUnavailable()
+
+    override fun chatListRooms(): List<NativeChatRoom> = emptyList()
+
+    private fun chatUnavailable(): HostRejection =
+        HostRejection.Rejected("native Chat adapter unavailable")
 }
 
 /**

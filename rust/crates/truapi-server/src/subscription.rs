@@ -10,9 +10,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
+use futures::channel::mpsc;
 use futures::future::{BoxFuture, Either, select};
 use futures::stream::BoxStream;
-use parity_scale_codec::Encode;
+use parity_scale_codec::{Decode, Encode};
 
 use crate::frame::{Payload, ProtocolMessage};
 use crate::transport::Transport;
@@ -49,6 +50,9 @@ pub enum SubscriptionOutput {
 /// Boxed stream of [`SubscriptionOutput`] consumed by the dispatcher.
 pub type SubscriptionStream = BoxStream<'static, SubscriptionOutput>;
 
+/// Raw product-to-host values carried by a paired subscription.
+pub type SubscriptionRequestStream = BoxStream<'static, Vec<u8>>;
+
 /// Wrap a host-side stream of typed items into the SCALE-encoded
 /// [`SubscriptionStream`] that the dispatcher delivers to the transport.
 ///
@@ -62,6 +66,23 @@ where
     S: futures::Stream<Item = Item> + Send + 'static,
 {
     Box::pin(stream.map(|item| SubscriptionOutput::Item(item.encode())))
+}
+
+/// Decode raw paired-stream request values into the typed TrUAPI stream.
+/// The first malformed value terminates this stream. The paired response
+/// stream then completes through its handler, without affecting sibling
+/// protocol streams on the same connection.
+pub fn subscription_request_stream<Item>(
+    stream: SubscriptionRequestStream,
+) -> truapi::Subscription<Item>
+where
+    Item: Decode + Send + 'static,
+{
+    let decoded = stream.scan(
+        (),
+        |_, bytes| async move { Item::decode(&mut &bytes[..]).ok() },
+    );
+    truapi::Subscription::new(Box::pin(decoded))
 }
 
 /// Generation-stamped slot tracking the lifecycle of one subscription id.
@@ -86,9 +107,12 @@ pub struct ReservationToken {
     generation: u64,
 }
 
+type RequestSenderMap = HashMap<String, (u64, u8, mpsc::UnboundedSender<Vec<u8>>)>;
+
 /// Manages active subscriptions on the server side.
 pub struct SubscriptionManager {
     active: Arc<Mutex<HashMap<String, Slot>>>,
+    request_senders: Arc<Mutex<RequestSenderMap>>,
     next_generation: Arc<AtomicU64>,
     spawner: Spawner,
 }
@@ -98,6 +122,7 @@ impl SubscriptionManager {
     pub fn new(spawner: Spawner) -> Self {
         Self {
             active: Arc::new(Mutex::new(HashMap::new())),
+            request_senders: Arc::new(Mutex::new(HashMap::new())),
             next_generation: Arc::new(AtomicU64::new(0)),
             spawner,
         }
@@ -109,6 +134,7 @@ impl SubscriptionManager {
     /// [`activate`](Self::activate) flips the reservation to cancelled.
     pub fn reserve(&self, request_id: String) -> ReservationToken {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+        self.request_senders.lock().unwrap().remove(&request_id);
         let mut active = self.active.lock().unwrap();
         if let Some(Slot::Live { cancel, .. }) = active.insert(
             request_id.clone(),
@@ -125,6 +151,21 @@ impl SubscriptionManager {
         }
     }
 
+    /// Reserve a paired subscription and return its product-to-host request stream.
+    pub fn reserve_pair(
+        &self,
+        request_id: String,
+        receive_id: u8,
+    ) -> (ReservationToken, SubscriptionRequestStream) {
+        let token = self.reserve(request_id.clone());
+        let (sender, receiver) = mpsc::unbounded();
+        self.request_senders
+            .lock()
+            .unwrap()
+            .insert(request_id, (token.generation, receive_id, sender));
+        (token, Box::pin(receiver))
+    }
+
     /// Drop a reservation whose `_start` handler failed before producing a
     /// stream. No-op if the slot was superseded by a newer reservation.
     pub fn cancel_reservation(&self, token: ReservationToken) {
@@ -135,6 +176,10 @@ impl SubscriptionManager {
         );
         if owned {
             active.remove(&token.request_id);
+        }
+        drop(active);
+        if owned {
+            self.remove_request_sender(&token.request_id, token.generation);
         }
     }
 
@@ -189,6 +234,7 @@ impl SubscriptionManager {
         }
 
         let active = self.active.clone();
+        let request_senders = self.request_senders.clone();
 
         let future: BoxFuture<'static, ()> = Box::pin(async move {
             let completed = {
@@ -239,6 +285,16 @@ impl SubscriptionManager {
                 owned
             };
 
+            if removed {
+                let mut senders = request_senders.lock().unwrap();
+                let owned = matches!(
+                    senders.get(&request_id),
+                    Some((sender_generation, _, _)) if *sender_generation == generation
+                );
+                if owned {
+                    senders.remove(&request_id);
+                }
+            }
             if completed && removed {
                 transport.send(ProtocolMessage {
                     request_id,
@@ -283,6 +339,22 @@ impl SubscriptionManager {
             }
             None => {}
         }
+        drop(active);
+        self.request_senders.lock().unwrap().remove(request_id);
+    }
+
+    /// Deliver one product-to-host value to an active paired subscription.
+    pub fn handle_request(&self, request_id: &str, receive_id: u8, value: Vec<u8>) {
+        let sender = self
+            .request_senders
+            .lock()
+            .unwrap()
+            .get(request_id)
+            .filter(|(_, expected_receive_id, _)| *expected_receive_id == receive_id)
+            .map(|(_, _, sender)| sender.clone());
+        if let Some(sender) = sender {
+            let _ = sender.unbounded_send(value);
+        }
     }
 
     /// Cancel and forget every pending or live subscription owned by this
@@ -302,6 +374,18 @@ impl SubscriptionManager {
         for cancel in cancellations {
             cancel();
         }
+        self.request_senders.lock().unwrap().clear();
+    }
+
+    fn remove_request_sender(&self, request_id: &str, generation: u64) {
+        let mut senders = self.request_senders.lock().unwrap();
+        let owned = matches!(
+            senders.get(request_id),
+            Some((sender_generation, _, _)) if *sender_generation == generation
+        );
+        if owned {
+            senders.remove(request_id);
+        }
     }
 }
 
@@ -309,6 +393,7 @@ impl SubscriptionManager {
 mod tests {
     use super::*;
     use futures::stream;
+    use parity_scale_codec::Encode;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll};
 
@@ -365,6 +450,16 @@ mod tests {
         Box::pin(stream::iter(
             items.into_iter().map(SubscriptionOutput::Item),
         ))
+    }
+
+    #[test]
+    fn malformed_paired_request_terminates_only_its_typed_stream() {
+        let raw: SubscriptionRequestStream =
+            Box::pin(stream::iter([7_u32.encode(), vec![0xff], 9_u32.encode()]));
+        let mut typed = subscription_request_stream::<u32>(raw);
+
+        assert_eq!(futures::executor::block_on(typed.next()), Some(7));
+        assert_eq!(futures::executor::block_on(typed.next()), None);
     }
 
     struct PendingDropStream {

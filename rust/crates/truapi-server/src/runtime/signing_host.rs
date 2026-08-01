@@ -358,7 +358,7 @@ impl ProductAuthority for SigningHost {
     ) -> Result<v01::ContextualAlias, RingVrfError> {
         require_current_session(&self.session_state, session)?;
         match super::account_access_authorization(
-            &self.services,
+            self.services.platform.as_ref(),
             &request.calling_product_id,
             &request.context.product_id,
         )

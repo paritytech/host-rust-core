@@ -15,5 +15,5 @@ truapi_macros::versioned_type! {
     pub enum HostChatListSubscribeItem { V1 => v01::HostChatListSubscribeItem }
     pub enum HostChatActionSubscribeItem { V1 => v01::HostChatActionSubscribeItem }
     pub enum ProductChatCustomMessageRenderSubscribeRequest { V1 => v01::ProductChatCustomMessageRenderSubscribeRequest }
-    pub enum ProductChatCustomMessageRenderSubscribeItem { V1 => v01::CustomRendererNode }
+    pub enum ProductChatCustomMessageRenderSubscribeItem { V1 => v01::ProductChatCustomMessageRenderSubscribeItem }
 }

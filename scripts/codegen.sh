@@ -24,8 +24,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-cargo +nightly rustdoc -p truapi -- -Z unstable-options --output-format json
-cargo +nightly rustdoc -p truapi-platform -- -Z unstable-options --output-format json
+NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly}"
+
+cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi -- -Z unstable-options --output-format json
+cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi-platform -- -Z unstable-options --output-format json
 cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
@@ -39,7 +41,7 @@ cargo run -p truapi-codegen -- \
   --explorer-output js/packages/truapi/src/explorer \
   --codec-version 1
 
-rustfmt +nightly --edition 2024 \
+rustfmt +"$NIGHTLY_TOOLCHAIN" --edition 2024 \
   rust/crates/truapi-server/src/generated/dispatcher.rs \
   rust/crates/truapi-server/src/generated/wire_table.rs \
   rust/crates/truapi-server/src/wasm/generated_bridge.rs

@@ -25,7 +25,7 @@ use proc_macro2::Literal;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    Attribute, Ident, ItemFn, LitInt, Token, TraitItemFn, Type, Visibility, braced,
+    Attribute, Ident, ItemFn, ItemTrait, LitInt, Token, TraitItemFn, Type, Visibility, braced,
     parse_macro_input,
 };
 
@@ -37,6 +37,37 @@ struct WireArgs {
     stop_id: Option<u8>,
     interrupt_id: Option<u8>,
     receive_id: Option<u8>,
+}
+
+struct ServiceArgs {
+    required_execution: Ident,
+}
+
+impl Parse for ServiceArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let key: Ident = input.parse()?;
+        if key != "required_execution" {
+            return Err(syn::Error::new(key.span(), "expected `required_execution`"));
+        }
+        input.parse::<Token![=]>()?;
+        let required_execution = input.parse()?;
+        if !input.is_empty() {
+            return Err(input.error("unexpected service attribute arguments"));
+        }
+        Ok(Self { required_execution })
+    }
+}
+
+/// Declare connection-scoped middleware required by a TrUAPI service trait.
+///
+/// The metadata is preserved in rustdoc JSON for `truapi-codegen`.
+#[proc_macro_attribute]
+pub fn service(args: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args as ServiceArgs);
+    let mut item = parse_macro_input!(item as ItemTrait);
+    let tag = format!("@service_required_execution={}", args.required_execution);
+    item.attrs.push(syn::parse_quote!(#[doc = #tag]));
+    quote!(#item).into()
 }
 
 impl Parse for WireArgs {

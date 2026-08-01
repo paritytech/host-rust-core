@@ -96,7 +96,10 @@ describe("generated client transport", () => {
         const client = createClient(transport);
 
         const request = {
-            productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Left", value: 0 } },
+            productAccountId: {
+                dotNsIdentifier: "foo",
+                derivationIndex: { tag: "Left", value: 0 },
+            },
         };
         void client.account.getAccount(request);
 
@@ -156,7 +159,10 @@ describe("generated client transport", () => {
         const client = createClient(transport);
 
         const response = client.account.getAccount({
-            productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Left", value: 0 } },
+            productAccountId: {
+                dotNsIdentifier: "foo",
+                derivationIndex: { tag: "Left", value: 0 },
+            },
         });
         const reason = { tag: "V1", value: { tag: "NotConnected", value: undefined } } as const;
         const frame = unwrap(
@@ -235,6 +241,104 @@ describe("generated client transport", () => {
         fixture.receive(frame);
 
         expect(events).toEqual(["Connected"]);
+    });
+
+    it("uses one subscription id for both renderer stream directions", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const renders: T.ProductChatCustomMessageRenderSubscribeItem[] = [];
+        const renderer = client.chat.customMessageRenderSubscribe();
+
+        expect(() =>
+            renderer.requests.next({ tag: "Failed", value: { messageId: "too-early" } }),
+        ).toThrow("subscribe to responses before sending paired-stream requests");
+
+        const subscription = renderer.responses.subscribe({ next: (item) => renders.push(item) });
+        const start = unwrap(
+            encodeWireMessage({
+                requestId: subscription.subscriptionId,
+                payload: {
+                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.start,
+                    value: indexedTaggedUnion({ V1: [0, _void] }).enc({
+                        tag: "V1",
+                        value: undefined,
+                    }),
+                },
+            }),
+            "encode renderer start",
+        );
+        expect(toHex(fixture.sent[0])).toBe(toHex(start));
+
+        const item = {
+            messageId: "message-1",
+            messageType: "vote",
+            payload: "0x0102",
+        } as const;
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: subscription.subscriptionId,
+                    payload: {
+                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.receive,
+                        value: T.VersionedProductChatCustomMessageRenderSubscribeItem.enc({
+                            tag: "V1",
+                            value: item,
+                        }),
+                    },
+                }),
+                "encode renderer work",
+            ),
+        );
+        expect(renders).toEqual([item]);
+
+        const update = {
+            tag: "Update",
+            value: {
+                messageId: item.messageId,
+                node: { tag: "String", value: { text: "Votes: 1" } },
+            },
+        } as const;
+        renderer.requests.next(update);
+        const request = unwrap(
+            encodeWireMessage({
+                requestId: subscription.subscriptionId,
+                payload: {
+                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.receive,
+                    value: T.VersionedProductChatCustomMessageRenderSubscribeRequest.enc({
+                        tag: "V1",
+                        value: update,
+                    }),
+                },
+            }),
+            "encode renderer update",
+        );
+        expect(toHex(fixture.sent[1])).toBe(toHex(request));
+    });
+
+    it("allows a renderer stream to reopen after the host completes it", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const renderer = createClient(transport).chat.customMessageRenderSubscribe();
+        const first = renderer.responses.subscribe();
+
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: first.subscriptionId,
+                    payload: {
+                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.interrupt,
+                        value: _void.enc(undefined),
+                    },
+                }),
+                "encode renderer completion",
+            ),
+        );
+
+        expect(() =>
+            renderer.requests.next({ tag: "Failed", value: { messageId: "closed" } }),
+        ).toThrow("subscribe to responses before sending paired-stream requests");
+        expect(() => renderer.responses.subscribe()).not.toThrow();
     });
 
     it("completes the observable on a payloadless interrupt terminator", () => {

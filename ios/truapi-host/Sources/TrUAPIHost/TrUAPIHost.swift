@@ -42,6 +42,21 @@ public enum PairingDeeplinkScheme: Sendable {
     }
 }
 
+/// Trusted kind of executable attached to a product connection.
+public enum ProductExecutionKind: Sendable, Equatable {
+    case app
+    case widget
+    case chat
+
+    fileprivate var native: NativeProductExecutionKind {
+        switch self {
+        case .app: .app
+        case .widget: .widget
+        case .chat: .chat
+        }
+    }
+}
+
 /// Static product and pairing config supplied before the Rust core handles
 /// product calls. One core instance represents one product identity.
 ///
@@ -51,6 +66,7 @@ public enum PairingDeeplinkScheme: Sendable {
 /// exactly 32 bytes.
 public struct RuntimeConfig: Sendable {
     public let productId: String
+    public let executionKind: ProductExecutionKind
     public let hostName: String
     public let hostIcon: String?
     public let hostVersion: String?
@@ -64,6 +80,7 @@ public struct RuntimeConfig: Sendable {
 
     public init(
         productId: String,
+        executionKind: ProductExecutionKind = .app,
         hostName: String,
         hostIcon: String? = nil,
         hostVersion: String? = nil,
@@ -76,6 +93,7 @@ public struct RuntimeConfig: Sendable {
         pairingDeeplinkScheme: PairingDeeplinkScheme = .polkadotApp
     ) {
         self.productId = productId
+        self.executionKind = executionKind
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
@@ -91,6 +109,7 @@ public struct RuntimeConfig: Sendable {
     fileprivate var native: NativeRuntimeConfig {
         NativeRuntimeConfig(
             productId: productId,
+            executionKind: executionKind.native,
             hostName: hostName,
             hostIcon: hostIcon,
             hostVersion: hostVersion,
@@ -101,6 +120,73 @@ public struct RuntimeConfig: Sendable {
             localSessionSecret: localSessionSecret,
             localSessionLiteUsername: localSessionLiteUsername,
             pairingDeeplinkScheme: pairingDeeplinkScheme.native
+        )
+    }
+}
+
+/// Immutable process-wide configuration shared by all product executions.
+public struct HostRuntimeConfig: Sendable, Equatable {
+    public let hostName: String
+    public let hostIcon: String?
+    public let hostVersion: String?
+    public let platformType: String?
+    public let platformVersion: String?
+    public let peopleChainGenesisHash: Data
+    public let bulletinChainGenesisHash: Data
+    public let localSessionSecret: Data?
+    public let localSessionLiteUsername: String?
+
+    public init(
+        hostName: String,
+        hostIcon: String? = nil,
+        hostVersion: String? = nil,
+        platformType: String? = nil,
+        platformVersion: String? = nil,
+        peopleChainGenesisHash: Data,
+        bulletinChainGenesisHash: Data,
+        localSessionSecret: Data? = nil,
+        localSessionLiteUsername: String? = nil
+    ) {
+        self.hostName = hostName
+        self.hostIcon = hostIcon
+        self.hostVersion = hostVersion
+        self.platformType = platformType
+        self.platformVersion = platformVersion
+        self.peopleChainGenesisHash = peopleChainGenesisHash
+        self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.localSessionSecret = localSessionSecret
+        self.localSessionLiteUsername = localSessionLiteUsername
+    }
+
+    fileprivate var native: NativeHostRuntimeConfig {
+        NativeHostRuntimeConfig(
+            hostName: hostName,
+            hostIcon: hostIcon,
+            hostVersion: hostVersion,
+            platformType: platformType,
+            platformVersion: platformVersion,
+            peopleChainGenesisHash: peopleChainGenesisHash,
+            bulletinChainGenesisHash: bulletinChainGenesisHash,
+            localSessionSecret: localSessionSecret,
+            localSessionLiteUsername: localSessionLiteUsername
+        )
+    }
+}
+
+/// Host-selected identity and trusted kind for one executable connection.
+public struct ProductExecutionConfig: Sendable, Equatable {
+    public let productId: String
+    public let executionKind: ProductExecutionKind
+
+    public init(productId: String, executionKind: ProductExecutionKind) {
+        self.productId = productId
+        self.executionKind = executionKind
+    }
+
+    fileprivate var native: NativeProductExecutionConfig {
+        NativeProductExecutionConfig(
+            productId: productId,
+            executionKind: executionKind.native
         )
     }
 }
@@ -131,6 +217,10 @@ public enum LocalhostBridgeBootstrap {
               onmessageerror: null,
 
               postMessage: function(message) {
+                if (!started) {
+                  port.start();
+                }
+
                 if (socket && socket.readyState === WebSocket.OPEN) {
                   socket.send(message);
                 } else {
@@ -322,6 +412,26 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Core-owned host-private storage for auth session, pairing identity,
     /// and persisted permission decisions.
     var coreStorage: HostCoreStorageBackend { get }
+
+    /// Whether this host installs native Chat storage and UI callbacks.
+    var supportsChat: Bool { get }
+
+    /// Create or resolve a native product Chat room.
+    func chatCreateRoom(roomId: String, name: String, icon: String) throws
+        -> NativeChatRoomRegistrationStatus
+
+    /// Persist a text message in native Chat storage.
+    func chatPostTextMessage(roomId: String, text: String) throws -> String
+
+    /// Persist a custom message in native Chat storage.
+    func chatPostCustomMessage(
+        roomId: String,
+        messageType: String,
+        payload: Data
+    ) throws -> String
+
+    /// Return the current product-scoped native Chat rooms.
+    func chatListRooms() throws -> [NativeChatRoom]
 }
 
 public extension HostBridge {
@@ -336,6 +446,25 @@ public extension HostBridge {
     func confirmUserAction(review: Data) throws -> Bool { false }
     func lookupPreimage(key: Data) throws -> Data? { nil }
     func currentTheme() throws -> HostTheme { .dark }
+    var supportsChat: Bool { false }
+    func chatCreateRoom(
+        roomId: String,
+        name: String,
+        icon: String
+    ) throws -> NativeChatRoomRegistrationStatus {
+        throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
+    }
+    func chatPostTextMessage(roomId: String, text: String) throws -> String {
+        throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
+    }
+    func chatPostCustomMessage(
+        roomId: String,
+        messageType: String,
+        payload: Data
+    ) throws -> String {
+        throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
+    }
+    func chatListRooms() throws -> [NativeChatRoom] { [] }
 }
 
 /// Adapter that bridges the public `HostBridge` to the generated UniFFI
@@ -466,6 +595,44 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
+    func chatSupported() -> Bool {
+        bridge.supportsChat
+    }
+
+    func chatCreateRoom(
+        roomId: String,
+        name: String,
+        icon: String
+    ) throws -> NativeChatRoomRegistrationStatus {
+        try withHostRejection {
+            try bridge.chatCreateRoom(roomId: roomId, name: name, icon: icon)
+        }
+    }
+
+    func chatPostTextMessage(roomId: String, text: String) throws -> String {
+        try withHostRejection {
+            try bridge.chatPostTextMessage(roomId: roomId, text: text)
+        }
+    }
+
+    func chatPostCustomMessage(
+        roomId: String,
+        messageType: String,
+        payload: Data
+    ) throws -> String {
+        try withHostRejection {
+            try bridge.chatPostCustomMessage(
+                roomId: roomId,
+                messageType: messageType,
+                payload: payload
+            )
+        }
+    }
+
+    func chatListRooms() throws -> [NativeChatRoom] {
+        try withHostRejection { try bridge.chatListRooms() }
+    }
+
     private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
         do {
             return try operation()
@@ -494,6 +661,142 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch {
             throw HostStorageError.Unknown(reason: error.localizedDescription)
         }
+    }
+}
+
+/// Process-owned Rust host runtime. Product executables open independent
+/// connections from this object and share its authentication and core services.
+public final class TrUAPIHostRuntime: @unchecked Sendable {
+    private let inner: NativeTrUApiHostRuntime
+    private let callbackRetainer: HostCallbacks
+
+    public init(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) throws {
+        let adapter = HostCallbackAdapter(bridge: bridge)
+        callbackRetainer = adapter
+        inner = try NativeTrUApiHostRuntime.withRuntimeConfig(
+            callbacks: adapter,
+            runtimeConfig: runtimeConfig.native
+        )
+        LiveSessionStoreForwarder.register(self)
+        notifySessionStoreChanged()
+    }
+
+    deinit {
+        LiveSessionStoreForwarder.unregister(self)
+    }
+
+    /// Open one executable connection with a host-assigned immutable context.
+    public func openProductExecution(
+        bridge: HostBridge,
+        configuration: ProductExecutionConfig
+    ) throws -> TrUAPIProductExecution {
+        let adapter = HostCallbackAdapter(bridge: bridge)
+        let execution = try inner.openProductExecution(
+            callbacks: adapter,
+            executionConfig: configuration.native
+        )
+        return TrUAPIProductExecution(inner: execution, callbackRetainer: adapter)
+    }
+
+    public func disconnect() {
+        inner.disconnect()
+    }
+
+    public func notifySessionStoreChanged() {
+        inner.notifySessionStoreChanged()
+    }
+
+    public func cancelLogin() {
+        inner.cancelLogin()
+    }
+
+    public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
+        try inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
+    }
+
+    public func notifyChainResponse(connectionId: UInt32, json: String) {
+        inner.notifyChainResponse(connectionId: connectionId, json: json)
+    }
+
+    public func notifyChainClosed(connectionId: UInt32) {
+        inner.notifyChainClosed(connectionId: connectionId)
+    }
+}
+
+/// One App, Widget, or Chat executable connected to a shared host runtime.
+public final class TrUAPIProductExecution: @unchecked Sendable {
+    private let inner: NativeProductExecution
+    private let callbackRetainer: HostCallbacks
+
+    fileprivate init(inner: NativeProductExecution, callbackRetainer: HostCallbacks) {
+        self.inner = inner
+        self.callbackRetainer = callbackRetainer
+    }
+
+    deinit {
+        inner.close()
+    }
+
+    public func startWsBridge(bindPort: UInt16 = 0) throws -> WsBridgeEndpoint {
+        try inner.startWsBridge(bindPort: bindPort)
+    }
+
+    public func stopWsBridge() {
+        inner.stopWsBridge()
+    }
+
+    public func close() {
+        inner.close()
+    }
+
+    public func publishChatAction(_ action: NativeChatAction) throws {
+        try inner.publishChatAction(action: action)
+    }
+
+    public func renderCustomMessage(
+        messageId: String,
+        messageType: String,
+        payload: Data
+    ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
+        let (stream, continuation) = AsyncThrowingStream.makeStream(
+            of: NativeCustomRendererNode.self
+        )
+        let observer = CustomRendererStreamObserver(continuation: continuation)
+        let subscription = try inner.renderCustomMessage(
+            messageId: messageId,
+            messageType: messageType,
+            payload: payload,
+            observer: observer
+        )
+        continuation.onTermination = { @Sendable _ in
+            subscription.cancel()
+        }
+        return stream
+    }
+
+    public func permissionAuthorizationStatus(
+        request: Data
+    ) throws -> NativePermissionAuthorizationStatus {
+        try inner.permissionAuthorizationStatus(payload: request)
+    }
+
+    public func setPermissionAuthorizationStatus(
+        request: Data,
+        status: NativePermissionAuthorizationStatus
+    ) throws {
+        try inner.setPermissionAuthorizationStatus(payload: request, status: status)
+    }
+
+    public func notifyThemeChanged(theme: HostTheme) {
+        inner.notifyThemeChanged(theme: theme)
+    }
+
+    public func notifyPreimageChanged(key: Data, value: Data?) {
+        inner.notifyPreimageChanged(key: key, value: value)
+    }
+
+    public func notifyChatRoomsChanged(rooms: [NativeChatRoom]) {
+        inner.notifyChatRoomsChanged(rooms: rooms)
     }
 }
 
@@ -537,6 +840,33 @@ public final class TrUAPIHostCore {
     /// Stop the localhost WebSocket bridge (if running).
     public func stopWsBridge() {
         inner.stopWsBridge()
+    }
+
+    /// Publish a native Chat action to this core's connected Chat worker.
+    public func publishChatAction(_ action: NativeChatAction) throws {
+        try inner.publishChatAction(action: action)
+    }
+
+    /// Stream typed replacement trees for one stored custom Chat message.
+    public func renderCustomMessage(
+        messageId: String,
+        messageType: String,
+        payload: Data
+    ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
+        let (stream, continuation) = AsyncThrowingStream.makeStream(
+            of: NativeCustomRendererNode.self
+        )
+        let observer = CustomRendererStreamObserver(continuation: continuation)
+        let subscription = try inner.renderCustomMessage(
+            messageId: messageId,
+            messageType: messageType,
+            payload: payload,
+            observer: observer
+        )
+        continuation.onTermination = { @Sendable _ in
+            subscription.cancel()
+        }
+        return stream
     }
 
     /// Core-owned logout/disconnect path. Best-effort notifies the SSO peer,
@@ -600,6 +930,28 @@ public final class TrUAPIHostCore {
     public func notifyChainClosed(connectionId: UInt32) {
         inner.notifyChainClosed(connectionId: connectionId)
     }
+
+    /// Push a complete replacement of the native Chat room list to active
+    /// product subscriptions.
+    public func notifyChatRoomsChanged(rooms: [NativeChatRoom]) {
+        inner.notifyChatRoomsChanged(rooms: rooms)
+    }
+}
+
+private final class CustomRendererStreamObserver: NativeCustomRendererObserver, @unchecked Sendable {
+    private let continuation: AsyncThrowingStream<NativeCustomRendererNode, Error>.Continuation
+
+    init(continuation: AsyncThrowingStream<NativeCustomRendererNode, Error>.Continuation) {
+        self.continuation = continuation
+    }
+
+    func onUpdate(node: NativeCustomRendererNode) {
+        continuation.yield(node)
+    }
+
+    func onComplete() {
+        continuation.finish()
+    }
 }
 
 private final class WeakTrUAPIHostCore {
@@ -610,9 +962,30 @@ private final class WeakTrUAPIHostCore {
     }
 }
 
+private final class WeakTrUAPIHostRuntime {
+    weak var value: TrUAPIHostRuntime?
+
+    init(_ value: TrUAPIHostRuntime) {
+        self.value = value
+    }
+}
+
 private enum LiveSessionStoreForwarder {
     private static let lock = NSLock()
     private static var cores: [ObjectIdentifier: WeakTrUAPIHostCore] = [:]
+    private static var runtimes: [ObjectIdentifier: WeakTrUAPIHostRuntime] = [:]
+
+    static func register(_ runtime: TrUAPIHostRuntime) {
+        lock.lock()
+        runtimes[ObjectIdentifier(runtime)] = WeakTrUAPIHostRuntime(runtime)
+        lock.unlock()
+    }
+
+    static func unregister(_ runtime: TrUAPIHostRuntime) {
+        lock.lock()
+        runtimes.removeValue(forKey: ObjectIdentifier(runtime))
+        lock.unlock()
+    }
 
     static func register(_ core: TrUAPIHostCore) {
         lock.lock()
@@ -628,14 +1001,20 @@ private enum LiveSessionStoreForwarder {
 
     static func notifySessionStoreChanged() {
         let liveCores: [TrUAPIHostCore]
+        let liveRuntimes: [TrUAPIHostRuntime]
 
         lock.lock()
         cores = cores.filter { $0.value.value != nil }
+        runtimes = runtimes.filter { $0.value.value != nil }
         liveCores = cores.values.compactMap(\.value)
+        liveRuntimes = runtimes.values.compactMap(\.value)
         lock.unlock()
 
         for core in liveCores {
             core.notifySessionStoreChanged()
+        }
+        for runtime in liveRuntimes {
+            runtime.notifySessionStoreChanged()
         }
     }
 }

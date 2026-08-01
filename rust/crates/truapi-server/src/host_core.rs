@@ -18,6 +18,7 @@ use parity_scale_codec::{Decode, Encode};
 use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
+use truapi_platform::ChatPlatform;
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -51,6 +52,18 @@ pub enum ProductRuntimeError {
         /// Decode failure reason.
         reason: String,
     },
+    /// The connection execution kind does not allow Chat operations.
+    #[error("chat operation denied for this execution")]
+    Denied,
+    /// The product connection has already closed.
+    #[error("product connection is closed")]
+    Closed,
+    /// The product or native host did not install the requested Chat surface.
+    #[error("chat operation is unsupported")]
+    Unsupported,
+    /// The bounded pre-subscription action queue is full.
+    #[error("chat action buffer is full")]
+    BufferFull,
 }
 
 fn product_context(product_id: &str) -> Result<ProductContext, v01::GenericError> {
@@ -79,6 +92,32 @@ impl PairingHostRuntime {
         let platform: Arc<dyn Platform> = platform;
         let services = RuntimeServices::new(
             platform.clone(),
+            config.people_chain_genesis_hash,
+            config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let pairing_host = PairingHostRole::new(services.clone(), config);
+        pairing_host.clone().start_session_store_sync(spawner);
+        Self {
+            services,
+            pairing_host,
+        }
+    }
+
+    /// Build a long-lived pairing host with a native Chat adapter.
+    pub fn new_with_chat<P>(
+        platform: Arc<P>,
+        chat: Arc<dyn ChatPlatform>,
+        config: PairingHostConfig,
+        spawner: Spawner,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
+        let platform: Arc<dyn Platform> = platform;
+        let services = RuntimeServices::new_with_chat(
+            platform,
+            Some(chat),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -255,6 +294,31 @@ impl SigningHostRuntime {
         }
     }
 
+    /// Build a long-lived signing host with a native Chat adapter.
+    pub fn new_with_chat<P>(
+        platform: Arc<P>,
+        chat: Arc<dyn ChatPlatform>,
+        config: SigningHostConfig,
+        spawner: Spawner,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
+        let platform: Arc<dyn Platform> = platform;
+        let services = RuntimeServices::new_with_chat(
+            platform,
+            Some(chat),
+            config.people_chain_genesis_hash,
+            config.bulletin_chain_genesis_hash,
+            spawner,
+        );
+        let signing_host = SigningHostRole::new(services.clone());
+        Self {
+            services,
+            signing_host,
+        }
+    }
+
     /// Build a product-facing runtime from this signing host.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_runtime"))]
     pub fn product_runtime(
@@ -270,10 +334,56 @@ impl SigningHostRuntime {
         )
     }
 
+    /// Build one product connection with connection-specific platform
+    /// adapters while sharing this runtime's authentication and core services.
+    pub fn product_runtime_with_platform(
+        &self,
+        product: ProductContext,
+        platform: Arc<dyn Platform>,
+        chat: Option<Arc<dyn ChatPlatform>>,
+        sink: Arc<dyn FrameSink>,
+    ) -> ProductRuntime {
+        ProductRuntime::new_with_platform(
+            self.services.clone(),
+            self.signing_host.clone(),
+            product,
+            platform,
+            chat,
+            sink,
+        )
+    }
+
     /// Build a product-scoped administration handle from this signing host.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_admin"))]
     pub fn product_admin(&self, product: ProductContext) -> HostAdmin {
         HostAdmin::new(self.services.clone(), self.signing_host.clone(), product)
+    }
+
+    /// Build a product administration handle with adapters scoped to one
+    /// native executable connection.
+    pub fn product_admin_with_platform(
+        &self,
+        product: ProductContext,
+        platform: Arc<dyn Platform>,
+        chat: Option<Arc<dyn ChatPlatform>>,
+    ) -> HostAdmin {
+        HostAdmin::new_with_platform(
+            self.services.clone(),
+            self.signing_host.clone(),
+            product,
+            platform,
+            chat,
+        )
+    }
+
+    /// Return whether this host currently has an authenticated signing session.
+    pub fn has_active_session(&self) -> bool {
+        self.signing_host.session_state().current().is_some()
+    }
+
+    /// Return whether this host installed a native Chat adapter.
+    pub fn supports_chat(&self) -> bool {
+        self.services.chat.is_some()
     }
 
     /// Disconnect the active account-authority session.
@@ -342,6 +452,28 @@ impl HostAdmin {
     ) -> Self {
         let product_runtime = Arc::new(ProductRuntimeHost::from_services(
             services,
+            authority.clone(),
+            product,
+        ));
+        Self {
+            authority,
+            product_runtime,
+        }
+    }
+
+    /// Build an admin handle with adapters scoped to one executable
+    /// connection while retaining the shared host authority.
+    pub(crate) fn new_with_platform(
+        services: Arc<RuntimeServices>,
+        authority: Arc<dyn ProductAuthority>,
+        product: ProductContext,
+        platform: Arc<dyn Platform>,
+        chat: Option<Arc<dyn ChatPlatform>>,
+    ) -> Self {
+        let product_runtime = Arc::new(ProductRuntimeHost::from_services_with_platform(
+            services,
+            platform,
+            chat,
             authority.clone(),
             product,
         ));
@@ -436,6 +568,40 @@ pub struct ProductRuntime {
     next_dispatch_id: AtomicU64,
 }
 
+/// Cloneable native control surface for one concrete product connection.
+#[derive(Clone)]
+pub struct ProductRuntimeControl {
+    runtime: Arc<ProductRuntimeHost>,
+    disposed: Arc<AtomicBool>,
+}
+
+impl ProductRuntimeControl {
+    /// Publish a native Chat action to this connection.
+    pub fn publish_chat_action(
+        &self,
+        action: v01::HostChatActionSubscribeItem,
+    ) -> Result<(), ProductRuntimeError> {
+        if self.disposed.load(Ordering::Acquire) {
+            return Err(ProductRuntimeError::Closed);
+        }
+        self.runtime.publish_chat_action(action)
+    }
+
+    /// Request custom-message UI from this connection's product renderer.
+    pub fn render_custom_message(
+        &self,
+        message_id: String,
+        message_type: String,
+        payload: Vec<u8>,
+    ) -> Result<truapi::Subscription<v01::CustomRendererNode>, ProductRuntimeError> {
+        if self.disposed.load(Ordering::Acquire) {
+            return Err(ProductRuntimeError::Closed);
+        }
+        self.runtime
+            .render_custom_message(message_id, message_type, payload)
+    }
+}
+
 impl ProductRuntime {
     /// Build a product-facing host core around a platform implementation and
     /// outgoing frame sink.
@@ -468,6 +634,42 @@ impl ProductRuntime {
             disposed: disposed.clone(),
         });
         let admin = HostAdmin::new(services.clone(), authority.clone(), product);
+        Self {
+            core: TrUApiCore::from_product_runtime(
+                admin.product_runtime.clone(),
+                services.spawner.clone(),
+                authority.session_state(),
+            ),
+            admin,
+            transport,
+            disposed,
+            in_flight: Mutex::new(HashMap::new()),
+            next_dispatch_id: AtomicU64::new(0),
+        }
+    }
+
+    /// Build one connection using execution-scoped platform adapters while
+    /// sharing host-level authentication and infrastructure.
+    pub(crate) fn new_with_platform(
+        services: Arc<RuntimeServices>,
+        authority: Arc<dyn ProductAuthority>,
+        product: ProductContext,
+        platform: Arc<dyn Platform>,
+        chat: Option<Arc<dyn ChatPlatform>>,
+        sink: Arc<dyn FrameSink>,
+    ) -> Self {
+        let disposed = Arc::new(AtomicBool::new(false));
+        let transport = Arc::new(SinkTransport {
+            sink,
+            disposed: disposed.clone(),
+        });
+        let admin = HostAdmin::new_with_platform(
+            services.clone(),
+            authority.clone(),
+            product,
+            platform,
+            chat,
+        );
         Self {
             core: TrUApiCore::from_product_runtime(
                 admin.product_runtime.clone(),
@@ -516,6 +718,40 @@ impl ProductRuntime {
             self.core.cancel_subscriptions();
         }
         Ok(())
+    }
+
+    /// Publish a native Chat action to this connection's action subscription.
+    pub fn publish_chat_action(
+        &self,
+        action: v01::HostChatActionSubscribeItem,
+    ) -> Result<(), ProductRuntimeError> {
+        if self.disposed.load(Ordering::Acquire) {
+            return Err(ProductRuntimeError::Closed);
+        }
+        self.admin.product_runtime.publish_chat_action(action)
+    }
+
+    /// Return a cloneable native control handle bound to this connection.
+    pub fn control(&self) -> ProductRuntimeControl {
+        ProductRuntimeControl {
+            runtime: self.admin.product_runtime.clone(),
+            disposed: self.disposed.clone(),
+        }
+    }
+
+    /// Request native UI for a stored custom message from the product renderer.
+    pub fn render_custom_message(
+        &self,
+        message_id: String,
+        message_type: String,
+        payload: Vec<u8>,
+    ) -> Result<truapi::Subscription<v01::CustomRendererNode>, ProductRuntimeError> {
+        if self.disposed.load(Ordering::Acquire) {
+            return Err(ProductRuntimeError::Closed);
+        }
+        self.admin
+            .product_runtime
+            .render_custom_message(message_id, message_type, payload)
     }
 
     /// Core-owned logout/disconnect. Best-effort notifies the SSO peer when
@@ -574,6 +810,7 @@ impl ProductRuntime {
         {
             handle.abort();
         }
+        self.admin.product_runtime.close_chat();
         self.core.cancel_subscriptions();
     }
 }
@@ -625,6 +862,16 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
 
+    fn text_action(text: &str) -> v01::HostChatActionSubscribeItem {
+        v01::HostChatActionSubscribeItem {
+            room_id: "room".to_string(),
+            peer: "alice".to_string(),
+            payload: v01::ChatActionPayload::MessagePosted(v01::ChatMessageContent::Text {
+                text: text.to_string(),
+            }),
+        }
+    }
+
     #[test]
     fn product_runtime_and_dispatch_future_are_send() {
         assert_send_sync::<ProductRuntime>();
@@ -638,6 +885,141 @@ mod tests {
         );
 
         assert_send(runtime.receive_frame(Vec::new()));
+    }
+
+    #[test]
+    fn app_connection_rejects_native_chat_actions() {
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+
+        assert!(matches!(
+            runtime.publish_chat_action(text_action("hello")),
+            Err(ProductRuntimeError::Denied)
+        ));
+    }
+
+    #[test]
+    fn app_connection_rejects_native_custom_rendering() {
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+
+        assert!(matches!(
+            runtime.render_custom_message("message".into(), "vote".into(), vec![]),
+            Err(ProductRuntimeError::Denied)
+        ));
+    }
+
+    #[test]
+    fn generated_filter_denies_chat_request_on_app_connection() {
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            sink.clone(),
+        );
+        let ids = crate::frame::request_ids("chat_create_room").expect("known Chat request");
+        let request = truapi::versioned::chat::HostChatCreateRoomRequest::V1(
+            v01::HostChatCreateRoomRequest {
+                room_id: "room".into(),
+                name: "Room".into(),
+                icon: String::new(),
+            },
+        );
+        let frame = ProtocolMessage {
+            request_id: "chat:1".into(),
+            payload: Payload {
+                id: ids.request_id,
+                value: request.encode(),
+            },
+        };
+
+        futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
+
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
+        assert_eq!(response.payload.id, ids.response_id);
+        let expected = crate::frame::encode_versioned_err_payload(
+            truapi::CallError::<truapi::versioned::chat::HostChatCreateRoomError>::Denied,
+            1,
+        );
+        assert_eq!(response.payload.value, expected);
+    }
+
+    #[test]
+    fn generated_filter_denies_chat_subscription_on_app_connection() {
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            sink.clone(),
+        );
+        let ids = subscription_ids("chat_action_subscribe").expect("known Chat subscription");
+        let frame = ProtocolMessage {
+            request_id: "chat:actions".into(),
+            payload: Payload {
+                id: ids.start_id,
+                value: Vec::new(),
+            },
+        };
+
+        futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
+
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
+        assert_eq!(response.request_id, "chat:actions");
+        assert_eq!(response.payload.id, ids.interrupt_id);
+        assert!(response.payload.value.is_empty());
+    }
+
+    #[test]
+    fn generated_filter_denies_renderer_stream_pair_on_app_connection() {
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            sink.clone(),
+        );
+        let ids = subscription_ids("chat_custom_message_render_subscribe")
+            .expect("known renderer stream pair");
+        let frame = ProtocolMessage {
+            request_id: "chat:renderer".into(),
+            payload: Payload {
+                id: ids.start_id,
+                value: Vec::new(),
+            },
+        };
+
+        futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
+
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
+        assert_eq!(response.request_id, "chat:renderer");
+        assert_eq!(response.payload.id, ids.interrupt_id);
+        assert!(response.payload.value.is_empty());
     }
 
     #[test]
