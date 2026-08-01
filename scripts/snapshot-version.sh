@@ -30,6 +30,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly-2026-01-10}"
 FORCE=0
 WIRE_VERSION=""
 while [ "$#" -gt 0 ]; do
@@ -69,7 +70,7 @@ fi
 TMP_DIR="$(mktemp -d -t truapi-snapshot.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-cargo +nightly rustdoc -p truapi -- -Z unstable-options --output-format json >/dev/null
+cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi -- -Z unstable-options --output-format json >/dev/null
 
 codegen_args=(
   --input target/doc/truapi.json

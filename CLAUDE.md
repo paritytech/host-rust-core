@@ -115,7 +115,7 @@ After regenerating, rebuild the client and refresh the playground's link copy:
 
 ```bash
 cargo build --workspace
-cargo +nightly fmt --check
+cargo +nightly-2026-01-10 fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```

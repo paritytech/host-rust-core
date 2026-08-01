@@ -2,7 +2,7 @@
 # Regenerate js/packages/truapi/src/generated/* from rust/crates/truapi.
 #
 # Pipeline:
-#   1. cargo +nightly rustdoc -p truapi --output-format json -> target/doc/truapi.json
+#   1. cargo +nightly-2026-01-10 rustdoc -p truapi --output-format json -> target/doc/truapi.json
 #   2. cargo run -p truapi-codegen -- --input target/doc/truapi.json
 #                                     --output js/packages/truapi/src/generated
 #                                     --playground-output js/packages/truapi/src/playground
@@ -24,7 +24,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly}"
+NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly-2026-01-10}"
 
 cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi -- -Z unstable-options --output-format json
 cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi-platform -- -Z unstable-options --output-format json

@@ -39,9 +39,9 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly-2026-01-10
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-01-10
           components: rustfmt
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

@@ -1,17 +1,18 @@
 //! Golden snapshot test for the Rust dispatcher emitter.
 //!
-//! Each test runs `cargo +nightly rustdoc -p truapi` into its own
+//! Each test runs `cargo +nightly-2026-01-10 rustdoc -p truapi` into its own
 //! `--target-dir` under a per-test tempdir so concurrent test execution
 //! cannot race on the shared `target/doc/truapi.json` path. Nightly Rust
 //! is required; if it is not available the test panics rather than
-//! silently passing (set up rustup with `rustup toolchain install nightly`).
+//! silently passing (install it with
+//! `rustup toolchain install nightly-2026-01-10 --component rustfmt`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn nightly_toolchain() -> String {
-    std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
+    std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly-2026-01-10".to_string())
 }
 
 fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
@@ -49,7 +50,7 @@ fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
     strings
 }
 
-/// Run `cargo +nightly rustdoc -p truapi --output-format json` into the
+/// Run `cargo +nightly-2026-01-10 rustdoc -p truapi --output-format json` into the
 /// given `target_dir` and return the path to the produced JSON file.
 /// Panics with a clear message if nightly is unavailable so CI cannot
 /// pass vacuously.
@@ -74,7 +75,8 @@ fn produce_rustdoc_json_for_package(
     );
     assert!(
         output.status.success(),
-        "`cargo +nightly rustdoc -p {package}` failed (status {}); nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
+        "`cargo +{} rustdoc -p {package}` failed (status {}); the pinned nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
+        nightly_toolchain(),
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
