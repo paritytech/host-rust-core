@@ -4992,6 +4992,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "truapi-dynamic-vrf"
+version = "0.1.0"
+dependencies = [
+ "merlin",
+ "schnorrkel",
+]
+
+[[package]]
 name = "truapi-host-cli"
 version = "0.1.0"
 dependencies = [
@@ -5065,6 +5073,7 @@ dependencies = [
  "hex",
  "hkdf",
  "js-sys",
+ "merlin",
  "nanoid",
  "p256",
  "parity-scale-codec",
@@ -5086,6 +5095,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "truapi",
+ "truapi-dynamic-vrf",
  "truapi-platform",
  "unicode-normalization",
  "uniffi",

@@ -729,8 +729,13 @@ impl PairingHost {
                         )
                         .await?;
                     }
-                    SsoAllocatedResource::SmartContractAllowance
-                    | SsoAllocatedResource::AutoSigning { .. } => {}
+                    SsoAllocatedResource::SmartContractAllowance => {}
+                    SsoAllocatedResource::AutoSigning {
+                        product_root_private_key,
+                    } => {
+                        self.remember_auto_signing_key(product_id, *product_root_private_key)
+                            .await?;
+                    }
                 }
             }
         }

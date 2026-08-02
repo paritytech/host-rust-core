@@ -54,6 +54,27 @@ impl BulletinAllowanceKey {
     }
 }
 
+/// Persisted AutoSigning capability for one hard product subtree.
+#[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
+pub(crate) struct AutoSigningKey {
+    #[debug("\"<redacted>\"")]
+    secret: [u8; 64],
+}
+
+impl AutoSigningKey {
+    pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
+        let secret = secret
+            .try_into()
+            .map_err(|secret: Vec<u8>| AuthorityError::Unavailable {
+                reason: format!("AutoSigning key must be 64 bytes, got {}", secret.len()),
+            })?;
+        Ok(Self { secret })
+    }
+
+    pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
+        &self.secret
+    }
+}
 /// Snapshot of an account-authority session selected by the authority.
 ///
 /// This is the neutral session projection product runtimes can use while

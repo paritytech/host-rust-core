@@ -795,8 +795,17 @@ async fn resource_allocation_response(
                     slot_account_key,
                 })
             }),
-            SsoAllocatableResource::SmartContractAllowance(_)
-            | SsoAllocatableResource::AutoSigning => Ok(SsoAllocationOutcome::NotAvailable),
+            SsoAllocatableResource::SmartContractAllowance(_) => {
+                Ok(SsoAllocationOutcome::NotAvailable)
+            }
+            SsoAllocatableResource::AutoSigning => signing_host
+                .product_subtree_secret(&request.calling_product_id)
+                .map(|product_root_private_key| {
+                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::AutoSigning {
+                        product_root_private_key,
+                    })
+                })
+                .map_err(AllowanceAllocationError::Authority),
         };
         match outcome {
             Ok(outcome) => outcomes.push(outcome),
@@ -1240,13 +1249,6 @@ mod tests {
 
     const ENTROPY: [u8; 16] = [0xab; 16];
 
-    fn product_account(product_id: &str) -> api::ProductAccountId {
-        api::ProductAccountId {
-            dot_ns_identifier: product_id.to_string(),
-            derivation_index: api::DerivationIndex::Left(0),
-        }
-    }
-
     fn signing_fixture(platform: Arc<StubPlatform>) -> (Arc<RuntimeServices>, Arc<SigningHost>) {
         let platform: Arc<dyn Platform> = platform;
         let config = SigningHostConfig::new(
@@ -1433,6 +1435,43 @@ mod tests {
             .expect("resource allocation review list mutex poisoned");
         assert_eq!(reviews.len(), 1);
         assert_eq!(reviews[0].calling_product_id, "myapp.dot");
+    }
+
+    #[test]
+    fn auto_signing_allocation_returns_the_product_subtree_secret() {
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            ..StubPlatform::default()
+        });
+        let (services, signing_host) = signing_fixture(platform);
+        let expected_secret = signing_host
+            .product_subtree_secret("myapp.dot")
+            .expect("product subtree secret derives");
+
+        let response = futures::executor::block_on(answer_remote_message(
+            &services,
+            &signing_host,
+            "alloc-auto-signing".to_string(),
+            v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                resources: vec![SsoAllocatableResource::AutoSigning],
+                on_existing: messages::OnExistingAllowancePolicy::Ignore,
+            }),
+        ))
+        .expect("response is emitted");
+
+        let v1::RemoteMessage::ResourceAllocationResponse(response) = response_payload(response)
+        else {
+            panic!("expected resource allocation response");
+        };
+        assert_eq!(
+            response.payload.unwrap(),
+            vec![SsoAllocationOutcome::Allocated(
+                SsoAllocatedResource::AutoSigning {
+                    product_root_private_key: expected_secret,
+                }
+            )]
+        );
     }
 
     #[test]

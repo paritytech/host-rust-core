@@ -31,7 +31,7 @@ use super::authority::{
     SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
     authority_session, require_current_session,
 };
-use super::{RuntimeServices, connected_session_ui_info};
+use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::{
     Sr25519Signer, build_signed_extrinsic_v4, build_signed_extrinsic_v4_with_signature,
@@ -52,7 +52,7 @@ use ring_vrf::{
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
 use truapi_platform::{
-    CreateProofReview, PermissionAuthorizationStatus, Platform, ProductContext,
+    CreateProofReview, PermissionAuthorizationStatus, Platform, ProductContext, SignVrfReview,
     UserConfirmationReview, normalize_product_identifier,
 };
 use zeroize::Zeroizing;
@@ -120,6 +120,19 @@ impl SigningHost {
             .expect("signing host entropy mutex poisoned")
             .clone()
             .ok_or(AuthorityError::Disconnected)
+    }
+
+    fn product_subtree_secret(&self, product_id: &str) -> Result<[u8; 64], AuthorityError> {
+        let entropy = self.root_entropy()?;
+        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
+        let product_id = normalize_product_identifier(product_id).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        derive_product_subtree_keypair(&root, &product_id)
+            .map(|keypair| keypair.secret.to_bytes())
+            .map_err(product_authority_error)
     }
 
     /// Derive the product-account keypair for `account` from the root entropy.
@@ -260,13 +273,34 @@ impl ProductAuthority for SigningHost {
         &self,
         _cx: &CallContext,
         session: &AuthoritySession,
-        _calling_product_id: String,
-        _request: v01::HostAccountSignVrfRequest,
+        calling_product_id: String,
+        request: v01::HostAccountSignVrfRequest,
     ) -> Result<v01::VrfSignature, AuthorityError> {
         require_current_session(&self.session_state, session)?;
-        Err(AuthorityError::NotSupported {
-            reason: "local signing host does not support dynamic VRF transcripts".to_string(),
-        })
+        validate_vrf_transcript(&request).map_err(|reason| AuthorityError::Unknown { reason })?;
+        let confirmed = self
+            .platform
+            .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                calling_product_id,
+                request: request.clone(),
+            }))
+            .await
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
+        if !confirmed {
+            return Err(AuthorityError::Rejected);
+        }
+        let keypair = self.product_keypair(&request.account)?;
+        let (pre_output, proof) = truapi_dynamic_vrf::sign_dynamic_vrf(
+            &keypair,
+            &request.transcript_label,
+            request
+                .items
+                .iter()
+                .map(|item| (item.label.as_slice(), item.value.as_slice())),
+        );
+        Ok(v01::VrfSignature { pre_output, proof })
     }
 
     async fn sign_payload(
@@ -487,8 +521,13 @@ impl ProductAuthority for SigningHost {
                     .await
                     .map(|_| v01::AllocationOutcome::Allocated)
                 }
-                v01::AllocatableResource::SmartContractAllowance(_)
-                | v01::AllocatableResource::AutoSigning => Ok(v01::AllocationOutcome::NotAvailable),
+                v01::AllocatableResource::SmartContractAllowance(_) => {
+                    Ok(v01::AllocationOutcome::NotAvailable)
+                }
+                v01::AllocatableResource::AutoSigning => self
+                    .product_subtree_secret(&product_id)
+                    .map(|_| v01::AllocationOutcome::Allocated)
+                    .map_err(sso_responder::AllowanceAllocationError::Authority),
             };
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),
@@ -752,6 +791,7 @@ mod tests {
         // not reject before reaching the signing authority.
         let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform {
             sign_raw_confirmed: true,
+            sign_vrf_confirmed: true,
             ..StubPlatform::default()
         });
         let config = SigningHostConfig::new(
@@ -1004,6 +1044,48 @@ mod tests {
                 .is_ok(),
             "signature verifies over the <Bytes>-wrapped message",
         );
+    }
+
+    #[test]
+    fn sign_vrf_replays_transcript_and_returns_verifiable_proof() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let request = v01::HostAccountSignVrfRequest {
+            account: product_account(0),
+            transcript_label: b"pop:airdrop".to_vec(),
+            items: vec![
+                v01::VrfTranscriptItem {
+                    label: b"domain".to_vec(),
+                    value: b"lottery".to_vec(),
+                },
+                v01::VrfTranscriptItem {
+                    label: b"round".to_vec(),
+                    value: 7u32.to_le_bytes().to_vec(),
+                },
+            ],
+        };
+
+        let signature = futures::executor::block_on(authority.sign_vrf(
+            &CallContext::default(),
+            &session,
+            "myapp.dot".to_string(),
+            request,
+        ))
+        .expect("VRF signing succeeds");
+
+        let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
+        let mut transcript = merlin::Transcript::new(b"pop:airdrop");
+        transcript.append_message(b"domain", b"lottery");
+        transcript.append_message(b"round", &7u32.to_le_bytes());
+        let pre_output = schnorrkel::vrf::VRFPreOut::from_bytes(&signature.pre_output).unwrap();
+        let proof = schnorrkel::vrf::VRFProof::from_bytes(&signature.proof).unwrap();
+        keypair
+            .public
+            .vrf_verify(transcript, &pre_output, &proof)
+            .expect("VRF proof verifies");
     }
 
     #[test]
@@ -1536,7 +1618,7 @@ mod tests {
             optional.outcomes,
             vec![
                 v01::AllocationOutcome::NotAvailable,
-                v01::AllocationOutcome::NotAvailable,
+                v01::AllocationOutcome::Allocated,
             ]
         );
     }

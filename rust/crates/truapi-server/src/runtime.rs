@@ -463,7 +463,7 @@ impl ProductRuntimeHost {
         cx: &CallContext,
         session: &AuthoritySession,
         product_account_id: &v01::ProductAccountId,
-    ) -> Result<[u8; 32], String> {
+    ) -> Result<[u8; 32], AuthorityError> {
         let cx = remote_authority_context(cx);
         let subtree = remote_authority_call(
             &cx,
@@ -473,13 +473,14 @@ impl ProductRuntimeHost {
                 product_account_id.dot_ns_identifier.clone(),
             ),
         )
-        .await
-        .map_err(|err| err.to_string())?;
+        .await?;
         derive_product_public_key(
             subtree,
             derivation_index_bytes(&product_account_id.derivation_index),
         )
-        .map_err(|err| err.to_string())
+        .map_err(|err| AuthorityError::Unknown {
+            reason: err.to_string(),
+        })
     }
 
     async fn legacy_slot_zero_public_key(
@@ -496,6 +497,7 @@ impl ProductRuntimeHost {
             },
         )
         .await
+        .map_err(|err| err.to_string())
     }
 
     fn product_storage_key(&self, key: String) -> String {
@@ -965,11 +967,7 @@ impl Account for ProductRuntimeHost {
         let public_key = self
             .product_account_public_key(cx, &session, &product_account_id)
             .await
-            .map_err(|reason| {
-                CallError::Domain(HostAccountGetError::V1(v01::HostAccountGetError::Unknown {
-                    reason,
-                }))
-            })?;
+            .map_err(account_get_authority_error)?;
 
         Ok(HostAccountGetResponse::V1(v01::HostAccountGetResponse {
             account: v01::ProductAccount {
@@ -1220,6 +1218,19 @@ fn vrf_call_error(err: AuthorityError) -> CallError<HostAccountSignVrfError> {
         | AuthorityError::Unknown { reason } => v01::HostAccountSignVrfError::Unknown { reason },
     };
     CallError::Domain(HostAccountSignVrfError::V1(error))
+}
+fn account_get_authority_error(err: AuthorityError) -> CallError<HostAccountGetError> {
+    let error = match err {
+        AuthorityError::Disconnected => v01::HostAccountGetError::NotConnected,
+        AuthorityError::Rejected => v01::HostAccountGetError::Rejected,
+        AuthorityError::Cancelled(err) => v01::HostAccountGetError::Unknown {
+            reason: err.to_string(),
+        },
+        AuthorityError::Unavailable { reason }
+        | AuthorityError::NotSupported { reason }
+        | AuthorityError::Unknown { reason } => v01::HostAccountGetError::Unknown { reason },
+    };
+    CallError::Domain(HostAccountGetError::V1(error))
 }
 
 fn ring_vrf_alias_error(err: RingVrfError) -> v01::HostAccountGetAliasError {
@@ -2539,6 +2550,30 @@ mod tests {
             },
         });
         let err = futures::executor::block_on(host.get_account(&cx, request)).unwrap_err();
+        assert!(matches!(
+            err,
+            CallError::Domain(HostAccountGetError::V1(
+                v01::HostAccountGetError::NotConnected
+            ))
+        ));
+    }
+
+    #[test]
+    fn get_account_maps_subtree_disconnect_race_to_not_connected() {
+        let session = sso_session_info();
+        let platform = Arc::new(StubPlatform {
+            sso_response_script: Some(sso_peer_disconnect_response_script(&session)),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(platform, runtime_config("myapp.dot"), test_spawner());
+        host.test_session_state().set_session(session);
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let err = futures::executor::block_on(host.get_account(&CallContext::default(), request))
+            .unwrap_err();
+
         assert!(matches!(
             err,
             CallError::Domain(HostAccountGetError::V1(
@@ -4431,6 +4466,92 @@ mod tests {
                 crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationRequest(_)
             )
         ));
+    }
+
+    #[test]
+    fn auto_signing_allocation_persists_and_serves_vrf_without_sso() {
+        let session = sso_session_info();
+        let root =
+            crate::host_logic::product_account::derive_root_keypair_from_entropy(&[0xAB; 16])
+                .unwrap();
+        let subtree =
+            crate::host_logic::product_account::derive_product_subtree_keypair(&root, "myapp.dot")
+                .unwrap();
+        let product_root_private_key = subtree.secret.to_bytes();
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            sso_response_script: Some(sso_success_response_script(
+                &session,
+                RemoteMessage {
+                    message_id: "wallet-auto-1".to_string(),
+                    data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
+                        crate::host_logic::sso::messages::ResourceAllocationResponse {
+                            responding_to: "auto-1".to_string(),
+                            payload: Ok(vec![
+                                crate::host_logic::sso::messages::SsoAllocationOutcome::Allocated(
+                                    crate::host_logic::sso::messages::SsoAllocatedResource::AutoSigning {
+                                        product_root_private_key,
+                                    },
+                                ),
+                            ]),
+                        },
+                    )),
+                },
+            )),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, session.clone());
+        let allocation =
+            HostRequestResourceAllocationRequest::V1(v01::HostRequestResourceAllocationRequest {
+                resources: vec![v01::AllocatableResource::AutoSigning],
+            });
+        futures::executor::block_on(ResourceAllocation::request(
+            &host,
+            &CallContext::with_request_id("auto-1".to_string()),
+            allocation,
+        ))
+        .expect("AutoSigning allocation succeeds");
+
+        let restored = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&restored, session);
+        let request = v01::HostAccountSignVrfRequest {
+            account: account_id("myapp.dot", 0),
+            transcript_label: b"ctx".to_vec(),
+            items: vec![v01::VrfTranscriptItem {
+                label: b"round".to_vec(),
+                value: vec![7],
+            }],
+        };
+        let response = futures::executor::block_on(restored.sign_vrf(
+            &CallContext::default(),
+            HostAccountSignVrfRequest::V1(request),
+        ))
+        .expect("persisted AutoSigning key signs locally");
+        let HostAccountSignVrfResponse::V1(signature) = response;
+
+        let keypair = crate::host_logic::product_account::derive_product_keypair(
+            &root,
+            "myapp.dot",
+            index_bytes(0),
+        )
+        .unwrap();
+        let mut transcript = merlin::Transcript::new(b"ctx");
+        transcript.append_message(b"round", &[7]);
+        let pre_output = schnorrkel::vrf::VRFPreOut::from_bytes(&signature.pre_output).unwrap();
+        let proof = schnorrkel::vrf::VRFProof::from_bytes(&signature.proof).unwrap();
+        keypair
+            .public
+            .vrf_verify(transcript, &pre_output, &proof)
+            .expect("local AutoSigning VRF verifies");
     }
 
     #[test]

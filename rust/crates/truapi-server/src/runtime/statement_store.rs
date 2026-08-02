@@ -311,7 +311,7 @@ impl ProductRuntimeHost {
         let signer = self
             .product_account_public_key(cx, &session, &product_account_id)
             .await
-            .map_err(StatementProofFailure::UnableToSign)?;
+            .map_err(|err| StatementProofFailure::UnableToSign(err.to_string()))?;
         let fields = statement_fields_from_v01(statement)
             .map_err(StatementProofFailure::InvalidStatement)?;
         let payload = unsigned_statement_signing_payload(fields)

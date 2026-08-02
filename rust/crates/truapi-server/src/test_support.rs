@@ -30,7 +30,8 @@ use truapi_platform::{
     JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
     PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
     ProductContext, ProductStorage as PlatformProductStorage, ResourceAllocationReview,
-    StatementStoreProductSignReview, ThemeHost, UserConfirmation, UserConfirmationReview,
+    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -77,6 +78,9 @@ pub(crate) struct StubPlatform {
     pub(crate) sign_payload_error: Option<&'static str>,
     pub(crate) sign_raw_confirmed: bool,
     pub(crate) sign_raw_error: Option<&'static str>,
+    pub(crate) sign_vrf_confirmed: bool,
+    pub(crate) sign_vrf_error: Option<&'static str>,
+    pub(crate) sign_vrf_reviews: Arc<Mutex<Vec<SignVrfReview>>>,
     /// Every `StatementStoreProductSign` review passed to `confirm_user_action`, in order.
     pub(crate) statement_store_product_sign_reviews:
         Arc<Mutex<Vec<StatementStoreProductSignReview>>>,
@@ -1315,6 +1319,13 @@ impl UserConfirmation for StubPlatform {
                 (self.sign_payload_error, self.sign_payload_confirmed)
             }
             UserConfirmationReview::SignRaw(_) => (self.sign_raw_error, self.sign_raw_confirmed),
+            UserConfirmationReview::SignVrf(review) => {
+                self.sign_vrf_reviews
+                    .lock()
+                    .expect("VRF signing review list mutex poisoned")
+                    .push(review);
+                (self.sign_vrf_error, self.sign_vrf_confirmed)
+            }
             UserConfirmationReview::StatementStoreProductSign(review) => {
                 self.statement_store_product_sign_reviews
                     .lock()

@@ -9,7 +9,7 @@
 
 use parity_scale_codec::Encode;
 use schnorrkel::derive::{ChainCode, Derivation};
-use schnorrkel::{ExpansionMode, Keypair, PublicKey};
+use schnorrkel::{ExpansionMode, Keypair, PublicKey, SecretKey};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -26,6 +26,9 @@ pub enum ProductAccountError {
     /// Root public key bytes are not a valid sr25519 point.
     #[error("invalid sr25519 root public key")]
     InvalidRootPublicKey,
+    /// Product subtree secret bytes are not a valid expanded sr25519 secret.
+    #[error("invalid sr25519 product subtree secret")]
+    InvalidProductSubtreeSecret,
     /// All-digit junction strings encode as `u64`, and this one overflows it.
     #[error("numeric derivation junction is outside u64 range")]
     NumericJunctionOutOfRange,
@@ -96,6 +99,22 @@ pub fn derive_product_keypair(
     derivation_index: [u8; 32],
 ) -> Result<Keypair, ProductAccountError> {
     let subtree = derive_product_subtree_keypair(root, product_id)?;
+    Ok(subtree
+        .derived_key_simple(ChainCode(derivation_index), [])
+        .0)
+}
+
+/// Soft-derive a product account from an allocated 64-byte subtree secret.
+pub fn derive_product_keypair_from_subtree_secret(
+    product_subtree_secret: [u8; 64],
+    derivation_index: [u8; 32],
+) -> Result<Keypair, ProductAccountError> {
+    let secret = SecretKey::from_bytes(&product_subtree_secret)
+        .map_err(|_| ProductAccountError::InvalidProductSubtreeSecret)?;
+    let subtree = Keypair {
+        public: secret.to_public(),
+        secret,
+    };
     Ok(subtree
         .derived_key_simple(ChainCode(derivation_index), [])
         .0)
@@ -205,11 +224,15 @@ mod tests {
             let subtree = derive_product_subtree_keypair(&root, product_id).unwrap();
             let keypair = derive_product_keypair(&root, product_id, index).unwrap();
             let public = derive_product_public_key(subtree.public.to_bytes(), index).unwrap();
+            let allocated =
+                derive_product_keypair_from_subtree_secret(subtree.secret.to_bytes(), index)
+                    .unwrap();
             assert_eq!(
                 keypair.public.to_bytes(),
                 public,
                 "{product_id}#{index:02x?} secret vs public derivation",
             );
+            assert_eq!(keypair.public, allocated.public);
         }
     }
 
