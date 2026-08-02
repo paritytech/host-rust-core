@@ -31,10 +31,10 @@ The product running in the `WKWebView` opens a `WebSocket` to the localhost port
 
 The core's `Permissions` platform trait has two methods, and so does `HostCallbacks`:
 
-- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a SCALE-encoded `v01::HostDevicePermissionRequest`.
-- `remotePermission(request:)` - per-product capability bundles. `request` is a SCALE-encoded `v01::RemotePermissionRequest`.
+- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
+- `remotePermission(request:)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
 
-Both return a `Bool` granted flag. SCALE decoding for the UI prompt is done by the `@parity/truapi` JS client (or any consumer that links the protocol crate's types directly).
+Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `permissionAuthorizationStatuses`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## Example
 
@@ -66,9 +66,9 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         await MainActor.run { /* UIApplication.shared.open(...) */ }
     }
 
-    func pushNotification(payload: Data) async throws -> UInt32 {
+    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 {
         let id: UInt32 = 1
-        await MainActor.run { /* schedule notification */ }
+        await MainActor.run { /* schedule request.text / request.deeplink / request.scheduledAt */ }
         return id
     }
 
@@ -76,14 +76,14 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         DispatchQueue.main.async { /* cancel notification */ }
     }
 
-    func devicePermission(request: Data) async throws -> Bool {
+    func devicePermission(request: NativeDevicePermission) async throws -> Bool {
         // Awaited by the core: present the prompt and suspend until the user
         // decides. Other TrUAPI traffic keeps flowing while suspended.
-        await MainActor.run { /* show prompt; */ false }
+        await MainActor.run { /* show prompt for request (.camera, .microphone, ...); */ false }
     }
 
-    func remotePermission(request: Data) async throws -> Bool {
-        await MainActor.run { /* show prompt; */ false }
+    func remotePermission(request: NativeRemotePermission) async throws -> Bool {
+        await MainActor.run { /* show prompt for request (.chainSubmit, .remote(domains:), ...); */ false }
     }
 
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
@@ -113,15 +113,17 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         /* close host connection */
     }
 
-    func confirmUserAction(review: Data) async throws -> Bool {
-        await MainActor.run { /* render decoded UserConfirmationReview; */ false }
+    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool {
+        // Switch on the review variant (.signPayload, .createTransaction, ...)
+        // to render the confirmation prompt with its typed fields.
+        await MainActor.run { /* render review; */ false }
     }
 
     func lookupPreimage(key: Data) async throws -> Data? { nil }
 
     func currentTheme() throws -> HostTheme { .dark }
 
-    func featureSupported(request: Data) async throws -> Bool { false }
+    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool { false }
 
     func localStorageRead(key: String) throws -> Data? { storage[key] }
     func localStorageWrite(key: String, value: Data) throws { storage[key] = value }

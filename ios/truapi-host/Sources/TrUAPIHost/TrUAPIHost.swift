@@ -266,18 +266,27 @@ public final class TrUAPIHostCore {
     }
 
     /// Read a stored permission authorization status without prompting.
-    /// `request` is a SCALE-encoded `PermissionAuthorizationRequest`.
-    public func permissionAuthorizationStatus(request: Data) throws -> NativePermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(payload: request)
+    public func permissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest
+    ) throws -> NativePermissionAuthorizationStatus {
+        try inner.permissionAuthorizationStatus(request: request)
+    }
+
+    /// Read stored permission authorization statuses without prompting.
+    /// Results are returned in the same order as `requests`.
+    public func permissionAuthorizationStatuses(
+        requests: [NativePermissionAuthorizationRequest]
+    ) throws -> [NativePermissionAuthorizationStatus] {
+        try inner.permissionAuthorizationStatuses(requests: requests)
     }
 
     /// Update a stored permission authorization status. `.notDetermined`
     /// clears the stored value so the next product request prompts again.
     public func setPermissionAuthorizationStatus(
-        request: Data,
+        request: NativePermissionAuthorizationRequest,
         status: NativePermissionAuthorizationStatus
     ) throws {
-        try inner.setPermissionAuthorizationStatus(payload: request, status: status)
+        try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
