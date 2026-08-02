@@ -19,7 +19,7 @@ use truapi_server::host_logic::product_account::{
 };
 use truapi_server::host_logic::session::SsoSessionInfo;
 use truapi_server::host_logic::sso::pairing::{
-    self, AES_GCM_NONCE_LEN, PairingBootstrap, SsoStatementData, VersionedHandshakeProposal,
+    self, AEAD_NONCE_LEN, PairingBootstrap, SsoStatementData, VersionedHandshakeProposal,
     VersionedHandshakeResponse, bootstrap_topic, build_pairing_deeplink, decode_app_handshake_data,
     decrypt_session_statement_data, decrypt_v2_handshake_response,
     encrypt_session_statement_data_with_nonce, establish_sso_session_info,
@@ -179,7 +179,7 @@ fn p256_hkdf_aes_gcm_vectors_work_on_wasm() {
         device_enc_pub_key: ENC_PUBLIC,
         root_entropy_source: [5; 32],
     }));
-    let nonce = [9u8; AES_GCM_NONCE_LEN];
+    let nonce = [9u8; AEAD_NONCE_LEN];
     let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
     let mut encrypted = nonce.to_vec();
     encrypted.extend(
@@ -206,10 +206,10 @@ fn session_crypto_and_statement_proof_vectors_work_on_wasm() {
         request_id: "req-1".to_string(),
         data: vec![vec![0xde, 0xad]],
     };
-    let nonce = [9u8; AES_GCM_NONCE_LEN];
+    let nonce = [9u8; AEAD_NONCE_LEN];
     let encrypted = encrypt_session_statement_data_with_nonce(&session, &data, nonce).unwrap();
 
-    assert_eq!(&encrypted[..AES_GCM_NONCE_LEN], nonce);
+    assert_eq!(&encrypted[..AEAD_NONCE_LEN], nonce);
     assert_eq!(
         SsoStatementData::decode(&mut &data.encode()[..]).unwrap(),
         data

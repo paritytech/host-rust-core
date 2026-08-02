@@ -38,7 +38,7 @@ use crate::host_logic::extrinsic::{
 };
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_product_keypair,
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+    derive_product_subtree_keypair, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
 };
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
@@ -235,6 +235,38 @@ impl ProductAuthority for SigningHost {
             .take();
         self.session_state.clear_session();
         self.auth_state.store_disconnected();
+    }
+
+    async fn product_subtree_public_key(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<[u8; 32], AuthorityError> {
+        require_current_session(&self.session_state, session)?;
+        let product_id = normalize_product_identifier(&product_id).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        let entropy = self.root_entropy()?;
+        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
+        derive_product_subtree_keypair(&root, &product_id)
+            .map(|keypair| keypair.public.to_bytes())
+            .map_err(product_authority_error)
+    }
+
+    async fn sign_vrf(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        _calling_product_id: String,
+        _request: v01::HostAccountSignVrfRequest,
+    ) -> Result<v01::VrfSignature, AuthorityError> {
+        require_current_session(&self.session_state, session)?;
+        Err(AuthorityError::NotSupported {
+            reason: "local signing host does not support dynamic VRF transcripts".to_string(),
+        })
     }
 
     async fn sign_payload(

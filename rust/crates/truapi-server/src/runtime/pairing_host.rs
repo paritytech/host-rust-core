@@ -144,6 +144,7 @@ pub(crate) struct PairingHost {
     login_generation: Mutex<u64>,
     statement_store_allowances: Mutex<HashMap<AllowanceCacheKey, StatementStoreAllowanceKey>>,
     bulletin_allowances: Mutex<HashMap<AllowanceCacheKey, BulletinAllowanceKey>>,
+    product_subtrees: Mutex<HashMap<(SsoSessionKey, String), [u8; 32]>>,
     /// Self-reference captured by the spawned disconnect-monitor task.
     weak_self: Weak<PairingHost>,
     /// Task spawner for background monitors.
@@ -169,6 +170,7 @@ impl PairingHost {
             login_generation: Mutex::new(0),
             statement_store_allowances: Mutex::new(HashMap::new()),
             bulletin_allowances: Mutex::new(HashMap::new()),
+            product_subtrees: Mutex::new(HashMap::new()),
             weak_self: weak_self.clone(),
             spawner: services.spawner.clone(),
         })
@@ -765,6 +767,45 @@ impl PairingHost {
         allowances.retain(|key, _| !key.is_for_session(session_key));
     }
 
+    fn clear_product_subtrees(&self, session: Option<&SessionInfo>) {
+        let mut subtrees = self
+            .product_subtrees
+            .lock()
+            .expect("product subtree cache mutex poisoned");
+        let Some(session) = session else {
+            subtrees.clear();
+            return;
+        };
+        let Some(sso) = session.sso.as_ref() else {
+            return;
+        };
+        let session_key = SsoSessionKey::from_session(sso);
+        subtrees.retain(|(key, _), _| *key != session_key);
+    }
+
+    async fn product_subtree_public_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<[u8; 32], AuthorityError> {
+        let session = self.current_private_session(session)?;
+        self.remote_product_subtree_public_key(cx, &session, product_id)
+            .await
+    }
+
+    async fn sign_vrf(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        calling_product_id: String,
+        request: v01::HostAccountSignVrfRequest,
+    ) -> Result<v01::VrfSignature, AuthorityError> {
+        let session = self.current_private_session(session)?;
+        self.remote_sign_vrf(cx, &session, calling_product_id, request)
+            .await
+    }
+
     async fn sign_payload(
         &self,
         cx: &CallContext,
@@ -921,6 +962,23 @@ impl ProductAuthority for PairingHost {
         PairingHost::session_state(self)
     }
 
+    #[cfg(test)]
+    fn cache_product_subtree_for_test(
+        &self,
+        session: &SessionInfo,
+        product_id: &str,
+        public_key: [u8; 32],
+    ) {
+        let sso = session.sso.as_ref().expect("test session must contain SSO");
+        self.product_subtrees
+            .lock()
+            .expect("product subtree cache mutex poisoned")
+            .insert(
+                (SsoSessionKey::from_session(sso), product_id.to_string()),
+                public_key,
+            );
+    }
+
     async fn request_login(
         &self,
         product: &ProductContext,
@@ -934,6 +992,25 @@ impl ProductAuthority for PairingHost {
 
     async fn refresh_session_identity(&self) -> Option<AuthoritySession> {
         self.refresh_current_session_identity().await
+    }
+
+    async fn product_subtree_public_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<[u8; 32], AuthorityError> {
+        PairingHost::product_subtree_public_key(self, cx, session, product_id).await
+    }
+
+    async fn sign_vrf(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        calling_product_id: String,
+        request: v01::HostAccountSignVrfRequest,
+    ) -> Result<v01::VrfSignature, AuthorityError> {
+        PairingHost::sign_vrf(self, cx, session, calling_product_id, request).await
     }
 
     async fn sign_payload(
