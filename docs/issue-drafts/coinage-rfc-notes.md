@@ -1,0 +1,337 @@
+---
+title: "Coinage RFC — working notes"
+status: "Working notes"
+---
+
+# Coinage RFC — working notes
+
+Scratch material collected while implementing the coinage base layer in
+`truapi-server`. Everything here is either a correction to an existing document
+or a decision that needs to be written down somewhere permanent. The intended
+destinations are a new coinage RFC and the implementation PR's description; this
+file should be folded into those and deleted.
+
+Sources of truth used throughout: `paritytech/individuality`
+`pallets/coinage/src/{lib.rs, extension.rs}` and the runtime configuration in
+`runtimes/next-people-paseo/src/people.rs`.
+
+## 1. Pallet facts worth recording
+
+The runtime configuration nobody had written down, and which several documents
+approximate incorrectly.
+
+| Constant | Value on `next-people-paseo` |
+|---|---|
+| `MinimumExponent` | `0` (type is `i8`) |
+| `MaximumExponent` | `14` — largest coin is 16,384 cents, i.e. $163.84 |
+| `MaximumAge` | `16` |
+| `MaxSplitOutputs` | `32` |
+| `MaxConsolidation` | `64` |
+| `RecyclerExpirationTime` | 90 days |
+| `UnloadTokenTimePeriodPeopleLitePeople` | 1 day |
+| `MaxFreeUnloadTokensPerTimePeriod` | `1000` |
+| `UnderlyingAssetUnit` | `10^4` base units per cent |
+
+Other pallet details the implementation depends on:
+
+- `pub type CoinValue = i8` — the denomination exponent is **signed**. Today
+  `MinimumExponent` is 0, but the type permits sub-cent denominations.
+- `Coin { value: CoinValue, age: u16 }`.
+- `RingIndex = u32`, `RevisionIndex = u32`, `Alias = [u8; 32]`.
+- Free-token personhood proof context: `pop:polkadot.net/coinftk` followed by
+  the period and counter as little-endian `u32`s. Proven message is
+  `blake2_256(alias_proofs.encode() ++ inherited_implication)`.
+- Recycler contextual-alias context: `pop:polkadot.network/coinrecyclr`.
+  Note the two contexts use different domains (`.net` and `.network`); this is
+  the pallet's own inconsistency, not a transcription error.
+- Individual alias proofs sign `blake2_256(inherited_implication)`.
+- Recycler collection id: 32 bytes of `b"coinage/recycler"` with the exponent
+  byte at index 16.
+- Coinage lives on the People chain.
+- `AsCoinage(Option<AsCoinageInfo>)` with variants `AsCoin`,
+  `AsUnloadTokenPeople`, `AsUnloadTokenLitePeople`, `AsUnloadTokenPaid`,
+  `AsUnloadTokenFromOutput`, `InfallibleUnpaidSigned`. The extension consumes
+  the coin or the token **before** dispatch, so a call that fails has already
+  cost the coin.
+
+## 2. RFC-0017 amendments
+
+### 2.1 Appendix A's derivation scheme is unsafe and must be superseded
+
+RFC-0017 Appendix A specifies
+`//coinage//<PURSE>//<PAGE><DERIV_SEC>/<ITEM>` — a secret component inside a
+path segment and a **soft** junction at the item.
+
+RFC-0022's Motivation establishes that sr25519 soft derivation is invertible
+from the child side: a child secret key, the parent public key and the path
+together recover the parent secret, and salting a segment with a secret
+component does not restore the firewall.
+
+RFC-0017's entire model is built on transmitting coin secrets — that is what a
+cheque is. So under Appendix A, cashing a single cheque would expose the purse
+root and with it every other coin in the purse, past and future.
+
+Nothing implements Appendix A, so there is no migration cost. The new RFC should
+supersede it explicitly with all-hard junctions and state the reason inline, or
+somebody will reintroduce soft derivation later to regain enumerable public keys.
+
+### 2.2 Missing permission variant
+
+RFC-0017 requires a `UserAgentPermission::CoinPayment`. `v01::permissions.rs`
+has only `HostDevicePermissionRequest` and `RemotePermission`. There is
+currently **no protocol-level way to grant or deny CoinPayment access**, so
+consent for purse operations cannot be expressed at all. This blocks an honest
+implementation of even `create_purse`.
+
+### 2.3 Balance units disagree
+
+`v01::coin_payment::CoinPaymentBalance` is `u32` cents. `v01::payment::Balance`
+is `u128`. They meet at the purse selectors RFC-0017 added to the RFC-0006
+calls, and nothing reconciles them.
+
+**Decision: `u32` cents.** The largest coin is 2^14 cents, so `u32` covers
+roughly $42.9M — ample. The implementation works in `u64` cents internally so
+sums cannot overflow, and narrows to the wire type through a fallible
+conversion.
+
+### 2.4 Cheque encryption is unspecified
+
+`CoinPaymentCheque.encrypted_secrets` is declared opaque. But a cheque crosses
+from the *payer's* host to the *receiver's* host, so both sides must agree on
+the KEM, the AEAD and the coin-secret encoding. As written, cross-vendor payment
+is impossible.
+
+Two decisions to record:
+
+1. **Specify one scheme.** The receivable is already a 32-byte public key
+   produced by the receiver's coinage subsystem, so the natural construction is
+   a sealed box — ephemeral key, HKDF, AEAD over the SCALE-encoded secrets. The
+   core already has an encrypted-channel construction in its SSO session-message
+   code; reuse it rather than inventing one. The receivable's key type still
+   needs pinning; RFC-0022 touches P-256 ECDH keys but does not settle this use.
+2. **Version the blob.** Even with a single implementation, a cheque crosses
+   between hosts on different app versions. The blob needs a version byte and a
+   stated rule for what a receiver does with a version it does not know. Cheap
+   now, painful to retrofit.
+
+### 2.5 Purse identifiers
+
+RFC-0017 says purse ids are "randomly assigned by the user agent". The
+implementation assigns them sequentially from a monotonic counter.
+
+**Decision: assignment is host-local; non-reuse is normative.** A purse id names
+a derivation namespace, so reusing one lets a new purse inherit the on-chain
+history of a closed one. That property is the security-relevant half and should
+be stated as a requirement. The assignment method is not, and sequential
+assignment is deterministic and testable.
+
+This matters because the earlier iOS implementation
+(`polkadot-app-ios-v2#872`) allocated `max(existing) + 1`, so deleting the
+highest purse and creating a new one **reused its derivation namespace**. Worth
+naming in the RFC as the failure the requirement prevents.
+
+### 2.6 Smaller RFC-0017 items
+
+- `MAIN_PURSE` is `u32::MAX` in RFC-0017 and "e.g. `0`" in the design doc. The
+  implementation uses `0`. Pick one and fix the other document.
+- `refund` takes only `receivable` in RFC-0017; the design's contract doc adds
+  `amount: Amount?`.
+- The purse-delete precondition differs between the two design docs: "no open
+  receivables" versus "no in-flight operations". The base layer cannot see
+  receivables, so the latter is the base-layer rule and the former belongs above
+  the seam.
+
+### 2.7 RFC-0021 deprecation, sequenced
+
+RFC-0021's `PaymentTopUpSource::Coins` lets a product handle raw coin secret
+keys in the clear, explicitly bypassing the cheque ceremony. It exists because
+the two large RFC-17 PRs were too big to review before a demo, and it should go
+once RFC-17 lands.
+
+It cannot go earlier: the T3rminal/W3S flow is its live consumer, and that is
+what `W3S_AUTH_KEY` / `/top-up` exercises in the CLI host. Order is: cheques
+land → W3S moves to cheques → RFC-0021 deprecated. Write the dependency into the
+new RFC so the stopgap does not become permanent.
+
+## 3. Corrections to `docs/design/coinage-layer.md`
+
+### 3.1 Appendix A values
+
+| Item | Doc says | Should say |
+|---|---|---|
+| A.10 `max_recycler_entries_per_group` | `8`, "chain-enforced; pallet `MaxConsolidation`" | `64` — and it is a chain constant, not a tunable |
+| A.5 `free_token_counter_search_range` | `[0, 10)`, "Matches the chain per-period allowance" | Value is legal but the rationale is wrong: the chain allows `1000`. This is a conservative policy choice *bounded by* the chain constant |
+| A.9 `max_split_outputs` | `32` (chain-enforced) | Value correct, but it belongs with the chain constants |
+| A.1 `recycle_at_age` | `chain_coin_max_age − 2` | Correct; resolves to `14` |
+| A.13 `rescue_margin` | 25% of `RecyclerExpirationTime`, floor 7 days | Correct; resolves to 22.5 days |
+
+The structural point: A.9, A.10 and the bound in A.5 are **chain constants**,
+and the module's own preamble claims it holds policy only. Exceeding a
+chain-enforced cap makes an extrinsic invalid, which is a different kind of fact
+from a tunable. The implementation splits them into a separate
+`CoinageChainConstants`, validated once at connection time so an unsupported
+runtime is refused rather than discovered at the first failed extrinsic.
+
+### 3.2 Denomination exponents are signed
+
+The design treats exponents as unsigned. The pallet's `CoinValue` is `i8`.
+
+**Decision:** mirror the pallet's type, reject negative exponents on
+construction, and keep amounts in whole cents. A sub-cent denomination has no
+representation in a cent-granular amount type, so a runtime that ever ships
+`MinimumExponent < 0` should fail loudly at connection rather than produce a
+truncated balance. Recorded as a validated precondition, not an assumption.
+
+### 3.3 Recycler entries need a ring revision
+
+§5.2 and §8 give an entry a ring index. The pallet's
+`unload_recycler_into_coins(aliases, value, index, revision, split_into, max_fee)`
+needs the **revision** too, and a membership proof built against one revision
+does not verify against another. The design should carry a ring *location* —
+index plus revision — and grouping for unload must key on both.
+
+### 3.4 Selection is policy-free
+
+§6.3 reads as though selection consumes the tunables. It does not: the anonymity
+floor is applied when a ring is *observed*, so an entry's readiness already
+encodes it by the time selection runs. The only limits selection must respect
+are the chain's. Worth stating, because it is a cleaner boundary than the
+document implies.
+
+### 3.5 §10 needs one more error
+
+Add a variant for "the purse holds enough selectable value, waiting would not
+add any, but it cannot be arranged into the requested denominations". Two causes,
+both reachable in ordinary use:
+
+- **Coinage divides but never merges.** Two 8-cent coins cannot satisfy a single
+  16-cent output.
+- **Per-extrinsic caps.** A named denomination must be minted whole by one
+  unload group, and no group may be large enough.
+
+`InsufficientFunds` is actively misleading here — the funds are present. The
+implementation calls it `UnsatisfiableOutputs`. The upper layer will also need a
+mapping for it; RFC-0017's nine `CoinPaymentError` variants have nothing
+suitable, and `BalanceLow` would be wrong.
+
+Failure classification should be a total three-way split, ordered by what the
+caller should do:
+
+| Condition | Error | Caller's move |
+|---|---|---|
+| Not enough value even counting waiting entries | `InsufficientFunds` | Fund the purse |
+| Enough, but some is not selectable yet | `NoReadyEntries` | Retry later |
+| Everything selectable already is, and it covers the amount | `UnsatisfiableOutputs` | Change the request |
+
+### 3.6 §7.4 should state the event-ordering rule
+
+Terminal operations drop their record as soon as the status is emitted, so the
+receipt exists only in the emitted event until it is published. That imposes an
+ordering the document does not mention: **drain and publish events before
+persisting the store**. Persisting first loses the receipt and the record
+together if the process dies in between; publishing first degrades to a
+duplicate event, which subscribers can absorb and `reconcile_after_restart`
+resolves. The asymmetry is worth stating explicitly.
+
+### 3.7 Superseded documents
+
+`coinage-management.md` and `coinage-management-contract.md` describe the
+pre-split unified design and contradict `coinage-layer.md` in several places
+(derivation appendix, `MAIN_PURSE` value, purse-delete precondition, stale
+cross-references, `RecyclerEntryReadinessState` versus
+`RecyclerEntryOnChainState`). Mark them superseded or delete them. PR #122's
+description also still describes the unified design and should be updated or the
+PR closed in favour of the new one.
+
+## 4. RFC-0022 interaction
+
+RFC-0022 **defers coinage by name, twice** — in the built-in-features table
+("Not coercible to a product | Coinage | — | Deferred to a separate RFC") and
+again for ring-VRF keys ("Coinage's ring-VRF keys (recyclers/vouchers) are
+deferred to the coinage RFC"). The new coinage RFC is that deferred RFC, which
+is the cleanest possible position: it fills a declared gap rather than
+overriding anything.
+
+Three points to carry:
+
+1. **Reuse RFC-0022's keyed-hash HDKD for entry keys.** Its
+   `derive_ringvrf_hard(parent, code) = hash(parent, code)` fold, hard-only, is
+   the right primitive. Adopt the function rather than defining a parallel one.
+2. **Root coinage under a reserved domain.** RFC-0022 shapes that tree as
+   `//{domain}//{index}` with the domain always a product's dotNS identifier,
+   which coinage cannot supply. Coinage takes `coinage` as a reserved domain —
+   unambiguous because every product domain is a dotNS name — and extends the
+   path with the purse and index structure it needs.
+3. **Correct RFC-0022's notation.** It records coinage's current layout as
+   `//pps//coin/{index}` and `//pps//ring-vrf/{index}`, with a *single* slash
+   before the index implying a soft junction. Both mobile implementations use
+   `//pps//coin//<n>` — hard. Probably loose notation in a table cell, but given
+   §2.1 it is worth being precise about.
+
+Also note RFC-0022 set the precedent for the breaking-change posture: "There are
+no production deployments … the selector change is wire-breaking … and is made
+freely, with no migration path."
+
+## 5. The adopted derivation scheme
+
+Appendix B of `coinage-layer.md`, unchanged, and now implemented:
+
+```text
+coins:            //coinage//coin//<purse>//<page>//<index>   sr25519
+recycler entries: //coinage//<purse>//<page>//<index>         bandersnatch,
+                                                             folded into
+                                                             RFC-0022's tree
+```
+
+- **Every junction is hard**, for the reason in §2.1. This is a security
+  requirement and the RFC should say so inline.
+- **The key-type split** lets recovery enumerate each subtree independently —
+  coins against `CoinsByOwner`, entries against recycler-location storage —
+  without probing indices that could only belong to the other.
+- **`<page>` is always 0** in this version. The junction is present anyway, so
+  adding pages later does not move existing accounts.
+- This is a clean break from the shipped `//pps//…` layout. Existing testnet
+  coins become unreachable, which is accepted.
+
+## 6. Non-document follow-ups
+
+These are not RFC content but were found alongside it and should not be lost.
+
+### 6.1 iOS silent loss of funds — unfiled, security-grade
+
+`CoinageRecyclingService` on `polkadot-app-ios-v2` recycles coins **into**
+recycler entries but never unloads entries **out**. If a user tops up and does
+not open the app before the ring is cleaned up (`immutable_since +
+RecyclerExpirationTime`, i.e. 90 days), the entry's backing value is destroyed by
+the pallet.
+
+This is the only way for value to disappear from a wallet whose root entropy and
+chain identity are otherwise intact. The Quint model in PR #122 finds traces
+matching it. It has been sitting in the work notes since May 2026 and is still
+unfiled; it affects shipping `develop`.
+
+Note the fix is not purely core-side. Three conditions must hold: the core
+implements the entry→coin rescue sweep, **the host schedules it in the
+background**, and the app routes its coinage through the core. The middle one is
+the general scheduling gap — the core has no clock outside a live session — and
+the failure mode is precisely "the user did not open the app", so a
+foreground-only sweep narrows the window without closing it.
+
+### 6.2 Balance drift after restore
+
+pgherveou reports that the displayed cash value is sometimes wrong, and that
+restoring from backup yields a different amount. Restore rescans derivation
+indices against chain state and reconstructs the true set, so this is consistent
+with local records having drifted — either value destroyed by ring expiry (§6.1)
+or entries consumed on chain but never reconciled locally. Worth capturing as a
+test case for the core implementation rather than chasing in the app.
+
+### 6.3 The apps still have to retire their own coinage engines
+
+Neither mobile integration PR migrates coinage: they delete the host-API
+dispatch layer, and `feature/coinage` / `Packages/Coinage` survive untouched. So
+core-side coinage will be available to *products* while the apps' own wallet UI
+still runs the native engine — two engines, two coin stores, cleanly disjoint
+only because the derivation break makes them so. Retiring the native engines is
+a third project after RFC-17-in-core and after the integrations, and it is real
+UI work in both apps.
