@@ -84,6 +84,26 @@ pub enum MetadataError {
     /// `MembershipCollection::LitePeople` variant was not found.
     #[error("MembershipCollection::LitePeople not found in metadata")]
     MissingLitePeopleCollection,
+    /// A transaction extension named in a request is absent from metadata.
+    #[error("`{identifier}` extension not found in metadata")]
+    MissingExtension {
+        /// Extension identifier that was looked up.
+        identifier: String,
+    },
+    /// An extension's extra is not the `Option<Info>` shape this resolver walks.
+    #[error("`{identifier}` extra is not an Option")]
+    ExtensionExtraNotOption {
+        /// Extension identifier that was looked up.
+        identifier: String,
+    },
+    /// The named variant is absent from an extension's info enum.
+    #[error("`{extension}` info enum has no variant `{variant}`")]
+    MissingExtensionInfoVariant {
+        /// Extension identifier that was looked up.
+        extension: String,
+        /// Variant name that was looked up.
+        variant: String,
+    },
     /// Type id did not resolve in the portable registry.
     #[error("unknown type id {type_id}")]
     UnknownTypeId {
@@ -390,6 +410,58 @@ impl Metadata {
             .find(|v| v.name == "LitePeople")
             .ok_or(MetadataError::MissingLitePeopleCollection)?;
         Ok((variant.index, lite_people.index))
+    }
+
+    /// Index of a named variant inside a transaction extension's
+    /// `Option<...Info>` extra.
+    ///
+    /// Variant indices are positional in SCALE and therefore not stable across
+    /// runtime upgrades, so callers resolve them by name for the same reason
+    /// they resolve call indices by name: a reordered enum should fail loudly
+    /// rather than silently select a different mode.
+    pub fn extension_info_variant_index(
+        &self,
+        identifier: &str,
+        variant: &str,
+    ) -> Result<u8, StatementAllowanceError> {
+        let ext = self
+            .extensions
+            .iter()
+            .find(|e| e.identifier == identifier)
+            .ok_or_else(|| MetadataError::MissingExtension {
+                identifier: identifier.to_string(),
+            })?;
+
+        // extra = `Extension(Option<Info>)`, with or without the struct wrapper.
+        let option_type = match &self.resolve_type(ext.extra_type)?.type_def {
+            TypeDef::Composite(_) => self.single_field_type(ext.extra_type)?,
+            _ => ext.extra_type,
+        };
+        let info_type = self
+            .resolve_variant(option_type)?
+            .variants
+            .iter()
+            .find(|v| v.name == "Some")
+            .and_then(|some| match some.fields.as_slice() {
+                [field] => Some(field.ty.id),
+                _ => None,
+            })
+            .ok_or_else(|| MetadataError::ExtensionExtraNotOption {
+                identifier: identifier.to_string(),
+            })?;
+
+        self.resolve_variant(info_type)?
+            .variants
+            .iter()
+            .find(|v| v.name == variant)
+            .map(|found| found.index)
+            .ok_or_else(|| {
+                MetadataError::MissingExtensionInfoVariant {
+                    extension: identifier.to_string(),
+                    variant: variant.to_string(),
+                }
+                .into()
+            })
     }
 
     /// Resolve a type id in the registry.

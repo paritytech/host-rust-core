@@ -8,3 +8,4 @@
 //! pairing host forwards these operations rather than performing them.
 
 pub mod call;
+pub mod extension;
