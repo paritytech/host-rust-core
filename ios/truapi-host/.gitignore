@@ -2,8 +2,5 @@
 .swiftpm/
 DerivedData/
 *.xcodeproj/xcuserdata/
-Package.resolved
-Binaries/
-Sources/TrUAPIHost/Resources/
 container/node_modules/
 container/dist/

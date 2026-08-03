@@ -12,32 +12,32 @@ The `TrUAPIHost` SPM package the iOS app imports directly. It carries:
 - [`container/`](container/) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
 - `Tests/` — WS-bridge round-trip tests that boot the real Rust core.
 
-The xcframework, the generated bindings, and the container bundle are gitignored build outputs. Regenerate them all with:
+The xcframework, the generated bindings, and the container bundle are **committed** build outputs, so the package is consumable straight from a git clone. Regenerate them all with:
 
 ```bash
 ./scripts/rebuild.sh
 ```
 
-Run it after a fresh checkout and after changing anything host-visible: the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `container/src`. It runs `make xcframework` (which regenerates the uniffi bindings), copies the xcframework into `Binaries/` (stripping the slice modulemaps that collide in Xcode's flat include dir), and builds the TS container.
+Run it after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `container/src` — and commit the regenerated artifacts together with the source change. The script runs `make xcframework` (which regenerates the uniffi bindings), copies the xcframework into `Binaries/` (stripping the slice modulemaps that collide in Xcode's flat include dir), and builds the TS container.
 
-`Package.swift` lives here (not at the repo root) — that is fine because the app consumes this package by local path, not via an SPM git URL.
+`Package.swift` lives at the **repo root** (SPM requires that for git-URL dependencies), with all target paths pointing into `ios/truapi-host/`.
 
 The embedding app implements the UniFFI-generated `HostCallbacks` protocol directly (defined in `truapi_server.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, and feature support. UI-decision callbacks are `async` and awaited by the Rust core.
 
 ## How the iOS app imports it
 
-`polkadot-app-ios-v2/Packages/TrUAPI` (app-side glue: chain connections, preimage cache, local storage) depends on this package by relative path and re-exports it, so app code just writes `import TrUAPI`:
+`polkadot-app-ios-v2/Packages/TrUAPI` (app-side glue: chain connections, preimage cache, local storage) depends on this package by git URL + branch and re-exports it, so app code just writes `import TrUAPI`:
 
 ```swift
-.package(path: "../../../truapi/ios/truapi-host")
+.package(url: "git@github.com:paritytech/truapi.git", branch: "rus-ios-integration")
 ```
 
-This requires the `truapi` checkout to sit next to `polkadot-app-ios-v2`, with `./scripts/rebuild.sh` run at least once. The dependency is unpinned — the app builds against the current state of this checkout — so record the truapi commit when cutting an app release.
+SPM pins the resolved revision in the app's `Package.resolved`; update it (File > Packages > Update in Xcode, or `xcodebuild -resolvePackageDependencies`) after pushing new commits to the branch.
 
 Run the package tests against an iOS simulator (the xcframework has no macOS slice):
 
 ```bash
-# from ios/truapi-host
+# from the repo root
 xcodebuild test -scheme TrUAPIHost -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
 
