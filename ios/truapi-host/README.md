@@ -4,14 +4,47 @@
 
 ## What this package is for
 
-The public surface lives in [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift):
+The `TrUAPIHost` SPM package the iOS app imports directly. It carries:
 
-- `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the callbacks alive for the lifetime of the core and exposes the localhost WebSocket bridge, session controls, and native change notifications for theme, preimage, and chain updates.
-- `LocalhostBridgeBootstrap` - helper that produces a JS snippet publishing the WS bridge endpoint to the product page so it can dial back in.
+- [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostCore` (owning wrapper around the UniFFI-generated `NativeTrUApiCore`, with the localhost WS bridge, session controls, and native change notifications), `TrUAPIHostCoreProtocol`, `RuntimeConfig`, and `LocalhostBridgeBootstrap`.
+- the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root manifest), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
+- `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
+- [`container/`](container/) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
+- `Tests/` — WS-bridge round-trip tests that boot the real Rust core.
 
-The embedding app implements the UniFFI-generated `HostCallbacks` protocol directly (defined in `Sources/TrUAPIHost/truapi_server.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, and feature support. UI-decision callbacks are `async` and awaited by the Rust core.
+The generated bindings and the container bundle are committed build outputs; the xcframework is **gitignored** and distributed as a GitHub release asset. Two scripts split the lifecycle:
 
-The generated UniFFI bindings live alongside the shell in `Sources/TrUAPIHost/truapi_server.swift` and the C header / module map in `Sources/truapi_serverFFI/include/`. They are ignored build outputs; regenerate them before building or publishing the Swift package.
+```bash
+./scripts/rebuild.sh            # regenerate xcframework + bindings + container locally
+./scripts/publish.sh <version>  # zip the built xcframework, upload it to the
+                                # "@parity/ios-host <version>" GitHub release, and
+                                # point Package.swift at it (URL + checksum)
+```
+
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `container/src` — and commit the regenerated bindings/container together with the source change. When the binary should reach consumers, run `publish.sh` and commit the manifest bump **after** the upload succeeds (a manifest pushed before its asset is live breaks resolution).
+
+For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
+
+`Package.swift` lives at the **repo root** (SPM requires that for git-URL dependencies), with all target paths pointing into `ios/truapi-host/`.
+
+The embedding app implements the UniFFI-generated `HostCallbacks` protocol directly (defined in `truapi_server.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, and feature support. UI-decision callbacks are `async` and awaited by the Rust core.
+
+## How the iOS app imports it
+
+`polkadot-app-ios-v2/Packages/TrUAPI` (app-side glue: chain connections, preimage cache, local storage) depends on this package by git URL + branch and re-exports it, so app code just writes `import TrUAPI`:
+
+```swift
+.package(url: "git@github.com:paritytech/truapi.git", branch: "rus-ios-integration")
+```
+
+SPM pins the resolved revision in the app's `Package.resolved`; update it (File > Packages > Update in Xcode, or `xcodebuild -resolvePackageDependencies`) after pushing new commits to the branch.
+
+Run the package tests against an iOS simulator (the xcframework has no macOS slice):
+
+```bash
+# from the repo root
+xcodebuild test -scheme TrUAPIHost -destination 'platform=iOS Simulator,name=iPhone 16'
+```
 
 ## Architecture
 
@@ -34,7 +67,7 @@ The core's `Permissions` platform trait has two methods, and so does `HostCallba
 - `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
 - `remotePermission(request:)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
 
-Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `permissionAuthorizationStatuses`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## Example
 
@@ -170,36 +203,10 @@ core.disconnect()
 
 The product page reads `window.__truapi_localhost.url` (set by the bootstrap script) and passes it to `@parity/truapi`'s `createWebSocketProvider(url)`.
 
-## Linking the cdylib
+## Build outputs in detail
 
-This package does not vendor `libtruapi_server` - integrators link a prebuilt static or dynamic library when building the app target. Typical workflow:
+`./scripts/rebuild.sh` orchestrates everything; the underlying pieces, should you need one in isolation:
 
-```bash
-cargo build -p truapi-server --release --features ws-bridge \
-  --target aarch64-apple-ios
-cargo build -p truapi-server --release --features ws-bridge \
-  --target aarch64-apple-ios-sim
-```
-
-Then either bundle the `.a` files as a `.xcframework` and add it under "Frameworks, Libraries, and Embedded Content" in the app target, or link directly via `OTHER_LDFLAGS`.
-
-## Regenerating the bindings
-
-The ignored bindings under `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` are produced from the workspace `uniffi-bindgen-cli`. Regenerate them before building or publishing the Swift package. The CLI emits `truapi_server.swift`, `truapi_serverFFI.h`, and `truapi_serverFFI.modulemap` into a single output directory; the modulemap is renamed to `module.modulemap` and the header is colocated under `Sources/truapi_serverFFI/include/` so SwiftPM's `systemLibrary` target picks them up.
-
-```bash
-cargo build -p truapi-server --release --features ws-bridge
-mkdir -p /tmp/uniffi-swift-out
-cargo run -p uniffi-bindgen-cli -- generate \
-  --library target/release/libtruapi_server.so \
-  --language swift \
-  --out-dir /tmp/uniffi-swift-out
-cp /tmp/uniffi-swift-out/truapi_server.swift \
-   ios/truapi-host/Sources/TrUAPIHost/truapi_server.swift
-cp /tmp/uniffi-swift-out/truapi_serverFFI.h \
-   ios/truapi-host/Sources/truapi_serverFFI/include/truapi_serverFFI.h
-cp /tmp/uniffi-swift-out/truapi_serverFFI.modulemap \
-   ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
-```
-
-Or run `make uniffi` from the repo root.
+- **xcframework** — `make xcframework` (repo root) builds `truapi-server` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
+- **bindings** — `make uniffi` (run automatically by `make xcframework`) regenerates `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` via the workspace `uniffi-bindgen-cli`; the emitted `truapi_serverFFI.modulemap` is renamed to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up.
+- **container** — `npm run build` in `container/` bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.
