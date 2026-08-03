@@ -766,7 +766,7 @@ async fn start_signing_host(
     {
         profile = Some(catalog.promote_to_user(current, user_id)?);
     }
-    let signer = profile
+    let mut signer = profile
         .as_ref()
         .map(|profile| {
             accounts::resolve_cached_signer(
@@ -792,6 +792,25 @@ async fn start_signing_host(
             .profile(DEFAULT_SESSION_NAME)
             .expect("default session profile is valid")
     });
+    if signer.is_none() && mnemonic.is_some() {
+        let mut explicit_signer = accounts::resolve_signer(ResolveSignerConfig {
+            base_path: &storage_profile.account_base_path,
+            network,
+            mnemonic: mnemonic.clone(),
+            account: None,
+            lite_username_prefix: None,
+        })
+        .await?;
+        match attestation::registered_lite_username(network.people_ws, &explicit_signer.entropy)
+            .await
+        {
+            Ok(user_id) => explicit_signer.lite_username = Some(user_id),
+            Err(error) => {
+                tracing::warn!(%error, "explicit signer has no resolvable People-chain username")
+            }
+        }
+        signer = Some(explicit_signer);
+    }
     let approval = approval_policy(args.auto_accept);
     let runtime = build_signing_runtime(
         network,
