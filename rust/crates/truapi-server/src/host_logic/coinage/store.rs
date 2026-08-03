@@ -334,6 +334,35 @@ impl CoinageStore {
         Ok(())
     }
 
+    /// Record that the chain no longer reports a location for an entry.
+    ///
+    /// Does not retire the record: an entry can lose its location because it was
+    /// unloaded, but also because a load has not finalized yet, and only the
+    /// owning operation can tell those apart.
+    pub fn observe_entry_missing(
+        &mut self,
+        purse: PurseId,
+        index: EntryIndex,
+    ) -> Result<(), CoinageError> {
+        let entry = self
+            .entries
+            .get_mut(&(purse, index))
+            .ok_or_else(|| unknown_record("recycler entry", purse))?;
+
+        let previous = entry.on_chain;
+        entry.observe_missing();
+
+        if entry.on_chain != previous {
+            self.events.push(LayerEvent::EntryReadinessChanged {
+                purse,
+                exponent: entry.exponent,
+                new_state: entry.on_chain,
+            });
+        }
+
+        Ok(())
+    }
+
     // -- operations --------------------------------------------------------
 
     /// Select records for a request and lock them under one new operation.

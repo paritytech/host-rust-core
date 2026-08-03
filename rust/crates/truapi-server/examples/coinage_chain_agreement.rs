@@ -30,8 +30,8 @@
 use std::time::Duration;
 
 use parity_scale_codec::Decode;
-use sp_crypto_hashing::{twox_64, twox_128};
 
+use truapi_server::coinage::storage::{ChainCoin, coins_by_owner_key};
 use truapi_server::host_logic::coinage::chain_constants::next_people_paseo;
 use truapi_server::host_logic::coinage::derivation;
 use truapi_server::host_logic::coinage::types::{CoinAge, CoinIndex, PurseId};
@@ -124,23 +124,6 @@ impl Report {
 fn constant<T: Decode>(metadata: &Metadata, name: &str) -> Option<T> {
     let bytes = metadata.constant("Coinage", name)?;
     T::decode(&mut &bytes[..]).ok()
-}
-
-/// `Coinage::CoinsByOwner(account)` — a `Twox64Concat` map over `AccountId`.
-fn coins_by_owner_key(account: &[u8; 32]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(16 + 16 + 8 + 32);
-    key.extend_from_slice(&twox_128(b"Coinage"));
-    key.extend_from_slice(&twox_128(b"CoinsByOwner"));
-    key.extend_from_slice(&twox_64(account));
-    key.extend_from_slice(account);
-    key
-}
-
-/// The coin record the pallet stores per account.
-#[derive(Debug, Decode)]
-struct ChainCoin {
-    value: i8,
-    age: u16,
 }
 
 fn arg(name: &str) -> Option<String> {
@@ -268,7 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for index in 0..scan_limit {
                 let account =
                     derivation::coin_account_id(&entropy, PurseId::MAIN, CoinIndex(index))?;
-                let value = rpc.get_storage(&coins_by_owner_key(&account.0)).await?;
+                let value = rpc.get_storage(&coins_by_owner_key(&account)).await?;
 
                 if let Some(bytes) = value {
                     let coin = ChainCoin::decode(&mut &bytes[..])?;

@@ -10,3 +10,4 @@
 pub mod call;
 pub mod extension;
 pub mod proof;
+pub mod storage;
