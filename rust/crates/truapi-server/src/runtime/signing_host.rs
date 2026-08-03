@@ -292,7 +292,7 @@ impl ProductAuthority for SigningHost {
             return Err(AuthorityError::Rejected);
         }
         let keypair = self.product_keypair(&request.account)?;
-        let (pre_output, proof) = truapi_dynamic_vrf::sign_dynamic_vrf(
+        let (pre_output, proof) = crate::dynamic_vrf::sign_dynamic_vrf(
             &keypair,
             &request.transcript_label,
             request

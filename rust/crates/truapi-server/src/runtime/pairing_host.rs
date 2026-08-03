@@ -878,7 +878,7 @@ impl PairingHost {
                 .map_err(|err| AuthorityError::Unknown {
                     reason: err.to_string(),
                 })?;
-                let (pre_output, proof) = truapi_dynamic_vrf::sign_dynamic_vrf(
+                let (pre_output, proof) = crate::dynamic_vrf::sign_dynamic_vrf(
                     &keypair,
                     &request.transcript_label,
                     request
