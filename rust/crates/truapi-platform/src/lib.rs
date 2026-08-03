@@ -530,6 +530,15 @@ pub enum CoreStorageKey {
     },
     /// Last processed SSO pairing response statement for the pairing device.
     LastProcessedPairingStatement,
+    /// The coinage layer's durable record store: purses, coins, recycler
+    /// entries, open operations and their derivation-index counters.
+    ///
+    /// One slot for the whole store rather than a slot per record, so a write is
+    /// atomic and the host needs no key enumeration. New variants belong at the
+    /// end of this enum: the key reaches hosts SCALE-encoded, so its discriminant
+    /// is persisted, and inserting above this point would remap every slot a
+    /// deployed host has already written.
+    CoinageState,
 }
 
 impl CoreStorageKey {
