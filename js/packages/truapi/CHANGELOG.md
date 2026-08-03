@@ -1,5 +1,14 @@
 # @parity/truapi
 
+## 0.6.0
+
+### Minor Changes
+
+- Represent product-account derivation indexes as tagged selectors that support
+  both compact numeric values and raw 32-byte values. Add the general-purpose
+  sr25519 `account.signVrf` API and its generated request, response, transcript,
+  error, and callback types.
+
 ## 0.5.1
 
 ### Patch Changes
