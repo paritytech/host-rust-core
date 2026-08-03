@@ -58,13 +58,12 @@ pub struct RequestEntry {
 /// A registered subscription handler plus the discriminants its frames carry.
 pub struct SubscriptionEntry {
     ids: SubscriptionFrameIds,
-    handler: SubscriptionHandler,
+    handler: SubscriptionHandlerKind,
 }
 
-/// A registered paired-stream handler plus its frame discriminants.
-pub struct StreamPairEntry {
-    ids: SubscriptionFrameIds,
-    handler: StreamPairHandler,
+enum SubscriptionHandlerKind {
+    OneWay(SubscriptionHandler),
+    Paired(StreamPairHandler),
 }
 
 /// Routes incoming protocol messages to registered handlers, keyed on the
@@ -72,7 +71,6 @@ pub struct StreamPairEntry {
 pub struct Dispatcher {
     by_request: HashMap<u8, RequestEntry>,
     by_start: HashMap<u8, SubscriptionEntry>,
-    by_pair_start: HashMap<u8, StreamPairEntry>,
     pair_receive_ids: HashSet<u8>,
     stop_ids: HashSet<u8>,
     subscriptions: SubscriptionManager,
@@ -97,7 +95,6 @@ impl Dispatcher {
         Self {
             by_request: HashMap::new(),
             by_start: HashMap::new(),
-            by_pair_start: HashMap::new(),
             pair_receive_ids: HashSet::new(),
             stop_ids: HashSet::new(),
             subscriptions: SubscriptionManager::new(spawner),
@@ -115,7 +112,7 @@ impl Dispatcher {
         &mut self,
         ids: SubscriptionFrameIds,
         handler: F,
-    ) -> Option<StreamPairEntry>
+    ) -> Option<SubscriptionEntry>
     where
         F: Fn(
                 String,
@@ -128,11 +125,11 @@ impl Dispatcher {
     {
         self.stop_ids.insert(ids.stop_id);
         self.pair_receive_ids.insert(ids.receive_id);
-        self.by_pair_start.insert(
+        self.by_start.insert(
             ids.start_id,
-            StreamPairEntry {
+            SubscriptionEntry {
                 ids,
-                handler: Arc::new(handler),
+                handler: SubscriptionHandlerKind::Paired(Arc::new(handler)),
             },
         )
     }
@@ -176,7 +173,7 @@ impl Dispatcher {
             ids.start_id,
             SubscriptionEntry {
                 ids,
-                handler: Arc::new(handler),
+                handler: SubscriptionHandlerKind::OneWay(Arc::new(handler)),
             },
         )
     }
@@ -200,39 +197,27 @@ impl Dispatcher {
                     value,
                 },
             });
-        } else if let Some(entry) = self.by_pair_start.get(&id) {
-            let (token, requests) = self
-                .subscriptions
-                .reserve_pair(message.request_id.clone(), entry.ids.receive_id);
-            let request_id = message.request_id.clone();
-            match (entry.handler)(request_id, message.payload.value, requests).await {
-                Ok(stream) => {
-                    self.subscriptions.activate(
-                        token,
-                        entry.ids.receive_id,
-                        entry.ids.interrupt_id,
-                        stream,
-                        transport,
-                    );
-                }
-                Err(err_bytes) => {
-                    self.subscriptions.cancel_reservation(token);
-                    transport.send(ProtocolMessage {
-                        request_id: message.request_id,
-                        payload: Payload {
-                            id: entry.ids.interrupt_id,
-                            value: err_bytes,
-                        },
-                    });
-                }
-            }
         } else if let Some(entry) = self.by_start.get(&id) {
             // Reserve the slot before awaiting the handler so a `_stop`
             // arriving while the handler resolves cancels the pending
             // subscription instead of racing the registration.
-            let token = self.subscriptions.reserve(message.request_id.clone());
             let request_id = message.request_id.clone();
-            match (entry.handler)(request_id, message.payload.value).await {
+            let (token, result) = match &entry.handler {
+                SubscriptionHandlerKind::OneWay(handler) => {
+                    let token = self.subscriptions.reserve(request_id.clone());
+                    (token, handler(request_id, message.payload.value).await)
+                }
+                SubscriptionHandlerKind::Paired(handler) => {
+                    let (token, requests) = self
+                        .subscriptions
+                        .reserve_pair(request_id.clone(), entry.ids.receive_id);
+                    (
+                        token,
+                        handler(request_id, message.payload.value, requests).await,
+                    )
+                }
+            };
+            match result {
                 Ok(stream) => {
                     self.subscriptions.activate(
                         token,

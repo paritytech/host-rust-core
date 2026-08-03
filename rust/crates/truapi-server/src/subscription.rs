@@ -93,9 +93,22 @@ enum Slot {
     /// Reserved by the dispatcher before its `_start` handler resolved.
     /// `cancelled` flips to `true` if a `_stop` arrives in that window so
     /// activation aborts instead of leaking an unstoppable stream.
-    Pending { generation: u64, cancelled: bool },
+    Pending {
+        generation: u64,
+        cancelled: bool,
+        request_sender: Option<RequestSender>,
+    },
     /// A live subscription with its cancellation handle.
-    Live { generation: u64, cancel: StopFn },
+    Live {
+        generation: u64,
+        cancel: StopFn,
+        request_sender: Option<RequestSender>,
+    },
+}
+
+struct RequestSender {
+    receive_id: u8,
+    sender: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 /// Handle returned by [`SubscriptionManager::reserve`] and presented back to
@@ -107,12 +120,9 @@ pub struct ReservationToken {
     generation: u64,
 }
 
-type RequestSenderMap = HashMap<String, (u64, u8, mpsc::UnboundedSender<Vec<u8>>)>;
-
 /// Manages active subscriptions on the server side.
 pub struct SubscriptionManager {
     active: Arc<Mutex<HashMap<String, Slot>>>,
-    request_senders: Arc<Mutex<RequestSenderMap>>,
     next_generation: Arc<AtomicU64>,
     spawner: Spawner,
 }
@@ -122,7 +132,6 @@ impl SubscriptionManager {
     pub fn new(spawner: Spawner) -> Self {
         Self {
             active: Arc::new(Mutex::new(HashMap::new())),
-            request_senders: Arc::new(Mutex::new(HashMap::new())),
             next_generation: Arc::new(AtomicU64::new(0)),
             spawner,
         }
@@ -133,14 +142,22 @@ impl SubscriptionManager {
     /// replaced (re-subscribe semantics). A `_stop` arriving before
     /// [`activate`](Self::activate) flips the reservation to cancelled.
     pub fn reserve(&self, request_id: String) -> ReservationToken {
+        self.reserve_with_request_sender(request_id, None)
+    }
+
+    fn reserve_with_request_sender(
+        &self,
+        request_id: String,
+        request_sender: Option<RequestSender>,
+    ) -> ReservationToken {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-        self.request_senders.lock().unwrap().remove(&request_id);
         let mut active = self.active.lock().unwrap();
         if let Some(Slot::Live { cancel, .. }) = active.insert(
             request_id.clone(),
             Slot::Pending {
                 generation,
                 cancelled: false,
+                request_sender,
             },
         ) {
             cancel();
@@ -157,12 +174,9 @@ impl SubscriptionManager {
         request_id: String,
         receive_id: u8,
     ) -> (ReservationToken, SubscriptionRequestStream) {
-        let token = self.reserve(request_id.clone());
         let (sender, receiver) = mpsc::unbounded();
-        self.request_senders
-            .lock()
-            .unwrap()
-            .insert(request_id, (token.generation, receive_id, sender));
+        let token = self
+            .reserve_with_request_sender(request_id, Some(RequestSender { receive_id, sender }));
         (token, Box::pin(receiver))
     }
 
@@ -176,10 +190,6 @@ impl SubscriptionManager {
         );
         if owned {
             active.remove(&token.request_id);
-        }
-        drop(active);
-        if owned {
-            self.remove_request_sender(&token.request_id, token.generation);
         }
     }
 
@@ -210,18 +220,20 @@ impl SubscriptionManager {
         // or a newer reservation superseded it while the handler resolved.
         {
             let mut active = self.active.lock().unwrap();
-            match active.get(&request_id) {
+            let request_sender = match active.get_mut(&request_id) {
                 Some(Slot::Pending {
                     generation: g,
                     cancelled,
+                    request_sender,
                 }) if *g == generation => {
                     if *cancelled {
                         active.remove(&request_id);
                         return;
                     }
+                    request_sender.take()
                 }
                 _ => return,
-            }
+            };
             active.insert(
                 request_id.clone(),
                 Slot::Live {
@@ -229,12 +241,12 @@ impl SubscriptionManager {
                     cancel: Box::new(move || {
                         let _ = cancel_tx.send(());
                     }),
+                    request_sender,
                 },
             );
         }
 
         let active = self.active.clone();
-        let request_senders = self.request_senders.clone();
 
         let future: BoxFuture<'static, ()> = Box::pin(async move {
             let completed = {
@@ -285,16 +297,6 @@ impl SubscriptionManager {
                 owned
             };
 
-            if removed {
-                let mut senders = request_senders.lock().unwrap();
-                let owned = matches!(
-                    senders.get(&request_id),
-                    Some((sender_generation, _, _)) if *sender_generation == generation
-                );
-                if owned {
-                    senders.remove(&request_id);
-                }
-            }
             if completed && removed {
                 transport.send(ProtocolMessage {
                     request_id,
@@ -339,19 +341,20 @@ impl SubscriptionManager {
             }
             None => {}
         }
-        drop(active);
-        self.request_senders.lock().unwrap().remove(request_id);
     }
 
     /// Deliver one product-to-host value to an active paired subscription.
     pub fn handle_request(&self, request_id: &str, receive_id: u8, value: Vec<u8>) {
-        let sender = self
-            .request_senders
-            .lock()
-            .unwrap()
-            .get(request_id)
-            .filter(|(_, expected_receive_id, _)| *expected_receive_id == receive_id)
-            .map(|(_, _, sender)| sender.clone());
+        let active = self.active.lock().unwrap();
+        let request_sender = match active.get(request_id) {
+            Some(Slot::Pending { request_sender, .. })
+            | Some(Slot::Live { request_sender, .. }) => request_sender.as_ref(),
+            None => None,
+        };
+        let sender = request_sender
+            .filter(|request| request.receive_id == receive_id)
+            .map(|request| request.sender.clone());
+        drop(active);
         if let Some(sender) = sender {
             let _ = sender.unbounded_send(value);
         }
@@ -373,18 +376,6 @@ impl SubscriptionManager {
         };
         for cancel in cancellations {
             cancel();
-        }
-        self.request_senders.lock().unwrap().clear();
-    }
-
-    fn remove_request_sender(&self, request_id: &str, generation: u64) {
-        let mut senders = self.request_senders.lock().unwrap();
-        let owned = matches!(
-            senders.get(request_id),
-            Some((sender_generation, _, _)) if *sender_generation == generation
-        );
-        if owned {
-            senders.remove(request_id);
         }
     }
 }

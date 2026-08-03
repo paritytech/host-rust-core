@@ -47,6 +47,34 @@ struct NativeProductControlState {
     pending_chat_actions: VecDeque<v01::HostChatActionSubscribeItem>,
 }
 
+#[cfg(feature = "ws-bridge")]
+impl NativeProductControlState {
+    fn publish_chat_action(
+        &mut self,
+        action: v01::HostChatActionSubscribeItem,
+    ) -> Result<(), NativeChatError> {
+        if let Some(control) = self.control.as_ref() {
+            match control.publish_chat_action(action.clone()) {
+                Ok(()) => return Ok(()),
+                Err(crate::ProductRuntimeError::Closed) => self.control = None,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if self.pending_chat_actions.len() == NATIVE_CHAT_ACTION_BUFFER_CAPACITY {
+            return Err(NativeChatError::BufferFull);
+        }
+        self.pending_chat_actions.push_back(action);
+        Ok(())
+    }
+
+    fn attach(&mut self, control: crate::ProductRuntimeControl) {
+        for action in self.pending_chat_actions.drain(..) {
+            let _ = control.publish_chat_action(action);
+        }
+        self.control = Some(control);
+    }
+}
+
 /// Native-friendly storage error. Mirrors the v0.1 wire shape so the
 /// callback surface stays SCALE-free.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
@@ -458,10 +486,8 @@ struct NativeResolvedHostRuntimeConfig {
 
 #[derive(Debug)]
 struct NativeResolvedRuntimeConfig {
-    signing: SigningHostConfig,
+    host: NativeResolvedHostRuntimeConfig,
     product: ProductContext,
-    local_session_secret: Option<Vec<u8>>,
-    local_session_lite_username: Option<String>,
 }
 
 /// Native runtime config validation error.
@@ -521,40 +547,38 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
     type Error = NativeRuntimeConfigError;
 
     fn try_from(config: NativeRuntimeConfig) -> Result<Self, Self::Error> {
-        let people_chain_genesis_hash =
-            <[u8; 32]>::try_from(config.people_chain_genesis_hash.as_slice()).map_err(|_| {
-                NativeRuntimeConfigError::InvalidPeopleChainGenesisHash {
-                    actual: config.people_chain_genesis_hash.len() as u64,
-                }
-            })?;
-        let bulletin_chain_genesis_hash =
-            <[u8; 32]>::try_from(config.bulletin_chain_genesis_hash.as_slice()).map_err(|_| {
-                NativeRuntimeConfigError::InvalidBulletinChainGenesisHash {
-                    actual: config.bulletin_chain_genesis_hash.len() as u64,
-                }
-            })?;
-        let product =
-            ProductContext::new_with_execution(config.product_id, config.execution_kind.into())
-                .map_err(NativeRuntimeConfigError::from)?;
-        let signing = SigningHostConfig::new(
-            HostInfo {
-                name: config.host_name,
-                icon: config.host_icon,
-                version: config.host_version,
-            },
-            PlatformInfo {
-                kind: config.platform_type,
-                version: config.platform_version,
-            },
+        let NativeRuntimeConfig {
+            product_id,
+            execution_kind,
+            host_name,
+            host_icon,
+            host_version,
+            platform_type,
+            platform_version,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
-        )?;
-        Ok(Self {
-            signing,
-            product,
-            local_session_secret: config.local_session_secret,
-            local_session_lite_username: config.local_session_lite_username,
-        })
+            local_session_secret,
+            local_session_lite_username,
+            pairing_deeplink_scheme: _,
+        } = config;
+        let host: NativeResolvedHostRuntimeConfig = NativeHostRuntimeConfig {
+            host_name,
+            host_icon,
+            host_version,
+            platform_type,
+            platform_version,
+            people_chain_genesis_hash,
+            bulletin_chain_genesis_hash,
+            local_session_secret,
+            local_session_lite_username,
+        }
+        .try_into()?;
+        let product = NativeProductExecutionConfig {
+            product_id,
+            execution_kind,
+        }
+        .try_into()?;
+        Ok(Self { host, product })
     }
 }
 
@@ -787,25 +811,18 @@ pub struct NativeTrUApiHostRuntime {
     events: Arc<NativeEventBus>,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
-    _callbacks: Arc<dyn HostCallbacks>,
     chat_executions: Mutex<HashMap<String, Weak<NativeProductExecution>>>,
 }
 
-#[uniffi::export]
 impl NativeTrUApiHostRuntime {
-    /// Construct one host-level runtime and optionally activate its local session.
-    #[uniffi::constructor]
-    pub fn with_runtime_config(
-        callbacks: Box<dyn HostCallbacks>,
-        runtime_config: NativeHostRuntimeConfig,
+    fn from_resolved(
+        callbacks: Arc<dyn HostCallbacks>,
+        runtime_config: NativeResolvedHostRuntimeConfig,
+        log_marker: &str,
+        log_detail: &str,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         crate::logging::init();
-        let runtime_config: NativeResolvedHostRuntimeConfig = runtime_config.try_into()?;
-        let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
-        callbacks.on_core_log(
-            "truapi.native.host_runtime.boot".to_string(),
-            "host runtime ready".to_string(),
-        );
+        callbacks.on_core_log(log_marker.to_string(), log_detail.to_string());
         let events = Arc::new(NativeEventBus::default());
         let platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
@@ -831,19 +848,15 @@ impl NativeTrUApiHostRuntime {
             events,
             #[cfg(feature = "ws-bridge")]
             spawner,
-            _callbacks: callbacks,
             chat_executions: Mutex::new(HashMap::new()),
         }))
     }
 
-    /// Open a connection-scoped execution with immutable trusted context.
-    pub fn open_product_execution(
+    fn open_product_execution_with_callbacks(
         &self,
-        callbacks: Box<dyn HostCallbacks>,
-        execution_config: NativeProductExecutionConfig,
-    ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
-        let product: ProductContext = execution_config.try_into()?;
-        let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
+        callbacks: Arc<dyn HostCallbacks>,
+        product: ProductContext,
+    ) -> Arc<NativeProductExecution> {
         let events = Arc::new(NativeEventBus::default());
         let concrete_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
@@ -852,7 +865,7 @@ impl NativeTrUApiHostRuntime {
         let platform: Arc<dyn truapi_platform::Platform> = concrete_platform.clone();
         let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> = callbacks
             .chat_supported()
-            .then(|| concrete_platform.clone() as Arc<dyn truapi_platform::ChatPlatform>);
+            .then_some(concrete_platform as Arc<dyn truapi_platform::ChatPlatform>);
         let execution = Arc::new(NativeProductExecution {
             runtime: self.runtime.clone(),
             product: product.clone(),
@@ -882,7 +895,37 @@ impl NativeTrUApiHostRuntime {
             }
         }
 
-        Ok(execution)
+        execution
+    }
+}
+
+#[uniffi::export]
+impl NativeTrUApiHostRuntime {
+    /// Construct one host-level runtime and optionally activate its local session.
+    #[uniffi::constructor]
+    pub fn with_runtime_config(
+        callbacks: Box<dyn HostCallbacks>,
+        runtime_config: NativeHostRuntimeConfig,
+    ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
+        let runtime_config: NativeResolvedHostRuntimeConfig = runtime_config.try_into()?;
+        let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
+        Self::from_resolved(
+            callbacks,
+            runtime_config,
+            "truapi.native.host_runtime.boot",
+            "host runtime ready",
+        )
+    }
+
+    /// Open a connection-scoped execution with immutable trusted context.
+    pub fn open_product_execution(
+        &self,
+        callbacks: Box<dyn HostCallbacks>,
+        execution_config: NativeProductExecutionConfig,
+    ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
+        let product: ProductContext = execution_config.try_into()?;
+        let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
+        Ok(self.open_product_execution_with_callbacks(callbacks, product))
     }
 
     /// Core-owned logout for the process-wide authentication session.
@@ -939,6 +982,47 @@ pub struct NativeProductExecution {
     product_control: Arc<Mutex<NativeProductControlState>>,
 }
 
+impl NativeProductExecution {
+    fn admin(&self) -> crate::HostAdmin {
+        self.runtime.product_admin_with_platform(
+            self.product.clone(),
+            self.platform.clone(),
+            self.chat.clone(),
+        )
+    }
+
+    fn require_chat(&self) -> Result<(), NativeChatError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(NativeChatError::Closed);
+        }
+        if self.product.execution_kind != ProductExecutionKind::Chat
+            || !self.runtime.has_active_session()
+        {
+            return Err(NativeChatError::Denied);
+        }
+        if self.chat.is_none() {
+            return Err(NativeChatError::Unsupported);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "ws-bridge")]
+    fn stop_bridge(&self) {
+        if let Some(mut bridge) = self
+            .bridge
+            .lock()
+            .expect("native product bridge mutex poisoned")
+            .take()
+        {
+            bridge.stop();
+        }
+        *self
+            .product_control
+            .lock()
+            .expect("native product control mutex poisoned") = NativeProductControlState::default();
+    }
+}
+
 #[uniffi::export]
 impl NativeProductExecution {
     /// Read a product-scoped permission authorization without prompting.
@@ -947,12 +1031,8 @@ impl NativeProductExecution {
         payload: Vec<u8>,
     ) -> Result<NativePermissionAuthorizationStatus, HostRejection> {
         let request = decode_permission_authorization_request(&payload)?;
-        let admin = self.runtime.product_admin_with_platform(
-            self.product.clone(),
-            self.platform.clone(),
-            self.chat.clone(),
-        );
-        let status = futures::executor::block_on(admin.permission_authorization_status(request))?;
+        let status =
+            futures::executor::block_on(self.admin().permission_authorization_status(request))?;
         Ok(status.into())
     }
 
@@ -963,13 +1043,9 @@ impl NativeProductExecution {
         status: NativePermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
         let request = decode_permission_authorization_request(&payload)?;
-        let admin = self.runtime.product_admin_with_platform(
-            self.product.clone(),
-            self.platform.clone(),
-            self.chat.clone(),
-        );
         futures::executor::block_on(
-            admin.set_permission_authorization_status(request, status.into()),
+            self.admin()
+                .set_permission_authorization_status(request, status.into()),
         )?;
         Ok(())
     }
@@ -991,37 +1067,15 @@ impl NativeProductExecution {
 
     /// Publish one native Chat action, buffering it until the connection opens.
     pub fn publish_chat_action(&self, action: NativeChatAction) -> Result<(), NativeChatError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(NativeChatError::Closed);
-        }
-        if self.product.execution_kind != ProductExecutionKind::Chat
-            || !self.runtime.has_active_session()
-        {
-            return Err(NativeChatError::Denied);
-        }
-        if self.chat.is_none() {
-            return Err(NativeChatError::Unsupported);
-        }
+        self.require_chat()?;
 
         #[cfg(feature = "ws-bridge")]
         {
             let action: v01::HostChatActionSubscribeItem = action.into();
-            let mut state = self
-                .product_control
+            self.product_control
                 .lock()
-                .expect("native product control mutex poisoned");
-            if let Some(control) = state.control.as_ref() {
-                match control.publish_chat_action(action.clone()) {
-                    Ok(()) => return Ok(()),
-                    Err(crate::ProductRuntimeError::Closed) => state.control = None,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            if state.pending_chat_actions.len() == NATIVE_CHAT_ACTION_BUFFER_CAPACITY {
-                return Err(NativeChatError::BufferFull);
-            }
-            state.pending_chat_actions.push_back(action);
-            Ok(())
+                .expect("native product control mutex poisoned")
+                .publish_chat_action(action)
         }
         #[cfg(not(feature = "ws-bridge"))]
         {
@@ -1038,17 +1092,7 @@ impl NativeProductExecution {
         payload: Vec<u8>,
         observer: Box<dyn NativeCustomRendererObserver>,
     ) -> Result<Arc<NativeCustomRendererSubscription>, NativeChatError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(NativeChatError::Closed);
-        }
-        if self.product.execution_kind != ProductExecutionKind::Chat
-            || !self.runtime.has_active_session()
-        {
-            return Err(NativeChatError::Denied);
-        }
-        if self.chat.is_none() {
-            return Err(NativeChatError::Unsupported);
-        }
+        self.require_chat()?;
         #[cfg(feature = "ws-bridge")]
         {
             let control = self
@@ -1073,27 +1117,11 @@ impl NativeProductExecution {
 
     /// Permanently close this executable and all of its connection state.
     pub fn close(&self) {
-        #[cfg(feature = "ws-bridge")]
-        {
-            if self.closed.swap(true, Ordering::AcqRel) {
-                return;
-            }
-            if let Some(mut bridge) = self
-                .bridge
-                .lock()
-                .expect("native product bridge mutex poisoned")
-                .take()
-            {
-                bridge.stop();
-            }
-            *self
-                .product_control
-                .lock()
-                .expect("native product control mutex poisoned") =
-                NativeProductControlState::default();
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
         }
-        #[cfg(not(feature = "ws-bridge"))]
-        self.closed.swap(true, Ordering::AcqRel);
+        #[cfg(feature = "ws-bridge")]
+        self.stop_bridge();
     }
 }
 
@@ -1133,13 +1161,10 @@ impl NativeProductExecution {
                 sink,
             );
             let control = product_runtime.control();
-            let mut state = product_control
+            product_control
                 .lock()
-                .expect("native product control mutex poisoned");
-            for action in state.pending_chat_actions.drain(..) {
-                let _ = control.publish_chat_action(action);
-            }
-            state.control = Some(control);
+                .expect("native product control mutex poisoned")
+                .attach(control);
             product_runtime
         });
         let (bridge, endpoint) = WsBridge::start(bind_port, runtime_factory, logger)?;
@@ -1149,18 +1174,7 @@ impl NativeProductExecution {
 
     /// Stop the active bridge while leaving the execution reusable.
     pub fn stop_ws_bridge(&self) {
-        if let Some(mut bridge) = self
-            .bridge
-            .lock()
-            .expect("native product bridge mutex poisoned")
-            .take()
-        {
-            bridge.stop();
-        }
-        *self
-            .product_control
-            .lock()
-            .expect("native product control mutex poisoned") = NativeProductControlState::default();
+        self.stop_bridge();
     }
 }
 
@@ -1175,17 +1189,8 @@ impl Drop for NativeProductExecution {
 /// [`NativeProductExecution`].
 #[derive(uniffi::Object)]
 pub struct NativeTrUApiCore {
-    runtime: Arc<SigningHostRuntime>,
-    product: ProductContext,
-    events: Arc<NativeEventBus>,
-    #[cfg(feature = "ws-bridge")]
-    spawner: Spawner,
-    #[cfg(feature = "ws-bridge")]
-    callbacks: Arc<dyn HostCallbacks>,
-    #[cfg(feature = "ws-bridge")]
-    bridge: std::sync::Mutex<Option<WsBridge>>,
-    #[cfg(feature = "ws-bridge")]
-    product_control: Arc<Mutex<NativeProductControlState>>,
+    host: Arc<NativeTrUApiHostRuntime>,
+    execution: Arc<NativeProductExecution>,
 }
 
 #[uniffi::export]
@@ -1211,7 +1216,7 @@ impl NativeTrUApiCore {
     /// Blocks the calling thread until the disconnect completes, so call it off
     /// the host's main/UI thread.
     pub fn disconnect(&self) {
-        futures::executor::block_on(self.runtime.disconnect_session());
+        self.host.disconnect();
     }
 
     /// Notify this core that host-global session storage changed outside a
@@ -1221,8 +1226,7 @@ impl NativeTrUApiCore {
     /// memory, so there is no session-store sync loop to wake. Retained so
     /// hosts written against the pairing-host surface still link.
     pub fn notify_session_store_changed(&self) {
-        // Signing hosts own the active local session in memory. There is no
-        // pairing-host session-store sync loop to notify.
+        self.host.notify_session_store_changed();
     }
 
     /// Cancel an in-flight pairing login.
@@ -1233,8 +1237,7 @@ impl NativeTrUApiCore {
     /// changes nothing. Retained so hosts written against the pairing-host
     /// surface still link.
     pub fn cancel_login(&self) {
-        // Signing hosts do not perform SSO pairing when products call
-        // request_login; a locally activated session returns AlreadyConnected.
+        self.host.cancel_login();
     }
 
     /// Read a stored permission authorization status without prompting.
@@ -1246,10 +1249,7 @@ impl NativeTrUApiCore {
         &self,
         payload: Vec<u8>,
     ) -> Result<NativePermissionAuthorizationStatus, HostRejection> {
-        let request = decode_permission_authorization_request(&payload)?;
-        let admin = self.runtime.product_admin(self.product.clone());
-        let status = futures::executor::block_on(admin.permission_authorization_status(request))?;
-        Ok(status.into())
+        self.execution.permission_authorization_status(payload)
     }
 
     /// Update a stored permission authorization status. Passing
@@ -1263,12 +1263,8 @@ impl NativeTrUApiCore {
         payload: Vec<u8>,
         status: NativePermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
-        let request = decode_permission_authorization_request(&payload)?;
-        let admin = self.runtime.product_admin(self.product.clone());
-        futures::executor::block_on(
-            admin.set_permission_authorization_status(request, status.into()),
-        )?;
-        Ok(())
+        self.execution
+            .set_permission_authorization_status(payload, status)
     }
 
     /// Activate or replace the local signing-host session from host-held
@@ -1281,16 +1277,12 @@ impl NativeTrUApiCore {
         secret: Vec<u8>,
         lite_username: Option<String>,
     ) -> Result<(), HostRejection> {
-        futures::executor::block_on(
-            self.runtime
-                .activate_local_session_with_identity(secret, lite_username),
-        )
-        .map_err(Into::into)
+        self.host.activate_local_session(secret, lite_username)
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
     pub fn notify_theme_changed(&self, theme: HostTheme) {
-        self.events.notify_theme_changed(theme.into());
+        self.execution.notify_theme_changed(theme);
     }
 
     /// Push a preimage lookup update to active subscriptions for `key`.
@@ -1298,61 +1290,27 @@ impl NativeTrUApiCore {
     /// `value == None` represents a known miss; `Some(bytes)` represents the
     /// current preimage value.
     pub fn notify_preimage_changed(&self, key: Vec<u8>, value: Option<Vec<u8>>) {
-        self.events.notify_preimage_changed(&key, value);
+        self.execution.notify_preimage_changed(key, value);
     }
 
     /// Push a JSON-RPC response from a native chain connection into the core.
     pub fn notify_chain_response(&self, connection_id: u32, json: String) {
-        self.events.notify_chain_response(connection_id, json);
+        self.host.notify_chain_response(connection_id, json);
     }
 
     /// Notify the core that a native chain connection closed externally.
     pub fn notify_chain_closed(&self, connection_id: u32) {
-        self.events.notify_chain_closed(connection_id);
+        self.host.notify_chain_closed(connection_id);
     }
 
     /// Push a complete replacement of the current native Chat room list.
     pub fn notify_chat_rooms_changed(&self, rooms: Vec<NativeChatRoom>) {
-        self.events.notify_chat_rooms_changed(rooms);
+        self.execution.notify_chat_rooms_changed(rooms);
     }
 
     /// Publish one native Chat action to the connected product worker.
     pub fn publish_chat_action(&self, action: NativeChatAction) -> Result<(), NativeChatError> {
-        if self.product.execution_kind != ProductExecutionKind::Chat
-            || !self.runtime.has_active_session()
-        {
-            return Err(NativeChatError::Denied);
-        }
-        if !self.runtime.supports_chat() {
-            return Err(NativeChatError::Unsupported);
-        }
-
-        #[cfg(feature = "ws-bridge")]
-        {
-            let action: v01::HostChatActionSubscribeItem = action.into();
-            let mut state = self
-                .product_control
-                .lock()
-                .expect("native product control mutex poisoned");
-            if let Some(control) = state.control.as_ref() {
-                match control.publish_chat_action(action.clone()) {
-                    Ok(()) => return Ok(()),
-                    Err(crate::ProductRuntimeError::Closed) => state.control = None,
-                    Err(error) => return Err(error.into()),
-                }
-            }
-
-            if state.pending_chat_actions.len() == NATIVE_CHAT_ACTION_BUFFER_CAPACITY {
-                return Err(NativeChatError::BufferFull);
-            }
-            state.pending_chat_actions.push_back(action);
-            Ok(())
-        }
-        #[cfg(not(feature = "ws-bridge"))]
-        {
-            let _ = action;
-            Err(NativeChatError::NotConnected)
-        }
+        self.execution.publish_chat_action(action)
     }
 
     /// Request typed native UI for one stored custom Chat message.
@@ -1363,35 +1321,8 @@ impl NativeTrUApiCore {
         payload: Vec<u8>,
         observer: Box<dyn NativeCustomRendererObserver>,
     ) -> Result<Arc<NativeCustomRendererSubscription>, NativeChatError> {
-        if self.product.execution_kind != ProductExecutionKind::Chat
-            || !self.runtime.has_active_session()
-        {
-            return Err(NativeChatError::Denied);
-        }
-        if !self.runtime.supports_chat() {
-            return Err(NativeChatError::Unsupported);
-        }
-
-        #[cfg(feature = "ws-bridge")]
-        {
-            let control = self
-                .product_control
-                .lock()
-                .expect("native product control mutex poisoned")
-                .control
-                .clone()
-                .ok_or(NativeChatError::NotConnected)?;
-            let stream = control
-                .render_custom_message(message_id, message_type, payload)
-                .map_err(NativeChatError::from)?;
-            let observer: Arc<dyn NativeCustomRendererObserver> = observer.into();
-            Ok(observe_renderer(stream, observer, self.spawner.clone()))
-        }
-        #[cfg(not(feature = "ws-bridge"))]
-        {
-            let _ = (message_id, message_type, payload, observer);
-            Err(NativeChatError::NotConnected)
-        }
+        self.execution
+            .render_custom_message(message_id, message_type, payload, observer)
     }
 }
 
@@ -1416,55 +1347,15 @@ fn native_core_from_platform_config(
     callbacks: Box<dyn HostCallbacks>,
     runtime_config: NativeResolvedRuntimeConfig,
 ) -> Result<Arc<NativeTrUApiCore>, NativeRuntimeConfigError> {
-    crate::logging::init();
     let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
-    callbacks.on_core_log(
-        "truapi.native.core.boot".to_string(),
-        "core ready".to_string(),
-    );
-
-    let events = Arc::new(NativeEventBus::default());
-    let platform = Arc::new(CallbackPlatform {
-        callbacks: callbacks.clone(),
-        events: events.clone(),
-    });
-    let spawner = native_thread_pool_spawner(&callbacks);
-    let runtime = if callbacks.chat_supported() {
-        Arc::new(SigningHostRuntime::new_with_chat(
-            platform.clone(),
-            platform,
-            runtime_config.signing,
-            spawner.clone(),
-        ))
-    } else {
-        Arc::new(SigningHostRuntime::new(
-            platform,
-            runtime_config.signing,
-            spawner.clone(),
-        ))
-    };
-
-    if let Some(secret) = runtime_config.local_session_secret {
-        futures::executor::block_on(runtime.activate_local_session_with_identity(
-            secret,
-            runtime_config.local_session_lite_username,
-        ))
-        .map_err(|err| NativeRuntimeConfigError::LocalSessionActivation { reason: err.reason })?;
-    }
-
-    Ok(Arc::new(NativeTrUApiCore {
-        runtime,
-        product: runtime_config.product,
-        events,
-        #[cfg(feature = "ws-bridge")]
-        spawner,
-        #[cfg(feature = "ws-bridge")]
-        callbacks,
-        #[cfg(feature = "ws-bridge")]
-        bridge: std::sync::Mutex::new(None),
-        #[cfg(feature = "ws-bridge")]
-        product_control: Arc::new(Mutex::new(NativeProductControlState::default())),
-    }))
+    let host = NativeTrUApiHostRuntime::from_resolved(
+        callbacks.clone(),
+        runtime_config.host,
+        "truapi.native.core.boot",
+        "core ready",
+    )?;
+    let execution = host.open_product_execution_with_callbacks(callbacks, runtime_config.product);
+    Ok(Arc::new(NativeTrUApiCore { host, execution }))
 }
 
 #[cfg(feature = "ws-bridge")]
@@ -1473,45 +1364,12 @@ impl NativeTrUApiCore {
     /// Start the localhost WebSocket bridge. Returns the descriptor the
     /// host hands to the product so it can dial back in.
     pub fn start_ws_bridge(&self, bind_port: u16) -> Result<WsBridgeEndpoint, WsBridgeStartError> {
-        let mut guard = self.bridge.lock().unwrap();
-        if guard.is_some() {
-            return Err(WsBridgeStartError::AlreadyRunning);
-        }
-        let logger: BridgeLogger = {
-            let callbacks = self.callbacks.clone();
-            Arc::new(move |marker: &str, detail: &str| {
-                callbacks.on_core_log(marker.to_string(), detail.to_string());
-            })
-        };
-        let runtime = self.runtime.clone();
-        let product = self.product.clone();
-        let product_control = self.product_control.clone();
-        let runtime_factory = Arc::new(move |sink| {
-            let product_runtime = runtime.product_runtime(product.clone(), sink);
-            let control = product_runtime.control();
-            let mut state = product_control
-                .lock()
-                .expect("native product control mutex poisoned");
-            for action in state.pending_chat_actions.drain(..) {
-                let _ = control.publish_chat_action(action);
-            }
-            state.control = Some(control);
-            product_runtime
-        });
-        let (bridge, endpoint) = WsBridge::start(bind_port, runtime_factory, logger)?;
-        *guard = Some(bridge);
-        Ok(endpoint)
+        self.execution.start_ws_bridge(bind_port)
     }
 
     /// Stop the localhost WebSocket bridge (if running).
     pub fn stop_ws_bridge(&self) {
-        if let Some(mut bridge) = self.bridge.lock().unwrap().take() {
-            bridge.stop();
-        }
-        *self
-            .product_control
-            .lock()
-            .expect("native product control mutex poisoned") = NativeProductControlState::default();
+        self.execution.stop_ws_bridge();
     }
 }
 

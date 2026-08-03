@@ -22,24 +22,13 @@ struct RendererState {
     renders: HashMap<String, mpsc::UnboundedSender<v01::CustomRendererNode>>,
 }
 
+#[derive(Default)]
 struct State {
     actions: Option<mpsc::UnboundedSender<HostChatActionSubscribeItem>>,
     action_buffer: VecDeque<HostChatActionSubscribeItem>,
     renderer: Option<RendererState>,
     next_renderer_generation: u64,
     closed: bool,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            actions: None,
-            action_buffer: VecDeque::new(),
-            renderer: None,
-            next_renderer_generation: 1,
-            closed: false,
-        }
-    }
 }
 
 /// Mutable Chat protocol state owned by one product connection.
@@ -74,15 +63,16 @@ impl ChatConnection {
     /// Publish one native action, buffering it until the product subscribes.
     pub(crate) fn publish_action(
         &self,
-        action: HostChatActionSubscribeItem,
+        mut action: HostChatActionSubscribeItem,
     ) -> Result<(), ProductRuntimeError> {
         let mut state = self.state.lock().expect("chat state mutex poisoned");
         if state.closed {
             return Err(ProductRuntimeError::Closed);
         }
         if let Some(sender) = state.actions.as_ref() {
-            if sender.unbounded_send(action.clone()).is_ok() {
-                return Ok(());
+            match sender.unbounded_send(action) {
+                Ok(()) => return Ok(()),
+                Err(error) => action = error.into_inner(),
             }
             state.actions = None;
         }
@@ -125,22 +115,19 @@ impl ChatConnection {
                 else {
                     break;
                 };
+                let ProductChatCustomMessageRenderChannelRequest::V1(request) = request;
                 match request {
-                    ProductChatCustomMessageRenderChannelRequest::V1(
-                        v01::ProductChatCustomMessageRenderChannelRequest::Update {
-                            message_id,
-                            node,
-                        },
-                    ) => {
+                    v01::ProductChatCustomMessageRenderChannelRequest::Update {
+                        message_id,
+                        node,
+                    } => {
                         if let Some(sender) = renderer.renders.get(&message_id)
                             && sender.unbounded_send(node).is_err()
                         {
                             renderer.renders.remove(&message_id);
                         }
                     }
-                    ProductChatCustomMessageRenderChannelRequest::V1(
-                        v01::ProductChatCustomMessageRenderChannelRequest::Failed { message_id },
-                    ) => {
+                    v01::ProductChatCustomMessageRenderChannelRequest::Failed { message_id } => {
                         renderer.renders.remove(&message_id);
                     }
                 }

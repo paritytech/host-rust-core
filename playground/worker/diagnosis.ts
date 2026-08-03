@@ -14,6 +14,9 @@ export const CHAT_DIAGNOSIS_METHODS = [
 
 export type ChatDiagnosisMethod = (typeof CHAT_DIAGNOSIS_METHODS)[number];
 
+export const CHAT_DIAGNOSIS_REFRESH_ACTION = "truapi-chat-diagnosis-refresh";
+export const CHAT_DIAGNOSIS_COPY_ACTION = "truapi-chat-diagnosis-copy";
+
 type CopyStatus = "idle" | "copied" | "unavailable";
 
 const STATUS_ICON = {
@@ -43,13 +46,12 @@ export class ChatDiagnosis {
   }
 
   fail(id: ChatDiagnosisMethod, error: unknown): void {
-    const details = error instanceof Error ? error.message : String(error);
-    this.#results.set(id, { id, status: "fail", details });
+    this.#results.set(id, { id, status: "fail", details: errorDetails(error) });
     this.#onChange();
   }
 
   failPending(error: unknown): void {
-    const details = error instanceof Error ? error.message : String(error);
+    const details = errorDetails(error);
     for (const id of CHAT_DIAGNOSIS_METHODS) {
       if (this.#results.get(id)?.status === "running") {
         this.#results.set(id, { id, status: "fail", details });
@@ -106,7 +108,7 @@ export class ChatDiagnosis {
             variant: "Secondary",
             enabled: true,
             loading: false,
-            clickAction: "truapi-chat-diagnosis-refresh",
+            clickAction: CHAT_DIAGNOSIS_REFRESH_ACTION,
           },
           children: [],
         },
@@ -120,7 +122,7 @@ export class ChatDiagnosis {
             variant: "Secondary",
             enabled: true,
             loading: false,
-            clickAction: "truapi-chat-diagnosis-copy",
+            clickAction: CHAT_DIAGNOSIS_COPY_ACTION,
           },
           children: [],
         },
@@ -135,6 +137,10 @@ export class ChatDiagnosis {
         : []),
     ]);
   }
+}
+
+function errorDetails(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function column(children: CustomRendererNode[]): CustomRendererNode {

@@ -1,26 +1,30 @@
 import { getClientSync } from "@parity/truapi/sandbox";
+import { bytesToHex, hexToBytes } from "@parity/truapi/scale";
 import type {
+  CustomRendererNode,
   HostChatActionSubscribeItem,
   HostChatListSubscribeItem,
-  HexString,
   ObservableLike,
   ProductChatCustomMessageRenderChannelItem,
   ProductChatCustomMessageRenderChannelRequest,
-  Subscription,
 } from "@parity/truapi";
-import { Subject } from "rxjs";
-import { ChatDiagnosis } from "./diagnosis";
+import { filter, firstValueFrom, from, Subject, timeout } from "rxjs";
+import {
+  CHAT_DIAGNOSIS_COPY_ACTION,
+  CHAT_DIAGNOSIS_REFRESH_ACTION,
+  ChatDiagnosis,
+} from "./diagnosis";
 
 const ROOM_ID = "truapi-playground";
 const ROOM_NAME = "TrUAPI Playground";
 const DIAGNOSIS_COMMAND = "!diagnose";
 const ECHO_COMMAND = "!echo";
 const RENDER_MESSAGE_TYPE = "truapi-chat-diagnosis";
-const REFRESH_ACTION = "truapi-chat-diagnosis-refresh";
-const COPY_ACTION = "truapi-chat-diagnosis-copy";
 const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const diagnosticRoomId = `${ROOM_ID}-diagnosis-${runId}`;
-const renderPayload = encodeHex(JSON.stringify({ version: 1, runId }));
+const renderPayload = bytesToHex(
+  new TextEncoder().encode(JSON.stringify({ version: 1, runId })),
+);
 
 const client = getClientSync();
 if (!client) {
@@ -138,14 +142,13 @@ function handleRenderRequest(
   item: ProductChatCustomMessageRenderChannelItem,
 ): void {
   if (item.messageType !== RENDER_MESSAGE_TYPE) {
-    renderRequests.next({
-      tag: "Failed",
-      value: { messageId: item.messageId },
-    });
+    rejectRender(item.messageId);
     return;
   }
   try {
-    const payload = JSON.parse(decodeHex(item.payload)) as {
+    const payload = JSON.parse(
+      new TextDecoder().decode(hexToBytes(item.payload)),
+    ) as {
       version?: number;
       runId?: string;
     };
@@ -155,10 +158,7 @@ function handleRenderRequest(
     // to renderer state that no longer exists, so reject them without turning
     // the current diagnosis red.
     if (payload.runId !== runId) {
-      renderRequests.next({
-        tag: "Failed",
-        value: { messageId: item.messageId },
-      });
+      rejectRender(item.messageId);
       return;
     }
     if (payload.version !== 1) {
@@ -175,31 +175,30 @@ function handleRenderRequest(
     }
 
     activeRenderMessageIds.add(item.messageId);
-    renderRequests.next({
-      tag: "Update",
-      value: { messageId: item.messageId, node: diagnosis.rendererNode() },
-    });
+    updateRender(item.messageId, diagnosis.rendererNode());
     diagnosis.pass(
       "Chat/custom_message_render_channel",
       "correlated render work and sent initial and replacement trees",
     );
   } catch (error) {
     diagnosis.fail("Chat/custom_message_render_channel", error);
-    renderRequests.next({
-      tag: "Failed",
-      value: { messageId: item.messageId },
-    });
+    rejectRender(item.messageId);
   }
 }
 
 function renderActiveMessages(): void {
   const node = diagnosis.rendererNode();
   for (const messageId of activeRenderMessageIds) {
-    renderRequests.next({
-      tag: "Update",
-      value: { messageId, node },
-    });
+    updateRender(messageId, node);
   }
+}
+
+function updateRender(messageId: string, node: CustomRendererNode): void {
+  renderRequests.next({ tag: "Update", value: { messageId, node } });
+}
+
+function rejectRender(messageId: string): void {
+  renderRequests.next({ tag: "Failed", value: { messageId } });
 }
 
 async function handleAction(
@@ -208,9 +207,9 @@ async function handleAction(
   if (action.payload.tag === "ActionTriggered") {
     const trigger = action.payload.value;
     if (trigger.messageId === customMessageId) {
-      if (trigger.actionId === REFRESH_ACTION) {
+      if (trigger.actionId === CHAT_DIAGNOSIS_REFRESH_ACTION) {
         renderActiveMessages();
-      } else if (trigger.actionId === COPY_ACTION) {
+      } else if (trigger.actionId === CHAT_DIAGNOSIS_COPY_ACTION) {
         await copyDiagnosisReport();
       }
     }
@@ -298,43 +297,12 @@ async function waitForRoom(
   observable: ObservableLike<HostChatListSubscribeItem>,
   roomId: string,
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      subscription.unsubscribe();
-      reject(new Error(`Timed out waiting for room ${roomId}`));
-    }, 10_000);
-    const subscription: Subscription = observable.subscribe({
-      next(item) {
-        if (item.rooms.some((candidate) => candidate.roomId === roomId)) {
-          queueMicrotask(() => {
-            clearTimeout(timeout);
-            subscription.unsubscribe();
-          });
-          resolve();
-        }
-      },
-      error(error) {
-        clearTimeout(timeout);
-        reject(error);
-      },
-      complete() {
-        clearTimeout(timeout);
-        reject(new Error(`Chat room list ended before returning ${roomId}`));
-      },
-    });
-  });
-}
-
-function encodeHex(value: string): HexString {
-  return `0x${Array.from(new TextEncoder().encode(value), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("")}`;
-}
-
-function decodeHex(value: HexString): string {
-  const bytes = value
-    .slice(2)
-    .match(/.{1,2}/g)
-    ?.map((byte) => Number.parseInt(byte, 16));
-  return new TextDecoder().decode(Uint8Array.from(bytes ?? []));
+  await firstValueFrom(
+    from(observable).pipe(
+      filter((item) =>
+        item.rooms.some((candidate) => candidate.roomId === roomId),
+      ),
+      timeout({ first: 10_000 }),
+    ),
+  );
 }

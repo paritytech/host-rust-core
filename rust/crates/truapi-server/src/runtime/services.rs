@@ -57,7 +57,7 @@ impl RuntimeServices {
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
     ) -> Arc<Self> {
-        Self::new_with_chat(
+        Self::build(
             platform,
             None,
             people_chain_genesis_hash,
@@ -66,8 +66,24 @@ impl RuntimeServices {
         )
     }
 
-    /// Build role-neutral runtime services with an optional native Chat adapter.
+    /// Build role-neutral runtime services with a native Chat adapter.
     pub(crate) fn new_with_chat(
+        platform: Arc<dyn Platform>,
+        chat: Arc<dyn ChatPlatform>,
+        people_chain_genesis_hash: [u8; 32],
+        bulletin_chain_genesis_hash: [u8; 32],
+        spawner: Spawner,
+    ) -> Arc<Self> {
+        Self::build(
+            platform,
+            Some(chat),
+            people_chain_genesis_hash,
+            bulletin_chain_genesis_hash,
+            spawner,
+        )
+    }
+
+    fn build(
         platform: Arc<dyn Platform>,
         chat: Option<Arc<dyn ChatPlatform>>,
         people_chain_genesis_hash: [u8; 32],

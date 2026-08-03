@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { run } from "./lib/ios-simulator.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 loadDotEnv(resolve(repoRoot, ".env"));
@@ -189,11 +190,4 @@ function parseDotEnvValue(value) {
 function nonEmpty(value) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
-}
-
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { stdio: "inherit", ...options });
-  if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(" ")} failed with ${result.status}`);
-  }
 }

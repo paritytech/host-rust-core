@@ -1069,22 +1069,32 @@ fn write_observable_helper(out: &mut String) {
           payload,
           decodeItem,
           decodeInterrupt,
+          onSubscribe,
         }}: {{
           transport: TrUApiTransport;
           ids: SubscriptionFrameIds;
           payload: Uint8Array;
           decodeItem: (payload: Uint8Array) => Item;
           decodeInterrupt?: (payload: Uint8Array) => Reason;
+          onSubscribe?: (subscription: Subscription) => {{ unsubscribe(): void }};
         }}): ObservableLike<Item, Reason> {{
           const observable: ObservableLike<Item, Reason> = {{
             subscribe(observer: Partial<Observer<Item, Reason>> = {{}}): Subscription {{
               let closed = false;
               let raw: Subscription | undefined;
+              let forwarding: {{ unsubscribe(): void }} | undefined;
+
+              const stopForwarding = () => {{
+                const active = forwarding;
+                forwarding = undefined;
+                active?.unsubscribe();
+              }};
 
               const fail = (error: unknown, stop = true) => {{
                 if (closed) return;
                 closed = true;
                 try {{
+                  stopForwarding();
                   if (stop) raw?.unsubscribe();
                 }} finally {{
                   observer.error?.(toSubscriptionError<Reason>(error));
@@ -1116,10 +1126,21 @@ fn write_observable_helper(out: &mut String) {
                     return;
                   }}
                   closed = true;
+                  stopForwarding();
                   observer.complete?.();
                 }},
                 onClose: fail,
               }});
+
+              if (!closed && onSubscribe) {{
+                try {{
+                  forwarding = onSubscribe(raw);
+                }} catch (error) {{
+                  raw.unsubscribe();
+                  throw error;
+                }}
+                if (closed) stopForwarding();
+              }}
 
               return {{
                 get subscriptionId() {{
@@ -1128,6 +1149,7 @@ fn write_observable_helper(out: &mut String) {
                 unsubscribe: () => {{
                   if (closed) return;
                   closed = true;
+                  stopForwarding();
                   raw?.unsubscribe();
                 }},
               }};
@@ -1163,59 +1185,28 @@ fn write_stream_pair_helper(out: &mut String) {
           decodeItem: (payload: Uint8Array) => Item;
         }): ObservableLike<Item> {
           let used = false;
-          const source = createObservable<Item>({ transport, ids, payload, decodeItem });
+          const source = createObservable<Item>({
+            transport,
+            ids,
+            payload,
+            decodeItem,
+            onSubscribe(subscription) {
+              return requests.subscribe({
+                next(request) {
+                  transport.sendSubscriptionItem({
+                    ids,
+                    subscriptionId: subscription.subscriptionId,
+                    payload: encodeRequest(request),
+                  });
+                },
+              });
+            },
+          });
           const items: ObservableLike<Item> = {
             subscribe(observer: Partial<Observer<Item>> = {}): Subscription {
               if (used) throw new Error("channel is single-use: its one subscription is the operation");
               used = true;
-              let requestSubscription: { unsubscribe(): void } | undefined;
-              let terminated = false;
-              const stopForwarding = () => {
-                const forwarding = requestSubscription;
-                requestSubscription = undefined;
-                forwarding?.unsubscribe();
-              };
-              const subscription = source.subscribe({
-                next(value) {
-                  observer.next?.(value);
-                },
-                error(error) {
-                  terminated = true;
-                  stopForwarding();
-                  observer.error?.(error);
-                },
-                complete() {
-                  terminated = true;
-                  stopForwarding();
-                  observer.complete?.();
-                },
-              });
-              if (!terminated) {
-                try {
-                  requestSubscription = requests.subscribe({
-                    next(request) {
-                      transport.sendSubscriptionItem({
-                        ids,
-                        subscriptionId: subscription.subscriptionId,
-                        payload: encodeRequest(request),
-                      });
-                    },
-                  });
-                } catch (error) {
-                  subscription.unsubscribe();
-                  throw error;
-                }
-                if (terminated) stopForwarding();
-              }
-              return {
-                get subscriptionId() {
-                  return subscription.subscriptionId;
-                },
-                unsubscribe() {
-                  stopForwarding();
-                  subscription.unsubscribe();
-                },
-              };
+              return source.subscribe(observer);
             },
             [OBSERVABLE_INTEROP as typeof Symbol.observable]() {
               return items;

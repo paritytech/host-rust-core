@@ -2,7 +2,6 @@
 // Copyright 2026 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -18,6 +17,13 @@ import {
   decodeTextMessage,
   labelChatDiagnosisReport,
 } from "./lib/chat-diagnosis-report.mjs";
+import {
+  bootAndInstallApp,
+  capture,
+  delay,
+  isLoopback,
+  run,
+} from "./lib/ios-simulator.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const bundle =
@@ -84,15 +90,7 @@ if (!existsSync(worker)) {
   throw new Error(`Chat product worker not found after build: ${worker}`);
 }
 
-const device = selectSimulator();
-run("open", ["-a", "Simulator", "--args", "-CurrentDeviceUDID", device.udid], {
-  stdio: "ignore",
-});
-if (device.state !== "Booted") {
-  run("xcrun", ["simctl", "boot", device.udid]);
-}
-run("xcrun", ["simctl", "bootstatus", device.udid, "-b"]);
-run("xcrun", ["simctl", "install", device.udid, app]);
+const device = bootAndInstallApp(app);
 
 const appData = capture("xcrun", [
   "simctl",
@@ -221,7 +219,7 @@ console.log(
 
 async function startProductServer(urlString, root) {
   const url = new URL(urlString);
-  if (!["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname)) {
+  if (!isLoopback(url)) {
     throw new Error(
       `Product URL must be loopback for this E2E test: ${urlString}`,
     );
@@ -345,58 +343,6 @@ async function waitForTextPrefix(database, identifier, afterMessageId, prefix) {
   );
 }
 
-function delay(milliseconds) {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
-}
-
 function sqlString(value) {
   return `'${value.replaceAll("'", "''")}'`;
-}
-
-function selectSimulator() {
-  const requested =
-    process.env.TRUAPI_IOS_E2E_DEVICE ?? process.env.IOS_SIMULATOR_DEVICE;
-  const simulatorList = JSON.parse(
-    capture("xcrun", ["simctl", "list", "devices", "available", "-j"]),
-  );
-  const devices = Object.values(simulatorList.devices)
-    .flat()
-    .filter(
-      (candidate) =>
-        candidate.isAvailable && candidate.name.startsWith("iPhone"),
-    );
-  const selected = requested
-    ? devices.find(
-        (candidate) =>
-          candidate.udid === requested || candidate.name === requested,
-      )
-    : (devices.find((candidate) => candidate.state === "Booted") ?? devices[0]);
-
-  if (!selected) {
-    throw new Error(
-      requested
-        ? `Requested iPhone simulator is unavailable: ${requested}`
-        : "No available iPhone simulator found",
-    );
-  }
-  return selected;
-}
-
-function capture(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed with ${result.status}`,
-    );
-  }
-  return result.stdout;
-}
-
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { stdio: "inherit", ...options });
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed with ${result.status}`,
-    );
-  }
 }

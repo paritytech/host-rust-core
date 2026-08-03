@@ -430,30 +430,33 @@ impl NativeCustomRendererNode {
 }
 
 impl NativeCustomRendererNode {
-    fn component_modifiers(&self) -> &[v01::Modifier] {
+    fn component_parts(&self) -> (&[v01::Modifier], &[v01::CustomRendererNode]) {
         match &self.inner {
-            v01::CustomRendererNode::Box(component) => &component.modifiers,
-            v01::CustomRendererNode::Column(component) => &component.modifiers,
-            v01::CustomRendererNode::Row(component) => &component.modifiers,
-            v01::CustomRendererNode::Spacer(component) => &component.modifiers,
-            v01::CustomRendererNode::Text(component) => &component.modifiers,
-            v01::CustomRendererNode::Button(component) => &component.modifiers,
-            v01::CustomRendererNode::TextField(component) => &component.modifiers,
-            v01::CustomRendererNode::Nil | v01::CustomRendererNode::String { .. } => &[],
+            v01::CustomRendererNode::Box(component) => (&component.modifiers, &component.children),
+            v01::CustomRendererNode::Column(component) => {
+                (&component.modifiers, &component.children)
+            }
+            v01::CustomRendererNode::Row(component) => (&component.modifiers, &component.children),
+            v01::CustomRendererNode::Spacer(component) => {
+                (&component.modifiers, &component.children)
+            }
+            v01::CustomRendererNode::Text(component) => (&component.modifiers, &component.children),
+            v01::CustomRendererNode::Button(component) => {
+                (&component.modifiers, &component.children)
+            }
+            v01::CustomRendererNode::TextField(component) => {
+                (&component.modifiers, &component.children)
+            }
+            v01::CustomRendererNode::Nil | v01::CustomRendererNode::String { .. } => (&[], &[]),
         }
     }
 
+    fn component_modifiers(&self) -> &[v01::Modifier] {
+        self.component_parts().0
+    }
+
     fn component_children(&self) -> &[v01::CustomRendererNode] {
-        match &self.inner {
-            v01::CustomRendererNode::Box(component) => &component.children,
-            v01::CustomRendererNode::Column(component) => &component.children,
-            v01::CustomRendererNode::Row(component) => &component.children,
-            v01::CustomRendererNode::Spacer(component) => &component.children,
-            v01::CustomRendererNode::Text(component) => &component.children,
-            v01::CustomRendererNode::Button(component) => &component.children,
-            v01::CustomRendererNode::TextField(component) => &component.children,
-            v01::CustomRendererNode::Nil | v01::CustomRendererNode::String { .. } => &[],
-        }
+        self.component_parts().1
     }
 }
 
@@ -490,14 +493,7 @@ impl NativeCustomRendererSubscription {
 
 impl Drop for NativeCustomRendererSubscription {
     fn drop(&mut self) {
-        if let Some(abort) = self
-            .abort
-            .get_mut()
-            .expect("native renderer subscription mutex poisoned")
-            .take()
-        {
-            abort.abort();
-        }
+        self.cancel();
     }
 }
 
@@ -509,7 +505,7 @@ pub(crate) fn observe_renderer(
 ) -> Arc<NativeCustomRendererSubscription> {
     let (abort, registration) = AbortHandle::new_pair();
     (spawner)(Box::pin(async move {
-        let completed = Abortable::new(
+        let _ = Abortable::new(
             async move {
                 while let Some(inner) = stream.next().await {
                     observer.on_update(Arc::new(NativeCustomRendererNode { inner }));
@@ -519,7 +515,6 @@ pub(crate) fn observe_renderer(
             registration,
         )
         .await;
-        let _ = completed;
     }));
     Arc::new(NativeCustomRendererSubscription {
         abort: Mutex::new(Some(abort)),

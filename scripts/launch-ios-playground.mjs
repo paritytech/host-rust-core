@@ -2,9 +2,16 @@
 // Copyright 2026 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  bootAndInstallApp,
+  captureOptional,
+  delay,
+  isLoopback,
+  run,
+} from "./lib/ios-simulator.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const bundle =
@@ -25,16 +32,7 @@ if (!existsSync(app)) {
 }
 
 const playgroundProcess = await ensurePlayground();
-const device = selectSimulator();
-
-run("open", ["-a", "Simulator", "--args", "-CurrentDeviceUDID", device.udid], {
-  stdio: "ignore",
-});
-if (device.state !== "Booted") {
-  run("xcrun", ["simctl", "boot", device.udid]);
-}
-run("xcrun", ["simctl", "bootstatus", device.udid, "-b"]);
-run("xcrun", ["simctl", "install", device.udid, app]);
+const device = bootAndInstallApp(app);
 const signingHostSession = readSigningHostSession(device.udid);
 run(
   "xcrun",
@@ -126,54 +124,9 @@ async function waitForPlayground(child) {
     if ((await probePlayground()) === "ready") {
       return;
     }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+    await delay(500);
   }
   throw new Error(`Timed out waiting for TrUAPI playground at ${productUrl}`);
-}
-
-function selectSimulator() {
-  const requested =
-    process.env.TRUAPI_IOS_E2E_DEVICE ?? process.env.IOS_SIMULATOR_DEVICE;
-  const simulatorList = JSON.parse(
-    capture("xcrun", ["simctl", "list", "devices", "available", "-j"]),
-  );
-  const devices = Object.values(simulatorList.devices)
-    .flat()
-    .filter((device) => device.isAvailable && device.name.startsWith("iPhone"));
-
-  const selected = requested
-    ? devices.find(
-        (device) => device.udid === requested || device.name === requested,
-      )
-    : (devices.find((device) => device.state === "Booted") ?? devices[0]);
-
-  if (!selected) {
-    throw new Error(
-      requested
-        ? `Requested iPhone simulator is unavailable: ${requested}`
-        : "No available iPhone simulator found",
-    );
-  }
-  return selected;
-}
-
-function isLoopback(url) {
-  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
-}
-
-function capture(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed with ${result.status}`,
-    );
-  }
-  return result.stdout;
-}
-
-function captureOptional(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
-  return result.status === 0 ? result.stdout.trim() : undefined;
 }
 
 function readSigningHostSession(deviceId) {
@@ -251,15 +204,6 @@ function readPlistValue(plist, key) {
     `Print :${key}`,
     plist,
   ]);
-}
-
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { stdio: "inherit", ...options });
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed with ${result.status}`,
-    );
-  }
 }
 
 async function keepPlaygroundAlive(child) {

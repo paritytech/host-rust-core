@@ -42,7 +42,7 @@ setup:
 worker calls chat.start(...)
   -> install local action and renderer callbacks
   -> when a renderer is supplied:
-       open custom_message_render_subscribe
+       open custom_message_render_channel
   -> optionally open chat_list_subscribe
   -> open chat_action_subscribe last
   -> resolve
@@ -136,4 +136,3 @@ The Product SDK integration is complete when:
 ## References
 
 - [Shared-core Chat protocol](./chat-modality-shared-core.md)
-- [Shared-core implementation plan](./chat-modality-shared-core-implementation-plan.md)

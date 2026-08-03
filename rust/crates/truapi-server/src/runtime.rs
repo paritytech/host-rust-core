@@ -1762,38 +1762,37 @@ impl Chain for ProductRuntimeHost {
 const PAYMENTS_NOT_IMPLEMENTED: &str = "Payments are not supported in dot.li";
 
 impl ProductRuntimeHost {
-    fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
+    fn native_chat_platform(
+        &self,
+    ) -> Result<Arc<dyn truapi_platform::ChatPlatform>, crate::host_core::ProductRuntimeError> {
         if self.product.execution_kind != ProductExecutionKind::Chat {
-            return Err(CallError::Denied);
+            return Err(crate::host_core::ProductRuntimeError::Denied);
         }
         if self.authority.session_state().current().is_none() {
-            return Err(CallError::Denied);
+            return Err(crate::host_core::ProductRuntimeError::Denied);
         }
-        self.chat_platform.clone().ok_or(CallError::Unsupported)
+        self.chat_platform
+            .clone()
+            .ok_or(crate::host_core::ProductRuntimeError::Unsupported)
+    }
+
+    fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
+        self.native_chat_platform().map_err(|error| match error {
+            crate::host_core::ProductRuntimeError::Denied => CallError::Denied,
+            crate::host_core::ProductRuntimeError::Unsupported => CallError::Unsupported,
+            _ => unreachable!("Chat platform policy only returns Denied or Unsupported"),
+        })
     }
 
     fn chat_streams_available(&self) -> bool {
         self.chat_platform::<()>().is_ok()
     }
 
-    fn require_native_chat(&self) -> Result<(), crate::host_core::ProductRuntimeError> {
-        if self.product.execution_kind != ProductExecutionKind::Chat {
-            return Err(crate::host_core::ProductRuntimeError::Denied);
-        }
-        if self.authority.session_state().current().is_none() {
-            return Err(crate::host_core::ProductRuntimeError::Denied);
-        }
-        if self.chat_platform.is_none() {
-            return Err(crate::host_core::ProductRuntimeError::Unsupported);
-        }
-        Ok(())
-    }
-
     pub(crate) fn publish_chat_action(
         &self,
         action: v01::HostChatActionSubscribeItem,
     ) -> Result<(), crate::host_core::ProductRuntimeError> {
-        self.require_native_chat()?;
+        self.native_chat_platform()?;
         self.chat
             .publish_action(HostChatActionSubscribeItem::V1(action))
     }
@@ -1804,7 +1803,7 @@ impl ProductRuntimeHost {
         message_type: String,
         payload: Vec<u8>,
     ) -> Result<Subscription<v01::CustomRendererNode>, crate::host_core::ProductRuntimeError> {
-        self.require_native_chat()?;
+        self.native_chat_platform()?;
         self.chat
             .render_custom_message(message_id, message_type, payload)
     }

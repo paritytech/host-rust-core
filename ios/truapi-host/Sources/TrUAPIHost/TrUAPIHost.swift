@@ -758,20 +758,14 @@ public final class TrUAPIProductExecution: @unchecked Sendable {
         messageType: String,
         payload: Data
     ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
-        let (stream, continuation) = AsyncThrowingStream.makeStream(
-            of: NativeCustomRendererNode.self
-        )
-        let observer = CustomRendererStreamObserver(continuation: continuation)
-        let subscription = try inner.renderCustomMessage(
-            messageId: messageId,
-            messageType: messageType,
-            payload: payload,
-            observer: observer
-        )
-        continuation.onTermination = { @Sendable _ in
-            subscription.cancel()
+        try customRendererStream { observer in
+            try inner.renderCustomMessage(
+                messageId: messageId,
+                messageType: messageType,
+                payload: payload,
+                observer: observer
+            )
         }
-        return stream
     }
 
     public func permissionAuthorizationStatus(
@@ -853,20 +847,14 @@ public final class TrUAPIHostCore {
         messageType: String,
         payload: Data
     ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
-        let (stream, continuation) = AsyncThrowingStream.makeStream(
-            of: NativeCustomRendererNode.self
-        )
-        let observer = CustomRendererStreamObserver(continuation: continuation)
-        let subscription = try inner.renderCustomMessage(
-            messageId: messageId,
-            messageType: messageType,
-            payload: payload,
-            observer: observer
-        )
-        continuation.onTermination = { @Sendable _ in
-            subscription.cancel()
+        try customRendererStream { observer in
+            try inner.renderCustomMessage(
+                messageId: messageId,
+                messageType: messageType,
+                payload: payload,
+                observer: observer
+            )
         }
-        return stream
     }
 
     /// Core-owned logout/disconnect path. Best-effort notifies the SSO peer,
@@ -938,6 +926,20 @@ public final class TrUAPIHostCore {
     }
 }
 
+private func customRendererStream(
+    _ subscribe: (CustomRendererStreamObserver) throws -> NativeCustomRendererSubscription
+) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
+    let (stream, continuation) = AsyncThrowingStream.makeStream(
+        of: NativeCustomRendererNode.self
+    )
+    let observer = CustomRendererStreamObserver(continuation: continuation)
+    let subscription = try subscribe(observer)
+    continuation.onTermination = { @Sendable _ in
+        subscription.cancel()
+    }
+    return stream
+}
+
 private final class CustomRendererStreamObserver: NativeCustomRendererObserver, @unchecked Sendable {
     private let continuation: AsyncThrowingStream<NativeCustomRendererNode, Error>.Continuation
 
@@ -954,30 +956,22 @@ private final class CustomRendererStreamObserver: NativeCustomRendererObserver, 
     }
 }
 
-private final class WeakTrUAPIHostCore {
-    weak var value: TrUAPIHostCore?
+private final class WeakReference<Value: AnyObject> {
+    weak var value: Value?
 
-    init(_ value: TrUAPIHostCore) {
-        self.value = value
-    }
-}
-
-private final class WeakTrUAPIHostRuntime {
-    weak var value: TrUAPIHostRuntime?
-
-    init(_ value: TrUAPIHostRuntime) {
+    init(_ value: Value) {
         self.value = value
     }
 }
 
 private enum LiveSessionStoreForwarder {
     private static let lock = NSLock()
-    private static var cores: [ObjectIdentifier: WeakTrUAPIHostCore] = [:]
-    private static var runtimes: [ObjectIdentifier: WeakTrUAPIHostRuntime] = [:]
+    private static var cores: [ObjectIdentifier: WeakReference<TrUAPIHostCore>] = [:]
+    private static var runtimes: [ObjectIdentifier: WeakReference<TrUAPIHostRuntime>] = [:]
 
     static func register(_ runtime: TrUAPIHostRuntime) {
         lock.lock()
-        runtimes[ObjectIdentifier(runtime)] = WeakTrUAPIHostRuntime(runtime)
+        runtimes[ObjectIdentifier(runtime)] = WeakReference(runtime)
         lock.unlock()
     }
 
@@ -989,7 +983,7 @@ private enum LiveSessionStoreForwarder {
 
     static func register(_ core: TrUAPIHostCore) {
         lock.lock()
-        cores[ObjectIdentifier(core)] = WeakTrUAPIHostCore(core)
+        cores[ObjectIdentifier(core)] = WeakReference(core)
         lock.unlock()
     }
 
