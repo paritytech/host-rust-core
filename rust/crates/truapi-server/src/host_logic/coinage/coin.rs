@@ -48,7 +48,7 @@ impl CoinState {
 }
 
 /// A coin the layer controls.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct Coin {
     /// Purse owning the coin. Together with [`Coin::index`] this is its
     /// identity; membership is implied by derivation.

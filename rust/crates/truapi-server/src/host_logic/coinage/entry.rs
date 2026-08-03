@@ -91,7 +91,7 @@ impl EntryLocalState {
 }
 
 /// A recycler entry the layer controls.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct RecyclerEntry {
     /// Purse owning the entry.
     pub purse: PurseId,

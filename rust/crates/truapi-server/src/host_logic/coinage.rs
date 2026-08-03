@@ -18,4 +18,5 @@ pub mod operation;
 pub mod params;
 pub mod purse;
 pub mod selection;
+pub mod store;
 pub mod types;
