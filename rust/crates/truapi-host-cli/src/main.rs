@@ -324,10 +324,12 @@ async fn run_alloc_check(
     lookback: u32,
     submit: bool,
 ) -> Result<()> {
+    use truapi_server::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
+
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let bandersnatch = alloc::bandersnatch_entropy(&entropy);
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; the all-zero default is read-only");
@@ -1292,28 +1294,30 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
 }
 
 /// Grant on-chain statement-store allowance to the two accounts that submit
-/// statements during pairing: the signing host's own `//wallet//sso` account
-/// and the pairing host's per-pairing device key (from the deeplink). Proves
-/// the signing account's LitePeople ring membership once and reuses it.
+/// statements during pairing: the signing host's RFC-0022 `uid.dot` identity
+/// account and the pairing host's per-pairing device key (from the deeplink).
+/// Proves the signing account's LitePeople ring membership once and reuses it.
 async fn register_pairing_allowances(
     statement_store_url: &str,
     entropy: &[u8],
     deeplink: &str,
 ) -> Result<()> {
-    use truapi_server::host_logic::product_account::derive_sr25519_hard_path;
+    use truapi_server::host_logic::product_account::{
+        derive_identity_keypair, derive_lite_person_ring_vrf_entropy,
+    };
     use truapi_server::host_logic::sso::pairing::{
         VersionedHandshakeProposal, decode_pairing_deeplink,
     };
 
-    let wallet_sso = derive_sr25519_hard_path(entropy, &["wallet", "sso"])
-        .map_err(|e| anyhow::anyhow!("//wallet//sso derivation failed: {e}"))?
+    let identity = derive_identity_keypair(entropy)
+        .map_err(|e| anyhow::anyhow!("uid.dot identity derivation failed: {e}"))?
         .public
         .to_bytes();
     let VersionedHandshakeProposal::V2(proposal) =
         decode_pairing_deeplink(deeplink).map_err(anyhow::Error::msg)?;
     let device = proposal.device.statement_account_id;
 
-    let bandersnatch = alloc::bandersnatch_entropy(entropy);
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(entropy);
     let rpc = alloc::rpc::RpcClient::connect(statement_store_url)
         .await
         .map_err(anyhow::Error::msg)?;
@@ -1348,7 +1352,7 @@ async fn register_pairing_allowances(
             .as_secs(),
     );
 
-    for (label, target) in [("wallet-sso", wallet_sso), ("device", device)] {
+    for (label, target) in [("identity", identity), ("device", device)] {
         terminal_ui::output_event(SystemEvent::AllowanceChecking {
             target: label.to_string(),
         });

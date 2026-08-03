@@ -1,8 +1,11 @@
-//! Product account derivation shared by all hosts.
+//! RFC-0022 account and personhood derivation shared by all hosts.
 //!
 //! Product subtrees use hard HDKD at `//product//{product_id}`. Individual
 //! accounts use one soft junction carrying the RFC-0022 32-byte derivation
 //! index, so a paired host can derive children from the subtree public key.
+//! Reserved built-ins additionally pin the `uid.dot` identity account and the
+//! `peopl.dot` full/lite ring-VRF keyed-hash paths so activation, pairing,
+//! registration, proof, allowance, and CLI code cannot drift.
 //! Host-spec C.5-C.7 define the product-account derivation, SS58 address, and
 //! `ProductAccountId` shape:
 //! <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L66-L128>
@@ -15,6 +18,11 @@ use thiserror::Error;
 
 const JUNCTION_ID_LEN: usize = 32;
 const PRODUCT_JUNCTION: &str = "product";
+/// Reserved RFC-0022 product id for the public light-person identity account.
+pub const IDENTITY_PRODUCT_ID: &str = "uid.dot";
+/// Reserved RFC-0022 ring-VRF domain for full and light personhood.
+pub const PERSONHOOD_PRODUCT_ID: &str = "peopl.dot";
+const RING_VRF_ROOT_KEY: &[u8] = b"ring-vrf";
 
 /// Substrate sr25519 signing-context string, shared by every sr25519 signature
 /// the core produces (statement store, product raw signing).
@@ -76,6 +84,45 @@ pub fn derivation_index_bytes(index: &truapi::v01::DerivationIndex) -> [u8; 32] 
         truapi::v01::DerivationIndex::Left(index) => index_bytes(*index),
         truapi::v01::DerivationIndex::Right(bytes) => *bytes,
     }
+}
+/// Derive the RFC-0022 public light-person identity account:
+/// `//product//uid.dot/index_bytes(0)`.
+pub fn derive_identity_keypair(entropy: &[u8]) -> Result<Keypair, ProductAccountError> {
+    let root = derive_root_keypair_from_entropy(entropy)?;
+    let subtree = derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, IDENTITY_PRODUCT_ID])?;
+    Ok(subtree.derived_key_simple(ChainCode(index_bytes(0)), []).0)
+}
+
+/// Derive the RFC-0022 full-person ring-VRF entropy at
+/// `hash(root_entropy, "ring-vrf")//peopl.dot//index_bytes(0)`.
+pub fn derive_full_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
+    derive_person_ring_vrf_entropy(root_entropy, 0)
+}
+
+/// Derive the RFC-0022 light-person ring-VRF entropy at
+/// `hash(root_entropy, "ring-vrf")//peopl.dot//index_bytes(1)`.
+pub fn derive_lite_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
+    derive_person_ring_vrf_entropy(root_entropy, 1)
+}
+
+fn derive_person_ring_vrf_entropy(root_entropy: &[u8], index: u32) -> [u8; 32] {
+    let root = blake2b256_keyed(root_entropy, RING_VRF_ROOT_KEY);
+    let domain = blake2b256_keyed(
+        &root,
+        &create_chain_code(PERSONHOOD_PRODUCT_ID)
+            .expect("the reserved personhood product id is a valid junction"),
+    );
+    blake2b256_keyed(&domain, &index_bytes(index))
+}
+
+fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
+    blake2b_simd::Params::new()
+        .hash_length(32)
+        .key(key)
+        .hash(message)
+        .as_bytes()
+        .try_into()
+        .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed")
 }
 
 /// Derive the product-subtree keypair at `//product//{product_id}`.
@@ -283,6 +330,14 @@ mod tests {
     }
 
     #[test]
+    fn index_bytes_matches_ios_vector() {
+        assert_eq!(
+            hex::encode(index_bytes(0)),
+            "0000000012e86013736c5498f050b03cdc16957dff0e422fb92ca77ec3ab168f"
+        );
+    }
+
+    #[test]
     fn derivation_index_bytes_maps_both_selector_forms() {
         use truapi::v01::DerivationIndex;
 
@@ -293,6 +348,48 @@ mod tests {
         assert_eq!(
             derivation_index_bytes(&DerivationIndex::Right([0xEE; 32])),
             [0xEE; 32]
+        );
+    }
+
+    #[test]
+    fn person_ring_vrf_entropy_matches_ios_vectors() {
+        let root_entropy: Vec<u8> = (1..=32).collect();
+        assert_eq!(
+            hex::encode(blake2b256_keyed(&root_entropy, RING_VRF_ROOT_KEY)),
+            "372b08255c7798fe3193756296005adc4c44adb9f3986fb718aa98a48b4bf725"
+        );
+        assert_eq!(
+            hex::encode(derive_full_person_ring_vrf_entropy(&root_entropy)),
+            "c47086f94a7f4c05b7afd9f2339d3fea168f3823b5424ba1f7b31043d8ef60af"
+        );
+        assert_eq!(
+            hex::encode(derive_lite_person_ring_vrf_entropy(&root_entropy)),
+            "8d7f5e1510a7e8d813887e100f5a260ec9de60e68695477b93360ee7e3d16a9f"
+        );
+    }
+
+    #[test]
+    fn identity_is_uid_dot_default_product_account_and_signs() {
+        let entropy = [0xAB; 16];
+        let identity = derive_identity_keypair(&entropy).unwrap();
+        let root = derive_root_keypair_from_entropy(&entropy).unwrap();
+        let uid_subtree =
+            derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, IDENTITY_PRODUCT_ID]).unwrap();
+        let expected = uid_subtree
+            .derived_key_simple(ChainCode(index_bytes(0)), [])
+            .0;
+        assert_eq!(identity.public, expected.public);
+
+        let message = b"RFC-0022 identity signing vector";
+        let signature =
+            identity
+                .secret
+                .sign_simple(SR25519_SIGNING_CONTEXT, message, &identity.public);
+        assert!(
+            identity
+                .public
+                .verify_simple(SR25519_SIGNING_CONTEXT, message, &signature)
+                .is_ok()
         );
     }
 

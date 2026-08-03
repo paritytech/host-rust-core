@@ -37,8 +37,8 @@ use crate::host_logic::extrinsic::{
     Sr25519Signer, build_signed_extrinsic_v4, build_signed_extrinsic_v4_with_signature,
 };
 use crate::host_logic::product_account::{
-    ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_product_keypair,
-    derive_product_subtree_keypair, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+    ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
+    derive_product_keypair, derive_product_subtree_keypair, derive_root_keypair_from_entropy,
 };
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
@@ -162,7 +162,7 @@ impl SigningHost {
 
     fn identity_keypair(&self) -> Result<schnorrkel::Keypair, AuthorityError> {
         let entropy = self.root_entropy()?;
-        derive_sr25519_hard_path(&entropy, &["wallet", "sso"]).map_err(product_authority_error)
+        derive_identity_keypair(&entropy).map_err(product_authority_error)
     }
 
     fn person_entropy(
@@ -744,7 +744,7 @@ mod tests {
     };
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
-        derive_product_keypair, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+        derive_identity_keypair, derive_product_keypair, derive_root_keypair_from_entropy,
         index_bytes,
     };
     use crate::host_logic::transaction::{
@@ -999,14 +999,14 @@ mod tests {
     }
 
     #[test]
-    fn local_activation_exposes_the_wallet_sso_identity_account() {
+    fn local_activation_exposes_the_uid_dot_identity_account() {
         let (_services, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
 
         let session = authority.current_session().expect("active session");
-        let identity = derive_sr25519_hard_path(&ENTROPY, &["wallet", "sso"])
-            .expect("wallet identity derivation")
+        let identity = derive_identity_keypair(&ENTROPY)
+            .expect("uid.dot identity derivation")
             .public
             .to_bytes();
         assert_eq!(session.identity_account_id, Some(identity));
@@ -1171,13 +1171,13 @@ mod tests {
     }
 
     #[test]
-    fn sign_raw_legacy_accepts_only_the_wallet_identity_key() {
+    fn sign_raw_legacy_accepts_only_the_uid_dot_identity_key() {
         let (_services, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
         let cx = CallContext::default();
-        let identity = derive_sr25519_hard_path(&ENTROPY, &["wallet", "sso"]).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY).unwrap();
         let request = |account| SignRawAuthorityRequest::LegacyAccount {
             account,
             request: v01::HostSignRawWithLegacyAccountRequest {
