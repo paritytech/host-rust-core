@@ -13,6 +13,10 @@ pub(crate) mod auth_state;
 mod authority;
 /// In-core Bulletin preimage submission over the shared Subxt client.
 pub(crate) mod bulletin_rpc;
+/// Chain-facing coinage: pallet calls, signing, submission, observation.
+/// Coinage needs key material, so it is a signing-host concern only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coinage;
 mod identity;
 mod pairing_host;
 /// Role-neutral runtime services shared by product-facing runtimes.

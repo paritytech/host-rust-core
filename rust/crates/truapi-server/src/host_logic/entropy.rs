@@ -52,7 +52,7 @@ pub fn derive_product_entropy_from_source(
     Ok(blake2b256_keyed(&per_product_entropy, key))
 }
 
-fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
+pub(crate) fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
     blake2b_simd::Params::new()
         .hash_length(32)
         .key(key)
