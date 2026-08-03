@@ -293,7 +293,51 @@ recycler entries: //coinage//<purse>//<page>//<index>         bandersnatch,
 - This is a clean break from the shipped `//pps//…` layout. Existing testnet
   coins become unreachable, which is accepted.
 
-## 6. Non-document follow-ups
+## 6. Two pallet constants are not discoverable
+
+Verified against `paseo-people-next` by
+`rust/crates/truapi-server/examples/coinage_chain_agreement.rs`. Seven of the
+nine values the layer needs come back from metadata and match; **two do not
+appear at all**:
+
+| Constant | Why absent | Consequence |
+|---|---|---|
+| `MaximumAge` | Declared in the pallet's `Config` **without** `#[pallet::constant]` | Drives `recycle_at_age = MaximumAge − 2`. A runtime that lowers it goes unnoticed, and the layer would then recycle later than the chain allows — coins age out unusable |
+| `RecyclerExpirationTime` | Marked `#[pallet::constant]` in the pallet source but absent from the deployed runtime's metadata, so the deployed runtime predates that attribute | Drives the rescue margin. A runtime that shortens it without our noticing makes the ring-expiration sweep fire too late |
+
+Both must be carried as per-network configuration. The uncomfortable part is
+that **these are exactly the two values that guard the two fund-loss paths** —
+coins aging out, and entries expiring in a ring. Everything else the layer can
+verify against the chain at connection time; these two it must be told.
+
+Two asks worth raising with the pallet authors:
+
+1. Add `#[pallet::constant]` to `MaximumAge`.
+2. Confirm whether the `RecyclerExpirationTime` attribute is newer than the
+   deployed runtime, and if so when it lands.
+
+Until then the layer should treat a mismatch between configured and observed
+values as a hard failure wherever it *can* observe, and the RFC should state
+that these two are configuration rather than implying every constant is
+discoverable.
+
+### Confirmed against the live runtime
+
+Worth recording, since it validates several assumptions the implementation was
+built on:
+
+- Coinage is pallet index **68**; `split` 0, `transfer` 1,
+  `load_recycler_with_coin` 2, `unload_recycler_into_coins` 13 — all resolvable
+  by name.
+- All six `AsCoinageInfo` variants exist at indices **0–5** in declaration
+  order. `InfallibleUnpaidSigned` is 5, which matches the byte layout the CLI
+  host already submits successfully, independently confirming the ordering the
+  encoder assumes.
+- `MaxConsolidation` is **64**, confirming Appendix A.10's 8 is wrong.
+- `MaxFreeUnloadTokensPerTimePeriod` is **1000**, confirming A.5's rationale is
+  wrong.
+
+## 7. Non-document follow-ups
 
 These are not RFC content but were found alongside it and should not be lost.
 

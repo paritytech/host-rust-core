@@ -1,9 +1,14 @@
 //! Facts about the coinage pallet the layer is talking to.
 //!
-//! These are read from chain metadata, not chosen by the layer. They are kept
+//! These are facts about the runtime, not choices of the layer. They are kept
 //! apart from [`super::params::CoinageParameters`] because the distinction
 //! matters: a policy parameter can be tuned, whereas exceeding one of these
 //! makes an extrinsic invalid. Anything the layer builds has to fit inside them.
+//!
+//! Most are read from metadata. Two are not exposed there and must be carried
+//! as per-network configuration — see the field docs for `maximum_age` and
+//! `recycler_expiration_time`. `examples/coinage_chain_agreement.rs` checks the
+//! rest against a live node.
 
 use core::time::Duration;
 
@@ -19,6 +24,13 @@ pub struct CoinageChainConstants {
     pub maximum_exponent: i8,
     /// Age at which a coin can no longer be transferred or split
     /// (`MaximumAge`). Past this it can only be recycled or offboarded.
+    ///
+    /// **Not discoverable.** The pallet declares this without
+    /// `#[pallet::constant]`, so it is absent from metadata and has to be
+    /// carried as per-network configuration. A runtime that lowers it will not
+    /// be noticed, and the layer would then recycle later than the chain
+    /// allows — letting coins age out unusable. Confirmed absent on
+    /// `paseo-people-next` by `examples/coinage_chain_agreement.rs`.
     pub maximum_age: CoinAge,
     /// Cap on output accounts of a single split or unload-into-coins extrinsic
     /// (`MaxSplitOutputs`).
@@ -28,6 +40,13 @@ pub struct CoinageChainConstants {
     pub max_consolidation: u32,
     /// How long after a ring becomes immutable the chain destroys the backing
     /// value of entries still in it (`RecyclerExpirationTime`).
+    ///
+    /// **Not discoverable on the deployed runtime.** Absent from
+    /// `paseo-people-next`'s metadata even though the pallet source marks it
+    /// `#[pallet::constant]`, so the deployed runtime predates that attribute.
+    /// Carried as configuration until it appears. This one drives the rescue
+    /// margin, so a runtime that shortens it without us noticing would make the
+    /// ring-expiration sweep fire too late.
     pub recycler_expiration_time: Duration,
     /// Length of a free-unload-token period
     /// (`UnloadTokenTimePeriodPeopleLitePeople`).
@@ -92,9 +111,10 @@ impl CoinageChainConstants {
 
 /// The values configured by the `next-people-paseo` runtime.
 ///
-/// A reference point for tests and for the CLI host's default network. Real
-/// instances read these from metadata; hard-coding them anywhere but here would
-/// silently disagree with a runtime upgrade.
+/// A reference point for tests and for the CLI host's default network. The
+/// metadata-exposed values are verified against the live runtime by
+/// `examples/coinage_chain_agreement.rs`; the two that metadata does not expose
+/// have no such check and are the reason this function exists at all.
 pub fn next_people_paseo() -> CoinageChainConstants {
     CoinageChainConstants {
         minimum_exponent: 0,
