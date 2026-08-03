@@ -7,13 +7,32 @@
 use truapi::v01;
 use truapi_platform::UserConfirmationReview;
 
+/// Account selector within a product subtree (RFC 0022): plain index or raw
+/// 32-byte derivation index.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum DerivationIndex {
+    /// Plain account index — the primary, enumerable form.
+    Index(u32),
+    /// Raw 32-byte derivation index (widened to `Vec<u8>` for FFI).
+    Raw(Vec<u8>),
+}
+
+impl From<v01::DerivationIndex> for DerivationIndex {
+    fn from(index: v01::DerivationIndex) -> Self {
+        match index {
+            v01::DerivationIndex::Left(index) => Self::Index(index),
+            v01::DerivationIndex::Right(raw) => Self::Raw(raw.to_vec()),
+        }
+    }
+}
+
 /// Product account identifier: dotNS domain plus derivation index.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ProductAccountId {
     /// A dotNS domain name identifier (e.g. `"my-product.dot"`).
     pub dot_ns_identifier: String,
-    /// Key derivation index for generating product-specific accounts.
-    pub derivation_index: u32,
+    /// Account selector within the product subtree.
+    pub derivation_index: DerivationIndex,
 }
 
 impl From<v01::ProductAccountId> for ProductAccountId {
@@ -24,7 +43,7 @@ impl From<v01::ProductAccountId> for ProductAccountId {
         } = account;
         Self {
             dot_ns_identifier,
-            derivation_index,
+            derivation_index: derivation_index.into(),
         }
     }
 }
@@ -337,14 +356,18 @@ impl From<v01::RingLocation> for RingLocation {
 pub struct ProductProofContext {
     /// dotNS product identifier (e.g. `"my-product.dot"`) scoping the context.
     pub product_id: String,
-    /// Arbitrary-byte suffix distinguishing contexts within the product.
-    pub suffix: Vec<u8>,
+    /// Selector distinguishing contexts within the product; expands to the
+    /// same 32-byte derivation index as [`ProductAccountId::derivation_index`].
+    pub suffix: DerivationIndex,
 }
 
 impl From<v01::ProductProofContext> for ProductProofContext {
     fn from(context: v01::ProductProofContext) -> Self {
         let v01::ProductProofContext { product_id, suffix } = context;
-        Self { product_id, suffix }
+        Self {
+            product_id,
+            suffix: suffix.into(),
+        }
     }
 }
 
@@ -393,6 +416,67 @@ impl From<truapi_platform::CreateProofReview> for CreateProofReview {
     }
 }
 
+/// One `append_message` call replayed against the signing transcript.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct VrfTranscriptItem {
+    /// Merlin `append_message` label.
+    pub label: Vec<u8>,
+    /// Merlin `append_message` value.
+    pub value: Vec<u8>,
+}
+
+impl From<v01::VrfTranscriptItem> for VrfTranscriptItem {
+    fn from(item: v01::VrfTranscriptItem) -> Self {
+        let v01::VrfTranscriptItem { label, value } = item;
+        Self { label, value }
+    }
+}
+
+/// Request to produce an sr25519 VRF signature from a product account over a
+/// caller-supplied Merlin transcript.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SignVrfRequest {
+    /// Account whose key signs the VRF.
+    pub account: ProductAccountId,
+    /// Root domain-separation label: `Transcript::new(transcript_label)`.
+    pub transcript_label: Vec<u8>,
+    /// Transcript items replayed in order as `append_message(label, value)`.
+    pub items: Vec<VrfTranscriptItem>,
+}
+
+impl From<v01::HostAccountSignVrfRequest> for SignVrfRequest {
+    fn from(request: v01::HostAccountSignVrfRequest) -> Self {
+        let v01::HostAccountSignVrfRequest {
+            account,
+            transcript_label,
+            items,
+        } = request;
+        Self {
+            account: account.into(),
+            transcript_label,
+            items: items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// Review for RFC-0023 VRF transcript signing.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SignVrfReview {
+    /// Product making the request.
+    pub calling_product_id: String,
+    /// Product account and exact ordered transcript.
+    pub request: SignVrfRequest,
+}
+
+impl From<truapi_platform::SignVrfReview> for SignVrfReview {
+    fn from(review: truapi_platform::SignVrfReview) -> Self {
+        Self {
+            calling_product_id: review.calling_product_id,
+            request: review.request.into(),
+        }
+    }
+}
+
 /// A resource the host can pre-allocate on behalf of the product (RFC 0010).
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum AllocatableResource {
@@ -402,7 +486,7 @@ pub enum AllocatableResource {
     BulletinAllowance,
     /// Pre-warmed PGAS balance for the smart-contract account at the given
     /// derivation index.
-    SmartContractAllowance(u32),
+    SmartContractAllowance(DerivationIndex),
     /// Permission to sign on the product's behalf without per-call prompts.
     AutoSigning,
 }
@@ -413,7 +497,7 @@ impl From<v01::AllocatableResource> for AllocatableResource {
             v01::AllocatableResource::StatementStoreAllowance => Self::StatementStoreAllowance,
             v01::AllocatableResource::BulletinAllowance => Self::BulletinAllowance,
             v01::AllocatableResource::SmartContractAllowance(index) => {
-                Self::SmartContractAllowance(index)
+                Self::SmartContractAllowance(index.into())
             }
             v01::AllocatableResource::AutoSigning => Self::AutoSigning,
         }
@@ -509,6 +593,8 @@ pub enum NativeUserConfirmationReview {
     PreimageSubmit(PreimageSubmitReview),
     /// Allow a product to access another product account.
     AccountAccess(AccountAccessReview),
+    /// Sign an RFC-0023 VRF transcript with a product account.
+    SignVrf(SignVrfReview),
 }
 
 impl From<UserConfirmationReview> for NativeUserConfirmationReview {
@@ -532,6 +618,7 @@ impl From<UserConfirmationReview> for NativeUserConfirmationReview {
             }
             UserConfirmationReview::PreimageSubmit(review) => Self::PreimageSubmit(review.into()),
             UserConfirmationReview::AccountAccess(review) => Self::AccountAccess(review.into()),
+            UserConfirmationReview::SignVrf(review) => Self::SignVrf(review.into()),
         }
     }
 }
@@ -563,7 +650,7 @@ mod tests {
     fn product_account() -> v01::ProductAccountId {
         v01::ProductAccountId {
             dot_ns_identifier: "app.dot".to_string(),
-            derivation_index: 7,
+            derivation_index: v01::DerivationIndex::Left(7),
         }
     }
 
@@ -584,7 +671,7 @@ mod tests {
             panic!("expected product sign-payload review");
         };
         assert_eq!(account.dot_ns_identifier, "app.dot");
-        assert_eq!(account.derivation_index, 7);
+        assert_eq!(account.derivation_index, DerivationIndex::Index(7));
         assert_eq!(payload, SignPayloadData::from(sign_payload_data()));
     }
 
@@ -662,7 +749,7 @@ mod tests {
                     calling_product_id: "app.dot".to_string(),
                     context: v01::ProductProofContext {
                         product_id: "app.dot".to_string(),
-                        suffix: vec![1],
+                        suffix: v01::DerivationIndex::Left(1),
                     },
                     ring_location: v01::RingLocation {
                         chain_id: [1; 32],
@@ -679,7 +766,7 @@ mod tests {
                     calling_product_id: "app.dot".to_string(),
                     context: v01::ProductProofContext {
                         product_id: "app.dot".to_string(),
-                        suffix: vec![],
+                        suffix: v01::DerivationIndex::Right([2; 32]),
                     },
                     ring_location: v01::RingLocation {
                         chain_id: [1; 32],
@@ -703,7 +790,9 @@ mod tests {
                         calling_product_id: "app.dot".to_string(),
                         resources: vec![
                             v01::AllocatableResource::StatementStoreAllowance,
-                            v01::AllocatableResource::SmartContractAllowance(4),
+                            v01::AllocatableResource::SmartContractAllowance(
+                                v01::DerivationIndex::Left(4),
+                            ),
                         ],
                     },
                 ),
@@ -728,6 +817,20 @@ mod tests {
                     target_product_id: "b.dot".to_string(),
                 }),
                 |review| matches!(review, NativeUserConfirmationReview::AccountAccess(_)),
+            ),
+            (
+                UserConfirmationReview::SignVrf(truapi_platform::SignVrfReview {
+                    calling_product_id: "app.dot".to_string(),
+                    request: v01::HostAccountSignVrfRequest {
+                        account: product_account(),
+                        transcript_label: b"vrf-label".to_vec(),
+                        items: vec![v01::VrfTranscriptItem {
+                            label: b"item".to_vec(),
+                            value: vec![1, 2, 3],
+                        }],
+                    },
+                }),
+                |review| matches!(review, NativeUserConfirmationReview::SignVrf(_)),
             ),
         ];
 

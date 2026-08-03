@@ -206,6 +206,28 @@ public enum LocalhostBridgeBootstrap {
     }
 }
 
+/// Session + WS-bridge controls of the Rust core, abstracted so hosts and
+/// runtimes can depend on the interface (and tests can mock it) without
+/// booting the Rust cdylib.
+public protocol TrUAPIHostCoreProtocol: AnyObject {
+    func startWsBridge(bindPort: UInt16) throws -> WsBridgeEndpoint
+    func stopWsBridge()
+    func disconnect()
+    func cancelLogin()
+    func activateLocalSession(secret: Data, liteUsername: String?) throws
+    func permissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest
+    ) throws -> NativePermissionAuthorizationStatus
+    func setPermissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest,
+        status: NativePermissionAuthorizationStatus
+    ) throws
+    func notifyThemeChanged(theme: HostTheme)
+    func notifyPreimageChanged(key: Data, value: Data?)
+    func notifyChainResponse(connectionId: UInt32, json: String)
+    func notifyChainClosed(connectionId: UInt32)
+}
+
 /// Owning wrapper around the Rust-backed `NativeTrUApiCore`. Holds the
 /// callbacks alive for the lifetime of the core and exposes session +
 /// WS-bridge controls.
@@ -214,7 +236,7 @@ public enum LocalhostBridgeBootstrap {
 /// and pass the resulting `ws://127.0.0.1:<port>/?t=<token>` URL to the
 /// product via `LocalhostBridgeBootstrap.script(...)`. The product wires
 /// that URL into `@parity/truapi`'s `createWebSocketProvider`.
-public final class TrUAPIHostCore {
+public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     let inner: NativeTrUApiCore
 
     // Rust holds the callback handle; this retainer pins the Swift side for
@@ -270,14 +292,6 @@ public final class TrUAPIHostCore {
         request: NativePermissionAuthorizationRequest
     ) throws -> NativePermissionAuthorizationStatus {
         try inner.permissionAuthorizationStatus(request: request)
-    }
-
-    /// Read stored permission authorization statuses without prompting.
-    /// Results are returned in the same order as `requests`.
-    public func permissionAuthorizationStatuses(
-        requests: [NativePermissionAuthorizationRequest]
-    ) throws -> [NativePermissionAuthorizationStatus] {
-        try inner.permissionAuthorizationStatuses(requests: requests)
     }
 
     /// Update a stored permission authorization status. `.notDetermined`

@@ -753,22 +753,6 @@ impl NativeTrUApiCore {
         Ok(status.into())
     }
 
-    /// Read stored permission authorization statuses without prompting.
-    /// Results are returned in the same order as `requests`.
-    ///
-    /// Blocks the calling thread on the storage reads, so call it off the
-    /// host's main/UI thread.
-    pub fn permission_authorization_statuses(
-        &self,
-        requests: Vec<NativePermissionAuthorizationRequest>,
-    ) -> Result<Vec<NativePermissionAuthorizationStatus>, HostRejection> {
-        let admin = self.runtime.product_admin(self.product.clone());
-        let statuses = futures::executor::block_on(
-            admin.permission_authorization_statuses(requests.into_iter().map(Into::into).collect()),
-        )?;
-        Ok(statuses.into_iter().map(Into::into).collect())
-    }
-
     /// Update a stored permission authorization status. Passing
     /// `.notDetermined` clears the stored value so the next product request
     /// prompts again.

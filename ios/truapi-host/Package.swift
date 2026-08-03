@@ -1,23 +1,20 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 5.10
 //
-// TrUAPI iOS host package.
+// TrUAPI iOS host package: Rust core (xcframework binary target) +
+// uniffi-generated bindings + the hand-written host shell + the bundled
+// TS lockdown container.
 //
-// The `truapi_serverFFI` target wraps the UniFFI-generated C header + module
-// map so the generated Swift bindings can `import truapi_serverFFI`. The
-// `TrUAPIHost` target contains both the generated Swift bindings and the
-// thin host shell defined in `TrUAPIHost.swift`.
-//
-// Consumers must link a prebuilt `libtruapi_server` static or dynamic
-// library when integrating into their app target. This package does not
-// vendor the binary itself; see README.md for build instructions.
+// The xcframework, the generated bindings, and the container bundle are
+// gitignored build outputs — run scripts/rebuild.sh after checkout and after
+// changing the Rust core or container sources.
 
 import PackageDescription
 
 let package = Package(
     name: "TrUAPIHost",
-    platforms: [.iOS(.v16), .macOS(.v13)],
+    platforms: [.iOS(.v17)],
     products: [
-        .library(name: "TrUAPIHost", targets: ["TrUAPIHost"]),
+        .library(name: "TrUAPIHost", targets: ["TrUAPIHost"])
     ],
     targets: [
         .systemLibrary(
@@ -26,10 +23,20 @@ let package = Package(
             pkgConfig: nil,
             providers: []
         ),
+        .binaryTarget(
+            name: "truapi_serverFFI_binary",
+            path: "Binaries/truapi_server.xcframework"
+        ),
         .target(
             name: "TrUAPIHost",
-            dependencies: ["truapi_serverFFI"],
-            path: "Sources/TrUAPIHost"
+            dependencies: ["truapi_serverFFI", "truapi_serverFFI_binary"],
+            path: "Sources/TrUAPIHost",
+            resources: [.copy("Resources/truapi-container.js")]
+        ),
+        .testTarget(
+            name: "TrUAPIHostTests",
+            dependencies: ["TrUAPIHost"],
+            path: "Tests"
         ),
     ]
 )
