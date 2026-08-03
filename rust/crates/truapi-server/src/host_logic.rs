@@ -6,6 +6,7 @@
 
 pub mod attestation;
 pub mod bulletin;
+pub mod coinage;
 pub mod dotns;
 pub mod entropy;
 pub mod extrinsic;
