@@ -172,23 +172,25 @@ mod tests {
 
     use super::super::entry::{EntryOnChainState, RecyclerEntry};
     use super::super::params::CoinageParameters;
-    use super::super::types::{CoinAge, DenominationExponent, OperationHandle, RingIndex};
+    use super::super::types::{
+        CoinAge, DenominationExponent, OperationHandle, RevisionIndex, RingIndex, RingLocation,
+    };
     use super::*;
 
     const NOW: Timestamp = Timestamp(1_000_000);
 
-    fn exponent(value: u8) -> DenominationExponent {
+    fn exponent(value: i8) -> DenominationExponent {
         DenominationExponent::new(value).expect("exponent is in range")
     }
 
-    fn available_coin(index: u32, exponent_value: u8) -> Coin {
+    fn available_coin(index: u32, exponent_value: i8) -> Coin {
         let mut coin = Coin::pending(PurseId::MAIN, CoinIndex(index), exponent(exponent_value));
         coin.observe_populated(CoinAge(0))
             .expect("observe is valid");
         coin
     }
 
-    fn entry_with(index: u32, exponent_value: u8, on_chain: EntryOnChainState) -> RecyclerEntry {
+    fn entry_with(index: u32, exponent_value: i8, on_chain: EntryOnChainState) -> RecyclerEntry {
         let mut entry = RecyclerEntry::allocated(
             PurseId::MAIN,
             EntryIndex(index),
@@ -196,7 +198,7 @@ mod tests {
             Timestamp(0),
             Duration::ZERO,
         );
-        entry.ring = Some(RingIndex(1));
+        entry.ring = Some(RingLocation::new(RingIndex(1), RevisionIndex(0)));
         entry.on_chain = on_chain;
         entry
     }
@@ -319,7 +321,11 @@ mod tests {
             NOW,
             Duration::from_secs(60),
         );
-        entry.observe_ring(RingIndex(1), 32, &params);
+        entry.observe_ring(
+            RingLocation::new(RingIndex(1), RevisionIndex(0)),
+            32,
+            &params,
+        );
 
         let balance = compute_balance(&[], core::slice::from_ref(&entry), NOW);
 

@@ -165,7 +165,7 @@ impl Coin {
 mod tests {
     use super::*;
 
-    fn exponent(value: u8) -> DenominationExponent {
+    fn exponent(value: i8) -> DenominationExponent {
         DenominationExponent::new(value).expect("exponent is in range")
     }
 

@@ -1,12 +1,14 @@
 //! Tunable parameters governing selection, recycling, and recovery.
 //!
-//! Every value here is a policy choice of the layer, not a chain constant.
-//! Where a recommendation is expressed relative to a chain constant, the
-//! constant is a function argument rather than a stored field.
+//! Every value here is a policy choice of the layer. Chain-enforced limits live
+//! in [`super::chain_constants::CoinageChainConstants`] instead: exceeding one of
+//! those makes an extrinsic invalid, which is a different kind of fact from a
+//! tunable. Where a recommendation is expressed relative to a chain constant,
+//! the constant arrives as an argument rather than a stored field.
 
 use core::time::Duration;
 
-use super::types::{Amount, CoinAge};
+use super::types::{Amount, CoinAge, DenominationExponent};
 
 /// Policy parameters for one layer instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +29,8 @@ pub struct CoinageParameters {
     pub rescue_margin_percent: u32,
     /// Lower bound on the rescue margin, whatever the fraction works out to.
     pub rescue_margin_minimum: Duration,
-    /// Number of free-unload-token counters to probe per period.
+    /// Number of free-unload-token counters to probe per period. Must not exceed
+    /// the runtime's `MaxFreeUnloadTokensPerTimePeriod`.
     pub free_token_counter_search_range: u32,
     /// How far past a period boundary a prior period's tokens stay eligible.
     pub period_lookback_grace: Duration,
@@ -35,11 +38,6 @@ pub struct CoinageParameters {
     pub recovery_batch_size: u32,
     /// Consecutive empty batches after which a recovery scan stops.
     pub recovery_gap_limit: u32,
-    /// Chain-enforced cap on outputs of a single split or unload-into-coins
-    /// extrinsic.
-    pub max_split_outputs: u32,
-    /// Chain-enforced cap on entries consolidated into one unload extrinsic.
-    pub max_recycler_entries_per_group: u32,
     /// How long external offload waits before re-planning when the deficit
     /// could be covered by coins currently in transient states.
     pub external_offload_retry_interval: Duration,
@@ -85,8 +83,6 @@ impl Default for CoinageParameters {
             period_lookback_grace: Duration::from_secs(60 * 60),
             recovery_batch_size: 500,
             recovery_gap_limit: 4,
-            max_split_outputs: 32,
-            max_recycler_entries_per_group: 8,
             external_offload_retry_interval: Duration::from_secs(30),
         }
     }
@@ -94,18 +90,24 @@ impl Default for CoinageParameters {
 
 /// Denomination breakdown of `amount` into powers of two, largest first.
 ///
-/// Every coinage amount is representable, since the set of denominations is
-/// exactly the powers of two: the breakdown is the binary expansion of the cent
-/// count. Returns `None` if any set bit exceeds the layer's supported
-/// denomination ceiling.
-pub fn canonical_breakdown(amount: Amount) -> Option<Vec<super::types::DenominationExponent>> {
+/// The set of denominations is exactly the powers of two, so the breakdown is
+/// the binary expansion of the cent count. Bounded by the runtime's largest
+/// accepted denomination: an amount needing a bigger coin than the chain mints
+/// has no breakdown, and returns `None` rather than a set of unusable outputs.
+pub fn canonical_breakdown(
+    amount: Amount,
+    largest: DenominationExponent,
+) -> Option<Vec<DenominationExponent>> {
     let mut exponents = Vec::new();
     let cents = amount.cents();
 
     for bit in (0..u64::BITS).rev() {
         if cents & (1u64 << bit) != 0 {
-            let exponent = u8::try_from(bit).ok()?;
-            exponents.push(super::types::DenominationExponent::new(exponent)?);
+            let exponent = i8::try_from(bit).ok()?;
+            if exponent > largest.get() {
+                return None;
+            }
+            exponents.push(DenominationExponent::new(exponent)?);
         }
     }
 
@@ -114,7 +116,8 @@ pub fn canonical_breakdown(amount: Amount) -> Option<Vec<super::types::Denominat
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::{DenominationExponent, MAX_DENOMINATION_EXPONENT};
+    use super::super::chain_constants::next_people_paseo;
+    use super::super::types::MAX_SUPPORTED_DENOMINATION_EXPONENT;
     use super::*;
 
     #[test]
@@ -157,10 +160,17 @@ mod tests {
         assert!(params.clears_anonymity_floor(11));
     }
 
+    fn largest() -> DenominationExponent {
+        next_people_paseo()
+            .largest_denomination()
+            .expect("the reference runtime is supported")
+    }
+
     #[test]
     fn breakdown_is_the_binary_expansion_largest_first() {
-        let exponents = canonical_breakdown(Amount::from_cents(13)).expect("13 is representable");
-        let raw: Vec<u8> = exponents.iter().map(|e| e.get()).collect();
+        let exponents =
+            canonical_breakdown(Amount::from_cents(13), largest()).expect("13 is representable");
+        let raw: Vec<i8> = exponents.iter().map(|e| e.get()).collect();
 
         // 13 = 8 + 4 + 1
         assert_eq!(raw, vec![3, 2, 0]);
@@ -169,23 +179,26 @@ mod tests {
     #[test]
     fn breakdown_of_zero_is_empty() {
         assert_eq!(
-            canonical_breakdown(Amount::ZERO),
+            canonical_breakdown(Amount::ZERO, largest()),
             Some(Vec::<DenominationExponent>::new())
         );
     }
 
     #[test]
     fn breakdown_sums_back_to_the_amount() {
-        let amount = Amount::from_cents(1_234_567);
-        let exponents = canonical_breakdown(amount).expect("representable");
+        let amount = Amount::from_cents(16_000);
+        let exponents = canonical_breakdown(amount, largest()).expect("representable");
         let total: Amount = exponents.iter().map(|e| e.value()).sum();
 
         assert_eq!(total, amount);
     }
 
     #[test]
-    fn breakdown_rejects_amounts_needing_an_oversized_denomination() {
-        let too_large = Amount::from_cents(1u64 << (MAX_DENOMINATION_EXPONENT + 1));
-        assert_eq!(canonical_breakdown(too_large), None);
+    fn breakdown_rejects_amounts_needing_a_denomination_the_chain_will_not_mint() {
+        // The reference runtime mints nothing above 2^14 cents, so an amount
+        // that needs a 2^15 coin has no valid breakdown.
+        let too_large = Amount::from_cents(1u64 << 15);
+        assert_eq!(canonical_breakdown(too_large, largest()), None);
+        assert!(MAX_SUPPORTED_DENOMINATION_EXPONENT > largest().get());
     }
 }

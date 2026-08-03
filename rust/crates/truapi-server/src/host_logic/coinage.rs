@@ -10,6 +10,7 @@
 //! persistence, and no time lookups — wall-clock instants are supplied by the
 //! caller. The chain-facing orchestration lives in `runtime::coinage`.
 
+pub mod chain_constants;
 pub mod coin;
 pub mod entry;
 pub mod error;

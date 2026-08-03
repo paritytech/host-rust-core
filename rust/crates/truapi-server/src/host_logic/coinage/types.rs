@@ -10,11 +10,14 @@ use core::time::Duration;
 
 use parity_scale_codec::{Decode, Encode};
 
-/// Largest denomination exponent the layer supports.
+/// Largest denomination exponent the layer's arithmetic supports.
 ///
 /// A coin of exponent `e` is worth `2^e` cents, so this bounds a single coin at
-/// `2^30` cents and keeps sums over a purse far inside `u64`.
-pub const MAX_DENOMINATION_EXPONENT: u8 = 30;
+/// `2^40` cents and leaves room for millions of them to sum inside `u64`. It is
+/// a ceiling on what the code can represent, deliberately far above any
+/// plausible runtime: the operative limit is the chain's `MaximumExponent`,
+/// carried in [`super::chain_constants::CoinageChainConstants`].
+pub const MAX_SUPPORTED_DENOMINATION_EXPONENT: i8 = 40;
 
 /// Identifier of a purse within the layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
@@ -90,7 +93,7 @@ impl fmt::Display for Amount {
 
 impl Sum for Amount {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        // Saturating: callers bound denominations by `MAX_DENOMINATION_EXPONENT`,
+        // Saturating: callers bound denominations by `MAX_SUPPORTED_DENOMINATION_EXPONENT`,
         // so a real purse cannot reach `u64::MAX`, and a saturated balance is
         // preferable to a panic in a display path.
         iter.fold(Self::ZERO, |acc, item| Self(acc.0.saturating_add(item.0)))
@@ -99,24 +102,33 @@ impl Sum for Amount {
 
 /// Denomination of a coin or recycler entry, as a power-of-two exponent over
 /// cents.
+///
+/// Signed, because the pallet's `CoinValue` is `i8` and a runtime could in
+/// principle configure a `MinimumExponent` below zero. This layer rejects
+/// negative exponents: [`Amount`] counts whole cents, so a sub-cent
+/// denomination has no representation here. Should a runtime ever ship one, that
+/// shows up as a loud construction failure rather than a silently truncated
+/// balance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
-pub struct DenominationExponent(u8);
+pub struct DenominationExponent(i8);
 
 impl DenominationExponent {
-    /// Construct a denomination, rejecting exponents above
-    /// [`MAX_DENOMINATION_EXPONENT`].
-    pub fn new(exponent: u8) -> Option<Self> {
-        (exponent <= MAX_DENOMINATION_EXPONENT).then_some(Self(exponent))
+    /// Construct a denomination, rejecting sub-cent exponents and anything above
+    /// [`MAX_SUPPORTED_DENOMINATION_EXPONENT`].
+    pub fn new(exponent: i8) -> Option<Self> {
+        (0..=MAX_SUPPORTED_DENOMINATION_EXPONENT)
+            .contains(&exponent)
+            .then_some(Self(exponent))
     }
 
-    /// The raw exponent.
-    pub const fn get(self) -> u8 {
+    /// The raw exponent, in the pallet's `CoinValue` representation.
+    pub const fn get(self) -> i8 {
         self.0
     }
 
     /// The denomination's value, `2^exponent` cents.
     pub const fn value(self) -> Amount {
-        Amount(1u64 << self.0)
+        Amount(1u64 << self.0 as u32)
     }
 }
 
@@ -137,6 +149,31 @@ pub struct EntryIndex(pub u32);
 /// Index of a recycler ring on chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
 pub struct RingIndex(pub u32);
+
+/// Revision of a recycler ring. A ring's membership is versioned, and a proof is
+/// only valid against the revision it was built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
+pub struct RevisionIndex(pub u32);
+
+/// Where a recycler entry sits on chain.
+///
+/// Both halves are needed to unload: the pallet's `unload_recycler_into_coins`
+/// takes the ring index and its revision, and a membership proof built against
+/// one revision does not verify against another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
+pub struct RingLocation {
+    /// The ring the entry joined.
+    pub index: RingIndex,
+    /// The membership revision the entry was observed at.
+    pub revision: RevisionIndex,
+}
+
+impl RingLocation {
+    /// A location from its raw parts.
+    pub const fn new(index: RingIndex, revision: RevisionIndex) -> Self {
+        Self { index, revision }
+    }
+}
 
 /// Number of transfers or splits a coin has undergone. The chain caps this;
 /// past the cap the coin is unusable.
@@ -246,17 +283,17 @@ mod tests {
         let two_cents = DenominationExponent::new(1).expect("1 is in range");
         assert_eq!(two_cents.value(), Amount::from_cents(2));
 
-        let largest =
-            DenominationExponent::new(MAX_DENOMINATION_EXPONENT).expect("ceiling is valid");
+        let largest = DenominationExponent::new(MAX_SUPPORTED_DENOMINATION_EXPONENT)
+            .expect("ceiling is valid");
         assert_eq!(
             largest.value(),
-            Amount::from_cents(1 << MAX_DENOMINATION_EXPONENT)
+            Amount::from_cents(1u64 << MAX_SUPPORTED_DENOMINATION_EXPONENT)
         );
     }
 
     #[test]
     fn denomination_rejects_exponents_above_the_ceiling() {
-        assert!(DenominationExponent::new(MAX_DENOMINATION_EXPONENT + 1).is_none());
+        assert!(DenominationExponent::new(MAX_SUPPORTED_DENOMINATION_EXPONENT + 1).is_none());
     }
 
     #[test]
@@ -283,10 +320,13 @@ mod tests {
 
     #[test]
     fn summing_a_purse_of_max_denomination_coins_does_not_overflow() {
-        let largest =
-            DenominationExponent::new(MAX_DENOMINATION_EXPONENT).expect("ceiling is valid");
+        let largest = DenominationExponent::new(MAX_SUPPORTED_DENOMINATION_EXPONENT)
+            .expect("ceiling is valid");
         let total: Amount = core::iter::repeat_n(largest.value(), 1_000).sum();
-        assert_eq!(total.cents(), 1_000 * (1u64 << MAX_DENOMINATION_EXPONENT));
+        assert_eq!(
+            total.cents(),
+            1_000 * (1u64 << MAX_SUPPORTED_DENOMINATION_EXPONENT)
+        );
     }
 
     #[test]

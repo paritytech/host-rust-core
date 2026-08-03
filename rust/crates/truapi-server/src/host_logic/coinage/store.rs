@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 
 use parity_scale_codec::{Decode, Encode};
 
+use super::chain_constants::CoinageChainConstants;
 use super::coin::Coin;
 use super::entry::{EntryLocalState, RecyclerEntry};
 use super::error::CoinageError;
@@ -39,7 +40,7 @@ use super::purse::{Purse, PurseBalance, PurseInfo, compute_balance};
 use super::selection::{SelectionPlan, SelectionRequest, select};
 use super::types::{
     CoinAge, CoinIndex, DenominationExponent, EntryIndex, ExtrinsicHash, OperationHandle,
-    OperationHandleAllocator, OperationKind, PurseId, RingIndex, Timestamp,
+    OperationHandleAllocator, OperationKind, PurseId, RingLocation, Timestamp,
 };
 
 use core::time::Duration;
@@ -310,7 +311,7 @@ impl CoinageStore {
         &mut self,
         purse: PurseId,
         index: EntryIndex,
-        ring: RingIndex,
+        ring: RingLocation,
         member_count: u32,
         params: &CoinageParameters,
     ) -> Result<(), CoinageError> {
@@ -346,7 +347,7 @@ impl CoinageStore {
         purse: PurseId,
         kind: OperationKind,
         request: &SelectionRequest,
-        params: &CoinageParameters,
+        constants: &CoinageChainConstants,
         now: Timestamp,
     ) -> Result<(OperationHandle, SelectionPlan), CoinageError> {
         if !self.purses.contains_key(&purse) {
@@ -355,7 +356,7 @@ impl CoinageStore {
 
         let coins = self.coins_in(purse);
         let entries = self.entries_in(purse);
-        let plan = select(request, &coins, &entries, params, now)?;
+        let plan = select(request, &coins, &entries, constants, now)?;
         let locks = plan.lock_set(purse);
 
         let handle = self.handles.allocate();
@@ -683,8 +684,15 @@ mod tests {
 
     const NOW: Timestamp = Timestamp(1_000_000);
 
-    fn exponent(value: u8) -> DenominationExponent {
+    fn exponent(value: i8) -> DenominationExponent {
         DenominationExponent::new(value).expect("exponent is in range")
+    }
+
+    fn ring(index: u32) -> RingLocation {
+        RingLocation::new(
+            super::super::types::RingIndex(index),
+            super::super::types::RevisionIndex(0),
+        )
     }
 
     fn store() -> CoinageStore {
@@ -692,7 +700,7 @@ mod tests {
     }
 
     /// Add a coin already confirmed on chain.
-    fn fund(store: &mut CoinageStore, purse: PurseId, exponent_value: u8) -> CoinIndex {
+    fn fund(store: &mut CoinageStore, purse: PurseId, exponent_value: i8) -> CoinIndex {
         let index = store
             .add_pending_coin(purse, exponent(exponent_value))
             .expect("purse exists");
@@ -719,7 +727,7 @@ mod tests {
             purse,
             OperationKind::Transfer,
             &request(cents),
-            &CoinageParameters::default(),
+            &super::super::chain_constants::next_people_paseo(),
             NOW,
         )
     }
@@ -1145,12 +1153,12 @@ mod tests {
         store.take_events();
 
         store
-            .observe_entry_ring(PurseId::MAIN, index, RingIndex(1), 32, &params)
+            .observe_entry_ring(PurseId::MAIN, index, ring(1), 32, &params)
             .expect("entry exists");
         let first = store.take_events();
 
         store
-            .observe_entry_ring(PurseId::MAIN, index, RingIndex(1), 33, &params)
+            .observe_entry_ring(PurseId::MAIN, index, ring(1), 33, &params)
             .expect("entry exists");
         let second = store.take_events();
 

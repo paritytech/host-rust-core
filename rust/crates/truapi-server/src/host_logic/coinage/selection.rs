@@ -15,13 +15,14 @@
 
 use std::collections::BTreeMap;
 
+use super::chain_constants::CoinageChainConstants;
 use super::coin::Coin;
 use super::entry::RecyclerEntry;
 use super::error::CoinageError;
 use super::operation::LockSet;
-use super::params::{CoinageParameters, canonical_breakdown};
+use super::params::canonical_breakdown;
 use super::types::{
-    Amount, CoinIndex, DenominationExponent, EntryIndex, PurseId, RingIndex, Timestamp,
+    Amount, CoinIndex, DenominationExponent, EntryIndex, PurseId, RingLocation, Timestamp,
 };
 
 /// What denominations the caller needs selection to produce.
@@ -88,8 +89,9 @@ pub struct SplitStep {
 /// does not need.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnloadGroup {
-    /// Ring the entries belong to.
-    pub ring: RingIndex,
+    /// Where the entries sit on chain. Index and revision both go into the
+    /// unload call.
+    pub ring: RingLocation,
     /// Denomination shared by every entry in the group.
     pub exponent: DenominationExponent,
     /// Entries consumed, in deterministic order.
@@ -176,14 +178,19 @@ impl SelectionPlan {
 /// `coins` and `entries` are the purse's records; non-selectable ones are
 /// filtered out here rather than by the caller, so the failure classification
 /// can tell "you have no funds" from "your funds are not ready yet".
+///
+/// Note the absence of [`super::params::CoinageParameters`]: selection is
+/// policy-free. The anonymity floor is applied when a ring is observed, so by
+/// the time an entry reaches selection its readiness already reflects it, and
+/// the only limits left to respect are the chain's.
 pub fn select(
     request: &SelectionRequest,
     coins: &[Coin],
     entries: &[RecyclerEntry],
-    params: &CoinageParameters,
+    constants: &CoinageChainConstants,
     now: Timestamp,
 ) -> Result<SelectionPlan, CoinageError> {
-    let targets = target_denominations(request)?;
+    let targets = target_denominations(request, constants)?;
 
     if request.amount.is_zero() {
         return Ok(SelectionPlan {
@@ -200,7 +207,7 @@ pub fn select(
     if let Some(plan) = try_exact_match(request, &targets, &available_coins) {
         return Ok(plan);
     }
-    if let Some(plan) = try_split(request, &targets, &available_coins, params) {
+    if let Some(plan) = try_split(request, &targets, &available_coins, constants) {
         return Ok(plan);
     }
     if let Some(plan) = try_unload(
@@ -208,7 +215,7 @@ pub fn select(
         &targets,
         &available_coins,
         &available_entries,
-        params,
+        constants,
     ) {
         return Ok(plan);
     }
@@ -225,14 +232,26 @@ pub fn select(
 /// The denominations a plan must produce, largest first.
 fn target_denominations(
     request: &SelectionRequest,
+    constants: &CoinageChainConstants,
 ) -> Result<Vec<DenominationExponent>, CoinageError> {
     match &request.outputs {
-        OutputRequirement::AnyDenominations => canonical_breakdown(request.amount)
-            .ok_or_else(|| CoinageError::Internal("amount exceeds supported denominations".into())),
+        OutputRequirement::AnyDenominations => {
+            canonical_breakdown(request.amount, largest_denomination(constants)?).ok_or(
+                CoinageError::UnsatisfiableOutputs {
+                    requested: request.amount,
+                    available: Amount::ZERO,
+                },
+            )
+        }
         OutputRequirement::Exact(outputs) => {
             let total: Amount = outputs.iter().map(|exponent| exponent.value()).sum();
             if total != request.amount {
                 return Err(CoinageError::OutputsDoNotSumToAmount);
+            }
+            if let Some(rejected) = outputs.iter().find(|output| !constants.accepts(**output)) {
+                return Err(CoinageError::Internal(format!(
+                    "requested denomination {rejected} is outside the runtime's range"
+                )));
             }
 
             let mut sorted = outputs.clone();
@@ -240,6 +259,18 @@ fn target_denominations(
             Ok(sorted)
         }
     }
+}
+
+/// The runtime's largest mintable denomination.
+fn largest_denomination(
+    constants: &CoinageChainConstants,
+) -> Result<DenominationExponent, CoinageError> {
+    constants.largest_denomination().ok_or_else(|| {
+        CoinageError::Internal(format!(
+            "runtime MaximumExponent {} is not a representable denomination",
+            constants.maximum_exponent
+        ))
+    })
 }
 
 /// Selectable coins in the layer's canonical order: largest denomination first,
@@ -283,7 +314,7 @@ fn ordered_entries(
 /// Ringless entries sort last; they are filtered out before this runs, so the
 /// fallback only guards against an inconsistent snapshot.
 fn ring_sort_key(entry: &RecyclerEntry) -> u32 {
-    entry.ring.map_or(u32::MAX, |ring| ring.0)
+    entry.ring.map_or(u32::MAX, |ring| ring.index.0)
 }
 
 /// Tier 1: the purse already holds coins of the right shape.
@@ -348,9 +379,9 @@ fn try_split(
     request: &SelectionRequest,
     targets: &[DenominationExponent],
     available: &[&Coin],
-    params: &CoinageParameters,
+    constants: &CoinageChainConstants,
 ) -> Option<SelectionPlan> {
-    if let Some(plan) = split_single(request.amount, targets, available, &[], params) {
+    if let Some(plan) = split_single(request.amount, targets, available, &[], constants) {
         return Some(plan);
     }
 
@@ -389,11 +420,13 @@ fn try_split(
     }
 
     let unmet_targets = match &request.outputs {
-        OutputRequirement::AnyDenominations => canonical_breakdown(remaining)?,
+        OutputRequirement::AnyDenominations => {
+            canonical_breakdown(remaining, constants.largest_denomination()?)?
+        }
         OutputRequirement::Exact(_) => unmet,
     };
 
-    let mut plan = split_single(remaining, &unmet_targets, available, &consumed, params)?;
+    let mut plan = split_single(remaining, &unmet_targets, available, &consumed, constants)?;
     plan.whole_coins.splice(0..0, whole);
     Some(plan)
 }
@@ -411,7 +444,7 @@ fn split_single(
     unmet_targets: &[DenominationExponent],
     available: &[&Coin],
     consumed: &[usize],
-    params: &CoinageParameters,
+    constants: &CoinageChainConstants,
 ) -> Option<SelectionPlan> {
     // `available` is largest-first, so searching from the back finds the
     // smallest coin that still covers the remainder.
@@ -422,10 +455,10 @@ fn split_single(
 
     let (_, coin) = candidate;
     let change = coin.value().checked_sub(remaining)?;
-    let change_outputs = canonical_breakdown(change)?;
+    let change_outputs = canonical_breakdown(change, constants.largest_denomination()?)?;
 
     let total_outputs = unmet_targets.len() + change_outputs.len();
-    if total_outputs > params.max_split_outputs as usize {
+    if total_outputs > constants.max_split_outputs as usize {
         return None;
     }
 
@@ -447,7 +480,7 @@ fn try_unload(
     targets: &[DenominationExponent],
     available_coins: &[&Coin],
     available_entries: &[&RecyclerEntry],
-    params: &CoinageParameters,
+    constants: &CoinageChainConstants,
 ) -> Option<SelectionPlan> {
     if available_entries.is_empty() {
         return None;
@@ -481,9 +514,9 @@ fn try_unload(
     }
 
     let chosen = choose_entries(remaining, available_entries)?;
-    let groups = group_entries(&chosen, params);
+    let groups = group_entries(&chosen, constants);
 
-    let unloads = assign_outputs(groups, &request.outputs, remaining, unmet, params)?;
+    let unloads = assign_outputs(groups, &request.outputs, remaining, unmet, constants)?;
 
     Some(SelectionPlan {
         tier: SelectionTier::UnloadIntoCoins,
@@ -522,23 +555,24 @@ fn choose_entries<'a>(
 /// grouping stays deterministic.
 fn group_entries(
     chosen: &[&RecyclerEntry],
-    params: &CoinageParameters,
-) -> Vec<(DenominationExponent, RingIndex, Vec<EntryIndex>)> {
-    let mut buckets: BTreeMap<(DenominationExponent, u32), Vec<EntryIndex>> = BTreeMap::new();
-    let mut order: Vec<(DenominationExponent, u32)> = Vec::new();
+    constants: &CoinageChainConstants,
+) -> Vec<(DenominationExponent, RingLocation, Vec<EntryIndex>)> {
+    let mut buckets: BTreeMap<(DenominationExponent, RingLocation), Vec<EntryIndex>> =
+        BTreeMap::new();
+    let mut order: Vec<(DenominationExponent, RingLocation)> = Vec::new();
 
     for entry in chosen {
         let Some(ring) = entry.ring else {
             continue;
         };
-        let key = (entry.exponent, ring.0);
+        let key = (entry.exponent, ring);
         if !buckets.contains_key(&key) {
             order.push(key);
         }
         buckets.entry(key).or_default().push(entry.index);
     }
 
-    let cap = params.max_recycler_entries_per_group.max(1) as usize;
+    let cap = constants.max_consolidation.max(1) as usize;
     let mut groups = Vec::new();
 
     for key in order {
@@ -546,7 +580,7 @@ fn group_entries(
             continue;
         };
         for chunk in indices.chunks(cap) {
-            groups.push((key.0, RingIndex(key.1), chunk.to_vec()));
+            groups.push((key.0, key.1, chunk.to_vec()));
         }
     }
 
@@ -563,11 +597,11 @@ fn group_entries(
 /// the denominations, each one must be minted whole by a single group, because
 /// a coin cannot span two extrinsics.
 fn assign_outputs(
-    groups: Vec<(DenominationExponent, RingIndex, Vec<EntryIndex>)>,
+    groups: Vec<(DenominationExponent, RingLocation, Vec<EntryIndex>)>,
     outputs: &OutputRequirement,
     deficit: Amount,
     unmet_targets: Vec<DenominationExponent>,
-    params: &CoinageParameters,
+    constants: &CoinageChainConstants,
 ) -> Option<Vec<UnloadGroup>> {
     let mut outstanding_value = deficit;
     let mut outstanding_targets = unmet_targets;
@@ -580,7 +614,10 @@ fn assign_outputs(
         let (target_outputs, spent) = match outputs {
             OutputRequirement::AnyDenominations => {
                 let contribution = group_value.min(outstanding_value);
-                (canonical_breakdown(contribution)?, contribution)
+                (
+                    canonical_breakdown(contribution, constants.largest_denomination()?)?,
+                    contribution,
+                )
             }
             OutputRequirement::Exact(_) => {
                 let mut budget = group_value;
@@ -604,9 +641,12 @@ fn assign_outputs(
         };
 
         outstanding_value = outstanding_value.saturating_sub(spent);
-        let change_outputs = canonical_breakdown(group_value.saturating_sub(spent))?;
+        let change_outputs = canonical_breakdown(
+            group_value.saturating_sub(spent),
+            constants.largest_denomination()?,
+        )?;
 
-        if target_outputs.len() + change_outputs.len() > params.max_split_outputs as usize {
+        if target_outputs.len() + change_outputs.len() > constants.max_split_outputs as usize {
             return None;
         }
 
@@ -699,24 +739,33 @@ fn selected(coin: &Coin) -> SelectedCoin {
 mod tests {
     use core::time::Duration;
 
+    use super::super::chain_constants::next_people_paseo;
     use super::super::entry::EntryOnChainState;
-    use super::super::types::CoinAge;
+    use super::super::types::{CoinAge, RevisionIndex, RingIndex};
     use super::*;
 
     const NOW: Timestamp = Timestamp(1_000_000);
 
-    fn exponent(value: u8) -> DenominationExponent {
+    fn exponent(value: i8) -> DenominationExponent {
         DenominationExponent::new(value).expect("exponent is in range")
     }
 
-    fn coin(index: u32, exponent_value: u8, age: u16) -> Coin {
+    fn coin(index: u32, exponent_value: i8, age: u16) -> Coin {
         let mut coin = Coin::pending(PurseId::MAIN, CoinIndex(index), exponent(exponent_value));
         coin.observe_populated(CoinAge(age))
             .expect("observe is valid");
         coin
     }
 
-    fn entry(index: u32, exponent_value: u8, ring: u32) -> RecyclerEntry {
+    fn ring(index: u32) -> RingLocation {
+        RingLocation::new(RingIndex(index), RevisionIndex(0))
+    }
+
+    fn constants() -> CoinageChainConstants {
+        next_people_paseo()
+    }
+
+    fn entry(index: u32, exponent_value: i8, ring_index: u32) -> RecyclerEntry {
         let mut entry = RecyclerEntry::allocated(
             PurseId::MAIN,
             EntryIndex(index),
@@ -724,7 +773,7 @@ mod tests {
             Timestamp(0),
             Duration::ZERO,
         );
-        entry.ring = Some(RingIndex(ring));
+        entry.ring = Some(ring(ring_index));
         entry.on_chain = EntryOnChainState::Ready;
         entry
     }
@@ -737,7 +786,7 @@ mod tests {
         }
     }
 
-    fn exact_request(cents: u64, outputs: &[u8]) -> SelectionRequest {
+    fn exact_request(cents: u64, outputs: &[i8]) -> SelectionRequest {
         SelectionRequest {
             amount: Amount::from_cents(cents),
             outputs: OutputRequirement::Exact(outputs.iter().copied().map(exponent).collect()),
@@ -750,7 +799,7 @@ mod tests {
         coins: &[Coin],
         entries: &[RecyclerEntry],
     ) -> Result<SelectionPlan, CoinageError> {
-        select(request, coins, entries, &CoinageParameters::default(), NOW)
+        select(request, coins, entries, &constants(), NOW)
     }
 
     #[test]
@@ -968,13 +1017,14 @@ mod tests {
 
     #[test]
     fn a_group_never_exceeds_the_consolidation_cap() {
-        let params = CoinageParameters {
-            max_recycler_entries_per_group: 2,
-            ..CoinageParameters::default()
+        let constants = CoinageChainConstants {
+            max_consolidation: 2,
+            ..next_people_paseo()
         };
         let entries: Vec<RecyclerEntry> = (0..5).map(|index| entry(index, 2, 1)).collect();
 
-        let plan = select(&request(20), &[], &entries, &params, NOW).expect("five 4-cent entries");
+        let plan =
+            select(&request(20), &[], &entries, &constants, NOW).expect("five 4-cent entries");
 
         assert!(plan.unloads.iter().all(|group| group.entries.len() <= 2));
         assert_eq!(plan.target_value(), Amount::from_cents(20));
@@ -1065,15 +1115,15 @@ mod tests {
     fn a_denomination_no_group_can_mint_reports_unsatisfiable_outputs() {
         // Enough value across five entries, but a named 16-cent output has to
         // be minted whole by one group, and the cap holds groups to 8 cents.
-        let params = CoinageParameters {
-            max_recycler_entries_per_group: 2,
-            ..CoinageParameters::default()
+        let constants = CoinageChainConstants {
+            max_consolidation: 2,
+            ..next_people_paseo()
         };
         let entries: Vec<RecyclerEntry> = (0..5).map(|index| entry(index, 2, 1)).collect();
         let request = exact_request(16, &[4]);
 
-        let error =
-            select(&request, &[], &entries, &params, NOW).expect_err("no group reaches 16 cents");
+        let error = select(&request, &[], &entries, &constants, NOW)
+            .expect_err("no group reaches 16 cents");
 
         assert_eq!(
             error,

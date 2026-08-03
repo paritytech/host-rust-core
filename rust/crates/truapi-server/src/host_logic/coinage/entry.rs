@@ -14,7 +14,7 @@ use parity_scale_codec::{Decode, Encode};
 use super::error::InvalidTransition;
 use super::params::CoinageParameters;
 use super::types::{
-    Amount, DenominationExponent, EntryIndex, OperationHandle, PurseId, RingIndex, Timestamp,
+    Amount, DenominationExponent, EntryIndex, OperationHandle, PurseId, RingLocation, Timestamp,
 };
 
 const SUBJECT: &str = "recycler entry";
@@ -99,8 +99,10 @@ pub struct RecyclerEntry {
     pub index: EntryIndex,
     /// Denomination the entry will realize when unloaded.
     pub exponent: DenominationExponent,
-    /// Ring the entry joined, once the chain reports one.
-    pub ring: Option<RingIndex>,
+    /// Where the entry sits on chain, once the chain reports it. Carries the
+    /// ring's revision as well as its index, because both are needed to unload
+    /// and a proof is only valid against the revision it was built for.
+    pub ring: Option<RingLocation>,
     /// Chain-side readiness.
     pub on_chain: EntryOnChainState,
     /// Layer-side lifecycle.
@@ -181,7 +183,12 @@ impl RecyclerEntry {
     }
 
     /// Record a chain observation of the entry's ring.
-    pub fn observe_ring(&mut self, ring: RingIndex, member_count: u32, params: &CoinageParameters) {
+    pub fn observe_ring(
+        &mut self,
+        ring: RingLocation,
+        member_count: u32,
+        params: &CoinageParameters,
+    ) {
         self.ring = Some(ring);
         self.on_chain = EntryOnChainState::from_ring_member_count(member_count, params);
     }
@@ -192,7 +199,7 @@ impl RecyclerEntry {
     }
 
     /// Record that the ring exists but is not yet usable.
-    pub fn observe_waiting(&mut self, ring: RingIndex) {
+    pub fn observe_waiting(&mut self, ring: RingLocation) {
         self.ring = Some(ring);
         self.on_chain = EntryOnChainState::Waiting;
     }
@@ -247,8 +254,15 @@ mod tests {
     const HOUR: Duration = Duration::from_secs(60 * 60);
     const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
-    fn exponent(value: u8) -> DenominationExponent {
+    fn exponent(value: i8) -> DenominationExponent {
         DenominationExponent::new(value).expect("exponent is in range")
+    }
+
+    fn ring(index: u32) -> RingLocation {
+        RingLocation::new(
+            super::super::types::RingIndex(index),
+            super::super::types::RevisionIndex(0),
+        )
     }
 
     fn ready_entry(now: Timestamp) -> RecyclerEntry {
@@ -260,7 +274,7 @@ mod tests {
             now,
             Duration::ZERO,
         );
-        entry.observe_ring(RingIndex(1), params.minimum_anonymous_ring_size, &params);
+        entry.observe_ring(ring(1), params.minimum_anonymous_ring_size, &params);
         entry
     }
 
@@ -298,7 +312,7 @@ mod tests {
         let params = CoinageParameters::default();
         let now = Timestamp(1_000);
         let mut entry = ready_entry(now);
-        entry.observe_ring(RingIndex(1), 4, &params);
+        entry.observe_ring(ring(1), 4, &params);
 
         assert!(entry.is_selectable(now, true));
         assert!(!entry.is_selectable(now, false));
@@ -315,7 +329,7 @@ mod tests {
             allocated_at,
             HOUR,
         );
-        entry.observe_ring(RingIndex(1), 32, &params);
+        entry.observe_ring(ring(1), 32, &params);
 
         assert_eq!(entry.on_chain, EntryOnChainState::Ready);
         assert!(!entry.is_selectable(Timestamp(HOUR.as_millis() as u64 - 1), true));
@@ -327,7 +341,7 @@ mod tests {
         let now = Timestamp(1_000);
         let mut entry = ready_entry(now);
 
-        entry.observe_waiting(RingIndex(1));
+        entry.observe_waiting(ring(1));
         assert!(!entry.is_selectable(now, true));
 
         entry.observe_missing();
