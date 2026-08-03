@@ -412,6 +412,49 @@ impl Metadata {
         Ok((variant.index, lite_people.index))
     }
 
+    /// Position of a transaction extension in metadata order.
+    pub fn extension_index(&self, identifier: &str) -> Option<usize> {
+        self.extensions
+            .iter()
+            .position(|e| e.identifier == identifier)
+    }
+
+    /// The raw inherited implication for `identifier`: everything the extension
+    /// signs over, unhashed.
+    ///
+    /// That is the extension version byte, the call, then the extras and the
+    /// implicits of every extension that follows this one. Returned raw rather
+    /// than hashed because some proofs prepend their own material before
+    /// hashing — a free unload token signs
+    /// `blake2_256(alias_proofs ++ implication)` while an individual alias proof
+    /// signs `blake2_256(implication)`.
+    pub fn inherited_implication(
+        &self,
+        identifier: &str,
+        call_data: &[u8],
+        state: &ChainState,
+    ) -> Result<Vec<u8>, StatementAllowanceError> {
+        let all = self.encode_signed_extensions(state);
+        let tail_start = self
+            .extension_index(identifier)
+            .map(|i| i + 1)
+            .ok_or_else(|| MetadataError::MissingExtension {
+                identifier: identifier.to_string(),
+            })?;
+        let tail = &all[tail_start..];
+
+        let mut payload = Vec::with_capacity(1 + call_data.len());
+        payload.push(0x00);
+        payload.extend_from_slice(call_data);
+        for ext in tail {
+            payload.extend_from_slice(&ext.extra);
+        }
+        for ext in tail {
+            payload.extend_from_slice(&ext.additional_signed);
+        }
+        Ok(payload)
+    }
+
     /// Index of a named variant inside a transaction extension's
     /// `Option<...Info>` extra.
     ///
