@@ -866,28 +866,27 @@ impl PairingHost {
         request: v01::HostAccountSignVrfRequest,
     ) -> Result<v01::VrfSignature, AuthorityError> {
         let session = self.current_private_session(session)?;
-        if calling_product_id == request.account.dot_ns_identifier {
-            if let Some(auto_signing_key) = self
+        if calling_product_id == request.account.dot_ns_identifier
+            && let Some(auto_signing_key) = self
                 .auto_signing_key(&request.account.dot_ns_identifier)
                 .await?
-            {
-                let keypair = derive_product_keypair_from_subtree_secret(
-                    *auto_signing_key.as_secret_bytes(),
-                    derivation_index_bytes(&request.account.derivation_index),
-                )
-                .map_err(|err| AuthorityError::Unknown {
-                    reason: err.to_string(),
-                })?;
-                let (pre_output, proof) = crate::dynamic_vrf::sign_dynamic_vrf(
-                    &keypair,
-                    &request.transcript_label,
-                    request
-                        .items
-                        .iter()
-                        .map(|item| (item.label.as_slice(), item.value.as_slice())),
-                );
-                return Ok(v01::VrfSignature { pre_output, proof });
-            }
+        {
+            let keypair = derive_product_keypair_from_subtree_secret(
+                *auto_signing_key.as_secret_bytes(),
+                derivation_index_bytes(&request.account.derivation_index),
+            )
+            .map_err(|err| AuthorityError::Unknown {
+                reason: err.to_string(),
+            })?;
+            let (pre_output, proof) = crate::dynamic_vrf::sign_dynamic_vrf(
+                &keypair,
+                &request.transcript_label,
+                request
+                    .items
+                    .iter()
+                    .map(|item| (item.label.as_slice(), item.value.as_slice())),
+            );
+            return Ok(v01::VrfSignature { pre_output, proof });
         }
         self.remote_sign_vrf(cx, &session, calling_product_id, request)
             .await
