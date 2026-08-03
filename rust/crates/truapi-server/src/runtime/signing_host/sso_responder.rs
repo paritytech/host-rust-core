@@ -27,10 +27,13 @@ use super::SigningHost;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::host_logic::product_account::ProductAccountError;
 use crate::host_logic::product_account::{
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path, product_public_key_to_address,
+    ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
+    product_public_key_to_address,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::{
+    derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{
@@ -74,6 +77,25 @@ const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::fr
 /// older than the eviction window are past their statement expiry and can no
 /// longer be validly replayed.
 const MAX_SERVED_REQUEST_IDS: usize = 1024;
+
+fn derive_responder_identity(
+    entropy: &[u8],
+) -> Result<(ResponderIdentity, [u8; 32]), ProductAccountError> {
+    let statement = derive_identity_keypair(entropy)?;
+    let (encryption_secret_key, encryption_public_key) =
+        derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
+    let (identity_chat_private_key, _) =
+        derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN);
+    Ok((
+        ResponderIdentity {
+            statement_secret: statement.secret.to_bytes(),
+            statement_public_key: statement.public.to_bytes(),
+            encryption_secret_key,
+            encryption_public_key,
+        },
+        identity_chat_private_key,
+    ))
+}
 
 /// Bounded set of served request ids for replay dedup. Evicts the oldest id
 /// once the capacity is reached so a peer cannot force unbounded memory growth
@@ -200,22 +222,12 @@ pub(crate) async fn respond_to_pairing(
     let entropy = signing_host
         .root_entropy()
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
-    // Product accounts derive from the canonical root key. The SSO statement
-    // identity keeps its dedicated hard-derived key.
+    // Product accounts and the SSO statement identity derive from the
+    // canonical root key; the identity is the RFC-0022 uid.dot default account.
     let root = derive_root_keypair_from_entropy(&entropy)
         .map_err(|err| format!("root account derivation failed: {err}"))?;
-    let statement = derive_sr25519_hard_path(&entropy, &["wallet", "sso"])
-        .map_err(|err| format!("//wallet//sso derivation failed: {err}"))?;
-    let (encryption_secret_key, encryption_public_key) =
-        derive_x25519_keypair_from_entropy(&entropy, SSO_ENCRYPTION_DOMAIN);
-    let (identity_chat_private_key, _) =
-        derive_x25519_keypair_from_entropy(&entropy, CHAT_ENCRYPTION_DOMAIN);
-    let identity = ResponderIdentity {
-        statement_secret: statement.secret.to_bytes(),
-        statement_public_key: statement.public.to_bytes(),
-        encryption_secret_key,
-        encryption_public_key,
-    };
+    let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
+        .map_err(|err| format!("responder identity derivation failed: {err}"))?;
     let session = establish_responder_session_info(
         &identity,
         proposal.device.statement_account_id,
@@ -852,7 +864,7 @@ pub(super) async fn allocate_statement_store_allowance(
     let allowance =
         derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
     let target = allowance.public.to_bytes();
-    let bandersnatch = statement_allowance::bandersnatch_entropy(&entropy);
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
     let rpc = statement_allowance::rpc::RpcClient::new(
         services
             .statement_store
@@ -947,7 +959,7 @@ pub(super) async fn allocate_bulletin_allowance(
     );
     let metadata = fetch_metadata(&people_rpc).await?;
     let chain_state = fetch_chain_state(&people_rpc).await?;
-    let bandersnatch = statement_allowance::bandersnatch_entropy(&entropy);
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
     let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
     let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
         .await?
@@ -1242,6 +1254,7 @@ mod tests {
     use super::super::LocalActivation;
     use super::*;
     use crate::host_logic::extrinsic::tests::split_v4;
+    use crate::host_logic::statement_store::decode_verified_statement_data;
     use crate::runtime::services::RuntimeServices;
     use crate::test_support::{StubPlatform, test_spawner};
     use std::sync::Arc;
@@ -1272,6 +1285,36 @@ mod tests {
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         (services, signing_host)
+    }
+
+    #[test]
+    fn responder_advertises_and_signs_with_the_local_uid_identity() {
+        let (_services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+        let local_identity = signing_host
+            .current_session()
+            .unwrap()
+            .identity_account_id
+            .unwrap();
+        let (identity, _) = derive_responder_identity(&ENTROPY).unwrap();
+        assert_eq!(identity.statement_public_key, local_identity);
+
+        let (_, host_encryption_public_key) =
+            derive_x25519_keypair_from_entropy(&[0x42; 16], b"sso");
+        let session =
+            establish_responder_session_info(&identity, [0x55; 32], host_encryption_public_key)
+                .unwrap();
+        let statement = build_signed_statement(
+            &session,
+            [0x66; 32],
+            [0x77; 32],
+            b"handshake".to_vec(),
+            fresh_statement_expiry(),
+        )
+        .unwrap();
+        let verified =
+            decode_verified_statement_data(&statement, Some(identity.statement_public_key))
+                .unwrap();
+        assert_eq!(verified.signer, local_identity);
     }
 
     fn response_payload(answer: AnsweredRemoteMessage) -> v1::RemoteMessage {
@@ -1480,7 +1523,7 @@ mod tests {
             create_transaction_confirmed: true,
             ..StubPlatform::default()
         }));
-        let identity = derive_sr25519_hard_path(&ENTROPY, &["wallet", "sso"]).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY).unwrap();
         let payload = api::LegacyAccountTxPayload {
             signer: identity.public.to_bytes(),
             genesis_hash: [0xaa; 32],

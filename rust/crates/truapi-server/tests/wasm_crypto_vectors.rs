@@ -1,4 +1,4 @@
-//! Wasm-target vectors pinning RFC-0022 product-account derivation and SSO
+//! Wasm-target vectors pinning RFC-0022 product-account, built-in, and SSO
 //! X25519/ChaCha20-Poly1305 crypto to the values used by the mobile hosts.
 
 #![cfg(target_arch = "wasm32")]

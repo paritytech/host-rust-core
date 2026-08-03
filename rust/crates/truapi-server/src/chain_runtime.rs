@@ -741,6 +741,9 @@ impl ChainRuntime {
         local_follow_id: String,
         with_runtime: bool,
     ) -> Result<String, RuntimeFailure> {
+        let local_follow_id = connection
+            .resolve_local_follow_id(method, &local_follow_id)
+            .await?;
         let remote_follow_id = connection
             .require_remote_follow(method, local_follow_id.clone())
             .await?;
@@ -906,6 +909,41 @@ impl ChainConnection {
             .get(local_follow_id)
             .and_then(|follow| follow.remote_subscription_id.clone())
     }
+    /// Resolve product-SDK follow aliases. PAPI assigns its own `follow_N`
+    /// handle after the TrUAPI follow request, so that handle does not equal
+    /// the request id used to key the core follow. With one live follow on this
+    /// chain the association is unambiguous; multiple follows must use their
+    /// exact ids rather than guessing across subscriptions.
+    async fn resolve_local_follow_id(
+        &self,
+        method: &'static str,
+        requested_follow_id: &str,
+    ) -> Result<String, RuntimeFailure> {
+        // `remote_chain_head_follow` installs its state on a spawned task.
+        // A product can legally issue its first operation immediately after
+        // the follow request, before that task wins the executor. Give the
+        // registration a short bounded window, then resolve PAPI's `follow_N`
+        // alias when this chain has exactly one live follow.
+        for _ in 0..100 {
+            {
+                let follows = self.follows.lock().unwrap();
+                if follows.contains_key(requested_follow_id) {
+                    return Ok(requested_follow_id.to_string());
+                }
+                if follows.len() == 1 {
+                    return Ok(follows.keys().next().unwrap().clone());
+                }
+                if follows.len() > 1 {
+                    break;
+                }
+            }
+            futures_timer::Delay::new(Duration::from_millis(1)).await;
+        }
+        Err(RuntimeFailure::host_failure(
+            method,
+            format!("unknown follow subscription id {requested_follow_id:?}"),
+        ))
+    }
 
     /// Record intent to follow `local_follow_id`, attaching `sender` for a
     /// follow subscriber. Idempotent: an existing follow keeps its
@@ -999,32 +1037,31 @@ impl ChainConnection {
         method: &'static str,
         local_follow_id: String,
     ) -> Result<String, RuntimeFailure> {
-        if let Some(remote_follow_id) = self.remote_follow_id(&local_follow_id) {
-            return Ok(remote_follow_id);
-        }
-
-        let setup = {
-            let follows = self.follows.lock().unwrap();
-            if !follows.contains_key(&local_follow_id) {
+        for _ in 0..100 {
+            if let Some(remote_follow_id) = self.remote_follow_id(&local_follow_id) {
+                return Ok(remote_follow_id);
+            }
+            if !self.follows.lock().unwrap().contains_key(&local_follow_id) {
                 return Err(RuntimeFailure::host_failure(
                     method,
                     format!("unknown follow subscription id {local_follow_id:?}"),
                 ));
             }
-            self.follow_setups
+            let setup = self
+                .follow_setups
                 .lock()
                 .unwrap()
                 .get(&local_follow_id)
-                .cloned()
-        };
-
-        match setup {
-            Some(setup) => setup.await.map_err(|failure| failure.reclassify(method)),
-            None => Err(RuntimeFailure::host_failure(
-                method,
-                format!("follow subscription {local_follow_id:?} is not established"),
-            )),
+                .cloned();
+            if let Some(setup) = setup {
+                return setup.await.map_err(|failure| failure.reclassify(method));
+            }
+            futures_timer::Delay::new(Duration::from_millis(1)).await;
         }
+        Err(RuntimeFailure::host_failure(
+            method,
+            format!("follow subscription {local_follow_id:?} is not established"),
+        ))
     }
 
     /// Body of the single-flight follow setup: ensure the `FollowState`
@@ -1776,7 +1813,7 @@ mod tests {
     }
 
     #[test]
-    fn header_request_reuses_existing_follow() {
+    fn immediate_header_maps_provider_alias_to_only_existing_follow() {
         let provider = Arc::new(ScriptedProvider::new(|request| {
             let id = extract_id(request).unwrap();
             if request.contains("chainHead_v1_follow") {
@@ -1799,20 +1836,11 @@ mod tests {
                 with_runtime: false,
             },
         );
-        let sent = wait_for_sent(&provider, |sent| {
-            sent.iter()
-                .any(|request| request.contains("chainHead_v1_follow"))
-        });
-        assert!(
-            sent.iter()
-                .any(|request| request.contains("chainHead_v1_follow")),
-            "follow setup did not start; sent: {sent:?}",
-        );
 
         let response = futures::executor::block_on(runtime.remote_chain_head_header(
             RemoteChainHeadHeaderRequest {
                 genesis_hash: vec![0u8; 32],
-                follow_subscription_id: "local-follow".to_string(),
+                follow_subscription_id: "follow_0".to_string(),
                 hash: vec![1u8; 32],
             },
         ))
@@ -1823,6 +1851,8 @@ mod tests {
         assert_eq!(sent.len(), 2);
         assert!(sent[0].contains("chainHead_v1_follow"));
         assert!(sent[1].contains("chainHead_v1_header"));
+        let header: Value = serde_json::from_str(&sent[1]).unwrap();
+        assert_eq!(header["params"][0], "REMOTE-FOLLOW");
     }
 
     #[test]

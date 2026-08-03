@@ -27,7 +27,7 @@ use x25519_dalek::{PublicKey, StaticSecret};
 use crate::host_logic::session::SsoSessionInfo;
 
 const HANDSHAKE_TOPIC_SUFFIX: &[u8] = b"topic";
-const MAX_P256_SECRET_ATTEMPTS: usize = 64;
+
 /// Byte length of the ChaCha20-Poly1305 nonce prepended to encrypted payloads.
 pub const AEAD_NONCE_LEN: usize = 12;
 const SESSION_PREFIX: &[u8] = b"session";
@@ -74,9 +74,6 @@ pub enum PairingBootstrapError {
     /// The generated sr25519 seed could not be expanded.
     #[error("failed to expand sr25519 pairing key: {0:?}")]
     Sr25519Key(SignatureError),
-    /// No valid P-256 compatibility key was found within the attempt budget.
-    #[error("failed to derive P-256 compatibility key")]
-    InvalidP256Secret,
 }
 
 /// Error while decoding a pairing deeplink or bare handshake payload.
@@ -324,33 +321,6 @@ pub fn derive_x25519_keypair_from_entropy(entropy: &[u8], domain: &[u8]) -> ([u8
     let secret = StaticSecret::from(secret_bytes);
     let public = PublicKey::from(&secret).to_bytes();
     (secret_bytes, public)
-}
-
-/// Derive the temporary P-256 identifier used by the legacy registration backend.
-///
-/// SSO and session encryption must not use this compatibility path.
-pub fn derive_p256_keypair_from_entropy(
-    entropy: &[u8],
-    label: &[u8],
-) -> Result<([u8; 32], [u8; 65]), PairingBootstrapError> {
-    use p256::SecretKey;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
-
-    for attempt in 0..MAX_P256_SECRET_ATTEMPTS {
-        let mut message = Vec::with_capacity(label.len() + 1);
-        message.extend_from_slice(label);
-        message.push(attempt as u8);
-        let candidate = blake2b256_keyed(&message, entropy);
-        let Ok(secret) = SecretKey::from_slice(&candidate) else {
-            continue;
-        };
-        let public = secret.public_key().to_encoded_point(false);
-        let mut encryption_public_key = [0u8; 65];
-        encryption_public_key.copy_from_slice(public.as_bytes());
-        return Ok((candidate, encryption_public_key));
-    }
-
-    Err(PairingBootstrapError::InvalidP256Secret)
 }
 
 /// Encrypt session-channel statement data with a random nonce.
@@ -772,10 +742,15 @@ mod tests {
             sso.1
         );
         let cross_platform_entropy: [u8; 32] = std::array::from_fn(|index| (index + 1) as u8);
-        let (secret, _) = derive_x25519_keypair_from_entropy(&cross_platform_entropy, b"sso");
+        let (sso_secret, _) = derive_x25519_keypair_from_entropy(&cross_platform_entropy, b"sso");
+        let (chat_secret, _) = derive_x25519_keypair_from_entropy(&cross_platform_entropy, b"chat");
         assert_eq!(
-            hex::encode(secret),
+            hex::encode(sso_secret),
             "c2c0f3112da0aa390a7d7b644a7f073b80782e49a3240685bc071046d6cc8ad3"
+        );
+        assert_eq!(
+            hex::encode(chat_secret),
+            "88705746a9788fb8bc232cc463b243a2828e470b932ce60a16426cc79b4618b1"
         );
     }
 
