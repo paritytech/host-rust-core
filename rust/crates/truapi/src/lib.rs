@@ -64,11 +64,11 @@ pub mod latest {
     /// Native chat message posting failure.
     pub type HostChatPostMessageError = LatestOf<versioned::chat::HostChatPostMessageError>;
     /// Product-to-host custom renderer update.
-    pub type ProductChatCustomMessageRenderSubscribeRequest =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderSubscribeRequest>;
+    pub type ProductChatCustomMessageRenderChannelRequest =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderChannelRequest>;
     /// Host-to-product custom render work item.
-    pub type ProductChatCustomMessageRenderSubscribeItem =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderSubscribeItem>;
+    pub type ProductChatCustomMessageRenderChannelItem =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderChannelItem>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;

@@ -765,15 +765,15 @@ where
     {
         let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
         let host = host;
-        dispatcher.on_stream_pair(wire_table::CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>, requests| {
+        dispatcher.on_stream_pair(wire_table::CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL, move |request_id: String, bytes: Vec<u8>, requests| {
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
                 let cx = CallContext::with_request_id(request_id.clone());
                 if !execution_allowed { return Err(Vec::new()); }
-                let requests = subscription_request_stream::<versioned::chat::ProductChatCustomMessageRenderSubscribeRequest>(requests);
-                let stream = host.custom_message_render_subscribe(&cx, requests).await;
-                Ok(subscription_stream::<versioned::chat::ProductChatCustomMessageRenderSubscribeItem, _>(stream))
+                let requests = subscription_request_stream::<versioned::chat::ProductChatCustomMessageRenderChannelRequest>(requests);
+                let stream = host.custom_message_render_channel(&cx, requests).await;
+                Ok(subscription_stream::<versioned::chat::ProductChatCustomMessageRenderChannelItem, _>(stream))
             })
         });
     }

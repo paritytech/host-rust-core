@@ -1,11 +1,11 @@
-## Truapi Desktop Diagnosis
+## Truapi Signing Host CLI Diagnosis
 
 | Method | Status | Details |
 | --- | --- | --- |
 | `Account/connection_status_subscribe` | ✅ |  |
 | `Account/get_account` | ✅ |  |
 | `Account/get_account_alias` | ✅ |  |
-| `Account/create_account_proof` | ❌ | createAccountProof failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
+| `Account/create_account_proof` | ✅ |  |
 | `Account/get_legacy_accounts` | ✅ |  |
 | `Account/get_user_id` | ✅ |  |
 | `Account/request_login` | ✅ |  |
@@ -22,12 +22,15 @@
 | `Chain/get_spec_properties` | ✅ |  |
 | `Chain/broadcast_transaction` | ✅ |  |
 | `Chain/stop_transaction` | ✅ |  |
-| `Chat/create_room` | ❌ | createRoom failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
-| `Chat/register_bot` | ❌ | registerBot failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
-| `Chat/list_subscribe` | ❌ | no elements in sequence |
-| `Chat/post_message` | ❌ | postMessage failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
-| `Chat/action_subscribe` | ❌ | no elements in sequence |
-| `Chat/custom_message_render_subscribe` | ❌ | timed out after 10s |
+| `Coin Payment/create_purse` | ❌ | createPurse failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
+| `Coin Payment/query_purse` | ❌ | queryPurse failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
+| `Coin Payment/rebalance_purse` | ❌ | Subscription interrupted |
+| `Coin Payment/delete_purse` | ❌ | Subscription interrupted |
+| `Coin Payment/create_receivable` | ❌ | createReceivable failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
+| `Coin Payment/create_cheque` | ❌ | createCheque failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
+| `Coin Payment/deposit` | ❌ | Subscription interrupted |
+| `Coin Payment/refund` | ❌ | Subscription interrupted |
+| `Coin Payment/listen_for_payment` | ❌ | Subscription interrupted |
 | `Entropy/derive` | ✅ |  |
 | `Local Storage/read` | ✅ |  |
 | `Local Storage/write` | ✅ |  |
@@ -35,18 +38,18 @@
 | `Notifications/send_push_notification` | ✅ |  |
 | `Notifications/cancel_push_notification` | ✅ |  |
 | `Payment/balance_subscribe` | ❌ | Subscription interrupted |
-| `Payment/top_up` | ❌ | topUp failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
-| `Payment/request` | ❌ | topUp failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
-| `Payment/status_subscribe` | ❌ | topUp failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
+| `Payment/top_up` | ❌ | topUp failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "Payments are not supported in dot.li" } } } } } |
+| `Payment/request` | ❌ | topUp failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "Payments are not supported in dot.li" } } } } } |
+| `Payment/status_subscribe` | ❌ | topUp failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "Payments are not supported in dot.li" } } } } } |
 | `Permissions/request_device_permission` | ✅ |  |
 | `Permissions/request_remote_permission` | ✅ |  |
 | `Preimage/lookup_subscribe` | ✅ |  |
 | `Preimage/submit` | ✅ |  |
 | `Resource Allocation/request` | ✅ |  |
 | `Signing/create_transaction` | ✅ |  |
-| `Signing/create_transaction_with_legacy_account` | ❌ | createTransactionWithLegacyAccount failed: { "error": { "tag": "Unknown", "value": { "reason": "Not implemented" } } } |
-| `Signing/sign_raw_with_legacy_account` | ❌ | signRawWithLegacyAccount failed: { "error": { "tag": "Unknown", "value": { "reason": "Account can't be derived from product account id" } } } |
-| `Signing/sign_payload_with_legacy_account` | ❌ | signPayloadWithLegacyAccount failed: { "error": { "tag": "Unknown", "value": { "reason": "Account can't be derived from product account id" } } } |
+| `Signing/create_transaction_with_legacy_account` | ✅ |  |
+| `Signing/sign_raw_with_legacy_account` | ✅ |  |
+| `Signing/sign_payload_with_legacy_account` | ✅ |  |
 | `Signing/sign_raw` | ✅ |  |
 | `Signing/sign_payload` | ✅ |  |
 | `Statement Store/subscribe` | ✅ |  |

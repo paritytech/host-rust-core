@@ -568,7 +568,8 @@ pub struct ProductRuntime {
     next_dispatch_id: AtomicU64,
 }
 
-/// Cloneable native control surface for one concrete product connection.
+/// Host-facing control handle for pushing native events into one concrete
+/// product connection.
 #[derive(Clone)]
 pub struct ProductRuntimeControl {
     runtime: Arc<ProductRuntimeHost>,
@@ -1002,7 +1003,7 @@ mod tests {
             test_spawner(),
             sink.clone(),
         );
-        let ids = subscription_ids("chat_custom_message_render_subscribe")
+        let ids = subscription_ids("chat_custom_message_render_channel")
             .expect("known renderer stream pair");
         let frame = ProtocolMessage {
             request_id: "chat:renderer".into(),

@@ -109,7 +109,7 @@ use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
     HostChatPostMessageRequest, HostChatPostMessageResponse,
-    ProductChatCustomMessageRenderSubscribeItem, ProductChatCustomMessageRenderSubscribeRequest,
+    ProductChatCustomMessageRenderChannelItem, ProductChatCustomMessageRenderChannelRequest,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -1869,12 +1869,12 @@ impl Chat for ProductRuntimeHost {
         self.chat.subscribe_actions()
     }
 
-    #[instrument(skip_all, fields(runtime.method = "chat.custom_message_render_subscribe"))]
-    async fn custom_message_render_subscribe(
+    #[instrument(skip_all, fields(runtime.method = "chat.custom_message_render_channel"))]
+    async fn custom_message_render_channel(
         &self,
         _cx: &CallContext,
-        requests: Subscription<ProductChatCustomMessageRenderSubscribeRequest>,
-    ) -> Subscription<ProductChatCustomMessageRenderSubscribeItem> {
+        requests: Subscription<ProductChatCustomMessageRenderChannelRequest>,
+    ) -> Subscription<ProductChatCustomMessageRenderChannelItem> {
         if !self.chat_streams_available() {
             return Subscription::empty();
         }

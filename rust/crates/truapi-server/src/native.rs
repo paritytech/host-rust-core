@@ -1073,11 +1073,11 @@ impl NativeProductExecution {
 
     /// Permanently close this executable and all of its connection state.
     pub fn close(&self) {
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return;
-        }
         #[cfg(feature = "ws-bridge")]
         {
+            if self.closed.swap(true, Ordering::AcqRel) {
+                return;
+            }
             if let Some(mut bridge) = self
                 .bridge
                 .lock()
@@ -1092,6 +1092,8 @@ impl NativeProductExecution {
                 .expect("native product control mutex poisoned") =
                 NativeProductControlState::default();
         }
+        #[cfg(not(feature = "ws-bridge"))]
+        self.closed.swap(true, Ordering::AcqRel);
     }
 }
 
@@ -1316,17 +1318,17 @@ impl NativeTrUApiCore {
 
     /// Publish one native Chat action to the connected product worker.
     pub fn publish_chat_action(&self, action: NativeChatAction) -> Result<(), NativeChatError> {
+        if self.product.execution_kind != ProductExecutionKind::Chat
+            || !self.runtime.has_active_session()
+        {
+            return Err(NativeChatError::Denied);
+        }
+        if !self.runtime.supports_chat() {
+            return Err(NativeChatError::Unsupported);
+        }
+
         #[cfg(feature = "ws-bridge")]
         {
-            if self.product.execution_kind != ProductExecutionKind::Chat
-                || !self.runtime.has_active_session()
-            {
-                return Err(NativeChatError::Denied);
-            }
-            if !self.runtime.supports_chat() {
-                return Err(NativeChatError::Unsupported);
-            }
-
             let action: v01::HostChatActionSubscribeItem = action.into();
             let mut state = self
                 .product_control
@@ -1361,16 +1363,17 @@ impl NativeTrUApiCore {
         payload: Vec<u8>,
         observer: Box<dyn NativeCustomRendererObserver>,
     ) -> Result<Arc<NativeCustomRendererSubscription>, NativeChatError> {
+        if self.product.execution_kind != ProductExecutionKind::Chat
+            || !self.runtime.has_active_session()
+        {
+            return Err(NativeChatError::Denied);
+        }
+        if !self.runtime.supports_chat() {
+            return Err(NativeChatError::Unsupported);
+        }
+
         #[cfg(feature = "ws-bridge")]
         {
-            if self.product.execution_kind != ProductExecutionKind::Chat
-                || !self.runtime.has_active_session()
-            {
-                return Err(NativeChatError::Denied);
-            }
-            if !self.runtime.supports_chat() {
-                return Err(NativeChatError::Unsupported);
-            }
             let control = self
                 .product_control
                 .lock()
@@ -1965,19 +1968,25 @@ impl truapi_platform::ChatPlatform for CallbackPlatform {
         _product: &ProductContext,
         request: v01::HostChatCreateRoomRequest,
     ) -> Result<v01::HostChatCreateRoomResponse, v01::HostChatCreateRoomError> {
-        self.callbacks
+        let status = self
+            .callbacks
             .chat_create_room(request.room_id, request.name, request.icon)
-            .map(|status| v01::HostChatCreateRoomResponse {
-                status: match status {
-                    NativeChatRoomRegistrationStatus::New => v01::ChatRoomRegistrationStatus::New,
-                    NativeChatRoomRegistrationStatus::Exists => {
-                        v01::ChatRoomRegistrationStatus::Exists
-                    }
-                },
-            })
             .map_err(|error| v01::HostChatCreateRoomError::Unknown {
                 reason: error.to_string(),
-            })
+            })?;
+
+        if status == NativeChatRoomRegistrationStatus::New
+            && let Ok(rooms) = self.callbacks.chat_list_rooms()
+        {
+            self.events.notify_chat_rooms_changed(rooms);
+        }
+
+        Ok(v01::HostChatCreateRoomResponse {
+            status: match status {
+                NativeChatRoomRegistrationStatus::New => v01::ChatRoomRegistrationStatus::New,
+                NativeChatRoomRegistrationStatus::Exists => v01::ChatRoomRegistrationStatus::Exists,
+            },
+        })
     }
 
     async fn post_message(
@@ -2192,6 +2201,23 @@ mod tests {
                 .push((room_id, text));
             Ok("message-id".to_string())
         }
+
+        fn chat_list_rooms(&self) -> Result<Vec<NativeChatRoom>, HostRejection> {
+            let mut room_ids = self
+                .chat_created_rooms
+                .lock()
+                .expect("created rooms mutex poisoned")
+                .clone();
+            room_ids.sort();
+            room_ids.dedup();
+            Ok(room_ids
+                .into_iter()
+                .map(|room_id| NativeChatRoom {
+                    room_id,
+                    is_host: true,
+                })
+                .collect())
+        }
     }
 
     fn event_platform() -> (Arc<EventCallbacks>, Arc<NativeEventBus>, CallbackPlatform) {
@@ -2274,6 +2300,7 @@ mod tests {
             }),
             Err(NativeChatError::Denied)
         ));
+        #[cfg(feature = "ws-bridge")]
         chat.publish_chat_action(NativeChatAction::MessagePostedText {
             room_id: "room".to_string(),
             peer: "native".to_string(),
@@ -2295,6 +2322,8 @@ mod tests {
             }),
             Err(NativeChatError::Closed)
         ));
+        assert!(!replacement.closed.load(Ordering::Acquire));
+        #[cfg(feature = "ws-bridge")]
         replacement
             .publish_chat_action(NativeChatAction::MessagePostedText {
                 room_id: "room".to_string(),
@@ -2433,6 +2462,13 @@ mod tests {
             name: "Support".to_string(),
             icon: String::new(),
         };
+        let mut rooms = truapi_platform::ChatPlatform::subscribe_rooms(&platform, &product);
+        assert!(
+            futures::executor::block_on(rooms.next())
+                .expect("initial room list")
+                .rooms
+                .is_empty()
+        );
 
         let created = futures::executor::block_on(truapi_platform::ChatPlatform::create_room(
             &platform,
@@ -2440,6 +2476,8 @@ mod tests {
             request.clone(),
         ))
         .unwrap();
+        let updated_rooms =
+            futures::executor::block_on(rooms.next()).expect("created room replacement");
         *callbacks
             .chat_room_status
             .lock()
@@ -2461,6 +2499,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(created.status, v01::ChatRoomRegistrationStatus::New);
+        assert_eq!(updated_rooms.rooms.len(), 1);
+        assert_eq!(updated_rooms.rooms[0].room_id, "support");
         assert_eq!(existing.status, v01::ChatRoomRegistrationStatus::Exists);
         assert_eq!(posted.message_id, "message-id");
         assert_eq!(

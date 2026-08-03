@@ -28,6 +28,27 @@ function unwrap<T>(result: Result<T, { message: string }>, message: string): T {
     );
 }
 
+/** Minimal replaying request source standing in for an RxJS subject. */
+function requestSource<Item>() {
+    const buffered: Item[] = [];
+    let target: { next?: (value: Item) => void } | undefined;
+    return {
+        next(value: Item): void {
+            if (target) target.next?.(value);
+            else buffered.push(value);
+        },
+        subscribe(observer: { next?: (value: Item) => void }): { unsubscribe: () => void } {
+            target = observer;
+            for (const value of buffered.splice(0)) observer.next?.(value);
+            return {
+                unsubscribe: () => {
+                    target = undefined;
+                },
+            };
+        },
+    };
+}
+
 /** Create an in-memory provider plus helpers for injecting frames and closes. */
 function providerFixture() {
     const sent: Uint8Array[] = [];
@@ -243,23 +264,71 @@ describe("generated client transport", () => {
         expect(events).toEqual(["Connected"]);
     });
 
-    it("uses one subscription id for both renderer stream directions", () => {
+    it("forwards requests replayed by the source when the channel opens", () => {
         const fixture = providerFixture();
-        const transport = createTransport(fixture.provider);
-        const client = createClient(transport);
-        const renders: T.ProductChatCustomMessageRenderSubscribeItem[] = [];
-        const renderer = client.chat.customMessageRenderSubscribe();
+        const requests = requestSource<T.ProductChatCustomMessageRenderChannelRequest>();
+        const responses = createClient(createTransport(fixture.provider)).chat.customMessageRenderChannel(requests);
+        const first: T.ProductChatCustomMessageRenderChannelRequest = {
+            tag: "Failed",
+            value: { messageId: "message-1" },
+        };
+        const second: T.ProductChatCustomMessageRenderChannelRequest = {
+            tag: "Failed",
+            value: { messageId: "message-2" },
+        };
 
-        expect(() =>
-            renderer.requests.next({ tag: "Failed", value: { messageId: "too-early" } }),
-        ).toThrow("subscribe to responses before sending paired-stream requests");
+        requests.next(first);
+        requests.next(second);
+        expect(fixture.sent).toHaveLength(0);
 
-        const subscription = renderer.responses.subscribe({ next: (item) => renders.push(item) });
+        const subscription = responses.subscribe();
         const start = unwrap(
             encodeWireMessage({
                 requestId: subscription.subscriptionId,
                 payload: {
-                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.start,
+                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.start,
+                    value: indexedTaggedUnion({ V1: [0, _void] }).enc({
+                        tag: "V1",
+                        value: undefined,
+                    }),
+                },
+            }),
+            "encode renderer start",
+        );
+        const requestFrame = (request: T.ProductChatCustomMessageRenderChannelRequest) =>
+            unwrap(
+                encodeWireMessage({
+                    requestId: subscription.subscriptionId,
+                    payload: {
+                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.receive,
+                        value: T.VersionedProductChatCustomMessageRenderChannelRequest.enc({
+                            tag: "V1",
+                            value: request,
+                        }),
+                    },
+                }),
+                "encode buffered renderer request",
+            );
+
+        expect(fixture.sent.map(toHex)).toEqual(
+            [start, requestFrame(first), requestFrame(second)].map(toHex),
+        );
+    });
+
+    it("uses one subscription id for both renderer stream directions", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+        const renders: T.ProductChatCustomMessageRenderChannelItem[] = [];
+        const requests = requestSource<T.ProductChatCustomMessageRenderChannelRequest>();
+        const responses = client.chat.customMessageRenderChannel(requests);
+
+        const subscription = responses.subscribe({ next: (item) => renders.push(item) });
+        const start = unwrap(
+            encodeWireMessage({
+                requestId: subscription.subscriptionId,
+                payload: {
+                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.start,
                     value: indexedTaggedUnion({ V1: [0, _void] }).enc({
                         tag: "V1",
                         value: undefined,
@@ -280,8 +349,8 @@ describe("generated client transport", () => {
                 encodeWireMessage({
                     requestId: subscription.subscriptionId,
                     payload: {
-                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.receive,
-                        value: T.VersionedProductChatCustomMessageRenderSubscribeItem.enc({
+                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.receive,
+                        value: T.VersionedProductChatCustomMessageRenderChannelItem.enc({
                             tag: "V1",
                             value: item,
                         }),
@@ -299,13 +368,13 @@ describe("generated client transport", () => {
                 node: { tag: "String", value: { text: "Votes: 1" } },
             },
         } as const;
-        renderer.requests.next(update);
+        requests.next(update);
         const request = unwrap(
             encodeWireMessage({
                 requestId: subscription.subscriptionId,
                 payload: {
-                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.receive,
-                    value: T.VersionedProductChatCustomMessageRenderSubscribeRequest.enc({
+                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.receive,
+                    value: T.VersionedProductChatCustomMessageRenderChannelRequest.enc({
                         tag: "V1",
                         value: update,
                     }),
@@ -316,18 +385,19 @@ describe("generated client transport", () => {
         expect(toHex(fixture.sent[1])).toBe(toHex(request));
     });
 
-    it("allows a renderer stream to reopen after the host completes it", () => {
+    it("stops forwarding after close and refuses a second subscription", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
-        const renderer = createClient(transport).chat.customMessageRenderSubscribe();
-        const first = renderer.responses.subscribe();
+        const requests = requestSource<T.ProductChatCustomMessageRenderChannelRequest>();
+        const responses = createClient(transport).chat.customMessageRenderChannel(requests);
+        const first = responses.subscribe();
 
         fixture.receive(
             unwrap(
                 encodeWireMessage({
                     requestId: first.subscriptionId,
                     payload: {
-                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE.interrupt,
+                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.interrupt,
                         value: _void.enc(undefined),
                     },
                 }),
@@ -335,10 +405,12 @@ describe("generated client transport", () => {
             ),
         );
 
-        expect(() =>
-            renderer.requests.next({ tag: "Failed", value: { messageId: "closed" } }),
-        ).toThrow("subscribe to responses before sending paired-stream requests");
-        expect(() => renderer.responses.subscribe()).not.toThrow();
+        requests.next({ tag: "Failed", value: { messageId: "closed" } });
+        expect(fixture.sent).toHaveLength(1);
+
+        expect(() => responses.subscribe()).toThrow(
+            "channel is single-use: its one subscription is the operation",
+        );
     });
 
     it("completes the observable on a payloadless interrupt terminator", () => {

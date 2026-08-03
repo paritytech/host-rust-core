@@ -120,8 +120,8 @@ controls, and examples.
 
 `scripts/battery.sh` drives that CLI from source over every code-generated
 example and writes both committed compatibility reports:
-`explorer/diagnosis-reports/signing-host-cli.md` from a direct signing-host run,
-and `pairing-host-cli.md` from a pairing host that the script pairs with a
+`explorer/diagnosis-reports/spa/signing-host-cli.md` from a direct signing-host
+run, and `spa/pairing-host-cli.md` from a pairing host that the script pairs with a
 signing host it starts itself.
 
 ```bash
@@ -166,23 +166,24 @@ does not provision or pair a signer-bot user.
 
 To exercise the shared-core Chat path with the first-party TrUAPI Playground
 worker, build and serve the local product, install its worker into the
-simulator app's product storage, and launch both executables:
+simulator app's product storage, and open its native Chat application:
 
 ```bash
 make ios-chat-run
 ```
 
-The launcher fails unless both the `App` and `Chat` WebSocket connections open,
-the worker completes all six Chat API checks, a typed custom-renderer update
-reaches the native widget, and a new SCALE-encoded `Echo: hello` reply reaches
-CoreData. The worker receives `!echo hello` through `chat_action_subscribe` and
-persists the reply through the Rust `ChatPlatform` adapter while the SPA uses
-its separate connection to the same process runtime. Both executables build
+The launcher verifies the Chat connection and runs a correlated Chat-only
+diagnosis. The worker proves create-room idempotency, observes the new room on
+the live list subscription, posts text and custom messages, receives
+`!diagnose` through `chat_action_subscribe`, and serves live renderer trees.
+The launcher also verifies that a renderer update reaches native code and that
+the final Markdown report reaches CoreData. It writes the host-labelled report
+to `playground/test-results/ios-chat/diagnosis-report.md`. The product builds
 against the workspace-linked `@parity/truapi`. Override the product source,
-identity, SPA URL, room, input, or expected reply with
+identity, SPA URL, room, input, or report path with
 `IOS_CHAT_PRODUCT_DIR`, `IOS_CHAT_PRODUCT_HOST`, `IOS_CHAT_PRODUCT_URL`,
 `TRUAPI_IOS_E2E_CHAT_ROOM_ID`, `TRUAPI_IOS_E2E_CHAT_MESSAGE`, or
-`TRUAPI_IOS_E2E_CHAT_EXPECTED_REPLY`.
+`TRUAPI_IOS_E2E_CHAT_REPORT`.
 
 The same harness can run the legacy Product SDK worker from the sibling
 `host-playground` checkout. This target builds the current TrUAPI client, links

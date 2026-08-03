@@ -16,6 +16,7 @@
     "typecheck:examples": "tsc -p tsconfig.examples.json",
     "deploy:test": "yarn build && bulletin-deploy ./out truapi-playground.dot && rm out.car",
     "lint:fix": "next lint --fix",
+    "test:unit": "bun test tests/unit",
     "e2e": "playwright test",
     "e2e:headed": "playwright test --headed",
     "e2e:ui": "playwright test --ui"

@@ -926,7 +926,7 @@ where
         let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
         let host = host;
         dispatcher.on_stream_pair(
-            wire_table::CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE,
+            wire_table::CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL,
             move |request_id: String, bytes: Vec<u8>, requests| {
                 let host = host.clone();
                 Box::pin(async move {
@@ -936,11 +936,11 @@ where
                         return Err(Vec::new());
                     }
                     let requests = subscription_request_stream::<
-                        versioned::chat::ProductChatCustomMessageRenderSubscribeRequest,
+                        versioned::chat::ProductChatCustomMessageRenderChannelRequest,
                     >(requests);
-                    let stream = host.custom_message_render_subscribe(&cx, requests).await;
+                    let stream = host.custom_message_render_channel(&cx, requests).await;
                     Ok(subscription_stream::<
-                        versioned::chat::ProductChatCustomMessageRenderSubscribeItem,
+                        versioned::chat::ProductChatCustomMessageRenderChannelItem,
                         _,
                     >(stream))
                 })

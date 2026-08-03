@@ -10,9 +10,14 @@ import {
   readFileSync,
   statSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, extname, resolve, sep } from "node:path";
+import {
+  decodeTextMessage,
+  labelChatDiagnosisReport,
+} from "./lib/chat-diagnosis-report.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const bundle =
@@ -32,12 +37,15 @@ const productHost =
 const productName =
   process.env.TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME ?? "TrUAPI Playground";
 const roomId = process.env.TRUAPI_IOS_E2E_CHAT_ROOM_ID ?? "truapi-playground";
-const message = process.env.TRUAPI_IOS_E2E_CHAT_MESSAGE ?? "!echo hello";
+const expectDiagnosis = process.env.TRUAPI_IOS_E2E_CHAT_DIAGNOSIS !== "0";
+const message =
+  process.env.TRUAPI_IOS_E2E_CHAT_MESSAGE ??
+  (expectDiagnosis ? "!diagnose" : "!echo hello");
 const expectedReply =
   process.env.TRUAPI_IOS_E2E_CHAT_EXPECTED_REPLY ?? "Echo: hello";
 const expectedStartupMessage =
-  process.env.TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE ??
-  'Chat API checks passed. Send "!echo <message>" to test actions.';
+  process.env.TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE ?? "";
+const reportHeading = "## Truapi Chat Diagnosis";
 const expectCustomRenderer =
   process.env.TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER !== "0";
 const worker = resolve(productRoot, "out/worker/index.js");
@@ -47,6 +55,11 @@ const screenshot = resolve(
   repoRoot,
   process.env.TRUAPI_IOS_E2E_CHAT_SCREENSHOT ??
     "artifacts/truapi-playground-chat.png",
+);
+const reportPath = resolve(
+  repoRoot,
+  process.env.TRUAPI_IOS_E2E_CHAT_REPORT ??
+    "playground/test-results/ios-chat/diagnosis-report.md",
 );
 
 if (!existsSync(app)) {
@@ -89,7 +102,6 @@ const appData = capture("xcrun", [
   "data",
 ]).trim();
 const connectionMarkers = [
-  resolve(appData, "tmp/truapi-e2e", `connected-app-${productHost}`),
   resolve(appData, "tmp/truapi-e2e", `connected-chat-${productHost}`),
 ];
 const customRendererMarker = resolve(
@@ -144,21 +156,37 @@ try {
     },
   );
 
-  await waitForFiles(connectionMarkers, 30_000);
-  if (expectedStartupMessage) {
-    await waitForReply(
+  await waitForFiles(
+    connectionMarkers,
+    60_000,
+    "Ensure the selected simulator has completed Polkadot onboarding.",
+  );
+  if (expectDiagnosis) {
+    const report = await waitForTextPrefix(
       userDataDatabase,
       chatIdentifier,
       messageWatermark,
-      expectedStartupMessage,
+      reportHeading,
+    );
+    const hostReport = labelChatDiagnosisReport(report, "iOS", 5);
+    mkdirSync(dirname(reportPath), { recursive: true });
+    writeFileSync(reportPath, `${hostReport}\n`);
+  } else {
+    if (expectedStartupMessage) {
+      await waitForTextPrefix(
+        userDataDatabase,
+        chatIdentifier,
+        messageWatermark,
+        expectedStartupMessage,
+      );
+    }
+    await waitForTextPrefix(
+      userDataDatabase,
+      chatIdentifier,
+      messageWatermark,
+      expectedReply,
     );
   }
-  await waitForReply(
-    userDataDatabase,
-    chatIdentifier,
-    messageWatermark,
-    expectedReply,
-  );
   if (expectCustomRenderer) {
     await waitForFiles([customRendererMarker], 30_000);
   }
@@ -179,13 +207,13 @@ console.log(
     productName,
     roomId,
     message,
-    expectedReply,
-    expectedStartupMessage,
+    diagnosisVerified: expectDiagnosis,
     customRendererVerified: expectCustomRenderer,
     productUrl,
-    connectedExecutions: ["App", "Chat"],
+    verifiedExecutions: ["Chat"],
     worker,
     workerDestination,
+    report: expectDiagnosis ? reportPath : undefined,
     screenshot,
     verified: true,
   }),
@@ -229,11 +257,7 @@ async function startProductServer(urlString, root) {
       }
       response.setHeader("Content-Type", contentType(file));
       const content = readFileSync(file);
-      response.end(
-        extname(file) === ".html"
-          ? injectAppConnectionProbe(content.toString("utf8"))
-          : content,
-      );
+      response.end(content);
     } catch {
       response.writeHead(404).end();
     }
@@ -243,26 +267,6 @@ async function startProductServer(urlString, root) {
     server.listen(Number(url.port || 80), url.hostname, resolveListen);
   });
   return server;
-}
-
-function injectAppConnectionProbe(html) {
-  const probe = `<script>
-    (() => {
-      let attempts = 0;
-      const timer = setInterval(() => {
-        const button = document.querySelector(
-          '[data-testid="run-storage-string-write-read"]',
-        );
-        if (button) {
-          clearInterval(timer);
-          button.click();
-        } else if (++attempts >= 100) {
-          clearInterval(timer);
-        }
-      }, 100);
-    })();
-  </script>`;
-  return html.replace("</body>", `${probe}</body>`);
 }
 
 function contentType(file) {
@@ -284,7 +288,7 @@ function contentType(file) {
   }
 }
 
-async function waitForFiles(files, timeoutMs) {
+async function waitForFiles(files, timeoutMs, hint) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (files.every(existsSync)) {
@@ -293,7 +297,7 @@ async function waitForFiles(files, timeoutMs) {
     await delay(250);
   }
   throw new Error(
-    `Timed out waiting for execution connections: ${files.join(", ")}`,
+    `Timed out waiting for files: ${files.join(", ")}${hint ? `\n${hint}` : ""}`,
   );
 }
 
@@ -308,60 +312,41 @@ function latestMessageId(database, identifier) {
   return Number.parseInt(value, 10) || 0;
 }
 
-async function waitForReply(database, identifier, afterMessageId, reply) {
-  const expectedPayload = Buffer.concat([
-    Buffer.of(0),
-    encodeScaleCompact(Buffer.byteLength(reply, "utf8")),
-    Buffer.from(reply, "utf8"),
-  ])
-    .toString("hex")
-    .toUpperCase();
+async function waitForTextPrefix(database, identifier, afterMessageId, prefix) {
   const deadline = Date.now() + 30_000;
 
   while (Date.now() < deadline) {
     if (existsSync(database)) {
       const query = `
-        SELECT COUNT(*)
+        SELECT hex(content.ZDATA)
         FROM ZCDCHATMESSAGE AS message
         JOIN ZCDCHAT AS chat ON chat.Z_PK = message.ZCHAT
         JOIN ZCDMESSAGECONTENT AS content ON content.Z_PK = message.ZCONTENT
         WHERE chat.ZIDENTIFIER = ${sqlString(identifier)}
           AND message.Z_PK > ${afterMessageId}
-          AND hex(content.ZDATA) = ${sqlString(expectedPayload)};
+        ORDER BY message.Z_PK;
       `;
-      if (capture("sqlite3", [database, query]).trim() !== "0") {
-        return;
+      const values = capture("sqlite3", [database, query])
+        .trim()
+        .split(/\r?\n/)
+        .filter(Boolean);
+      for (const value of values) {
+        const text = decodeTextMessage(value);
+        if (text?.startsWith(prefix)) {
+          return text;
+        }
       }
     }
     await delay(250);
   }
 
   throw new Error(
-    `Timed out waiting for ${JSON.stringify(reply)} in ${identifier}`,
+    `Timed out waiting for a message starting with ${JSON.stringify(prefix)} in ${identifier}`,
   );
 }
 
 function delay(milliseconds) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
-}
-
-function encodeScaleCompact(value) {
-  if (value < 1 << 6) {
-    return Buffer.of(value << 2);
-  }
-  if (value < 1 << 14) {
-    const encoded = (value << 2) | 1;
-    const result = Buffer.allocUnsafe(2);
-    result.writeUInt16LE(encoded);
-    return result;
-  }
-  if (value < 1 << 30) {
-    const encoded = value * 4 + 2;
-    const result = Buffer.allocUnsafe(4);
-    result.writeUInt32LE(encoded);
-    return result;
-  }
-  throw new Error("Expected reply is too large for this E2E assertion");
 }
 
 function sqlString(value) {

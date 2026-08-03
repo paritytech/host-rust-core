@@ -657,7 +657,8 @@ export interface ChainProvider {
 }
 
 /**
- * Optional native chat storage and UI adapter used by Chat executions.
+ * Host-implemented adapter through which product Chat calls reach native
+ * storage and UI.
  */
 export interface ChatPlatform {
   /**

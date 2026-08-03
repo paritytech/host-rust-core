@@ -311,7 +311,7 @@ pub enum CustomRendererNode {
 
 /// Values sent by a product on its custom-message renderer request stream.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub enum ProductChatCustomMessageRenderSubscribeRequest {
+pub enum ProductChatCustomMessageRenderChannelRequest {
     /// Replace the native tree for an active render instance.
     Update {
         /// Identifier supplied by the host in the corresponding render item.
@@ -326,10 +326,10 @@ pub enum ProductChatCustomMessageRenderSubscribeRequest {
     },
 }
 
-/// Custom-message render work sent by the host to the product.
+/// Render item sent from Rust to the product on the renderer response stream.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct ProductChatCustomMessageRenderSubscribeItem {
-    /// Stable identifier used to correlate updates and widget actions.
+pub struct ProductChatCustomMessageRenderChannelItem {
+    /// Stable identifier used to correlate updates and triggered actions.
     pub message_id: String,
     /// Product-defined discriminator used to select a renderer.
     pub message_type: String,

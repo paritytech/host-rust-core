@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use truapi::versioned::chat::{
-    HostChatActionSubscribeItem, ProductChatCustomMessageRenderSubscribeItem,
-    ProductChatCustomMessageRenderSubscribeRequest,
+    HostChatActionSubscribeItem, ProductChatCustomMessageRenderChannelItem,
+    ProductChatCustomMessageRenderChannelRequest,
 };
 use truapi::{Subscription, v01};
 
@@ -18,7 +18,7 @@ const ACTION_BUFFER_CAPACITY: usize = 64;
 
 struct RendererState {
     generation: u64,
-    work: mpsc::UnboundedSender<ProductChatCustomMessageRenderSubscribeItem>,
+    work: mpsc::UnboundedSender<ProductChatCustomMessageRenderChannelItem>,
     renders: HashMap<String, mpsc::UnboundedSender<v01::CustomRendererNode>>,
 }
 
@@ -96,8 +96,8 @@ impl ChatConnection {
     /// Register the product's paired renderer streams for this connection.
     pub(crate) fn register_renderer(
         &self,
-        mut requests: Subscription<ProductChatCustomMessageRenderSubscribeRequest>,
-    ) -> Subscription<ProductChatCustomMessageRenderSubscribeItem> {
+        mut requests: Subscription<ProductChatCustomMessageRenderChannelRequest>,
+    ) -> Subscription<ProductChatCustomMessageRenderChannelItem> {
         let (work, receiver) = mpsc::unbounded();
         let generation = {
             let mut state = self.state.lock().expect("chat state mutex poisoned");
@@ -126,8 +126,8 @@ impl ChatConnection {
                     break;
                 };
                 match request {
-                    ProductChatCustomMessageRenderSubscribeRequest::V1(
-                        v01::ProductChatCustomMessageRenderSubscribeRequest::Update {
+                    ProductChatCustomMessageRenderChannelRequest::V1(
+                        v01::ProductChatCustomMessageRenderChannelRequest::Update {
                             message_id,
                             node,
                         },
@@ -138,8 +138,8 @@ impl ChatConnection {
                             renderer.renders.remove(&message_id);
                         }
                     }
-                    ProductChatCustomMessageRenderSubscribeRequest::V1(
-                        v01::ProductChatCustomMessageRenderSubscribeRequest::Failed { message_id },
+                    ProductChatCustomMessageRenderChannelRequest::V1(
+                        v01::ProductChatCustomMessageRenderChannelRequest::Failed { message_id },
                     ) => {
                         renderer.renders.remove(&message_id);
                     }
@@ -175,8 +175,8 @@ impl ChatConnection {
             .as_mut()
             .ok_or(ProductRuntimeError::Unsupported)?;
         renderer.renders.insert(message_id.clone(), sender);
-        let item = ProductChatCustomMessageRenderSubscribeItem::V1(
-            v01::ProductChatCustomMessageRenderSubscribeItem {
+        let item = ProductChatCustomMessageRenderChannelItem::V1(
+            v01::ProductChatCustomMessageRenderChannelItem {
                 message_id: message_id.clone(),
                 message_type,
                 payload,
@@ -273,8 +273,8 @@ mod tests {
 
         assert_eq!(
             block_on(work.next()),
-            Some(ProductChatCustomMessageRenderSubscribeItem::V1(
-                v01::ProductChatCustomMessageRenderSubscribeItem {
+            Some(ProductChatCustomMessageRenderChannelItem::V1(
+                v01::ProductChatCustomMessageRenderChannelItem {
                     message_id: "one".into(),
                     message_type: "vote".into(),
                     payload: vec![1],
@@ -283,8 +283,8 @@ mod tests {
         );
         assert_eq!(
             block_on(work.next()),
-            Some(ProductChatCustomMessageRenderSubscribeItem::V1(
-                v01::ProductChatCustomMessageRenderSubscribeItem {
+            Some(ProductChatCustomMessageRenderChannelItem::V1(
+                v01::ProductChatCustomMessageRenderChannelItem {
                     message_id: "two".into(),
                     message_type: "balance".into(),
                     payload: vec![2],
@@ -296,8 +296,8 @@ mod tests {
             text: "second".into(),
         };
         requests_tx
-            .unbounded_send(ProductChatCustomMessageRenderSubscribeRequest::V1(
-                v01::ProductChatCustomMessageRenderSubscribeRequest::Update {
+            .unbounded_send(ProductChatCustomMessageRenderChannelRequest::V1(
+                v01::ProductChatCustomMessageRenderChannelRequest::Update {
                     message_id: "two".into(),
                     node: node.clone(),
                 },
@@ -307,8 +307,8 @@ mod tests {
         assert_eq!(block_on(second.next()), Some(node));
 
         requests_tx
-            .unbounded_send(ProductChatCustomMessageRenderSubscribeRequest::V1(
-                v01::ProductChatCustomMessageRenderSubscribeRequest::Failed {
+            .unbounded_send(ProductChatCustomMessageRenderChannelRequest::V1(
+                v01::ProductChatCustomMessageRenderChannelRequest::Failed {
                     message_id: "one".into(),
                 },
             ))
@@ -328,8 +328,8 @@ mod tests {
 
         for text in ["first", "second"] {
             requests_tx
-                .unbounded_send(ProductChatCustomMessageRenderSubscribeRequest::V1(
-                    v01::ProductChatCustomMessageRenderSubscribeRequest::Update {
+                .unbounded_send(ProductChatCustomMessageRenderChannelRequest::V1(
+                    v01::ProductChatCustomMessageRenderChannelRequest::Update {
                         message_id: "one".into(),
                         node: CustomRendererNode::String { text: text.into() },
                     },
@@ -409,8 +409,8 @@ mod tests {
             text: "first product".into(),
         };
         first_requests_tx
-            .unbounded_send(ProductChatCustomMessageRenderSubscribeRequest::V1(
-                v01::ProductChatCustomMessageRenderSubscribeRequest::Update {
+            .unbounded_send(ProductChatCustomMessageRenderChannelRequest::V1(
+                v01::ProductChatCustomMessageRenderChannelRequest::Update {
                     message_id: "same-id".into(),
                     node: node.clone(),
                 },

@@ -953,7 +953,8 @@ pub trait PreimageHost: Send + Sync {
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, GenericError>>;
 }
 
-/// Optional native chat storage and UI adapter used by Chat executions.
+/// Host-implemented adapter through which product Chat calls reach native
+/// storage and UI.
 #[async_trait]
 pub trait ChatPlatform: Send + Sync {
     /// Create or resolve a product-scoped native chat room.

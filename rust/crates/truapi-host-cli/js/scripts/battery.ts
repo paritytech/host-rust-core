@@ -20,7 +20,7 @@ import { createDiagnosisPlan, runDiagnosis } from "../diagnosis.ts";
 const report = cliDiagnosisReportMetadata(process.env.TRUAPI_CLI_HOST_ROLE);
 const DEFAULT_REPORT_PATH = fileURLToPath(
   new URL(
-    `../../../../../explorer/diagnosis-reports/${report.filename}`,
+    `../../../../../explorer/diagnosis-reports/spa/${report.filename}`,
     import.meta.url,
   ),
 );

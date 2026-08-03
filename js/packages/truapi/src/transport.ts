@@ -106,13 +106,15 @@ export interface ObservableLike<Item, Reason = never> {
 }
 
 /**
- * Minimal write-only stream used by generated paired-stream APIs.
+ * Observable source accepted by generated channel methods as the
+ * product-to-host request stream. Structurally satisfied by RxJS subjects and
+ * observables as well as generated `ObservableLike` values.
  **/
-export interface SubjectLike<Item> {
+export interface ObservableSource<Item> {
   /**
-   * Send one item on the active paired stream.
+   * Start consuming the source until the returned handle unsubscribes.
    **/
-  next(value: Item): void;
+  subscribe(observer: Partial<Observer<Item>>): { unsubscribe(): void };
 }
 
 /**

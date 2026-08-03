@@ -760,6 +760,7 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
     {
         kind = MethodKind::StreamPair;
     }
+    validate_stream_method_name(&name, kind)?;
 
     let wire = item
         .docs
@@ -775,6 +776,18 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
         wire,
         docs: clean_docs(item.docs.as_deref()),
     }))
+}
+
+fn validate_stream_method_name(name: &str, kind: MethodKind) -> Result<()> {
+    if matches!(kind, MethodKind::StreamPair) && name.ends_with("_subscribe") {
+        let stem = name
+            .strip_suffix("_subscribe")
+            .expect("suffix checked above");
+        bail!(
+            "Paired-stream method `{name}` must use the `_channel` suffix; rename it to `{stem}_channel`"
+        );
+    }
+    Ok(())
 }
 
 /// Strips hidden codegen marker lines from a rustdoc comment so it can be
@@ -1505,6 +1518,26 @@ mod tests {
 
         assert_eq!(trait_def.required_execution(), Some("Chat"));
         assert_eq!(trait_def.public_docs().as_deref(), Some("Chat operations."));
+    }
+
+    #[test]
+    fn stream_pair_rejects_subscribe_suffix() {
+        let error =
+            validate_stream_method_name("custom_message_render_subscribe", MethodKind::StreamPair)
+                .expect_err("paired streams must not use the subscription suffix");
+
+        assert_eq!(
+            error.to_string(),
+            "Paired-stream method `custom_message_render_subscribe` must use the `_channel` suffix; rename it to `custom_message_render_channel`"
+        );
+    }
+
+    #[test]
+    fn stream_pair_accepts_channel_suffix() {
+        assert!(
+            validate_stream_method_name("custom_message_render_channel", MethodKind::StreamPair)
+                .is_ok()
+        );
     }
 
     #[test]

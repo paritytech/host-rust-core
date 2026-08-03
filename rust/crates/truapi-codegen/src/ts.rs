@@ -936,12 +936,12 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         import * as S from '../scale.js';
         import type {{ HexString }} from '../scale.js';
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ ObservableLike, Observer, SubjectLike, Subscription, SubscriptionFrameIds, TrUApiTransport }} from '../transport.js';
+        import type {{ ObservableLike, ObservableSource, Observer, Subscription, SubscriptionFrameIds, TrUApiTransport }} from '../transport.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
         export {{ ResultAsync, SubscriptionError }};
-        export type {{ ObservableLike, Observer, Result, SubjectLike, Subscription, TrUApiTransport }};
+        export type {{ ObservableLike, ObservableSource, Observer, Result, Subscription, TrUApiTransport }};
         export const TRUAPI_VERSION = {target_version} as const;
         export const TRUAPI_CODEC_VERSION = {codec_version} as const;
 
@@ -1147,70 +1147,81 @@ fn write_observable_helper(out: &mut String) {
 fn write_stream_pair_helper(out: &mut String) {
     out.push_str(indoc! {
         r#"
-        function createStreamPair<Request, Item>({
+        function createStreamChannel<Request, Item>({
           transport,
           ids,
           payload,
+          requests,
           encodeRequest,
           decodeItem,
         }: {
           transport: TrUApiTransport;
           ids: SubscriptionFrameIds;
           payload: Uint8Array;
+          requests: ObservableSource<Request>;
           encodeRequest: (request: Request) => Uint8Array;
           decodeItem: (payload: Uint8Array) => Item;
-        }): { requests: SubjectLike<Request>; responses: ObservableLike<Item> } {
-          let active: Subscription | undefined;
+        }): ObservableLike<Item> {
+          let used = false;
           const source = createObservable<Item>({ transport, ids, payload, decodeItem });
-          const responses: ObservableLike<Item> = {
+          const items: ObservableLike<Item> = {
             subscribe(observer: Partial<Observer<Item>> = {}): Subscription {
-              if (active) throw new Error("paired stream already has an active subscriber");
+              if (used) throw new Error("channel is single-use: its one subscription is the operation");
+              used = true;
+              let requestSubscription: { unsubscribe(): void } | undefined;
               let terminated = false;
+              const stopForwarding = () => {
+                const forwarding = requestSubscription;
+                requestSubscription = undefined;
+                forwarding?.unsubscribe();
+              };
               const subscription = source.subscribe({
                 next(value) {
                   observer.next?.(value);
                 },
                 error(error) {
                   terminated = true;
-                  active = undefined;
+                  stopForwarding();
                   observer.error?.(error);
                 },
                 complete() {
                   terminated = true;
-                  active = undefined;
+                  stopForwarding();
                   observer.complete?.();
                 },
               });
-              if (!terminated) active = subscription;
+              if (!terminated) {
+                try {
+                  requestSubscription = requests.subscribe({
+                    next(request) {
+                      transport.sendSubscriptionItem({
+                        ids,
+                        subscriptionId: subscription.subscriptionId,
+                        payload: encodeRequest(request),
+                      });
+                    },
+                  });
+                } catch (error) {
+                  subscription.unsubscribe();
+                  throw error;
+                }
+                if (terminated) stopForwarding();
+              }
               return {
                 get subscriptionId() {
                   return subscription.subscriptionId;
                 },
                 unsubscribe() {
+                  stopForwarding();
                   subscription.unsubscribe();
-                  if (active === subscription) active = undefined;
                 },
               };
             },
             [OBSERVABLE_INTEROP as typeof Symbol.observable]() {
-              return responses;
+              return items;
             },
           };
-          return {
-            requests: {
-              next(request) {
-                if (!active?.subscriptionId) {
-                  throw new Error("subscribe to responses before sending paired-stream requests");
-                }
-                transport.sendSubscriptionItem({
-                  ids,
-                  subscriptionId: active.subscriptionId,
-                  payload: encodeRequest(request),
-                });
-              },
-            },
-            responses,
-          };
+          return items;
         }
 
         "#
@@ -1647,13 +1658,13 @@ fn emit_stream_pair_method(
     writedoc!(
         out,
         "
-          {ts_method_name}(): {{
-            requests: SubjectLike<{request_type}>;
-            responses: ObservableLike<{response_type}>;
-          }} {{
-            return createStreamPair<{request_type}, {response_type}>({{
+          {ts_method_name}(
+            requests: ObservableSource<{request_type}>,
+          ): ObservableLike<{response_type}> {{
+            return createStreamChannel<{request_type}, {response_type}>({{
               transport: this.transport,
               ids: W.{wire_const},
+              requests,
         ",
         request_type = request.inner_type_ts,
         response_type = response.inner_type_ts,
@@ -3010,13 +3021,13 @@ mod tests {
     }
 
     #[test]
-    fn generate_client_emits_subject_and_observable_for_stream_pair() {
+    fn generate_client_emits_channel_for_stream_pair() {
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Chat".to_string(),
                 module_path: Vec::new(),
                 methods: vec![stream_pair_method_with_wrappers(
-                    "custom_message_render_subscribe",
+                    "custom_message_render_channel",
                     Some(52),
                     "RendererRequest",
                     "RendererItem",
@@ -3032,9 +3043,11 @@ mod tests {
 
         let source = generate_client(&api, 1, 1).expect("generate paired-stream client");
 
-        assert!(source.contains("requests: SubjectLike<T.RendererRequestV1>"));
-        assert!(source.contains("responses: ObservableLike<T.RendererItemV1>"));
-        assert!(source.contains("return createStreamPair<T.RendererRequestV1, T.RendererItemV1>"));
+        assert!(source.contains("requests: ObservableSource<T.RendererRequestV1>"));
+        assert!(source.contains("): ObservableLike<T.RendererItemV1>"));
+        assert!(
+            source.contains("return createStreamChannel<T.RendererRequestV1, T.RendererItemV1>")
+        );
         assert!(source.contains("transport.sendSubscriptionItem({"));
     }
 

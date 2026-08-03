@@ -16,7 +16,24 @@ export interface MethodInfo {
   errorType?: string;
 }
 
+/** Trusted executable kind required to access a generated service. */
+export type ProductExecutionKind = "App" | "Widget" | "Chat";
+
 export interface ServiceInfo {
   name: string;
+  /** Executable kind required by the host, or unrestricted when absent. */
+  requiredExecution?: ProductExecutionKind;
   methods: MethodInfo[];
+}
+
+/** Services visible to one trusted executable kind. */
+export function servicesForExecution(
+  services: ServiceInfo[],
+  execution: ProductExecutionKind,
+): ServiceInfo[] {
+  return services.filter(
+    (service) =>
+      service.requiredExecution === undefined ||
+      service.requiredExecution === execution,
+  );
 }

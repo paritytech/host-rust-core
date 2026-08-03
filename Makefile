@@ -149,7 +149,7 @@ ios-run: ios-build ## Build and launch the local TrUAPI playground in an iPhone 
 	TRUAPI_IOS_E2E_PRODUCT_URL="$(IOS_PRODUCT_URL)" \
 	node scripts/launch-ios-playground.mjs
 
-ios-chat-run: ios-build ## Verify concurrent TrUAPI Playground App + Chat executions in an iPhone simulator.
+ios-chat-run: ios-build ## Run the TrUAPI Playground Chat diagnosis in an iPhone simulator.
 	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
 	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
 	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(IOS_CHAT_PRODUCT_DIR)" \
@@ -166,6 +166,8 @@ ios-chat-host-playground-run: ios-build ## Verify Host Playground Chat through t
 	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_HOST_PLAYGROUND_NAME)" \
 	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_HOST_PLAYGROUND_URL)" \
 	TRUAPI_IOS_E2E_CHAT_ROOM_ID="host-playground-room" \
+	TRUAPI_IOS_E2E_CHAT_MESSAGE="!echo hello" \
+	TRUAPI_IOS_E2E_CHAT_DIAGNOSIS="0" \
 	TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE="" \
 	TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER="0" \
 	TRUAPI_IOS_E2E_CHAT_SCREENSHOT="artifacts/host-playground-chat.png" \

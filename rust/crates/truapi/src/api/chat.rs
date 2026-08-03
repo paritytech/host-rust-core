@@ -5,7 +5,7 @@ use crate::versioned::chat::{
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
     HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
     HostChatRegisterBotRequest, HostChatRegisterBotResponse,
-    ProductChatCustomMessageRenderSubscribeItem, ProductChatCustomMessageRenderSubscribeRequest,
+    ProductChatCustomMessageRenderChannelItem, ProductChatCustomMessageRenderChannelRequest,
 };
 use crate::wire;
 use crate::{CallContext, CallError, Subscription};
@@ -106,16 +106,20 @@ pub trait Chat: Send + Sync {
         Subscription::empty()
     }
 
-    /// Open the paired custom-message renderer streams.
+    /// Serves custom-message rendering over a product-initiated channel.
     ///
-    /// The product subscribes to the returned stream for render work and
-    /// publishes replacement trees through `requests`.
+    /// The product passes its request stream and subscribes to the returned
+    /// stream for render work. The channel is single-use: the one
+    /// subscription is the operation, and a new operation is a new call.
     ///
     /// ```ts
-    /// const renderer = truapi.chat.customMessageRenderSubscribe();
-    /// renderer.responses.subscribe({
+    /// import { Subject } from "rxjs";
+    /// import type { ProductChatCustomMessageRenderChannelRequest } from "@parity/truapi";
+    ///
+    /// const requests = new Subject<ProductChatCustomMessageRenderChannelRequest>();
+    /// truapi.chat.customMessageRenderChannel(requests).subscribe({
     ///   next(item) {
-    ///     renderer.requests.next({
+    ///     requests.next({
     ///       tag: "Failed",
     ///       value: { messageId: item.messageId },
     ///     });
@@ -123,11 +127,11 @@ pub trait Chat: Send + Sync {
     /// });
     /// ```
     #[wire(start_id = 52)]
-    async fn custom_message_render_subscribe(
+    async fn custom_message_render_channel(
         &self,
         _cx: &CallContext,
-        _requests: Subscription<ProductChatCustomMessageRenderSubscribeRequest>,
-    ) -> Subscription<ProductChatCustomMessageRenderSubscribeItem> {
+        _requests: Subscription<ProductChatCustomMessageRenderChannelRequest>,
+    ) -> Subscription<ProductChatCustomMessageRenderChannelItem> {
         Subscription::empty()
     }
 }

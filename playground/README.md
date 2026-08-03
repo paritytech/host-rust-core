@@ -1,24 +1,24 @@
 # TrUAPI Playground
 
-_Browse, edit, and call every TrUAPI method live against a connected Polkadot host._
+_Browse, edit, and call App-compatible TrUAPI methods live against a connected Polkadot host._
 
-The playground is an interactive reference for the TrUAPI: every method grouped by domain, with live request payload editing, one-click calls, and live subscriptions. It must be opened from inside a TrUAPI host so it can talk to the host over the wire.
+The playground is an interactive reference for the App-compatible TrUAPI surface: methods are grouped by domain, with live request payload editing, one-click calls, and live subscriptions. It must be opened from inside a TrUAPI host so it can talk to the host over the wire.
 
 **Live app:** [https://truapi-playground.dot.li/](https://truapi-playground.dot.li/)
 
 ## Features
 
-- **Full method browser**: every TrUAPI service and method, each with a description and a Request / Response or Subscription badge.
+- **Execution-aware method browser**: every TrUAPI service available to an `App` execution, each with a description and a Request / Response or Subscription badge.
 - **Live calls**: edit a JSON request payload and fire the call against the connected host.
 - **Subscriptions**: open and close streaming methods and watch events arrive in real time.
-- **Auto-test view**: runs every method and reports pass / fail in one pass.
-- **Diagnosis view**: runs the full surface and produces a copy-pasteable markdown report per host. The explorer's Compatibility page aggregates those into a cross-host matrix. See [Diagnosis](#diagnosis).
+- **Auto-test view**: runs every listed method and reports pass / fail in one pass.
+- **Diagnosis view**: runs the App surface and produces a copy-pasteable markdown report per host. The explorer's Compatibility page aggregates those into a cross-host matrix. See [Diagnosis](#diagnosis).
 - **Wiring status**: methods that are not yet bound are flagged "Not supported" so you can see protocol coverage at a glance.
-- **Chat worker**: the same build emits `out/worker/index.js`, which exercises
-  every generated Chat method. It verifies room creation, the intentionally
-  unavailable bot registration call, room-list updates, text and custom
-  messages, actions, and the paired custom-renderer streams before answering
-  `!echo <message>`.
+- **Chat diagnosis**: the same build emits `out/worker/index.js`, a native Chat
+  application that tests room creation and idempotency, live room-list updates,
+  text and custom messages, user actions, and custom-renderer channels. It
+  displays live results in Chat and posts a Chat-only Markdown report after
+  `!diagnose` completes the action check.
 
 ## Local development
 
@@ -38,6 +38,11 @@ The app needs a host to connect to. Opening it directly in a regular browser wil
 `yarn build` produces both the static SPA under `out/` and its Chat executable
 at `out/worker/index.js`. Both resolve `@parity/truapi` from the linked
 workspace package in `../js/packages/truapi`.
+
+The browser and Chat diagnoses are intentionally separate. Generated service
+metadata carries `requiredExecution`; the browser omits services requiring
+`Chat`, while the worker tests only the Chat service in its trusted Chat
+connection.
 
 ## Adding a method
 
@@ -60,7 +65,19 @@ An example **passes** when its promise resolves and **fails** when it throws. Us
 
 ## Diagnosis
 
-The Diagnosis view exercises every TrUAPI method against the connected host and emits a per-host pass/fail report you can copy out. Per-host reports feed the explorer's **Compatibility** page, which renders the host × method matrix; aggregation lives in the explorer (see [`explorer/README.md`](../explorer/README.md#host-compatibility-matrix)).
+The Diagnosis view exercises every App-compatible TrUAPI method against the connected host and emits a per-host pass/fail report you can copy out. Per-host reports feed the explorer's **Compatibility** page, which renders the host × method matrix; aggregation lives in the explorer (see [`explorer/README.md`](../explorer/README.md#host-compatibility-matrix)). Chat APIs are diagnosed separately by the native Chat worker.
+
+Run the iOS Chat diagnosis from the repository root:
+
+```bash
+make ios-chat-run
+```
+
+It writes a Chat-only report to
+`playground/test-results/ios-chat/diagnosis-report.md`. The native diagnosis
+widget also provides **Copy report**; save the result as
+`explorer/diagnosis-reports/chat/ios.md` to update the explorer's separate Chat
+compatibility section.
 
 Open the playground inside a TrUAPI host (it cannot run standalone in a browser tab):
 
@@ -78,7 +95,7 @@ Then, in the playground:
 2. Read the instructions on the screen, then click **Run diagnosis**.
 3. Wait for the run to finish. Non-disruptive methods run in parallel first, then disruptive methods run one at a time — approve each pop-up on your phone as it appears. A live log updates per method (`queued → processing… → success / failed`).
 4. When the run finishes, a **Report** panel appears above the log. Click **Copy report**.
-5. Click **Submit report ↗** to file a pre-filled GitHub issue that the `diagnosis-report` workflow turns into a per-host PR under `explorer/diagnosis-reports/`. (Or click **Copy report**, save the markdown to a host-named file like `web.md`, and update the matrix by hand — see [`../explorer/README.md`](../explorer/README.md#updating-the-matrix).)
+5. Click **Submit report ↗** to file a pre-filled GitHub issue that the `diagnosis-report` workflow turns into a per-host PR under `explorer/diagnosis-reports/`. (Or click **Copy report**, save the markdown to a host-named file like `spa/web.md`, and update the matrix by hand — see [`../explorer/README.md`](../explorer/README.md#updating-the-matrix).)
 
 The report looks like this:
 
