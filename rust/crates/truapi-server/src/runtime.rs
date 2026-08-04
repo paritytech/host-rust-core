@@ -60,9 +60,8 @@ use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use services::RuntimeServices;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, WalletDerivations, answer_pairing,
-    respond_to_pairing, serve_session as serve_responder_session,
-    session_for_peer as responder_session_for_peer,
+    LocalActivation, SigningHost as SigningHostRole, answer_pairing, respond_to_pairing,
+    serve_session as serve_responder_session, session_for_peer as responder_session_for_peer,
     submit_disconnected as submit_responder_disconnected,
 };
 pub use signing_host::{ResponderExit, ResponderPeer};

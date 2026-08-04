@@ -58,16 +58,15 @@ xcrun simctl launch "$IOS_SSO_SIMULATOR_ID" io.pcf.polkadotapp.develop
 
 ## Prepare a real iOS identity
 
-Recover or create a disposable test wallet in the app and claim its username
-through the native iOS flow. Do not import an identity created by the generic
-Rust CLI and assume it represents iOS: deployed iOS SSO uses the legacy
-`//wallet` identity and its own full/lite Bandersnatch derivations. An account
-claimed on PreviewNet also does not provide membership on Paseo Next v2.
+Recover or create a disposable RFC-0022 test wallet and make sure its `uid.dot`
+identity plus `peopl.dot` LitePeople membership are registered on Paseo Next
+v2 before importing the same mnemonic into the app. A wallet claimed through
+the older native `//wallet` flow is not an RFC-0022 test identity and will fail
+alias, proof, allowance, and legacy-identity signing checks even when the
+shared core is working correctly.
 
-The native bridge reports `platformType` as `iOS`; Rust uses that value to
-select the deployed iOS compatibility profile for SSO. Keep the generic CLI on
-the RFC-0022 profile instead of changing the derivations globally, or the
-headless pairing-host battery will regress while the simulator starts passing.
+All hosts use the same RFC-0022 derivations. `platformType` is metadata only;
+it must never select account, ring-VRF, allowance, or ECDH key material.
 
 On a fresh simulator, the app can remain on “Waiting for network connection”
 until Safari has made the simulator's first network request. Open any HTTPS
@@ -128,9 +127,9 @@ Over/recovery flow rather than adding more defaults.
 - `channelPriorityTooLow` on the second rapid SSO request means two statements
   reused an expiry priority. Rust statement priorities are process-locally
   monotonic so calls created in the same second remain strictly ordered.
-- A legacy signer “not available in this CLI wallet” means an SSO request was
-  routed through the generic RFC-0022 identity instead of the deployed iOS
-  `//wallet` compatibility path.
+- A legacy signer “not available in this CLI wallet” means the requested
+  account is not the RFC-0022 `uid.dot` identity derived from the active root
+  entropy. Check that the simulator imported the RFC-provisioned mnemonic.
 - A ten-second timeout after approving VRF is a CLI diagnosis timeout, not a
   cryptographic failure. Interactive SSO methods use the remote-response
   timeout in the battery runner.

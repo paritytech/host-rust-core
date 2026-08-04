@@ -40,9 +40,7 @@ use crate::host_logic::extrinsic::{
 };
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
-    derive_ios_full_person_ring_vrf_entropy, derive_ios_lite_person_ring_vrf_entropy,
-    derive_ios_sso_identity_keypair, derive_product_keypair, derive_product_subtree_keypair,
-    derive_root_keypair_from_entropy,
+    derive_product_keypair, derive_product_subtree_keypair, derive_root_keypair_from_entropy,
 };
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
@@ -64,12 +62,6 @@ use zeroize::Zeroizing;
 const BYTES_WRAP_PREFIX: &[u8] = b"<Bytes>";
 const BYTES_WRAP_SUFFIX: &[u8] = b"</Bytes>";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WalletDerivations {
-    Rfc0022,
-    DeployedIosSso,
-}
-
 /// Wallet-local account authority for a signing host.
 pub(crate) struct SigningHost {
     services: Arc<RuntimeServices>,
@@ -77,19 +69,13 @@ pub(crate) struct SigningHost {
     session_state: Arc<SessionState>,
     auth_state: AuthStateMachine,
     ring_resolver: Arc<dyn RingResolver>,
-    /// SSO compatibility profile selected by the embedding platform. Direct
-    /// product calls always remain on RFC-0022 derivations.
-    sso_derivations: WalletDerivations,
     /// Root BIP-39 entropy held only while a session is active.
     root_entropy: Mutex<Option<Zeroizing<Vec<u8>>>>,
 }
 
 impl SigningHost {
     /// Build a signing host with no active session.
-    pub(crate) fn new(
-        services: Arc<RuntimeServices>,
-        sso_derivations: WalletDerivations,
-    ) -> Arc<Self> {
+    pub(crate) fn new(services: Arc<RuntimeServices>) -> Arc<Self> {
         let platform = services.platform.clone();
         let ring_resolver = ChainRingResolver::new(services.chain.clone());
         Arc::new(Self {
@@ -98,7 +84,6 @@ impl SigningHost {
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform),
             ring_resolver,
-            sso_derivations,
             root_entropy: Mutex::new(None),
         })
     }
@@ -107,7 +92,6 @@ impl SigningHost {
     fn new_with_ring_resolver(
         platform: Arc<dyn Platform>,
         ring_resolver: Arc<dyn RingResolver>,
-        sso_derivations: WalletDerivations,
     ) -> Arc<Self> {
         let services = RuntimeServices::new(
             platform.clone(),
@@ -121,7 +105,6 @@ impl SigningHost {
             session_state: SessionState::new(),
             auth_state: AuthStateMachine::new(platform),
             ring_resolver,
-            sso_derivations,
             root_entropy: Mutex::new(None),
         })
     }
@@ -139,10 +122,6 @@ impl SigningHost {
             .expect("signing host entropy mutex poisoned")
             .clone()
             .ok_or(AuthorityError::Disconnected)
-    }
-
-    pub(crate) fn sso_derivations(&self) -> WalletDerivations {
-        self.sso_derivations
     }
 
     fn product_subtree_secret(&self, product_id: &str) -> Result<[u8; 64], AuthorityError> {
@@ -183,42 +162,27 @@ impl SigningHost {
         .map_err(product_authority_error)
     }
 
-    fn identity_keypair(
-        &self,
-        derivations: WalletDerivations,
-    ) -> Result<schnorrkel::Keypair, AuthorityError> {
+    fn identity_keypair(&self) -> Result<schnorrkel::Keypair, AuthorityError> {
         let entropy = self.root_entropy()?;
-        match derivations {
-            WalletDerivations::Rfc0022 => derive_identity_keypair(&entropy),
-            WalletDerivations::DeployedIosSso => derive_ios_sso_identity_keypair(&entropy),
-        }
-        .map_err(product_authority_error)
+        derive_identity_keypair(&entropy).map_err(product_authority_error)
     }
 
     fn person_entropy(
         &self,
         session: &AuthoritySession,
         key: PersonKey,
-        derivations: WalletDerivations,
     ) -> Result<Zeroizing<[u8; 32]>, RingVrfError> {
         require_current_session(&self.session_state, session)?;
         let root = self.root_entropy()?;
-        Ok(match derivations {
-            WalletDerivations::Rfc0022 => person_entropy(&root, key),
-            WalletDerivations::DeployedIosSso => Zeroizing::new(match key {
-                PersonKey::Full => derive_ios_full_person_ring_vrf_entropy(&root),
-                PersonKey::Lite => derive_ios_lite_person_ring_vrf_entropy(&root),
-            }),
-        })
+        Ok(person_entropy(&root, key))
     }
 
     fn member_candidates(
         &self,
         session: &AuthoritySession,
-        derivations: WalletDerivations,
     ) -> Result<[MemberCandidate; 2], RingVrfError> {
-        let full_entropy = self.person_entropy(session, PersonKey::Full, derivations)?;
-        let lite_entropy = self.person_entropy(session, PersonKey::Lite, derivations)?;
+        let full_entropy = self.person_entropy(session, PersonKey::Full)?;
+        let lite_entropy = self.person_entropy(session, PersonKey::Lite)?;
         Ok([
             MemberCandidate {
                 key: PersonKey::Full,
@@ -231,11 +195,10 @@ impl SigningHost {
         ])
     }
 
-    async fn account_alias_with_derivations(
+    async fn account_alias_inner(
         &self,
         session: &AuthoritySession,
         request: AccountAliasAuthorityRequest,
-        derivations: WalletDerivations,
     ) -> Result<v01::ContextualAlias, RingVrfError> {
         require_current_session(&self.session_state, session)?;
         match super::account_access_authorization(
@@ -258,7 +221,7 @@ impl SigningHost {
         }
         let collection = self.ring_resolver.validate(&request.ring_location).await?;
         let context = context_bytes(&request.context);
-        let entropy = self.person_entropy(session, key_for_collection(&collection), derivations)?;
+        let entropy = self.person_entropy(session, key_for_collection(&collection))?;
         let alias = alias_from_entropy(&entropy, &context)?;
         Ok(v01::ContextualAlias {
             context,
@@ -266,11 +229,10 @@ impl SigningHost {
         })
     }
 
-    async fn create_proof_with_derivations(
+    async fn create_proof_inner(
         &self,
         session: &AuthoritySession,
         request: CreateProofAuthorityRequest,
-        derivations: WalletDerivations,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         require_current_session(&self.session_state, session)?;
         self.confirm_ring_vrf_if_cross_product(
@@ -284,14 +246,14 @@ impl SigningHost {
             }),
         )
         .await?;
-        let candidates = self.member_candidates(session, derivations)?;
+        let candidates = self.member_candidates(session)?;
         let resolved = self
             .ring_resolver
             .resolve(&request.ring_location, &candidates)
             .await?;
         // Reject a stale request if the local session disconnected or changed
         // while its chain snapshot was being resolved.
-        let entropy = self.person_entropy(session, resolved.selected.key, derivations)?;
+        let entropy = self.person_entropy(session, resolved.selected.key)?;
         let context = context_bytes(&request.context);
         let (proof, alias) = create_proof(&entropy, &resolved, &context, &request.message)?;
         Ok(v01::HostAccountCreateProofResponse {
@@ -310,8 +272,7 @@ impl SigningHost {
         session: &AuthoritySession,
         request: AccountAliasAuthorityRequest,
     ) -> Result<v01::ContextualAlias, RingVrfError> {
-        self.account_alias_with_derivations(session, request, self.sso_derivations)
-            .await
+        self.account_alias_inner(session, request).await
     }
 
     async fn sso_create_proof(
@@ -319,19 +280,17 @@ impl SigningHost {
         session: &AuthoritySession,
         request: CreateProofAuthorityRequest,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
-        self.create_proof_with_derivations(session, request, self.sso_derivations)
-            .await
+        self.create_proof_inner(session, request).await
     }
 
-    fn sign_raw_with_identity_derivations(
+    fn sign_raw_with_identity(
         &self,
         session: &AuthoritySession,
         account: [u8; 32],
         payload: v01::RawPayload,
-        derivations: WalletDerivations,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
         require_current_session(&self.session_state, session)?;
-        let keypair = self.identity_keypair(derivations)?;
+        let keypair = self.identity_keypair()?;
         if keypair.public.to_bytes() != account {
             return Err(AuthorityError::Unavailable {
                 reason:
@@ -356,17 +315,16 @@ impl SigningHost {
         account: [u8; 32],
         payload: v01::RawPayload,
     ) -> Result<v01::HostSignPayloadResponse, AuthorityError> {
-        self.sign_raw_with_identity_derivations(session, account, payload, self.sso_derivations)
+        self.sign_raw_with_identity(session, account, payload)
     }
 
-    fn create_identity_transaction_with_derivations(
+    fn create_identity_transaction_inner(
         &self,
         session: &AuthoritySession,
         request: v01::LegacyAccountTxPayload,
-        derivations: WalletDerivations,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
         require_current_session(&self.session_state, session)?;
-        let keypair = self.identity_keypair(derivations)?;
+        let keypair = self.identity_keypair()?;
         if keypair.public.to_bytes() != request.signer {
             return Err(AuthorityError::Unavailable {
                 reason: "signing host: the requested identity account is not available in this CLI wallet"
@@ -386,7 +344,7 @@ impl SigningHost {
         session: &AuthoritySession,
         request: v01::LegacyAccountTxPayload,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
-        self.create_identity_transaction_with_derivations(session, request, self.sso_derivations)
+        self.create_identity_transaction_inner(session, request)
     }
 
     async fn confirm_ring_vrf_if_cross_product(
@@ -529,12 +487,7 @@ impl ProductAuthority for SigningHost {
                 (self.product_keypair(&request.account)?, request.payload)
             }
             SignRawAuthorityRequest::LegacyAccount { account, request } => {
-                return self.sign_raw_with_identity_derivations(
-                    session,
-                    account,
-                    request.payload,
-                    WalletDerivations::Rfc0022,
-                );
+                return self.sign_raw_with_identity(session, account, request.payload);
             }
         };
         require_current_session(&self.session_state, session)?;
@@ -590,12 +543,9 @@ impl ProductAuthority for SigningHost {
                     request.tx_ext_version,
                 )
             }
-            CreateTransactionAuthorityRequest::IdentityAccount(request) => self
-                .create_identity_transaction_with_derivations(
-                    session,
-                    request,
-                    WalletDerivations::Rfc0022,
-                ),
+            CreateTransactionAuthorityRequest::IdentityAccount(request) => {
+                self.create_identity_transaction_inner(session, request)
+            }
         }
     }
 
@@ -605,8 +555,7 @@ impl ProductAuthority for SigningHost {
         session: &AuthoritySession,
         request: AccountAliasAuthorityRequest,
     ) -> Result<v01::ContextualAlias, RingVrfError> {
-        self.account_alias_with_derivations(session, request, WalletDerivations::Rfc0022)
-            .await
+        self.account_alias_inner(session, request).await
     }
 
     async fn create_proof(
@@ -615,8 +564,7 @@ impl ProductAuthority for SigningHost {
         session: &AuthoritySession,
         request: CreateProofAuthorityRequest,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
-        self.create_proof_with_derivations(session, request, WalletDerivations::Rfc0022)
-            .await
+        self.create_proof_inner(session, request).await
     }
 
     async fn allocate_resources(
@@ -634,7 +582,6 @@ impl ProductAuthority for SigningHost {
                     sso_responder::allocate_statement_store_allowance(
                         &self.services,
                         self,
-                        WalletDerivations::Rfc0022,
                         &product_id,
                         OnExistingAllowancePolicy::Increase,
                     )
@@ -645,7 +592,6 @@ impl ProductAuthority for SigningHost {
                     sso_responder::allocate_bulletin_allowance(
                         &self.services,
                         self,
-                        WalletDerivations::Rfc0022,
                         &product_id,
                         OnExistingAllowancePolicy::Increase,
                     )
@@ -681,7 +627,6 @@ impl ProductAuthority for SigningHost {
         let secret = sso_responder::allocate_statement_store_allowance(
             &self.services,
             self,
-            WalletDerivations::Rfc0022,
             &product_id,
             OnExistingAllowancePolicy::Ignore,
         )
@@ -700,7 +645,6 @@ impl ProductAuthority for SigningHost {
         let secret = sso_responder::allocate_bulletin_allowance(
             &self.services,
             self,
-            WalletDerivations::Rfc0022,
             &product_id,
             OnExistingAllowancePolicy::Ignore,
         )
@@ -719,7 +663,6 @@ impl ProductAuthority for SigningHost {
         let secret = sso_responder::allocate_bulletin_allowance(
             &self.services,
             self,
-            WalletDerivations::Rfc0022,
             &product_id,
             OnExistingAllowancePolicy::Increase,
         )
@@ -874,12 +817,12 @@ mod tests {
     };
     use super::{
         BYTES_WRAP_PREFIX, BYTES_WRAP_SUFFIX, LocalActivation, RingVrfError,
-        SR25519_SIGNING_CONTEXT, WalletDerivations, raw_payload_bytes,
+        SR25519_SIGNING_CONTEXT, raw_payload_bytes,
     };
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
-        derive_identity_keypair, derive_ios_lite_person_ring_vrf_entropy, derive_product_keypair,
-        derive_root_keypair_from_entropy, index_bytes,
+        derive_identity_keypair, derive_product_keypair, derive_root_keypair_from_entropy,
+        index_bytes,
     };
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
@@ -945,7 +888,7 @@ mod tests {
             config.bulletin_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHostRole::new(services.clone(), WalletDerivations::Rfc0022);
+        let signing_host = SigningHostRole::new(services.clone());
         (services, signing_host)
     }
 
@@ -990,30 +933,11 @@ mod tests {
         })
     }
 
-    fn ios_lite_person_ring_resolver() -> Arc<StubRingResolver> {
-        let lite_entropy = derive_ios_lite_person_ring_vrf_entropy(&ENTROPY);
-        let lite_member = member_from_entropy(&lite_entropy).expect("iOS LitePeople member");
-        Arc::new(StubRingResolver {
-            collection: *b"pop:polkadot.network/people-lite",
-            ring: ResolvedRing {
-                selected: MemberCandidate {
-                    key: PersonKey::Lite,
-                    member: lite_member,
-                },
-                ring_index: 9,
-                ring_revision: 13,
-                domain_size: RingDomainSize::Domain11,
-                members: vec![lite_member],
-            },
-        })
-    }
-
     #[test]
     fn ring_alias_and_proof_share_the_selected_person_key() {
         let resolver = full_person_ring_resolver();
         let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
-        let authority =
-            SigningHostRole::new_with_ring_resolver(platform, resolver, WalletDerivations::Rfc0022);
+        let authority = SigningHostRole::new_with_ring_resolver(platform, resolver);
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
@@ -1061,61 +985,10 @@ mod tests {
     }
 
     #[test]
-    fn ios_sso_ring_alias_and_proof_use_deployed_ios_person_keys() {
-        let resolver = ios_lite_person_ring_resolver();
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform::default());
-        let authority = SigningHostRole::new_with_ring_resolver(
-            platform,
-            resolver,
-            WalletDerivations::DeployedIosSso,
-        );
-        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
-            .expect("activation succeeds");
-        let session = authority.current_session().expect("active session");
-        let context = v01::ProductProofContext {
-            product_id: "myapp.dot".to_string(),
-            suffix: v01::DerivationIndex::Left(0),
-        };
-        let ring_location = v01::RingLocation {
-            chain_id: [0x22; 32],
-            junctions: vec![v01::RingLocationJunction::CollectionId(
-                b"pop:polkadot.network/people-lite".to_vec(),
-            )],
-        };
-
-        let alias = futures::executor::block_on(authority.sso_account_alias(
-            &session,
-            AccountAliasAuthorityRequest {
-                calling_product_id: "myapp.dot".to_string(),
-                context: context.clone(),
-                ring_location: ring_location.clone(),
-            },
-        ))
-        .expect("iOS SSO alias succeeds");
-        let proof = futures::executor::block_on(authority.sso_create_proof(
-            &session,
-            CreateProofAuthorityRequest {
-                calling_product_id: "myapp.dot".to_string(),
-                context,
-                ring_location,
-                message: b"prove me".to_vec(),
-            },
-        ))
-        .expect("iOS SSO proof succeeds");
-
-        assert_eq!(proof.contextual_alias, alias);
-        assert_eq!(proof.ring_index, 9);
-        assert_eq!(proof.ring_revision, 13);
-    }
-
-    #[test]
     fn cross_product_ring_requests_use_their_respective_authorization_paths() {
         let platform = Arc::new(StubPlatform::default());
-        let authority = SigningHostRole::new_with_ring_resolver(
-            platform.clone(),
-            full_person_ring_resolver(),
-            WalletDerivations::Rfc0022,
-        );
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform.clone(), full_person_ring_resolver());
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
@@ -1167,11 +1040,8 @@ mod tests {
             account_access_confirmed: true,
             ..StubPlatform::default()
         });
-        let authority = SigningHostRole::new_with_ring_resolver(
-            platform.clone(),
-            full_person_ring_resolver(),
-            WalletDerivations::Rfc0022,
-        );
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform.clone(), full_person_ring_resolver());
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");

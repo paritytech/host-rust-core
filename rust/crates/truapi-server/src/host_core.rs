@@ -28,9 +28,8 @@ use crate::frame::ProtocolMessage;
 use crate::host_logic::session::SsoSessionInfo;
 use crate::runtime::{
     LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
-    ResponderPeer, RuntimeServices, SigningHostRole, WalletDerivations, answer_pairing,
-    respond_to_pairing, responder_session_for_peer, serve_responder_session,
-    submit_responder_disconnected,
+    ResponderPeer, RuntimeServices, SigningHostRole, answer_pairing, respond_to_pairing,
+    responder_session_for_peer, serve_responder_session, submit_responder_disconnected,
 };
 use crate::subscription::Spawner;
 use crate::transport::Transport;
@@ -245,24 +244,13 @@ impl SigningHostRuntime {
         P: Platform + 'static,
     {
         let platform: Arc<dyn Platform> = platform;
-        let sso_derivations = if config
-            .host
-            .platform_info
-            .kind
-            .as_deref()
-            .is_some_and(|kind| kind.eq_ignore_ascii_case("ios"))
-        {
-            WalletDerivations::DeployedIosSso
-        } else {
-            WalletDerivations::Rfc0022
-        };
         let services = RuntimeServices::new(
             platform.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
         );
-        let signing_host = SigningHostRole::new(services.clone(), sso_derivations);
+        let signing_host = SigningHostRole::new(services.clone());
         Self {
             services,
             signing_host,
@@ -696,42 +684,50 @@ mod tests {
     }
 
     #[test]
-    fn signing_runtime_selects_ios_sso_derivations_from_platform_kind() {
-        let config = |kind: Option<&str>| {
-            SigningHostConfig::new(
+    fn all_platforms_activate_the_same_rfc0022_identity() {
+        const ENTROPY: [u8; 16] = [0xab; 16];
+        let runtime_for = |kind: &str| {
+            let config = SigningHostConfig::new(
                 truapi_platform::HostInfo {
-                    name: "test host".to_string(),
+                    name: format!("{kind} signing host"),
                     icon: None,
                     version: None,
                 },
                 truapi_platform::PlatformInfo {
-                    kind: kind.map(str::to_string),
+                    kind: Some(kind.to_string()),
                     version: None,
                 },
                 [0; 32],
                 [0xbb; 32],
             )
-            .unwrap()
+            .expect("signing host config is valid");
+            SigningHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner())
         };
+        let ios = runtime_for("iOS");
+        let cli = runtime_for("CLI");
 
-        let ios = SigningHostRuntime::new(
-            Arc::new(StubPlatform::default()),
-            config(Some("iOS")),
-            test_spawner(),
-        );
-        let cli = SigningHostRuntime::new(
-            Arc::new(StubPlatform::default()),
-            config(Some("CLI")),
-            test_spawner(),
-        );
+        futures::executor::block_on(ios.signing_host.activate_local_session(ENTROPY.to_vec()))
+            .expect("iOS activation succeeds");
+        futures::executor::block_on(cli.signing_host.activate_local_session(ENTROPY.to_vec()))
+            .expect("CLI activation succeeds");
+        let expected = crate::host_logic::product_account::derive_identity_keypair(&ENTROPY)
+            .expect("RFC-0022 identity derives")
+            .public
+            .to_bytes();
 
         assert_eq!(
-            ios.signing_host.sso_derivations(),
-            WalletDerivations::DeployedIosSso
+            ios.signing_host
+                .current_session()
+                .expect("iOS session")
+                .identity_account_id,
+            Some(expected)
         );
         assert_eq!(
-            cli.signing_host.sso_derivations(),
-            WalletDerivations::Rfc0022
+            cli.signing_host
+                .current_session()
+                .expect("CLI session")
+                .identity_account_id,
+            Some(expected)
         );
     }
 

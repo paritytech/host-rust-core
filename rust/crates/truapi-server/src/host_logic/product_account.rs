@@ -93,33 +93,6 @@ pub fn derive_identity_keypair(entropy: &[u8]) -> Result<Keypair, ProductAccount
     Ok(subtree.derived_key_simple(ChainCode(index_bytes(0)), []).0)
 }
 
-/// Derive the identity account used by the deployed iOS SSO implementation.
-///
-/// The mobile app predates the RFC-0022 `uid.dot` account and signs pairing
-/// statements with its legacy `//wallet` account. Keep this helper explicit so
-/// the responder can stay wire-compatible without changing the RFC-0022
-/// product-account APIs.
-pub fn derive_ios_sso_identity_keypair(entropy: &[u8]) -> Result<Keypair, ProductAccountError> {
-    derive_sr25519_hard_path(entropy, &["wallet"])
-}
-
-/// Derive the LitePeople ring-VRF entropy used by the deployed iOS app.
-///
-/// iOS hashes the raw root entropy once with unkeyed BLAKE2b-256. RFC-0022
-/// introduced a different keyed subtree, so SSO integrations targeting the
-/// current app must select this legacy derivation deliberately.
-pub fn derive_ios_lite_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
-    sp_crypto_hashing::blake2_256(root_entropy)
-}
-
-/// Derive the full-People ring-VRF entropy used by the deployed iOS app.
-///
-/// The full-person key uses the same BLAKE2b-256 construction as LitePeople,
-/// with `candidate` as the keyed-hash domain separator.
-pub fn derive_ios_full_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
-    blake2b256_keyed(root_entropy, b"candidate")
-}
-
 /// Derive the RFC-0022 full-person ring-VRF entropy at
 /// `hash(root_entropy, "ring-vrf")//peopl.dot//index_bytes(0)`.
 pub fn derive_full_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
@@ -271,8 +244,6 @@ fn normalize_chain_code(encoded: Vec<u8>) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use verifiable::GenerateVerifiable;
-    use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
     fn fixture_root() -> Keypair {
         derive_root_keypair_from_entropy(&[0xAB; 16]).unwrap()
@@ -394,34 +365,6 @@ mod tests {
         assert_eq!(
             hex::encode(derive_lite_person_ring_vrf_entropy(&root_entropy)),
             "8d7f5e1510a7e8d813887e100f5a260ec9de60e68695477b93360ee7e3d16a9f"
-        );
-    }
-
-    #[test]
-    fn deployed_ios_sso_derivations_match_ios_vectors() {
-        let root_entropy: Vec<u8> = (1..=32).collect();
-        let root = derive_root_keypair_from_entropy(&root_entropy).unwrap();
-        let identity = derive_ios_sso_identity_keypair(&root_entropy).unwrap();
-        let full_entropy = derive_ios_full_person_ring_vrf_entropy(&root_entropy);
-        let lite_entropy = derive_ios_lite_person_ring_vrf_entropy(&root_entropy);
-        let lite_secret = BandersnatchVrfVerifiable::new_secret(lite_entropy);
-        let lite_member = BandersnatchVrfVerifiable::member_from_secret(&lite_secret);
-
-        assert_eq!(
-            hex::encode(root.public.to_bytes()),
-            "54c4b522299dc8601b51e41b24b120acd71448e2f0994044b72ff3337e9eef6b"
-        );
-        assert_eq!(
-            hex::encode(identity.public.to_bytes()),
-            "5a995ef6d9cea676c2297439a3ac382df9a80899f0df353e4c26259d2a652c17"
-        );
-        assert_eq!(
-            hex::encode(full_entropy),
-            "241db07f25078ccb80b03dba1a3f33db7eeae66a958ff22d45a30c9b051415e7"
-        );
-        assert_eq!(
-            hex::encode(lite_member),
-            "ac148b11e7d3b2426087b015ddc48c5cbdd4cc771ee0d0d44d4bd3330c165580"
         );
     }
 
