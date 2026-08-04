@@ -3,11 +3,11 @@ title: "Secrets Management in TrUAPI"
 owner: "@BigTava"
 ---
 
-# RFC: Secrets Management in TrUAPI
+# RFC-0025: Secrets Management in TrUAPI
 
 |                 |                                                                                                    |
 | --------------- | -------------------------------------------------------------------------------------------------- |
-| **RFC Number**  | (assigned on merge)                                                                                |
+| **RFC Number**  | 25                                                                                                 |
 | **Start Date**  | 2026-08-03                                                                                         |
 | **Description** | A single TrUAPI method letting products use secrets they never hold, held by backends they don't run |
 | **Authors**     | Tiago Tavares                                                                                      |
