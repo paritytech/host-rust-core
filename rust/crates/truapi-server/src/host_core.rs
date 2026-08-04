@@ -28,8 +28,9 @@ use crate::frame::ProtocolMessage;
 use crate::host_logic::session::SsoSessionInfo;
 use crate::runtime::{
     LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
-    ResponderPeer, RuntimeServices, SigningHostRole, answer_pairing, respond_to_pairing,
-    responder_session_for_peer, serve_responder_session, submit_responder_disconnected,
+    ResponderPeer, RuntimeServices, SigningHostRole, WalletDerivations, answer_pairing,
+    respond_to_pairing, responder_session_for_peer, serve_responder_session,
+    submit_responder_disconnected,
 };
 use crate::subscription::Spawner;
 use crate::transport::Transport;
@@ -244,13 +245,24 @@ impl SigningHostRuntime {
         P: Platform + 'static,
     {
         let platform: Arc<dyn Platform> = platform;
+        let sso_derivations = if config
+            .host
+            .platform_info
+            .kind
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("ios"))
+        {
+            WalletDerivations::DeployedIosSso
+        } else {
+            WalletDerivations::Rfc0022
+        };
         let services = RuntimeServices::new(
             platform.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
         );
-        let signing_host = SigningHostRole::new(services.clone());
+        let signing_host = SigningHostRole::new(services.clone(), sso_derivations);
         Self {
             services,
             signing_host,
@@ -681,6 +693,46 @@ mod tests {
         );
 
         assert_send(runtime.receive_frame(Vec::new()));
+    }
+
+    #[test]
+    fn signing_runtime_selects_ios_sso_derivations_from_platform_kind() {
+        let config = |kind: Option<&str>| {
+            SigningHostConfig::new(
+                truapi_platform::HostInfo {
+                    name: "test host".to_string(),
+                    icon: None,
+                    version: None,
+                },
+                truapi_platform::PlatformInfo {
+                    kind: kind.map(str::to_string),
+                    version: None,
+                },
+                [0; 32],
+                [0xbb; 32],
+            )
+            .unwrap()
+        };
+
+        let ios = SigningHostRuntime::new(
+            Arc::new(StubPlatform::default()),
+            config(Some("iOS")),
+            test_spawner(),
+        );
+        let cli = SigningHostRuntime::new(
+            Arc::new(StubPlatform::default()),
+            config(Some("CLI")),
+            test_spawner(),
+        );
+
+        assert_eq!(
+            ios.signing_host.sso_derivations(),
+            WalletDerivations::DeployedIosSso
+        );
+        assert_eq!(
+            cli.signing_host.sso_derivations(),
+            WalletDerivations::Rfc0022
+        );
     }
 
     #[test]

@@ -23,16 +23,18 @@ use truapi_platform::{
     UserConfirmationReview,
 };
 
-use super::SigningHost;
+use super::{SigningHost, WalletDerivations};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::{
-    ProductAccountError, derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
+    ProductAccountError, derive_ios_lite_person_ring_vrf_entropy,
+    derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
 };
 use crate::host_logic::product_account::{
-    derive_identity_keypair, derive_root_keypair_from_entropy, product_public_key_to_address,
+    derive_identity_keypair, derive_ios_sso_identity_keypair, derive_root_keypair_from_entropy,
+    product_public_key_to_address,
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{
@@ -77,9 +79,15 @@ const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::fr
 /// longer be validly replayed.
 const MAX_SERVED_REQUEST_IDS: usize = 1024;
 
-fn derive_responder_identity(entropy: &[u8]) -> Result<(ResponderIdentity, [u8; 32]), String> {
-    let statement = derive_identity_keypair(entropy)
-        .map_err(|err| format!("identity account derivation failed: {err}"))?;
+fn derive_responder_identity(
+    entropy: &[u8],
+    derivations: WalletDerivations,
+) -> Result<(ResponderIdentity, [u8; 32]), String> {
+    let statement = match derivations {
+        WalletDerivations::Rfc0022 => derive_identity_keypair(entropy),
+        WalletDerivations::DeployedIosSso => derive_ios_sso_identity_keypair(entropy),
+    }
+    .map_err(|err| format!("identity account derivation failed: {err}"))?;
     let (encryption_secret_key, encryption_public_key) =
         derive_p256_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN)
             .map_err(|err| format!("SSO P-256 derivation failed: {err}"))?;
@@ -308,8 +316,9 @@ fn responder_material(signing_host: &Arc<SigningHost>) -> Result<ResponderMateri
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
     let root = derive_root_keypair_from_entropy(&entropy)
         .map_err(|err| format!("root account derivation failed: {err}"))?;
-    let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
-        .map_err(|err| format!("responder identity derivation failed: {err}"))?;
+    let (identity, identity_chat_private_key) =
+        derive_responder_identity(&entropy, signing_host.sso_derivations())
+            .map_err(|err| format!("responder identity derivation failed: {err}"))?;
     Ok(ResponderMaterial {
         identity,
         identity_chat_private_key,
@@ -762,13 +771,8 @@ async fn answer_remote_message(
         }
         v1::RemoteMessage::CreateTransactionLegacyRequest(request) => {
             let messages::CreateTransactionLegacyPayload::V1(payload) = request.payload;
-            let signed_transaction = create_transaction_response(
-                services,
-                signing_host,
-                CreateTransactionReview::LegacyAccount(payload.clone()),
-                CreateTransactionAuthorityRequest::IdentityAccount(payload),
-            )
-            .await;
+            let signed_transaction =
+                create_sso_identity_transaction_response(services, signing_host, payload).await;
             v1::RemoteMessage::CreateTransactionResponse(messages::CreateTransactionResponse {
                 responding_to: message_id,
                 signed_transaction,
@@ -863,6 +867,7 @@ async fn resource_allocation_response(
             SsoAllocatableResource::StatementStoreAllowance => allocate_statement_store_allowance(
                 services,
                 signing_host,
+                signing_host.sso_derivations(),
                 &request.calling_product_id,
                 request.on_existing,
             )
@@ -875,6 +880,7 @@ async fn resource_allocation_response(
             SsoAllocatableResource::BulletinAllowance => allocate_bulletin_allowance(
                 services,
                 signing_host,
+                signing_host.sso_derivations(),
                 &request.calling_product_id,
                 request.on_existing,
             )
@@ -929,6 +935,7 @@ fn public_allocatable_resource(resource: &SsoAllocatableResource) -> api::Alloca
 pub(super) async fn allocate_statement_store_allowance(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
+    derivations: WalletDerivations,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -941,7 +948,10 @@ pub(super) async fn allocate_statement_store_allowance(
     let allowance =
         derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
     let target = allowance.public.to_bytes();
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
+    let bandersnatch = match derivations {
+        WalletDerivations::Rfc0022 => derive_lite_person_ring_vrf_entropy(&entropy),
+        WalletDerivations::DeployedIosSso => derive_ios_lite_person_ring_vrf_entropy(&entropy),
+    };
     let rpc = statement_allowance::rpc::RpcClient::new(
         services
             .statement_store
@@ -999,6 +1009,7 @@ pub(super) async fn allocate_statement_store_allowance(
 pub(super) async fn allocate_bulletin_allowance(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
+    derivations: WalletDerivations,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -1036,7 +1047,10 @@ pub(super) async fn allocate_bulletin_allowance(
     );
     let metadata = fetch_metadata(&people_rpc).await?;
     let chain_state = fetch_chain_state(&people_rpc).await?;
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
+    let bandersnatch = match derivations {
+        WalletDerivations::Rfc0022 => derive_lite_person_ring_vrf_entropy(&entropy),
+        WalletDerivations::DeployedIosSso => derive_ios_lite_person_ring_vrf_entropy(&entropy),
+    };
     let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
     let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
         .await?
@@ -1091,6 +1105,7 @@ pub(super) async fn allocate_bulletin_allowance(
 pub(super) async fn allocate_statement_store_allowance(
     _services: &Arc<RuntimeServices>,
     _signing_host: &SigningHost,
+    _derivations: WalletDerivations,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -1103,6 +1118,7 @@ pub(super) async fn allocate_statement_store_allowance(
 pub(super) async fn allocate_bulletin_allowance(
     _services: &Arc<RuntimeServices>,
     _signing_host: &SigningHost,
+    _derivations: WalletDerivations,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
@@ -1194,15 +1210,7 @@ async fn sign_raw_legacy_response(
         .current_session()
         .ok_or_else(|| "signing host session is not active".to_string())?;
     signing_host
-        .sign_raw(
-            &CallContext::default(),
-            &session,
-            SignRawAuthorityRequest::LegacyAccount {
-                account: request.account,
-                request: public_request,
-            },
-        )
-        .await
+        .sign_sso_raw_identity(&session, request.account, public_request.payload)
         .map(|response| response.signature)
         .map_err(|err| err.to_string())
 }
@@ -1264,6 +1272,27 @@ async fn create_transaction_response(
         .map_err(|err| err.to_string())
 }
 
+async fn create_sso_identity_transaction_response(
+    services: &Arc<RuntimeServices>,
+    signing_host: &Arc<SigningHost>,
+    request: api::LegacyAccountTxPayload,
+) -> Result<Vec<u8>, String> {
+    let session = signing_host
+        .current_session()
+        .ok_or_else(|| "signing host session is not active".to_string())?;
+    confirm(
+        services,
+        UserConfirmationReview::CreateTransaction(CreateTransactionReview::LegacyAccount(
+            request.clone(),
+        )),
+    )
+    .await?;
+    signing_host
+        .create_sso_identity_transaction(&session, request)
+        .map(|response| response.transaction)
+        .map_err(|err| err.to_string())
+}
+
 async fn account_alias_response(
     signing_host: &Arc<SigningHost>,
     request: messages::RingVrfAliasRequest,
@@ -1271,10 +1300,8 @@ async fn account_alias_response(
     let session = signing_host
         .current_session()
         .ok_or_else(disconnected_ring_vrf)?;
-    let cx = CallContext::default();
     signing_host
-        .account_alias(
-            &cx,
+        .sso_account_alias(
             &session,
             AccountAliasAuthorityRequest {
                 calling_product_id: request.calling_product_id,
@@ -1292,10 +1319,8 @@ async fn create_proof_response(
     let session = signing_host
         .current_session()
         .ok_or_else(disconnected_ring_vrf)?;
-    let cx = CallContext::default();
     signing_host
-        .create_proof(
-            &cx,
+        .sso_create_proof(
             &session,
             CreateProofAuthorityRequest {
                 calling_product_id: request.calling_product_id,
@@ -1358,22 +1383,28 @@ mod tests {
             config.bulletin_chain_genesis_hash,
             test_spawner(),
         );
-        let signing_host = SigningHost::new(services.clone());
+        let signing_host = SigningHost::new(services.clone(), WalletDerivations::DeployedIosSso);
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         (services, signing_host)
     }
 
     #[test]
-    fn responder_advertises_and_signs_with_the_local_uid_identity() {
+    fn responder_advertises_and_signs_with_the_ios_wallet_identity() {
         let (_services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
-        let local_identity = signing_host
+        let rfc_identity = signing_host
             .current_session()
             .unwrap()
             .identity_account_id
             .unwrap();
-        let (identity, _) = derive_responder_identity(&ENTROPY).unwrap();
-        assert_eq!(identity.statement_public_key, local_identity);
+        let (identity, _) =
+            derive_responder_identity(&ENTROPY, WalletDerivations::DeployedIosSso).unwrap();
+        let ios_identity = derive_ios_sso_identity_keypair(&ENTROPY)
+            .unwrap()
+            .public
+            .to_bytes();
+        assert_eq!(identity.statement_public_key, ios_identity);
+        assert_ne!(identity.statement_public_key, rfc_identity);
 
         let (_, host_encryption_public_key) =
             derive_p256_keypair_from_entropy(&[0x42; 16], b"sso").unwrap();
@@ -1391,7 +1422,7 @@ mod tests {
         let verified =
             decode_verified_statement_data(&statement, Some(identity.statement_public_key))
                 .unwrap();
-        assert_eq!(verified.signer, local_identity);
+        assert_eq!(verified.signer, ios_identity);
     }
 
     fn response_payload(answer: AnsweredRemoteMessage) -> v1::RemoteMessage {
@@ -1600,7 +1631,7 @@ mod tests {
             create_transaction_confirmed: true,
             ..StubPlatform::default()
         }));
-        let identity = derive_identity_keypair(&ENTROPY).unwrap();
+        let identity = derive_ios_sso_identity_keypair(&ENTROPY).unwrap();
         let payload = api::LegacyAccountTxPayload {
             signer: identity.public.to_bytes(),
             genesis_hash: [0xaa; 32],
@@ -1640,6 +1671,40 @@ mod tests {
             identity
                 .public
                 .verify_simple(b"substrate", &[0x00, 0x00, 1, 2, 3], &signature)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn legacy_raw_request_signs_with_the_ios_sso_identity() {
+        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform {
+            sign_raw_confirmed: true,
+            ..StubPlatform::default()
+        }));
+        let identity = derive_ios_sso_identity_keypair(&ENTROPY).unwrap();
+
+        let response = futures::executor::block_on(answer_remote_message(
+            &services,
+            &signing_host,
+            "legacy-raw-1".to_string(),
+            v1::RemoteMessage::SignRawLegacyRequest(messages::SignRawLegacyRequest {
+                account: identity.public.to_bytes(),
+                data: messages::SigningRawPayload::Bytes(b"hello".to_vec()),
+            }),
+        ))
+        .expect("response is emitted");
+
+        let v1::RemoteMessage::SignRawLegacyResponse(response) = response_payload(response) else {
+            panic!("expected raw-signing response");
+        };
+        let signature = schnorrkel::Signature::from_bytes(
+            &response.signature.expect("identity raw signing succeeds"),
+        )
+        .unwrap();
+        assert!(
+            identity
+                .public
+                .verify_simple(b"substrate", b"<Bytes>hello</Bytes>", &signature)
                 .is_ok()
         );
     }

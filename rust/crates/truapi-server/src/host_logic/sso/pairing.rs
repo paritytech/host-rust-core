@@ -26,6 +26,7 @@ use truapi_platform::PairingHostConfig;
 #[cfg(test)]
 use truapi_platform::{HostInfo, PlatformInfo};
 
+use crate::host_logic::product_account::{ProductAccountError, derive_sr25519_hard_path};
 use crate::host_logic::session::SsoSessionInfo;
 
 const HANDSHAKE_TOPIC_SUFFIX: &[u8] = b"topic";
@@ -79,6 +80,9 @@ pub enum PairingBootstrapError {
     /// No valid P-256 secret was found within the attempt budget.
     #[error("failed to generate P-256 pairing key")]
     InvalidP256Secret,
+    /// The deployed iOS sr25519 derivation path could not be derived.
+    #[error("failed to derive iOS SSO key material: {0}")]
+    IosKeyDerivation(#[from] ProductAccountError),
 }
 
 /// Error while decoding a pairing deeplink or bare handshake payload.
@@ -326,19 +330,21 @@ pub fn peer_response_channel(session: &SsoSessionInfo) -> [u8; 32] {
     keyed_hash(session.session_id_peer, RESPONSE_CHANNEL_SUFFIX)
 }
 
-/// Derive an RFC-0022 P-256 keypair from BIP-39 entropy and an ECDH domain.
+/// Derive the P-256 keypair used by the deployed iOS SSO implementation.
 ///
-/// `root = blake2b256(entropy, key = "ecdh")`, followed by the hard keyed-hash
-/// junction `//{domain}`. The resulting 32 bytes are interpreted as the P-256
-/// private scalar, and the public key uses the 65-byte uncompressed x9.63 form
-/// expected by the deployed iOS SSO protocol.
+/// iOS first derives the sr25519 account at `//wallet//{domain}`, hashes the
+/// first 32 bytes of its expanded secret with unkeyed BLAKE2b-256, and uses the
+/// result as a P-256 private scalar. The public key uses the 65-byte
+/// uncompressed x9.63 form carried by the v2 handshake.
 pub fn derive_p256_keypair_from_entropy(
     entropy: &[u8],
     domain: &[u8],
 ) -> Result<([u8; 32], [u8; 65]), PairingBootstrapError> {
-    let root = blake2b256_keyed(entropy, b"ecdh");
-    let chain_code = normalize_chain_code(domain.encode());
-    let candidate = blake2b256_keyed(&root, &chain_code);
+    let domain =
+        std::str::from_utf8(domain).map_err(|_| PairingBootstrapError::InvalidP256Secret)?;
+    let derived = derive_sr25519_hard_path(entropy, &["wallet", domain])?;
+    let expanded_secret = derived.secret.to_bytes();
+    let candidate = sp_crypto_hashing::blake2_256(&expanded_secret[..32]);
     let secret =
         SecretKey::from_slice(&candidate).map_err(|_| PairingBootstrapError::InvalidP256Secret)?;
     let public = secret.public_key().to_encoded_point(false);
@@ -640,16 +646,6 @@ fn generate_p256_keypair() -> Result<([u8; 32], [u8; 65]), PairingBootstrapError
     Err(PairingBootstrapError::InvalidP256Secret)
 }
 
-fn normalize_chain_code(encoded: Vec<u8>) -> [u8; 32] {
-    let mut chain_code = [0u8; 32];
-    if encoded.len() > chain_code.len() {
-        chain_code = sp_crypto_hashing::blake2_256(&encoded);
-    } else {
-        chain_code[..encoded.len()].copy_from_slice(&encoded);
-    }
-    chain_code
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -930,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn rfc0022_entropy_domains_produce_stable_p256_keys() {
+    fn ios_wallet_domains_produce_stable_p256_keys() {
         let entropy: [u8; 32] = std::array::from_fn(|index| (index + 1) as u8);
         let sso = derive_p256_keypair_from_entropy(&entropy, b"sso").unwrap();
         let chat = derive_p256_keypair_from_entropy(&entropy, b"chat").unwrap();
@@ -942,11 +938,11 @@ mod tests {
         assert_ne!(sso, chat);
         assert_eq!(
             hex::encode(sso.0),
-            "c2c0f3112da0aa390a7d7b644a7f073b80782e49a3240685bc071046d6cc8ad3"
+            "7a053da7e2cfe814c42810b0df2cc45655e36727f31d9b4d27ebd0b6633922f3"
         );
         assert_eq!(
             hex::encode(chat.0),
-            "88705746a9788fb8bc232cc463b243a2828e470b932ce60a16426cc79b4618b1"
+            "310d2aecc7d79c95984cace09bdb65f2d1decaccd31e07a5e7385327e7db0c0b"
         );
         assert_eq!(sso.1[0], 0x04);
         assert_eq!(chat.1[0], 0x04);
