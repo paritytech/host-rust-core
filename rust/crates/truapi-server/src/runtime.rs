@@ -1066,13 +1066,6 @@ impl Account for ProductRuntimeHost {
                 },
             ))
         })?;
-        if !self.is_product_account_valid_for_caller(&request.account.dot_ns_identifier) {
-            return Err(CallError::Domain(HostAccountSignVrfError::V1(
-                v01::HostAccountSignVrfError::Unknown {
-                    reason: "Product account does not belong to the calling product".to_string(),
-                },
-            )));
-        }
         validate_vrf_transcript(&request).map_err(|reason| {
             CallError::Domain(HostAccountSignVrfError::V1(
                 v01::HostAccountSignVrfError::Unknown { reason },
@@ -2925,13 +2918,14 @@ mod tests {
     }
 
     #[test]
-    fn sign_vrf_forwards_mobile_sso_request_and_response() {
+    fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
         let session = sso_session_info();
         let signature = v01::VrfSignature {
             pre_output: [0x11; 32],
             proof: [0x22; 64],
         };
         let platform = Arc::new(StubPlatform {
+            sign_vrf_confirmed: true,
             sso_response_script: Some(sso_success_response_script(
                 &session,
                 RemoteMessage {
@@ -2953,7 +2947,7 @@ mod tests {
         );
         install_pairing_session(&host, session.clone());
         let request = v01::HostAccountSignVrfRequest {
-            account: account_id("myapp.dot", 0),
+            account: account_id("other-product.dot", 0),
             transcript_label: b"ctx".to_vec(),
             items: vec![v01::VrfTranscriptItem {
                 label: b"domain".to_vec(),
@@ -2968,6 +2962,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(response, HostAccountSignVrfResponse::V1(signature));
+        assert_eq!(
+            *platform
+                .sign_vrf_reviews
+                .lock()
+                .expect("VRF signing review list mutex poisoned"),
+            vec![truapi_platform::SignVrfReview {
+                calling_product_id: "myapp.dot".to_string(),
+                request: request.clone(),
+            }]
+        );
         let message = submitted_remote_message(&platform, &session);
         let RemoteMessageData::V1(v1::RemoteMessage::SignVrfRequest(request_message)) =
             message.data
@@ -2976,6 +2980,73 @@ mod tests {
         };
         assert_eq!(request_message.calling_product_id, "myapp.dot");
         assert_eq!(request_message.payload, request);
+    }
+
+    #[test]
+    fn sign_vrf_rejects_declined_pairing_host_confirmation_before_mobile_sso() {
+        let session = sso_session_info();
+        let platform = Arc::new(StubPlatform {
+            sso_response_script: Some(sso_success_response_script(
+                &session,
+                RemoteMessage {
+                    message_id: "wallet-vrf-declined".to_string(),
+                    data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(
+                        crate::host_logic::sso::messages::SignVrfResponse {
+                            responding_to: "vrf-declined".to_string(),
+                            payload: Ok(v01::VrfSignature {
+                                pre_output: [0x11; 32],
+                                proof: [0x22; 64],
+                            }),
+                        },
+                    )),
+                },
+            )),
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, session);
+        let request = v01::HostAccountSignVrfRequest {
+            account: account_id("other-product.dot", 0),
+            transcript_label: b"ctx".to_vec(),
+            items: vec![v01::VrfTranscriptItem {
+                label: b"domain".to_vec(),
+                value: vec![1, 2],
+            }],
+        };
+
+        let err = futures::executor::block_on(host.sign_vrf(
+            &CallContext::with_request_id("vrf-declined".to_string()),
+            HostAccountSignVrfRequest::V1(request.clone()),
+        ))
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CallError::Domain(HostAccountSignVrfError::V1(
+                v01::HostAccountSignVrfError::Rejected
+            ))
+        ));
+        assert_eq!(
+            *platform
+                .sign_vrf_reviews
+                .lock()
+                .expect("VRF signing review list mutex poisoned"),
+            vec![truapi_platform::SignVrfReview {
+                calling_product_id: "myapp.dot".to_string(),
+                request,
+            }]
+        );
+        assert!(
+            platform
+                .sent_rpc
+                .lock()
+                .expect("RPC request list mutex poisoned")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -4537,6 +4608,13 @@ mod tests {
         ))
         .expect("persisted AutoSigning key signs locally");
         let HostAccountSignVrfResponse::V1(signature) = response;
+        assert!(
+            platform
+                .sign_vrf_reviews
+                .lock()
+                .expect("VRF signing review list mutex poisoned")
+                .is_empty()
+        );
 
         let keypair = crate::host_logic::product_account::derive_product_keypair(
             &root,
