@@ -1,0 +1,76 @@
+# Builds and publishes the Android host AAR (io.parity:truapi-host) to GitHub
+# Packages. The AAR bundles the per-ABI Rust core (ws-bridge feature), the
+# UniFFI Kotlin bindings generated from the same source, and the Kotlin shell.
+name: release-android
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0 or 0.1.0-rc.1)"
+        required: true
+  push:
+    tags:
+      - "truapi-host-android@*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#truapi-host-android@}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Generate UniFFI Kotlin bindings
+        run: make uniffi-kotlin
+
+      - name: Cross-compile libtruapi_server.so for all ABIs
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: make android-jni
+
+      - name: Verify AAR inputs
+        run: |
+          set -e
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            test -f "android/truapi-host/src/main/jniLibs/$abi/libtruapi_server.so" \
+              || { echo "missing .so for $abi"; exit 1; }
+          done
+          test -f android/truapi-host/src/main/kotlin/generated/uniffi/truapi_server/truapi_server.kt
+
+      - name: Publish to GitHub Packages
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gradle :truapi-host:publishReleasePublicationToGitHubPackagesRepository \
+            -PtruapiHostVersion="${{ steps.version.outputs.version }}"

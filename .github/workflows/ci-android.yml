@@ -1,0 +1,35 @@
+# Compile gate for the Android host module: regenerates the UniFFI Kotlin
+# bindings and compiles the shell against them whenever the module or the
+# native surface changes. No cross-compile, no publishing.
+name: ci-android
+
+on:
+  pull_request:
+    paths:
+      - "android/**"
+      - "rust/crates/truapi-server/**"
+      - "rust/crates/truapi-platform/**"
+      - "rust/crates/uniffi-bindgen-cli/**"
+      - ".github/workflows/ci-android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Generate UniFFI Kotlin bindings
+        run: make uniffi-kotlin
+      - name: Compile the shell against the bindings
+        run: gradle :truapi-host:assembleRelease
