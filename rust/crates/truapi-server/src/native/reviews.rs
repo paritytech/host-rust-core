@@ -571,6 +571,7 @@ impl From<truapi_platform::PreimageSubmitReview> for PreimageSubmitReview {
 }
 
 /// Native-friendly mirror of [`truapi_platform::UserConfirmationReview`].
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum NativeUserConfirmationReview {
     /// Sign a SCALE payload with a product or legacy account.
