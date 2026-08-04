@@ -23,14 +23,15 @@
 
 use parity_scale_codec::{Decode, Encode, OptionBool};
 use truapi::latest::{
-    AccountId, AllocatableResource, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
-    LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
-    RawPayload, RingLocation,
+    AccountId, AllocatableResource, DerivationIndex, HostAccountCreateProofResponse,
+    HostAccountGetAliasResponse, LegacyAccountTxPayload, ProductAccountId, ProductAccountTxPayload,
+    ProductProofContext, RawPayload, RingLocation,
 };
+use truapi::v01::{HostAccountSignVrfError, HostAccountSignVrfRequest, VrfSignature};
 
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::pairing::{
-    AES_GCM_NONCE_LEN, SsoStatementData, decrypt_session_statement_data,
+    AEAD_NONCE_LEN, SsoStatementData, decrypt_session_statement_data,
     encrypt_session_statement_data, encrypt_session_statement_data_with_nonce,
     peer_response_channel,
 };
@@ -298,26 +299,22 @@ pub struct SignRawLegacyResponse {
     pub signature: Result<Vec<u8>, String>,
 }
 
-/// Request exact statement-store proof signing with a product-derived account.
-///
-/// Raw signing cannot be reused because it applies the public
-/// `<Bytes>...</Bytes>` payload convention, while statement proofs sign the
-/// unsigned statement payload bytes directly.
+/// RFC-0023 VRF-signing request forwarded to the Account Holder.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct StatementStoreProductSignRequest {
-    /// Product-derived account that must sign the statement payload.
-    pub product_account_id: ProductAccountId,
-    /// Exact SCALE-encoded unsigned statement payload to sign.
-    pub payload: Vec<u8>,
+pub struct SignVrfRequest {
+    /// Product making the request, used for the Account Holder confirmation.
+    pub calling_product_id: String,
+    /// Product account and ordered Merlin transcript.
+    pub payload: HostAccountSignVrfRequest,
 }
 
-/// Response returned for exact statement-store proof signing.
+/// RFC-0023 VRF-signing response returned by the Account Holder.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct StatementStoreProductSignResponse {
-    /// `message_id` of the statement-signing request being answered.
+pub struct SignVrfResponse {
+    /// `message_id` of the VRF-signing request being answered.
     pub responding_to: String,
-    /// Signature bytes, or an error description from the signing host.
-    pub signature: Result<Vec<u8>, String>,
+    /// Fixed-width schnorrkel VRF signature or the public API error.
+    pub payload: Result<VrfSignature, HostAccountSignVrfError>,
 }
 
 /// Failure returned by the Account Holder for a ring-VRF proof or alias request.
@@ -413,9 +410,9 @@ pub enum SsoAllocatableResource {
     StatementStoreAllowance,
     /// Bulletin chain slot allowance for the product's allowance account.
     BulletinAllowance,
-    /// Pre-warmed PGAS balance for the smart-contract account at the given
+    /// Pre-warmed PGAS balance for the product account selected by this
     /// derivation index.
-    SmartContractAllowance(u32),
+    SmartContractAllowance(DerivationIndex),
     /// Transfer of the product subtree key so the host can sign locally.
     AutoSigning,
 }
@@ -479,11 +476,25 @@ pub enum SsoAllocatedResource {
     SmartContractAllowance,
     /// Auto-signing material for the product subtree.
     AutoSigning {
-        /// Secret component of the per-product soft-derivation path.
-        product_derivation_secret: String,
         /// Private key of the product subtree root.
-        product_root_private_key: Vec<u8>,
+        product_root_private_key: [u8; 64],
     },
+}
+
+/// Consent-free request for `//product//{product_id}`'s sr25519 public key.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ProductSubtreeRequest {
+    /// DotNS product identifier whose hard subtree is requested.
+    pub product_id: String,
+}
+
+/// Account Holder response carrying a product subtree public key.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ProductSubtreeResponse {
+    /// `message_id` of the subtree request being answered.
+    pub responding_to: String,
+    /// Raw 32-byte sr25519 subtree public key or a stable failure reason.
+    pub product_public_key: Result<[u8; 32], String>,
 }
 
 /// Request sent when a product asks the signing host to create a signed transaction
@@ -544,8 +555,8 @@ pub enum SsoRemoteResponse {
     Sign(SigningResponse),
     /// Legacy-account raw-signing response.
     SignRawLegacy(SignRawLegacyResponse),
-    /// Statement-store product signing response.
-    StatementStoreProductSign(StatementStoreProductSignResponse),
+    /// Product-account VRF signing response.
+    SignVrf(SignVrfResponse),
     /// Contextual-alias response.
     RingVrfAlias(RingVrfAliasResponse),
     /// Ring-VRF proof response.
@@ -554,6 +565,8 @@ pub enum SsoRemoteResponse {
     ResourceAllocation(ResourceAllocationResponse),
     /// Transaction-creation response.
     CreateTransaction(CreateTransactionResponse),
+    /// Product subtree public-key response.
+    ProductSubtree(ProductSubtreeResponse),
 }
 
 /// Decode and classify an inbound encrypted SSO session statement.
@@ -655,10 +668,10 @@ fn remote_response_for_message(
         {
             Some(SsoRemoteResponse::SignRawLegacy(response))
         }
-        v1::RemoteMessage::StatementStoreProductSignResponse(response)
+        v1::RemoteMessage::SignVrfResponse(response)
             if response.responding_to == expected_remote_message_id =>
         {
-            Some(SsoRemoteResponse::StatementStoreProductSign(response))
+            Some(SsoRemoteResponse::SignVrf(response))
         }
         v1::RemoteMessage::ResourceAllocationResponse(response)
             if response.responding_to == expected_remote_message_id =>
@@ -670,24 +683,27 @@ fn remote_response_for_message(
         {
             Some(SsoRemoteResponse::CreateTransaction(response))
         }
+        v1::RemoteMessage::ProductSubtreeResponse(response)
+            if response.responding_to == expected_remote_message_id =>
+        {
+            Some(SsoRemoteResponse::ProductSubtree(response))
+        }
         _ => None,
     }
 }
 
-/// Build an exact statement-store proof signing request.
-pub fn statement_store_product_sign_message(
+/// Build an RFC-0023 VRF-signing request for the Account Holder.
+pub fn sign_vrf_message(
     message_id: String,
-    product_account_id: ProductAccountId,
-    payload: Vec<u8>,
+    calling_product_id: String,
+    payload: HostAccountSignVrfRequest,
 ) -> RemoteMessage {
     RemoteMessage {
         message_id,
-        data: RemoteMessageData::V1(v1::RemoteMessage::StatementStoreProductSignRequest(
-            StatementStoreProductSignRequest {
-                product_account_id,
-                payload,
-            },
-        )),
+        data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfRequest(SignVrfRequest {
+            calling_product_id,
+            payload,
+        })),
     }
 }
 
@@ -770,6 +786,16 @@ pub fn proof_request_message(
                 ring_location,
                 message,
             },
+        )),
+    }
+}
+
+/// Build a consent-free product subtree public-key request.
+pub fn product_subtree_request_message(message_id: String, product_id: String) -> RemoteMessage {
+    RemoteMessage {
+        message_id,
+        data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeRequest(
+            ProductSubtreeRequest { product_id },
         )),
     }
 }
@@ -942,7 +968,7 @@ pub fn build_outgoing_request_statement_with_nonce(
     statement_request_id: String,
     messages: Vec<RemoteMessage>,
     expiry: u64,
-    nonce: [u8; AES_GCM_NONCE_LEN],
+    nonce: [u8; AEAD_NONCE_LEN],
 ) -> Result<Vec<u8>, String> {
     let encrypted =
         encrypt_outgoing_request_data_with_nonce(session, statement_request_id, messages, nonce)?;
@@ -964,7 +990,7 @@ fn encrypt_outgoing_request_data_with_nonce(
     session: &SsoSessionInfo,
     statement_request_id: String,
     messages: Vec<RemoteMessage>,
-    nonce: [u8; AES_GCM_NONCE_LEN],
+    nonce: [u8; AEAD_NONCE_LEN],
 ) -> Result<Vec<u8>, String> {
     encrypt_session_statement_data_with_nonce(
         session,
@@ -993,16 +1019,15 @@ mod tests {
     use crate::host_logic::statement_store::{
         StatementField, build_signed_statement, decode_statement_data,
     };
-    use p256::SecretKey as P256SecretKey;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
     use schnorrkel::{ExpansionMode, MiniSecretKey};
     use truapi::latest::{HostSignPayloadData, TxPayloadExtension};
     use truapi::v01::RingLocationJunction;
+    use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
     fn account() -> ProductAccountId {
         ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
-            derivation_index: 7,
+            derivation_index: DerivationIndex::Left(7),
         }
     }
 
@@ -1017,18 +1042,13 @@ mod tests {
     fn session() -> SsoSessionInfo {
         let mini_secret = MiniSecretKey::from_bytes(&[7; 32]).unwrap();
         let keypair = mini_secret.expand_to_keypair(ExpansionMode::Ed25519);
-        let core_secret = P256SecretKey::from_slice(&[1; 32]).unwrap();
-        let peer_secret = P256SecretKey::from_slice(&[2; 32]).unwrap();
+        let core_secret = X25519SecretKey::from([1; 32]);
+        let peer_secret = X25519SecretKey::from([2; 32]);
         SsoSessionInfo {
             ss_secret: keypair.secret.to_bytes(),
             ss_public_key: keypair.public.to_bytes(),
-            enc_secret: core_secret.to_bytes().into(),
-            peer_enc_pubkey: peer_secret
-                .public_key()
-                .to_encoded_point(false)
-                .as_bytes()
-                .try_into()
-                .unwrap(),
+            enc_secret: core_secret.to_bytes(),
+            peer_enc_pubkey: X25519PublicKey::from(&peer_secret).to_bytes(),
             identity_account_id: [3; 32],
             session_id_own: [4; 32],
             session_id_peer: [5; 32],
@@ -1053,7 +1073,7 @@ mod tests {
     fn raw_sign_request_uses_remote_message_variant_indices() {
         let message = sign_raw_message(
             "m1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Bytes {
                     bytes: vec![0xde, 0xad],
@@ -1090,10 +1110,10 @@ mod tests {
     }
 
     #[test]
-    fn ring_vrf_messages_match_host_papp_0_8_11_fixtures() {
+    fn ring_vrf_messages_wire_shape_pin() {
         let context = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: vec![0, 1, 2, 3],
+            suffix: DerivationIndex::Left(0),
         };
         let ring_location = RingLocation {
             chain_id: [0x11; 32],
@@ -1116,6 +1136,19 @@ mod tests {
             ring_location,
             b"vote".to_vec(),
         );
+
+        assert_host_papp_0_8_11_fixture(
+            alias,
+            "0x1c6d2d616c69617300032863616c6c65722e646f7428766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f70",
+        );
+        assert_host_papp_0_8_11_fixture(
+            proof,
+            "0x1c6d2d70726f6f66000c2863616c6c65722e646f7428766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f7010766f7465",
+        );
+    }
+
+    #[test]
+    fn ring_vrf_response_messages_match_host_papp_0_8_11_fixtures() {
         let contextual_alias = HostAccountGetAliasResponse {
             context: [0x22; 32],
             alias: vec![0x33, 0x44],
@@ -1145,14 +1178,6 @@ mod tests {
         };
 
         assert_host_papp_0_8_11_fixture(
-            alias,
-            "0x1c6d2d616c69617300032863616c6c65722e646f7428766f74696e672e646f7410000102031111111111111111111111111111111111111111111111111111111111111111080043010c706f70",
-        );
-        assert_host_papp_0_8_11_fixture(
-            proof,
-            "0x1c6d2d70726f6f66000c2863616c6c65722e646f7428766f74696e672e646f7410000102031111111111111111111111111111111111111111111111111111111111111111080043010c706f7010766f7465",
-        );
-        assert_host_papp_0_8_11_fixture(
             alias_response,
             "0x1c722d616c69617300041c6d2d616c696173002222222222222222222222222222222222222222222222222222222222222222083344",
         );
@@ -1174,14 +1199,118 @@ mod tests {
     }
 
     #[test]
-    fn resource_allocation_message_matches_host_papp_0_8_11_fixture() {
+    fn product_subtree_messages_match_mobile_wire_contract() {
+        let request =
+            product_subtree_request_message("request".to_string(), "browse.dot".to_string());
+        assert_eq!(
+            hex::encode(request.encode()),
+            "1c7265717565737400102862726f7773652e646f74"
+        );
+
+        let response = RemoteMessage {
+            message_id: "response".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(
+                ProductSubtreeResponse {
+                    responding_to: "request".to_string(),
+                    product_public_key: Ok([0xAB; 32]),
+                },
+            )),
+        };
+        assert_eq!(
+            hex::encode(response.encode()),
+            format!(
+                "20726573706f6e736500111c7265717565737400{}",
+                "ab".repeat(32)
+            )
+        );
+        assert_eq!(
+            remote_response_for_message(response, "request"),
+            Some(SsoRemoteResponse::ProductSubtree(ProductSubtreeResponse {
+                responding_to: "request".to_string(),
+                product_public_key: Ok([0xAB; 32]),
+            }))
+        );
+    }
+
+    #[test]
+    fn sign_vrf_messages_match_mobile_wire_contract() {
+        let payload = HostAccountSignVrfRequest {
+            account: ProductAccountId {
+                dot_ns_identifier: "browse.dot".to_string(),
+                derivation_index: DerivationIndex::Left(7),
+            },
+            transcript_label: b"ctx".to_vec(),
+            items: vec![truapi::v01::VrfTranscriptItem {
+                label: b"domain".to_vec(),
+                value: vec![1, 2],
+            }],
+        };
+        let request = sign_vrf_message("req".to_string(), "browse.dot".to_string(), payload);
+        assert_eq!(
+            hex::encode(request.encode()),
+            "0c726571000e2862726f7773652e646f742862726f7773652e646f7400070000000c6374780418646f6d61696e080102"
+        );
+
+        let response = RemoteMessage {
+            message_id: "resp".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(SignVrfResponse {
+                responding_to: "req".to_string(),
+                payload: Ok(VrfSignature {
+                    pre_output: [0x11; 32],
+                    proof: [0x22; 64],
+                }),
+            })),
+        };
+        assert_eq!(
+            hex::encode(response.encode()),
+            format!(
+                "1072657370000f0c72657100{}{}",
+                "11".repeat(32),
+                "22".repeat(64)
+            )
+        );
+        assert!(matches!(
+            remote_response_for_message(response, "req"),
+            Some(SsoRemoteResponse::SignVrf(SignVrfResponse {
+                payload: Ok(VrfSignature { .. }),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn auto_signing_secret_is_fixed_width_on_the_mobile_wire() {
+        let message = RemoteMessage {
+            message_id: "m".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(
+                ResourceAllocationResponse {
+                    responding_to: "r".to_string(),
+                    payload: Ok(vec![SsoAllocationOutcome::Allocated(
+                        SsoAllocatedResource::AutoSigning {
+                            product_root_private_key: sequential_bytes(0),
+                        },
+                    )]),
+                },
+            )),
+        };
+        assert_eq!(
+            hex::encode(message.encode()),
+            format!(
+                "046d0006047200040003{}",
+                hex::encode(sequential_bytes::<64>(0))
+            )
+        );
+    }
+
+    #[test]
+    fn resource_allocation_message_wire_shape_pin() {
         let message = resource_allocation_message(
             "m-resource".to_string(),
             "truapi-playground.dot".to_string(),
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
-                AllocatableResource::SmartContractAllowance(9),
+                AllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
                 AllocatableResource::AutoSigning,
             ],
             OnExistingAllowancePolicy::Increase,
@@ -1189,18 +1318,18 @@ mod tests {
 
         assert_host_papp_0_8_11_fixture(
             message,
-            "0x286d2d7265736f757263650005547472756170692d706c617967726f756e642e646f7410000102090000000301",
+            "0x286d2d7265736f757263650005547472756170692d706c617967726f756e642e646f741000010200090000000301",
         );
     }
 
     #[test]
-    fn create_transaction_message_matches_host_papp_0_8_11_fixture() {
+    fn create_transaction_message_wire_shape_pin() {
         let message = create_transaction_message(
             "m-product-tx".to_string(),
             ProductAccountTxPayload {
                 signer: ProductAccountId {
                     dot_ns_identifier: "truapi-playground.dot".to_string(),
-                    derivation_index: 0,
+                    derivation_index: DerivationIndex::Left(0),
                 },
                 genesis_hash: sequential_bytes(32),
                 call_data: vec![0, 0],
@@ -1215,18 +1344,18 @@ mod tests {
 
         assert_host_papp_0_8_11_fixture(
             message,
-            "0x306d2d70726f647563742d7478000700547472756170692d706c617967726f756e642e646f7400000000202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
+            "0x306d2d70726f647563742d7478000700547472756170692d706c617967726f756e642e646f740000000000202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0800000428436865636b4e6f6e6365040108020300",
         );
     }
 
     #[test]
-    fn playground_create_transaction_message_matches_host_papp_0_8_11_fixture() {
+    fn playground_create_transaction_message_wire_shape_pin() {
         let message = create_transaction_message(
             "create-transaction-1".to_string(),
             ProductAccountTxPayload {
                 signer: ProductAccountId {
                     dot_ns_identifier: "truapi-playground.dot".to_string(),
-                    derivation_index: 0,
+                    derivation_index: DerivationIndex::Left(0),
                 },
                 genesis_hash: [
                     0xbf, 0x04, 0x88, 0xdb, 0xe9, 0xda, 0xa1, 0xde, 0x1c, 0x08, 0xc5, 0xf7, 0x43,
@@ -1241,7 +1370,7 @@ mod tests {
 
         assert_host_papp_0_8_11_fixture(
             message,
-            "0x506372656174652d7472616e73616374696f6e2d31000700547472756170692d706c617967726f756e642e646f7400000000bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f0800000000",
+            "0x506372656174652d7472616e73616374696f6e2d31000700547472756170692d706c617967726f756e642e646f740000000000bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f0800000000",
         );
     }
 
@@ -1294,7 +1423,7 @@ mod tests {
 
     #[test]
     fn option_bool_matches_host_papp_option_bool_encoding() {
-        let mut request = truapi::v01::HostSignPayloadRequest {
+        let mut request = truapi::latest::HostSignPayloadRequest {
             account: account(),
             payload: HostSignPayloadData {
                 block_hash: vec![],
@@ -1333,7 +1462,7 @@ mod tests {
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
-                AllocatableResource::SmartContractAllowance(9),
+                AllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
                 AllocatableResource::AutoSigning,
             ],
             OnExistingAllowancePolicy::Increase,
@@ -1349,7 +1478,7 @@ mod tests {
             vec![
                 SsoAllocatableResource::StatementStoreAllowance,
                 SsoAllocatableResource::BulletinAllowance,
-                SsoAllocatableResource::SmartContractAllowance(9),
+                SsoAllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
                 SsoAllocatableResource::AutoSigning,
             ]
         );
@@ -1361,7 +1490,7 @@ mod tests {
         let session = session();
         let remote_message = sign_raw_message(
             "remote-1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Payload {
                     payload: "<Bytes>hello</Bytes>".to_string(),
@@ -1374,7 +1503,7 @@ mod tests {
             "statement-1".to_string(),
             vec![remote_message.clone()],
             99,
-            [9; AES_GCM_NONCE_LEN],
+            [9; AEAD_NONCE_LEN],
         )
         .unwrap();
         let encrypted = decode_statement_data(&statement).unwrap();
@@ -1401,7 +1530,7 @@ mod tests {
         let session = session();
         let remote_message = sign_raw_message(
             "remote-1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Payload {
                     payload: "<Bytes>hello</Bytes>".to_string(),
@@ -1413,7 +1542,7 @@ mod tests {
             "statement-1".to_string(),
             vec![remote_message],
             fresh_expiry(),
-            [9; AES_GCM_NONCE_LEN],
+            [9; AEAD_NONCE_LEN],
         )
         .unwrap();
 
@@ -1425,7 +1554,7 @@ mod tests {
 
     fn host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionInfo) {
         use crate::host_logic::sso::pairing::{
-            ResponderIdentity, create_pairing_bootstrap, derive_p256_keypair_from_entropy,
+            ResponderIdentity, create_pairing_bootstrap, derive_x25519_keypair_from_entropy,
             establish_responder_session_info, establish_sso_session_info,
         };
         use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
@@ -1447,7 +1576,7 @@ mod tests {
             .unwrap()
             .expand_to_keypair(ExpansionMode::Ed25519);
         let (encryption_secret_key, encryption_public_key) =
-            derive_p256_keypair_from_entropy(&[0xAB; 16], b"sso-encryption").unwrap();
+            derive_x25519_keypair_from_entropy(&[0xAB; 16], b"sso");
         let responder = ResponderIdentity {
             statement_secret: statement_keypair.secret.to_bytes(),
             statement_public_key: statement_keypair.public.to_bytes(),
@@ -1477,7 +1606,7 @@ mod tests {
         let (host_session, responder_session) = host_and_responder_sessions();
         let request = sign_raw_message(
             "remote-1".to_string(),
-            truapi::v01::HostSignRawRequest {
+            truapi::latest::HostSignRawRequest {
                 account: account(),
                 payload: RawPayload::Payload {
                     payload: "<Bytes>hello</Bytes>".to_string(),
@@ -1631,7 +1760,7 @@ mod tests {
                 request_id: "statement-1".to_string(),
                 response_code: 0,
             },
-            [9; AES_GCM_NONCE_LEN],
+            [9; AEAD_NONCE_LEN],
         )
         .unwrap();
         build_signed_statement(

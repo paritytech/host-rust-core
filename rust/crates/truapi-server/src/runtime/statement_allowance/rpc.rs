@@ -6,9 +6,59 @@ use futures::{FutureExt, pin_mut};
 use serde_json::{Value, json};
 use subxt_rpcs::RpcClient as HostRpcClient;
 use subxt_rpcs::client::{RpcClient as NativeRpcClient, RpcParams, rpc_params};
+use thiserror::Error;
+
+use super::StatementAllowanceError;
 
 /// Timeout for an allowance registration extrinsic to reach a block.
 const SUBMIT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Error from the native JSON-RPC surface used by allowance allocation.
+#[derive(Debug, Error)]
+pub enum RpcError {
+    /// Opening a direct RPC URL failed.
+    #[error("connect {url}: {source}")]
+    Connect {
+        /// RPC URL.
+        url: String,
+        /// RPC failure.
+        #[source]
+        source: subxt_rpcs::Error,
+    },
+    /// JSON-RPC request failed.
+    #[error("{method}: {source}")]
+    Request {
+        /// RPC method.
+        method: String,
+        /// RPC failure.
+        #[source]
+        source: subxt_rpcs::Error,
+    },
+    /// RPC params were not supplied as a JSON array.
+    #[error("RPC params must be a JSON array")]
+    ParamsNotArray,
+    /// Encoding one JSON-RPC param failed.
+    #[error("RPC param encode failed: {0}")]
+    ParamEncode(#[source] subxt_rpcs::Error),
+    /// `state_getStorage` returned invalid hex.
+    #[error("decode hex storage value: {0}")]
+    StorageHex(#[source] hex::FromHexError),
+    /// `chain_getFinalizedHead` did not return a hash string.
+    #[error("chain_getFinalizedHead returned non-string")]
+    FinalizedHeadNotString,
+    /// Extrinsic status subscription ended before inclusion.
+    #[error("author_submitAndWatchExtrinsic subscription ended")]
+    SubmitSubscriptionEnded,
+    /// Extrinsic status subscription timed out before inclusion.
+    #[error("timed out waiting for author_submitAndWatchExtrinsic inclusion")]
+    SubmitTimeout,
+    /// Extrinsic status subscription yielded a terminal rejection status.
+    #[error("extrinsic {status}")]
+    ExtrinsicRejected {
+        /// Terminal status key.
+        status: String,
+    },
+}
 
 /// Thin adapter matching the allowance allocator's minimal RPC surface.
 #[derive(Clone)]
@@ -18,10 +68,13 @@ pub struct RpcClient {
 
 impl RpcClient {
     /// Open a native JSON-RPC connection to `url`.
-    pub async fn connect(url: &str) -> Result<Self, String> {
+    pub async fn connect(url: &str) -> Result<Self, StatementAllowanceError> {
         let inner = NativeRpcClient::from_insecure_url(url)
             .await
-            .map_err(|err| format!("connect {url}: {err}"))?;
+            .map_err(|err| RpcError::Connect {
+                url: url.to_string(),
+                source: err,
+            })?;
         Ok(Self { inner })
     }
 
@@ -31,22 +84,39 @@ impl RpcClient {
     }
 
     /// Call `method` with JSON-array `params`, returning the result value.
-    pub async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+    pub async fn call(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, StatementAllowanceError> {
         self.inner
             .request(method, value_to_params(params)?)
             .await
-            .map_err(rpc_error_message)
+            .map_err(|err| {
+                RpcError::Request {
+                    method: method.to_string(),
+                    source: err,
+                }
+                .into()
+            })
     }
 
     /// `state_getStorage(key)` at the current best block -> raw value bytes,
     /// or `None` if absent.
-    pub async fn get_storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    pub async fn get_storage(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StatementAllowanceError> {
         self.get_storage_maybe_at(key, None).await
     }
 
     /// `state_getStorage(key, at)` pinned to block `at` -> raw value bytes,
     /// or `None` if absent.
-    pub async fn get_storage_at(&self, key: &[u8], at: &str) -> Result<Option<Vec<u8>>, String> {
+    pub async fn get_storage_at(
+        &self,
+        key: &[u8],
+        at: &str,
+    ) -> Result<Option<Vec<u8>>, StatementAllowanceError> {
         self.get_storage_maybe_at(key, Some(at)).await
     }
 
@@ -54,7 +124,7 @@ impl RpcClient {
         &self,
         key: &[u8],
         at: Option<&str>,
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<Vec<u8>>, StatementAllowanceError> {
         let key_hex = format!("0x{}", hex::encode(key));
         let params = match at {
             Some(at) => rpc_params![key_hex, at],
@@ -64,24 +134,29 @@ impl RpcClient {
             .inner
             .request::<Value>("state_getStorage", params)
             .await
-            .map_err(rpc_error_message)?
-        {
+            .map_err(|err| RpcError::Request {
+                method: "state_getStorage".to_string(),
+                source: err,
+            })? {
             Value::String(hex_value) => Ok(Some(decode_hex(&hex_value)?)),
             _ => Ok(None),
         }
     }
 
     /// `chain_getFinalizedHead` -> hash of the latest finalized block.
-    pub async fn finalized_head(&self) -> Result<String, String> {
+    pub async fn finalized_head(&self) -> Result<String, StatementAllowanceError> {
         let value = self.call("chain_getFinalizedHead", json!([])).await?;
         value
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| "chain_getFinalizedHead returned non-string".to_string())
+            .ok_or_else(|| RpcError::FinalizedHeadNotString.into())
     }
 
     /// Submit an extrinsic and wait for `inBlock` or `finalized`; returns the block hash.
-    pub async fn submit_and_watch(&self, extrinsic: &[u8]) -> Result<String, String> {
+    pub async fn submit_and_watch(
+        &self,
+        extrinsic: &[u8],
+    ) -> Result<String, StatementAllowanceError> {
         let extrinsic_hex = format!("0x{}", hex::encode(extrinsic));
         let mut subscription = self
             .inner
@@ -91,7 +166,10 @@ impl RpcClient {
                 "author_unwatchExtrinsic",
             )
             .await
-            .map_err(rpc_error_message)?;
+            .map_err(|err| RpcError::Request {
+                method: "author_submitAndWatchExtrinsic".to_string(),
+                source: err,
+            })?;
         let timeout = futures_timer::Delay::new(SUBMIT_TIMEOUT).fuse();
         pin_mut!(timeout);
 
@@ -100,16 +178,19 @@ impl RpcClient {
             pin_mut!(next);
             let status = futures::select! {
                 item = next => item.ok_or_else(|| {
-                    "author_submitAndWatchExtrinsic subscription ended".to_string()
-                })?.map_err(rpc_error_message)?,
-                () = timeout => return Err(
-                    "timed out waiting for author_submitAndWatchExtrinsic inclusion".to_string()
-                ),
+                    RpcError::SubmitSubscriptionEnded
+                })?.map_err(|err| RpcError::Request {
+                    method: "author_submitAndWatchExtrinsic".to_string(),
+                    source: err,
+                })?,
+                () = timeout => return Err(RpcError::SubmitTimeout.into()),
             };
             tracing::debug!(?status, "allowance extrinsic status");
             match extrinsic_status(&status) {
                 ExtrinsicStatus::Included(hash) => return Ok(hash),
-                ExtrinsicStatus::Rejected(reason) => return Err(format!("extrinsic {reason}")),
+                ExtrinsicStatus::Rejected(reason) => {
+                    return Err(RpcError::ExtrinsicRejected { status: reason }.into());
+                }
                 ExtrinsicStatus::Pending => {}
             }
         }
@@ -143,27 +224,20 @@ fn extrinsic_status(status: &Value) -> ExtrinsicStatus {
     ExtrinsicStatus::Pending
 }
 
-fn value_to_params(value: Value) -> Result<RpcParams, String> {
+fn value_to_params(value: Value) -> Result<RpcParams, StatementAllowanceError> {
     let Value::Array(values) = value else {
-        return Err("RPC params must be a JSON array".to_string());
+        return Err(RpcError::ParamsNotArray.into());
     };
     let mut params = RpcParams::new();
     for value in values {
-        params.push(value).map_err(rpc_error_message)?;
+        params.push(value).map_err(RpcError::ParamEncode)?;
     }
     Ok(params)
 }
 
-fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+fn decode_hex(value: &str) -> Result<Vec<u8>, StatementAllowanceError> {
     hex::decode(value.strip_prefix("0x").unwrap_or(value))
-        .map_err(|err| format!("decode hex storage value: {err}"))
-}
-
-fn rpc_error_message(error: subxt_rpcs::Error) -> String {
-    match error {
-        subxt_rpcs::Error::User(error) => error.message,
-        other => other.to_string(),
-    }
+        .map_err(|err| RpcError::StorageHex(err).into())
 }
 
 #[cfg(test)]

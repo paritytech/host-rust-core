@@ -59,7 +59,7 @@ fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
         .hash(message)
         .as_bytes()
         .try_into()
-        .expect("BLAKE2b-256 returns 32 bytes")
+        .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed")
 }
 
 #[cfg(test)]

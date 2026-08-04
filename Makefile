@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi dotli-link dev dev-bootstrap dev-link-check e2e-dotli matrix explorer
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli headless install matrix explorer
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -22,13 +22,7 @@ DOTLI_TRUAPI_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi
 DOTLI_HOST_WASM_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi-host
 DOTLI_UI_TRUAPI_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi
 DOTLI_UI_HOST_WASM_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi-host
-SIGNER_BOT_BASE_URL ?= https://signing-bot-dev.novasama-tech.org/
-SIGNER_BOT_NETWORK ?= paseo-next-v2
-SIGNER_BOT_BASE_URL_ORIGIN := $(origin SIGNER_BOT_BASE_URL)
-SIGNER_BOT_NETWORK_ORIGIN := $(origin SIGNER_BOT_NETWORK)
 VITE_NETWORKS ?= paseo-next-v2,previewnet
-export SIGNER_BOT_BASE_URL
-export SIGNER_BOT_NETWORK
 export VITE_NETWORKS
 
 # Local product URLs (`http://localhost:5173/localhost:3000`) are intentionally
@@ -56,6 +50,18 @@ build: ## Build the Rust workspace and the TypeScript client.
 	cd $(TRUAPI_PKG) && npm run build
 	cd $(HOST_WASM_PKG) && npm run build
 
+headless: ## Build the truapi-host CLI and generated TypeScript client.
+	# The client build shells out to tsc, which `ensure-generated.sh` looks for at
+	# the root or in the package. Install workspace deps when neither is present so
+	# this target works on a checkout that has not run `make setup`.
+	@[ -x node_modules/.bin/tsc ] || [ -x $(TRUAPI_PKG)/node_modules/.bin/tsc ] \
+		|| npm ci --ignore-scripts
+	cargo build -p truapi-host-cli
+	cd $(TRUAPI_PKG) && npm run build
+
+install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `make headless install`.
+	cargo install --path rust/crates/truapi-host-cli --bin truapi-host --locked --force
+
 codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 	./scripts/codegen.sh
 	cd $(PLAYGROUND) && rm -rf node_modules/@parity && yarn install
@@ -66,7 +72,12 @@ wasm: ## Rebuild the truapi-server WASM artifacts under js/packages/truapi-host/
 wasm-crypto-test: ## Run crypto/vector tests on wasm32 via wasm-pack/node.
 	wasm-pack test --node rust/crates/truapi-server --test wasm_crypto_vectors --no-default-features
 
-UNIFFI_CDYLIB_DIR := target/release
+dotli-link: ## Link dotli to this checkout's local @parity/truapi packages.
+	cd $(DOTLI) && TRUAPI_REPO="$(CURDIR)" bun run link:truapi
+
+# uniffi-bindgen scans the cdylib's metadata symbols, which `release` strips, so
+# codegen builds use the unstripped `codegen` profile (see [profile.codegen]).
+UNIFFI_CDYLIB_DIR := target/codegen
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.dylib
@@ -77,7 +88,7 @@ endif
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 
 uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
-	$(CARGO) build -p truapi-server --release --features ws-bridge
+	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
 	$(CARGO) run -p uniffi-bindgen-cli -- generate \
@@ -92,8 +103,30 @@ uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
 	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap \
 		ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
 
-dotli-link: ## Link dotli to this checkout's local @parity/truapi packages.
-	cd $(DOTLI) && TRUAPI_REPO="$(CURDIR)" bun run link:truapi
+UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
+
+uniffi-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-server cdylib.
+	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
+	rm -rf $(UNIFFI_KOTLIN_OUT)
+	mkdir -p $(UNIFFI_KOTLIN_OUT)
+	$(CARGO) run -p uniffi-bindgen-cli -- generate \
+		--library $(UNIFFI_CDYLIB) \
+		--language kotlin \
+		--out-dir $(UNIFFI_KOTLIN_OUT)
+
+# Android ABIs to cross-compile the cdylib for. arm64 + armv7 cover physical
+# devices; x86_64 covers the emulator on Intel/Apple-silicon hosts.
+ANDROID_ABIS ?= arm64-v8a armeabi-v7a x86_64
+ANDROID_JNILIBS := android/truapi-host/src/main/jniLibs
+
+android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
+	@command -v cargo-ndk >/dev/null || { echo "cargo-ndk not found: cargo install cargo-ndk"; exit 1; }
+	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
+		-o $(ANDROID_JNILIBS) \
+		build --release -p truapi-server --features ws-bridge
+
+android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
+	gradle :truapi-host:publishReleasePublicationToMavenLocal
 
 test: ## Run Rust + TypeScript client tests.
 	cargo test --workspace
@@ -109,6 +142,21 @@ check: ## Full verification suite (build, fmt, clippy, test, TS tests, playgroun
 	cd $(TRUAPI_PKG) && npm run build && npm test
 	cd $(JS_PACKAGES)/truapi-host && npm install --no-fund --no-audit && npm test
 	cd $(PLAYGROUND) && yarn build && yarn lint
+
+ANDROID_SHELL := android/truapi-host/src/main/kotlin/io/parity/truapi/TrUAPIHost.kt
+ANDROID_SHELL_VENDORED := hosts/android/bindings/truapi-host/src/main/kotlin/io/parity/truapi/TrUAPIHost.kt
+
+check-android-parity: ## Verify the canonical android/truapi-host shell matches the copy vendored in the app (hosts/android). Skips if the submodule is not initialized.
+	@if [ ! -f "$(ANDROID_SHELL_VENDORED)" ]; then \
+		echo "Skipping android parity check: hosts/android not initialized (run 'git submodule update --init hosts/android')."; \
+	elif diff -q "$(ANDROID_SHELL)" "$(ANDROID_SHELL_VENDORED)" >/dev/null; then \
+		echo "android/truapi-host shell matches the vendored app copy."; \
+	else \
+		echo "ERROR: $(ANDROID_SHELL) has drifted from $(ANDROID_SHELL_VENDORED)."; \
+		echo "The host adapter shell is duplicated in truapi and the app; keep them in sync."; \
+		diff "$(ANDROID_SHELL)" "$(ANDROID_SHELL_VENDORED)" || true; \
+		exit 1; \
+	fi
 
 clean: ## Remove local build/test artifacts without deleting dependencies.
 	cargo clean
@@ -165,20 +213,9 @@ dev: dev-bootstrap ## Start dotli host (:5173) + playground (:3000) together; op
 	( until curl -fsS http://localhost:3000/ >/dev/null 2>&1; do sleep 1; done; curl -fsS http://localhost:3000/diagnostics >/dev/null 2>&1 || true ) & \
 	wait
 
-e2e-dotli: ## Fully automated dotli + playground diagnosis e2e. Requires SIGNER_BOT_SVC_TOKEN unless E2E_DOTLI_SMOKE=1.
-	@SIGNER_BOT_SVC_TOKEN_ENV="$$SIGNER_BOT_SVC_TOKEN"; \
-	SIGNER_BOT_BASE_URL_ENV="$$SIGNER_BOT_BASE_URL"; \
-	SIGNER_BOT_NETWORK_ENV="$$SIGNER_BOT_NETWORK"; \
-	SIGNER_BOT_BASE_URL_ORIGIN="$(SIGNER_BOT_BASE_URL_ORIGIN)"; \
-	SIGNER_BOT_NETWORK_ORIGIN="$(SIGNER_BOT_NETWORK_ORIGIN)"; \
-	set -a; \
-	if [ -f .env ]; then . ./.env; fi; \
-	set +a; \
-	if [ -n "$$SIGNER_BOT_SVC_TOKEN_ENV" ]; then SIGNER_BOT_SVC_TOKEN="$$SIGNER_BOT_SVC_TOKEN_ENV"; export SIGNER_BOT_SVC_TOKEN; fi; \
-	if [ "$$SIGNER_BOT_BASE_URL_ORIGIN" != "file" ] && [ -n "$$SIGNER_BOT_BASE_URL_ENV" ]; then SIGNER_BOT_BASE_URL="$$SIGNER_BOT_BASE_URL_ENV"; export SIGNER_BOT_BASE_URL; fi; \
-	if [ "$$SIGNER_BOT_NETWORK_ORIGIN" != "file" ] && [ -n "$$SIGNER_BOT_NETWORK_ENV" ]; then SIGNER_BOT_NETWORK="$$SIGNER_BOT_NETWORK_ENV"; export SIGNER_BOT_NETWORK; fi; \
-	if [ "$$E2E_DOTLI_SMOKE" != "1" ]; then test -n "$$SIGNER_BOT_SVC_TOKEN" || (echo "Missing SIGNER_BOT_SVC_TOKEN. e2e-dotli requires signer-bot; without it a human phone scan is required."; exit 1); fi; \
-	$(MAKE) dev-bootstrap; \
+e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local signing-host CLI.
+	@$(MAKE) dev-bootstrap
+	cargo build -p truapi-host-cli
 	cd $(PLAYGROUND) && bun tests/e2e/dotli-diagnosis.ts
 
 matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-reports.

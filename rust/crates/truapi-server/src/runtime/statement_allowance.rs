@@ -2,9 +2,9 @@
 //!
 //! Mirrors how an iOS/web client obtains statement-store allowance from the real
 //! People chain: build the `Resources.set_statement_store_account` call, prove
-//! LitePeople ring membership with a bandersnatch ring-VRF, and submit the
-//! resulting unsigned General (v5) extrinsic. Native only (needs the
-//! `verifiable` prover and live chain reads).
+//! LitePeople membership with the RFC-0022 `peopl.dot` index-1 ring-VRF key,
+//! and submit the resulting unsigned General (v5) extrinsic. Native only
+//! (needs the `verifiable` prover and live chain reads).
 
 pub mod extension;
 pub mod extrinsic;
@@ -19,34 +19,88 @@ use futures::FutureExt;
 use parity_scale_codec::{Decode, Encode};
 use serde_json::{Value, json};
 use sp_crypto_hashing::twox_128;
+use thiserror::Error;
 use tracing::{debug, warn};
 
-use extension::{ChainState, Metadata};
+use extension::{ChainState, Metadata, MetadataError};
 use ring::RingParams;
 use rpc::RpcClient;
-use slot::SlotSelection;
+use slot::{SlotError, SlotSelection};
 
-/// Bandersnatch entropy for a bip39 entropy: `blake2b256(bip39_entropy)`.
-pub fn bandersnatch_entropy(bip39_entropy: &[u8]) -> [u8; 32] {
-    blake2b_simd::Params::new()
-        .hash_length(32)
-        .hash(bip39_entropy)
-        .as_bytes()
-        .try_into()
-        .expect("BLAKE2b-256 returns 32 bytes")
+/// Error while reading chain state, building allowance extrinsics, or waiting
+/// for allowance authorization.
+#[derive(Debug, Error)]
+pub enum StatementAllowanceError {
+    /// JSON-RPC transport, request, subscription, or storage hex failure.
+    #[error(transparent)]
+    Rpc(#[from] rpc::RpcError),
+    /// Runtime metadata was missing an expected pallet, call, type, extension,
+    /// constant, or could not be decoded.
+    #[error(transparent)]
+    Metadata(#[from] extension::MetadataError),
+    /// Chain RPC returned a value with an unexpected shape.
+    #[error(transparent)]
+    ChainState(#[from] ChainStateError),
+    /// Ring lookup or ring storage decoding failed.
+    #[error(transparent)]
+    Ring(#[from] ring::RingError),
+    /// Slot context, alias, or free-slot selection failed.
+    #[error(transparent)]
+    Slot(#[from] slot::SlotError),
+    /// Ring-VRF proof construction failed.
+    #[error(transparent)]
+    Proof(#[from] proof::ProofError),
+    /// Bulletin allowance polling timed out.
+    #[error("timed out waiting for Bulletin authorization")]
+    BulletinAuthorizationTimeout,
+}
+
+/// Error while decoding generic chain state used by allowance registration.
+#[derive(Debug, Error)]
+pub enum ChainStateError {
+    /// `chain_getBlockHash(0)` did not return a hex string.
+    #[error("chain_getBlockHash returned non-string")]
+    GenesisHashNotString,
+    /// `chain_getBlockHash(0)` returned invalid hex.
+    #[error("genesis hex: {0}")]
+    GenesisHex(#[source] hex::FromHexError),
+    /// Decoded genesis hash was not 32 bytes.
+    #[error("genesis hash is {len} bytes, expected 32")]
+    GenesisHashLength {
+        /// Actual decoded length.
+        len: usize,
+    },
+    /// Runtime JSON lacked an expected u32 field.
+    #[error("missing/invalid {field}")]
+    MissingU32Field {
+        /// Field name.
+        field: &'static str,
+    },
+    /// Bulletin authorization storage failed to decode a field.
+    #[error("authorization {field}: {source}")]
+    AuthorizationFieldDecode {
+        /// Field name.
+        field: &'static str,
+        /// SCALE decode failure.
+        #[source]
+        source: parity_scale_codec::Error,
+    },
+    /// `chain_getHeader` did not contain a block number string.
+    #[error("chain_getHeader returned no number")]
+    HeaderNumberMissing,
+    /// `chain_getHeader.number` was not valid hex.
+    #[error("chain_getHeader number: {0}")]
+    HeaderNumberParse(#[source] std::num::ParseIntError),
 }
 
 /// Fetch and decode the runtime metadata (`state_getMetadata`).
-pub async fn fetch_metadata(rpc: &RpcClient) -> Result<Metadata, String> {
-    let value = rpc
-        .call("state_getMetadata", json!([]))
-        .await
-        .map_err(|e| e.to_string())?;
+pub async fn fetch_metadata(rpc: &RpcClient) -> Result<Metadata, StatementAllowanceError> {
+    let value = rpc.call("state_getMetadata", json!([])).await?;
     let hex_str = value
         .as_str()
-        .ok_or_else(|| "state_getMetadata returned non-string".to_string())?;
+        .ok_or(MetadataError::MetadataResultNotString)?;
     let bytes = hex::decode(hex_str.strip_prefix("0x").unwrap_or(hex_str))
-        .map_err(|e| format!("metadata hex: {e}"))?;
+        .map_err(MetadataError::MetadataHex)?;
     // `state_getMetadata` may return either the raw `RuntimeMetadataPrefixed`
     // (starts with the `meta` magic) or an OpaqueMetadata wrapper
     // (`Vec<u8>` = compact(len) ‖ bytes). Strip the wrapper only when present.
@@ -54,31 +108,25 @@ pub async fn fetch_metadata(rpc: &RpcClient) -> Result<Metadata, String> {
     if bytes.get(..4) == Some(&META_MAGIC) {
         Metadata::decode(&bytes)
     } else {
-        let inner =
-            Vec::<u8>::decode(&mut &bytes[..]).map_err(|e| format!("opaque metadata: {e}"))?;
+        let inner = Vec::<u8>::decode(&mut &bytes[..]).map_err(MetadataError::OpaqueMetadata)?;
         Metadata::decode(&inner)
     }
 }
 
 /// Fetch the chain state needed to fill the signed extensions.
-pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, String> {
-    let genesis_hex = rpc
-        .call("chain_getBlockHash", json!([0]))
-        .await
-        .map_err(|e| e.to_string())?;
+pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementAllowanceError> {
+    let genesis_hex = rpc.call("chain_getBlockHash", json!([0])).await?;
     let genesis_str = genesis_hex
         .as_str()
-        .ok_or_else(|| "chain_getBlockHash returned non-string".to_string())?;
+        .ok_or(ChainStateError::GenesisHashNotString)?;
     let genesis = hex::decode(genesis_str.strip_prefix("0x").unwrap_or(genesis_str))
-        .map_err(|e| format!("genesis hex: {e}"))?;
+        .map_err(ChainStateError::GenesisHex)?;
+    let len = genesis.len();
     let genesis_hash: [u8; 32] = genesis
         .try_into()
-        .map_err(|_| "genesis hash is not 32 bytes".to_string())?;
+        .map_err(|_| ChainStateError::GenesisHashLength { len })?;
 
-    let runtime = rpc
-        .call("state_getRuntimeVersion", json!([]))
-        .await
-        .map_err(|e| e.to_string())?;
+    let runtime = rpc.call("state_getRuntimeVersion", json!([])).await?;
     let spec_version = json_u32(&runtime, "specVersion")?;
     let transaction_version = json_u32(&runtime, "transactionVersion")?;
 
@@ -91,12 +139,12 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, String> {
 }
 
 /// Read a u32 field from a JSON object.
-fn json_u32(value: &Value, field: &str) -> Result<u32, String> {
+fn json_u32(value: &Value, field: &'static str) -> Result<u32, StatementAllowanceError> {
     value
         .get(field)
         .and_then(Value::as_u64)
         .and_then(|v| u32::try_from(v).ok())
-        .ok_or_else(|| format!("missing/invalid {field}"))
+        .ok_or_else(|| ChainStateError::MissingU32Field { field }.into())
 }
 
 /// Result of a statement-store allowance registration attempt.
@@ -182,7 +230,7 @@ pub async fn find_including_ring(
     metadata: &Metadata,
     entropy: [u8; 32],
     lookback: u32,
-) -> Result<Option<RingParams>, String> {
+) -> Result<Option<RingParams>, StatementAllowanceError> {
     let member = proof::member_key(entropy);
     let at = rpc.finalized_head().await?;
     let exponent = ring::read_ring_exponent(rpc, metadata, &at).await?;
@@ -210,7 +258,7 @@ pub async fn register_statement_account(
     chain_state: &ChainState,
     entropy: [u8; 32],
     params: RegistrationParams<'_>,
-) -> Result<RegistrationOutcome, String> {
+) -> Result<RegistrationOutcome, StatementAllowanceError> {
     let mut skipped_duplicate_slots = Vec::new();
     loop {
         let seq = match slot::scan_slot_excluding(
@@ -251,11 +299,12 @@ pub async fn register_statement_account(
                 if slot::read_slot_account_at(rpc, entropy, params.period, seq, &block_hash).await?
                     != Some(*params.target)
                 {
-                    return Err(format!(
-                        "registration reached block {block_hash} but slot (period {}, \
-                         seq {seq}) is not held by the target account",
-                        params.period
-                    ));
+                    return Err(SlotError::RegistrationVerificationMismatch {
+                        block_hash,
+                        period: params.period,
+                        seq,
+                    }
+                    .into());
                 }
                 return Ok(RegistrationOutcome::Registered {
                     block_hash,
@@ -263,10 +312,10 @@ pub async fn register_statement_account(
                     ring_index: params.ring.ring_index,
                 });
             }
-            Err(err) if duplicate_submit_error(&err) => {
+            Err(err) if duplicate_submit_error(&err.to_string()) => {
                 skipped_duplicate_slots.push(seq);
             }
-            Err(err) => return Err(err.to_string()),
+            Err(err) => return Err(err),
         }
     }
 }
@@ -281,7 +330,7 @@ pub async fn claim_long_term_storage(
     target: &[u8; 32],
     period: u32,
     ring: &RingParams,
-) -> Result<LongTermStorageOutcome, String> {
+) -> Result<LongTermStorageOutcome, StatementAllowanceError> {
     let revision =
         ring::read_ring_revision(rpc, metadata, ring.ring_index, &ring.block_hash).await?;
     let mut skipped_duplicate_counters = Vec::new();
@@ -325,7 +374,7 @@ pub async fn claim_long_term_storage(
                     ring_index: ring.ring_index,
                 });
             }
-            Err(err) if duplicate_submit_error(&err) => {
+            Err(err) if duplicate_submit_error(&err.to_string()) => {
                 skipped_duplicate_counters.push(counter);
             }
             Err(err) => {
@@ -337,7 +386,7 @@ pub async fn claim_long_term_storage(
                     %err,
                     "Bulletin long-term-storage claim failed"
                 );
-                return Err(err.to_string());
+                return Err(err);
             }
         }
     }
@@ -347,12 +396,8 @@ pub async fn claim_long_term_storage(
 pub async fn fetch_bulletin_allowance(
     rpc: &RpcClient,
     target: &[u8; 32],
-) -> Result<Option<BulletinAllowanceInfo>, String> {
-    let Some(bytes) = rpc
-        .get_storage(&bulletin_authorization_key(target))
-        .await
-        .map_err(|e| e.to_string())?
-    else {
+) -> Result<Option<BulletinAllowanceInfo>, StatementAllowanceError> {
+    let Some(bytes) = rpc.get_storage(&bulletin_authorization_key(target)).await? else {
         return Ok(None);
     };
     let fetched_at = fetch_block_number(rpc).await?;
@@ -365,7 +410,7 @@ pub async fn wait_bulletin_authorization(
     target: &[u8; 32],
     current: Option<BulletinAllowanceInfo>,
     timeout: Duration,
-) -> Result<BulletinAllowanceInfo, String> {
+) -> Result<BulletinAllowanceInfo, StatementAllowanceError> {
     let started = Instant::now();
     let baseline = current.filter(|info| info.available());
     loop {
@@ -383,9 +428,9 @@ pub async fn wait_bulletin_authorization(
 async fn wait_before_next_bulletin_authorization_poll(
     started: Instant,
     timeout: Duration,
-) -> Result<(), String> {
+) -> Result<(), StatementAllowanceError> {
     let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
-        return Err("timed out waiting for Bulletin authorization".to_string());
+        return Err(StatementAllowanceError::BulletinAuthorizationTimeout);
     };
     let delay = futures_timer::Delay::new(remaining.min(Duration::from_secs(2))).fuse();
     futures::pin_mut!(delay);
@@ -424,20 +469,38 @@ fn bulletin_authorization_key(target: &[u8; 32]) -> Vec<u8> {
 fn decode_bulletin_allowance(
     bytes: &[u8],
     fetched_at: u32,
-) -> Result<BulletinAllowanceInfo, String> {
+) -> Result<BulletinAllowanceInfo, StatementAllowanceError> {
     let mut input = bytes;
     let transactions =
-        u32::decode(&mut input).map_err(|err| format!("authorization transactions: {err}"))?;
-    let transactions_allowance = u32::decode(&mut input)
-        .map_err(|err| format!("authorization transactions_allowance: {err}"))?;
+        u32::decode(&mut input).map_err(|err| ChainStateError::AuthorizationFieldDecode {
+            field: "transactions",
+            source: err,
+        })?;
+    let transactions_allowance =
+        u32::decode(&mut input).map_err(|err| ChainStateError::AuthorizationFieldDecode {
+            field: "transactions_allowance",
+            source: err,
+        })?;
     let bytes_used =
-        u64::decode(&mut input).map_err(|err| format!("authorization bytes: {err}"))?;
+        u64::decode(&mut input).map_err(|err| ChainStateError::AuthorizationFieldDecode {
+            field: "bytes",
+            source: err,
+        })?;
     let _bytes_permanent =
-        u64::decode(&mut input).map_err(|err| format!("authorization bytes_permanent: {err}"))?;
+        u64::decode(&mut input).map_err(|err| ChainStateError::AuthorizationFieldDecode {
+            field: "bytes_permanent",
+            source: err,
+        })?;
     let bytes_allowance =
-        u64::decode(&mut input).map_err(|err| format!("authorization bytes_allowance: {err}"))?;
+        u64::decode(&mut input).map_err(|err| ChainStateError::AuthorizationFieldDecode {
+            field: "bytes_allowance",
+            source: err,
+        })?;
     let expires_in =
-        u32::decode(&mut input).map_err(|err| format!("authorization expiration: {err}"))?;
+        u32::decode(&mut input).map_err(|err| ChainStateError::AuthorizationFieldDecode {
+            field: "expiration",
+            source: err,
+        })?;
     Ok(BulletinAllowanceInfo {
         remained_size: bytes_allowance.saturating_sub(bytes_used),
         remained_transactions: transactions_allowance.saturating_sub(transactions),
@@ -446,17 +509,14 @@ fn decode_bulletin_allowance(
     })
 }
 
-async fn fetch_block_number(rpc: &RpcClient) -> Result<u32, String> {
-    let header = rpc
-        .call("chain_getHeader", json!([]))
-        .await
-        .map_err(|err| err.to_string())?;
+async fn fetch_block_number(rpc: &RpcClient) -> Result<u32, StatementAllowanceError> {
+    let header = rpc.call("chain_getHeader", json!([])).await?;
     let number = header
         .get("number")
         .and_then(Value::as_str)
-        .ok_or_else(|| "chain_getHeader returned no number".to_string())?;
+        .ok_or(ChainStateError::HeaderNumberMissing)?;
     u32::from_str_radix(number.trim_start_matches("0x"), 16)
-        .map_err(|err| format!("chain_getHeader number: {err}"))
+        .map_err(|err| ChainStateError::HeaderNumberParse(err).into())
 }
 
 /// Pool responses meaning an equivalent claim already occupies the pool, so
@@ -556,7 +616,10 @@ mod tests {
     /// read at that block returns `verified_entry`.
     fn scripted_registration(
         verified_entry: &str,
-    ) -> (Result<RegistrationOutcome, String>, ScriptedRpc) {
+    ) -> (
+        Result<RegistrationOutcome, StatementAllowanceError>,
+        ScriptedRpc,
+    ) {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let chain_state = ChainState {
             spec_version: 1_000_000,
@@ -615,6 +678,9 @@ mod tests {
         let (outcome, _scripted) = scripted_registration(&slot_entry([0x99; 32]));
 
         let err = outcome.unwrap_err();
-        assert!(err.contains("0xb10c"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("0xb10c"),
+            "unexpected error: {err}"
+        );
     }
 }

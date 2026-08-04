@@ -21,9 +21,10 @@ use truapi::latest::{
     HostNavigateToError, HostPushNotificationRequest, HostPushNotificationResponse,
     HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermissionRequest,
+    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
     RemotePermissionResponse, RingLocation, ThemeVariant,
 };
+use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
 
 /// Role-neutral runtime configuration supplied by the embedding host.
@@ -115,10 +116,8 @@ impl HostRuntimeConfig {
     ) -> Result<Self, RuntimeConfigValidationError> {
         require_non_empty("host_info.name", &host_info.name)?;
         if let Some(icon) = &host_info.icon {
-            let parsed =
-                Url::parse(icon).map_err(|err| RuntimeConfigValidationError::InvalidHostIcon {
-                    reason: err.to_string(),
-                })?;
+            let parsed = Url::parse(icon)
+                .map_err(|source| RuntimeConfigValidationError::InvalidHostIcon { source })?;
             if parsed.scheme() != "https" {
                 return Err(RuntimeConfigValidationError::InsecureHostIcon {
                     scheme: parsed.scheme().to_string(),
@@ -226,10 +225,10 @@ pub enum RuntimeConfigValidationError {
         field: &'static str,
     },
     /// Host icon URL could not be parsed as an absolute HTTPS URL.
-    #[display("host_info.icon must be an absolute HTTPS URL: {reason}")]
+    #[display("host_info.icon must be an absolute HTTPS URL: {source}")]
     InvalidHostIcon {
-        /// Parse failure reason.
-        reason: String,
+        /// Parse failure.
+        source: url::ParseError,
     },
     /// Host icon URL used a non-HTTPS scheme.
     #[display("host_info.icon must use https scheme, got {scheme:?}")]
@@ -251,10 +250,85 @@ pub enum RuntimeConfigValidationError {
     },
 }
 
+const PRODUCT_STORAGE_KEY_PREFIX: &str = "truapi:product-storage:v1:";
+
+/// Decoded product scope and product-owned key used by [`ProductStorage`].
+///
+/// The string representation remains the host callback ABI. Native hosts that
+/// need separate backing stores can decode it without duplicating the wire
+/// format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductStorageKey {
+    product_id: String,
+    key: String,
+}
+
+impl ProductStorageKey {
+    /// Build a key with a validated, normalized product id.
+    pub fn new(
+        product_id: &str,
+        key: impl Into<String>,
+    ) -> Result<Self, RuntimeConfigValidationError> {
+        Ok(Self {
+            product_id: normalize_product_identifier(product_id)?,
+            key: key.into(),
+        })
+    }
+
+    /// Decode the opaque key passed through [`ProductStorage`].
+    pub fn decode(value: &str) -> Result<Self, String> {
+        let remainder = value
+            .strip_prefix(PRODUCT_STORAGE_KEY_PREFIX)
+            .ok_or_else(|| "product storage key has an unknown format".to_string())?;
+        let (length, scoped) = remainder
+            .split_once(':')
+            .ok_or_else(|| "product storage key is missing its scope length".to_string())?;
+        let product_length = length
+            .parse::<usize>()
+            .map_err(|_| "product storage key has an invalid scope length".to_string())?;
+        let product_id = scoped
+            .get(..product_length)
+            .ok_or_else(|| "product storage key has a truncated product id".to_string())?;
+        let separator = scoped
+            .as_bytes()
+            .get(product_length)
+            .copied()
+            .ok_or_else(|| "product storage key is missing its key separator".to_string())?;
+        if separator != b':' {
+            return Err("product storage key has an invalid key separator".to_string());
+        }
+        let key = scoped
+            .get(product_length + 1..)
+            .ok_or_else(|| "product storage key splits a UTF-8 character".to_string())?;
+        Self::new(product_id, key.to_string()).map_err(|error| error.to_string())
+    }
+
+    /// Product identifier owning this storage key.
+    pub fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    /// Product-local key without the host scope prefix.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Encode the stable opaque key used by existing host callbacks.
+    pub fn encode(&self) -> String {
+        format!(
+            "{PRODUCT_STORAGE_KEY_PREFIX}{}:{}:{}",
+            self.product_id.len(),
+            self.product_id,
+            self.key
+        )
+    }
+}
+
 /// Product-scoped key-value storage.
 ///
 /// The core namespaces product keys before calling this trait. Host
-/// implementations should treat `key` as an opaque OS-style storage key.
+/// implementations may treat `key` as opaque or decode it with
+/// [`ProductStorageKey`] when their physical storage is separated by product.
 #[async_trait]
 pub trait ProductStorage: Send + Sync {
     /// Read a value by key.
@@ -457,6 +531,185 @@ pub enum CoreStorageKey {
     },
     /// Last processed SSO pairing response statement for the pairing device.
     LastProcessedPairingStatement,
+    /// Persisted RFC-0010 AutoSigning secret for one product subtree.
+    AutoSigningKey {
+        /// Product whose hard subtree the secret controls.
+        product_id: String,
+    },
+}
+
+impl CoreStorageKey {
+    /// Persisted authorization key for one product-scoped device permission.
+    pub fn device_permission_authorization(
+        product_id: &str,
+        permission: &HostDevicePermissionRequest,
+    ) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::Device(*permission),
+        }
+    }
+
+    /// Persisted authorization key for one product-scoped remote permission.
+    pub fn remote_permission_authorization(
+        product_id: &str,
+        request: &RemotePermissionRequest,
+    ) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::Remote(canonical_remote_request(request)),
+        }
+    }
+
+    /// Persisted authorization key for product-scoped identity disclosure.
+    pub fn identity_disclosure_authorization(product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::IdentityDisclosure,
+        }
+    }
+
+    /// Persisted authorization key for one product accessing another product's
+    /// account context.
+    pub fn account_access_authorization(product_id: &str, target_product_id: &str) -> Self {
+        Self::PermissionAuthorization {
+            product_id: product_id.to_string(),
+            request: PermissionAuthorizationRequest::AccountAccess {
+                target_product_id: target_product_id.to_string(),
+            },
+        }
+    }
+}
+
+fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissionRequest {
+    let permission = match &request.permission {
+        RemotePermission::Remote { domains } => {
+            // DNS domains are case-insensitive, so a logically-identical bundle
+            // requested with different casing or duplicate entries must
+            // canonicalize to one key (no spurious re-prompt).
+            let mut canonical: Vec<String> = domains
+                .iter()
+                .map(|domain| domain.to_ascii_lowercase())
+                .collect();
+            canonical.sort();
+            canonical.dedup();
+            RemotePermission::Remote { domains: canonical }
+        }
+        other => other.clone(),
+    };
+    RemotePermissionRequest { permission }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_authorization_keys_separate_product_and_request_variants() {
+        let camera = CoreStorageKey::device_permission_authorization(
+            "product.dot",
+            &HostDevicePermissionRequest::Camera,
+        );
+        let other_product = CoreStorageKey::device_permission_authorization(
+            "other.dot",
+            &HostDevicePermissionRequest::Camera,
+        );
+        let remote = CoreStorageKey::remote_permission_authorization(
+            "product.dot",
+            &RemotePermissionRequest {
+                permission: RemotePermission::ChainSubmit,
+            },
+        );
+        let identity = CoreStorageKey::identity_disclosure_authorization("product.dot");
+        let other_product_identity = CoreStorageKey::identity_disclosure_authorization("other.dot");
+        let account_access =
+            CoreStorageKey::account_access_authorization("product.dot", "target.dot");
+        let other_target = CoreStorageKey::account_access_authorization("product.dot", "other.dot");
+
+        assert_ne!(camera, other_product);
+        assert_ne!(camera, remote);
+        assert_ne!(camera, identity);
+        assert_ne!(remote, identity);
+        assert_ne!(identity, other_product_identity);
+        assert_ne!(account_access, other_target);
+        assert_ne!(account_access, camera);
+    }
+
+    #[test]
+    fn remote_permission_authorization_key_canonicalizes_domain_sets() {
+        let unsorted = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["b.example.com".into(), "a.example.com".into()],
+            },
+        };
+        let sorted = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["a.example.com".into(), "b.example.com".into()],
+            },
+        };
+        assert_eq!(
+            CoreStorageKey::remote_permission_authorization("product.dot", &unsorted),
+            CoreStorageKey::remote_permission_authorization("product.dot", &sorted)
+        );
+
+        let mixed = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["Example.COM".into(), "a.com".into(), "a.com".into()],
+            },
+        };
+        let canonical = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["a.com".into(), "example.com".into()],
+            },
+        };
+        assert_eq!(
+            CoreStorageKey::remote_permission_authorization("product.dot", &mixed),
+            CoreStorageKey::remote_permission_authorization("product.dot", &canonical)
+        );
+    }
+
+    #[test]
+    fn remote_permission_authorization_key_handles_separator_chars_in_domains() {
+        // Domain strings containing separator-looking text must not be able to
+        // forge a key that matches an unrelated permission.
+        let injecting = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["a|b".into(), "c,d".into(), "remote:web-rtc".into()],
+            },
+        };
+        let benign_same_set = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["x".into(), "y".into(), "z".into()],
+            },
+        };
+        let injecting_key =
+            CoreStorageKey::remote_permission_authorization("product.dot", &injecting);
+        let benign_key =
+            CoreStorageKey::remote_permission_authorization("product.dot", &benign_same_set);
+        assert_ne!(injecting_key, benign_key);
+
+        // The injecting permission must also be distinct from the `WebRtc`
+        // variant it tries to impersonate via crafted strings.
+        let webrtc = RemotePermissionRequest {
+            permission: RemotePermission::WebRtc,
+        };
+        assert_ne!(
+            injecting_key,
+            CoreStorageKey::remote_permission_authorization("product.dot", &webrtc)
+        );
+
+        // Re-ordering the same domains still collapses to a single key
+        // (canonicalization is order-independent).
+        let injecting_reordered = RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: vec!["remote:web-rtc".into(), "c,d".into(), "a|b".into()],
+            },
+        };
+        assert_eq!(
+            injecting_key,
+            CoreStorageKey::remote_permission_authorization("product.dot", &injecting_reordered)
+        );
+    }
 }
 
 /// Host-private persistence for core-owned state.
@@ -592,6 +845,15 @@ pub struct CreateProofReview {
     pub message: Vec<u8>,
 }
 
+/// Review shown before signing an RFC-0023 VRF transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct SignVrfReview {
+    /// Product making the request.
+    pub calling_product_id: String,
+    /// Product account and exact ordered transcript.
+    pub request: HostAccountSignVrfRequest,
+}
+
 /// Review shown before allocating resources for a product. Names the
 /// beneficiary product so the user knows which product receives the
 /// (signing-capable) allowance key they are approving.
@@ -650,6 +912,8 @@ pub enum UserConfirmationReview {
     PreimageSubmit(PreimageSubmitReview),
     /// Allow a product to access another product account.
     AccountAccess(AccountAccessReview),
+    /// Sign an RFC-0023 VRF transcript with a product account.
+    SignVrf(SignVrfReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.

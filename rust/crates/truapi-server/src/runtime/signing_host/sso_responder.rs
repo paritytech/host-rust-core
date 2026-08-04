@@ -17,49 +17,56 @@ use std::time::Instant;
 
 use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
-use truapi::{CallContext, latest as api};
+use truapi::{CallContext, latest as api, v01};
 use truapi_platform::{
     CreateTransactionReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
-    StatementStoreProductSignReview, UserConfirmationReview,
+    UserConfirmationReview,
 };
 
 use super::SigningHost;
-use crate::host_logic::entropy::root_entropy_source;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::host_logic::product_account::ProductAccountError;
+use crate::chain_runtime::RuntimeFailure;
+use crate::host_logic::entropy::root_entropy_source;
 use crate::host_logic::product_account::{
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path, product_public_key_to_address,
+    ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
+    product_public_key_to_address,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::{
+    derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{
     self, CreateTransactionPayload, IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessage,
     RemoteMessageData, ResourceAllocationResponse, RingVrfAliasResponse, RingVrfError,
-    RingVrfProofResponse, SignRawLegacyResponse, SigningPayloadResponseData, SigningRequest,
-    SigningResponse, SsoAllocatableResource, SsoAllocatedResource, SsoAllocationOutcome,
-    SsoResponseCode, StatementStoreProductSignResponse, build_outgoing_request_statement,
+    RingVrfProofResponse, SignRawLegacyResponse, SignVrfResponse, SigningPayloadResponseData,
+    SigningRequest, SigningResponse, SsoAllocatableResource, SsoAllocatedResource,
+    SsoAllocationOutcome, SsoResponseCode, build_outgoing_request_statement,
     build_signed_session_response_statement, decode_incoming_sso_request, v1,
 };
 use crate::host_logic::sso::pairing::{
     ResponderIdentity, VersionedHandshakeProposal, bootstrap_topic, decode_pairing_deeplink,
-    derive_p256_keypair_from_entropy, encrypt_v2_handshake_response,
+    derive_x25519_keypair_from_entropy, encrypt_v2_handshake_response,
     establish_responder_session_info, v2,
 };
-use crate::host_logic::statement_store::{
-    build_signed_statement, parse_new_statements_result,
-    validate_unsigned_statement_signing_payload,
-};
+use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
 use crate::runtime::authority::{
-    AccountAliasAuthorityRequest, CreateProofAuthorityRequest, CreateTransactionAuthorityRequest,
-    ProductAuthority, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
+    AccountAliasAuthorityRequest, AuthorityError, CreateProofAuthorityRequest,
+    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    SignRawAuthorityRequest,
 };
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::fresh_statement_expiry;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
-/// Domain label for the responder's persistent P-256 encryption key.
-const SSO_ENCRYPTION_KEY_LABEL: &[u8] = b"sso-encryption";
-/// Domain label for the identity chat key shared in the handshake payload.
-const CHAT_KEY_LABEL: &[u8] = b"chat-encryption";
+/// RFC-0022 domain for the responder's persistent SSO X25519 key.
+const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
+/// RFC-0022 domain for the identity chat X25519 key shared in the handshake.
+const CHAT_ENCRYPTION_DOMAIN: &[u8] = b"chat";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
 #[cfg(not(target_arch = "wasm32"))]
@@ -70,6 +77,25 @@ const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::fr
 /// older than the eviction window are past their statement expiry and can no
 /// longer be validly replayed.
 const MAX_SERVED_REQUEST_IDS: usize = 1024;
+
+fn derive_responder_identity(
+    entropy: &[u8],
+) -> Result<(ResponderIdentity, [u8; 32]), ProductAccountError> {
+    let statement = derive_identity_keypair(entropy)?;
+    let (encryption_secret_key, encryption_public_key) =
+        derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
+    let (identity_chat_private_key, _) =
+        derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN);
+    Ok((
+        ResponderIdentity {
+            statement_secret: statement.secret.to_bytes(),
+            statement_public_key: statement.public.to_bytes(),
+            encryption_secret_key,
+            encryption_public_key,
+        },
+        identity_chat_private_key,
+    ))
+}
 
 /// Bounded set of served request ids for replay dedup. Evicts the oldest id
 /// once the capacity is reached so a peer cannot force unbounded memory growth
@@ -112,6 +138,78 @@ pub enum ResponderExit {
     SubscriptionEnded,
 }
 
+/// Failure while deriving or allocating a Statement Store/Bulletin allowance.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum AllowanceAllocationError {
+    /// Signing host session or authority state was unavailable.
+    #[error("{0}")]
+    Authority(AuthorityError),
+    /// Product-account key derivation failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    ProductAccount(ProductAccountError),
+    /// Chain state, metadata, ring, slot, proof, or extrinsic allocation failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    StatementAllowance(#[from] StatementAllowanceError),
+    /// Runtime service could not open the required Statement Store RPC client.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{0}")]
+    StatementStoreRpcClient(#[from] StatementStoreRpcClientError),
+    /// Runtime service could not open the required Bulletin RPC client.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{context}: {source}")]
+    BulletinRpcClient {
+        /// Client context.
+        context: &'static str,
+        /// Chain runtime failure.
+        #[source]
+        source: RuntimeFailure,
+    },
+    /// Allocation helper is unavailable for this target.
+    #[cfg(target_arch = "wasm32")]
+    #[error("signing host: {resource} allowance allocation is native-only")]
+    NativeOnly {
+        /// Resource name.
+        resource: &'static str,
+    },
+    /// System time cannot be converted into a UNIX timestamp.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("system clock before UNIX epoch")]
+    SystemClockBeforeUnixEpoch,
+    /// The signing account is not in the required LitePeople ring.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("signing account is not a LitePeople ring member; cannot grant {resource} allowance")]
+    MissingLitePeopleMembership {
+        /// Resource name.
+        resource: &'static str,
+    },
+}
+
+impl From<AuthorityError> for AllowanceAllocationError {
+    fn from(err: AuthorityError) -> Self {
+        Self::Authority(err)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<ProductAccountError> for AllowanceAllocationError {
+    fn from(err: ProductAccountError) -> Self {
+        Self::ProductAccount(err)
+    }
+}
+
+impl AllowanceAllocationError {
+    pub(super) fn into_authority_error(self) -> AuthorityError {
+        match self {
+            Self::Authority(err) => err,
+            other => AuthorityError::Unavailable {
+                reason: other.to_string(),
+            },
+        }
+    }
+}
+
 /// Answer `deeplink` and serve the resulting SSO session until it ends.
 #[instrument(skip_all, fields(runtime.method = "sso_responder.respond_to_pairing"))]
 pub(crate) async fn respond_to_pairing(
@@ -119,27 +217,17 @@ pub(crate) async fn respond_to_pairing(
     signing_host: Arc<SigningHost>,
     deeplink: &str,
 ) -> Result<ResponderExit, String> {
-    let VersionedHandshakeProposal::V2(proposal) = decode_pairing_deeplink(deeplink)?;
+    let VersionedHandshakeProposal::V2(proposal) =
+        decode_pairing_deeplink(deeplink).map_err(|err| err.to_string())?;
     let entropy = signing_host
         .root_entropy()
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
-    // Product accounts derive from the canonical root key. The SSO statement
-    // identity keeps its dedicated hard-derived key.
+    // Product accounts and the SSO statement identity derive from the
+    // canonical root key; the identity is the RFC-0022 uid.dot default account.
     let root = derive_root_keypair_from_entropy(&entropy)
         .map_err(|err| format!("root account derivation failed: {err}"))?;
-    let statement = derive_sr25519_hard_path(&entropy, &["wallet", "sso"])
-        .map_err(|err| format!("//wallet//sso derivation failed: {err}"))?;
-    let (encryption_secret_key, encryption_public_key) =
-        derive_p256_keypair_from_entropy(&entropy, SSO_ENCRYPTION_KEY_LABEL)
-            .map_err(|err| format!("responder P-256 derivation failed: {err}"))?;
-    let (identity_chat_private_key, _) = derive_p256_keypair_from_entropy(&entropy, CHAT_KEY_LABEL)
-        .map_err(|err| format!("responder chat-key derivation failed: {err}"))?;
-    let identity = ResponderIdentity {
-        statement_secret: statement.secret.to_bytes(),
-        statement_public_key: statement.public.to_bytes(),
-        encryption_secret_key,
-        encryption_public_key,
-    };
+    let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
+        .map_err(|err| format!("responder identity derivation failed: {err}"))?;
     let session = establish_responder_session_info(
         &identity,
         proposal.device.statement_account_id,
@@ -185,7 +273,8 @@ async fn serve_session(
     let rpc_client = services
         .statement_store
         .client("sso-responder session")
-        .await?;
+        .await
+        .map_err(|err| err.to_string())?;
     let mut subscription =
         statement_store_rpc::subscribe_match_all(&rpc_client, &[session.session_id_peer])
             .await
@@ -396,8 +485,8 @@ fn remote_response_result(message: &RemoteMessageData) -> ResponseResult {
         v1::RemoteMessage::SignRawLegacyResponse(response) => {
             response.signature.as_ref().err().cloned()
         }
-        v1::RemoteMessage::StatementStoreProductSignResponse(response) => {
-            response.signature.as_ref().err().cloned()
+        v1::RemoteMessage::SignVrfResponse(response) => {
+            response.payload.as_ref().err().map(sign_vrf_error_reason)
         }
         _ => None,
     };
@@ -615,15 +704,29 @@ async fn answer_remote_message(
                 signature,
             })
         }
-        v1::RemoteMessage::StatementStoreProductSignRequest(request) => {
-            let signature =
-                statement_store_product_sign_response(services, signing_host, request).await;
-            v1::RemoteMessage::StatementStoreProductSignResponse(
-                StatementStoreProductSignResponse {
-                    responding_to: message_id,
-                    signature,
-                },
-            )
+        v1::RemoteMessage::SignVrfRequest(request) => {
+            let payload = sign_vrf_response(signing_host, message_id.clone(), request).await;
+            v1::RemoteMessage::SignVrfResponse(SignVrfResponse {
+                responding_to: message_id,
+                payload,
+            })
+        }
+        v1::RemoteMessage::ProductSubtreeRequest(request) => {
+            let product_public_key = match signing_host.current_session() {
+                Some(session) => signing_host
+                    .product_subtree_public_key(
+                        &CallContext::with_request_id(message_id.clone()),
+                        &session,
+                        request.product_id,
+                    )
+                    .await
+                    .map_err(|err| err.to_string()),
+                None => Err("signing host is disconnected".to_string()),
+            };
+            v1::RemoteMessage::ProductSubtreeResponse(messages::ProductSubtreeResponse {
+                responding_to: message_id,
+                product_public_key,
+            })
         }
         v1::RemoteMessage::Disconnected
         | v1::RemoteMessage::SignResponse(_)
@@ -632,7 +735,8 @@ async fn answer_remote_message(
         | v1::RemoteMessage::ResourceAllocationResponse(_)
         | v1::RemoteMessage::CreateTransactionResponse(_)
         | v1::RemoteMessage::SignRawLegacyResponse(_)
-        | v1::RemoteMessage::StatementStoreProductSignResponse(_) => return None,
+        | v1::RemoteMessage::ProductSubtreeResponse(_)
+        | v1::RemoteMessage::SignVrfResponse(_) => return None,
     };
     Some(AnsweredRemoteMessage {
         response: RemoteMessage {
@@ -703,12 +807,22 @@ async fn resource_allocation_response(
                     slot_account_key,
                 })
             }),
-            SsoAllocatableResource::SmartContractAllowance(_)
-            | SsoAllocatableResource::AutoSigning => Ok(SsoAllocationOutcome::NotAvailable),
+            SsoAllocatableResource::SmartContractAllowance(_) => {
+                Ok(SsoAllocationOutcome::NotAvailable)
+            }
+            SsoAllocatableResource::AutoSigning => signing_host
+                .product_subtree_secret(&request.calling_product_id)
+                .map(|product_root_private_key| {
+                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::AutoSigning {
+                        product_root_private_key,
+                    })
+                })
+                .map_err(AllowanceAllocationError::Authority),
         };
         match outcome {
             Ok(outcome) => outcomes.push(outcome),
-            Err(reason) => {
+            Err(err) => {
+                let reason = err.to_string();
                 warn!(%reason, "resource allocation item failed");
                 item_failures.push(reason);
                 outcomes.push(SsoAllocationOutcome::NotAvailable);
@@ -728,7 +842,7 @@ fn public_allocatable_resource(resource: &SsoAllocatableResource) -> api::Alloca
         }
         SsoAllocatableResource::BulletinAllowance => api::AllocatableResource::BulletinAllowance,
         SsoAllocatableResource::SmartContractAllowance(index) => {
-            api::AllocatableResource::SmartContractAllowance(*index)
+            api::AllocatableResource::SmartContractAllowance(index.clone())
         }
         SsoAllocatableResource::AutoSigning => api::AllocatableResource::AutoSigning,
     }
@@ -740,18 +854,17 @@ pub(super) async fn allocate_statement_store_allowance(
     signing_host: &SigningHost,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
         self, RegistrationParams, fetch_chain_state, fetch_metadata, find_including_ring,
         register_statement_account,
     };
 
-    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
+    let entropy = signing_host.root_entropy()?;
     let allowance =
-        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])
-            .map_err(product_account_error)?;
+        derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
     let target = allowance.public.to_bytes();
-    let bandersnatch = statement_allowance::bandersnatch_entropy(&entropy);
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
     let rpc = statement_allowance::rpc::RpcClient::new(
         services
             .statement_store
@@ -763,9 +876,8 @@ pub(super) async fn allocate_statement_store_allowance(
     let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
     let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
         .await?
-        .ok_or_else(|| {
-            "signing account is not a LitePeople ring member; cannot grant statement-store allowance"
-                .to_string()
+        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+            resource: "statement-store",
         })?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let outcome = register_statement_account(
@@ -812,15 +924,14 @@ pub(super) async fn allocate_bulletin_allowance(
     signing_host: &SigningHost,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
         self, claim_long_term_storage, fetch_bulletin_allowance, fetch_chain_state, fetch_metadata,
         find_including_ring, wait_bulletin_authorization,
     };
 
-    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
-    let allowance = derive_sr25519_hard_path(&entropy, &["allowance", "bulletin", product_id])
-        .map_err(product_account_error)?;
+    let entropy = signing_host.root_entropy()?;
+    let allowance = derive_sr25519_hard_path(&entropy, &["allowance", "bulletin", product_id])?;
     let target = allowance.public.to_bytes();
 
     let bulletin_rpc = statement_allowance::rpc::RpcClient::new(
@@ -828,7 +939,10 @@ pub(super) async fn allocate_bulletin_allowance(
             .bulletin
             .client("bulletin allowance")
             .await
-            .map_err(|err| err.reason())?,
+            .map_err(|source| AllowanceAllocationError::BulletinRpcClient {
+                context: "bulletin allowance client",
+                source,
+            })?,
     );
     let current_allowance = fetch_bulletin_allowance(&bulletin_rpc, &target).await?;
     if matches!(policy, OnExistingAllowancePolicy::Ignore)
@@ -845,13 +959,12 @@ pub(super) async fn allocate_bulletin_allowance(
     );
     let metadata = fetch_metadata(&people_rpc).await?;
     let chain_state = fetch_chain_state(&people_rpc).await?;
-    let bandersnatch = statement_allowance::bandersnatch_entropy(&entropy);
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
     let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
     let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
         .await?
-        .ok_or_else(|| {
-            "signing account is not a LitePeople ring member; cannot grant Bulletin allowance"
-                .to_string()
+        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+            resource: "Bulletin",
         })?;
     let period_duration = statement_allowance::slot::long_term_storage_period_duration(&metadata)?;
     let period = statement_allowance::slot::current_long_term_storage_period(
@@ -903,8 +1016,10 @@ pub(super) async fn allocate_statement_store_allowance(
     _signing_host: &SigningHost,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
-    Err("signing host: statement-store allowance allocation is native-only".to_string())
+) -> Result<Vec<u8>, AllowanceAllocationError> {
+    Err(AllowanceAllocationError::NativeOnly {
+        resource: "statement-store",
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -913,21 +1028,18 @@ pub(super) async fn allocate_bulletin_allowance(
     _signing_host: &SigningHost,
     _product_id: &str,
     _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, String> {
-    Err("signing host: Bulletin allowance allocation is native-only".to_string())
+) -> Result<Vec<u8>, AllowanceAllocationError> {
+    Err(AllowanceAllocationError::NativeOnly {
+        resource: "Bulletin",
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn current_unix_secs() -> Result<u64, String> {
+fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .map_err(|_| "system clock before UNIX epoch".to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn product_account_error(err: ProductAccountError) -> String {
-    err.to_string()
+        .map_err(|_| AllowanceAllocationError::SystemClockBeforeUnixEpoch)
 }
 
 /// Confirm and serve a payload or raw signing request.
@@ -1018,34 +1130,42 @@ async fn sign_raw_legacy_response(
         .map_err(|err| err.to_string())
 }
 
-async fn statement_store_product_sign_response(
-    services: &Arc<RuntimeServices>,
+fn sign_vrf_error_reason(error: &v01::HostAccountSignVrfError) -> String {
+    match error {
+        v01::HostAccountSignVrfError::NotConnected => "NotConnected".to_string(),
+        v01::HostAccountSignVrfError::Rejected => "Rejected".to_string(),
+        v01::HostAccountSignVrfError::Unknown { reason } => reason.clone(),
+    }
+}
+
+async fn sign_vrf_response(
     signing_host: &Arc<SigningHost>,
-    request: messages::StatementStoreProductSignRequest,
-) -> Result<Vec<u8>, String> {
-    validate_unsigned_statement_signing_payload(&request.payload)?;
-    confirm(
-        services,
-        UserConfirmationReview::StatementStoreProductSign(StatementStoreProductSignReview {
-            account: request.product_account_id.clone(),
-            payload: request.payload.clone(),
-        }),
-    )
-    .await?;
+    message_id: String,
+    request: messages::SignVrfRequest,
+) -> Result<v01::VrfSignature, v01::HostAccountSignVrfError> {
     let session = signing_host
         .current_session()
-        .ok_or_else(|| "signing host session is not active".to_string())?;
-    let cx = CallContext::default();
+        .ok_or(v01::HostAccountSignVrfError::NotConnected)?;
     signing_host
-        .sign_statement_store_product_payload(
-            &cx,
+        .sign_vrf(
+            &CallContext::with_request_id(message_id),
             &session,
-            request.product_account_id,
+            request.calling_product_id,
             request.payload,
         )
         .await
-        .map(|signature| signature.to_vec())
-        .map_err(|err| err.to_string())
+        .map_err(|err| match err {
+            AuthorityError::Disconnected => v01::HostAccountSignVrfError::NotConnected,
+            AuthorityError::Rejected => v01::HostAccountSignVrfError::Rejected,
+            AuthorityError::Cancelled(err) => v01::HostAccountSignVrfError::Unknown {
+                reason: err.to_string(),
+            },
+            AuthorityError::Unavailable { reason }
+            | AuthorityError::NotSupported { reason }
+            | AuthorityError::Unknown { reason } => {
+                v01::HostAccountSignVrfError::Unknown { reason }
+            }
+        })
 }
 
 /// Confirm and serve a transaction-creation request.
@@ -1134,20 +1254,13 @@ mod tests {
     use super::super::LocalActivation;
     use super::*;
     use crate::host_logic::extrinsic::tests::split_v4;
-    use crate::host_logic::statement_store::{StatementField, unsigned_statement_signing_payload};
+    use crate::host_logic::statement_store::decode_verified_statement_data;
     use crate::runtime::services::RuntimeServices;
     use crate::test_support::{StubPlatform, test_spawner};
     use std::sync::Arc;
     use truapi_platform::{HostInfo, Platform, PlatformInfo, SigningHostConfig};
 
     const ENTROPY: [u8; 16] = [0xab; 16];
-
-    fn product_account(product_id: &str) -> api::ProductAccountId {
-        api::ProductAccountId {
-            dot_ns_identifier: product_id.to_string(),
-            derivation_index: 0,
-        }
-    }
 
     fn signing_fixture(platform: Arc<StubPlatform>) -> (Arc<RuntimeServices>, Arc<SigningHost>) {
         let platform: Arc<dyn Platform> = platform;
@@ -1174,88 +1287,39 @@ mod tests {
         (services, signing_host)
     }
 
-    fn statement_sign_request(payload: Vec<u8>) -> v1::RemoteMessage {
-        v1::RemoteMessage::StatementStoreProductSignRequest(
-            messages::StatementStoreProductSignRequest {
-                product_account_id: product_account("myapp.dot"),
-                payload,
-            },
-        )
-    }
+    #[test]
+    fn responder_advertises_and_signs_with_the_local_uid_identity() {
+        let (_services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+        let local_identity = signing_host
+            .current_session()
+            .unwrap()
+            .identity_account_id
+            .unwrap();
+        let (identity, _) = derive_responder_identity(&ENTROPY).unwrap();
+        assert_eq!(identity.statement_public_key, local_identity);
 
-    fn statement_payload() -> Vec<u8> {
-        unsigned_statement_signing_payload(vec![
-            StatementField::Expiry(42),
-            StatementField::Topic1([1; 32]),
-            StatementField::Data(vec![0xde, 0xad]),
-        ])
-        .expect("valid statement payload")
+        let (_, host_encryption_public_key) =
+            derive_x25519_keypair_from_entropy(&[0x42; 16], b"sso");
+        let session =
+            establish_responder_session_info(&identity, [0x55; 32], host_encryption_public_key)
+                .unwrap();
+        let statement = build_signed_statement(
+            &session,
+            [0x66; 32],
+            [0x77; 32],
+            b"handshake".to_vec(),
+            fresh_statement_expiry(),
+        )
+        .unwrap();
+        let verified =
+            decode_verified_statement_data(&statement, Some(identity.statement_public_key))
+                .unwrap();
+        assert_eq!(verified.signer, local_identity);
     }
 
     fn response_payload(answer: AnsweredRemoteMessage) -> v1::RemoteMessage {
         let RemoteMessageData::V1(data) = answer.response.data;
         data
-    }
-
-    #[test]
-    fn statement_store_product_sign_rejects_non_statement_payload() {
-        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform {
-            sign_raw_confirmed: true,
-            ..StubPlatform::default()
-        }));
-
-        let response = futures::executor::block_on(answer_remote_message(
-            &services,
-            &signing_host,
-            "request-1".to_string(),
-            statement_sign_request(vec![0, 0, 1, 2, 3]),
-        ))
-        .expect("response is emitted");
-
-        let v1::RemoteMessage::StatementStoreProductSignResponse(response) =
-            response_payload(response)
-        else {
-            panic!("expected statement sign response");
-        };
-        assert_eq!(response.responding_to, "request-1");
-        assert!(
-            response
-                .signature
-                .unwrap_err()
-                .contains("invalid statement signing payload")
-        );
-    }
-
-    #[test]
-    fn statement_store_product_sign_requires_confirmation() {
-        let platform = Arc::new(StubPlatform::default());
-        let (services, signing_host) = signing_fixture(platform.clone());
-
-        let payload = statement_payload();
-        let response = futures::executor::block_on(answer_remote_message(
-            &services,
-            &signing_host,
-            "request-1".to_string(),
-            statement_sign_request(payload.clone()),
-        ))
-        .expect("response is emitted");
-
-        let v1::RemoteMessage::StatementStoreProductSignResponse(response) =
-            response_payload(response)
-        else {
-            panic!("expected statement sign response");
-        };
-        assert_eq!(response.signature.unwrap_err(), "Rejected");
-
-        // The confirmation is a statement-store proof review carrying the exact
-        // unsigned payload, not a raw-message (`<Bytes>`-wrapped) signing review.
-        let reviews = platform
-            .statement_store_product_sign_reviews
-            .lock()
-            .expect("statement store product sign review list mutex poisoned");
-        assert_eq!(reviews.len(), 1);
-        assert_eq!(reviews[0].account.dot_ns_identifier, "myapp.dot");
-        assert_eq!(reviews[0].payload, payload);
     }
 
     #[test]
@@ -1270,7 +1334,7 @@ mod tests {
                 calling_product_id: "myapp.dot".to_string(),
                 context: api::ProductProofContext {
                     product_id: "other.dot".to_string(),
-                    suffix: vec![],
+                    suffix: api::DerivationIndex::Left(0),
                 },
                 ring_location: api::RingLocation {
                     chain_id: [0; 32],
@@ -1417,12 +1481,49 @@ mod tests {
     }
 
     #[test]
+    fn auto_signing_allocation_returns_the_product_subtree_secret() {
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: true,
+            ..StubPlatform::default()
+        });
+        let (services, signing_host) = signing_fixture(platform);
+        let expected_secret = signing_host
+            .product_subtree_secret("myapp.dot")
+            .expect("product subtree secret derives");
+
+        let response = futures::executor::block_on(answer_remote_message(
+            &services,
+            &signing_host,
+            "alloc-auto-signing".to_string(),
+            v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                resources: vec![SsoAllocatableResource::AutoSigning],
+                on_existing: messages::OnExistingAllowancePolicy::Ignore,
+            }),
+        ))
+        .expect("response is emitted");
+
+        let v1::RemoteMessage::ResourceAllocationResponse(response) = response_payload(response)
+        else {
+            panic!("expected resource allocation response");
+        };
+        assert_eq!(
+            response.payload.unwrap(),
+            vec![SsoAllocationOutcome::Allocated(
+                SsoAllocatedResource::AutoSigning {
+                    product_root_private_key: expected_secret,
+                }
+            )]
+        );
+    }
+
+    #[test]
     fn legacy_transaction_request_uses_the_controlled_identity_account() {
         let (services, signing_host) = signing_fixture(Arc::new(StubPlatform {
             create_transaction_confirmed: true,
             ..StubPlatform::default()
         }));
-        let identity = derive_sr25519_hard_path(&ENTROPY, &["wallet", "sso"]).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY).unwrap();
         let payload = api::LegacyAccountTxPayload {
             signer: identity.public.to_bytes(),
             genesis_hash: [0xaa; 32],
@@ -1464,6 +1565,33 @@ mod tests {
                 .verify_simple(b"substrate", &[0x00, 0x00, 1, 2, 3], &signature)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn product_subtree_request_is_consent_free_and_hard_derived() {
+        let (services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+        let response = futures::executor::block_on(answer_remote_message(
+            &services,
+            &signing_host,
+            "subtree-1".to_string(),
+            v1::RemoteMessage::ProductSubtreeRequest(messages::ProductSubtreeRequest {
+                product_id: "browse.dot".to_string(),
+            }),
+        ))
+        .expect("response is emitted");
+
+        let v1::RemoteMessage::ProductSubtreeResponse(response) = response_payload(response) else {
+            panic!("expected product subtree response");
+        };
+        let root =
+            derive_root_keypair_from_entropy(&ENTROPY).expect("fixture entropy derives root");
+        let expected =
+            crate::host_logic::product_account::derive_product_subtree_keypair(&root, "browse.dot")
+                .expect("fixture derives subtree")
+                .public
+                .to_bytes();
+        assert_eq!(response.responding_to, "subtree-1");
+        assert_eq!(response.product_public_key, Ok(expected));
     }
 
     #[test]

@@ -1,11 +1,12 @@
 //! UniFFI-facing native bridge. Exposes [`NativeTrUApiCore`] and the
 //! [`HostCallbacks`] callback interface that iOS and Android call into.
 //!
-//! The native side builds a [`CallbackPlatform`] that adapts every
+//! The native side builds a `CallbackPlatform` that adapts every
 //! [`truapi_platform::Platform`] trait to a corresponding callback. The
-//! resulting platform is fed into [`TrUApiCore::from_platform_with_config`] so the rest
-//! of the dispatcher pipeline behaves identically to the WS-bridge and wasm
-//! flavors.
+//! resulting platform is fed into [`SigningHostRuntime`] so the rest of the
+//! dispatcher pipeline behaves identically to the WS-bridge and wasm flavors.
+//! A native host therefore owns the signer: there is no pairing flow here, and
+//! the pairing-host-only entry points are inert.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -353,9 +354,11 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             RuntimeConfigValidationError::EmptyField { field } => Self::EmptyField {
                 field: field.to_string(),
             },
-            RuntimeConfigValidationError::InvalidHostIcon { reason } => {
-                Self::InvalidHostIcon { reason }
-            }
+            // `url::ParseError` cannot cross the UniFFI boundary, so the native
+            // error keeps a rendered string.
+            RuntimeConfigValidationError::InvalidHostIcon { source } => Self::InvalidHostIcon {
+                reason: source.to_string(),
+            },
             RuntimeConfigValidationError::InsecureHostIcon { scheme } => {
                 Self::InsecureHostIcon { scheme }
             }
@@ -383,16 +386,18 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback is invoked on a background thread
-/// owned by the Rust core, never the host's main/UI thread. UI-decision
-/// callbacks (`navigate_to`, `device_permission`, `remote_permission`, and
-/// the `confirm_*` family) run on the tokio blocking pool, so an
-/// implementation may block its calling thread until the user decides
-/// without stalling concurrent dispatches. All other callbacks run inline on
-/// the dispatcher thread and must return promptly; in particular
-/// `auth_state_changed` should only hand the state to the host UI thread,
-/// never wait for the user. As the one exception to the background-thread
-/// rule, `auth_state_changed` can also arrive synchronously on whichever
-/// thread calls `NativeTrUApiCore::cancel_login`.
+/// owned by the Rust core, never the host's main/UI thread.
+///
+/// These six run on the tokio blocking pool, so an implementation may block
+/// its calling thread until the user decides without stalling concurrent
+/// dispatches: `navigate_to`, `push_notification`, `device_permission`,
+/// `remote_permission`, `feature_supported`, and `confirm_user_action`.
+///
+/// Every other callback runs inline on the dispatcher thread and must return
+/// promptly — including `cancel_notification`, which is the one
+/// notification-side callback that is *not* on the blocking pool. In
+/// particular `auth_state_changed` should only hand the state to the host UI
+/// thread, never wait for the user.
 #[uniffi::export(callback_interface)]
 pub trait HostCallbacks: Send + Sync {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.
@@ -460,7 +465,7 @@ pub trait HostCallbacks: Send + Sync {
     fn current_theme(&self) -> Result<HostTheme, HostRejection>;
 
     /// Answer a feature-support query. `request` is the SCALE-encoded
-    /// [`HostFeatureSupportedRequest`].
+    /// `HostFeatureSupportedRequest`.
     fn feature_supported(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
 
     /// Read a value from the host's scoped key-value store.
@@ -486,6 +491,11 @@ pub struct NativeTrUApiCore {
 #[uniffi::export]
 impl NativeTrUApiCore {
     /// Construct the core with explicit product and pairing runtime config.
+    ///
+    /// When `runtime_config` carries `local_session_secret`, the session is
+    /// activated before this returns, so construction blocks the calling thread
+    /// on the same key derivation as [`Self::activate_local_session`]. Prefer
+    /// constructing off the host's main/UI thread.
     #[uniffi::constructor]
     pub fn with_runtime_config(
         callbacks: Box<dyn HostCallbacks>,
@@ -497,22 +507,31 @@ impl NativeTrUApiCore {
     /// Core-owned logout/disconnect. Best-effort notifies the SSO peer when
     /// the session has channel material, then clears in-memory and persisted
     /// session state.
+    ///
+    /// Blocks the calling thread until the disconnect completes, so call it off
+    /// the host's main/UI thread.
     pub fn disconnect(&self) {
         futures::executor::block_on(self.runtime.disconnect_session());
     }
 
     /// Notify this core that host-global session storage changed outside a
-    /// direct core write/clear. Native hosts call this after cross-process or
-    /// platform storage notifications so the core re-reads `CoreStorage`.
+    /// direct core write/clear.
+    ///
+    /// **Inert on a native host.** A signing host owns the active session in
+    /// memory, so there is no session-store sync loop to wake. Retained so
+    /// hosts written against the pairing-host surface still link.
     pub fn notify_session_store_changed(&self) {
         // Signing hosts own the active local session in memory. There is no
         // pairing-host session-store sync loop to notify.
     }
 
-    /// Cancel any in-flight `request_login` pairing (e.g. the user dismissed
-    /// the pairing UI). The host receives a `Disconnected` auth state
-    /// immediately and the pending login resolves to `Rejected`. A no-op
-    /// when no login is in progress.
+    /// Cancel an in-flight pairing login.
+    ///
+    /// **Inert on a native host.** The native bridge runs a signing host, which
+    /// has no pairing flow to cancel: `request_login` resolves against the
+    /// locally activated session instead. Calling this emits no auth state and
+    /// changes nothing. Retained so hosts written against the pairing-host
+    /// surface still link.
     pub fn cancel_login(&self) {
         // Signing hosts do not perform SSO pairing when products call
         // request_login; a locally activated session returns AlreadyConnected.
@@ -520,6 +539,9 @@ impl NativeTrUApiCore {
 
     /// Read a stored permission authorization status without prompting.
     /// `payload` is a SCALE-encoded `PermissionAuthorizationRequest`.
+    ///
+    /// Blocks the calling thread on the storage read, so call it off the host's
+    /// main/UI thread.
     pub fn permission_authorization_status(
         &self,
         payload: Vec<u8>,
@@ -533,6 +555,9 @@ impl NativeTrUApiCore {
     /// Update a stored permission authorization status. Passing
     /// `.notDetermined` clears the stored value so the next product request
     /// prompts again.
+    ///
+    /// Blocks the calling thread on the storage write, so call it off the host's
+    /// main/UI thread.
     pub fn set_permission_authorization_status(
         &self,
         payload: Vec<u8>,
@@ -548,6 +573,9 @@ impl NativeTrUApiCore {
 
     /// Activate or replace the local signing-host session from host-held
     /// secret material (raw BIP-39 entropy).
+    ///
+    /// Blocks the calling thread while the session is derived (PBKDF2, 2048
+    /// rounds), so call it off the host's main/UI thread.
     pub fn activate_local_session(
         &self,
         secret: Vec<u8>,

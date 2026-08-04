@@ -31,14 +31,14 @@ use super::authority::{
     SignPayloadAuthorityRequest, SignRawAuthorityRequest, StatementStoreAllowanceKey,
     authority_session, require_current_session,
 };
-use super::{RuntimeServices, connected_session_ui_info};
+use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::{
     Sr25519Signer, build_signed_extrinsic_v4, build_signed_extrinsic_v4_with_signature,
 };
 use crate::host_logic::product_account::{
-    ProductAccountError, SR25519_SIGNING_CONTEXT, derive_product_keypair,
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+    ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
+    derive_product_keypair, derive_product_subtree_keypair, derive_root_keypair_from_entropy,
 };
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
@@ -52,7 +52,7 @@ use ring_vrf::{
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
 use truapi_platform::{
-    CreateProofReview, PermissionAuthorizationStatus, Platform, ProductContext,
+    CreateProofReview, PermissionAuthorizationStatus, Platform, ProductContext, SignVrfReview,
     UserConfirmationReview, normalize_product_identifier,
 };
 use zeroize::Zeroizing;
@@ -122,6 +122,19 @@ impl SigningHost {
             .ok_or(AuthorityError::Disconnected)
     }
 
+    fn product_subtree_secret(&self, product_id: &str) -> Result<[u8; 64], AuthorityError> {
+        let entropy = self.root_entropy()?;
+        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
+        let product_id = normalize_product_identifier(product_id).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        derive_product_subtree_keypair(&root, &product_id)
+            .map(|keypair| keypair.secret.to_bytes())
+            .map_err(product_authority_error)
+    }
+
     /// Derive the product-account keypair for `account` from the root entropy.
     ///
     /// The root keypair is recomputed per call (PBKDF2, 2048 rounds, via
@@ -139,13 +152,17 @@ impl SigningHost {
                     reason: err.to_string(),
                 }
             })?;
-        derive_product_keypair(&root, &product_id, account.derivation_index)
-            .map_err(product_authority_error)
+        derive_product_keypair(
+            &root,
+            &product_id,
+            derivation_index_bytes(&account.derivation_index),
+        )
+        .map_err(product_authority_error)
     }
 
     fn identity_keypair(&self) -> Result<schnorrkel::Keypair, AuthorityError> {
         let entropy = self.root_entropy()?;
-        derive_sr25519_hard_path(&entropy, &["wallet", "sso"]).map_err(product_authority_error)
+        derive_identity_keypair(&entropy).map_err(product_authority_error)
     }
 
     fn person_entropy(
@@ -231,6 +248,59 @@ impl ProductAuthority for SigningHost {
             .take();
         self.session_state.clear_session();
         self.auth_state.store_disconnected();
+    }
+
+    async fn product_subtree_public_key(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<[u8; 32], AuthorityError> {
+        require_current_session(&self.session_state, session)?;
+        let product_id = normalize_product_identifier(&product_id).map_err(|err| {
+            AuthorityError::Unavailable {
+                reason: err.to_string(),
+            }
+        })?;
+        let entropy = self.root_entropy()?;
+        let root = derive_root_keypair_from_entropy(&entropy).map_err(product_authority_error)?;
+        derive_product_subtree_keypair(&root, &product_id)
+            .map(|keypair| keypair.public.to_bytes())
+            .map_err(product_authority_error)
+    }
+
+    async fn sign_vrf(
+        &self,
+        _cx: &CallContext,
+        session: &AuthoritySession,
+        calling_product_id: String,
+        request: v01::HostAccountSignVrfRequest,
+    ) -> Result<v01::VrfSignature, AuthorityError> {
+        require_current_session(&self.session_state, session)?;
+        validate_vrf_transcript(&request).map_err(|reason| AuthorityError::Unknown { reason })?;
+        let confirmed = self
+            .platform
+            .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                calling_product_id,
+                request: request.clone(),
+            }))
+            .await
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
+        if !confirmed {
+            return Err(AuthorityError::Rejected);
+        }
+        let keypair = self.product_keypair(&request.account)?;
+        let (pre_output, proof) = crate::dynamic_vrf::sign_dynamic_vrf(
+            &keypair,
+            &request.transcript_label,
+            request
+                .items
+                .iter()
+                .map(|item| (item.label.as_slice(), item.value.as_slice())),
+        );
+        Ok(v01::VrfSignature { pre_output, proof })
     }
 
     async fn sign_payload(
@@ -365,7 +435,11 @@ impl ProductAuthority for SigningHost {
                 PermissionAuthorizationStatus::Denied
                 | PermissionAuthorizationStatus::NotDetermined,
             ) => return Err(RingVrfError::Rejected),
-            Err(reason) => return Err(RingVrfError::Unknown { reason }),
+            Err(err) => {
+                return Err(RingVrfError::Unknown {
+                    reason: err.to_string(),
+                });
+            }
         }
         let collection = self.ring_resolver.validate(&request.ring_location).await?;
         let context = context_bytes(&request.context);
@@ -447,8 +521,13 @@ impl ProductAuthority for SigningHost {
                     .await
                     .map(|_| v01::AllocationOutcome::Allocated)
                 }
-                v01::AllocatableResource::SmartContractAllowance(_)
-                | v01::AllocatableResource::AutoSigning => Ok(v01::AllocationOutcome::NotAvailable),
+                v01::AllocatableResource::SmartContractAllowance(_) => {
+                    Ok(v01::AllocationOutcome::NotAvailable)
+                }
+                v01::AllocatableResource::AutoSigning => self
+                    .product_subtree_secret(&product_id)
+                    .map(|_| v01::AllocationOutcome::Allocated)
+                    .map_err(sso_responder::AllowanceAllocationError::Authority),
             };
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),
@@ -475,7 +554,7 @@ impl ProductAuthority for SigningHost {
             OnExistingAllowancePolicy::Ignore,
         )
         .await
-        .map_err(allocation_authority_error)?;
+        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)?;
         StatementStoreAllowanceKey::from_secret_bytes(secret)
     }
 
@@ -493,7 +572,7 @@ impl ProductAuthority for SigningHost {
             OnExistingAllowancePolicy::Ignore,
         )
         .await
-        .map_err(allocation_authority_error)?;
+        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)?;
         BulletinAllowanceKey::from_secret_bytes(secret)
     }
 
@@ -511,7 +590,7 @@ impl ProductAuthority for SigningHost {
             OnExistingAllowancePolicy::Increase,
         )
         .await
-        .map_err(allocation_authority_error)?;
+        .map_err(sso_responder::AllowanceAllocationError::into_authority_error)?;
         BulletinAllowanceKey::from_secret_bytes(secret)
     }
 
@@ -558,8 +637,9 @@ fn sign_extrinsic_payload(
             ),
         });
     }
-    let preimage = extrinsic_payload_preimage(&payload)
-        .map_err(|reason| AuthorityError::Unknown { reason })?;
+    let preimage = extrinsic_payload_preimage(&payload).map_err(|err| AuthorityError::Unknown {
+        reason: err.to_string(),
+    })?;
     let raw_signature = keypair
         .secret
         .sign_simple(SR25519_SIGNING_CONTEXT, &preimage, &keypair.public)
@@ -585,10 +665,6 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
     AuthorityError::Unavailable {
         reason: err.to_string(),
     }
-}
-
-fn allocation_authority_error(reason: String) -> AuthorityError {
-    AuthorityError::Unavailable { reason }
 }
 
 /// Assemble and sign a transaction locally from caller-supplied, pre-encoded
@@ -668,7 +744,8 @@ mod tests {
     };
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
-        derive_product_keypair, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+        derive_identity_keypair, derive_product_keypair, derive_root_keypair_from_entropy,
+        index_bytes,
     };
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
@@ -714,6 +791,7 @@ mod tests {
         // not reject before reaching the signing authority.
         let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform {
             sign_raw_confirmed: true,
+            sign_vrf_confirmed: true,
             ..StubPlatform::default()
         });
         let config = SigningHostConfig::new(
@@ -789,7 +867,7 @@ mod tests {
         let cx = CallContext::default();
         let context = v01::ProductProofContext {
             product_id: "myapp.dot".to_string(),
-            suffix: b"account".to_vec(),
+            suffix: v01::DerivationIndex::Left(0),
         };
         let ring_location = v01::RingLocation {
             chain_id: [0x22; 32],
@@ -840,7 +918,7 @@ mod tests {
         let cx = CallContext::default();
         let context = v01::ProductProofContext {
             product_id: "other.dot".to_string(),
-            suffix: b"account".to_vec(),
+            suffix: v01::DerivationIndex::Left(0),
         };
         let ring_location = v01::RingLocation {
             chain_id: [0x22; 32],
@@ -895,7 +973,7 @@ mod tests {
             calling_product_id: "myapp.dot".to_string(),
             context: v01::ProductProofContext {
                 product_id: "other.dot".to_string(),
-                suffix: b"account".to_vec(),
+                suffix: v01::DerivationIndex::Left(0),
             },
             ring_location: v01::RingLocation {
                 chain_id: [0x22; 32],
@@ -921,14 +999,14 @@ mod tests {
     }
 
     #[test]
-    fn local_activation_exposes_the_wallet_sso_identity_account() {
+    fn local_activation_exposes_the_uid_dot_identity_account() {
         let (_services, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
 
         let session = authority.current_session().expect("active session");
-        let identity = derive_sr25519_hard_path(&ENTROPY, &["wallet", "sso"])
-            .expect("wallet identity derivation")
+        let identity = derive_identity_keypair(&ENTROPY)
+            .expect("uid.dot identity derivation")
             .public
             .to_bytes();
         assert_eq!(session.identity_account_id, Some(identity));
@@ -945,7 +1023,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: 0,
+                derivation_index: v01::DerivationIndex::Left(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: b"hello world".to_vec(),
@@ -956,7 +1034,7 @@ mod tests {
         assert!(response.signed_transaction.is_none());
 
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
-        let keypair = derive_product_keypair(&root, "myapp.dot", 0).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
         let signature =
             schnorrkel::Signature::from_bytes(&response.signature).expect("64-byte signature");
         assert!(
@@ -966,6 +1044,48 @@ mod tests {
                 .is_ok(),
             "signature verifies over the <Bytes>-wrapped message",
         );
+    }
+
+    #[test]
+    fn sign_vrf_replays_transcript_and_returns_verifiable_proof() {
+        let (_services, authority) = signing_runtime();
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let request = v01::HostAccountSignVrfRequest {
+            account: product_account(0),
+            transcript_label: b"pop:airdrop".to_vec(),
+            items: vec![
+                v01::VrfTranscriptItem {
+                    label: b"domain".to_vec(),
+                    value: b"lottery".to_vec(),
+                },
+                v01::VrfTranscriptItem {
+                    label: b"round".to_vec(),
+                    value: 7u32.to_le_bytes().to_vec(),
+                },
+            ],
+        };
+
+        let signature = futures::executor::block_on(authority.sign_vrf(
+            &CallContext::default(),
+            &session,
+            "myapp.dot".to_string(),
+            request,
+        ))
+        .expect("VRF signing succeeds");
+
+        let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
+        let mut transcript = merlin::Transcript::new(b"pop:airdrop");
+        transcript.append_message(b"domain", b"lottery");
+        transcript.append_message(b"round", &7u32.to_le_bytes());
+        let pre_output = schnorrkel::vrf::VRFPreOut::from_bytes(&signature.pre_output).unwrap();
+        let proof = schnorrkel::vrf::VRFProof::from_bytes(&signature.proof).unwrap();
+        keypair
+            .public
+            .vrf_verify(transcript, &pre_output, &proof)
+            .expect("VRF proof verifies");
     }
 
     #[test]
@@ -998,7 +1118,7 @@ mod tests {
         .expect("product payload signing succeeds");
 
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
-        let keypair = derive_product_keypair(&root, "myapp.dot", 0).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
         assert_eq!(product_response.signature.len(), 65);
         assert_eq!(product_response.signature[0], 1);
         let signature =
@@ -1051,13 +1171,13 @@ mod tests {
     }
 
     #[test]
-    fn sign_raw_legacy_accepts_only_the_wallet_identity_key() {
+    fn sign_raw_legacy_accepts_only_the_uid_dot_identity_key() {
         let (_services, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
         let cx = CallContext::default();
-        let identity = derive_sr25519_hard_path(&ENTROPY, &["wallet", "sso"]).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY).unwrap();
         let request = |account| SignRawAuthorityRequest::LegacyAccount {
             account,
             request: v01::HostSignRawWithLegacyAccountRequest {
@@ -1096,7 +1216,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: 0,
+                derivation_index: v01::DerivationIndex::Left(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: vec![1, 2, 3],
@@ -1110,7 +1230,7 @@ mod tests {
     fn product_account(index: u32) -> v01::ProductAccountId {
         v01::ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
-            derivation_index: index,
+            derivation_index: v01::DerivationIndex::Left(index),
         }
     }
 
@@ -1147,7 +1267,7 @@ mod tests {
         assert_eq!(tail, vec![1, 0x00, 0x00], "body tail is extra ++ call_data");
 
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
-        let keypair = derive_product_keypair(&root, "myapp.dot", 0).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
         assert_eq!(account, keypair.public.to_bytes());
 
         // Payload = call_data ++ extra ++ additional_signed (call first).
@@ -1216,7 +1336,7 @@ mod tests {
         let cx = CallContext::default();
 
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
-        let keypair = derive_product_keypair(&root, "myapp.dot", 0).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
 
         let request = CreateTransactionAuthorityRequest::LegacyAccount {
             product_account: product_account(0),
@@ -1295,7 +1415,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: 0,
+                derivation_index: v01::DerivationIndex::Left(0),
             },
         });
         let err = futures::executor::block_on(runtime.get_account(&cx, request))
@@ -1371,7 +1491,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: 0,
+                derivation_index: v01::DerivationIndex::Left(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: b"<Bytes>hi</Bytes>".to_vec(),
@@ -1380,7 +1500,7 @@ mod tests {
         let HostSignRawResponse::V1(response) =
             futures::executor::block_on(runtime.sign_raw(&cx, request)).expect("sign_raw ok");
         let root = derive_root_keypair_from_entropy(&ENTROPY).unwrap();
-        let keypair = derive_product_keypair(&root, "myapp.dot", 0).unwrap();
+        let keypair = derive_product_keypair(&root, "myapp.dot", index_bytes(0)).unwrap();
         let signature =
             schnorrkel::Signature::from_bytes(&response.signature).expect("64-byte signature");
         assert!(
@@ -1423,7 +1543,7 @@ mod tests {
         let request = v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: 0,
+                derivation_index: v01::DerivationIndex::Left(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: vec![1, 2, 3],
@@ -1452,7 +1572,7 @@ mod tests {
         let request = v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: 0,
+                derivation_index: v01::DerivationIndex::Left(0),
             },
             payload: v01::RawPayload::Bytes { bytes: vec![1] },
         };
@@ -1488,7 +1608,7 @@ mod tests {
             "myapp.dot".to_string(),
             v01::HostRequestResourceAllocationRequest {
                 resources: vec![
-                    v01::AllocatableResource::SmartContractAllowance(0),
+                    v01::AllocatableResource::SmartContractAllowance(v01::DerivationIndex::Left(0)),
                     v01::AllocatableResource::AutoSigning,
                 ],
             },
@@ -1498,7 +1618,7 @@ mod tests {
             optional.outcomes,
             vec![
                 v01::AllocationOutcome::NotAvailable,
-                v01::AllocationOutcome::NotAvailable,
+                v01::AllocationOutcome::Allocated,
             ]
         );
     }
