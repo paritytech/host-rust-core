@@ -87,7 +87,7 @@ endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 
-uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
+uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by the truapi-ios repo's rebuild.sh).
 	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
@@ -95,13 +95,6 @@ uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
 		--library $(UNIFFI_CDYLIB) \
 		--language swift \
 		--out-dir $(UNIFFI_SWIFT_TMP)
-	mkdir -p ios/truapi-host/Sources/truapi_serverFFI/include
-	cp $(UNIFFI_SWIFT_TMP)/truapi_server.swift \
-		ios/truapi-host/Sources/TrUAPIHost/truapi_server.swift
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h \
-		ios/truapi-host/Sources/truapi_serverFFI/include/truapi_serverFFI.h
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap \
-		ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
 
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 

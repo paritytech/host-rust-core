@@ -64,7 +64,6 @@ js/packages/
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
-ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
@@ -74,6 +73,12 @@ docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
+
+The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
+UniFFI core) lives in its own repo,
+[paritytech/truapi-ios](https://github.com/paritytech/truapi-ios), so SPM
+consumers resolve it without this repo's submodules. Its `scripts/rebuild.sh`
+builds against a checkout of this repo (`make xcframework` + `make uniffi`).
 
 ### JS Host SDKs
 

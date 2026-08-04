@@ -1,8 +1,0 @@
-.build/
-.swiftpm/
-DerivedData/
-*.xcodeproj/xcuserdata/
-Package.resolved
-Binaries/
-container/node_modules/
-container/dist/
