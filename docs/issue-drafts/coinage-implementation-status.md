@@ -248,10 +248,22 @@ using `InfallibleUnpaidSigned`, the one extension variant already known good.
 
 ## 6. Commit history on the branch
 
-**Everything from A1 onward is uncommitted** — roughly 1,900 lines across 23
-modified files plus 7 new ones, all gates green. New files:
-`docs/design/coinage-layer.md`, `host_logic/coinage/{log,recovery}.rs`,
-`runtime/coinage/{bootstrap,observe,persistence,recover}.rs`.
+Twelve commits carry the foundations, the durability layer and the observation
+driver. Nothing is pushed.
+
+Two items travel inside another commit because their whole diff lives in files
+that commit introduces, and both say so in their message: **B2** (dependency
+ordering) is inside "add the durable operation log and its ordering rules", and
+**B3** (definite vs optimistic) is inside "submit coinage extrinsics and grade
+the outcome".
+
+**The branch does not bisect.** The tip is verified — 900 tests, clippy
+`-D warnings`, fmt, wasm32, zero coinage doc warnings — but the commits were
+split out of one finished working tree rather than replayed, and several do not
+build standalone: `runtime/coinage.rs` declares every module and only lands in
+the observation-driver commit, so earlier commits reference modules the mod list
+does not yet expose. Worth a replay rebase before the PR if `git bisect` should
+work on this branch; the history reads correctly either way.
 
 
 ```
