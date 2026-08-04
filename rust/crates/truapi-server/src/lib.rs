@@ -11,11 +11,10 @@
 //! - [`native`]: UniFFI surface exposing the native host runtime + callbacks.
 //! - `wasm` (wasm32 only): wasm-bindgen surface exposing `WasmProductRuntime`.
 
-#![forbid(unsafe_code)]
-
 pub(crate) mod chain_runtime;
 pub mod core;
 pub(crate) mod dispatcher;
+mod dynamic_vrf;
 pub mod frame;
 pub(crate) mod host_core;
 pub mod host_logic;
