@@ -25,15 +25,17 @@ use truapi_server::host_logic::coinage::derivation;
 use truapi_server::host_logic::coinage::entry::EntryLocalState;
 use truapi_server::host_logic::coinage::error::CoinageError;
 use truapi_server::host_logic::coinage::event::LayerEvent;
-use truapi_server::host_logic::coinage::operation::{OperationReceipt, OperationStatus};
+use truapi_server::host_logic::coinage::log::Checkpoint;
+use truapi_server::host_logic::coinage::operation::{LockSet, OperationReceipt, OperationStatus};
 use truapi_server::host_logic::coinage::params::CoinageParameters;
 use truapi_server::host_logic::coinage::selection::{
     OutputRequirement, SelectionRequest, SelectionTier,
 };
 use truapi_server::host_logic::coinage::store::CoinageStore;
 use truapi_server::host_logic::coinage::types::{
-    Amount, CoinAccountId, CoinAge, CoinIndex, DenominationExponent, EntryIndex, ExtrinsicHash,
-    OperationKind, PurseId, RevisionIndex, RingIndex, RingLocation, Timestamp,
+    Amount, BlockHash, CoinAccountId, CoinAge, CoinIndex, DenominationExponent, EntryIndex,
+    ExtrinsicHash, OperationHandle, OperationKind, PurseId, RevisionIndex, RingIndex, RingLocation,
+    Timestamp,
 };
 use truapi_server::host_logic::coinage::unload_token::{
     FeeMode, FreeTokenAvailability, PaidRingState, TokenGrant, choose_fee_mode, resolve,
@@ -84,6 +86,33 @@ impl ScriptedChain {
             consumed: self.consumed_tokens.clone(),
         }
     }
+}
+
+/// Plan a transaction and record its broadcast, in the order the layer really
+/// does it: the write-ahead entry exists before the extrinsic goes out.
+fn submit(store: &mut CoinageStore, handle: OperationHandle, hash: ExtrinsicHash) -> u32 {
+    let locks = store
+        .operation(handle)
+        .expect("operation is open")
+        .locks
+        .clone();
+    let sequence = store
+        .plan_transaction(
+            handle,
+            locks,
+            LockSet::default(),
+            Checkpoint {
+                number: 1_000,
+                hash: BlockHash([1; 32]),
+                mortality: 256,
+            },
+            [],
+        )
+        .expect("operation is open");
+    store
+        .record_submission(handle, sequence, hash)
+        .expect("operation is open");
+    sequence
 }
 
 fn exponent(value: i8) -> DenominationExponent {
@@ -323,9 +352,7 @@ fn an_unload_runs_from_selection_through_to_a_submittable_extrinsic() {
     assert_eq!(&extra[..2], &[1u8, 1], "Some, then the variant index");
 
     // -- submit and settle -------------------------------------------------
-    store
-        .record_submission(handle, ExtrinsicHash([9; 32]))
-        .expect("operation is open");
+    submit(&mut store, handle, ExtrinsicHash([9; 32]));
     assert_eq!(
         store.operation(handle).expect("still open").status,
         OperationStatus::Submitted
@@ -411,9 +438,7 @@ fn a_purse_survives_persistence_and_resumes_its_in_flight_operation() {
             now,
         )
         .expect("32 cents are ready");
-    store
-        .record_submission(handle, ExtrinsicHash([1; 32]))
-        .expect("operation is open");
+    submit(&mut store, handle, ExtrinsicHash([1; 32]));
 
     // The host writes the store out and the process dies.
     let encoded = store.encode();
@@ -425,7 +450,11 @@ fn a_purse_survives_persistence_and_resumes_its_in_flight_operation() {
     let pending = restored.reconcile_after_restart();
     assert_eq!(pending, vec![handle]);
     assert_eq!(
-        restored.operation(handle).expect("still open").submitted,
+        restored
+            .operation(handle)
+            .expect("still open")
+            .log
+            .submitted_hashes(),
         vec![ExtrinsicHash([1; 32])]
     );
     assert_eq!(
@@ -503,6 +532,12 @@ fn an_entry_approaching_ring_expiry_is_flagged_for_rescue() {
     );
     observe_entries(&mut store, &chain, PurseId::MAIN);
 
+    // The chain reports the ring as immutable; without this observation the
+    // sweep has no deadline to race and would silently never fire.
+    store
+        .observe_entry_ring_immutability(PurseId::MAIN, index, Some(immutable_since))
+        .expect("entry exists");
+
     let expiration = constants().recycler_expiration_time;
     let margin = params().rescue_margin(expiration);
     let entry = *store.entry(PurseId::MAIN, index).expect("exists");
@@ -511,16 +546,11 @@ fn an_entry_approaching_ring_expiry_is_flagged_for_rescue() {
     let trigger = deadline.saturating_sub(margin);
 
     assert!(
-        !entry.needs_rescue(
-            trigger.saturating_sub(DAY),
-            immutable_since,
-            expiration,
-            margin
-        ),
+        !entry.needs_rescue(trigger.saturating_sub(DAY), expiration, margin),
         "a day before the margin there is nothing to do"
     );
     assert!(
-        entry.needs_rescue(trigger, immutable_since, expiration, margin),
+        entry.needs_rescue(trigger, expiration, margin),
         "at the margin the sweep must act"
     );
     // 90 days expiry, 25% margin: roughly 22 days of slack.
@@ -679,7 +709,8 @@ fn an_aging_coin_is_offered_for_recycling_before_the_chain_rejects_it() {
         .observe_coin(PurseId::MAIN, old, CoinAge(14))
         .expect("coin exists");
 
-    let due = store.coins_needing_recycling(PurseId::MAIN, constants().recycle_at_age());
+    let due =
+        store.coins_needing_recycling(PurseId::MAIN, constants().recycle_at_age(), Timestamp(0));
 
     assert_eq!(due, vec![old]);
     // Two transfers of headroom remain below the chain's cap of 16.

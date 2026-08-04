@@ -8,6 +8,7 @@
 use parity_scale_codec::{Decode, Encode};
 
 use super::error::{CoinageError, InvalidTransition};
+use super::log::{Checkpoint, LogEntry, OperationLog};
 use super::types::{
     BlockHash, CoinAccountId, CoinIndex, EntryIndex, ExtrinsicHash, OperationHandle, OperationKind,
     PurseId, Timestamp,
@@ -15,19 +16,29 @@ use super::types::{
 
 const SUBJECT: &str = "operation";
 
-/// Outcome of one submitted extrinsic.
+/// Outcome of one logged transaction.
+///
+/// Only ever written from a **definite** outcome (`coinage-layer.md` §7.6): a
+/// transaction seen in a non-finalized block has not resolved, because the
+/// block can be reverted and the transaction invalidated on the new canonical
+/// chain.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum ExtrinsicOutcome {
-    /// The extrinsic was included and its effects observed.
+    /// The extrinsic was finalized and its effects observed.
     Succeeded {
-        /// Block that included the extrinsic.
+        /// Finalized block the effect was observed at.
         block_hash: BlockHash,
         /// Coin accounts the extrinsic consumed and created, together.
         affected_coins: Vec<CoinAccountId>,
     },
-    /// The chain rejected the extrinsic.
+    /// The chain rejected the extrinsic, or it expired unincluded.
     Rejected {
         /// Rejection reason reported by the chain.
+        reason: String,
+    },
+    /// Never submitted, because a transaction it depended on did not succeed.
+    Abandoned {
+        /// Which dependency, and how it ended.
         reason: String,
     },
 }
@@ -39,12 +50,12 @@ impl ExtrinsicOutcome {
     }
 }
 
-/// One extrinsic an operation submitted, and how it resolved.
+/// One transaction an operation logged, and how it resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct ExtrinsicRecord {
-    /// Hash of the submitted extrinsic.
-    pub extrinsic_hash: ExtrinsicHash,
-    /// How the chain resolved it.
+    /// Hash of the submitted extrinsic; `None` if it was never broadcast.
+    pub extrinsic_hash: Option<ExtrinsicHash>,
+    /// How it resolved.
     pub outcome: ExtrinsicOutcome,
 }
 
@@ -101,6 +112,9 @@ pub enum OperationStatus {
     Finalized,
     /// Blocked until the given instant, then back to `Preparing`.
     Waiting(Timestamp),
+    /// Tracking lost a submitted transaction and its fate is being resolved
+    /// against finalized chain state (`coinage-layer.md` §7.7).
+    Recovering,
     /// Terminal success.
     Done(OperationReceipt),
     /// Terminal failure.
@@ -116,6 +130,7 @@ impl OperationStatus {
             Self::InBlock => "in-block",
             Self::Finalized => "finalized",
             Self::Waiting(_) => "waiting",
+            Self::Recovering => "recovering",
             Self::Done(_) => "done",
             Self::Failed(_) => "failed",
         }
@@ -136,8 +151,11 @@ impl OperationStatus {
     }
 
     /// Whether an extrinsic is currently in flight.
+    ///
+    /// `Recovering` counts: the transaction may well be on chain, and the
+    /// caller must not be allowed to cancel out from under it.
     pub const fn has_extrinsic_in_flight(&self) -> bool {
-        matches!(self, Self::Submitted | Self::InBlock)
+        matches!(self, Self::Submitted | Self::InBlock | Self::Recovering)
     }
 
     /// The terminal outcome, if the operation has reached one.
@@ -187,8 +205,8 @@ pub struct Operation {
     pub purse: PurseId,
     /// Records held exclusively by this operation.
     pub locks: LockSet,
-    /// Extrinsics submitted so far, appended before each broadcast.
-    pub submitted: Vec<ExtrinsicHash>,
+    /// Write-ahead log of the operation's transactions (§7.4).
+    pub log: OperationLog,
     /// Current status.
     pub status: OperationStatus,
 }
@@ -201,7 +219,7 @@ impl Operation {
             kind,
             purse,
             locks: LockSet::default(),
-            submitted: Vec::new(),
+            log: OperationLog::default(),
             status: OperationStatus::Preparing,
         }
     }
@@ -213,27 +231,79 @@ impl Operation {
 
     /// Whether the operation ever broadcast anything.
     pub fn has_submitted(&self) -> bool {
-        !self.submitted.is_empty()
+        self.log.any_broadcast()
     }
 
-    /// Record an extrinsic hash immediately before broadcasting it, and move to
-    /// `Submitted`.
+    /// Log a transaction the operation intends to submit, returning its
+    /// sequence.
     ///
-    /// The hash is appended before the broadcast so that a restart mid-flight
+    /// Written before an extrinsic exists, let alone is broadcast: the log has
+    /// to describe work the operation is about to attempt, or a crash between
+    /// planning and broadcasting would leave inputs locked with nothing
+    /// recording why.
+    pub fn plan_transaction(
+        &mut self,
+        inputs: LockSet,
+        outputs: LockSet,
+        checkpoint: Checkpoint,
+        depends_on: impl IntoIterator<Item = u32>,
+    ) -> Result<u32, CoinageError> {
+        if self.status.is_terminal() {
+            return Err(InvalidTransition::new(
+                SUBJECT,
+                self.status.label(),
+                "plan a transaction for",
+            )
+            .into());
+        }
+
+        let sequence = self.log.next_sequence();
+        self.log
+            .push(LogEntry::planned(sequence, inputs, outputs, checkpoint).after(depends_on))?;
+        Ok(sequence)
+    }
+
+    /// Attach an extrinsic hash to a logged transaction immediately before
+    /// broadcasting it, and move to `Submitted`.
+    ///
+    /// The hash is recorded before the broadcast so that a restart mid-flight
     /// can reconcile it against chain state rather than assume nothing happened.
     pub fn record_submission(
         &mut self,
+        sequence: u32,
         extrinsic_hash: ExtrinsicHash,
-    ) -> Result<(), InvalidTransition> {
+    ) -> Result<(), CoinageError> {
         if self.status.is_terminal() {
             return Err(InvalidTransition::new(
                 SUBJECT,
                 self.status.label(),
                 "record a submission for",
-            ));
+            )
+            .into());
         }
 
-        self.submitted.push(extrinsic_hash);
+        if self.log.entry(sequence).is_none() {
+            return Err(CoinageError::Internal(format!(
+                "{} has no logged transaction {sequence}",
+                self.handle
+            )));
+        }
+        // §7.5: a dependency that has not *definitely* succeeded means this
+        // transaction's inputs may not exist. Broadcasting anyway would leave a
+        // reorg to decide which of the two survives.
+        if !self.log.is_submittable(sequence) {
+            return Err(CoinageError::Internal(format!(
+                "{} cannot broadcast transaction {sequence}: a transaction it depends on has not \
+                 definitely succeeded",
+                self.handle
+            )));
+        }
+
+        let entry = self
+            .log
+            .entry_mut(sequence)
+            .expect("presence checked immediately above; qed");
+        entry.set_extrinsic_hash(extrinsic_hash);
         self.status = OperationStatus::Submitted;
         Ok(())
     }
@@ -332,6 +402,26 @@ pub enum RestartDisposition {
 mod tests {
     use super::*;
 
+    fn checkpoint() -> Checkpoint {
+        Checkpoint {
+            number: 1_000,
+            hash: BlockHash([1; 32]),
+            mortality: 256,
+        }
+    }
+
+    /// Plan a transaction and attach a hash, the way a submission actually
+    /// happens: the log entry exists before the extrinsic is broadcast.
+    fn submit(operation: &mut Operation, byte: u8) -> u32 {
+        let sequence = operation
+            .plan_transaction(LockSet::default(), LockSet::default(), checkpoint(), [])
+            .expect("planning is valid");
+        operation
+            .record_submission(sequence, hash(byte))
+            .expect("submission is valid");
+        sequence
+    }
+
     fn hash(byte: u8) -> ExtrinsicHash {
         ExtrinsicHash([byte; 32])
     }
@@ -342,7 +432,7 @@ mod tests {
 
     fn succeeded() -> ExtrinsicRecord {
         ExtrinsicRecord {
-            extrinsic_hash: hash(1),
+            extrinsic_hash: Some(hash(1)),
             outcome: ExtrinsicOutcome::Succeeded {
                 block_hash: BlockHash([9; 32]),
                 affected_coins: Vec::new(),
@@ -352,7 +442,7 @@ mod tests {
 
     fn rejected() -> ExtrinsicRecord {
         ExtrinsicRecord {
-            extrinsic_hash: hash(2),
+            extrinsic_hash: Some(hash(2)),
             outcome: ExtrinsicOutcome::Rejected {
                 reason: "bad origin".to_string(),
             },
@@ -376,27 +466,66 @@ mod tests {
         assert!(!OperationStatus::Submitted.is_cancellable());
         assert!(!OperationStatus::InBlock.is_cancellable());
         assert!(!OperationStatus::Finalized.is_cancellable());
+        // Recovering is the sharpest case: the transaction may be on chain and
+        // the layer simply does not know yet.
+        assert!(!OperationStatus::Recovering.is_cancellable());
+        assert!(OperationStatus::Recovering.has_extrinsic_in_flight());
     }
 
     #[test]
     fn submission_is_recorded_before_the_status_moves() {
         let mut operation = new_operation();
 
-        operation
-            .record_submission(hash(3))
-            .expect("submission is valid");
+        let sequence = submit(&mut operation, 3);
 
-        assert_eq!(operation.submitted, vec![hash(3)]);
+        assert_eq!(operation.log.submitted_hashes(), vec![hash(3)]);
+        assert_eq!(sequence, 0);
         assert_eq!(operation.status, OperationStatus::Submitted);
         assert!(operation.status.has_extrinsic_in_flight());
     }
 
     #[test]
+    fn a_dependent_transaction_cannot_be_broadcast_before_its_predecessor_succeeds() {
+        // §7.5. The gate lives here because this is the last point before the
+        // bytes leave the layer.
+        let mut operation = new_operation();
+        let first = operation
+            .plan_transaction(LockSet::default(), LockSet::default(), checkpoint(), [])
+            .expect("planning is valid");
+        let second = operation
+            .plan_transaction(
+                LockSet::default(),
+                LockSet::default(),
+                checkpoint(),
+                [first],
+            )
+            .expect("planning is valid");
+
+        let refused = operation.record_submission(second, hash(2));
+        assert!(refused.is_err(), "its inputs do not exist yet");
+        assert!(!operation.log.entry(second).expect("exists").was_broadcast());
+
+        operation
+            .record_submission(first, hash(1))
+            .expect("the head is submittable");
+        operation
+            .log
+            .entry_mut(first)
+            .expect("exists")
+            .resolve(crate::host_logic::coinage::log::LogEntryState::Succeeded {
+                block_hash: BlockHash([3; 32]),
+            })
+            .expect("resolves");
+
+        operation
+            .record_submission(second, hash(2))
+            .expect("the predecessor definitely succeeded");
+    }
+
+    #[test]
     fn an_in_flight_operation_cannot_be_cancelled() {
         let mut operation = new_operation();
-        operation
-            .record_submission(hash(3))
-            .expect("submission is valid");
+        submit(&mut operation, 3);
 
         assert!(operation.cancel().is_err());
         assert_eq!(operation.status, OperationStatus::Submitted);
@@ -405,9 +534,7 @@ mod tests {
     #[test]
     fn a_multi_phase_operation_becomes_cancellable_again_at_preparing() {
         let mut operation = new_operation();
-        operation
-            .record_submission(hash(3))
-            .expect("submission is valid");
+        submit(&mut operation, 3);
         operation
             .advance(OperationStatus::Finalized)
             .expect("advance is valid");
@@ -457,7 +584,7 @@ mod tests {
         let mut operation = new_operation();
         operation.cancel().expect("cancel is valid");
 
-        assert!(operation.record_submission(hash(4)).is_err());
+        assert!(operation.record_submission(0, hash(4)).is_err());
         assert!(operation.advance(OperationStatus::Preparing).is_err());
         assert!(operation.finish(OperationReceipt::default()).is_err());
         assert!(operation.fail(CoinageError::Cancelled).is_err());
@@ -494,9 +621,7 @@ mod tests {
     #[test]
     fn restart_reconciles_operations_that_broadcast() {
         let mut operation = new_operation();
-        operation
-            .record_submission(hash(5))
-            .expect("submission is valid");
+        submit(&mut operation, 5);
 
         assert_eq!(
             operation.restart_disposition(),
