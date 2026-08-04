@@ -11,7 +11,7 @@
 #   scripts/battery.sh --signing-host     # direct phase only
 #   scripts/battery.sh --pairing-host     # paired phase only
 #   scripts/battery.sh --release          # build and run the release binary
-#   scripts/battery.sh -- --network foo   # arguments after `--` go to both hosts
+#   scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
 #
 # Environment:
 #   E2E_LIVE_CHAIN=1              route Chain/* at the network's real nodes
@@ -20,9 +20,9 @@
 #   BATTERY_PAIRING_TIMEOUT       seconds to wait for the pairing link (default 120)
 #   TRUAPI_BATTERY_REPORT_PATH    override the report destination; single phase only
 #
-# Each phase exits nonzero when any generated example fails, which includes the
-# services the host intentionally does not implement, so compare the reports
-# against their committed versions to tell a regression from the baseline.
+# Each phase exits nonzero when pairing/bootstrap fails or when a generated
+# example fails outside the committed unsupported baseline. Unsupported service
+# families still appear as failures in the Markdown reports.
 #
 # Host transcripts land in target/battery/. The paired phase runs its pairing
 # host on a throwaway identity under target/battery/pairing-host-state so every
@@ -111,7 +111,7 @@ fi
 
 # The paired phase runs two hosts at once, so build once up front instead of
 # letting concurrent `cargo run` invocations queue on the build lock.
-cargo build ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"} -p truapi-host-cli
+cargo build "${CARGO_ARGS[@]}" -p truapi-host-cli
 HOST="target/$PROFILE_DIR/truapi-host"
 mkdir -p "$LOG_DIR"
 
@@ -167,7 +167,7 @@ signing_phase() {
     --product-id "$PRODUCT_ID" \
     --script "$SCRIPT" \
     --auto-accept \
-    ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
+    "${HOST_ARGS[@]}" > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0
   start_watchdog "$host_pid" "signing-host phase"
   wait "$host_pid" || rc=$?
@@ -193,7 +193,7 @@ pairing_phase() {
     --product-id "$PRODUCT_ID" \
     --script "$SCRIPT" \
     --auto-accept \
-    ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
+    "${HOST_ARGS[@]}" > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0
   start_watchdog "$host_pid" "pairing-host phase"
 
@@ -216,8 +216,9 @@ pairing_phase() {
     echo "battery: answering pairing link with a signing host"
     "$HOST" signing-host \
       --auto-accept \
+      --product-id "$PRODUCT_ID" \
       --frame-listen 127.0.0.1:0 \
-      ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} \
+      "${HOST_ARGS[@]}" \
       exec "/pair $deeplink" > >(tee "$signer_log" | sed 's/^/[signer] /') 2>&1 &
     SIGNER_PID=$!
   elif [ "$paired" = 1 ]; then

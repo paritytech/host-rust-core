@@ -671,9 +671,11 @@ The top-level `--script` option does not update remembered `/script` state.
 `TRUAPI_BATTERY_REPORT_PATH` overrides the destination. `scripts/battery.sh` in
 the repository root produces both reports in one invocation: it runs the direct
 signing-host phase, then starts a pairing host and answers its emitted link
-with a second signing host so the paired phase can complete. Its custom reporter
-uses terminal color when stdout is a TTY or `FORCE_COLOR` is nonzero, unless
-`NO_COLOR` exists.
+with a second signing host using the same product id and forwarded host flags
+so the paired phase can complete. Known unsupported service families remain
+reported as failures but do not fail the process; any other generated-example
+failure is a nonzero exit. Its custom reporter uses terminal color when stdout
+is a TTY or `FORCE_COLOR` is nonzero, unless `NO_COLOR` exists.
 
 ## 11. Pairing lifecycle
 

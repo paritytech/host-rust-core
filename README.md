@@ -122,7 +122,8 @@ controls, and examples.
 example and writes both committed compatibility reports:
 `explorer/diagnosis-reports/signing-host-cli.md` from a direct signing-host run,
 and `pairing-host-cli.md` from a pairing host that the script pairs with a
-signing host it starts itself.
+signing host it starts itself under the same product id. Known unsupported
+service families remain visible in the reports without making the command fail.
 
 ```bash
 scripts/battery.sh                  # both phases

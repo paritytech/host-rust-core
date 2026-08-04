@@ -15,7 +15,11 @@ import {
   cliDiagnosisReportMetadata,
   renderDiagnosisReport,
 } from "../diagnosis-report.ts";
-import { createDiagnosisPlan, runDiagnosis } from "../diagnosis.ts";
+import {
+  createDiagnosisPlan,
+  expectedCliBatteryFailureReason,
+  runDiagnosis,
+} from "../diagnosis.ts";
 
 const report = cliDiagnosisReportMetadata(process.env.TRUAPI_CLI_HOST_ROLE);
 const DEFAULT_REPORT_PATH = fileURLToPath(
@@ -60,8 +64,16 @@ writeFileSync(REPORT_PATH, renderDiagnosisReport(report.title, rows));
 reporter.reportSaved(REPORT_PATH);
 
 const failures = rows.filter((row) => row.status === "fail");
-if (failures.length > 0) {
+const unexpectedFailures = failures.filter(
+  (row) => !expectedCliBatteryFailureReason(row.serviceName),
+);
+if (unexpectedFailures.length > 0) {
   throw new Error(
-    `TrUAPI battery failed: ${failures.length} of ${rows.length} generated examples failed`,
+    `TrUAPI battery failed: ${unexpectedFailures.length} of ${rows.length} generated examples failed outside the known unsupported baseline`,
+  );
+}
+if (failures.length > 0) {
+  console.log(
+    `Known unsupported baseline: ${failures.length} generated examples failed as expected`,
   );
 }
