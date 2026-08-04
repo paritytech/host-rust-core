@@ -27,7 +27,7 @@ pub trait Funding: Send + Sync {
     ///
     /// ```ts
     /// const result = await truapi.funding.request({
-    ///   direction: { tag: "In" },
+    ///   direction: "In",
     ///   asset: undefined,
     ///   amount: 1000n,
     ///   purse: undefined,
@@ -55,7 +55,7 @@ pub trait Funding: Send + Sync {
     /// import { firstValueFrom, from } from "rxjs";
     ///
     /// const requested = await truapi.funding.request({
-    ///   direction: { tag: "In" },
+    ///   direction: "In",
     ///   asset: undefined,
     ///   amount: 1000n,
     ///   purse: undefined,
