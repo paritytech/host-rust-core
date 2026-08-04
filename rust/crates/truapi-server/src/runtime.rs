@@ -1066,13 +1066,6 @@ impl Account for ProductRuntimeHost {
                 },
             ))
         })?;
-        if !self.is_product_account_valid_for_caller(&request.account.dot_ns_identifier) {
-            return Err(CallError::Domain(HostAccountSignVrfError::V1(
-                v01::HostAccountSignVrfError::Unknown {
-                    reason: "Product account does not belong to the calling product".to_string(),
-                },
-            )));
-        }
         validate_vrf_transcript(&request).map_err(|reason| {
             CallError::Domain(HostAccountSignVrfError::V1(
                 v01::HostAccountSignVrfError::Unknown { reason },
@@ -2925,7 +2918,7 @@ mod tests {
     }
 
     #[test]
-    fn sign_vrf_forwards_mobile_sso_request_and_response() {
+    fn sign_vrf_forwards_cross_product_mobile_sso_request_and_response() {
         let session = sso_session_info();
         let signature = v01::VrfSignature {
             pre_output: [0x11; 32],
@@ -2953,7 +2946,7 @@ mod tests {
         );
         install_pairing_session(&host, session.clone());
         let request = v01::HostAccountSignVrfRequest {
-            account: account_id("myapp.dot", 0),
+            account: account_id("other-product.dot", 0),
             transcript_label: b"ctx".to_vec(),
             items: vec![v01::VrfTranscriptItem {
                 label: b"domain".to_vec(),
