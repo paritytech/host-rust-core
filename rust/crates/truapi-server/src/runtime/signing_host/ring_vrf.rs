@@ -17,12 +17,15 @@ use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 use zeroize::Zeroizing;
 
 use crate::chain_runtime::ChainRuntime;
+use crate::host_logic::product_account::{
+    derivation_index_bytes, derive_full_person_ring_vrf_entropy,
+    derive_lite_person_ring_vrf_entropy,
+};
 use crate::host_logic::sso::messages::RingVrfError;
 
 const MEMBERS_PALLET: &str = "Members";
 const FULL_PERSON_COLLECTION: [u8; 32] = *b"pop:polkadot.network/people     ";
 const LITE_PERSON_COLLECTION: [u8; 32] = *b"pop:polkadot.network/people-lite";
-const FULL_PERSON_ENTROPY_KEY: &[u8] = b"candidate";
 
 type RingMember = <BandersnatchVrfVerifiable as GenerateVerifiable>::Member;
 
@@ -225,20 +228,20 @@ impl RingResolver for ChainRingResolver {
 }
 
 pub(super) fn context_bytes(context: &ProductProofContext) -> [u8; 32] {
-    let mut input = Vec::with_capacity(9 + context.product_id.len() + context.suffix.len());
+    let suffix = derivation_index_bytes(&context.suffix);
+    let mut input = Vec::with_capacity(9 + context.product_id.len() + suffix.len());
     input.extend_from_slice(b"product/");
     input.extend_from_slice(context.product_id.as_bytes());
     input.push(b'/');
-    input.extend_from_slice(&context.suffix);
+    input.extend_from_slice(&suffix);
     blake2b_256(&input, None)
 }
 
 pub(super) fn person_entropy(root_entropy: &[u8], key: PersonKey) -> Zeroizing<[u8; 32]> {
-    let key = match key {
-        PersonKey::Full => Some(FULL_PERSON_ENTROPY_KEY),
-        PersonKey::Lite => None,
-    };
-    Zeroizing::new(blake2b_256(root_entropy, key))
+    Zeroizing::new(match key {
+        PersonKey::Full => derive_full_person_ring_vrf_entropy(root_entropy),
+        PersonKey::Lite => derive_lite_person_ring_vrf_entropy(root_entropy),
+    })
 }
 
 pub(super) fn member_from_entropy(entropy: &[u8; 32]) -> Result<[u8; 32], RingVrfError> {
@@ -390,8 +393,10 @@ struct RingRoot {
 mod tests {
     use parity_scale_codec::Encode;
     use scale_info::TypeInfo;
+    use truapi::v01::DerivationIndex;
 
     use super::*;
+    use crate::host_logic::product_account::index_bytes;
 
     fn decode_as<A, B>(source: A) -> B
     where
@@ -404,28 +409,36 @@ mod tests {
         B::decode_as_type(&mut &*source.encode(), type_id, &types).expect("dynamic decode succeeds")
     }
 
+    /// The alias context hashes `product/{product_id}/` followed by the
+    /// suffix's 32-byte derivation index, so the alias and the product account
+    /// it belongs to are selected by the same value.
     #[test]
-    fn context_matches_rfc_0004_vector() {
-        let context = ProductProofContext {
-            product_id: "example.dot".to_string(),
-            suffix: b"login".to_vec(),
-        };
-        assert_eq!(
-            hex::encode(context_bytes(&context)),
-            "be397823154bdcc0f4d86938af932cd4d5c49d0793e0138663ccdb3d8e0062eb"
-        );
-    }
-
-    #[test]
-    fn context_matches_ios_host_vector() {
+    fn context_bytes_pins_derivation_index_preimage() {
         let context = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: vec![0, 1, 2, 3],
+            suffix: DerivationIndex::Left(0),
         };
-        assert_eq!(
-            hex::encode(context_bytes(&context)),
-            "03fba4e4f9ce1b2eb228e79b8aabef71213cfc53bec6dcae9d24a075a2d5a89e"
-        );
+
+        let mut expected = b"product/voting.dot/".to_vec();
+        expected.extend_from_slice(&index_bytes(0));
+
+        assert_eq!(context_bytes(&context), blake2b_256(&expected, None));
+    }
+
+    /// A raw 32-byte selector is used verbatim, and never collides with a
+    /// plain index.
+    #[test]
+    fn context_bytes_distinguishes_selector_forms() {
+        let indexed = ProductProofContext {
+            product_id: "voting.dot".to_string(),
+            suffix: DerivationIndex::Left(0),
+        };
+        let raw = ProductProofContext {
+            product_id: "voting.dot".to_string(),
+            suffix: DerivationIndex::Right([0; 32]),
+        };
+
+        assert_ne!(context_bytes(&indexed), context_bytes(&raw));
     }
 
     #[test]

@@ -24,6 +24,7 @@ use truapi::latest::{
     ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
     RemotePermissionResponse, RingLocation, ThemeVariant,
 };
+use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
 
 /// Role-neutral runtime configuration supplied by the embedding host.
@@ -249,10 +250,85 @@ pub enum RuntimeConfigValidationError {
     },
 }
 
+const PRODUCT_STORAGE_KEY_PREFIX: &str = "truapi:product-storage:v1:";
+
+/// Decoded product scope and product-owned key used by [`ProductStorage`].
+///
+/// The string representation remains the host callback ABI. Native hosts that
+/// need separate backing stores can decode it without duplicating the wire
+/// format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductStorageKey {
+    product_id: String,
+    key: String,
+}
+
+impl ProductStorageKey {
+    /// Build a key with a validated, normalized product id.
+    pub fn new(
+        product_id: &str,
+        key: impl Into<String>,
+    ) -> Result<Self, RuntimeConfigValidationError> {
+        Ok(Self {
+            product_id: normalize_product_identifier(product_id)?,
+            key: key.into(),
+        })
+    }
+
+    /// Decode the opaque key passed through [`ProductStorage`].
+    pub fn decode(value: &str) -> Result<Self, String> {
+        let remainder = value
+            .strip_prefix(PRODUCT_STORAGE_KEY_PREFIX)
+            .ok_or_else(|| "product storage key has an unknown format".to_string())?;
+        let (length, scoped) = remainder
+            .split_once(':')
+            .ok_or_else(|| "product storage key is missing its scope length".to_string())?;
+        let product_length = length
+            .parse::<usize>()
+            .map_err(|_| "product storage key has an invalid scope length".to_string())?;
+        let product_id = scoped
+            .get(..product_length)
+            .ok_or_else(|| "product storage key has a truncated product id".to_string())?;
+        let separator = scoped
+            .as_bytes()
+            .get(product_length)
+            .copied()
+            .ok_or_else(|| "product storage key is missing its key separator".to_string())?;
+        if separator != b':' {
+            return Err("product storage key has an invalid key separator".to_string());
+        }
+        let key = scoped
+            .get(product_length + 1..)
+            .ok_or_else(|| "product storage key splits a UTF-8 character".to_string())?;
+        Self::new(product_id, key.to_string()).map_err(|error| error.to_string())
+    }
+
+    /// Product identifier owning this storage key.
+    pub fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    /// Product-local key without the host scope prefix.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Encode the stable opaque key used by existing host callbacks.
+    pub fn encode(&self) -> String {
+        format!(
+            "{PRODUCT_STORAGE_KEY_PREFIX}{}:{}:{}",
+            self.product_id.len(),
+            self.product_id,
+            self.key
+        )
+    }
+}
+
 /// Product-scoped key-value storage.
 ///
 /// The core namespaces product keys before calling this trait. Host
-/// implementations should treat `key` as an opaque OS-style storage key.
+/// implementations may treat `key` as opaque or decode it with
+/// [`ProductStorageKey`] when their physical storage is separated by product.
 #[async_trait]
 pub trait ProductStorage: Send + Sync {
     /// Read a value by key.
@@ -455,6 +531,11 @@ pub enum CoreStorageKey {
     },
     /// Last processed SSO pairing response statement for the pairing device.
     LastProcessedPairingStatement,
+    /// Persisted RFC-0010 AutoSigning secret for one product subtree.
+    AutoSigningKey {
+        /// Product whose hard subtree the secret controls.
+        product_id: String,
+    },
 }
 
 impl CoreStorageKey {
@@ -764,6 +845,15 @@ pub struct CreateProofReview {
     pub message: Vec<u8>,
 }
 
+/// Review shown before signing an RFC-0023 VRF transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct SignVrfReview {
+    /// Product making the request.
+    pub calling_product_id: String,
+    /// Product account and exact ordered transcript.
+    pub request: HostAccountSignVrfRequest,
+}
+
 /// Review shown before allocating resources for a product. Names the
 /// beneficiary product so the user knows which product receives the
 /// (signing-capable) allowance key they are approving.
@@ -822,6 +912,8 @@ pub enum UserConfirmationReview {
     PreimageSubmit(PreimageSubmitReview),
     /// Allow a product to access another product account.
     AccountAccess(AccountAccessReview),
+    /// Sign an RFC-0023 VRF transcript with a product account.
+    SignVrf(SignVrfReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.

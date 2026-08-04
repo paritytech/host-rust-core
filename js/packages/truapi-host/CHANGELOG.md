@@ -1,5 +1,32 @@
 # @parity/truapi-host
 
+## 0.4.0
+
+### Minor Changes
+
+- Publish the RFC-0022 mobile host cutover and completed RFC-0023 account VRF
+  signing runtime. Pairing hosts persist product-scoped AutoSigning keys, sign
+  matching same-product requests locally, and require structured host and
+  Account Holder confirmations before forwarding every other request.
+
+### Patch Changes
+
+- Updated dependencies
+  - @parity/truapi@0.7.0
+
+## 0.3.0
+
+### Minor Changes
+
+- Update the WASM host runtime and generated callbacks for tagged 32-byte
+  product-account derivation indexes. Implement sr25519 VRF signing through both
+  local AutoSigning authorization and account-holder confirmation flows.
+
+### Patch Changes
+
+- Updated dependencies
+  - @parity/truapi@0.6.0
+
 ## 0.2.1
 
 ### Patch Changes
