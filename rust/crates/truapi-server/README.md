@@ -181,8 +181,8 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 - **`PairingHost`** (seedless): the user's keys live in an external wallet, so
   signing/aliases/entropy relay over an encrypted SSO channel (statement store
   on the People chain; the channel lives in `pairing_host/sso_channel.rs`). The
-  v2 wire protocol uses raw X25519 keys, HKDF-SHA256, and
-  ChaCha20-Poly1305. It owns pairing/login state, persisted auth-session reload,
+  v2 wire protocol uses 65-byte uncompressed P-256 keys, HKDF-SHA256, and
+  AES-256-GCM. It owns pairing/login state, persisted auth-session reload,
   and remote signing-host liveness monitoring.
 - **`SigningHost`** (wallet-local): signs on device from local BIP-39 entropy,
   no pairing flow. `signing_host/local_activation.rs` establishes a session

@@ -27,13 +27,12 @@ use super::SigningHost;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-use crate::host_logic::product_account::{
-    ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
-    product_public_key_to_address,
-};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::{
-    derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
+    ProductAccountError, derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
+};
+use crate::host_logic::product_account::{
+    derive_identity_keypair, derive_root_keypair_from_entropy, product_public_key_to_address,
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{
@@ -46,7 +45,7 @@ use crate::host_logic::sso::messages::{
 };
 use crate::host_logic::sso::pairing::{
     ResponderIdentity, VersionedHandshakeProposal, bootstrap_topic, decode_pairing_deeplink,
-    derive_x25519_keypair_from_entropy, encrypt_v2_handshake_response,
+    derive_p256_keypair_from_entropy, encrypt_v2_handshake_response,
     establish_responder_session_info, v2,
 };
 use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
@@ -63,9 +62,9 @@ use crate::runtime::statement_store_rpc;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
-/// RFC-0022 domain for the responder's persistent SSO X25519 key.
+/// RFC-0022 domain for the responder's persistent SSO P-256 key.
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
-/// RFC-0022 domain for the identity chat X25519 key shared in the handshake.
+/// RFC-0022 domain for the identity chat P-256 key shared in the handshake.
 const CHAT_ENCRYPTION_DOMAIN: &[u8] = b"chat";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
@@ -78,14 +77,15 @@ const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::fr
 /// longer be validly replayed.
 const MAX_SERVED_REQUEST_IDS: usize = 1024;
 
-fn derive_responder_identity(
-    entropy: &[u8],
-) -> Result<(ResponderIdentity, [u8; 32]), ProductAccountError> {
-    let statement = derive_identity_keypair(entropy)?;
+fn derive_responder_identity(entropy: &[u8]) -> Result<(ResponderIdentity, [u8; 32]), String> {
+    let statement = derive_identity_keypair(entropy)
+        .map_err(|err| format!("identity account derivation failed: {err}"))?;
     let (encryption_secret_key, encryption_public_key) =
-        derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
+        derive_p256_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN)
+            .map_err(|err| format!("SSO P-256 derivation failed: {err}"))?;
     let (identity_chat_private_key, _) =
-        derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN);
+        derive_p256_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN)
+            .map_err(|err| format!("chat P-256 derivation failed: {err}"))?;
     Ok((
         ResponderIdentity {
             statement_secret: statement.secret.to_bytes(),
@@ -1299,7 +1299,7 @@ mod tests {
         assert_eq!(identity.statement_public_key, local_identity);
 
         let (_, host_encryption_public_key) =
-            derive_x25519_keypair_from_entropy(&[0x42; 16], b"sso");
+            derive_p256_keypair_from_entropy(&[0x42; 16], b"sso").unwrap();
         let session =
             establish_responder_session_info(&identity, [0x55; 32], host_encryption_public_key)
                 .unwrap();
