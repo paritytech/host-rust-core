@@ -219,14 +219,18 @@ explorer: ## Run the explorer dev server standalone at http://localhost:5181.
 
 IOS_DEVICE_TARGET := aarch64-apple-ios
 IOS_SIM_TARGET := aarch64-apple-ios-sim
+# Must match the TrUAPIHost Package.swift platforms entry. Without it rustc/cc
+# stamp objects with the SDK version and every consumer link emits
+# "built for newer iOS version than being linked" warnings.
+IOS_DEPLOYMENT_TARGET := 17.0
 XCFRAMEWORK_OUT := target/truapi_server.xcframework
 XCFRAMEWORK_HEADERS := target/xcframework-headers
 
 xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator.
 	rustup target add $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
-	$(CARGO) build -p truapi-server --release \
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
 		--features ws-bridge --target $(IOS_DEVICE_TARGET)
-	$(CARGO) build -p truapi-server --release \
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
 		--features ws-bridge --target $(IOS_SIM_TARGET)
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
