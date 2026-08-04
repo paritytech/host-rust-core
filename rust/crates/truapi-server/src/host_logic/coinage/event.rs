@@ -8,7 +8,7 @@
 use super::entry::EntryOnChainState;
 use super::operation::{OperationStatus, TerminalStatus};
 use super::types::{
-    Amount, CoinAge, DenominationExponent, OperationHandle, OperationKind, PurseId,
+    Amount, CoinAge, DenominationExponent, OperationHandle, OperationKind, PurseId, Timestamp,
 };
 
 /// Something the layer observed or did.
@@ -56,6 +56,16 @@ pub enum LayerEvent {
         /// Denomination.
         exponent: DenominationExponent,
     },
+    /// The chain locked a coin after a dispatch that used it as its origin
+    /// failed. The coin is intact but unspendable until the lock expires.
+    CoinChainLocked {
+        /// Owning purse.
+        purse: PurseId,
+        /// Denomination.
+        exponent: DenominationExponent,
+        /// When the chain will accept the coin again.
+        until: Timestamp,
+    },
     /// A coin's observed age changed.
     CoinAged {
         /// Owning purse.
@@ -81,6 +91,17 @@ pub enum LayerEvent {
         exponent: DenominationExponent,
         /// The new readiness.
         new_state: EntryOnChainState,
+    },
+    /// The chain locked a recycler entry's alias after a dispatch that used it
+    /// as an output token failed. The entry is intact but unusable until the
+    /// lock expires.
+    EntryAliasLocked {
+        /// Owning purse.
+        purse: PurseId,
+        /// Denomination.
+        exponent: DenominationExponent,
+        /// When the chain will accept the alias again.
+        until: Timestamp,
     },
     /// A recycler entry was unloaded.
     EntryConsumed {

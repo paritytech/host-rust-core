@@ -112,6 +112,24 @@ pub struct RecyclerEntry {
     /// When the entry becomes selectable, `allocated_at` plus a random delay.
     /// The delay decorrelates a load from its later unload.
     pub ready_at: Timestamp,
+    /// When the chain's own lock on this entry's alias expires, as last
+    /// observed.
+    ///
+    /// The entry-side counterpart of `Coin::locked_until`, and it exists for
+    /// the same reason: after a dispatch that used an output token fails, the
+    /// pallet restores the first alias but writes `AliasState::Locked` against
+    /// it with the same exponential backoff, and `validate` refuses it until
+    /// that passes. Orthogonal to [`RecyclerEntry::local`] — the entry can be
+    /// locally available and still refused.
+    pub alias_locked_until: Option<Timestamp>,
+    /// When the entry's ring became immutable, as last observed.
+    ///
+    /// `None` while the ring is still accepting members. Once set, the chain
+    /// will destroy the backing value of anything left in the ring
+    /// `RecyclerExpirationTime` later, so this is the clock the rescue sweep
+    /// races — and the only warning the layer ever gets that a purse is about
+    /// to lose money.
+    pub ring_immutable_since: Option<Timestamp>,
 }
 
 impl RecyclerEntry {
@@ -135,6 +153,8 @@ impl RecyclerEntry {
             local: EntryLocalState::Available,
             allocated_at,
             ready_at: allocated_at.saturating_add(jitter),
+            alias_locked_until: None,
+            ring_immutable_since: None,
         }
     }
 
@@ -159,7 +179,24 @@ impl RecyclerEntry {
             self.on_chain.is_full_anonymity()
         };
 
-        self.local == EntryLocalState::Available && anonymity_ok && self.jitter_elapsed(now)
+        self.local == EntryLocalState::Available
+            && anonymity_ok
+            && self.jitter_elapsed(now)
+            && !self.is_alias_locked(now)
+    }
+
+    /// Whether the chain is still holding its own lock on this entry's alias.
+    pub fn is_alias_locked(&self, now: Timestamp) -> bool {
+        self.alias_locked_until.is_some_and(|until| now < until)
+    }
+
+    /// Record the chain's alias lock expiry, or its absence.
+    ///
+    /// Applied unconditionally, like the coin-side lock: it is a fact about the
+    /// alias regardless of what the layer is doing with the record, and it must
+    /// be possible to clear once the chain drops it.
+    pub fn observe_alias_lock(&mut self, alias_locked_until: Option<Timestamp>) {
+        self.alias_locked_until = alias_locked_until;
     }
 
     /// Whether the ring-expiration rescue sweep should unload this entry.
@@ -167,19 +204,30 @@ impl RecyclerEntry {
     /// The chain destroys the backing value of any entry still in a ring when
     /// the ring is cleaned up, `recycler_expiration_time` after it became
     /// immutable. The margin is the slack the layer keeps ahead of that.
+    /// A ring that has not become immutable has no expiry yet, so there is
+    /// nothing to race and the answer is `false` — but note that this is also
+    /// what an *unobserved* ring looks like. The sweep is only as good as the
+    /// observation feeding it; see [`RecyclerEntry::ring_immutable_since`].
     pub fn needs_rescue(
         &self,
         now: Timestamp,
-        ring_immutable_since: Timestamp,
         recycler_expiration_time: Duration,
         rescue_margin: Duration,
     ) -> bool {
         if self.local != EntryLocalState::Available || !self.on_chain.is_usable() {
             return false;
         }
+        let Some(immutable_since) = self.ring_immutable_since else {
+            return false;
+        };
 
-        let expires_at = ring_immutable_since.saturating_add(recycler_expiration_time);
+        let expires_at = immutable_since.saturating_add(recycler_expiration_time);
         now >= expires_at.saturating_sub(rescue_margin)
+    }
+
+    /// Record when the entry's ring became immutable.
+    pub fn observe_ring_immutability(&mut self, immutable_since: Option<Timestamp>) {
+        self.ring_immutable_since = immutable_since;
     }
 
     /// Record a chain observation of the entry's ring.
@@ -226,6 +274,28 @@ impl RecyclerEntry {
                 SUBJECT,
                 self.local.label(),
                 "release",
+            )),
+        }
+    }
+
+    /// Retire an entry that was never loaded, because the transaction meant to
+    /// create it did not take effect.
+    ///
+    /// Terminal for the same reason as [`Self::mark_consumed`]: the entry's
+    /// bandersnatch key may already sit in a public ring member list, and the
+    /// derivation index must never be reused either way. Only an entry the
+    /// chain never accepted can be abandoned; one an operation holds must go
+    /// through that operation.
+    pub fn abandon(&mut self) -> Result<(), InvalidTransition> {
+        match (self.local, self.on_chain) {
+            (EntryLocalState::Available, EntryOnChainState::Missing) => {
+                self.local = EntryLocalState::Consumed;
+                Ok(())
+            }
+            _ => Err(InvalidTransition::new(
+                SUBJECT,
+                self.local.label(),
+                "abandon",
             )),
         }
     }
@@ -392,18 +462,29 @@ mod tests {
         let immutable_since = Timestamp(0);
         let expiration = DAY * 40;
         let margin = params.rescue_margin(expiration);
-        let entry = ready_entry(Timestamp(0));
+        let mut entry = ready_entry(Timestamp(0));
+        entry.observe_ring_immutability(Some(immutable_since));
 
         let deadline = immutable_since.saturating_add(expiration);
         let trigger = deadline.saturating_sub(margin);
 
-        assert!(!entry.needs_rescue(
-            Timestamp(trigger.0 - 1),
-            immutable_since,
-            expiration,
-            margin
-        ));
-        assert!(entry.needs_rescue(trigger, immutable_since, expiration, margin));
+        assert!(!entry.needs_rescue(Timestamp(trigger.0 - 1), expiration, margin));
+        assert!(entry.needs_rescue(trigger, expiration, margin));
+    }
+
+    #[test]
+    fn a_ring_never_observed_as_immutable_is_never_rescued() {
+        // The honest failure mode: with no observation there is no deadline to
+        // race, so the sweep does nothing. That is correct for a ring still
+        // accepting members and *silent* for one the layer simply never read —
+        // which is why the observation driver must supply this.
+        let params = CoinageParameters::default();
+        let expiration = DAY * 40;
+        let margin = params.rescue_margin(expiration);
+        let entry = ready_entry(Timestamp(0));
+
+        assert_eq!(entry.ring_immutable_since, None);
+        assert!(!entry.needs_rescue(Timestamp(u64::MAX), expiration, margin));
     }
 
     #[test]
@@ -414,12 +495,40 @@ mod tests {
         let past_deadline = Timestamp(expiration.as_millis() as u64);
         let mut entry = ready_entry(Timestamp(0));
 
+        entry.observe_ring_immutability(Some(Timestamp(0)));
+
         entry.lock_for(OperationHandle(1)).expect("lock is valid");
-        assert!(!entry.needs_rescue(past_deadline, Timestamp(0), expiration, margin));
+        assert!(!entry.needs_rescue(past_deadline, expiration, margin));
 
         entry
             .mark_consumed(OperationHandle(1))
             .expect("consume is valid");
-        assert!(!entry.needs_rescue(past_deadline, Timestamp(0), expiration, margin));
+        assert!(!entry.needs_rescue(past_deadline, expiration, margin));
+    }
+
+    #[test]
+    fn an_alias_locked_entry_is_intact_but_unselectable() {
+        // What the pallet leaves after an output-token dispatch fails: the
+        // alias is restored, but `validate` refuses it until the lock expires.
+        let mut entry = ready_entry(Timestamp(0));
+
+        entry.observe_alias_lock(Some(Timestamp(2_000)));
+
+        assert_eq!(entry.local, EntryLocalState::Available, "still ours");
+        assert!(entry.is_alias_locked(Timestamp(1_999)));
+        assert!(!entry.is_selectable(Timestamp(1_999), true));
+        // Exclusive at the boundary, like every other expiry in this layer.
+        assert!(!entry.is_alias_locked(Timestamp(2_000)));
+        assert!(entry.is_selectable(Timestamp(2_000), true));
+    }
+
+    #[test]
+    fn observing_no_alias_lock_clears_a_previous_one() {
+        let mut entry = ready_entry(Timestamp(0));
+        entry.observe_alias_lock(Some(Timestamp(2_000)));
+
+        entry.observe_alias_lock(None);
+
+        assert!(entry.is_selectable(Timestamp(0), true));
     }
 }
