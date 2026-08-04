@@ -44,7 +44,8 @@ use tracing::{instrument, warn};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
 use truapi_platform::{
-    CoreStorageKey, PairingHostConfig, Platform, ProductContext, normalize_product_identifier,
+    CoreStorageKey, PairingHostConfig, Platform, ProductContext, SignVrfReview,
+    UserConfirmationReview, normalize_product_identifier,
 };
 
 /// Distinguishes all remote authority request entrypoints by wire label.
@@ -1739,6 +1740,19 @@ impl PairingHost {
                     .map(|item| (item.label.as_slice(), item.value.as_slice())),
             );
             return Ok(v01::VrfSignature { pre_output, proof });
+        }
+        let confirmed = self
+            .platform
+            .confirm_user_action(UserConfirmationReview::SignVrf(SignVrfReview {
+                calling_product_id: calling_product_id.clone(),
+                request: request.clone(),
+            }))
+            .await
+            .map_err(|err| AuthorityError::Unknown {
+                reason: format!("VRF signing confirmation failed: {err:?}"),
+            })?;
+        if !confirmed {
+            return Err(AuthorityError::Rejected);
         }
         self.remote_sign_vrf(cx, &session, calling_product_id, request)
             .await
