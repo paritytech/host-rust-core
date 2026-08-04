@@ -4555,6 +4555,121 @@ mod tests {
     }
 
     #[test]
+    fn external_session_activation_is_memory_only_and_rejects_trailing_bytes() {
+        let platform = Arc::new(StubPlatform::default());
+        let (host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+        let session = sso_session_info();
+        let blob = crate::host_logic::session::encode_persisted_session(&session);
+
+        futures::executor::block_on(pairing_host.activate_external_session(&blob))
+            .expect("valid external session activates");
+
+        assert_eq!(host.test_session_state().current(), Some(session.clone()));
+        assert!(
+            platform
+                .session_writes
+                .lock()
+                .expect("session write list mutex poisoned")
+                .is_empty(),
+            "external activation must not copy the blob into core storage"
+        );
+
+        let invalid = futures::executor::block_on(pairing_host.activate_external_session(&[0xff]))
+            .expect_err("invalid bytes are rejected");
+        assert!(invalid.starts_with("invalid session blob:"));
+
+        let mut trailing = blob;
+        trailing.push(0);
+        let error = futures::executor::block_on(pairing_host.activate_external_session(&trailing))
+            .expect_err("trailing bytes are rejected");
+        assert_eq!(error, "invalid session blob: trailing bytes");
+        assert_eq!(
+            host.test_session_state().current(),
+            Some(session),
+            "invalid replacement preserves the active external session"
+        );
+    }
+
+    #[test]
+    fn external_session_activation_replaces_and_fences_the_previous_session() {
+        let (host, pairing_host) = ProductRuntimeHost::new_compat_with_pairing(
+            Arc::new(StubPlatform::default()),
+            test_spawner(),
+        );
+        let first = sso_session_info();
+        let mut replacement = first.clone();
+        replacement.public_key = [0x44; 32];
+        replacement.identity_account_id = Some([0x55; 32]);
+        replacement
+            .sso
+            .as_mut()
+            .expect("fixture has SSO")
+            .identity_account_id = [0x55; 32];
+
+        futures::executor::block_on(pairing_host.activate_external_session(
+            &crate::host_logic::session::encode_persisted_session(&first),
+        ))
+        .expect("first external session activates");
+        futures::executor::block_on(pairing_host.activate_external_session(
+            &crate::host_logic::session::encode_persisted_session(&replacement),
+        ))
+        .expect("replacement external session activates");
+
+        assert_eq!(host.test_session_state().current(), Some(replacement));
+    }
+
+    #[test]
+    fn stored_session_activation_resolves_after_connected_installation() {
+        let stored = sso_session_info();
+        let platform = Arc::new(StubPlatform {
+            session_blob: Some(crate::host_logic::session::encode_persisted_session(
+                &stored,
+            )),
+            ..Default::default()
+        });
+        let (host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        futures::executor::block_on(pairing_host.activate_stored_session())
+            .expect("valid stored session activates");
+
+        assert_eq!(host.test_session_state().current(), Some(stored.clone()));
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(connected_session_ui_info(&stored))]
+        );
+    }
+
+    #[test]
+    fn stored_session_activation_rejects_invalid_blob_and_disconnects() {
+        let session_clears = Arc::new(Mutex::new(0));
+        let platform = Arc::new(StubPlatform {
+            session_blob: Some(vec![0xff]),
+            session_clears: session_clears.clone(),
+            ..Default::default()
+        });
+        let (host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform, test_spawner());
+        install_pairing_session(&host, sso_session_info());
+
+        let error = futures::executor::block_on(pairing_host.activate_stored_session())
+            .expect_err("invalid stored session is rejected");
+
+        assert!(error.starts_with("invalid stored auth session:"));
+        assert!(host.test_session_state().current().is_none());
+        assert_eq!(
+            *session_clears
+                .lock()
+                .expect("session clear counter mutex poisoned"),
+            1
+        );
+    }
+
+    #[test]
     fn session_store_sync_restores_valid_blob_from_tick() {
         let stored = sso_session_info();
         let platform = Arc::new(StubPlatform {

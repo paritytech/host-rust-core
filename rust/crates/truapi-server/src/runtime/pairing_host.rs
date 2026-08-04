@@ -7,6 +7,7 @@
 mod sso_channel;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::channel::oneshot;
@@ -126,6 +127,25 @@ impl Drop for LoginInFlightOwner<'_> {
     }
 }
 
+#[derive(Debug)]
+enum StoredSessionActivationError {
+    Missing,
+    Invalid(String),
+    Read(String),
+    Changed,
+}
+
+impl std::fmt::Display for StoredSessionActivationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => f.write_str("stored auth session is absent"),
+            Self::Invalid(reason) => write!(f, "invalid stored auth session: {reason}"),
+            Self::Read(reason) => write!(f, "failed to read stored auth session: {reason}"),
+            Self::Changed => f.write_str("stored auth session changed during activation"),
+        }
+    }
+}
+
 /// Remote account authority for a pairing host.
 pub(crate) struct PairingHost {
     /// Host platform backing all syscalls.
@@ -149,6 +169,8 @@ pub(crate) struct PairingHost {
     bulletin_allowances: Mutex<HashMap<AllowanceCacheKey, BulletinAllowanceKey>>,
     product_subtrees: Mutex<HashMap<(SsoSessionKey, String), [u8; 32]>>,
     auto_signing_keys: Mutex<HashMap<String, AutoSigningKey>>,
+    session_store_activation: futures::lock::Mutex<()>,
+    external_session_active: AtomicBool,
     /// Self-reference captured by the spawned disconnect-monitor task.
     weak_self: Weak<PairingHost>,
     /// Task spawner for background monitors.
@@ -176,6 +198,8 @@ impl PairingHost {
             bulletin_allowances: Mutex::new(HashMap::new()),
             product_subtrees: Mutex::new(HashMap::new()),
             auto_signing_keys: Mutex::new(HashMap::new()),
+            session_store_activation: futures::lock::Mutex::new(()),
+            external_session_active: AtomicBool::new(false),
             weak_self: weak_self.clone(),
             spawner: services.spawner.clone(),
         })
@@ -189,6 +213,7 @@ impl PairingHost {
     /// Signal that the persisted auth session may have changed; the sync task
     /// re-reads it.
     pub(crate) fn notify_session_store_changed(&self) {
+        self.external_session_active.store(false, Ordering::Release);
         self.session_store_changes.notify();
     }
 
@@ -216,6 +241,112 @@ impl PairingHost {
         }
     }
 
+    /// Validate, resolve, and install an externally persisted canonical
+    /// session blob without copying it into core storage.
+    pub(crate) async fn activate_external_session(&self, blob: &[u8]) -> Result<(), String> {
+        let _activation = self.session_store_activation.lock().await;
+        let session = crate::host_logic::session::decode_persisted_session(blob)?;
+        let resolved = resolve_session_identity_with_chain(
+            &self.chain,
+            self.host_config.people_chain_genesis_hash,
+            session,
+        )
+        .await;
+        self.set_connected_session(resolved);
+        self.external_session_active.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Read, validate, resolve, and install the persisted auth session before
+    /// returning. Product frames may use the connected session once this
+    /// future resolves.
+    pub(crate) async fn activate_stored_session(&self) -> Result<(), String> {
+        self.reconcile_stored_session(true, false)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn reconcile_stored_session(
+        &self,
+        clear_after_read_error: bool,
+        preserve_external_session: bool,
+    ) -> Result<(), StoredSessionActivationError> {
+        let _activation = self.session_store_activation.lock().await;
+        if preserve_external_session && self.external_session_active.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.external_session_active.store(false, Ordering::Release);
+        let blob = match self
+            .platform
+            .read_core_storage(CoreStorageKey::AuthSession)
+            .await
+        {
+            Ok(Some(blob)) => blob,
+            Ok(None) => {
+                self.clear_disconnected_session(false).await;
+                return Err(StoredSessionActivationError::Missing);
+            }
+            Err(error) => {
+                self.clear_disconnected_session(false).await;
+                if clear_after_read_error {
+                    let _ = self
+                        .platform
+                        .clear_core_storage(CoreStorageKey::AuthSession)
+                        .await;
+                }
+                return Err(StoredSessionActivationError::Read(error.reason));
+            }
+        };
+        let session = match crate::host_logic::session::decode_persisted_session(&blob) {
+            Ok(session) => session,
+            Err(error) => {
+                self.clear_disconnected_session(true).await;
+                return Err(StoredSessionActivationError::Invalid(error));
+            }
+        };
+        let resolved = resolve_session_identity_with_chain(
+            &self.chain,
+            self.host_config.people_chain_genesis_hash,
+            session,
+        )
+        .await;
+
+        // Identity resolution can await chain I/O. Re-read the slot before
+        // installation so an older activation cannot overwrite or expose a
+        // session replaced while that lookup was in flight.
+        let latest = match self
+            .platform
+            .read_core_storage(CoreStorageKey::AuthSession)
+            .await
+        {
+            Ok(latest) => latest,
+            Err(error) => {
+                self.clear_disconnected_session(false).await;
+                if clear_after_read_error {
+                    let _ = self
+                        .platform
+                        .clear_core_storage(CoreStorageKey::AuthSession)
+                        .await;
+                }
+                return Err(StoredSessionActivationError::Read(error.reason));
+            }
+        };
+        if latest.as_deref() != Some(blob.as_slice()) {
+            self.clear_disconnected_session(false).await;
+            return Err(StoredSessionActivationError::Changed);
+        }
+
+        let resolved_blob = encode_persisted_session(&resolved);
+        if resolved_blob != blob {
+            let _ = self
+                .platform
+                .write_core_storage(CoreStorageKey::AuthSession, resolved_blob)
+                .await;
+        }
+        self.set_connected_session(resolved);
+        Ok(())
+    }
+
     /// Spawn the background task that re-reads the persisted auth session on
     /// every change notification and reconciles the in-memory session.
     #[instrument(skip_all, fields(runtime.method = "session_store.sync"))]
@@ -236,49 +367,17 @@ impl PairingHost {
                     break;
                 };
                 match pairing_host
-                    .platform
-                    .read_core_storage(CoreStorageKey::AuthSession)
+                    .reconcile_stored_session(!cleared_after_read_error, true)
                     .await
                 {
-                    Ok(Some(blob)) => {
+                    Ok(())
+                    | Err(StoredSessionActivationError::Missing)
+                    | Err(StoredSessionActivationError::Invalid(_))
+                    | Err(StoredSessionActivationError::Changed) => {
                         cleared_after_read_error = false;
-                        match crate::host_logic::session::decode_persisted_session(&blob) {
-                            Ok(session) => {
-                                let resolved = resolve_session_identity_with_chain(
-                                    &pairing_host.chain,
-                                    pairing_host.host_config.people_chain_genesis_hash,
-                                    session,
-                                )
-                                .await;
-                                if encode_persisted_session(&resolved) != blob {
-                                    let _ = pairing_host
-                                        .platform
-                                        .write_core_storage(
-                                            CoreStorageKey::AuthSession,
-                                            encode_persisted_session(&resolved),
-                                        )
-                                        .await;
-                                }
-                                pairing_host.set_connected_session(resolved);
-                            }
-                            Err(_) => {
-                                pairing_host.clear_disconnected_session(true).await;
-                            }
-                        }
                     }
-                    Ok(None) => {
-                        cleared_after_read_error = false;
-                        pairing_host.clear_disconnected_session(false).await;
-                    }
-                    Err(_) => {
-                        pairing_host.clear_disconnected_session(false).await;
-                        if !cleared_after_read_error {
-                            cleared_after_read_error = true;
-                            let _ = pairing_host
-                                .platform
-                                .clear_core_storage(CoreStorageKey::AuthSession)
-                                .await;
-                        }
+                    Err(StoredSessionActivationError::Read(_)) => {
+                        cleared_after_read_error = true;
                     }
                 }
             }
@@ -465,6 +564,7 @@ impl PairingHost {
 
     #[instrument(skip_all, fields(runtime.method = "session_store.clear_disconnected"))]
     async fn clear_disconnected_session(&self, clear_auth_session: bool) {
+        self.external_session_active.store(false, Ordering::Release);
         let previous = self.session_state.current();
         self.session_state.clear_session();
         self.stop_session_channel(previous.as_ref());

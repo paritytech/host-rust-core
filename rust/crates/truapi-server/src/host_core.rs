@@ -152,6 +152,32 @@ impl PairingHostRuntime {
         self.pairing_host.cancel_login();
     }
 
+    /// Activate a canonical session blob supplied by an external encrypted
+    /// session owner without writing the blob to core storage.
+    ///
+    /// Success means decoding, username resolution, replacement fencing, and
+    /// connected-session installation have completed.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.activate_external_session"))]
+    pub async fn activate_external_session(&self, blob: &[u8]) -> Result<(), v01::GenericError> {
+        self.pairing_host
+            .activate_external_session(blob)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Await restoration of the persisted auth-session blob.
+    ///
+    /// Success means decoding, username resolution, stale-read fencing, and
+    /// connected-session installation have completed, so product frames may
+    /// immediately use the restored authority session.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.activate_stored_session"))]
+    pub async fn activate_stored_session(&self) -> Result<(), v01::GenericError> {
+        self.pairing_host
+            .activate_stored_session()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Notify the pairing runtime that the persisted auth-session blob may
     /// have changed and should be re-read.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.notify_session_store_changed"))]

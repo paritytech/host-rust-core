@@ -724,6 +724,25 @@ impl WasmPairingHostRuntime {
         self.runtime.cancel_pairing();
     }
 
+    /// Activate an externally persisted canonical session without writing it
+    /// to core storage; resolves only after product frames may use it.
+    #[wasm_bindgen(js_name = activateExternalSession)]
+    pub async fn activate_external_session(&self, blob: Vec<u8>) -> Result<(), JsValue> {
+        self.runtime
+            .activate_external_session(&blob)
+            .await
+            .map_err(generic_error_to_js)
+    }
+
+    /// Restore the persisted auth session and resolve only after it is active.
+    #[wasm_bindgen(js_name = activateStoredSession)]
+    pub async fn activate_stored_session(&self) -> Result<(), JsValue> {
+        self.runtime
+            .activate_stored_session()
+            .await
+            .map_err(generic_error_to_js)
+    }
+
     /// Notify the runtime that the auth session slot may have changed.
     #[wasm_bindgen(js_name = notifySessionStoreChanged)]
     pub fn notify_session_store_changed(&self) {

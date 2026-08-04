@@ -514,6 +514,7 @@ pub trait JsonRpcConnection: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum CoreStorageKey {
     /// Opaque SSO/auth session blob.
+    #[codec(index = 0)]
     AuthSession,
     /// Pairing device identity used during SSO flows.
     PairingDeviceIdentity,
@@ -603,6 +604,10 @@ fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn auth_session_storage_key_has_stable_encoding() {
+        assert_eq!(CoreStorageKey::AuthSession.encode(), [0]);
+    }
 
     #[test]
     fn permission_authorization_keys_separate_product_and_request_variants() {

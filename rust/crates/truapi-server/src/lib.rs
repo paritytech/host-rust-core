@@ -42,6 +42,9 @@ pub use host_core::{
     FrameSink, HostAdmin, PairingHostRuntime, ProductRuntime, ProductRuntimeError,
     SigningHostRuntime,
 };
+pub use host_logic::session::{
+    ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
+};
 pub use runtime::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;
