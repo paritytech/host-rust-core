@@ -10,6 +10,9 @@ license = "MIT"
 missing_docs = "warn"
 unsafe_code = "deny"
 
+[patch.crates-io]
+frame-decode = { git = "https://github.com/paritytech/frame-decode", rev = "ee8acb51f49dc8306a5d0b4160c5d278fef05978" }
+
 [profile.release]
 opt-level = "z"
 lto = "fat"
