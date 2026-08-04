@@ -466,6 +466,12 @@ pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
     response_id: 165,
 };
 
+/// Wire discriminants for `secrets_request`.
+pub const SECRETS_REQUEST: RequestFrameIds = RequestFrameIds {
+    request_id: 166,
+    response_id: 167,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -728,5 +734,9 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "account_sign_vrf",
         kind: WireKind::Request(ACCOUNT_SIGN_VRF),
+    },
+    WireEntry {
+        method: "secrets_request",
+        kind: WireKind::Request(SECRETS_REQUEST),
     },
 ];

@@ -41,6 +41,7 @@ pub mod payment;
 pub mod permissions;
 pub mod preimage;
 pub mod resource_allocation;
+pub mod secrets;
 pub mod signing;
 pub mod statement_store;
 pub mod system;

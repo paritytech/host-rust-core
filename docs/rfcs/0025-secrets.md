@@ -100,7 +100,7 @@ Added to a new `Secrets` trait:
 /// The backend is resolved as `secret:<name>` in `product`'s dotNS records,
 /// falling back to a host default. That record fixes the endpoint, path, and
 /// method, so the caller supplies only a body, query, and headers.
-#[wire(request_id = 152)]
+#[wire(request_id = 166)]
 async fn request(
     &self,
     _cx: &CallContext,
