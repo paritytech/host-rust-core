@@ -25,9 +25,11 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
+use crate::host_logic::session::SsoSessionInfo;
 use crate::runtime::{
     LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
-    RuntimeServices, SigningHostRole, respond_to_pairing,
+    ResponderPeer, RuntimeServices, SigningHostRole, answer_pairing, respond_to_pairing,
+    responder_session_for_peer, serve_responder_session, submit_responder_disconnected,
 };
 use crate::subscription::Spawner;
 use crate::transport::Transport;
@@ -318,6 +320,47 @@ impl SigningHostRuntime {
         deeplink: &str,
     ) -> Result<ResponderExit, v01::GenericError> {
         respond_to_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Submit a pairing response and return immediately-servable session
+    /// material. Used by native shells that own the background task lifecycle.
+    pub(crate) async fn answer_pairing(
+        &self,
+        deeplink: &str,
+    ) -> Result<(ResponderPeer, SsoSessionInfo), v01::GenericError> {
+        answer_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Rebuild session channels for a persisted pairing host.
+    pub(crate) fn responder_session_for_peer(
+        &self,
+        peer: &ResponderPeer,
+    ) -> Result<SsoSessionInfo, v01::GenericError> {
+        responder_session_for_peer(&self.signing_host, peer)
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Drive one responder subscription until the peer disconnects or the
+    /// underlying subscription ends.
+    pub(crate) async fn serve_responder_session(
+        &self,
+        session: SsoSessionInfo,
+    ) -> Result<ResponderExit, v01::GenericError> {
+        serve_responder_session(self.services.clone(), self.signing_host.clone(), session)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Notify one paired host that this signing host ended its session.
+    pub(crate) async fn disconnect_responder_session(
+        &self,
+        session: &SsoSessionInfo,
+    ) -> Result<(), v01::GenericError> {
+        submit_responder_disconnected(&self.services, session)
             .await
             .map_err(|reason| v01::GenericError { reason })
     }
