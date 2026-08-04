@@ -5,6 +5,7 @@
 //! ```text
 //! coins:            //coinage//coin//<purse>//<page>//<index>     (sr25519)
 //! recycler entries: //coinage//<purse>//<page>//<index>           (bandersnatch)
+//! fee account:      //coinage//fee                                (sr25519)
 //! ```
 //!
 //! Splitting by key type lets recovery enumerate each side on its own — coins
@@ -60,6 +61,10 @@ const COIN_JUNCTION: &str = "coin";
 /// Key under which RFC-0022 roots the ring-VRF tree in the account entropy.
 const RING_VRF_TREE_KEY: &[u8] = b"ring-vrf";
 
+/// Junction of the layer-wide fee account. Not a purse identifier, so it cannot
+/// collide with one: purse junctions are decimal integers.
+const FEE_JUNCTION: &str = "fee";
+
 /// The sr25519 keypair controlling a coin.
 pub fn coin_keypair(
     entropy: &[u8],
@@ -85,6 +90,25 @@ pub fn coin_account_id(
 ) -> Result<CoinAccountId, CoinageError> {
     Ok(CoinAccountId(
         coin_keypair(entropy, purse, index)?.public.to_bytes(),
+    ))
+}
+
+/// The sr25519 keypair of the layer's single fee account.
+///
+/// One account for the whole layer, not one per purse: it pays the on-chain fee
+/// for unloads (`coinage-layer.md` §6.6) and is never exposed through the API.
+/// It sits outside the purse junction deliberately — it holds no coinage value
+/// and belongs to no purse, so putting it under one would imply an ownership
+/// relation that does not exist, and deleting that purse would strand it.
+pub fn fee_account_keypair(entropy: &[u8]) -> Result<Keypair, CoinageError> {
+    derive_sr25519_hard_path(entropy, &[COINAGE_DOMAIN, FEE_JUNCTION])
+        .map_err(|error| CoinageError::Internal(format!("fee account derivation failed: {error}")))
+}
+
+/// The on-chain account that pays unload fees.
+pub fn fee_account_id(entropy: &[u8]) -> Result<CoinAccountId, CoinageError> {
+    Ok(CoinAccountId(
+        fee_account_keypair(entropy)?.public.to_bytes(),
     ))
 }
 
