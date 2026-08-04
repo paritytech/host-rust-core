@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use super::chain_constants::CoinageChainConstants;
-use super::coin::Coin;
+use super::coin::{Coin, CoinState};
 use super::entry::RecyclerEntry;
 use super::error::CoinageError;
 use super::operation::LockSet;
@@ -201,7 +201,7 @@ pub fn select(
         });
     }
 
-    let available_coins = ordered_coins(coins);
+    let available_coins = ordered_coins(coins, now);
     let available_entries = ordered_entries(entries, now, request.allow_degraded);
 
     if let Some(plan) = try_exact_match(request, &targets, &available_coins) {
@@ -278,8 +278,11 @@ fn largest_denomination(
 ///
 /// Preferring older coins is what makes payment traffic refresh a wallet
 /// implicitly, so the age sweep has less to do.
-fn ordered_coins(coins: &[Coin]) -> Vec<&Coin> {
-    let mut selectable: Vec<&Coin> = coins.iter().filter(|coin| coin.is_selectable()).collect();
+fn ordered_coins(coins: &[Coin], now: Timestamp) -> Vec<&Coin> {
+    let mut selectable: Vec<&Coin> = coins
+        .iter()
+        .filter(|coin| coin.is_selectable(now))
+        .collect();
     selectable.sort_by(|left, right| {
         right
             .exponent
@@ -693,22 +696,23 @@ fn classify_failure(
     let entries_now: Amount = available_entries.iter().map(|entry| entry.value()).sum();
     let available = coins_now.checked_add(entries_now).unwrap_or(coins_now);
 
-    // What the purse could offer if every entry were ready and degraded rings
-    // were acceptable. Locked and terminal records stay excluded: they are not
-    // waiting on anything the caller can outlast.
+    // What the purse could offer if every entry were ready, degraded rings were
+    // acceptable, and every chain-side coin lock had expired. Locked and
+    // terminal records stay excluded: they are not waiting on anything the
+    // caller can outlast, whereas all three of those conditions clear with time.
     let eventual_entries: Amount = entries
         .iter()
         .filter(|entry| entry.local == EntryLocalState::Available)
         .map(|entry| entry.value())
         .sum();
-    let selectable_coins: Amount = coins
+    let eventual_coins: Amount = coins
         .iter()
-        .filter(|coin| coin.is_selectable())
+        .filter(|coin| coin.state == CoinState::Available)
         .map(|coin| coin.value())
         .sum();
-    let available_when_ready = selectable_coins
+    let available_when_ready = eventual_coins
         .checked_add(eventual_entries)
-        .unwrap_or(selectable_coins);
+        .unwrap_or(eventual_coins);
 
     if available_when_ready < request.amount {
         CoinageError::InsufficientFunds {
@@ -812,7 +816,10 @@ mod tests {
             coin(9, 3, 7),
         ];
 
-        let ordered: Vec<u32> = ordered_coins(&coins).iter().map(|c| c.index.0).collect();
+        let ordered: Vec<u32> = ordered_coins(&coins, NOW)
+            .iter()
+            .map(|c| c.index.0)
+            .collect();
 
         assert_eq!(ordered, vec![0, 2, 1, 9, 5]);
     }
@@ -845,7 +852,36 @@ mod tests {
             Coin::pending(PurseId::MAIN, CoinIndex(1), exponent(4)),
         ];
 
-        assert!(ordered_coins(&coins).is_empty());
+        assert!(ordered_coins(&coins, NOW).is_empty());
+    }
+
+    #[test]
+    fn a_chain_locked_coin_is_never_offered() {
+        let mut locked = coin(0, 4, 0);
+        locked.observe_chain_lock(Some(Timestamp(NOW.0 + 1)));
+
+        assert!(ordered_coins(&[locked], NOW).is_empty());
+    }
+
+    #[test]
+    fn a_chain_locked_coin_reads_as_wait_not_as_no_funds() {
+        // The distinction the caller acts on: a locked coin comes back, so the
+        // right advice is to retry, not to tell the user they are out of money.
+        let mut locked = coin(0, 4, 0);
+        locked.observe_chain_lock(Some(Timestamp(NOW.0 + 1)));
+
+        let error = select_from(&request(16), &[locked], &[]).expect_err("nothing is selectable");
+
+        assert!(
+            matches!(
+                error,
+                CoinageError::NoReadyEntries {
+                    available_when_ready,
+                    ..
+                } if available_when_ready == Amount::from_cents(16)
+            ),
+            "expected a wait classification, got {error:?}"
+        );
     }
 
     #[test]

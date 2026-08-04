@@ -201,6 +201,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reference.underlying_asset_unit,
         constant::<u128>(&metadata, "UnderlyingAssetUnit"),
     );
+    report.check_constant(
+        "CoinFailureLockPeriod",
+        reference.coin_failure_lock_period,
+        constant::<u64>(&metadata, "CoinFailureLockPeriod").map(Duration::from_secs),
+    );
 
     match reference.validate() {
         Ok(()) => report.note(

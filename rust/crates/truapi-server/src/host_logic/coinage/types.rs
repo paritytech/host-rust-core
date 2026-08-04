@@ -188,6 +188,15 @@ pub struct CoinAge(pub u16);
 pub struct Timestamp(pub u64);
 
 impl Timestamp {
+    /// The instant a Unix-seconds value from the chain names.
+    ///
+    /// The pallet stores lock expiries in whole seconds; this layer counts
+    /// milliseconds, and mixing the two silently makes a lock look 1000 times
+    /// shorter than it is.
+    pub const fn from_unix_seconds(seconds: u64) -> Self {
+        Self(seconds.saturating_mul(1_000))
+    }
+
     /// The instant `duration` after this one, saturating at `u64::MAX`.
     pub fn saturating_add(self, duration: Duration) -> Self {
         Self(self.0.saturating_add(duration.as_millis() as u64))

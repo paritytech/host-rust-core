@@ -56,6 +56,15 @@ pub struct CoinageChainConstants {
     pub max_free_unload_tokens_per_period: u32,
     /// Underlying-asset base units in one cent (`UnderlyingAssetUnit`).
     pub underlying_asset_unit: u128,
+    /// Base period a coin stays locked after a dispatch that failed with the
+    /// coin as its origin (`CoinFailureLockPeriod`).
+    ///
+    /// The lock the chain writes is `2^retries` times this, counted from
+    /// consecutive failures on the same coin. Nothing about the coin is lost —
+    /// the extension restores it — but it is unspendable until the lock
+    /// expires, and a layer that does not model this reselects the coin and
+    /// spends a fresh unload token on an extrinsic the chain will refuse.
+    pub coin_failure_lock_period: Duration,
 }
 
 impl CoinageChainConstants {
@@ -126,6 +135,7 @@ pub fn next_people_paseo() -> CoinageChainConstants {
         unload_token_period: Duration::from_secs(24 * 60 * 60),
         max_free_unload_tokens_per_period: 1_000,
         underlying_asset_unit: 10u128.pow(4),
+        coin_failure_lock_period: Duration::from_secs(60),
     }
 }
 
