@@ -59,7 +59,14 @@ fn produce_rustdoc_json_for_package(
     package: &str,
 ) -> PathBuf {
     let output = Command::new("cargo")
-        .args(["+nightly", "rustdoc", "-p", package, "--target-dir"])
+        .args([
+            "+nightly",
+            "rustdoc",
+            "-p",
+            package,
+            "--lib",
+            "--target-dir",
+        ])
         .arg(target_dir)
         .args(["--", "-Z", "unstable-options", "--output-format", "json"])
         .current_dir(workspace_root)

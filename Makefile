@@ -115,8 +115,8 @@ uniffi-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-server cdyli
 		--out-dir $(UNIFFI_KOTLIN_OUT)
 
 # Android ABIs to cross-compile the cdylib for. arm64 + armv7 cover physical
-# devices; x86_64 covers the emulator on Intel/Apple-silicon hosts.
-ANDROID_ABIS ?= arm64-v8a armeabi-v7a x86_64
+# devices; x86 + x86_64 cover emulators.
+ANDROID_ABIS ?= arm64-v8a armeabi-v7a x86 x86_64
 ANDROID_JNILIBS := android/truapi-host/src/main/jniLibs
 
 android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
@@ -124,8 +124,11 @@ android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs 
 	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
 		-o $(ANDROID_JNILIBS) \
 		build --release -p truapi-server --features ws-bridge
+	# cargo-ndk also copies dependency cdylib intermediates (hash-suffixed,
+	# statically linked into libtruapi_server.so already); keep only ours.
+	find $(ANDROID_JNILIBS) -name '*.so' ! -name 'libtruapi_server.so' -delete
 
-android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
+android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 as io.parity:truapi-host:0.0.0-local (needs Gradle + JDK 17). Run `make android-jni` first to bundle the per-ABI cdylibs into the AAR.
 	gradle :truapi-host:publishReleasePublicationToMavenLocal
 
 test: ## Run Rust + TypeScript client tests.

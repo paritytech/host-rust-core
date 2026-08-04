@@ -1,4 +1,4 @@
-# ProGuard / R8 rules applied to consumers of `io.parity:truapi-host-android`.
+# ProGuard / R8 rules applied to consumers of `io.parity:truapi-host`.
 #
 # JNA reflects into our generated UniFFI types at runtime, so the bindings
 # package and the public Kotlin surface must survive shrinking.

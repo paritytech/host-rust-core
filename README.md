@@ -65,7 +65,9 @@ js/packages/
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
-android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
+                           published to GitHub Packages as io.parity:truapi-host (AAR with
+                           per-ABI cdylibs; see android/truapi-host/README.md)
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
 hosts/ios/                 polkadot-app-ios-v2, vendored as a submodule (build/test against the core)
