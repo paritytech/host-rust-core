@@ -7,9 +7,16 @@ status: "Working notes"
 
 Scratch material collected while implementing the coinage base layer in
 `truapi-server`. Everything here is either a correction to an existing document
-or a decision that needs to be written down somewhere permanent. The intended
-destinations are a new coinage RFC and the implementation PR's description; this
-file should be folded into those and deleted.
+or a decision that needs to be written down somewhere permanent.
+
+**Much of this has now landed.** `docs/design/coinage-layer.md` is the
+authoritative specification and has absorbed every correction that was addressed
+to it, plus the pallet facts, the derivation scheme and the RFC‑0022 interaction.
+Do not re-apply those; see §3 for the map of what went where.
+
+What remains here is destined for a **new coinage RFC** (§2, the RFC‑0017
+amendments) or is a **non-document follow-up** (§7). Fold those into their
+destinations and delete this file.
 
 Sources of truth used throughout: `paritytech/individuality`
 `pallets/coinage/src/{lib.rs, extension.rs}` and the runtime configuration in
@@ -31,6 +38,7 @@ approximate incorrectly.
 | `UnloadTokenTimePeriodPeopleLitePeople` | 1 day |
 | `MaxFreeUnloadTokensPerTimePeriod` | `1000` |
 | `UnderlyingAssetUnit` | `10^4` base units per cent |
+| `CoinFailureLockPeriod` | 60 seconds (base; the applied lock doubles per retry) |
 
 Other pallet details the implementation depends on:
 
@@ -51,8 +59,35 @@ Other pallet details the implementation depends on:
 - `AsCoinage(Option<AsCoinageInfo>)` with variants `AsCoin`,
   `AsUnloadTokenPeople`, `AsUnloadTokenLitePeople`, `AsUnloadTokenPaid`,
   `AsUnloadTokenFromOutput`, `InfallibleUnpaidSigned`. The extension consumes
-  the coin or the token **before** dispatch, so a call that fails has already
-  cost the coin.
+  the coin or the token in `prepare`, **before** dispatch. What a failed
+  dispatch then costs is not uniform — see §1.1.
+
+### 1.1 A failed dispatch does not cost the same thing in every flow
+
+`AsCoinage::post_dispatch_details` partially undoes what `prepare` did, and the
+asymmetry between the cases is load-bearing for a wallet:
+
+| Origin | On `ExtrinsicFailed` |
+|---|---|
+| `AsCoin` | The coin is **restored** to `CoinsByOwner`, and a `LockedCoins` entry refuses it as an origin until `now + 2^retries × CoinFailureLockPeriod` |
+| `AsUnloadTokenFromOutput` | The first alias is **restored**, as `AliasState::Locked` with the same exponential backoff |
+| `AsUnloadTokenPeople` / `LitePeople` / `Paid` | The token is **gone**. Nothing restores it |
+| `InfallibleUnpaidSigned` | Cannot happen — the pallet returns `InvalidTransaction::Custom(InternalError)` from `post_dispatch`, so the extrinsic is not included at all |
+
+Three consequences for the layer:
+
+1. **Nothing must be retired on a failed dispatch.** The records the operation
+   held still exist; treating the failure as "the coin was spent" would delete
+   a record the chain still honours.
+2. **Nothing must be released as immediately reusable either.** `LockedCoins`
+   and `RecyclerAliasStates` are checked in `validate`, so a coin reselected
+   inside its lock produces an extrinsic that is refused — after a fresh unload
+   token has already been spent building it. Every retry doubles the wait, so a
+   naive retry loop converges on burning a token per attempt.
+3. **`LockedCoins` is a read the layer has to make**, alongside `CoinsByOwner`,
+   and the coin record needs a chain-side lock expiry orthogonal to its local
+   lifecycle state. `CoinFailureLockPeriod` is `#[pallet::constant]` and does
+   come back from metadata, unlike the two constants in §6.
 
 ## 2. RFC-0017 amendments
 
@@ -153,95 +188,34 @@ what `W3S_AUTH_KEY` / `/top-up` exercises in the CLI host. Order is: cheques
 land → W3S moves to cheques → RFC-0021 deprecated. Write the dependency into the
 new RFC so the stopgap does not become permanent.
 
-## 3. Corrections to `docs/design/coinage-layer.md`
+## 3. Corrections to `docs/design/coinage-layer.md` — all applied
 
-### 3.1 Appendix A values
+Every item in this section has been folded into the specification. Kept as a map
+so a future reader can see what changed and why, without re-applying it.
 
-| Item | Doc says | Should say |
-|---|---|---|
-| A.10 `max_recycler_entries_per_group` | `8`, "chain-enforced; pallet `MaxConsolidation`" | `64` — and it is a chain constant, not a tunable |
-| A.5 `free_token_counter_search_range` | `[0, 10)`, "Matches the chain per-period allowance" | Value is legal but the rationale is wrong: the chain allows `1000`. This is a conservative policy choice *bounded by* the chain constant |
-| A.9 `max_split_outputs` | `32` (chain-enforced) | Value correct, but it belongs with the chain constants |
-| A.1 `recycle_at_age` | `chain_coin_max_age − 2` | Correct; resolves to `14` |
-| A.13 `rescue_margin` | 25% of `RecyclerExpirationTime`, floor 7 days | Correct; resolves to 22.5 days |
+| Correction | Where it landed |
+|---|---|
+| A.10 `max_recycler_entries_per_group` is `64`, not `8`, and is a chain constant | Appendix A.0 (`MaxConsolidation`), A.9–A.10 withdrawn |
+| A.5's rationale was wrong — the chain allows `1000`, so `[0, 10)` is a policy choice bounded by the constant | Appendix A.5, A.0 |
+| A.9 `max_split_outputs` belongs with the chain constants | Appendix A.0 (`MaxSplitOutputs`) |
+| Chain-enforced caps and policy tunables are different kinds of fact and must be separated | Appendix A.0 vs A.1–A.14; §6.7 validates the former at connection |
+| Denomination exponents are signed (`i8`); reject negatives, refuse a negative-`MinimumExponent` runtime | §3.6, §6.7, Appendix A.0 |
+| Entries need a ring *revision*, not just an index; grouping keys on both | §3.7 (ring location), §5.2, §6.3, §6.4, §8.6 |
+| Selection is policy-free — readiness already encodes the anonymity floor | §6.3 |
+| A third selection error is needed: value present, shape impossible | §6.3 three-way table, §10 `UnsatisfiableOutputs` |
+| Events must be drained and published before the store is persisted | §7.9 |
+| `coinage-management.md` / `coinage-management-contract.md` are superseded | §2.4 |
 
-The structural point: A.9, A.10 and the bound in A.5 are **chain constants**,
-and the module's own preamble claims it holds policy only. Exceeding a
-chain-enforced cap makes an extrinsic invalid, which is a different kind of fact
-from a tunable. The implementation splits them into a separate
-`CoinageChainConstants`, validated once at connection time so an unsupported
-runtime is refused rather than discovered at the first failed extrinsic.
+Also folded in from elsewhere in this file: the pallet constants and their
+discoverability (§1, §6 → Appendix A.0), the failed-dispatch asymmetry
+(§1.1 → §5.6), the adopted derivation scheme and its hard-junction requirement
+(§5, §2.1 → Appendix B), the RFC‑0022 interaction (§4 → Appendix B), the
+main-purse identifier and purse-id non-reuse rule (§2.5, §2.6 → §3.1, §4.3), and
+the balance-unit decision (§2.3 → §3.6).
 
-### 3.2 Denomination exponents are signed
-
-The design treats exponents as unsigned. The pallet's `CoinValue` is `i8`.
-
-**Decision:** mirror the pallet's type, reject negative exponents on
-construction, and keep amounts in whole cents. A sub-cent denomination has no
-representation in a cent-granular amount type, so a runtime that ever ships
-`MinimumExponent < 0` should fail loudly at connection rather than produce a
-truncated balance. Recorded as a validated precondition, not an assumption.
-
-### 3.3 Recycler entries need a ring revision
-
-§5.2 and §8 give an entry a ring index. The pallet's
-`unload_recycler_into_coins(aliases, value, index, revision, split_into, max_fee)`
-needs the **revision** too, and a membership proof built against one revision
-does not verify against another. The design should carry a ring *location* —
-index plus revision — and grouping for unload must key on both.
-
-### 3.4 Selection is policy-free
-
-§6.3 reads as though selection consumes the tunables. It does not: the anonymity
-floor is applied when a ring is *observed*, so an entry's readiness already
-encodes it by the time selection runs. The only limits selection must respect
-are the chain's. Worth stating, because it is a cleaner boundary than the
-document implies.
-
-### 3.5 §10 needs one more error
-
-Add a variant for "the purse holds enough selectable value, waiting would not
-add any, but it cannot be arranged into the requested denominations". Two causes,
-both reachable in ordinary use:
-
-- **Coinage divides but never merges.** Two 8-cent coins cannot satisfy a single
-  16-cent output.
-- **Per-extrinsic caps.** A named denomination must be minted whole by one
-  unload group, and no group may be large enough.
-
-`InsufficientFunds` is actively misleading here — the funds are present. The
-implementation calls it `UnsatisfiableOutputs`. The upper layer will also need a
-mapping for it; RFC-0017's nine `CoinPaymentError` variants have nothing
-suitable, and `BalanceLow` would be wrong.
-
-Failure classification should be a total three-way split, ordered by what the
-caller should do:
-
-| Condition | Error | Caller's move |
-|---|---|---|
-| Not enough value even counting waiting entries | `InsufficientFunds` | Fund the purse |
-| Enough, but some is not selectable yet | `NoReadyEntries` | Retry later |
-| Everything selectable already is, and it covers the amount | `UnsatisfiableOutputs` | Change the request |
-
-### 3.6 §7.4 should state the event-ordering rule
-
-Terminal operations drop their record as soon as the status is emitted, so the
-receipt exists only in the emitted event until it is published. That imposes an
-ordering the document does not mention: **drain and publish events before
-persisting the store**. Persisting first loses the receipt and the record
-together if the process dies in between; publishing first degrades to a
-duplicate event, which subscribers can absorb and `reconcile_after_restart`
-resolves. The asymmetry is worth stating explicitly.
-
-### 3.7 Superseded documents
-
-`coinage-management.md` and `coinage-management-contract.md` describe the
-pre-split unified design and contradict `coinage-layer.md` in several places
-(derivation appendix, `MAIN_PURSE` value, purse-delete precondition, stale
-cross-references, `RecyclerEntryReadinessState` versus
-`RecyclerEntryOnChainState`). Mark them superseded or delete them. PR #122's
-description also still describes the unified design and should be updated or the
-PR closed in favour of the new one.
+Two items from §2 are recorded in the spec only as open questions, because they
+belong above the seam: the missing `UserAgentPermission::CoinPayment` (§2.2) and
+the unspecified cheque encryption (§2.4). They still need the RFC.
 
 ## 4. RFC-0022 interaction
 
@@ -296,8 +270,8 @@ recycler entries: //coinage//<purse>//<page>//<index>         bandersnatch,
 ## 6. Two pallet constants are not discoverable
 
 Verified against `paseo-people-next` by
-`rust/crates/truapi-server/examples/coinage_chain_agreement.rs`. Seven of the
-nine values the layer needs come back from metadata and match; **two do not
+`rust/crates/truapi-server/examples/coinage_chain_agreement.rs`. Eight of the
+ten values the layer needs come back from metadata and match; **two do not
 appear at all**:
 
 | Constant | Why absent | Consequence |
@@ -336,6 +310,8 @@ built on:
 - `MaxConsolidation` is **64**, confirming Appendix A.10's 8 is wrong.
 - `MaxFreeUnloadTokensPerTimePeriod` is **1000**, confirming A.5's rationale is
   wrong.
+- `CoinFailureLockPeriod` is **60 seconds** and *is* discoverable, so the
+  failure-lock backoff in §1.1 needs no configuration.
 
 ## 7. Non-document follow-ups
 
