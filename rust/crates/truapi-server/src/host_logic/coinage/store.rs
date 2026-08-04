@@ -28,10 +28,11 @@ use std::collections::BTreeMap;
 use parity_scale_codec::{Decode, Encode};
 
 use super::chain_constants::CoinageChainConstants;
-use super::coin::Coin;
+use super::coin::{Coin, CoinState};
 use super::entry::{EntryLocalState, RecyclerEntry};
 use super::error::CoinageError;
 use super::event::LayerEvent;
+use super::log::{Checkpoint, LogEntryState};
 use super::operation::{
     LockSet, Operation, OperationReceipt, OperationStatus, RestartDisposition, TerminalStatus,
 };
@@ -268,9 +269,10 @@ impl CoinageStore {
         &self,
         purse: PurseId,
         recycle_at_age: CoinAge,
+        now: Timestamp,
     ) -> Vec<CoinIndex> {
         self.coin_records(purse)
-            .filter(|coin| coin.needs_recycling(recycle_at_age))
+            .filter(|coin| coin.needs_recycling(recycle_at_age, now))
             .map(|coin| coin.index)
             .collect()
     }
@@ -287,7 +289,7 @@ impl CoinageStore {
             .get_mut(&(purse, index))
             .ok_or_else(|| unknown_record("coin", purse))?;
 
-        let was_pending = !coin.is_selectable();
+        let was_pending = coin.state != CoinState::Available;
         let previous_age = coin.age;
         let exponent = coin.exponent;
         coin.observe_populated(age)?;
@@ -303,6 +305,93 @@ impl CoinageStore {
             });
         }
 
+        Ok(())
+    }
+
+    /// Record the chain's own lock on a coin account, or its absence.
+    ///
+    /// Separate from [`Self::observe_coin`] because the two reads are separate
+    /// on chain and answer different questions: one says the account holds a
+    /// coin, the other says whether the runtime will currently accept it as an
+    /// origin. A coin can be locked whatever the layer thinks its state is, so
+    /// this applies to any tracked record.
+    pub fn observe_coin_lock(
+        &mut self,
+        purse: PurseId,
+        index: CoinIndex,
+        locked_until: Option<Timestamp>,
+    ) -> Result<(), CoinageError> {
+        let coin = self
+            .coins
+            .get_mut(&(purse, index))
+            .ok_or_else(|| unknown_record("coin", purse))?;
+
+        let exponent = coin.exponent;
+        let was_locked = coin.locked_until;
+        coin.observe_chain_lock(locked_until);
+
+        if was_locked != locked_until
+            && let Some(until) = locked_until
+        {
+            self.events.push(LayerEvent::CoinChainLocked {
+                purse,
+                exponent,
+                until,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Record the chain's lock on a recycler entry's alias, or its absence.
+    ///
+    /// The entry-side counterpart of [`Self::observe_coin_lock`]. Separate from
+    /// the ring observation because it is a separate read against a separate
+    /// storage map, and because it can be set on an entry whose ring state has
+    /// not changed at all.
+    pub fn observe_entry_alias_lock(
+        &mut self,
+        purse: PurseId,
+        index: EntryIndex,
+        locked_until: Option<Timestamp>,
+    ) -> Result<(), CoinageError> {
+        let entry = self
+            .entries
+            .get_mut(&(purse, index))
+            .ok_or_else(|| unknown_record("recycler entry", purse))?;
+
+        let exponent = entry.exponent;
+        let was_locked = entry.alias_locked_until;
+        entry.observe_alias_lock(locked_until);
+
+        if was_locked != locked_until
+            && let Some(until) = locked_until
+        {
+            self.events.push(LayerEvent::EntryAliasLocked {
+                purse,
+                exponent,
+                until,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Record when a recycler entry's ring became immutable.
+    ///
+    /// Kept separate from the ring observation because it can change while the
+    /// ring location does not, and because it is the one fact the rescue sweep
+    /// reads — losing it silently is how entries expire unnoticed.
+    pub fn observe_entry_ring_immutability(
+        &mut self,
+        purse: PurseId,
+        index: EntryIndex,
+        immutable_since: Option<Timestamp>,
+    ) -> Result<(), CoinageError> {
+        self.entries
+            .get_mut(&(purse, index))
+            .ok_or_else(|| unknown_record("recycler entry", purse))?
+            .observe_ring_immutability(immutable_since);
         Ok(())
     }
 
@@ -392,7 +481,7 @@ impl CoinageStore {
         let mut operation = Operation::start(handle, kind, purse);
         operation.locks = locks.clone();
 
-        self.apply_locks(handle, &locks)?;
+        self.apply_locks(handle, &locks, now)?;
         self.operations.insert(handle, operation);
         self.events.push(LayerEvent::OperationStarted {
             handle,
@@ -451,21 +540,168 @@ impl CoinageStore {
         Ok(())
     }
 
+    /// Log a transaction the operation intends to submit, returning its
+    /// sequence within the operation.
+    ///
+    /// `depends_on` names sequences whose outputs this transaction consumes;
+    /// see `coinage-layer.md` §7.5 for why that ordering is load-bearing.
+    pub fn plan_transaction(
+        &mut self,
+        handle: OperationHandle,
+        inputs: LockSet,
+        outputs: LockSet,
+        checkpoint: Checkpoint,
+        depends_on: impl IntoIterator<Item = u32>,
+    ) -> Result<u32, CoinageError> {
+        let operation = self
+            .operations
+            .get_mut(&handle)
+            .ok_or(CoinageError::OperationNotFound(handle))?;
+        operation.plan_transaction(inputs, outputs, checkpoint, depends_on)
+    }
+
     /// Note an extrinsic hash immediately before it is broadcast.
     pub fn record_submission(
         &mut self,
         handle: OperationHandle,
+        sequence: u32,
         extrinsic_hash: ExtrinsicHash,
     ) -> Result<(), CoinageError> {
         let operation = self
             .operations
             .get_mut(&handle)
             .ok_or(CoinageError::OperationNotFound(handle))?;
-        operation.record_submission(extrinsic_hash)?;
+        operation.record_submission(sequence, extrinsic_hash)?;
         self.events.push(LayerEvent::OperationProgress {
             handle,
             status: OperationStatus::Submitted,
         });
+        Ok(())
+    }
+
+    /// Record one logged transaction's definite outcome and move its records
+    /// accordingly.
+    ///
+    /// `coinage-layer.md` §7.7. The three cases differ in exactly the way that
+    /// matters:
+    ///
+    /// - **Succeeded** — the inputs are gone from chain, so they retire.
+    /// - **Rejected** — the inputs survive, so they return to the pool. If the
+    ///   rejection was a failed dispatch rather than non-inclusion, the chain
+    ///   also wrote a lock against them (§5.6), which arrives through
+    ///   observation and keeps them out of selection until it expires. The
+    ///   outputs never came to exist, so they retire unused.
+    /// - **Abandoned** — nothing was ever submitted, so nothing reverts here:
+    ///   the inputs were a predecessor's outputs, retired by the predecessor's
+    ///   own rejection. Only this entry's own outputs retire.
+    ///
+    /// Callers must resolve entries in dependency order and run
+    /// [`super::log::OperationLog::cascade_abandoned`] first.
+    pub fn resolve_transaction(
+        &mut self,
+        handle: OperationHandle,
+        sequence: u32,
+        state: LogEntryState,
+    ) -> Result<(), CoinageError> {
+        let operation = self
+            .operations
+            .get_mut(&handle)
+            .ok_or(CoinageError::OperationNotFound(handle))?;
+        let entry = operation.log.entry(sequence).cloned().ok_or_else(|| {
+            CoinageError::Internal(format!("{handle} has no logged transaction {sequence}"))
+        })?;
+
+        operation
+            .log
+            .entry_mut(sequence)
+            .expect("presence checked above; qed")
+            .resolve(state.clone())?;
+
+        match state {
+            LogEntryState::Pending => {
+                return Err(CoinageError::Internal(format!(
+                    "{handle} cannot resolve transaction {sequence} back to pending"
+                )));
+            }
+            LogEntryState::Succeeded { .. } => {
+                self.retire_inputs(handle, &entry.inputs)?;
+            }
+            LogEntryState::Rejected { .. } => {
+                self.release_inputs(handle, &entry.inputs)?;
+                self.abandon_outputs(&entry.outputs)?;
+            }
+            LogEntryState::Abandoned { .. } => {
+                self.abandon_outputs(&entry.outputs)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Retire records the chain consumed.
+    fn retire_inputs(
+        &mut self,
+        handle: OperationHandle,
+        inputs: &LockSet,
+    ) -> Result<(), CoinageError> {
+        for key in &inputs.coins {
+            let Some(coin) = self.coins.get_mut(key) else {
+                continue;
+            };
+            coin.mark_spent(handle)?;
+            self.events.push(LayerEvent::CoinSpent {
+                purse: key.0,
+                exponent: coin.exponent,
+            });
+        }
+        for key in &inputs.entries {
+            let Some(entry) = self.entries.get_mut(key) else {
+                continue;
+            };
+            entry.mark_consumed(handle)?;
+            self.events.push(LayerEvent::EntryConsumed {
+                purse: key.0,
+                exponent: entry.exponent,
+            });
+        }
+        Ok(())
+    }
+
+    /// Return records the chain did not consume to the selectable pool.
+    fn release_inputs(
+        &mut self,
+        handle: OperationHandle,
+        inputs: &LockSet,
+    ) -> Result<(), CoinageError> {
+        for key in &inputs.coins {
+            if let Some(coin) = self.coins.get_mut(key) {
+                coin.release(handle)?;
+            }
+        }
+        for key in &inputs.entries {
+            if let Some(entry) = self.entries.get_mut(key) {
+                entry.release(handle)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Retire records a transaction would have created but did not.
+    ///
+    /// Their derivation indices stay consumed: an account that was never
+    /// populated is still an account this layer has committed to, and reusing
+    /// its index would break the no-reuse invariant of §4.3.
+    fn abandon_outputs(&mut self, outputs: &LockSet) -> Result<(), CoinageError> {
+        for key in &outputs.coins {
+            if let Some(coin) = self.coins.get_mut(key) {
+                coin.abandon()?;
+            }
+        }
+        for key in &outputs.entries {
+            if let Some(entry) = self.entries.get_mut(key) {
+                entry.abandon()?;
+            }
+        }
         Ok(())
     }
 
@@ -618,13 +854,14 @@ impl CoinageStore {
         &mut self,
         handle: OperationHandle,
         locks: &LockSet,
+        now: Timestamp,
     ) -> Result<(), CoinageError> {
         for key in &locks.coins {
             let coin = self
                 .coins
                 .get(key)
                 .ok_or_else(|| unknown_record("coin", key.0))?;
-            if !coin.is_selectable() {
+            if !coin.is_selectable(now) {
                 return Err(CoinageError::Internal(format!(
                     "coin {:?} in {} is not lockable",
                     key.1, key.0
@@ -737,6 +974,33 @@ mod tests {
             .observe_coin(purse, index, CoinAge(0))
             .expect("coin exists");
         index
+    }
+
+    /// Plan a transaction and record its broadcast, in the order the real
+    /// caller does it: the log entry exists before the extrinsic goes out.
+    fn submit(store: &mut CoinageStore, handle: OperationHandle, hash: ExtrinsicHash) -> u32 {
+        let locks = store
+            .operation(handle)
+            .expect("operation is open")
+            .locks
+            .clone();
+        let sequence = store
+            .plan_transaction(
+                handle,
+                locks,
+                LockSet::default(),
+                Checkpoint {
+                    number: 1_000,
+                    hash: super::super::types::BlockHash([1; 32]),
+                    mortality: 256,
+                },
+                [],
+            )
+            .expect("operation is open");
+        store
+            .record_submission(handle, sequence, hash)
+            .expect("operation is open");
+        sequence
     }
 
     fn request(cents: u64) -> SelectionRequest {
@@ -1080,9 +1344,7 @@ mod tests {
         let mut store = store();
         fund(&mut store, PurseId::MAIN, 3);
         let (handle, _) = begin(&mut store, PurseId::MAIN, 8).expect("8 cents are available");
-        store
-            .record_submission(handle, ExtrinsicHash([1; 32]))
-            .expect("operation is open");
+        submit(&mut store, handle, ExtrinsicHash([1; 32]));
 
         assert!(store.cancel_operation(handle).is_err());
         assert!(store.operation(handle).is_some());
@@ -1109,9 +1371,7 @@ mod tests {
         let mut store = store();
         fund(&mut store, PurseId::MAIN, 3);
         let (handle, _) = begin(&mut store, PurseId::MAIN, 8).expect("8 cents are available");
-        store
-            .record_submission(handle, ExtrinsicHash([2; 32]))
-            .expect("operation is open");
+        submit(&mut store, handle, ExtrinsicHash([2; 32]));
 
         let pending = store.reconcile_after_restart();
 
@@ -1138,9 +1398,7 @@ mod tests {
         let purse = original.create_purse("Groceries".to_string());
         fund(&mut original, purse, 4);
         let (handle, _) = begin(&mut original, purse, 16).expect("16 cents are available");
-        original
-            .record_submission(handle, ExtrinsicHash([3; 32]))
-            .expect("operation is open");
+        submit(&mut original, handle, ExtrinsicHash([3; 32]));
 
         let encoded = original.encode();
         let restored =
@@ -1151,7 +1409,11 @@ mod tests {
             original.balance(purse, NOW).expect("purse exists")
         );
         assert_eq!(
-            restored.operation(handle).expect("still open").submitted,
+            restored
+                .operation(handle)
+                .expect("still open")
+                .log
+                .submitted_hashes(),
             vec![ExtrinsicHash([3; 32])]
         );
         assert_eq!(restored.purses().count(), 2);
@@ -1166,7 +1428,7 @@ mod tests {
             .observe_coin(PurseId::MAIN, old, CoinAge(14))
             .expect("coin exists");
 
-        let due = store.coins_needing_recycling(PurseId::MAIN, CoinAge(14));
+        let due = store.coins_needing_recycling(PurseId::MAIN, CoinAge(14), Timestamp(0));
 
         assert_eq!(due, vec![old]);
         assert!(!due.contains(&young));
@@ -1193,5 +1455,194 @@ mod tests {
 
         assert_eq!(first.len(), 1);
         assert!(second.is_empty());
+    }
+
+    /// Plan a transaction consuming the operation's locks and producing a fresh
+    /// pending coin, the shape every value-moving operation has.
+    fn plan_with_output(
+        store: &mut CoinageStore,
+        handle: OperationHandle,
+        purse: PurseId,
+    ) -> (u32, CoinIndex) {
+        let inputs = store
+            .operation(handle)
+            .expect("operation is open")
+            .locks
+            .clone();
+        let output = store
+            .add_pending_coin(purse, exponent(3))
+            .expect("purse exists");
+        let sequence = store
+            .plan_transaction(
+                handle,
+                inputs,
+                LockSet {
+                    coins: vec![(purse, output)],
+                    entries: Vec::new(),
+                },
+                Checkpoint {
+                    number: 1_000,
+                    hash: super::super::types::BlockHash([1; 32]),
+                    mortality: 256,
+                },
+                [],
+            )
+            .expect("operation is open");
+        (sequence, output)
+    }
+
+    #[test]
+    fn a_succeeded_transaction_retires_its_inputs() {
+        let mut store = store();
+        let spent = fund(&mut store, PurseId::MAIN, 3);
+        let (handle, _) = begin(&mut store, PurseId::MAIN, 8).expect("8 cents are available");
+        let (sequence, _) = plan_with_output(&mut store, handle, PurseId::MAIN);
+
+        store
+            .resolve_transaction(
+                handle,
+                sequence,
+                LogEntryState::Succeeded {
+                    block_hash: super::super::types::BlockHash([9; 32]),
+                },
+            )
+            .expect("resolves");
+
+        assert_eq!(
+            store.coin(PurseId::MAIN, spent).expect("exists").state,
+            CoinState::Spent
+        );
+    }
+
+    #[test]
+    fn a_rejected_transaction_returns_its_inputs_and_retires_its_outputs() {
+        // The chain kept the inputs, so they must become spendable again; the
+        // outputs never existed, so their indices retire unused rather than
+        // being handed out a second time.
+        let mut store = store();
+        let input = fund(&mut store, PurseId::MAIN, 3);
+        let (handle, _) = begin(&mut store, PurseId::MAIN, 8).expect("8 cents are available");
+        let (sequence, output) = plan_with_output(&mut store, handle, PurseId::MAIN);
+
+        store
+            .resolve_transaction(
+                handle,
+                sequence,
+                LogEntryState::Rejected {
+                    reason: "expired".to_string(),
+                },
+            )
+            .expect("resolves");
+
+        assert_eq!(
+            store.coin(PurseId::MAIN, input).expect("exists").state,
+            CoinState::Available,
+            "the input is spendable again"
+        );
+        assert_eq!(
+            store.coin(PurseId::MAIN, output).expect("exists").state,
+            CoinState::Spent,
+            "the output retires without ever having existed"
+        );
+        let reissued = store
+            .add_pending_coin(PurseId::MAIN, exponent(3))
+            .expect("purse exists");
+        assert_ne!(reissued, output, "its derivation index is never reused");
+    }
+
+    #[test]
+    fn an_abandoned_transaction_reverts_nothing() {
+        // Its inputs were a predecessor's outputs, which the predecessor's own
+        // rejection already retired. Releasing them here would be a second
+        // reversion of records that never existed.
+        let mut store = store();
+        fund(&mut store, PurseId::MAIN, 3);
+        let (handle, _) = begin(&mut store, PurseId::MAIN, 8).expect("8 cents are available");
+        let (first, intermediate) = plan_with_output(&mut store, handle, PurseId::MAIN);
+        let downstream = store
+            .add_pending_coin(PurseId::MAIN, exponent(3))
+            .expect("purse exists");
+        let second = store
+            .plan_transaction(
+                handle,
+                LockSet {
+                    coins: vec![(PurseId::MAIN, intermediate)],
+                    entries: Vec::new(),
+                },
+                LockSet {
+                    coins: vec![(PurseId::MAIN, downstream)],
+                    entries: Vec::new(),
+                },
+                Checkpoint {
+                    number: 1_000,
+                    hash: super::super::types::BlockHash([1; 32]),
+                    mortality: 256,
+                },
+                [first],
+            )
+            .expect("operation is open");
+
+        store
+            .resolve_transaction(
+                handle,
+                first,
+                LogEntryState::Rejected {
+                    reason: "expired".to_string(),
+                },
+            )
+            .expect("resolves");
+        store
+            .resolve_transaction(
+                handle,
+                second,
+                LogEntryState::Abandoned {
+                    reason: "predecessor rejected".to_string(),
+                },
+            )
+            .expect("resolves");
+
+        // The intermediate coin was retired exactly once, by the first
+        // transaction's rejection.
+        assert_eq!(
+            store
+                .coin(PurseId::MAIN, intermediate)
+                .expect("exists")
+                .state,
+            CoinState::Spent
+        );
+        assert_eq!(
+            store.coin(PurseId::MAIN, downstream).expect("exists").state,
+            CoinState::Spent
+        );
+    }
+
+    #[test]
+    fn a_transaction_cannot_be_resolved_twice() {
+        let mut store = store();
+        fund(&mut store, PurseId::MAIN, 3);
+        let (handle, _) = begin(&mut store, PurseId::MAIN, 8).expect("8 cents are available");
+        let (sequence, _) = plan_with_output(&mut store, handle, PurseId::MAIN);
+        store
+            .resolve_transaction(
+                handle,
+                sequence,
+                LogEntryState::Succeeded {
+                    block_hash: super::super::types::BlockHash([9; 32]),
+                },
+            )
+            .expect("resolves");
+
+        assert!(
+            store
+                .resolve_transaction(
+                    handle,
+                    sequence,
+                    LogEntryState::Rejected {
+                        reason: "expired".to_string()
+                    },
+                )
+                .is_err(),
+            "a settled outcome is final"
+        );
     }
 }
