@@ -10,6 +10,7 @@ use super::operation::{OperationStatus, TerminalStatus};
 use super::types::{
     Amount, CoinAge, DenominationExponent, OperationHandle, OperationKind, PurseId, Timestamp,
 };
+use super::unload_token::FeeMode;
 
 /// Something the layer observed or did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +134,22 @@ pub enum LayerEvent {
         handle: OperationHandle,
         /// How it ended.
         terminal: TerminalStatus,
+    },
+
+    /// An unload settled its cost: which class of token it spent, if any, and
+    /// how the network fee was paid.
+    ///
+    /// §6.5 requires per-token cost to be reported, and the status machine has
+    /// nowhere to carry it. Note that a from-output fee spends no token at all,
+    /// so the free allowance is untouched in that case.
+    UnloadTokenSpent {
+        /// Purse whose entries were unloaded.
+        purse: PurseId,
+        /// Whether the token came from the paid ring rather than the free
+        /// per-period allowance.
+        paid: bool,
+        /// How the network fee was settled.
+        fee: FeeMode,
     },
 
     /// A maintenance sweep began.

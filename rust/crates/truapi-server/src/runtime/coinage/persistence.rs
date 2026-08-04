@@ -58,11 +58,14 @@ pub async fn load<S: CoreStorage + ?Sized>(
 
 /// Publish everything the store has observed, then persist it.
 ///
-/// `publish` receives the drained events in order. It runs before the write, so
-/// a crash between the two costs a duplicate event rather than a lost receipt.
-/// A failed write leaves the in-memory store ahead of the durable one; the
-/// caller should treat that as fatal for the operation in flight and let
-/// recovery reconcile on the next start.
+/// `publish` receives the drained events in order, together with the store they
+/// came from: a balance is a projection of every record in a purse rather than
+/// anything an event can carry, so the publisher needs the store to reproject
+/// the derived subscription streams. It runs before the write, so a crash
+/// between the two costs a duplicate event rather than a lost receipt. A failed
+/// write leaves the in-memory store ahead of the durable one; the caller should
+/// treat that as fatal for the operation in flight and let recovery reconcile on
+/// the next start.
 pub async fn publish_and_persist<S, P>(
     storage: &S,
     store: &mut CoinageStore,
@@ -70,9 +73,10 @@ pub async fn publish_and_persist<S, P>(
 ) -> Result<(), CoinageError>
 where
     S: CoreStorage + ?Sized,
-    P: FnOnce(Vec<LayerEvent>),
+    P: FnOnce(Vec<LayerEvent>, &CoinageStore),
 {
-    publish(store.take_events());
+    let events = store.take_events();
+    publish(events, store);
 
     storage
         .write_core_storage(CoreStorageKey::CoinageState, store.encode())
@@ -190,7 +194,7 @@ mod tests {
             .observe_coin(savings, coin, CoinAge(3))
             .expect("coin exists");
 
-        block_on(publish_and_persist(&storage, &mut store, |_| {})).expect("persists");
+        block_on(publish_and_persist(&storage, &mut store, |_, _| {})).expect("persists");
         let reloaded = block_on(load(&storage, "Main")).expect("loads");
 
         assert_eq!(reloaded.purse(savings).expect("exists").name, "Savings");
@@ -216,7 +220,7 @@ mod tests {
         store.create_purse("Savings".to_string());
         let mut slot_when_published = Some(vec![0xff]);
 
-        block_on(publish_and_persist(&storage, &mut store, |events| {
+        block_on(publish_and_persist(&storage, &mut store, |events, _| {
             slot_when_published = storage.slot();
             assert!(
                 events
@@ -238,12 +242,12 @@ mod tests {
         store.create_purse("Savings".to_string());
 
         let mut first = Vec::new();
-        block_on(publish_and_persist(&storage, &mut store, |events| {
+        block_on(publish_and_persist(&storage, &mut store, |events, _| {
             first = events;
         }))
         .expect("persists");
         let mut second = Vec::new();
-        block_on(publish_and_persist(&storage, &mut store, |events| {
+        block_on(publish_and_persist(&storage, &mut store, |events, _| {
             second = events;
         }))
         .expect("persists");
@@ -273,8 +277,8 @@ mod tests {
         let storage = MemStorage::failing();
         let mut store = CoinageStore::new("Main".to_string());
 
-        let error =
-            block_on(publish_and_persist(&storage, &mut store, |_| {})).expect_err("write fails");
+        let error = block_on(publish_and_persist(&storage, &mut store, |_, _| {}))
+            .expect_err("write fails");
 
         assert!(matches!(error, CoinageError::StorageError(_)));
     }
@@ -283,7 +287,7 @@ mod tests {
     fn clearing_removes_the_slot() {
         let storage = MemStorage::default();
         let mut store = CoinageStore::new("Main".to_string());
-        block_on(publish_and_persist(&storage, &mut store, |_| {})).expect("persists");
+        block_on(publish_and_persist(&storage, &mut store, |_, _| {})).expect("persists");
 
         block_on(clear(&storage)).expect("clears");
 

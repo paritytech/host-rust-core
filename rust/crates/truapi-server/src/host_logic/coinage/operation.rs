@@ -168,6 +168,18 @@ impl OperationStatus {
     }
 }
 
+impl From<TerminalStatus> for OperationStatus {
+    /// Lift a terminal outcome back into the status machine, which is how a
+    /// status subscriber learns of a completion whose operation record the store
+    /// has already dropped.
+    fn from(terminal: TerminalStatus) -> Self {
+        match terminal {
+            TerminalStatus::Done(receipt) => Self::Done(receipt),
+            TerminalStatus::Failed(error) => Self::Failed(error),
+        }
+    }
+}
+
 /// The set of records an operation holds exclusively until it terminates.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
 pub struct LockSet {

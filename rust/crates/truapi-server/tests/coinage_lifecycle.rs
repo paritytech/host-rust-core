@@ -13,10 +13,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use futures::executor::block_on;
+use futures::{FutureExt, StreamExt};
 use parity_scale_codec::{Decode, Encode};
 
 use truapi_server::coinage::call::{CoinOutput, UnloadRecyclerIntoCoinsArgs};
 use truapi_server::coinage::extension::{AsCoinageInfo, FreeTokenRing};
+use truapi_server::coinage::subscription::CoinageSubscriptions;
 use truapi_server::host_logic::coinage::chain_constants::{
     CoinageChainConstants, next_people_paseo,
 };
@@ -157,6 +160,13 @@ fn top_up_entry(
         derivation::entry_member_key(&ENTROPY, purse, index).expect("derivation succeeds");
     chain.load_entry(member_key, ring_at, 32);
     index
+}
+
+/// Drain the store's events into the subscription hub, the way the persistence
+/// path does on every mutation.
+fn publish(hub: &CoinageSubscriptions, store: &mut CoinageStore, now: Timestamp) {
+    let events = store.take_events();
+    hub.publish(&events, store, now);
 }
 
 /// Feed every locally known entry's ring state back into the store.
@@ -743,5 +753,120 @@ fn indices_are_never_reused_across_a_purse_lifetime() {
     assert_eq!(
         store.purse(purse).expect("exists").next_coin_index,
         CoinIndex(8)
+    );
+}
+
+#[test]
+fn the_three_streams_tell_one_story_over_an_operations_lifetime() {
+    // §8.9 and §7.2 composed: a subscriber watching events, a purse balance and
+    // an operation status must never see the three disagree about what happened.
+    let mut store = CoinageStore::new("Main".to_string());
+    let mut chain = ScriptedChain::default();
+    let now = Timestamp(7_000_000);
+    let hub = CoinageSubscriptions::new();
+
+    let mut events = hub.subscribe_events();
+    let mut balances = hub
+        .subscribe_purse_balance(&store, PurseId::MAIN, now)
+        .expect("the main purse exists");
+    assert_eq!(
+        block_on(balances.next())
+            .expect("an item at subscribe time")
+            .spendable,
+        Amount::ZERO,
+        "an empty purse still opens its stream with a value"
+    );
+
+    // -- top up ------------------------------------------------------------
+    let entry = top_up_entry(
+        &mut store,
+        &mut chain,
+        PurseId::MAIN,
+        5,
+        now,
+        Duration::ZERO,
+        ring(2, 0),
+    );
+    observe_entries(&mut store, &chain, PurseId::MAIN);
+    publish(&hub, &mut store, now);
+
+    assert_eq!(
+        block_on(balances.next())
+            .expect("the entry is ready")
+            .spendable,
+        Amount::from_cents(32)
+    );
+
+    // -- start an operation ------------------------------------------------
+    let (handle, plan) = store
+        .begin_operation(
+            PurseId::MAIN,
+            OperationKind::Transfer,
+            &any(20),
+            &constants(),
+            now,
+        )
+        .expect("32 cents are ready");
+    publish(&hub, &mut store, now);
+
+    // The lock is visible as pending value before any status is subscribed to.
+    let locked = block_on(balances.next()).expect("selection locked the entry");
+    assert_eq!(locked.spendable, Amount::ZERO);
+    assert_eq!(locked.pending, Amount::from_cents(32));
+
+    let mut statuses = hub
+        .subscribe_operation_status(&store, handle)
+        .expect("the operation is open");
+    assert_eq!(block_on(statuses.next()), Some(OperationStatus::Preparing));
+
+    // -- submit and settle -------------------------------------------------
+    submit(&mut store, handle, ExtrinsicHash([4; 32]));
+    publish(&hub, &mut store, now);
+    assert_eq!(block_on(statuses.next()), Some(OperationStatus::Submitted));
+
+    store
+        .finish_operation(
+            handle,
+            OperationReceipt::default(),
+            &plan.lock_set(PurseId::MAIN),
+        )
+        .expect("operation is open");
+    publish(&hub, &mut store, now);
+
+    assert_eq!(
+        block_on(statuses.next()),
+        Some(OperationStatus::Done(OperationReceipt::default()))
+    );
+    assert_eq!(
+        block_on(statuses.next()),
+        None,
+        "the terminal item closes the status stream"
+    );
+
+    // The unloaded entry took its value with it, and no output coin was minted
+    // in this scenario, so the purse reads empty on both counts.
+    let settled = block_on(balances.next()).expect("the entry retired");
+    assert_eq!(settled.spendable, Amount::ZERO);
+    assert_eq!(settled.pending, Amount::ZERO);
+    assert_eq!(
+        store.entry(PurseId::MAIN, entry).expect("exists").local,
+        EntryLocalState::Consumed
+    );
+
+    // The event stream carries the same story, in order, and outlives the
+    // operation whose status stream has already closed.
+    let published: Vec<LayerEvent> =
+        core::iter::from_fn(|| events.next().now_or_never().flatten()).collect();
+    let consumed_at = published
+        .iter()
+        .position(|event| matches!(event, LayerEvent::EntryConsumed { .. }))
+        .expect("the entry was consumed");
+    let completed_at = published
+        .iter()
+        .position(|event| matches!(event, LayerEvent::OperationCompleted { .. }))
+        .expect("the operation completed");
+    assert!(
+        consumed_at < completed_at,
+        "the record retires before the operation that held it reports done"
     );
 }

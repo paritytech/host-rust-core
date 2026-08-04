@@ -330,6 +330,8 @@ Unloads support two fee modes:
 
 The layer picks the mode automatically per unload: prepaid if the fee account holds sufficient external funds at submission time, from-output otherwise. The caller does not specify.
 
+The two modes are different **origins**, not two ways of paying for one origin. Prepaid presents an unload token (§6.5) and carries `max_fee = 0`. From-output presents no token at all: the extension takes the fee out of the unloaded value, pre-validating the first entry's alias in the token's place, and `max_fee` is the ceiling it may take. An unfunded fee account therefore spends no free allowance — which also means the fee has to be priced before the origin is known, so an implementation prices the prepaid shape's own bytes and re-assembles if the answer was from-output.
+
 ### 6.7 Runtime compatibility check
 
 Chain-enforced limits (Appendix A.0) are read from runtime metadata once at connection time and validated before the layer accepts any operation. An unsupported runtime — a negative `MinimumExponent`, a maximum exponent above what the amount type can represent, an inverted exponent range, a zero split or consolidation cap — MUST be refused at connection rather than discovered at the first rejected extrinsic.
@@ -603,7 +605,9 @@ Transfers `amount` from `from` to the supplied recipient-controlled accounts. Th
 
 Multiple outputs with the same `exponent` are allowed (e.g. two `exponent = 3` outputs to two distinct accounts).
 
-Selection from `from` uses the three-tier strategy (§6.3) routing the output coins to the supplied accounts. A plan that requires a preparatory split or unload produces dependent log entries per §7.5.
+Selection from `from` uses the three-tier strategy (§6.3) routing the output coins to the supplied accounts. Both `split` and `unload_recycler_into_coins` name a destination account per produced coin, so a transfer mints the payee's coins *directly* into the accounts the payee named: it never needs the two-step "mint to myself, then transfer" that a dependent log entry would describe. A transfer's transactions are therefore independent of one another, one atomic effect each, and a failure of one does not orphan the others. Dependent entries per §7.5 arise where a later transaction really does spend an earlier one's output, as in external offload (§8.6).
+
+`sender_coin_account` is the on-chain origin the coin came from: the spending coin's account for a coin-origin transfer, or the recycler entry's contextual alias for a coin minted by an unload. Both are 32-byte identifiers the transaction already carries in public.
 
 If `memo_callback` is supplied, the layer invokes it with one `MemoEntry` per transferred coin once the corresponding transaction reaches optimistic in-block inclusion (§7.6), before finalization. This is deliberate — the recipient should be able to act promptly — but it means a memo may be delivered for a transfer that a subsequent reorg invalidates. The layer does not encode or transmit memos; the caller owns the wire format and is responsible for tolerating that case.
 
@@ -728,7 +732,11 @@ struct PurseBalance {
 }
 ```
 
-Each stream emits the current value at subscribe time, then a new item on every state change. Closing the stream releases the subscription. Multiple concurrent subscriptions are independent.
+The two value streams — balance and operation status — emit the current value at subscribe time, then a new item on every change. An event is a change rather than a value, so the event stream has nothing to emit at subscribe time and carries no backlog: it begins with the next event the layer publishes.
+
+A balance is a projection of every record in a purse, and some of its inputs are time-dependent — an entry inside its jitter delay, a coin the chain locked after a failed dispatch. A balance stream therefore MUST NOT be driven by state changes alone; the layer re-evaluates it against the clock and emits when the value has moved, whether or not any record changed.
+
+Closing the stream releases the subscription. Multiple concurrent subscriptions are independent, and dropping one never affects the layer's behaviour.
 
 ### 8.10 Wallet recovery from root entropy
 
@@ -833,6 +841,8 @@ enum LayerEvent {
     PurseCreated  { purse: PurseId, name: String },
     PurseRenamed  { purse: PurseId, name: String },
     PurseDeleted  { purse: PurseId, drained_into: PurseId, amount: Amount },
+
+    UnloadTokenSpent { purse: PurseId, paid: bool, fee: FeeMode },
 
     CoinAvailable   { purse: PurseId, exponent: DenominationExponent },
     CoinSpent       { purse: PurseId, exponent: DenominationExponent },

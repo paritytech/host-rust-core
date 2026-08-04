@@ -147,6 +147,78 @@ pub fn ring_keys_status_key(collection: &[u8; 32], ring: RingIndex) -> Vec<u8> {
     .concat()
 }
 
+/// `Members::RingKeys((collection, ring_index, page))` — the collection
+/// identifier raw, the ring index `Blake2_128Concat`, the page `Twox64Concat`.
+///
+/// A ring's members are paged, and proving membership needs all of them: the
+/// prover reconstructs the ring commitment from the member list, so a missed page
+/// produces a proof against a ring the chain does not have.
+pub fn ring_keys_key(collection: &[u8; 32], ring: RingIndex, page: u32) -> Vec<u8> {
+    [
+        twox_128(b"Members").as_slice(),
+        twox_128(b"RingKeys").as_slice(),
+        collection.as_slice(),
+        &blake2_128_concat(&ring.0.to_le_bytes()),
+        &twox_64_concat(&page.to_le_bytes()),
+    ]
+    .concat()
+}
+
+/// `Members::Collections(collection)` — the collection identifier used raw.
+///
+/// Carries the ring size, which fixes the proof domain. A proof built for the
+/// wrong domain does not verify.
+pub fn collections_key(collection: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Members").as_slice(),
+        twox_128(b"Collections").as_slice(),
+        collection.as_slice(),
+    ]
+    .concat()
+}
+
+/// `Coinage::ConsumedFreeUnloadTokens((period, alias))` — both keys
+/// `Twox64Concat`.
+///
+/// Presence means the slot is spent. A free unload token is one `(period,
+/// counter)` slot, identified on chain by the alias the personhood key produces
+/// in that slot's context.
+pub fn consumed_free_unload_tokens_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Coinage").as_slice(),
+        twox_128(b"ConsumedFreeUnloadTokens").as_slice(),
+        &twox_64_concat(&period.to_le_bytes()),
+        &twox_64_concat(alias),
+    ]
+    .concat()
+}
+
+/// `Coinage::PaidUnloadTokenMembers(member_key)` — `Twox64Concat` over the
+/// member key.
+///
+/// Presence means this key has joined a paid unload-token ring.
+pub fn paid_unload_token_members_key(member_key: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Coinage").as_slice(),
+        twox_128(b"PaidUnloadTokenMembers").as_slice(),
+        &twox_64_concat(member_key),
+    ]
+    .concat()
+}
+
+/// `System::Account(account)` — `Blake2_128Concat` over `AccountId`.
+///
+/// The fee account's native balance lives here, and it is what decides between
+/// the two unload fee modes (§6.6).
+pub fn system_account_key(account: &CoinAccountId) -> Vec<u8> {
+    [
+        twox_128(b"System").as_slice(),
+        twox_128(b"Account").as_slice(),
+        &blake2_128_concat(&account.0),
+    ]
+    .concat()
+}
+
 /// The coin record the pallet stores per account.
 ///
 /// `Encode` is derived so tests can build the exact bytes the chain returns.
@@ -798,6 +870,65 @@ mod tests {
         assert_eq!(&key[49..53], &7u32.to_le_bytes());
         assert_eq!(&key[53..61], twox_64(&alias).as_slice());
         assert_eq!(&key[61..], &alias);
+    }
+
+    #[test]
+    fn the_ring_page_and_collection_keys_are_pinned() {
+        // The three-key `RingKeys` map mixes all three hashers, so an order or
+        // hasher slip returns an empty page — indistinguishable from a ring that
+        // ends there, which would silently produce a proof against a truncated
+        // ring.
+        let collection = recycler_collection_id(exponent(4));
+        let key = ring_keys_key(&collection, RingIndex(3), 2);
+
+        assert_eq!(&key[..16], twox_128(b"Members").as_slice());
+        assert_eq!(&key[16..32], twox_128(b"RingKeys").as_slice());
+        assert_eq!(&key[32..64], &collection, "the collection is raw");
+        assert_eq!(&key[64..80], blake2_128(&3u32.to_le_bytes()));
+        assert_eq!(&key[80..84], &3u32.to_le_bytes());
+        assert_eq!(&key[84..92], twox_64(&2u32.to_le_bytes()).as_slice());
+        assert_eq!(&key[92..], &2u32.to_le_bytes());
+
+        let collections = collections_key(&collection);
+        assert_eq!(&collections[16..32], twox_128(b"Collections").as_slice());
+        assert_eq!(&collections[32..], &collection);
+        assert_eq!(collections.len(), 16 + 16 + 32);
+    }
+
+    #[test]
+    fn the_unload_token_and_balance_keys_are_pinned() {
+        let alias = [0x5c; 32];
+        let consumed = consumed_free_unload_tokens_key(77, &alias);
+
+        assert_eq!(&consumed[..16], twox_128(b"Coinage").as_slice());
+        assert_eq!(
+            &consumed[16..32],
+            twox_128(b"ConsumedFreeUnloadTokens").as_slice()
+        );
+        assert_eq!(&consumed[32..40], twox_64(&77u32.to_le_bytes()).as_slice());
+        assert_eq!(&consumed[40..44], &77u32.to_le_bytes());
+        assert_eq!(&consumed[44..52], twox_64(&alias).as_slice());
+        assert_eq!(&consumed[52..], &alias);
+
+        // A different period must be a different slot, or one period's spend
+        // would read as every period's.
+        assert_ne!(consumed, consumed_free_unload_tokens_key(78, &alias));
+
+        let member = [0x91; 32];
+        let paid = paid_unload_token_members_key(&member);
+        assert_eq!(
+            &paid[16..32],
+            twox_128(b"PaidUnloadTokenMembers").as_slice()
+        );
+        assert_eq!(&paid[32..40], twox_64(&member).as_slice());
+        assert_eq!(&paid[40..], &member);
+
+        let account = CoinAccountId([0x22; 32]);
+        let balance = system_account_key(&account);
+        assert_eq!(&balance[..16], twox_128(b"System").as_slice());
+        assert_eq!(&balance[16..32], twox_128(b"Account").as_slice());
+        assert_eq!(&balance[32..48], blake2_128(&account.0));
+        assert_eq!(&balance[48..], &account.0);
     }
 
     #[test]

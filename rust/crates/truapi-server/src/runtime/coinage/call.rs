@@ -456,3 +456,171 @@ mod tests {
         assert_eq!(args.encode(), expected);
     }
 }
+
+/// Arguments of `Coinage::unload_recycler_into_external_asset_and_vouchers`.
+///
+/// The one call that moves value out of coinage. Its surplus argument is not an
+/// optimization: whatever the group carries beyond what the destination is owed
+/// must be reloaded into fresh recycler entries *by this same extrinsic*, because
+/// surplus landing as a coin would tie the entry-side anonymity set to a fresh
+/// account and undo what the ring was for.
+#[derive(Debug, Clone, PartialEq, Eq, Encode)]
+pub struct UnloadRecyclerIntoExternalAssetAndVouchersArgs {
+    /// Aliases of the entries being unloaded.
+    pub aliases: Vec<[u8; 32]>,
+    /// Denomination shared by every entry in the group.
+    pub value: i8,
+    /// Ring the entries belong to.
+    pub index: u32,
+    /// Membership revision the aliases were proven against.
+    pub revision: u32,
+    /// Account receiving the external asset.
+    pub to: [u8; 32],
+    /// Amount transferred, in the underlying asset's base units.
+    pub external_asset_amount: u128,
+    /// Fresh entries for the surplus: `(denomination, member key)` each.
+    ///
+    /// No ownership proof here, unlike `load_recycler_with_coin`: the value being
+    /// loaded is already the caller's, so publishing a key they do not control
+    /// would only strand their own funds.
+    pub new_vouchers: Vec<(i8, [u8; 32])>,
+}
+
+impl UnloadRecyclerIntoExternalAssetAndVouchersArgs {
+    /// Offboard one group, paying `external_cents` out and reloading the rest.
+    ///
+    /// Rejects a group whose arithmetic does not balance, because the pallet does
+    /// too — and by then the entries and the unload token are already spent.
+    pub fn new(
+        aliases: Vec<[u8; 32]>,
+        exponent: DenominationExponent,
+        ring: RingLocation,
+        to: CoinAccountId,
+        external_cents: Amount,
+        vouchers: &[(DenominationExponent, [u8; 32])],
+        constants: &CoinageChainConstants,
+    ) -> Result<Self, CoinageError> {
+        if aliases.is_empty() {
+            return Err(CoinageError::Internal(
+                "an offboard group needs at least one alias".to_string(),
+            ));
+        }
+        let cap = constants.max_consolidation as usize;
+        if aliases.len() > cap {
+            return Err(CoinageError::Internal(format!(
+                "{} aliases exceeds the runtime\'s MaxConsolidation of {cap}",
+                aliases.len()
+            )));
+        }
+        if vouchers.len() > constants.max_split_outputs as usize {
+            return Err(CoinageError::Internal(format!(
+                "{} vouchers exceeds the runtime\'s MaxSplitOutputs of {}",
+                vouchers.len(),
+                constants.max_split_outputs
+            )));
+        }
+
+        let group_value = Amount::from_cents(
+            exponent
+                .value()
+                .cents()
+                .saturating_mul(aliases.len() as u64),
+        );
+        let reloaded: Amount = vouchers.iter().map(|(exponent, _)| exponent.value()).sum();
+        let accounted = external_cents
+            .checked_add(reloaded)
+            .ok_or_else(|| CoinageError::Internal("offboard value overflows".to_string()))?;
+        if accounted != group_value {
+            return Err(CoinageError::Internal(format!(
+                "offboarding {group_value} would pay out {external_cents} and reload {reloaded}, \
+                 which does not balance"
+            )));
+        }
+
+        let external_asset_amount = u128::from(external_cents.cents())
+            .checked_mul(constants.underlying_asset_unit)
+            .ok_or_else(|| {
+                CoinageError::Internal("the external asset amount overflows u128".to_string())
+            })?;
+
+        Ok(Self {
+            aliases,
+            value: exponent.get(),
+            index: ring.index.0,
+            revision: ring.revision.0,
+            to: to.0,
+            external_asset_amount,
+            new_vouchers: vouchers
+                .iter()
+                .map(|(exponent, member_key)| (exponent.get(), *member_key))
+                .collect(),
+        })
+    }
+}
+
+/// The pallet's `Preservation` argument, as the unpaid load takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode)]
+pub enum CodecPreservation {
+    /// The source account may be reaped by the transfer.
+    Expendable,
+}
+
+/// One item of `Coinage::load_recycler_with_external_asset_unpaid_batch`.
+#[derive(Debug, Clone, PartialEq, Eq, Encode)]
+pub struct UnpaidLoadInput {
+    /// What may happen to the source account.
+    pub preservation: CodecPreservation,
+    /// Denomination of the entry to create.
+    pub value: i8,
+    /// Bandersnatch member key the entry publishes.
+    pub member_key: [u8; 32],
+    /// Signature by that key over the origin account, proving control of it.
+    pub proof_of_ownership: RawEncoded,
+}
+
+/// Arguments of `Coinage::load_recycler_with_external_asset_unpaid_batch`.
+///
+/// One extrinsic for the whole top-up rather than one per denomination: the
+/// runtime bounds the batch with `MaxBatchUnpaidLoad`, and a batch is the shape the
+/// shipped faucet flow uses.
+#[derive(Debug, Clone, PartialEq, Eq, Encode)]
+pub struct UnpaidLoadBatchArgs {
+    /// Entries to create, one per denomination.
+    pub items: Vec<UnpaidLoadInput>,
+}
+
+impl UnpaidLoadBatchArgs {
+    /// Build a batch, rejecting denominations the runtime will not mint.
+    pub fn new(
+        items: Vec<(DenominationExponent, [u8; 32], RawEncoded)>,
+        constants: &CoinageChainConstants,
+    ) -> Result<Self, CoinageError> {
+        if items.is_empty() {
+            return Err(CoinageError::Internal(
+                "an unpaid load batch needs at least one entry".to_string(),
+            ));
+        }
+        if let Some((rejected, _, _)) = items
+            .iter()
+            .find(|(exponent, _, _)| !constants.accepts(*exponent))
+        {
+            return Err(CoinageError::Internal(format!(
+                "denomination {rejected} is outside the runtime's range"
+            )));
+        }
+
+        Ok(Self {
+            items: items
+                .into_iter()
+                .map(
+                    |(exponent, member_key, proof_of_ownership)| UnpaidLoadInput {
+                        preservation: CodecPreservation::Expendable,
+                        value: exponent.get(),
+                        member_key,
+                        proof_of_ownership,
+                    },
+                )
+                .collect(),
+        })
+    }
+}

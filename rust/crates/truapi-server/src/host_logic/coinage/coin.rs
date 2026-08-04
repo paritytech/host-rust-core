@@ -197,6 +197,26 @@ impl Coin {
         }
     }
 
+    /// Retire a coin a definitely-successful transaction just materialized, whose
+    /// secret has now left the layer (§8.4).
+    ///
+    /// Accepts `Pending` alone, which is exactly the state such a coin is in: the
+    /// transaction that created it has settled, so the account is populated, but
+    /// observation has not caught up and the record has never been `Available`. A
+    /// coin the *operation holds* is retired through [`Self::mark_spent`] instead,
+    /// because that is its owning operation consuming it.
+    pub fn mark_exported(&mut self) -> Result<(), InvalidTransition> {
+        if self.state != CoinState::Pending {
+            return Err(InvalidTransition::new(
+                SUBJECT,
+                self.state.label(),
+                "export",
+            ));
+        }
+        self.state = CoinState::Spent;
+        Ok(())
+    }
+
     /// Retire the coin after its owning operation consumed it.
     pub fn mark_spent(&mut self, handle: OperationHandle) -> Result<(), InvalidTransition> {
         match self.state {

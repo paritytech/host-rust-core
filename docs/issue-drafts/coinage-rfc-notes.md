@@ -37,6 +37,7 @@ approximate incorrectly.
 | `RecyclerExpirationTime` | 90 days |
 | `UnloadTokenTimePeriodPeopleLitePeople` | 1 day |
 | `MaxFreeUnloadTokensPerTimePeriod` | `1000` |
+| `MaxBatchUnpaidLoad` | `10` — entries one unpaid external-asset load may create |
 | `UnderlyingAssetUnit` | `10^4` base units per cent |
 | `CoinFailureLockPeriod` | 60 seconds (base; the applied lock doubles per retry) |
 
@@ -355,3 +356,68 @@ still runs the native engine — two engines, two coin stores, cleanly disjoint
 only because the derivation break makes them so. Retiring the native engines is
 a third project after RFC-17-in-core and after the integrations, and it is real
 UI work in both apps.
+
+### 6.4 The paid unload-token ring cannot be built from what the layer can read
+
+§6.5 falls back to paid tokens when a period's free allowance is exhausted. The
+fallback is not implemented, and cannot be without a pallet fact that is neither
+in metadata nor derivable from anything on chain: the 32-byte `Members`
+collection identifier the pallet uses for a period's paid-token ring. The
+recycler collections have a documented shape (`b"coinage/recycler"` with the
+exponent at byte 16); the paid-token collection's is unknown.
+
+What the layer does today is read `Coinage::PaidUnloadTokenMembers` — so a wallet
+that joined out of band is not told it has no tokens — and never report the ring
+as joinable, so resolution fails with `NoUnloadToken` rather than building a
+token it cannot prove. Getting the identifier out of `pallets/coinage/src` closes
+this; until then a wallet that exhausts its free slots waits for the next period.
+
+Note that from-output fees blunt this in practice: an unfunded fee account
+spends no free slot at all (§6.6), so the allowance is only consumed by wallets
+that *can* pay prepaid.
+
+### 6.5 Which side's index `MemoEntry::derivation_index` carries is unsettled
+
+§8.3's `MemoEntry` has `sender_coin_account`, `recipient_account` and
+`derivation_index`, and nothing says whose index the third field is. Two readings:
+
+- **The payer's** index for the origin coin. Derivable by the layer, useless to
+  the payee, and mildly leaky — though the entry already names the payer's coin
+  account, which is strictly more revealing and is public on chain anyway.
+- **The payee's** index for `recipient_account`, echoed back so the payee can
+  locate the coin without a scan. Far more useful, and consistent with RFC‑0017's
+  flow where the payee generates the receivable — but the payer only knows it if
+  the caller supplies it, so it would have to become an input to `transfer`.
+
+The implementation carries the payer's index and documents the choice. The new
+RFC should settle it; the second reading is the better API and costs one field on
+the transfer request.
+
+### 6.6 `proof_of_ownership` signs the origin account, raw
+
+Settled. Both `load_recycler_with_coin` and
+`load_recycler_with_external_asset_unpaid_batch` carry a 64-byte
+`proof_of_ownership` beside the member key they publish, and unlike every other
+proof in this pallet it is checked by the *call* rather than by the extension —
+so its message cannot be the inherited implication, which a dispatch cannot see.
+
+The message is the **origin account's 32 bytes, raw and unhashed**, signed by the
+entry's own Bandersnatch secret. Confirmed against the shipped top-up flow in
+truapi#323, which signs the temporary external-asset holder's account id exactly
+this way; the coin-origin case signs the recycling coin's account by the same
+rule. What the proof establishes is that whoever controls the value being
+converted also controls the key being published.
+
+### 6.7 A recovery scan is expensive before it is anything else
+
+Appendix A.7 and A.8 recommend a batch of 500 and a gap limit of 4, which means a
+scan of an *empty* purse still derives 2,000 coin accounts and 2,000 recycler
+member keys before it can conclude there is nothing there. The coin side is
+sr25519 hard derivation; the entry side is Bandersnatch, which is slower. On a
+laptop that is seconds per purse, and a recovery names several purses.
+
+The chain reads themselves are fine — one bulk `state_queryStorageAt` per batch —
+so the cost is entirely local key derivation. Worth knowing before someone runs a
+recovery on a phone. Two obvious mitigations if it bites: derive the batch's keys
+in parallel, or let the caller narrow the window when it knows the wallet is
+small.

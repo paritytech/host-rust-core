@@ -15,7 +15,11 @@
 //! present.
 
 use core::time::Duration;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use futures::channel::mpsc;
+use futures::stream::BoxStream;
 use parity_scale_codec::Decode;
 use truapi_platform::CoreStorage;
 
@@ -23,10 +27,20 @@ use crate::host_logic::coinage::chain_constants::CoinageChainConstants;
 use crate::host_logic::coinage::derivation;
 use crate::host_logic::coinage::error::CoinageError;
 use crate::host_logic::coinage::event::LayerEvent;
+use crate::host_logic::coinage::operation::OperationStatus;
 use crate::host_logic::coinage::params::CoinageParameters;
+use crate::host_logic::coinage::purse::PurseBalance;
 use crate::host_logic::coinage::store::CoinageStore;
-use crate::host_logic::coinage::types::{CoinAccountId, CoinAge};
+use crate::host_logic::coinage::types::{
+    CoinAccountId, CoinAge, CoinSecret, OperationHandle, PurseId, Timestamp,
+};
+use crate::runtime::coinage::execute::{
+    Completion, ExportedCoin, MemoCallback, OffloadRequest, RecoveryRequest,
+};
+use crate::runtime::coinage::extrinsic::FundingOrigin;
 use crate::runtime::coinage::persistence;
+use crate::runtime::coinage::plan::OperationProgram;
+use crate::runtime::coinage::subscription::CoinageSubscriptions;
 use crate::runtime::statement_allowance::extension::Metadata;
 
 /// Pallet whose constants describe the layer's limits.
@@ -73,6 +87,46 @@ pub struct CoinageLayer {
     params: CoinageParameters,
     fee_account: CoinAccountId,
     store: CoinageStore,
+    subscriptions: Arc<CoinageSubscriptions>,
+    /// What a wallet-recovery scan was asked to walk, by operation.
+    recoveries: BTreeMap<OperationHandle, RecoveryRequest>,
+    /// Who signs for a top-up's incoming asset, by operation.
+    ///
+    /// Beside the program rather than inside it: a signer is not data, and the
+    /// account it speaks for is not one this layer holds.
+    funding: BTreeMap<OperationHandle, Arc<dyn FundingOrigin + Send + Sync>>,
+    /// What an external offload was asked to do, by operation.
+    ///
+    /// An offload re-plans between phases, so it has a request rather than a
+    /// program. Not durable: a restart before the first broadcast is a cancel, and
+    /// after one, recovery resolves the log.
+    offloads: BTreeMap<OperationHandle, OffloadRequest>,
+    /// Sinks for the coins an export hands out, by operation.
+    exports: BTreeMap<OperationHandle, mpsc::UnboundedSender<ExportedCoin>>,
+    /// Secrets an import was handed, by operation.
+    ///
+    /// Dropped as soon as the operation's transactions have been broadcast: §8.5
+    /// requires the layer not to retain them, and holding them for longer would
+    /// keep spendable material alive for no purpose.
+    import_secrets: BTreeMap<OperationHandle, Vec<CoinSecret>>,
+    /// Work to apply once an operation's transactions have definitely settled.
+    ///
+    /// Not durable, for the same reason as the programs: an operation that never
+    /// broadcast has nothing to complete, and one that did is resolved by recovery
+    /// from the log rather than from a local intention.
+    completions: BTreeMap<OperationHandle, Completion>,
+    /// Memo callbacks awaiting their transactions' inclusion, by operation.
+    ///
+    /// Alongside the programs rather than inside them because a callback is not
+    /// data: it cannot be compared, printed, or persisted.
+    memos: BTreeMap<OperationHandle, MemoCallback>,
+    /// Transactions planned but not yet submitted, by operation.
+    ///
+    /// Deliberately not durable. §7.8 makes a restart while preparing equivalent
+    /// to a cancel, so a program that never reached a broadcast has nothing worth
+    /// surviving: the records it named are still locked in the persisted store and
+    /// `reconcile_after_restart` releases them.
+    programs: BTreeMap<OperationHandle, OperationProgram>,
 }
 
 impl core::fmt::Debug for CoinageLayer {
@@ -109,6 +163,15 @@ impl CoinageLayer {
             params: CoinageParameters::default(),
             fee_account,
             store,
+            subscriptions: CoinageSubscriptions::new(),
+            recoveries: BTreeMap::new(),
+            funding: BTreeMap::new(),
+            offloads: BTreeMap::new(),
+            exports: BTreeMap::new(),
+            import_secrets: BTreeMap::new(),
+            completions: BTreeMap::new(),
+            memos: BTreeMap::new(),
+            programs: BTreeMap::new(),
         })
     }
 
@@ -143,17 +206,202 @@ impl CoinageLayer {
         &mut self.store
     }
 
-    /// Publish the store's pending events, then write it back.
-    pub async fn publish_and_persist<S, P>(
+    /// Remember the transactions an operation still has to submit.
+    pub(crate) fn register_program(&mut self, handle: OperationHandle, program: OperationProgram) {
+        self.programs.insert(handle, program);
+    }
+
+    /// Remember what a recovery scan should walk.
+    pub(crate) fn register_recovery(&mut self, handle: OperationHandle, request: RecoveryRequest) {
+        self.recoveries.insert(handle, request);
+    }
+
+    /// Take a recovery's request, leaving nothing behind.
+    pub(crate) fn take_recovery(&mut self, handle: OperationHandle) -> Option<RecoveryRequest> {
+        self.recoveries.remove(&handle)
+    }
+
+    /// Remember who signs for a top-up.
+    pub(crate) fn register_funding_origin(
+        &mut self,
+        handle: OperationHandle,
+        origin: Arc<dyn FundingOrigin + Send + Sync>,
+    ) {
+        self.funding.insert(handle, origin);
+    }
+
+    /// The funding origin for an operation, if it has one.
+    pub(crate) fn funding_origin(
+        &self,
+        handle: OperationHandle,
+    ) -> Option<Arc<dyn FundingOrigin + Send + Sync>> {
+        self.funding.get(&handle).cloned()
+    }
+
+    /// Forget a top-up's funding origin.
+    pub(crate) fn forget_funding_origin(&mut self, handle: OperationHandle) {
+        self.funding.remove(&handle);
+    }
+
+    /// Remember what an offload was asked to do.
+    pub(crate) fn register_offload(&mut self, handle: OperationHandle, request: OffloadRequest) {
+        self.offloads.insert(handle, request);
+    }
+
+    /// Take an offload's request, leaving nothing behind.
+    pub(crate) fn take_offload(&mut self, handle: OperationHandle) -> Option<OffloadRequest> {
+        self.offloads.remove(&handle)
+    }
+
+    /// Remember where an export's coins should be delivered.
+    pub(crate) fn register_export(
+        &mut self,
+        handle: OperationHandle,
+        sender: mpsc::UnboundedSender<ExportedCoin>,
+    ) {
+        self.exports.insert(handle, sender);
+    }
+
+    /// Hand one exported coin to whoever holds the export's stream.
+    pub(crate) fn send_export(&mut self, handle: OperationHandle, coin: ExportedCoin) {
+        if let Some(sender) = self.exports.get(&handle) {
+            let _ = sender.unbounded_send(coin);
+        }
+    }
+
+    /// Close an export's stream: no further coin can be emitted for it.
+    pub(crate) fn close_exports(&mut self, handle: OperationHandle) {
+        self.exports.remove(&handle);
+    }
+
+    /// Remember the secrets an import was handed.
+    pub(crate) fn register_import_secrets(
+        &mut self,
+        handle: OperationHandle,
+        secrets: Vec<CoinSecret>,
+    ) {
+        self.import_secrets.insert(handle, secrets);
+    }
+
+    /// One of an import's supplied secrets, by position.
+    pub(crate) fn import_secret(
+        &self,
+        handle: OperationHandle,
+        position: usize,
+    ) -> Option<&CoinSecret> {
+        self.import_secrets.get(&handle)?.get(position)
+    }
+
+    /// Drop every secret an import was handed.
+    pub(crate) fn forget_import_secrets(&mut self, handle: OperationHandle) {
+        self.import_secrets.remove(&handle);
+    }
+
+    /// Remember what to do once an operation's transactions have settled.
+    pub(crate) fn register_completion(&mut self, handle: OperationHandle, completion: Completion) {
+        self.completions.insert(handle, completion);
+    }
+
+    /// Take an operation's completion, leaving nothing behind.
+    pub(crate) fn take_completion(&mut self, handle: OperationHandle) -> Option<Completion> {
+        self.completions.remove(&handle)
+    }
+
+    /// Remember a memo callback to invoke as the operation's transactions land.
+    pub(crate) fn register_memo(&mut self, handle: OperationHandle, memo: MemoCallback) {
+        self.memos.insert(handle, memo);
+    }
+
+    /// The memo callback for an operation, if the caller supplied one.
+    pub(crate) fn memo_of(&self, handle: OperationHandle) -> Option<&MemoCallback> {
+        self.memos.get(&handle)
+    }
+
+    /// Forget an operation's memo callback, once it can no longer fire.
+    pub(crate) fn forget_memo(&mut self, handle: OperationHandle) {
+        self.memos.remove(&handle);
+    }
+
+    /// Take an operation's program, leaving nothing behind.
+    ///
+    /// Taken rather than borrowed so driving an operation twice cannot submit its
+    /// transactions twice.
+    pub(crate) fn take_program(&mut self, handle: OperationHandle) -> Option<OperationProgram> {
+        self.programs.remove(&handle)
+    }
+
+    /// Whether an operation still has transactions waiting to be submitted.
+    pub fn has_pending_program(&self, handle: OperationHandle) -> bool {
+        self.programs.contains_key(&handle)
+    }
+
+    /// Fix the jitter upper bound, so a test can make a fresh entry usable at once.
+    ///
+    /// Production draws a delay in `[0, bound]` per new entry (§5.3); a test that
+    /// wants the next phase to see the entry sets the bound to zero.
+    #[cfg(test)]
+    pub(crate) fn set_jitter_for_tests(&mut self, bound: Duration) {
+        self.params.recycler_entry_jitter_upper_bound = bound;
+    }
+
+    /// Shrink the recovery scan's window, so a test does not derive thousands of
+    /// keys to prove one behaviour.
+    #[cfg(test)]
+    pub(crate) fn set_recovery_limits_for_tests(&mut self, batch_size: u32, gap_limit: u32) {
+        self.params.recovery_batch_size = batch_size;
+        self.params.recovery_gap_limit = gap_limit;
+    }
+
+    /// Publish the store's pending events to the layer's subscribers, then write
+    /// the store back.
+    ///
+    /// `now` is what the balance streams are reprojected against; see
+    /// [`CoinageSubscriptions`] for why a balance cannot ride on an event.
+    pub async fn publish_and_persist<S>(
         &mut self,
         storage: &S,
-        publish: P,
+        now: Timestamp,
     ) -> Result<(), CoinageError>
     where
         S: CoreStorage + ?Sized,
-        P: FnOnce(Vec<LayerEvent>),
     {
-        persistence::publish_and_persist(storage, &mut self.store, publish).await
+        let subscriptions = self.subscriptions.clone();
+        persistence::publish_and_persist(storage, &mut self.store, move |events, store| {
+            subscriptions.publish(&events, store, now);
+        })
+        .await
+    }
+
+    /// Reproject the balance streams without a mutation to publish.
+    ///
+    /// For the driver's clock tick: a jitter delay elapsing or a chain lock
+    /// expiring changes a purse's balance while every record stays as it was.
+    pub fn refresh_subscriptions(&self, now: Timestamp) {
+        self.subscriptions.refresh(&self.store, now);
+    }
+
+    /// Subscribe to the layer's event stream (§8.9).
+    pub fn subscribe_events(&self) -> BoxStream<'static, LayerEvent> {
+        self.subscriptions.subscribe_events()
+    }
+
+    /// Subscribe to a purse's balance, current value first (§8.9).
+    pub fn subscribe_purse_balance(
+        &self,
+        purse: PurseId,
+        now: Timestamp,
+    ) -> Result<BoxStream<'static, PurseBalance>, CoinageError> {
+        self.subscriptions
+            .subscribe_purse_balance(&self.store, purse, now)
+    }
+
+    /// Subscribe to an operation's status stream (§7.2).
+    pub fn subscribe_operation_status(
+        &self,
+        handle: OperationHandle,
+    ) -> Result<BoxStream<'static, OperationStatus>, CoinageError> {
+        self.subscriptions
+            .subscribe_operation_status(&self.store, handle)
     }
 }
 
@@ -180,6 +428,7 @@ pub fn read_chain_constants(
         unload_token_period: required::<u32>(metadata, "UnloadTokenTimePeriodPeopleLitePeople")
             .map(|secs| Duration::from_secs(u64::from(secs)))?,
         max_free_unload_tokens_per_period: required(metadata, "MaxFreeUnloadTokensPerTimePeriod")?,
+        max_batch_unpaid_load: required(metadata, "MaxBatchUnpaidLoad")?,
         underlying_asset_unit: required(metadata, "UnderlyingAssetUnit")?,
         coin_failure_lock_period: required::<u64>(metadata, "CoinFailureLockPeriod")
             .map(Duration::from_secs)?,
@@ -282,6 +531,7 @@ mod tests {
     }
 
     const ENTROPY: [u8; 32] = [7; 32];
+    const NOW: Timestamp = Timestamp(1_000_000);
 
     #[test]
     fn the_deployed_runtime_yields_the_reference_constants() {
@@ -372,7 +622,7 @@ mod tests {
         ))
         .expect("initializes");
         let savings = layer.store_mut().create_purse("Savings".to_string());
-        block_on(layer.publish_and_persist(&storage, |_| {})).expect("persists");
+        block_on(layer.publish_and_persist(&storage, NOW)).expect("persists");
 
         let reopened = block_on(CoinageLayer::initialize(
             &storage,
@@ -384,6 +634,38 @@ mod tests {
 
         assert_eq!(reopened.store().purses().count(), 2);
         assert!(reopened.store().purse(savings).is_some());
+    }
+
+    #[test]
+    fn persisting_publishes_to_the_layers_own_subscribers() {
+        use futures::{FutureExt, StreamExt};
+
+        let storage = MemStorage::default();
+        let mut layer = block_on(CoinageLayer::initialize(
+            &storage,
+            &metadata(),
+            ENTROPY.to_vec(),
+            &CoinageConfig::default(),
+        ))
+        .expect("initializes");
+        let mut events = layer.subscribe_events();
+        let mut balances = layer
+            .subscribe_purse_balance(PurseId::MAIN, NOW)
+            .expect("purse exists");
+        let _ = block_on(balances.next());
+
+        let savings = layer.store_mut().create_purse("Savings".to_string());
+        block_on(layer.publish_and_persist(&storage, NOW)).expect("persists");
+
+        assert_eq!(
+            block_on(events.next()),
+            Some(LayerEvent::PurseCreated {
+                purse: savings,
+                name: "Savings".to_string(),
+            })
+        );
+        // The new purse leaves the main purse's balance where it was.
+        assert!(balances.next().now_or_never().is_none());
     }
 
     #[test]

@@ -9,6 +9,7 @@ use core::iter::Sum;
 use core::time::Duration;
 
 use parity_scale_codec::{Decode, Encode};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Largest denomination exponent the layer's arithmetic supports.
 ///
@@ -139,11 +140,11 @@ impl fmt::Display for DenominationExponent {
 }
 
 /// Derivation index of a coin within its purse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
 pub struct CoinIndex(pub u32);
 
 /// Derivation index of a recycler entry within its purse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
 pub struct EntryIndex(pub u32);
 
 /// Index of a recycler ring on chain.
@@ -211,6 +212,39 @@ impl Timestamp {
 /// On-chain account holding a coin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]
 pub struct CoinAccountId(pub [u8; 32]);
+
+/// The secret controlling a coin, as it crosses the layer's API.
+///
+/// The only cryptographic material the layer hands out or takes in: §12.1 forbids
+/// the rest, and §8.4 makes export the single exception. 64 bytes, the sr25519
+/// secret's own encoding.
+///
+/// Zeroized on drop, and never rendered — a `Debug` that printed it would put a
+/// spendable coin into every log line that touched an export.
+#[derive(Clone, Encode, Decode, Zeroize, ZeroizeOnDrop)]
+pub struct CoinSecret(pub [u8; 64]);
+
+impl fmt::Debug for CoinSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CoinSecret(<redacted>)")
+    }
+}
+
+impl PartialEq for CoinSecret {
+    /// Constant-time: comparing a secret byte by byte leaks its prefix through
+    /// timing.
+    fn eq(&self, other: &Self) -> bool {
+        self.0
+            .iter()
+            .zip(other.0.iter())
+            .fold(0u8, |differences, (left, right)| {
+                differences | (left ^ right)
+            })
+            == 0
+    }
+}
+
+impl Eq for CoinSecret {}
 
 /// Hash of a submitted extrinsic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Encode, Decode)]

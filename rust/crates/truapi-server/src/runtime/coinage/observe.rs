@@ -8,15 +8,12 @@
 //! decision it makes must not be undoable, so its reads are pinned to a
 //! finalized block rather than taken at whatever the best block happens to be.
 
-use subxt::ext::scale_value::scale::decode_as_type;
-use subxt::ext::scale_value::{Composite, Value, ValueDef};
-
 use crate::host_logic::coinage::derivation;
 use crate::host_logic::coinage::error::CoinageError;
 use crate::host_logic::coinage::params::CoinageParameters;
 use crate::host_logic::coinage::store::CoinageStore;
 use crate::host_logic::coinage::types::{
-    BlockHash, CoinIndex, EntryIndex, PurseId, RevisionIndex, RingIndex, RingLocation, Timestamp,
+    BlockHash, CoinIndex, EntryIndex, PurseId, RingLocation, Timestamp,
 };
 use crate::runtime::coinage::storage;
 use crate::runtime::statement_allowance::extension::Metadata;
@@ -181,7 +178,8 @@ pub async fn refresh_purse(
         let status = storage::decode_ring_status(
             read(rpc, &storage::ring_keys_status_key(&collection, ring), at).await?,
         )?;
-        let revision = ring_revision(rpc, metadata, &collection, ring, at).await?;
+        let revision =
+            super::ring::read_ring_revision(rpc, metadata, entry.exponent, ring, at).await?;
 
         entries.push(storage::ObservedEntry {
             index: entry.index,
@@ -223,47 +221,6 @@ async fn read(rpc: &RpcClient, key: &[u8], at: &str) -> Result<Option<Vec<u8>>, 
     rpc.get_storage_at(key, at)
         .await
         .map_err(|error| CoinageError::SubscriptionError(error.to_string()))
-}
-
-/// The revision of a ring's current root.
-///
-/// Decoded through the metadata registry rather than by byte offset: the root
-/// is a bandersnatch ring commitment whose size is a property of the curve, and
-/// a hard-coded offset would read a neighbouring field the day it changes.
-async fn ring_revision(
-    rpc: &RpcClient,
-    metadata: &Metadata,
-    collection: &[u8; 32],
-    ring: RingIndex,
-    at: &str,
-) -> Result<Option<RevisionIndex>, CoinageError> {
-    let Some(raw) = read(rpc, &storage::ring_root_key(collection, ring), at).await? else {
-        return Ok(None);
-    };
-    let type_id = metadata
-        .storage_value_type("Members", "Root")
-        .ok_or_else(|| {
-            CoinageError::Internal("Members.Root is absent from metadata".to_string())
-        })?;
-    let value = decode_as_type(&mut &raw[..], type_id, metadata.registry())
-        .map_err(|error| CoinageError::Internal(format!("decoding a ring root failed: {error}")))?;
-
-    revision_field(&value)
-        .map(Some)
-        .ok_or_else(|| CoinageError::Internal("a ring root carried no revision field".to_string()))
-}
-
-/// Pull the `revision` field out of a decoded ring root.
-fn revision_field(value: &Value<u32>) -> Option<RevisionIndex> {
-    let ValueDef::Composite(Composite::Named(fields)) = &value.value else {
-        return None;
-    };
-    fields
-        .iter()
-        .find(|(name, _)| name == "revision")
-        .and_then(|(_, value)| value.as_u128())
-        .and_then(|revision| u32::try_from(revision).ok())
-        .map(RevisionIndex)
 }
 
 #[cfg(test)]

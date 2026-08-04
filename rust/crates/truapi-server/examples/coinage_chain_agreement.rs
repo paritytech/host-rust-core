@@ -48,6 +48,8 @@ const CALLS: &[&str] = &[
     "transfer",
     "load_recycler_with_coin",
     "unload_recycler_into_coins",
+    "unload_recycler_into_external_asset_and_vouchers",
+    "load_recycler_with_external_asset_unpaid_batch",
 ];
 
 /// `AsCoinageInfo` variants the layer encodes.
@@ -195,6 +197,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "MaxFreeUnloadTokensPerTimePeriod",
         reference.max_free_unload_tokens_per_period,
         constant::<u32>(&metadata, "MaxFreeUnloadTokensPerTimePeriod"),
+    );
+    report.check_constant(
+        "MaxBatchUnpaidLoad",
+        reference.max_batch_unpaid_load,
+        constant::<u32>(&metadata, "MaxBatchUnpaidLoad"),
     );
     report.check_constant(
         "UnderlyingAssetUnit",

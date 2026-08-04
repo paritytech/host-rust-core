@@ -23,7 +23,7 @@ use super::call::RawEncoded;
 use super::extension::{RECYCLER_ALIAS_CONTEXT, free_token_signing_context};
 use crate::host_logic::coinage::derivation;
 use crate::host_logic::coinage::error::CoinageError;
-use crate::host_logic::coinage::types::{EntryIndex, PurseId};
+use crate::host_logic::coinage::types::{CoinAccountId, EntryIndex, PurseId};
 use crate::runtime::statement_allowance::extension::blake2b256;
 use crate::runtime::statement_allowance::proof::ring_vrf_proof;
 
@@ -135,6 +135,34 @@ pub fn free_token_proof(
     Ok(RawEncoded(proof))
 }
 
+/// Prove control of the member key an entry is about to publish.
+///
+/// `load_recycler_with_coin` carries a `proof_of_ownership` beside the member key,
+/// and unlike every other proof in this pallet it is verified by the *call* rather
+/// than by the extension — so its message cannot be the inherited implication,
+/// which a dispatch cannot see. It signs the recycling coin's account: the fact
+/// worth proving is that whoever controls that coin also controls the key being
+/// published, which is what stops one wallet publishing another's key.
+///
+/// The message is the account's 32 bytes, raw and unhashed. Confirmed against the
+/// shipped iOS-compatible top-up flow, which signs the external-asset holder's
+/// account the same way for `load_recycler_with_external_asset_unpaid_batch` —
+/// the same field, the same key, the same origin-account message.
+pub fn entry_ownership_proof(
+    entropy: &[u8],
+    purse: PurseId,
+    index: EntryIndex,
+    coin_account: CoinAccountId,
+) -> Result<RawEncoded, CoinageError> {
+    let vrf_entropy = derivation::entry_ring_vrf_entropy(entropy, purse, index)?;
+    let secret = BandersnatchVrfVerifiable::new_secret(vrf_entropy);
+    let signature = BandersnatchVrfVerifiable::sign(&secret, &coin_account.0).map_err(|error| {
+        CoinageError::Internal(format!("member-key ownership signature failed: {error:?}"))
+    })?;
+
+    Ok(RawEncoded(signature.encode()))
+}
+
 /// Aliases in the order the call expects them.
 pub fn aliases_of(proofs: &[EntryProof]) -> Vec<[u8; 32]> {
     proofs.iter().map(|proof| proof.alias).collect()
@@ -147,6 +175,8 @@ pub fn alias_proofs_of(proofs: &[EntryProof]) -> Vec<RawEncoded> {
 
 #[cfg(test)]
 mod tests {
+    use parity_scale_codec::Decode;
+
     use crate::host_logic::coinage::derivation;
     use crate::runtime::statement_allowance::proof::RING_VRF_PROOF_LEN;
 
@@ -179,6 +209,38 @@ mod tests {
         with_fillers(vec![
             crate::runtime::statement_allowance::proof::member_key(ENTROPY),
         ])
+    }
+
+    #[test]
+    fn an_ownership_proof_is_bound_to_the_coin_being_recycled() {
+        // The signature's whole job is to tie the member key to the coin paying
+        // for it, so two coins must not produce the same proof — and the key's own
+        // public must verify it.
+        let purse = PurseId::MAIN;
+        let index = EntryIndex(0);
+        let first =
+            entry_ownership_proof(&ENTROPY, purse, index, CoinAccountId([1; 32])).expect("signs");
+        let second =
+            entry_ownership_proof(&ENTROPY, purse, index, CoinAccountId([2; 32])).expect("signs");
+
+        assert_ne!(first, second, "a proof for one coin must not serve another");
+        assert_eq!(
+            first.0.len(),
+            64,
+            "the call's field is a fixed 64 bytes, spliced raw"
+        );
+
+        let vrf_entropy =
+            derivation::entry_ring_vrf_entropy(&ENTROPY, purse, index).expect("derives");
+        let secret = BandersnatchVrfVerifiable::new_secret(vrf_entropy);
+        let member = BandersnatchVrfVerifiable::member_from_secret(&secret);
+        let signature =
+            <BandersnatchVrfVerifiable as GenerateVerifiable>::Signature::decode(&mut &first.0[..])
+                .expect("the signature round-trips");
+        assert!(
+            BandersnatchVrfVerifiable::verify_signature(&signature, &[1u8; 32], &member),
+            "the published member key verifies its own ownership proof"
+        );
     }
 
     #[test]

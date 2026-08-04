@@ -84,6 +84,16 @@ impl CoinageStore {
         }
     }
 
+    /// Record an event the chain layer observed about work this store planned.
+    ///
+    /// The store raises its own events for every record and operation change; this
+    /// is for facts only the chain layer knows, such as what an unload's origin
+    /// ended up costing. It joins the same queue, so ordering against record
+    /// events is preserved.
+    pub fn publish(&mut self, event: LayerEvent) {
+        self.events.push(event);
+    }
+
     /// Take everything observed since the last drain.
     ///
     /// Publish these before persisting the store; see the module documentation
@@ -201,6 +211,76 @@ impl CoinageStore {
 
     // -- records -----------------------------------------------------------
 
+    /// Put back a purse a scan is reconstructing, at the identifier it had (§8.10).
+    ///
+    /// Distinct from [`Self::create_purse`], which takes the next free identifier:
+    /// a recovered purse must keep its own, because that identifier names the
+    /// derivation namespace its accounts are already in on chain. The counter moves
+    /// past it, so a later `create_purse` cannot collide with one that was restored.
+    ///
+    /// A purse that already exists is left alone, so a rescan is not a rename.
+    pub fn restore_purse(&mut self, purse: PurseId, name: String) {
+        self.next_purse_id = self.next_purse_id.max(purse.0.saturating_add(1));
+        self.purses
+            .entry(purse)
+            .or_insert_with(|| Purse::new(purse, name));
+    }
+
+    /// Put back a coin a scan found on chain, at the index it was derived under.
+    ///
+    /// The index is the caller's, not the next free one: it is what the account was
+    /// derived from, so restoring under a different one would name an account
+    /// nobody holds. The purse's counter moves past it for the same reason
+    /// [`Self::restore_purse`] moves the purse counter.
+    pub fn restore_coin(
+        &mut self,
+        purse: PurseId,
+        index: CoinIndex,
+        exponent: DenominationExponent,
+        age: CoinAge,
+    ) -> Result<(), CoinageError> {
+        let record = self
+            .purses
+            .get_mut(&purse)
+            .ok_or(CoinageError::PurseNotFound(purse))?;
+        record.next_coin_index = CoinIndex(record.next_coin_index.0.max(index.0 + 1));
+
+        let mut coin = Coin::pending(purse, index, exponent);
+        coin.observe_populated(age)?;
+        self.coins.insert((purse, index), coin);
+        self.events
+            .push(LayerEvent::CoinAvailable { purse, exponent });
+        Ok(())
+    }
+
+    /// Put back a recycler entry a scan found on chain, at its derived index.
+    ///
+    /// Readiness is not restored, because it cannot be: the delay of §5.3 was drawn
+    /// locally and that draw is gone. A recovered entry is therefore selectable at
+    /// once — the decorrelation it was protecting has already had however long the
+    /// wallet was lost to elapse.
+    pub fn restore_entry(
+        &mut self,
+        purse: PurseId,
+        index: EntryIndex,
+        exponent: DenominationExponent,
+        now: Timestamp,
+    ) -> Result<(), CoinageError> {
+        let record = self
+            .purses
+            .get_mut(&purse)
+            .ok_or(CoinageError::PurseNotFound(purse))?;
+        record.next_entry_index = EntryIndex(record.next_entry_index.0.max(index.0 + 1));
+
+        self.entries.insert(
+            (purse, index),
+            RecyclerEntry::allocated(purse, index, exponent, now, Duration::ZERO),
+        );
+        self.events
+            .push(LayerEvent::EntryAllocated { purse, exponent });
+        Ok(())
+    }
+
     /// Register a coin an in-flight operation is expected to produce, taking
     /// the next free index in the purse.
     pub fn add_pending_coin(
@@ -277,6 +357,101 @@ impl CoinageStore {
             .collect()
     }
 
+    /// Entries whose ring is close enough to expiry that the rescue sweep must
+    /// unload them now (§6.4).
+    ///
+    /// Returned in the layer's canonical entry order so two implementations rescue
+    /// the same entries in the same order. An entry whose ring immutability was
+    /// never observed has no deadline and is *not* returned — which is correct for
+    /// a ring still accepting members and indistinguishable from a ring nobody
+    /// read, so an empty result is not evidence that observation ran.
+    pub fn entries_needing_rescue(
+        &self,
+        purse: PurseId,
+        recycler_expiration_time: Duration,
+        rescue_margin: Duration,
+        now: Timestamp,
+    ) -> Vec<EntryIndex> {
+        let mut due: Vec<&RecyclerEntry> = self
+            .entry_records(purse)
+            .filter(|entry| entry.needs_rescue(now, recycler_expiration_time, rescue_margin))
+            .collect();
+        due.sort_by(|left, right| {
+            right
+                .exponent
+                .cmp(&left.exponent)
+                .then(left.index.cmp(&right.index))
+        });
+        due.into_iter().map(|entry| entry.index).collect()
+    }
+
+    /// Make sure an operation holds the records it chose for itself.
+    ///
+    /// Idempotent: naming a record this operation already holds is a no-op, which is
+    /// what lets a multi-phase offload re-name the entries it created earlier.
+    ///
+    /// Selection-driven operations get their locks from [`Self::begin_operation`],
+    /// which chooses and locks in one step. A sweep picks records by age or by
+    /// deadline instead, and still has to hold them: two sweeps overlapping on one
+    /// coin would submit two recycles for it, and the second would be refused after
+    /// the first had consumed it.
+    pub fn lock_for_operation(
+        &mut self,
+        handle: OperationHandle,
+        locks: &LockSet,
+        now: Timestamp,
+    ) -> Result<(), CoinageError> {
+        if !self.operations.contains_key(&handle) {
+            return Err(CoinageError::OperationNotFound(handle));
+        }
+        for other in self.operations.values() {
+            if other.handle != handle && other.locks.intersects(locks) {
+                return Err(CoinageError::Internal(format!(
+                    "{} already holds a record {handle} is trying to lock",
+                    other.handle
+                )));
+            }
+        }
+
+        // Records this operation already holds are left alone, so a later phase can
+        // name the same record without having to remember whether an earlier one
+        // locked it.
+        let wanted = LockSet {
+            coins: locks
+                .coins
+                .iter()
+                .copied()
+                .filter(|key| {
+                    self.coins
+                        .get(key)
+                        .is_some_and(|coin| coin.state.locked_by() != Some(handle))
+                })
+                .collect(),
+            entries: locks
+                .entries
+                .iter()
+                .copied()
+                .filter(|key| {
+                    self.entries
+                        .get(key)
+                        .is_some_and(|entry| entry.local.locked_by() != Some(handle))
+                })
+                .collect(),
+        };
+        if wanted.is_empty() {
+            return Ok(());
+        }
+
+        self.apply_locks(handle, &wanted, now)?;
+        let operation = self
+            .operations
+            .get_mut(&handle)
+            .expect("presence checked above; qed");
+        operation.locks.coins.extend(wanted.coins);
+        operation.locks.entries.extend(wanted.entries);
+        Ok(())
+    }
+
     /// Record that the chain reports a coin account populated at a given age.
     pub fn observe_coin(
         &mut self,
@@ -305,6 +480,46 @@ impl CoinageStore {
             });
         }
 
+        Ok(())
+    }
+
+    /// Retire a coin whose secret has been handed out of the layer (§8.4).
+    ///
+    /// Terminal like a spend, and for the same reason: the account still holds the
+    /// coin, but this layer no longer controls it, so offering it to selection
+    /// again would build an extrinsic the chain refuses. The record stays, so its
+    /// index is never reused.
+    ///
+    /// Two states reach here, and the difference matters:
+    ///
+    /// - **Locked by `handle`** — a coin that was already the right shape. Nothing
+    ///   was submitted for it; this is its owning operation consuming it.
+    /// - **Pending** — a coin one of the operation's transactions just
+    ///   materialized. That transaction definitely succeeded, so the account is
+    ///   populated even though observation has not caught up.
+    pub fn retire_exported(
+        &mut self,
+        purse: PurseId,
+        index: CoinIndex,
+        handle: OperationHandle,
+    ) -> Result<(), CoinageError> {
+        let coin = self
+            .coins
+            .get_mut(&(purse, index))
+            .ok_or_else(|| unknown_record("coin", purse))?;
+        let exponent = coin.exponent;
+
+        match coin.state {
+            CoinState::LockedFor(holder) if holder == handle => coin.mark_spent(handle)?,
+            CoinState::Pending => coin.mark_exported()?,
+            other => {
+                return Err(
+                    super::error::InvalidTransition::new("coin", other.label(), "export").into(),
+                );
+            }
+        }
+
+        self.events.push(LayerEvent::CoinSpent { purse, exponent });
         Ok(())
     }
 
@@ -767,6 +982,30 @@ impl CoinageStore {
             }
         }
 
+        self.retire(handle, TerminalStatus::Done(receipt))
+    }
+
+    /// Finish an operation whose transactions have each already been resolved.
+    ///
+    /// The per-transaction path of §7.4 retires or releases every record its log
+    /// entries named as it goes, so by the time the operation ends there is
+    /// nothing left to move except records it still holds in a live state —
+    /// inputs of a transaction that was never submitted. Those go back to the
+    /// pool.
+    ///
+    /// Distinct from [`Self::finish_operation`], which is for the caller that
+    /// learns what the chain consumed only at the end: retiring the same record
+    /// twice is a lifecycle error, not a no-op.
+    pub fn conclude_operation(
+        &mut self,
+        handle: OperationHandle,
+        receipt: OperationReceipt,
+    ) -> Result<(), CoinageError> {
+        if !self.operations.contains_key(&handle) {
+            return Err(CoinageError::OperationNotFound(handle));
+        }
+
+        self.release_locks(handle);
         self.retire(handle, TerminalStatus::Done(receipt))
     }
 

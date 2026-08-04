@@ -54,6 +54,10 @@ pub struct CoinageChainConstants {
     /// Free unload tokens a member may consume per period
     /// (`MaxFreeUnloadTokensPerTimePeriod`).
     pub max_free_unload_tokens_per_period: u32,
+    /// Entries one unpaid external-asset load may create
+    /// (`MaxBatchUnpaidLoad`). Bounds a top-up: an amount needing more
+    /// denominations than this cannot be loaded in one extrinsic.
+    pub max_batch_unpaid_load: u32,
     /// Underlying-asset base units in one cent (`UnderlyingAssetUnit`).
     pub underlying_asset_unit: u128,
     /// Base period a coin stays locked after a dispatch that failed with the
@@ -134,6 +138,7 @@ pub fn next_people_paseo() -> CoinageChainConstants {
         recycler_expiration_time: Duration::from_secs(90 * 24 * 60 * 60),
         unload_token_period: Duration::from_secs(24 * 60 * 60),
         max_free_unload_tokens_per_period: 1_000,
+        max_batch_unpaid_load: 10,
         underlying_asset_unit: 10u128.pow(4),
         coin_failure_lock_period: Duration::from_secs(60),
     }

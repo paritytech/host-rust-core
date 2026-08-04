@@ -19,6 +19,8 @@ pub mod entry;
 pub mod error;
 pub mod event;
 pub mod log;
+pub mod memo;
+pub mod offload;
 pub mod operation;
 pub mod params;
 pub mod purse;
