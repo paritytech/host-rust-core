@@ -14,7 +14,9 @@ owner: "@valentunn"
 
 ## Summary
 
-RFC-0004 makes the Host pick a ring VRF member key on the caller's behalf, with a hard-coded fallback to "the PoP ring". This RFC replaces that with an explicit, product-owned key registry: a product registers keys it owns against the rings it intends them for, other products discover those registrations by an anonymized handle, and the handle is passed to `create_account_proof`, `get_account_alias`, and a new `ring_vrf_sign`. With an `onLoad` executable modality for global lifetime and the Accounts Protocol companions, full and light personhood become a standalone product whose key index no consumer — including the Host — has to know.
+RFC-0004 makes the Host pick a ring VRF member key on the caller's behalf, with a hard-coded fallback to "the PoP ring". This RFC replaces that with **two separable changes**: an explicit `key_handle` parameter on `account_get_account_alias` and `account_create_account_proof`, deleting the selection contract; and a **registry** of `(handle, declared rings)` that the Host consults where no caller supplies a handle. A new `account_ring_vrf_sign` signs with the member key directly.
+
+With an `onLoad` executable modality for global lifetime and the Accounts Protocol companions, personhood's **key management and client-side surface** move into a product whose key index no consumer — including the Host — has to know. Rings, membership, onboarding, and suspension remain on chain and are untouched by this RFC; "personhood as a product" means the client side of it, not the protocol.
 
 A proof is a bearer token for its context's alias and a signature is a bearer token for the key, and neither can be constrained by inspecting an opaque message. Cross-product use of a foreign key is therefore gated on the owning product having allowlisted the caller in its manifest, with no user-prompt fallback — an interim position, with a more expressive scheme left to follow-up work. The RFC also resolves RFC-0022's deferral of well-known alias accounts: every context is product-owned and built with TrUAPI's product-scoped context function, so there is no second context scheme.
 
@@ -32,7 +34,13 @@ A personhood product must instead own the full and light keys — under RFC-0022
 | Product-extractable features | game, mobrule, identity                            | Yes                                |
 | Cross-product shared         | set identity account, set score alias              | Yes, but needs cross-product reach |
 
-The app-internal class forces a mechanism, and this RFC picks a **registration call**: the product declares which key is intended for which ring, and the Host uses that registration wherever it used a compiled-in key. The rejected alternative is in [Alternatives](#alternatives).
+These motivate two changes with very different costs, and they are **separable** — either can be accepted without the other.
+
+**The explicit key parameter is the cheap one, and it solves the motivating problem by itself.** Selection is fragile only because the key is missing from the request; once `key_handle` is present, alias determinism holds by construction rather than by cross-implementation agreement, and the selection contract can simply be deleted. No registry is required for that.
+
+**The registry answers a different question**: when the Host performs coinage unloading, or the Account Holder assigns a ring-VRF allowance slot, there is no caller to supply a handle, so something must tell them which handle is the person key. That is the load-bearing justification. The other things a registry buys are weaker — cross-product discovery could be convention, since RFC-0022 already pins index 0 as full and index 1 as light, and phone-side bookkeeping is a nice-to-have. Against that, the registry adds distributed state, an intent leak, and the unenforceable derivation rule noted below.
+
+Both are specified here because the app-internal flows need both, but a reviewer should be able to reject the registry without rejecting the parameter. The rejected alternative to the registry is in [Alternatives](#alternatives).
 
 **Remote Hosts cannot reach ring VRF keys without the phone**, which is usually backgrounded. Two directions address it: the layered background-availability model designed for consent-free SSO requests (referenced, not respecified — see [Prior Art](#prior-art-and-references)), and an AutoSigning extension transferring the product's ring VRF domain entropy so the Host can derive registered member secrets locally.
 
@@ -42,7 +50,7 @@ The app-internal class forces a mechanism, and this RFC picks a **registration c
 - **Product developers building on personhood** — score / identity / mobrule / game; consume foreign handles, foreign contexts, and alias origins.
 - **Host developers** — implement the registry, drop the compiled-in member-key selection, enforce the owner allowlist on proofs and signatures, add the `onLoad` modality.
 - **Account Holder developers (Mobile App)** — become the authoritative registry, implement the new message pairs, extend the AutoSigning payload, answer registrations from the background.
-- **Chain / individuality developers** — on-chain contexts (`score`, `resources`, `mob-rule`) must be derived with TrUAPI's product-scoped context function rather than a parallel namespace.
+- **Chain / individuality developers** — on-chain contexts must be derived with TrUAPI's product-scoped context function rather than a parallel namespace. `score`, `resources`, and `mob-rule` are named here as examples, **not as a complete list**: coinage has its own contexts, including ones constructed at runtime from a base plus period and counter, and there is a dotNS gateway context. Every such context has to be migrated to the product-scoped construction, and enumerating them is part of that work rather than of this RFC.
 
 ## Explanation
 
@@ -56,6 +64,8 @@ The app-internal class forces a mechanism, and this RFC picks a **registration c
 ### Key management calls
 
 Two additions to the `Account` trait, alongside the signing call in the next section.
+
+Naming throughout this RFC: prose uses the **wire** method name, which is the service prefix plus the trait method — `account_create_account_proof`, `account_get_account_alias`, `account_ring_vrf_sign` — while the Rust snippets show the trait methods those wire names dispatch to (`create_account_proof`, `get_account_alias`, `ring_vrf_sign`). Sibling RFCs use the older `host_account_*` spelling for the same calls.
 
 ```rust
 type RingVrfPublicKey = [u8; 32];
@@ -129,7 +139,7 @@ fn ring_vrf_sign(
 
 `ring` stays a parameter on the first two even though the handle carries declared rings: a key may be registered for several, and the caller must say which the proof is against. The Host MUST verify `ring` appears in the handle's declared rings and return `KeyNotInRing` otherwise. RFC-0004's guarantee that `(key_handle, context, ring)` yields the same alias on every conforming Host now holds trivially, since key selection is no longer Host policy.
 
-`ring_vrf_sign` takes neither: it derives no alias and proves no membership, so there is nothing for a context or a ring to scope. A verifier needs the member public key, which is what makes `RingVrfKeyDisclosure::PublicKey` load-bearing rather than merely informational, and which makes every such signature linkable to every other use of that key.
+`account_ring_vrf_sign` takes neither: it derives no alias and proves no membership, so there is nothing for a context or a ring to scope. A verifier needs the member public key, which is what makes `RingVrfKeyDisclosure::PublicKey` load-bearing rather than merely informational, and which makes every such signature linkable to every other use of that key.
 
 ### Errors
 
@@ -191,7 +201,13 @@ sequenceDiagram
   H-->>G: proof + contextual_alias + ring_index + ring_revision
 ```
 
-**No product may assume a key index of another product.** The index is the owner's implementation detail; consumers select by declared `RingLocation` and treat the handle as opaque. Hardcoding `(peopl.dot, 0)` breaks the moment the owner rotates or adds a key. This is the one rule a consuming product has to remember.
+**Selection moves from on-chain state to declared intent, and that is a real change.** Today the Host derives both person keys and looks each up in the membership map, full before light, so full-versus-light is resolved against actual chain state. Here the consumer picks by the ring a key was *declared* for and only learns it chose wrong when the proof returns `NotMember`.
+
+No product needs "try full, fall back to light" today, so this RFC does not specify one. If a product ever does, the fallback belongs in the **product SDK**, not in the Host and not reimplemented per product — the Host no longer has the information to choose, and duplicating the retry across consumers is how the selection contract became fragile in the first place.
+
+**No product should assume a key index of another product.** The index is the owner's implementation detail; consumers select by declared `RingLocation` and treat the handle as opaque. Hardcoding `(peopl.dot, 0)` breaks the moment the owner adds a key.
+
+This is a **convention, not an enforceable rule**, and the RFC does not pretend otherwise. The index is part of the handle, so any caller that can list the registry can read it and hardcode it; `Anonymized` disclosure withholds the member public key, not the index. Hiding the index would mean the handle could no longer name a derivation slot, which is the whole point of it. So this lands as an implementation note for the **product SDK**, which should expose selection-by-ring and never surface a raw index to product code.
 
 ### Every context is owned by exactly one product
 
@@ -211,17 +227,19 @@ A context therefore has exactly one owner: the `product_id` mixed into its deriv
 
 ### Using a foreign key means trusting the caller
 
-Both `create_account_proof` and `ring_vrf_sign` hand the caller output produced with someone else's member key, and neither can be constrained by inspection. **A proof is a bearer token for its context's alias, and a signature is a bearer token for the key itself.** `message` is opaque — for an extrinsic it is a hash of the inherited implication, and accepting a caller-supplied preimage would still be blind signing — so nothing at call time can tell what the result will authorize.
+Both `account_create_account_proof` and `account_ring_vrf_sign` hand the caller output produced with someone else's member key, and neither can be constrained by inspection. **A proof is a bearer token for its context's alias, and a signature is a bearer token for the key itself.** `message` is opaque — for an extrinsic it is a hash of the inherited implication, and accepting a caller-supplied preimage would still be blind signing — so nothing at call time can tell what the result will authorize.
 
-The concrete consequence, worth stating because it is not obvious: a product holding a proof under the score context can build a `set_alias` binding that alias to an account of its own, sign it with its own product account, and submit it without involving the Host again. The score alias then resolves to an account it controls. Every check passes; the proof was the authority. `ring_vrf_sign` is the wider version of the same problem, since it has no context or ring to scope what the signature is good for.
+The concrete consequence, worth stating because it is not obvious: a product holding a proof for a context can build a `set_alias` binding that alias to an account of its own, sign it with its own product account, and submit it without involving the Host again. The alias then resolves to an account it controls. Every check passes; the proof was the authority. `account_ring_vrf_sign` is the wider version of the same problem, since it has no context or ring to scope what the signature is good for.
+
+**This is not hypothetical, and it is not limited to the score context.** `pallet-alias-accounts` as already deployed in individuality takes the proof as a call argument, accepts **any** 32-byte context rather than an allowlisted set, works for both People and People Lite, and signs over `blake2_256(("alias-accounts", account, proof_valid_at))` — exactly the opaque hash described above. So every context reachable through that pallet is exposed, not one of them. The runtime should be adjusted so the contexts it accepts are aligned with TrUAPI's product-scoped derivation; until then the surface is wider than the alias flow below implies.
 
 There is no way to bound this by structure at the call site. So it is bounded by **whom the owner trusts**:
 
-> A Host MUST reject `create_account_proof` and `ring_vrf_sign` with a foreign `key_handle` unless the key's owning product has allowlisted the calling product in its manifest, with `NotAllowlisted`.
+> A Host MUST reject `account_create_account_proof` and `account_ring_vrf_sign` with a foreign `key_handle` unless the key's owning product has allowlisted the calling product in its manifest, with `NotAllowlisted`.
 
 The allowlist is the *only* authorization for these two calls. A user prompt is not a substitute and MUST NOT be offered as a fallback: consenting to an opaque message is not meaningful consent, and the risk being accepted is one only the key's owner is positioned to evaluate. This is a deliberate departure from the general permission model, where the allowlist merely avoids a prompt.
 
-Foreign `get_account_alias` and foreign `get_account` are unaffected — reading an alias or an account id authorizes nothing — and `create_transaction` is unchanged, keeping its `signer: ProductAccountId` and accepting a foreign one under an ordinary grant.
+Foreign `account_get_account_alias` and foreign `account_get_account` are unaffected — reading an alias or an account id authorizes nothing — and `signing_create_transaction` is unchanged, keeping its `signer: ProductAccountId` and accepting a foreign one under an ordinary grant.
 
 This is the pragmatic position, not the durable one. It makes cross-product key use an all-or-nothing trust decision by the owner, when what the owner actually wants to express is narrower — "you may prove personhood for your own airdrop" rather than "you may do anything my key can do". [Future work](#unresolved-questions) records the shape a general solution would take.
 
@@ -230,8 +248,8 @@ This is the pragmatic position, not the durable one. It makes cross-product key 
 Using an alias — claiming score rewards, say — is then:
 
 1. **Read the alias.** `get_account_alias(pop_handle, score_context, people_ring)`. The consuming product checks the ring revision on each use and renews when it has moved; nothing else watches for it.
-2. **Bind or rebind if needed.** Build a `set_alias` from the alias account id (`get_account` on the context's alias index, which the context determines 1:1) and a proof (`create_account_proof`, requiring the allowlist above). After a suspension this is a fresh `set_alias`; on a ring-revision change the accompanying action can ride an `AsPersonalAliasWithAccountRevised` origin alongside the update.
-3. **Submit.** `create_transaction` with the alias account's `ProductAccountId` as signer.
+2. **Bind or rebind if needed.** Build a `set_alias` from the alias account id (`account_get_account` on the context's alias index, which the context determines 1:1) and a proof (`account_create_account_proof`, requiring the allowlist above). After a suspension this is a fresh `set_alias`; on a ring-revision change the accompanying action can ride an `AsPersonalAliasWithAccountRevised` origin alongside the update.
+3. **Submit.** `signing_create_transaction` with the alias account's `ProductAccountId` as signer.
 
 At worst three cross-product requests, and **in the happy path the user sees none of them** — the requirement that shapes the permission model below.
 
@@ -262,19 +280,28 @@ The personhood product declares `{ pocket: true, onLoad: true }`. No capability 
 
 ### Permission model
 
-The requirement is asymmetric: routine discovery should be cheap, and the powerful grants deliberate but not per-call.
+The calls this RFC touches fall into **two regimes with different rules**, and they must not be read as one. Everything that only ever *reads* follows the ordinary model; the two calls that produce a bearer token do not.
 
-| Call                                     | Own key | Foreign key or context                                        |
-| ---------------------------------------- | ------- | ------------------------------------------------------------- |
-| `register_ring_vrf_key`                  | permissionless | n/a — a product registers only its own keys            |
-| `list_ring_vrf_keys` (either disclosure) | permissionless | grant, or a user prompt                                |
-| `get_account_alias`, `get_account`       | permissionless | grant, or a user prompt                                |
-| `create_account_proof`, `ring_vrf_sign`  | permissionless | **owner's manifest allowlist only** — no prompt fallback |
-| `create_transaction`                     | permissionless | grant, or a user prompt — unchanged by this RFC         |
+**Regime A — reading. Ordinary RFC-0002 rules.**
 
-The model is **user-approval driven**, per RFC-0002: an unapproved foreign access produces a one-time prompt with the persist-once lifecycle. The only way to avoid the prompt is for the *owner* to have allowed the caller in advance — **a product declares, in its manifest, the list of product ids it permits to access its data without a prompt.** For proofs and signatures that allowlist is not an optimization but the whole gate, per the rule above.
+| Call                                               | Own key        | Foreign                                          |
+| -------------------------------------------------- | -------------- | ------------------------------------------------ |
+| `account_register_ring_vrf_key`                    | permissionless | n/a — a product registers only its own keys      |
+| `account_list_ring_vrf_keys` (either disclosure)   | permissionless | allowlist, else a one-time prompt                |
+| `account_get_account_alias`, `account_get_account` | permissionless | allowlist, else a one-time prompt                |
+| `signing_create_transaction`                       | permissionless | allowlist, else a one-time prompt — unchanged by this RFC |
 
-That declaration belongs to the product manifest, specified separately ([RFC: Product Manifest Format](https://github.com/paritytech/truapi/pull/206)), with two requirements from here: the allowlist must be **structurally extensible**, so a richer scheme (per-method grants, attestation thresholds) can replace a flat product-id list without a wire break; and it should be expressible **per method or category**, so "read my key handles" and "sign under my alias" need not be one grant. Until it lands, Hosts fall back to a one-time prompt per (caller, owner, call) triple, persisted per RFC-0002.
+Here the model is **user-approval driven**: an unapproved foreign access produces a one-time prompt with the persist-once lifecycle, and the owner's allowlist merely avoids that prompt. **Until the manifest RFC lands, these calls fall back to a one-time prompt per (caller, owner, call) triple**, persisted per RFC-0002.
+
+**Regime B — producing a proof or a signature. Allowlist only.**
+
+| Call                                                    | Own key        | Foreign                                     |
+| -------------------------------------------------------- | -------------- | ------------------------------------------- |
+| `account_create_account_proof`, `account_ring_vrf_sign`  | permissionless | **owner's manifest allowlist, or refused**  |
+
+For these two the allowlist is not an optimization but the whole gate, per the rule above: a prompt is not a substitute and MUST NOT be offered, because consenting to an opaque message is not meaningful consent. **The interim fallback of the previous paragraph does not apply here** — the consequence is that foreign proofs and foreign signatures are simply **unavailable until the manifest RFC lands**, since there is nowhere yet to express the allowlist. Own-key use is unaffected and needs nothing.
+
+The allowlist belongs to the product manifest, specified separately ([RFC: Product Manifest Format](https://github.com/paritytech/truapi/pull/206)), with two requirements from here: it must be **structurally extensible**, so a richer scheme (per-method grants, attestation thresholds) can replace a flat product-id list without a wire break; and it should be expressible **per method or category**, so "read my key handles" and "produce a proof with my key" need not be one grant.
 
 ### Accounts Protocol
 
@@ -302,7 +329,7 @@ struct ListRingVrfKeysResponse {
 }
 ```
 
-A Host holding a current registry snapshot answers `list` locally. `RingVrfProofRequest` and `RingVrfAliasRequest` gain `key_handle: ProductAccountId` alongside the `calling_product_id` they already carry, and a `RingVrfSignRequest` / `Response` pair mirrors `ring_vrf_sign` with the same two fields plus `message`. `RingVrfError` gains `KeyNotRegistered`, `KeyNotInRing`, and `NotAllowlisted`.
+A Host holding a current registry snapshot answers `list` locally. `RingVrfProofRequest` and `RingVrfAliasRequest` gain `key_handle: ProductAccountId` alongside the `calling_product_id` they already carry, and a `RingVrfSignRequest` / `Response` pair mirrors `account_ring_vrf_sign` with the same two fields plus `message`. `RingVrfError` gains `KeyNotRegistered`, `KeyNotInRing`, and `NotAllowlisted`.
 
 **Registration always reaches the Account Holder, but never blocks on it.** The phone is the authoritative registry — it needs the complete set to serve slot assignment and PGAS claims, and to show the user what their keys are used for. A Host holding the product's domain entropy answers immediately and mirrors the registration fire-and-forget; registration is idempotent, so re-notifying the phone about an entry it already has costs nothing. Without the entropy the Host issues the request and waits.
 
@@ -344,20 +371,20 @@ AutoSigning {
 
 - **Per-flow host callbacks instead of a registration call** — a Host call per internal flow with a product-supplied handler. Rejected: a new bidirectional contract for every internal feature the Host ever adds, coupled release cycles, and it hands the product flows (slot-table bookkeeping, claim budgets) RFC-0010 put on the Account Holder.
 - **Inspecting the `message`**, with or without a caller-supplied preimage. Unimplementable: for an extrinsic it is a hash of the inherited implication, and trusting a caller's preimage is still blind signing.
-- **Moving cross-product alias use into `create_transaction`**, by generalizing its signer to carry personhood-alias origins so the Host produces the proof while satisfying the signer and never hands one out, then checking the `set_alias` target it can now see. **Deferred, not rejected** — this is the direction a general solution takes, and it is the one worked out furthest. It was set aside for now because it only closes the cases whose call shape the Host can recognize: `set_alias` is one known call with one checkable argument, whereas `ring_vrf_sign` has no such structure, so the chokepoint would have to be rebuilt for every consequential call and could not cover raw signing at all. Shipping the allowlist first keeps the interim rule simple and uniform across both calls.
+- **Moving cross-product alias use into `signing_create_transaction`**, by generalizing its signer to carry personhood-alias origins so the Host produces the proof while satisfying the signer and never hands one out, then checking the `set_alias` target it can now see. **Deferred, not rejected** — this is the direction a general solution takes, and it is the one worked out furthest. It was set aside for now because it only closes the cases whose call shape the Host can recognize: `set_alias` is one known call with one checkable argument, whereas `account_ring_vrf_sign` has no such structure, so the chokepoint would have to be rebuilt for every consequential call and could not cover raw signing at all. Shipping the allowlist first keeps the interim rule simple and uniform across both calls.
 - **Constraining the alias target on chain**, so `set_alias` accepts only an account the runtime can derive from the proof's context. Attractive — it would remove the class rather than the instance — but the context-to-alias-account mapping is a client-side HD derivation the runtime cannot verify, and it removes the deliberately convenient case of pointing an alias at a real product account.
 - **Attestation thresholds / trusted verifiers** instead of a product-id allowlist. Deferred rather than dismissed: the flat list is simpler, and the manifest RFC must keep the schema extensible.
 - **A `ProofContext` enum with a `PoP(WellKnownContextSuffix)` variant.** Rejected: it forks context derivation and alias-account mapping in two — the situation RFC-0022 left open and this RFC closes.
 
 ## Prior Art and References
 
-- [RFC-0004 — Redesign `create_account_proof`](0004-ringlocation-redesign.md) — `RingLocation`, `ProductProofContext`, the context derivation, and the member-key selection contract this RFC deletes. Its "Out of scope: explicit member-key management … left to a future RFC" is this RFC.
+- [RFC-0004 — Redesign `account_create_account_proof`](0004-ringlocation-redesign.md) — `RingLocation`, `ProductProofContext`, the context derivation, and the member-key selection contract this RFC deletes. Its "Out of scope: explicit member-key management … left to a future RFC" is this RFC.
 - **RFC-0022 — Account key derivations** ([PR #296](https://github.com/paritytech/truapi/pull/296)) — the ring-VRF tree, `Either<u32, [u8; 32]>` indices, the reserved `peopl.dot` identity, and the `AutoSigning` payload this RFC extends. Its deferral of well-known alias accounts is resolved here.
 - **RFC-0023 — sr25519 VRF signing for product accounts** ([PR #301](https://github.com/paritytech/truapi/pull/301)) — the complementary non-member path, where this RFC's ring VRF path serves members.
-- [RFC-0020 — `create_transaction` and its AP mirror](0020-create-transaction.md) — the pattern of specifying a TrUAPI call together with its AP companion, followed here.
+- [RFC-0020 — `signing_create_transaction` and its AP mirror](0020-create-transaction.md) — the pattern of specifying a TrUAPI call together with its AP companion, followed here.
 - [RFC-0010 — W3S Allowance Management](0010-allowance.md) — AutoSigning and the PGAS / Bulletin / SSS flows that consume the person key.
 - [RFC-0002 — Permission Model](0002-permission-model.md) — the prompt-once lifecycle every cross-product grant reuses · [RFC-0009](0009-unauthenticated-product-access.md) — `NotConnected` semantics · [RFC: Product Manifest Format](https://github.com/paritytech/truapi/pull/206) — where the allowlist is specified.
-- *SSO background availability — common model* — the layered availability ladder referenced above. **TODO: link the HackMD document.**
+- [*SSO background availability — common model*](https://hackmd.io/rBEBjBzLQdOHvzwJkfufIQ) — the layered availability ladder the `onLoad` and AutoSigning sections lean on.
 - `rust/crates/truapi-server/src/runtime/signing_host/ring_vrf.rs` — the compiled-in selection this RFC removes.
 - [Polkadot People Registry / Ring VRF](https://forum.polkadot.network/t/the-people-registry/12749) · [individuality#878](https://github.com/paritytech/individuality/pull/878) — alias-account assignment for derived product addresses.
 
@@ -365,7 +392,7 @@ AutoSigning {
 
 No open questions remain on the design above. Four items are deliberately deferred to follow-up work:
 
-- **Expressing cross-product key use more narrowly than an allowlist.** The interim rule trades precision for time: an owner can say *who* may use its key but not *for what*. What an owner wants is closer to "you may prove personhood under your own airdrop context" than "you may do anything my key can do". The most developed candidate is in [Alternatives](#alternatives) — routing alias use through `create_transaction` so the Host sees the call — and any general answer has to cover `ring_vrf_sign`, where there is no call to inspect.
+- **Expressing cross-product key use more narrowly than an allowlist.** The interim rule trades precision for time: an owner can say *who* may use its key but not *for what*. What an owner wants is closer to "you may prove personhood under your own airdrop context" than "you may do anything my key can do". The most developed candidate is in [Alternatives](#alternatives) — routing alias use through `signing_create_transaction` so the Host sees the call — and any general answer has to cover `account_ring_vrf_sign`, where there is no call to inspect.
 - **Revocation** — already deferred by RFC-0010 and made more urgent by the entropy transfer, including retraction of a registry entry by its owner.
-- **Key rotation and recovery** — the registry makes rotation expressible (register a new index, retire the old), but the effect on in-flight aliases is unspecified.
+- **Key recovery.** Rotation is deliberately *not* in scope, and the registry's ability to express it (register a new index, retire the old) should not be read as an intention to use it. A person's alias is derived from their member key, so rotating the key changes that person's alias in **every context at once** — not merely in-flight ones — which is destructive rather than merely unspecified. The original PoP design treats the Bandersnatch key as something a person never changes, and individuality already handles the cases that do arise with `migrate_included_key` / `migrate_onboarding_key` plus an offchain worker that cleans up stale aliases. What remains open is recovery, which is a different problem from rotation.
 - **Provider competition** — once personhood is a product, more than one can exist; the provider-designation setting is only the minimal hook.
