@@ -153,8 +153,6 @@ This repopulates the ignored generated TS under `js/packages/truapi/`, including
 The full `make e2e-dotli` diagnosis builds and launches the local
 `truapi-host signing-host` CLI to answer dotli's pairing QR and auto-approve
 remote signing requests. It does not require the external signer-bot service.
-The generated account examples exercise `account.signVrf` through both the
-local signing and paired remote-SSO paths.
 When `HOST_CLI_SIGNER_MNEMONIC` is absent, the CLI manages a reusable isolated
 test identity under `.e2e-dotli/`. Set `E2E_DOTLI_SIGNING_HOST_BASE_PATH` to
 use a different state directory while debugging.
