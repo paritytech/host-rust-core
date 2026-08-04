@@ -157,6 +157,21 @@ impl RpcClient {
         &self,
         extrinsic: &[u8],
     ) -> Result<String, StatementAllowanceError> {
+        self.submit_and_watch_inclusion(extrinsic)
+            .await
+            .map(|inclusion| inclusion.block_hash)
+    }
+
+    /// Submit an extrinsic and report where it landed **and whether that block
+    /// was final**.
+    ///
+    /// The distinction matters to callers that must not treat a reversible
+    /// inclusion as a settled outcome: a transaction in a non-finalized block
+    /// can be invalidated on the new canonical chain after a reorg.
+    pub async fn submit_and_watch_inclusion(
+        &self,
+        extrinsic: &[u8],
+    ) -> Result<Inclusion, StatementAllowanceError> {
         let extrinsic_hex = format!("0x{}", hex::encode(extrinsic));
         let mut subscription = self
             .inner
@@ -185,9 +200,9 @@ impl RpcClient {
                 })?,
                 () = timeout => return Err(RpcError::SubmitTimeout.into()),
             };
-            tracing::debug!(?status, "allowance extrinsic status");
+            tracing::debug!(?status, "extrinsic status");
             match extrinsic_status(&status) {
-                ExtrinsicStatus::Included(hash) => return Ok(hash),
+                ExtrinsicStatus::Included(inclusion) => return Ok(inclusion),
                 ExtrinsicStatus::Rejected(reason) => {
                     return Err(RpcError::ExtrinsicRejected { status: reason }.into());
                 }
@@ -197,17 +212,30 @@ impl RpcClient {
     }
 }
 
+/// Where a submitted extrinsic landed, and how settled that is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inclusion {
+    /// Hash of the block the extrinsic was reported in.
+    pub block_hash: String,
+    /// Whether the node reported that block as finalized. An inclusion that is
+    /// not finalized is provisional and may be undone by a reorg.
+    pub finalized: bool,
+}
+
 #[derive(Debug, PartialEq)]
 enum ExtrinsicStatus {
-    Included(String),
+    Included(Inclusion),
     Rejected(String),
     Pending,
 }
 
 fn extrinsic_status(status: &Value) -> ExtrinsicStatus {
-    for key in ["finalized", "inBlock"] {
+    for (key, finalized) in [("finalized", true), ("inBlock", false)] {
         if let Some(hash) = status.get(key).and_then(Value::as_str) {
-            return ExtrinsicStatus::Included(hash.to_string());
+            return ExtrinsicStatus::Included(Inclusion {
+                block_hash: hash.to_string(),
+                finalized,
+            });
         }
     }
     for key in [
@@ -334,20 +362,47 @@ mod tests {
     use serde_json::json;
 
     use super::testing::ScriptedRpc;
-    use super::{ExtrinsicStatus, HostRpcClient, RpcClient, extrinsic_status};
+    use super::{ExtrinsicStatus, HostRpcClient, Inclusion, RpcClient, extrinsic_status};
 
     #[test]
-    fn in_block_status_completes_submission() {
+    fn in_block_status_completes_submission_but_is_not_final() {
         let status = extrinsic_status(&json!({"inBlock": "0x1234"}));
 
-        assert!(matches!(status, ExtrinsicStatus::Included(hash) if hash == "0x1234"));
+        assert_eq!(
+            status,
+            ExtrinsicStatus::Included(Inclusion {
+                block_hash: "0x1234".to_string(),
+                finalized: false,
+            })
+        );
     }
 
     #[test]
-    fn finalized_status_completes_submission() {
+    fn finalized_status_completes_submission_and_is_final() {
         let status = extrinsic_status(&json!({"finalized": "0xabcd"}));
 
-        assert!(matches!(status, ExtrinsicStatus::Included(hash) if hash == "0xabcd"));
+        assert_eq!(
+            status,
+            ExtrinsicStatus::Included(Inclusion {
+                block_hash: "0xabcd".to_string(),
+                finalized: true,
+            })
+        );
+    }
+
+    #[test]
+    fn a_status_carrying_both_is_read_as_finalized() {
+        // Defensive: finality is the stronger claim, so if a node ever reports
+        // both, taking the weaker one would understate what is settled.
+        let status = extrinsic_status(&json!({"inBlock": "0x1", "finalized": "0x2"}));
+
+        assert_eq!(
+            status,
+            ExtrinsicStatus::Included(Inclusion {
+                block_hash: "0x2".to_string(),
+                finalized: true,
+            })
+        );
     }
 
     #[test]
