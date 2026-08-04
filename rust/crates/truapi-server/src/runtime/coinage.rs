@@ -7,8 +7,13 @@
 //! Coinage needs key material, so it is a signing-host concern: a seedless
 //! pairing host forwards these operations rather than performing them.
 
+pub mod bootstrap;
 pub mod call;
 pub mod extension;
 pub mod extrinsic;
+pub mod observe;
+pub mod persistence;
 pub mod proof;
+pub mod recover;
 pub mod storage;
+pub mod submit;
