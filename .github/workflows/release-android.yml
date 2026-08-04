@@ -12,6 +12,11 @@ on:
   push:
     tags:
       - "truapi-host-android@*"
+    # Temporary, remove once the pipeline is proven: publish an rc build on
+    # every push to the introducing branch, since workflow_dispatch is only
+    # available after this file lands on the default branch.
+    branches:
+      - "vf/android-host-artifact"
 
 permissions:
   contents: read
@@ -28,8 +33,11 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             echo "version=${GITHUB_REF_NAME#truapi-host-android@}" >> "$GITHUB_OUTPUT"
+          else
+            # Branch push (temporary trigger): unique rc per run.
+            echo "version=0.1.0-rc.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: dtolnay/rust-toolchain@stable
