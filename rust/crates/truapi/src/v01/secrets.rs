@@ -1,31 +1,22 @@
 use parity_scale_codec::{Decode, Encode};
 
-/// Caller identity a backend requires, declared in its dotNS record (RFC 0025).
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub enum CallerRequirement {
-    /// Product name only. Nothing the backend can verify.
-    None,
-    /// Product account key plus a signature over the canonical digest.
-    Signature,
-    /// The above plus a ring VRF proof and its contextual alias.
-    Personhood,
-}
-
 /// Error from [`crate::api::Secrets::request`] (RFC 0025).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum HostSecretError {
     /// No authenticated session (RFC 0009). The host must not auto-prompt login.
     NotConnected,
-    /// No record and no host default under that name.
+    /// No record under that name.
     UnknownSecret,
     /// The record resolved but does not parse.
     MalformedRecord,
     /// The user declined consent or the signing confirmation.
     Rejected,
-    /// The backend requires `Personhood` and the user is not a people-set member.
+    /// The user is not a people-set member, so no caller proof can be produced.
     NotMember,
     /// The backend could not be reached.
     Transport,
+    /// The response exceeded the host's limit and was discarded.
+    ResponseTooLarge,
     /// Catch-all.
     Unknown {
         /// Human-readable failure reason.
@@ -53,13 +44,14 @@ pub struct SecretQueryParam {
 
 /// Request to a backend holding a credential the product never sees (RFC 0025).
 ///
-/// The backend is resolved as `secret:<name>` in `product`'s dotNS records,
-/// falling back to a host default. That record fixes the endpoint, path, and
-/// method, so the caller supplies only a query, headers, and a body.
+/// The backend is resolved as `secret:<name>` in `product`'s dotNS records.
+/// That record fixes the endpoint, path, and method, so the caller supplies
+/// only a query, headers, and a body. The host attaches a ring VRF proof over
+/// the canonical digest, plus the contextual alias for that backend.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostSecretRequest {
-    /// dotNS name whose records declare the backend. Usually the caller's own,
-    /// but naming another product is allowed.
+    /// dotNS name whose records declare the backend. Often the caller's own,
+    /// but naming another is how a product reaches a shared service.
     pub product: String,
     /// Secret name, resolved as `secret:<name>` in that product's records.
     pub name: String,

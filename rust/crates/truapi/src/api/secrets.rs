@@ -10,9 +10,9 @@ pub trait Secrets: Send + Sync {
     /// Send a request to a backend, which holds a credential the product never
     /// sees, and return its response.
     ///
-    /// The backend is resolved as `secret:<name>` in `product`'s dotNS records,
-    /// falling back to a host default. That record fixes the endpoint, path,
-    /// and method, so the caller supplies only a query, headers, and a body.
+    /// The backend is resolved as `secret:<name>` in `product`'s dotNS
+    /// records. That record fixes the endpoint, path, and method, so the
+    /// caller supplies only a query, headers, and a body.
     ///
     /// ```ts
     /// const result = await truapi.secrets.request({
