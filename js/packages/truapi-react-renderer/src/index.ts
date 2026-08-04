@@ -12,3 +12,8 @@ export type { CustomRendererNode } from "@parity/truapi";
 
 // React renderer
 export { createRenderer } from "./renderer.js";
+export type {
+  ChatCustomMessageRenderer,
+  ChatCustomMessageRendererParams,
+} from "./rendererChatMessage.js";
+export { registerChatMessageRenderer } from "./rendererChatMessage.js";
