@@ -7,16 +7,15 @@ use crate::{CallContext, CallError};
 /// Calls made with a credential the product never holds.
 #[crate::async_trait]
 pub trait Secrets: Send + Sync {
-    /// Send a request to a backend, which holds a credential the product never
-    /// sees, and return its response.
+    /// Send a request to a backend and return its response.
     ///
-    /// The backend is resolved as `secret:<name>` in `product`'s dotNS
-    /// records. That record fixes the endpoint, path, and method, so the
+    /// The backend is resolved as `secret:<name>` in the dotNS records of
+    /// `product_id`. That record fixes the endpoint, path, and method, so the
     /// caller supplies only a query, headers, and a body.
     ///
     /// ```ts
     /// const result = await truapi.secrets.request({
-    ///   product: "onramp.dot",
+    ///   productId: "onramp.dot",
     ///   name: "meld-session",
     ///   query: [],
     ///   headers: [{ name: "Content-Type", value: "application/json" }],

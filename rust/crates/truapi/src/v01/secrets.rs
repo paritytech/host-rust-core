@@ -7,7 +7,7 @@ pub enum HostSecretError {
     NotConnected,
     /// No record under that name.
     UnknownSecret,
-    /// The record resolved but does not parse.
+    /// The record resolved but does not parse, or names an unsupported field.
     MalformedRecord,
     /// The user declined consent or the signing confirmation.
     Rejected,
@@ -15,8 +15,10 @@ pub enum HostSecretError {
     NotMember,
     /// The backend could not be reached.
     Transport,
-    /// The response exceeded the host's limit and was discarded.
+    /// The response exceeded the limit set by the host and was discarded.
     ResponseTooLarge,
+    /// The request body or header count exceeded the limit set by the host.
+    RequestTooLarge,
     /// Catch-all.
     Unknown {
         /// Human-readable failure reason.
@@ -33,7 +35,7 @@ pub struct SecretHeader {
     pub value: String,
 }
 
-/// One query parameter appended to the record's fixed path.
+/// One query parameter appended to the fixed path in the record.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SecretQueryParam {
     /// Parameter name.
@@ -44,22 +46,22 @@ pub struct SecretQueryParam {
 
 /// Request to a backend holding a credential the product never sees (RFC 0025).
 ///
-/// The backend is resolved as `secret:<name>` in `product`'s dotNS records.
+/// The backend is resolved as `secret:<name>` in the dotNS records of `product_id`.
 /// That record fixes the endpoint, path, and method, so the caller supplies
 /// only a query, headers, and a body. The host attaches a ring VRF proof over
 /// the canonical digest, plus the contextual alias for that backend.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostSecretRequest {
-    /// dotNS name whose records declare the backend. Often the caller's own,
+    /// dotNS name whose records declare the backend. Often the calling product,
     /// but naming another is how a product reaches a shared service.
-    pub product: String,
-    /// Secret name, resolved as `secret:<name>` in that product's records.
+    pub product_id: String,
+    /// Secret name, resolved as `secret:<name>` in those records.
     pub name: String,
-    /// Appended to the record's fixed path as a query string.
+    /// Appended to the fixed path as a query string.
     pub query: Vec<SecretQueryParam>,
     /// Headers to forward. The host strips any in the `X-Polkadot-` namespace.
     pub headers: Vec<SecretHeader>,
-    /// Request body, if the record's method takes one.
+    /// Request body, if the declared method takes one.
     pub body: Option<Vec<u8>>,
 }
 

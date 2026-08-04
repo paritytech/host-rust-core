@@ -37,8 +37,8 @@ pub mod latest {
         RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
         RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
         RemoteStatementStoreSubscribeRequest, RingLocation, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeVariant, TxPayloadExtension,
+        SecretHeader, SecretQueryParam, SignedStatement, Statement, StatementProof,
+        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeVariant, TxPayloadExtension,
     };
 
     /// Latest payload type of a versioned envelope.

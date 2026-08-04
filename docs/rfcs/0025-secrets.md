@@ -31,6 +31,8 @@ The credential never reaches the product or the host. The host runs on the user'
 
 A funding product wants a meld.io API key for fiat onramp. A game product wants TURN credentials so two players can connect through a relay when their networks refuse a direct path. Neither can hold what they are asking for, because a product runs inside a host on the user's own machine and anything handed to either is readable by the person using it. [Meld's documentation](https://docs.meld.io/docs/meld-api/getting-started) states it plainly: "Always call Meld from your backend. Direct calls from a browser or mobile app expose your API key." A TURN relay secret mints unlimited credentials for a relay somebody pays bandwidth for. Both are long-lived credentials that must stay unknown to the person running the product.
 
+Where a provider offers a credential that is safe in a client, none of this is needed. Meld Checkout takes a `publicKey` in the URL and requires no backend, at the cost of Meld's hosted UI in place of a custom provider and quote flow. That is worth checking before publishing a record.
+
 Requirements for a solution:
 
 1. **Products never receive secret material.** What crosses the TrUAPI boundary is the result of an operation, or a credential that expires on its own.
@@ -70,11 +72,11 @@ The credential never appears in the record. What is published is one operation t
 A request names the dotNS name whose records to read and the secret within them, so `secret:<name>` resolves under that name.
 
 ```ts
-// The deployer's own TURN relay.
-await truapi.secrets.request({ product: self, name: "turn" });
+// A TURN relay run by the deployer.
+await truapi.secrets.request({ productId: myDotNsName, name: "turn" });
 
-// The deployer's own Meld session backend.
-await truapi.secrets.request({ product: self, name: "meld-session", body });
+// A Meld session backend run by the deployer.
+await truapi.secrets.request({ productId: myDotNsName, name: "meld-session", body });
 ```
 
 Naming a dotNS name other than your own is allowed, which is how a product reaches a service another deployer publishes. It follows [RFC-0004](0004-ringlocation-redesign.md) and [RFC-0023](0023-account-sign-vrf.md), which take a product identifier rather than assuming the caller's. Records are public and endpoints are publicly reachable, so refusing it would buy obscurity rather than isolation. What actually protects a backend is the caller proof and its own rate limiting, not who is permitted to name it.
@@ -86,10 +88,9 @@ Typed convenience such as a `getIceServers()` that parses the TURN response into
 Added to a new `Secrets` trait:
 
 ```rust
-/// Send a request to a backend, which holds a credential the product never
-/// sees, and return its response.
+/// Send a request to a backend and return its response.
 ///
-/// The backend is resolved as `secret:<name>` in `product`'s dotNS records.
+/// The backend is resolved as `secret:<name>` in the dotNS records of `product`.
 /// That record fixes the endpoint, path, and method, so the caller supplies
 /// only a body, query, and headers.
 #[wire(request_id = 166)]
@@ -106,17 +107,22 @@ async fn request(
 
 ```rust
 struct HostSecretRequest {
-    /// dotNS name whose records declare the backend. Often the caller's own,
+    /// dotNS name whose records declare the backend. Often the calling product,
     /// but naming another is how a product reaches a shared service.
-    product: DotNsName,
-    /// Secret name, resolved as `secret:<name>` in that name's records.
+    product_id: String,
+    /// Secret name, resolved as `secret:<name>` in those records.
     /// The record it finds names the backend.
     name: String,
-    /// Appended to the record's fixed path as a query string.
-    query: Vec<(String, String)>,
-    headers: Vec<(String, String)>,
-    body: Option<Bytes>,
+    /// Appended to the fixed path as a query string.
+    query: Vec<SecretQueryParam>,
+    /// Headers to forward. The host strips any in the `X-Polkadot-` namespace.
+    headers: Vec<SecretHeader>,
+    /// Request body, if the declared method takes one.
+    body: Option<Vec<u8>>,
 }
+
+struct SecretHeader { name: String, value: String }
+struct SecretQueryParam { name: String, value: String }
 
 /// The dotNS record, published by the deployer rather than sent over the wire.
 struct BackendRecord {
@@ -130,8 +136,8 @@ struct BackendRecord {
 
 struct HostSecretResponse {
     status: u16,
-    headers: Vec<(String, String)>,
-    body: Bytes,
+    headers: Vec<SecretHeader>,
+    body: Vec<u8>,
 }
 
 enum HostSecretError {
@@ -139,7 +145,8 @@ enum HostSecretError {
     NotConnected,
     /// No record under that name.
     UnknownSecret,
-    /// The record exists but does not parse, or names an unsupported field.
+    /// The record resolved but does not parse, names an unsupported field,
+    /// or declares an endpoint the host refuses to fetch.
     MalformedRecord,
     /// The user declined consent or the signing confirmation.
     Rejected,
@@ -148,8 +155,10 @@ enum HostSecretError {
     NotMember,
     /// The endpoint could not be reached.
     Transport,
-    /// The response exceeded the host's limit and was discarded.
+    /// The response exceeded the limit set by the host and was discarded.
     ResponseTooLarge,
+    /// The request body or header count exceeded the limit set by the host.
+    RequestTooLarge,
     Unknown { reason: String },
 }
 ```
@@ -165,15 +174,17 @@ X-Polkadot-Proof       Ring VRF proof over the canonical digest.
 X-Polkadot-Alias       Contextual alias for this backend.
 ```
 
-The canonical digest covers the method, the full request URL including query, the timestamp, the nonce, and a hash of the body. Backends reject a request whose timestamp falls outside their accepted window, and should reject a repeated nonce within it.
+The canonical digest covers the method, the full request URL including query, the timestamp, the nonce, and a hash of the body. Backends MUST reject a request whose timestamp falls outside their accepted window, and MUST reject a repeated nonce within it. A replayed request is a duplicated operation, which for a payment session is a duplicated charge.
 
 ### Call semantics
 
 The host resolves `secret:<name>` from `product`'s dotNS records and returns `UnknownSecret` if there is none. It builds the request from the record's `endpoint`, `path`, and `method`, appending the caller's `query`. It obtains user consent, produces the caller proof, and attaches it.
 
+The host MUST reject an endpoint that is not `https`, and MUST reject one resolving to a loopback, link-local, or private address, returning `MalformedRecord` in both cases. It MUST apply that check to the address it connects to rather than to the hostname, so a name that resolves differently on a second lookup cannot slip past it. Without this a product could publish `secret:x` naming `http://127.0.0.1:9944` under its own dotNS name and use the host as a proxy into the user's machine and local network, reaching what the browser's same-origin and local network protections would otherwise deny it.
+
 The host MUST strip any caller-supplied header in the `X-Polkadot-` namespace before attaching its own, so a product cannot forge or displace the proof.
 
-The host MUST bound the response it buffers and MUST return `ResponseTooLarge` rather than exceed that bound. A product may publish a record naming any endpoint and then call it, so the response is untrusted input regardless of who deployed the product, and an unbounded one exhausts the host through a call the user has already consented to. The same bound applies to the request body and header count, which the product supplies directly.
+The host MUST bound the response it buffers and MUST return `ResponseTooLarge` rather than exceed that bound. A product may publish a record naming any endpoint and then call it, so the response is untrusted input regardless of who deployed the product, and an unbounded one exhausts the host through a call the user has already consented to. The same applies to the request body and header count, which the product supplies directly, returning `RequestTooLarge`.
 
 The response is returned unmodified except for hop-by-hop headers. Products must not assume the request originated from the user's address, because the host makes it directly and the backend makes any upstream call from its own infrastructure.
 
@@ -189,7 +200,7 @@ The unlinkable identifier comes with it: the call takes a `ProductProofContext {
 
 This is deliberately the ring path and not `sign_vrf` ([RFC-0023](0023-account-sign-vrf.md)). That method produces an sr25519 VRF bound to the product account, for participants who are **not yet** people-set members. It is identity-bound rather than anonymous, and a non-member account is free to create, so it delivers neither the anonymity nor the scarcity this design needs. The two are complementary and only the ring path fits here.
 
-A backend verifies against the People chain, so Parity is in neither the request path nor the verification path, and there is no token format or key distribution to agree. It also works identically on the desktop and web hosts, which is why device attestation is not used here: Apple App Attest and Google Play Integrity exist only on mobile.
+A backend verifies against the People chain, so Parity is in neither the request path nor the verification path, and there is no key distribution to agree. The canonical digest is the one thing every verifier must reproduce identically, and it is not yet pinned to that precision. It also works identically on the desktop and web hosts, which is why device attestation is not used here: Apple App Attest and Google Play Integrity exist only on mobile.
 
 The cost is that a non-member cannot reach any backend and gets `NotMember`. That is the deliberate trade: every backend is Sybil-resistant without its operator configuring anything, and the population still verifying is served by nothing here.
 
@@ -197,7 +208,7 @@ The cost is that a non-member cannot reach any backend and gets `NotMember`. Tha
 
 A backend that verifies these proofs MUST:
 
-> Derive the caller identity it rate limits from the contextual alias carried by a ring proof checked against the current ring on the People chain, never from a caller-supplied field.
+> Verify the ring proof against the current ring on the People chain, and verify that it was made over the digest of the request as received. Derive the caller identity it rate limits from the contextual alias that proof carries, never from a caller-supplied field.
 
 `X-Polkadot-Product` is host-asserted and unverifiable, so a backend must never make a trust decision on it. It is a routing and diagnostics hint. In particular a backend cannot restrict itself to the product that declared it, because any product may name that record and the header asserting otherwise is unverifiable. A backend that ignores this contract gains nothing an attacker cannot forge, and the failure is silent, which is why it is stated normatively rather than left to implementers.
 
@@ -217,7 +228,7 @@ sequenceDiagram
   D->>N: publish secret:meld-session = { endpoint, path, method }
   Note over D,S: The Meld key stays on the backend. It is never published.
 
-  P->>H: secrets.request({ product: self, name: "meld-session" })
+  P->>H: secrets.request({ productId: myDotNsName, name: "meld-session" })
   H->>H: resolve secret:meld-session, obtain user consent
   H->>H: ring proof over the canonical digest
   H->>S: POST /session + X-Polkadot-Proof, -Alias
@@ -246,7 +257,7 @@ For credentials that belong to a **deployer or to Parity** and must stay unknown
 
 **Not** for secrets that belong to the user. Those can be encrypted to the user's own key, and the objection driving this design does not apply to them.
 
-**Not** a general outbound HTTP proxy. The endpoint is fixed by the record, and a product wanting arbitrary network access already has `RemotePermission::Remote`.
+**Not** a general outbound HTTP proxy. The endpoint is fixed by the record, must be public HTTPS, and a product wanting arbitrary network access already has `RemotePermission::Remote`.
 
 **Not** a way to hide anything from the user. Results cross into the host and are therefore readable by whoever runs it. Only the credential stays out of reach.
 
@@ -260,41 +271,29 @@ For credentials that belong to a **deployer or to Parity** and must stay unknown
 
 ## Alternatives
 
-### A generic `get_host_secret(name)`
+### The product calls the endpoint directly
 
-Rejected. It breaches the trust boundary by definition, and it cannot serve the TURN case anyway, because what a relay backend gives out is a ticket it mints, not a credential it stores. A flat namespace with no owner also lets two products each claim `meld`.
-
-### Bake secrets into host distributions
-
-Rejected. A downloadable host makes any embedded secret public. This is not hypothetical, it is what ships today.
-
-### Fetch the secret from the deployer's URL into the host
-
-Rejected, and worth distinguishing from the accepted design because it looks similar. An endpoint that hands the plaintext credential to whoever asks is strictly worse than publishing the credential, because it adds a false sense of control. The host calls a backend to have work done, never to collect a key.
-
-### Escrow the secret with a Parity-run resolver
-
-Considered at length and set aside. The deployer would encrypt the secret to a resolver's published key, publish the ciphertext in the record, and the resolver would decrypt and attach it. It spares deployers from running anything, but it makes Parity the custodian of third-party payment credentials with the liability that follows, and concentrates every deployer's secret behind one breach. Confidential computing with remote attestation reduces that trust rather than removing it, at the cost of reproducible builds, enclave-hosted TLS egress, and re-attestation on every deploy. If requiring deployer-run infrastructure proves to block adoption, the network-run enclave below is the better version of this idea, since it removes the single custodian rather than hardening one.
-
-### Encrypt secrets to every user's key
-
-Rejected. Authorising a user to decrypt gives that user the plaintext, which is the outcome the Meld case must avoid. The same objection defeats encrypting to a host key, since the host is the user's to control. It also requires enumerating users before they arrive, grows the record linearly, and cannot revoke what has already been decrypted. The scheme is correct for secrets that belong to the user, which is a non-goal here.
-
-### Identity-backend attestation tokens as the caller proof
-
-Rejected. It attests app instances using Apple App Attest, Google Play Integrity, and Android key attestation, none of which exist on the desktop or web hosts. Its tokens are HS256, so the identity backend is the only party able to verify them, and a deployer could not check one without new asymmetric signing, a published JWKS, and an audience claim. Personhood delivers stronger scarcity, works everywhere, and is verifiable against the People chain.
-
-### Deliver results over the statement store
-
-Rejected as the general transport. It offers durability across reloads and multi-device delivery, but it is a public broadcast medium, so it publishes durable metadata about which product called what and when, and [RFC-0010](0010-allowance.md) names that observer as the threat it defends against. It also adds propagation latency at the moment a user taps buy, needs a slot allowance, and bounds payload size. It remains plausible as an optional delivery mode for small latency-tolerant payloads.
+The closest thing to doing nothing. A product can already reach any origin with `RemotePermission::Remote`, so a deployer could publish no record and hardcode their endpoint instead. Two things would be missing. The endpoint would live in the bundle, so rotating it needs a redeploy and every consumer of a shared service needs its own copy. And nothing the product sends could be trusted, because a product can claim whatever identity it likes, which leaves the endpoint open to anyone who finds it. Record-based discovery and an unforgeable caller proof are the whole of what this method adds, and without both it should not exist.
 
 ### A network-run trusted execution environment
 
-Not rejected, and the direction to revisit. Instead of the deployer running a backend, the credential would be encrypted to an enclave whose attestation proves which code decrypts it, with the enclave operated by network nodes rather than by Parity or the deployer. That removes the custody objection to a Parity-run resolver and the requirement that every deployer run infrastructure. Polkadot parachains built for confidential compute, such as Integritee and Phala, exist for roughly this purpose. It is out of scope here because it needs a different record carrying ciphertext and an attestation policy, because attestation moves trust to a hardware vendor rather than removing it, and because nothing in this design is blocked waiting for it.
+Not rejected, and the direction to revisit. Instead of the deployer running a backend, the credential would be encrypted to an enclave whose attestation proves which code decrypts it, with the enclave operated by network nodes rather than by Parity or the deployer. That removes both the custody problem and the requirement that every deployer run infrastructure. Polkadot parachains built for confidential compute, such as Integritee and Phala, exist for roughly this purpose. It is out of scope here because it needs a different record carrying ciphertext and an attestation policy, because attestation moves trust to a hardware vendor rather than removing it, and because nothing in this design is blocked waiting for it.
 
-### Have the provider issue a client-safe credential
+### Put the secret on the device
 
-Not rejected, and preferable where available. Meld Checkout accepts a `publicKey` in the URL and requires no backend, which would leave the funding product needing nothing from this RFC, at the cost of Meld's hosted UI in place of a custom provider and quote flow. Worth checking before declaring a backend.
+This fails in both the forms it takes. A generic `get_host_secret(name)` breaches the trust boundary by definition, and it cannot serve the TURN case anyway, because what a relay backend gives out is a ticket it mints rather than a credential it stores. A flat namespace with no owner also lets two products each claim `meld`. Baking the secret into the host distribution fails harder still, since a downloadable host makes any embedded secret public.
+
+### Fetch the secret from the deployer's URL into the host
+
+Worth distinguishing from the accepted design, because it looks similar. An endpoint that hands the plaintext credential to whoever asks is strictly worse than publishing the credential, because it adds a false sense of control. The host calls a backend to have work done, never to collect a key.
+
+### Escrow the secret with a Parity-run resolver
+
+Considered at length and set aside. The deployer would encrypt the secret to a resolver's published key, publish the ciphertext in the record, and the resolver would decrypt and attach it. It spares deployers from running anything, but it makes Parity the custodian of third-party payment credentials with the liability that follows, and concentrates every deployer's secret behind one breach. The network-run enclave above is the better form of the same idea, since it removes the single custodian rather than hardening one.
+
+### Encrypt secrets to every user's key
+
+Authorising a user to decrypt gives that user the plaintext, which is the outcome the Meld case must avoid. The same objection defeats encrypting to a host key, since the host is the user's to control. It also requires enumerating users before they arrive, grows the record linearly, and cannot revoke what has already been decrypted. The scheme is correct for secrets that belong to the user, which is a non-goal here.
 
 ## Prior Art and References
 
@@ -308,6 +307,7 @@ Not rejected, and preferable where available. Meld Checkout accepts a `publicKey
 
 ## Unresolved Questions
 
+- **How is the canonical digest constructed, exactly?** Every deployer writes an independent verifier, so field ordering, separators, the hash algorithm, query canonicalization, and the encoding of the proof and alias headers all have to be pinned rather than described. This RFC should not ship without test vectors a verifier can check itself against.
 - **What user consent does this call require?** Reusing `RemotePermission::Remote { domains }` for the endpoint origin is the obvious fit, but it was written for a product reaching out directly, and here the host calls on the product's behalf. Open within that: whether consent is per backend or per call, and whether the record's declared endpoint is shown at grant time.
 - **How the `ProductProofContext` suffix is derived from the backend.** It must bind in a way the backend operator can reproduce and a product cannot vary to farm fresh aliases. The endpoint origin is the obvious binding, which means changing endpoint resets every identifier. [RFC-0004](0004-ringlocation-redesign.md) leaves the suffix to the caller, and [RFC-0024](https://github.com/paritytech/truapi/pull/324) requires contexts to use the product-scoped construction, so this needs settling against whichever lands.
 - **Where the `key_handle` comes from if [RFC-0024](https://github.com/paritytech/truapi/pull/324) lands.** That RFC deletes host-side key selection, so a request would need a handle the product does not have and must not learn. The host supplying it from the registry is the obvious answer and is not specified here.
