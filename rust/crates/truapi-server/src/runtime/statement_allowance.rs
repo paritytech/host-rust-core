@@ -22,7 +22,7 @@ use sp_crypto_hashing::twox_128;
 use thiserror::Error;
 use tracing::{debug, warn};
 
-use extension::{ChainState, Metadata, MetadataError};
+use extension::{ChainState, EraAnchor, Metadata, MetadataError};
 use ring::RingParams;
 use rpc::RpcClient;
 use slot::{SlotError, SlotSelection};
@@ -145,7 +145,36 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
         transaction_version,
         genesis_hash,
         nonce: 0,
+        mortality: None,
     })
+}
+
+/// Read the finalized head as an era anchor for a mortal transaction.
+///
+/// The finalized head rather than the best block: an anchor on a fork that is
+/// later reorganized away takes the extrinsic with it, and the whole point of
+/// the anchor is that it stays decidable.
+pub async fn fetch_era_anchor(
+    rpc: &RpcClient,
+    period: u64,
+) -> Result<EraAnchor, StatementAllowanceError> {
+    let hash_hex = rpc.finalized_head().await?;
+    let hash_bytes = hex::decode(hash_hex.strip_prefix("0x").unwrap_or(&hash_hex))
+        .map_err(ChainStateError::GenesisHex)?;
+    let len = hash_bytes.len();
+    let hash: [u8; 32] = hash_bytes
+        .try_into()
+        .map_err(|_| ChainStateError::GenesisHashLength { len })?;
+
+    let header = rpc.call("chain_getHeader", json!([hash_hex])).await?;
+    let number = header
+        .get("number")
+        .and_then(Value::as_str)
+        .ok_or(ChainStateError::HeaderNumberMissing)?;
+    let number = u64::from_str_radix(number.strip_prefix("0x").unwrap_or(number), 16)
+        .map_err(ChainStateError::HeaderNumberParse)?;
+
+    Ok(EraAnchor::new(number, hash, period))
 }
 
 /// Read a u32 field from a JSON object.
@@ -636,6 +665,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            mortality: None,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {

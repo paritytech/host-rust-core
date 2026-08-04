@@ -8,6 +8,19 @@
 
 use core::time::Duration;
 
+/// Era length, in blocks, for every coinage extrinsic.
+///
+/// `coinage-layer.md` Appendix A.14. Coinage extrinsics are mortal by
+/// requirement, not by preference: this period is the only thing that lets
+/// recovery eventually declare a transaction it lost track of dead, and so the
+/// only thing that makes returning its inputs to the spendable pool safe.
+///
+/// 256 blocks is roughly 25 minutes at a six-second block time — long enough to
+/// survive a socket drop or a backgrounded host, short enough that a vanished
+/// transaction does not strand its inputs for hours. Must be a power of two in
+/// `[4, 65536]`.
+pub const EXTRINSIC_MORTALITY_BLOCKS: u64 = 256;
+
 use super::types::{Amount, CoinAge, DenominationExponent};
 
 /// Policy parameters for one layer instance.

@@ -105,12 +105,25 @@ pub fn inherited_implication(
 
 /// Assemble the unsigned extrinsic, splicing `as_coinage_extra` into the
 /// extension slot metadata says it occupies.
+///
+/// Refuses an immortal `state`. Mortality is a correctness requirement for this
+/// layer, not a fee optimization: recovery decides that a lost transaction is
+/// dead by watching the finalized height pass the era's end, and an immortal
+/// extrinsic never reaches such a point, so its inputs could never safely be
+/// returned to the spendable pool. Enforced here because this is the one place
+/// every coinage extrinsic passes through.
 pub fn build_unsigned_extrinsic(
     metadata: &Metadata,
     state: &ChainState,
     call_data: &[u8],
     as_coinage_extra: &[u8],
 ) -> Result<Vec<u8>, CoinageError> {
+    if state.mortality.is_none() {
+        return Err(CoinageError::Internal(
+            "a coinage extrinsic must be mortal; chain state carries no era anchor".to_string(),
+        ));
+    }
+
     let all = metadata.encode_signed_extensions(state);
     let slot = metadata.extension_index(AS_COINAGE).ok_or_else(|| {
         CoinageError::Internal(format!("{AS_COINAGE} extension not found in metadata"))
@@ -136,6 +149,7 @@ mod tests {
     use crate::host_logic::coinage::types::{CoinAccountId, DenominationExponent};
     use crate::runtime::coinage::call::{CoinOutput, SplitArgs, TransferArgs};
     use crate::runtime::coinage::extension::AsCoinageInfo;
+    use crate::runtime::statement_allowance::extension::EraAnchor;
 
     use super::*;
 
@@ -145,17 +159,82 @@ mod tests {
         Metadata::decode(FIXTURE).expect("the fixture decodes")
     }
 
+    /// A mortal chain state, because assembly refuses anything else.
     fn state() -> ChainState {
+        ChainState {
+            mortality: Some(EraAnchor::new(1_000, [0xcd; 32], 256)),
+            ..immortal_state()
+        }
+    }
+
+    fn immortal_state() -> ChainState {
         ChainState {
             spec_version: 1_000_000,
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            mortality: None,
         }
     }
 
     fn exponent(value: i8) -> DenominationExponent {
         DenominationExponent::new(value).expect("exponent is in range")
+    }
+
+    #[test]
+    fn an_immortal_extrinsic_is_refused() {
+        // The layer cannot recover an immortal transaction it loses track of:
+        // there is no height past which inclusion becomes impossible, so its
+        // inputs could never be released. Refused at assembly rather than
+        // discovered during recovery.
+        let metadata = metadata();
+        let call = build_call(
+            &metadata,
+            CoinageCall::Transfer,
+            &TransferArgs::new(CoinAccountId([1; 32])),
+        )
+        .expect("resolves");
+        let extra = AsCoinageInfo::AsCoin
+            .encode_extra(&metadata)
+            .expect("resolves");
+
+        let refused = build_unsigned_extrinsic(&metadata, &immortal_state(), &call, &extra)
+            .expect_err("an immortal coinage extrinsic is refused");
+
+        assert!(refused.to_string().contains("must be mortal"));
+        assert!(build_unsigned_extrinsic(&metadata, &state(), &call, &extra).is_ok());
+    }
+
+    #[test]
+    fn the_era_binds_the_extrinsic_to_its_anchor() {
+        // Two extrinsics identical but for their era anchor must differ, or the
+        // checkpoint recorded in the operation log would not describe the
+        // transaction that was actually broadcast.
+        let metadata = metadata();
+        let call = build_call(
+            &metadata,
+            CoinageCall::Transfer,
+            &TransferArgs::new(CoinAccountId([1; 32])),
+        )
+        .expect("resolves");
+        let extra = AsCoinageInfo::AsCoin
+            .encode_extra(&metadata)
+            .expect("resolves");
+        let elsewhere = ChainState {
+            mortality: Some(EraAnchor::new(2_000, [0xef; 32], 256)),
+            ..immortal_state()
+        };
+
+        let here = build_unsigned_extrinsic(&metadata, &state(), &call, &extra).expect("assembles");
+        let there =
+            build_unsigned_extrinsic(&metadata, &elsewhere, &call, &extra).expect("assembles");
+
+        assert_ne!(here, there);
+        assert_ne!(
+            inherited_implication(&metadata, &call, &state()).expect("builds"),
+            inherited_implication(&metadata, &call, &elsewhere).expect("builds"),
+            "the proof must sign over the era it was built for"
+        );
     }
 
     #[test]

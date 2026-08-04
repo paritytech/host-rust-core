@@ -148,6 +148,67 @@ pub enum MetadataError {
     },
 }
 
+/// Anchor for a mortal transaction era.
+///
+/// A mortal extrinsic is only includable in `[anchor, anchor + period]`. That
+/// bound is what lets a caller eventually decide that a transaction it lost
+/// track of can never land — an immortal extrinsic offers no such point, so
+/// returning its inputs to a spendable pool is never safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EraAnchor {
+    /// Height of the anchor block.
+    pub number: u64,
+    /// Hash of the anchor block; the `CheckMortality` implicit.
+    pub hash: [u8; 32],
+    /// Era length in blocks.
+    pub period: u64,
+}
+
+/// Smallest era period Substrate's encoding admits.
+const MIN_ERA_PERIOD: u64 = 4;
+/// Largest era period Substrate's encoding admits.
+const MAX_ERA_PERIOD: u64 = 1 << 16;
+
+impl EraAnchor {
+    /// Anchor an era of `period` blocks at the given block.
+    ///
+    /// `period` is rounded up to a power of two and clamped to Substrate's
+    /// `[4, 65536]`, matching `sp_runtime::generic::Era::mortal`.
+    pub fn new(number: u64, hash: [u8; 32], period: u64) -> Self {
+        let period = period
+            .checked_next_power_of_two()
+            .unwrap_or(MAX_ERA_PERIOD)
+            .clamp(MIN_ERA_PERIOD, MAX_ERA_PERIOD);
+        Self {
+            number,
+            hash,
+            period,
+        }
+    }
+
+    /// Last block height at which the extrinsic can still be included.
+    ///
+    /// The anchor is its own era birth: this layer only ever quantizes by one
+    /// (periods up to 4096), so `birth(number) == number`.
+    pub const fn last_valid_block(&self) -> u64 {
+        self.number.saturating_add(self.period)
+    }
+
+    /// SCALE-encoded `Era::Mortal`: a little-endian `u16` carrying
+    /// `log2(period) - 1` in the low nibble and the quantized phase above it.
+    pub fn encode_era(&self) -> Vec<u8> {
+        let quantize_factor = (self.period >> 12).max(1);
+        let phase = self.number % self.period;
+        let quantized_phase = phase / quantize_factor * quantize_factor;
+
+        let low = (self.period.trailing_zeros() as u16)
+            .saturating_sub(1)
+            .clamp(1, 15);
+        let high = ((quantized_phase / quantize_factor) as u16) << 4;
+        (low | high).encode()
+    }
+}
+
 /// Chain state needed to fill the standard signed extensions.
 #[derive(Debug, Clone, Copy)]
 pub struct ChainState {
@@ -155,10 +216,17 @@ pub struct ChainState {
     pub spec_version: u32,
     /// Runtime `transactionVersion` (CheckTxVersion implicit).
     pub transaction_version: u32,
-    /// Genesis block hash (CheckGenesis / CheckMortality implicit).
+    /// Genesis block hash (CheckGenesis implicit; also CheckMortality's when
+    /// the transaction is immortal).
     pub genesis_hash: [u8; 32],
     /// Account nonce (CheckNonce extra); ignored by the unsigned path.
     pub nonce: u32,
+    /// Era anchor, or `None` for an immortal transaction.
+    ///
+    /// Opt-in rather than always-on: allowance registration has always used
+    /// immortal extrinsics and has no recovery procedure that needs an expiry,
+    /// whereas coinage requires mortality (`coinage-layer.md` §7.4).
+    pub mortality: Option<EraAnchor>,
 }
 
 /// A signed extension's identifier plus the type ids of its `extra` and
@@ -575,8 +643,12 @@ impl Metadata {
             "CheckSpecVersion" => (Vec::new(), state.spec_version.to_le_bytes().to_vec()),
             "CheckTxVersion" => (Vec::new(), state.transaction_version.to_le_bytes().to_vec()),
             "CheckGenesis" => (Vec::new(), state.genesis_hash.to_vec()),
-            // extra = Era::Immortal (0x00); implicit = genesis hash.
-            "CheckMortality" => (vec![0x00], state.genesis_hash.to_vec()),
+            // Immortal: extra = 0x00, implicit = genesis hash. Mortal: extra =
+            // the encoded era, implicit = the anchor block's hash.
+            "CheckMortality" => match state.mortality {
+                None => (vec![0x00], state.genesis_hash.to_vec()),
+                Some(anchor) => (anchor.encode_era(), anchor.hash.to_vec()),
+            },
             // extra = first variant `Disabled` (void) = 0x00.
             "VerifyMultiSignature" => (vec![0x00], Vec::new()),
             // extra = { tip: compact(0), asset_id: None } = 0x00 0x00.
@@ -706,7 +778,83 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            mortality: None,
         }
+    }
+
+    #[test]
+    fn a_mortal_era_matches_substrates_encoding() {
+        // Golden against a known-answer pair: `Era::Mortal(64, 61)` is the
+        // familiar `d5 03` seen on Polkadot extrinsics. Getting the nibble
+        // layout wrong yields a valid-looking era with the wrong lifetime, so a
+        // transaction would expire at a time recovery does not expect.
+        let anchor = EraAnchor::new(64 * 3 + 61, [0u8; 32], 64);
+
+        assert_eq!(anchor.period, 64);
+        assert_eq!(anchor.encode_era(), vec![0xd5, 0x03]);
+    }
+
+    #[test]
+    fn the_coinage_period_encodes_and_bounds_the_transaction() {
+        use crate::host_logic::coinage::params::EXTRINSIC_MORTALITY_BLOCKS;
+
+        let anchor = EraAnchor::new(1_000, [0u8; 32], EXTRINSIC_MORTALITY_BLOCKS);
+
+        assert_eq!(anchor.period, 256);
+        // log2(256) - 1 = 7 in the low nibble; phase 1000 % 256 = 232 above it.
+        assert_eq!(anchor.encode_era(), (7u16 | (232u16 << 4)).encode());
+        assert_eq!(anchor.last_valid_block(), 1_256);
+    }
+
+    #[test]
+    fn a_period_is_rounded_and_clamped_to_what_the_encoding_admits() {
+        let hash = [0u8; 32];
+
+        assert_eq!(EraAnchor::new(0, hash, 100).period, 128, "rounded up");
+        assert_eq!(EraAnchor::new(0, hash, 1).period, 4, "clamped up");
+        assert_eq!(
+            EraAnchor::new(0, hash, 1 << 20).period,
+            1 << 16,
+            "clamped down"
+        );
+    }
+
+    #[test]
+    fn mortality_changes_both_the_extra_and_the_implicit() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let immortal = fixture_state();
+        let anchor = EraAnchor::new(1_000, [0x5c; 32], 256);
+        let mortal = ChainState {
+            mortality: Some(anchor),
+            ..immortal
+        };
+
+        let find = |state: &ChainState| {
+            metadata
+                .extension_ids()
+                .iter()
+                .position(|id| *id == "CheckMortality")
+                .map(|index| {
+                    let all = metadata.encode_signed_extensions(state);
+                    (
+                        all[index].extra.clone(),
+                        all[index].additional_signed.clone(),
+                    )
+                })
+                .expect("the runtime carries CheckMortality")
+        };
+
+        let (immortal_extra, immortal_implicit) = find(&immortal);
+        let (mortal_extra, mortal_implicit) = find(&mortal);
+
+        assert_eq!(immortal_extra, vec![0x00]);
+        assert_eq!(immortal_implicit, immortal.genesis_hash.to_vec());
+        assert_eq!(mortal_extra, anchor.encode_era());
+        assert_eq!(
+            mortal_implicit,
+            anchor.hash.to_vec(),
+            "a mortal era is anchored to its own block, not to genesis"
+        );
     }
 
     /// `Resources.set_statement_store_account(period=7, seq=0, target=0)`.
