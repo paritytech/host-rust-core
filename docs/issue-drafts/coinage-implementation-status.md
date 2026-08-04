@@ -390,3 +390,66 @@ e83bbcdc  feat(server): add the coinage record store
 ```
 
 Nothing pushed. Branched from `main` at `079ecd19`.
+
+## 7. What remains, and why it was not done
+
+Layer 1's *specified API* is complete. Layer 1 as a **running subsystem** is not:
+it has no observer, no scheduler, no caller, and no live validation. Four separate
+pieces, with four different reasons for being open.
+
+### 7.1 Reactive observation (§6.1) — a gap in the plan, not in the spec
+
+§6.1 is explicit: *"the layer maintains continuous subscriptions to every chain
+storage entry backing its local records… The layer does not pull-poll."* What
+exists is the six **reads** (`observe::refresh_purse`), called only by operations
+that need a fresh view mid-flight — the offload phase loop and the recovery scan.
+Nothing subscribes and nothing polls, so an idle wallet never notices an incoming
+payment, a coin ageing, or a chain lock expiring, and `refresh_subscriptions` has
+no caller at all.
+
+The nineteen-item plan never had an item for this; C1 was scoped to the reads.
+
+Two things have to be decided before it can be built, and neither is obvious:
+
+1. **`RpcClient` has no public subscription surface.** Only
+   `submit_and_watch_inclusion` uses the inner `subscribe_raw`, so
+   `state_subscribeStorage` has to be added to it.
+2. **`CoinageLayer` is `&mut self` throughout.** A long-lived observer needs an
+   ownership model the crate has not chosen: an actor loop owning the layer, or
+   `Arc<Mutex<CoinageLayer>>` driven by the existing `crate::subscription::Spawner`.
+   An actor avoids a mutex around every operation and is the recommendation, but it
+   is a real design decision and should be made deliberately.
+
+Until this lands, a host can drive the layer by calling `refresh_subscriptions` and
+`refresh_purse` on a timer — a pull-poll the spec does not want, but honest.
+
+### 7.2 Nothing constructs the layer — deliberate
+
+`CoinageLayer::initialize` has no caller outside the coinage module. That is the
+integration point, and it belongs with layer 2 / host wiring, which this plan
+defers. Building a caller now would be product surface nobody asked for.
+
+### 7.3 Paid unload tokens (§6.5) — blocked on one pallet fact, not yet chased
+
+Blocked on the `Members` collection identifier the pallet derives per period, which
+is neither in metadata nor derivable from anything the layer reads. **The obvious
+next move has not been tried:** read
+`paritytech/individuality`'s `pallets/coinage/src/lib.rs` directly. Fetching source
+from GitHub worked for truapi#323, and it either closes this or confirms the gap in
+one step. See `coinage-rfc-notes.md` §6.4.
+
+### 7.4 Live validation — environmental
+
+`examples/coinage_live_validation` exists, compiles and lints, and has never been
+run: this work had no chain access. Running it against a testnet is what settles
+whether a node parses the five `AsCoinage` variants that no runtime has yet
+accepted. Mortality expiry and `post_dispatch` failure-lock behaviour need a funded
+wallet on top of that.
+
+### Suggested order
+
+1. §7.3 — cheapest, and it either finishes §6.5 or closes the question.
+2. §7.4 — read-only, needs only a testnet endpoint.
+3. §7.1 — decide the ownership model first, then build it.
+4. §7.2 — with layer 2.
+
