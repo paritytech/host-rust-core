@@ -566,16 +566,6 @@ class TrUAPIHostCore private constructor(
         inner.permissionAuthorizationStatus(request)
 
     /**
-     * Read stored permission authorization statuses without prompting.
-     * Results are returned in the same order as [requests].
-     */
-    @Throws(HostRejection::class)
-    fun permissionAuthorizationStatuses(
-        requests: List<NativePermissionAuthorizationRequest>,
-    ): List<NativePermissionAuthorizationStatus> =
-        inner.permissionAuthorizationStatuses(requests)
-
-    /**
      * Update a stored permission authorization status. Passing `NotDetermined`
      * clears the stored value so the next product request prompts again.
      */

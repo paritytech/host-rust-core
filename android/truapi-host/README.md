@@ -72,7 +72,7 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 - `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
 - `remotePermission(request)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
 
-Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `permissionAuthorizationStatuses`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## Example
 
