@@ -582,14 +582,20 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 
 /// Callback surface that iOS and Android implement.
 ///
-/// Threading contract: async callbacks (`navigate_to`, `push_notification`,
-/// `device_permission`, `remote_permission`, `feature_supported`,
-/// `confirm_user_action`, `lookup_preimage`) are awaited by the core —
-/// implementations hop to the main thread for any UI and may take
-/// arbitrarily long; dropping the returned future cancels the foreign task.
-/// The remaining sync callbacks run inline on the dispatcher thread and must
-/// return promptly; in particular `auth_state_changed` should only hand the
-/// state to the host UI thread, never wait for the user.
+/// Threading contract: every callback executes on the shared bridge
+/// executor's worker threads, and blocking one of those threads can stall
+/// the entire bridge — not just the request being served. Async callbacks
+/// (`navigate_to`, `push_notification`, `device_permission`,
+/// `remote_permission`, `feature_supported`, `confirm_user_action`,
+/// `lookup_preimage`) are awaited by the core — implementations hop to the
+/// main thread for any UI and may keep the future pending arbitrarily long,
+/// but must suspend rather than block the polling thread (foreign
+/// implementations bridged through UniFFI suspend naturally; the rule
+/// chiefly binds Rust implementations). Dropping the returned future
+/// cancels the foreign task. The remaining sync callbacks run inline on the
+/// dispatcher thread and must return promptly without blocking; in
+/// particular `auth_state_changed` should only hand the state to the host
+/// UI thread, never wait for the user.
 #[uniffi::export(with_foreign)]
 #[async_trait::async_trait]
 pub trait HostCallbacks: Send + Sync {
@@ -1786,12 +1792,12 @@ mod tests {
         core.stop_ws_bridge();
     }
 
-    /// A permission callback that blocks awaiting the user's decision runs on
-    /// the blocking pool, so an unrelated request on the same connection
-    /// still round-trips while the callback is blocked.
+    /// A permission callback suspends while awaiting the user's decision and
+    /// holds no executor worker, so an unrelated request on the same
+    /// connection still round-trips while the decision is pending.
     #[cfg(feature = "ws-bridge")]
     #[test]
-    fn blocked_permission_callback_does_not_stall_bridge() {
+    fn pending_permission_decision_does_not_stall_bridge() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         use futures::SinkExt;
@@ -1802,11 +1808,11 @@ mod tests {
 
         use crate::frame::{Payload, ProtocolMessage, request_ids};
 
-        /// `device_permission` blocks until the test sends on `release`;
-        /// every other callback is a trivial success.
+        /// `device_permission` stays pending until the test sends on
+        /// `release`; every other callback is a trivial success.
         struct GatedPermissionCallbacks {
             permission_entered: Arc<AtomicBool>,
-            release: Mutex<std::sync::mpsc::Receiver<()>>,
+            release: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<()>>,
         }
 
         #[async_trait::async_trait]
@@ -1831,8 +1837,9 @@ mod tests {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
-                    .expect("release receiver mutex poisoned")
+                    .await
                     .recv()
+                    .await
                     .expect("release signal");
                 Ok(true)
             }
@@ -1908,12 +1915,12 @@ mod tests {
             }
         }
 
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::mpsc::channel::<()>(1);
         let permission_entered = Arc::new(AtomicBool::new(false));
         let core = NativeTrUApiCore::with_runtime_config(
             Arc::new(GatedPermissionCallbacks {
                 permission_entered: permission_entered.clone(),
-                release: Mutex::new(release_rx),
+                release: tokio::sync::Mutex::new(release_rx),
             }),
             NativeRuntimeConfig {
                 host_icon: Some("https://dot.li/dotli.png".to_string()),
@@ -1992,9 +1999,12 @@ mod tests {
                     }
                 })
                 .await
-                .expect("feature_supported must answer while the permission is blocked");
+                .expect("feature_supported must answer while the permission decision is pending");
 
-            release_tx.send(()).expect("release permission callback");
+            release_tx
+                .send(())
+                .await
+                .expect("release permission callback");
             let permission_response =
                 tokio::time::timeout(std::time::Duration::from_secs(10), async {
                     loop {
