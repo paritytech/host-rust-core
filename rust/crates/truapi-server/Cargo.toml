@@ -66,6 +66,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+truapi = { path = "../truapi", features = ["uniffi"] }
+truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
 futures = { version = "0.3", features = ["thread-pool"] }
 rand = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util"], optional = true }

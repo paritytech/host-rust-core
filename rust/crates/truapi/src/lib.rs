@@ -25,14 +25,17 @@ pub mod api;
 pub mod v01;
 pub mod versioned;
 
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
+
 /// Latest-version protocol payload types, unwrapped from their versioned
 /// envelopes. Runtime code should use these instead of per-version modules.
 pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ContextualAlias, DerivationIndex,
-        GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
+        AccountId, AllocatableResource, AllocationOutcome, Bytes32, ContextualAlias,
+        DerivationIndex, GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
         ProductAccountId, ProductProofContext, RawPayload, RemotePermission,
         RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
         RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,

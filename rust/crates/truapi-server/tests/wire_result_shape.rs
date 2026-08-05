@@ -188,7 +188,7 @@ fn account_proof_declined_confirmation_returns_rejected() {
             suffix: v01::DerivationIndex::Left(0),
         },
         ring_location: v01::RingLocation {
-            chain_id: [0u8; 32],
+            chain_id: [0u8; 32].into(),
             junctions: vec![v01::RingLocationJunction::PalletInstance(0)],
         },
         message: Vec::new(),

@@ -82,7 +82,7 @@ pub fn index_bytes(index: u32) -> [u8; 32] {
 pub fn derivation_index_bytes(index: &truapi::v01::DerivationIndex) -> [u8; 32] {
     match index {
         truapi::v01::DerivationIndex::Left(index) => index_bytes(*index),
-        truapi::v01::DerivationIndex::Right(bytes) => *bytes,
+        truapi::v01::DerivationIndex::Right(bytes) => bytes.0,
     }
 }
 /// Derive the RFC-0022 public light-person identity account:
@@ -346,7 +346,7 @@ mod tests {
             index_bytes(7)
         );
         assert_eq!(
-            derivation_index_bytes(&DerivationIndex::Right([0xEE; 32])),
+            derivation_index_bytes(&DerivationIndex::Right([0xEE; 32].into())),
             [0xEE; 32]
         );
     }

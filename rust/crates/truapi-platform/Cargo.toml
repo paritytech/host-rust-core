@@ -13,7 +13,12 @@ futures = "0.3"
 parity-scale-codec = { version = "3", features = ["derive"] }
 unicode-normalization = "0.1"
 url = "2"
+uniffi = { version = "0.29.4", optional = true }
 zeroize = { version = "1", default-features = false, features = ["derive"] }
+
+[features]
+# FFI derives on the review types consumed by native hosts.
+uniffi = ["dep:uniffi", "truapi/uniffi"]
 
 [lints]
 workspace = true

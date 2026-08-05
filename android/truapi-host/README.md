@@ -109,7 +109,7 @@ import uniffi.truapi_server.FeatureSupportedRequest
 import uniffi.truapi_server.HostTheme
 import uniffi.truapi_server.NativeDevicePermission
 import uniffi.truapi_server.NativeRemotePermission
-import uniffi.truapi_server.UserConfirmationReview
+import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.PushNotificationRequest
 
 class MyStorage : HostStorage {

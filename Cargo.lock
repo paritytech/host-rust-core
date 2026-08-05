@@ -4975,6 +4975,7 @@ dependencies = [
  "hex",
  "parity-scale-codec",
  "truapi-macros",
+ "uniffi",
 ]
 
 [[package]]
@@ -5045,6 +5046,7 @@ dependencies = [
  "parity-scale-codec",
  "truapi",
  "unicode-normalization",
+ "uniffi",
  "url",
  "zeroize",
 ]

@@ -1105,7 +1105,7 @@ async fn sign_raw_legacy_response(
     request: messages::SignRawLegacyRequest,
 ) -> Result<Vec<u8>, String> {
     let public_request = api::HostSignRawWithLegacyAccountRequest {
-        signer: product_public_key_to_address(request.account),
+        signer: product_public_key_to_address(request.account.0),
         payload: request.data.into(),
     };
     confirm(
@@ -1337,7 +1337,7 @@ mod tests {
                     suffix: api::DerivationIndex::Left(0),
                 },
                 ring_location: api::RingLocation {
-                    chain_id: [0; 32],
+                    chain_id: [0; 32].into(),
                     junctions: vec![],
                 },
             }),
@@ -1525,8 +1525,8 @@ mod tests {
         }));
         let identity = derive_identity_keypair(&ENTROPY).unwrap();
         let payload = api::LegacyAccountTxPayload {
-            signer: identity.public.to_bytes(),
-            genesis_hash: [0xaa; 32],
+            signer: identity.public.to_bytes().into(),
+            genesis_hash: [0xaa; 32].into(),
             call_data: vec![0x00, 0x00],
             extensions: vec![api::TxPayloadExtension {
                 id: "CheckNonce".to_string(),

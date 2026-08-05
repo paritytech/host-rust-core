@@ -39,7 +39,7 @@ import uniffi.truapi_server.NativePermissionAuthorizationStatus
 import uniffi.truapi_server.NativeRemotePermission
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
-import uniffi.truapi_server.UserConfirmationReview
+import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.PushNotificationRequest
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException

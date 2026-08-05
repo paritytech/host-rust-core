@@ -15,6 +15,9 @@ use unicode_normalization::UnicodeNormalization;
 
 pub use async_trait::async_trait;
 
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
+
 use truapi::latest::{
     AllocatableResource, GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
@@ -903,6 +906,7 @@ pub trait AuthPresenter: Send + Sync {
 
 /// Review shown before a sign-payload request is sent to the paired wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum SignPayloadReview {
     /// Product-account signing request.
     Product(HostSignPayloadRequest),
@@ -912,6 +916,7 @@ pub enum SignPayloadReview {
 
 /// Review shown before a sign-raw request is sent to the paired wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum SignRawReview {
     /// Product-account raw signing request.
     Product(HostSignRawRequest),
@@ -924,6 +929,7 @@ pub enum SignRawReview {
 /// unsigned statement, signed as-is (no `<Bytes>` envelope), so the host must
 /// not present it with the raw-signing convention.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct StatementStoreProductSignReview {
     /// Product account that will sign the statement payload.
     pub account: ProductAccountId,
@@ -933,6 +939,7 @@ pub struct StatementStoreProductSignReview {
 
 /// Review shown before a transaction-creation request is sent to the paired wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum CreateTransactionReview {
     /// Product-account transaction request.
     Product(ProductAccountTxPayload),
@@ -942,6 +949,7 @@ pub enum CreateTransactionReview {
 
 /// Review shown before a product derives a contextual alias (RFC 0004).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AccountAliasReview {
     /// Product requesting the alias.
     pub calling_product_id: String,
@@ -953,6 +961,7 @@ pub struct AccountAliasReview {
 
 /// Review shown before a product creates a ring-VRF proof (RFC 0004).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct CreateProofReview {
     /// Product requesting the proof.
     pub calling_product_id: String,
@@ -966,6 +975,7 @@ pub struct CreateProofReview {
 
 /// Review shown before signing an RFC-0023 VRF transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct SignVrfReview {
     /// Product making the request.
     pub calling_product_id: String,
@@ -977,6 +987,7 @@ pub struct SignVrfReview {
 /// beneficiary product so the user knows which product receives the
 /// (signing-capable) allowance key they are approving.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ResourceAllocationReview {
     /// Product the allocation is requested for.
     pub calling_product_id: String,
@@ -986,6 +997,7 @@ pub struct ResourceAllocationReview {
 
 /// Review shown before a product asks to access another product account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct AccountAccessReview {
     /// Product currently handling the request.
     pub requesting_product_id: String,
@@ -995,6 +1007,7 @@ pub struct AccountAccessReview {
 
 /// Review shown before a product learns the user's primary identity.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct IdentityDisclosureReview {
     /// Product currently handling the request.
     pub product_id: String,
@@ -1002,6 +1015,7 @@ pub struct IdentityDisclosureReview {
 
 /// Review shown before a preimage is submitted.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct PreimageSubmitReview {
     /// Size of the preimage in bytes.
     pub size: u64,
@@ -1010,6 +1024,7 @@ pub struct PreimageSubmitReview {
 /// Review shown before a user-confirmed core action continues.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum UserConfirmationReview {
     /// Sign a SCALE payload with a product or legacy account.
     SignPayload(SignPayloadReview),

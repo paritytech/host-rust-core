@@ -83,7 +83,7 @@ impl ChainRingResolver {
     > {
         let client = self
             .chain
-            .online_client(&location.chain_id)
+            .online_client(&location.chain_id.0)
             .await
             .map_err(unknown)?;
         let at_block = client.at_current_block().await.map_err(unknown)?;
@@ -435,7 +435,7 @@ mod tests {
         };
         let raw = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: DerivationIndex::Right([0; 32]),
+            suffix: DerivationIndex::Right([0; 32].into()),
         };
 
         assert_ne!(context_bytes(&indexed), context_bytes(&raw));
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn missing_collection_defaults_to_full_personhood() {
         let location = RingLocation {
-            chain_id: [0; 32],
+            chain_id: [0; 32].into(),
             junctions: vec![RingLocationJunction::PalletInstance(42)],
         };
         assert_eq!(collection_id(&location), Ok(FULL_PERSON_COLLECTION));

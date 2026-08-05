@@ -1074,7 +1074,7 @@ mod tests {
             suffix: v01::DerivationIndex::Left(0),
         };
         let ring_location = v01::RingLocation {
-            chain_id: [0x22; 32],
+            chain_id: [0x22; 32].into(),
             junctions: vec![
                 v01::RingLocationJunction::PalletInstance(42),
                 v01::RingLocationJunction::CollectionId(
@@ -1125,7 +1125,7 @@ mod tests {
             suffix: v01::DerivationIndex::Left(0),
         };
         let ring_location = v01::RingLocation {
-            chain_id: [0x22; 32],
+            chain_id: [0x22; 32].into(),
             junctions: vec![v01::RingLocationJunction::PalletInstance(42)],
         };
 
@@ -1180,7 +1180,7 @@ mod tests {
                 suffix: v01::DerivationIndex::Left(0),
             },
             ring_location: v01::RingLocation {
-                chain_id: [0x22; 32],
+                chain_id: [0x22; 32].into(),
                 junctions: vec![v01::RingLocationJunction::CollectionId(
                     b"pop:polkadot.network/people     ".to_vec(),
                 )],
@@ -1668,7 +1668,7 @@ mod tests {
         let response = futures::executor::block_on(authority.sign_raw(
             &cx,
             &session,
-            request(identity.public.to_bytes()),
+            request(identity.public.to_bytes().into()),
         ))
         .expect("identity raw signing succeeds");
         let signature = schnorrkel::Signature::from_bytes(&response.signature).unwrap();
@@ -1679,9 +1679,12 @@ mod tests {
                 .is_ok()
         );
 
-        let error =
-            futures::executor::block_on(authority.sign_raw(&cx, &session, request([0xff; 32])))
-                .expect_err("unknown legacy account is rejected");
+        let error = futures::executor::block_on(authority.sign_raw(
+            &cx,
+            &session,
+            request([0xff; 32].into()),
+        ))
+        .expect_err("unknown legacy account is rejected");
         assert!(matches!(error, AuthorityError::Unavailable { .. }));
     }
 
@@ -1714,7 +1717,7 @@ mod tests {
     fn tx_payload(tx_ext_version: u8) -> v01::ProductAccountTxPayload {
         v01::ProductAccountTxPayload {
             signer: product_account(0),
-            genesis_hash: [0xaa; 32],
+            genesis_hash: [0xaa; 32].into(),
             call_data: vec![0x00, 0x00],
             extensions: vec![v01::TxPayloadExtension {
                 id: "CheckNonce".to_string(),
@@ -1789,7 +1792,7 @@ mod tests {
         let request = CreateTransactionAuthorityRequest::LegacyAccount {
             product_account: product_account(0),
             request: v01::LegacyAccountTxPayload {
-                signer: [0xff; 32], // does not match the derived slot-zero key
+                signer: [0xff; 32].into(), // does not match the derived slot-zero key
                 genesis_hash: payload.genesis_hash,
                 call_data: payload.call_data.clone(),
                 extensions: payload.extensions.clone(),
@@ -1818,8 +1821,8 @@ mod tests {
         let request = CreateTransactionAuthorityRequest::LegacyAccount {
             product_account: product_account(0),
             request: v01::LegacyAccountTxPayload {
-                signer: keypair.public.to_bytes(), // matches the derived slot-zero key
-                genesis_hash: [0xaa; 32],
+                signer: keypair.public.to_bytes().into(), // matches the derived slot-zero key
+                genesis_hash: [0xaa; 32].into(),
                 call_data: vec![0x00, 0x00],
                 extensions: vec![v01::TxPayloadExtension {
                     id: "CheckNonce".to_string(),

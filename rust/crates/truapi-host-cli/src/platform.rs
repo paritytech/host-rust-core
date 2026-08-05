@@ -1563,7 +1563,7 @@ mod tests {
             request: truapi::v01::HostAccountSignVrfRequest {
                 account: truapi::v01::ProductAccountId {
                     dot_ns_identifier: "target.dot".to_string(),
-                    derivation_index: truapi::v01::DerivationIndex::Right([7; 32]),
+                    derivation_index: truapi::v01::DerivationIndex::Right([7; 32].into()),
                 },
                 transcript_label: b"lottery".to_vec(),
                 items: vec![truapi::v01::VrfTranscriptItem {
