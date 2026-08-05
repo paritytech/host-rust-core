@@ -62,6 +62,22 @@ pub enum RemotePermission {
     /// Submitting statements on behalf of the user via `remote_statement_store_submit`.
     #[display("submit statements")]
     StatementSubmit,
+    /// Outbound access to one method and path on one domain, carrying a
+    /// personhood proof the host attaches (RFC 0025).
+    ///
+    /// Appended last on purpose. This enum is SCALE-encoded into the persisted
+    /// permission key, so changing an existing variant would invalidate every
+    /// decision a user has already made.
+    #[display("{method} {domain}{path}")]
+    Credential {
+        /// Domain the grant covers. Covered requests must be `https`, since
+        /// the proof would otherwise travel in plaintext.
+        domain: String,
+        /// Exact path the grant covers. No wildcards.
+        path: String,
+        /// HTTP method the grant covers.
+        method: String,
+    },
 }
 
 /// remote-permission request (RFC 0002).
