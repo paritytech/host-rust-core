@@ -70,6 +70,7 @@ android/truapi-host/       Kotlin host adapter package over the truapi-server Un
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
+hosts/android/             Android host app (polkadot-app-android-v2), vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles

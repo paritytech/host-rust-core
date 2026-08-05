@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["rust/crates/*"]
+# Host submodules under hosts/ carry their own crates (e.g. the Android app's
+# bandersnatch-crypto); keep them out of this workspace so cargo treats them
+# as standalone packages.
+exclude = ["hosts"]
 
 [workspace.package]
 edition = "2024"
