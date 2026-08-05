@@ -111,7 +111,7 @@ fi
 
 # The paired phase runs two hosts at once, so build once up front instead of
 # letting concurrent `cargo run` invocations queue on the build lock.
-cargo build "${CARGO_ARGS[@]}" -p truapi-host-cli
+cargo build ${CARGO_ARGS[@]+"${CARGO_ARGS[@]}"} -p truapi-host-cli
 HOST="target/$PROFILE_DIR/truapi-host"
 mkdir -p "$LOG_DIR"
 
@@ -167,7 +167,7 @@ signing_phase() {
     --product-id "$PRODUCT_ID" \
     --script "$SCRIPT" \
     --auto-accept \
-    "${HOST_ARGS[@]}" > >(tee "$log") 2>&1 &
+    ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0
   start_watchdog "$host_pid" "signing-host phase"
   wait "$host_pid" || rc=$?
@@ -193,7 +193,7 @@ pairing_phase() {
     --product-id "$PRODUCT_ID" \
     --script "$SCRIPT" \
     --auto-accept \
-    "${HOST_ARGS[@]}" > >(tee "$log") 2>&1 &
+    ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
   local host_pid=$! rc=0
   start_watchdog "$host_pid" "pairing-host phase"
 
@@ -218,7 +218,7 @@ pairing_phase() {
       --auto-accept \
       --product-id "$PRODUCT_ID" \
       --frame-listen 127.0.0.1:0 \
-      "${HOST_ARGS[@]}" \
+      ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} \
       exec "/pair $deeplink" > >(tee "$signer_log" | sed 's/^/[signer] /') 2>&1 &
     SIGNER_PID=$!
   elif [ "$paired" = 1 ]; then

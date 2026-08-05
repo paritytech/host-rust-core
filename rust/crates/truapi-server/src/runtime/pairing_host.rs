@@ -218,23 +218,16 @@ impl SessionLifecycle {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::Display)]
 enum StoredSessionActivationError {
+    #[display("stored auth session is absent")]
     Missing,
+    #[display("invalid stored auth session: {_0}")]
     Invalid(String),
+    #[display("failed to read stored auth session: {_0}")]
     Read(String),
+    #[display("stored auth session changed during activation")]
     Changed,
-}
-
-impl std::fmt::Display for StoredSessionActivationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Missing => f.write_str("stored auth session is absent"),
-            Self::Invalid(reason) => write!(f, "invalid stored auth session: {reason}"),
-            Self::Read(reason) => write!(f, "failed to read stored auth session: {reason}"),
-            Self::Changed => f.write_str("stored auth session changed during activation"),
-        }
-    }
 }
 
 /// Remote account authority for a pairing host.
@@ -714,6 +707,7 @@ impl PairingHost {
     pub(crate) async fn reset_session_state(&self) {
         self.cancel_login();
         self.clear_disconnected_session(true).await;
+        let _storage_guard = self.session_secret_storage.lock().await;
         self.clear_statement_store_allowance_keys(None);
         self.clear_bulletin_allowance_keys(None);
         self.clear_product_subtrees(None);

@@ -263,6 +263,8 @@ Five scripts ship under `js/scripts/`:
   scripts/battery.sh                    # both phases
   scripts/battery.sh --signing-host     # direct phase only
   scripts/battery.sh --pairing-host     # paired phase only
+  make e2e-signing-cli                  # direct phase only
+  make e2e-pairing-cli                  # paired phase only
   scripts/battery.sh --release          # release binary
   scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
   ```
