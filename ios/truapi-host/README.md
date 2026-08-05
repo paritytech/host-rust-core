@@ -11,7 +11,7 @@ The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 - [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostCore` (owning wrapper around the UniFFI-generated `NativeTrUApiCore`, with the localhost WS bridge, session controls, and native change notifications), `TrUAPIHostCoreProtocol`, `RuntimeConfig`, and `LocalhostBridgeBootstrap`.
 - the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
 - `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
-- [`container/`](container/) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
+- [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
 - `Tests/` — WS-bridge round-trip tests that boot the real Rust core.
 
 The generated bindings and the container bundle are committed build outputs; the xcframework is **gitignored** and distributed as a GitHub release asset. Two scripts split the lifecycle:
@@ -25,7 +25,7 @@ The generated bindings and the container bundle are committed build outputs; the
                                 # (URL + checksum)
 ```
 
-Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `container/src` — and commit the regenerated bindings/container together with the source change. When the binary should reach consumers, run `publish.sh` and commit the manifest bump **after** the upload succeeds (a manifest pushed before its asset is live breaks resolution).
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. When the binary should reach consumers, run `publish.sh` and commit the manifest bump **after** the upload succeeds (a manifest pushed before its asset is live breaks resolution).
 
 For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
 
@@ -223,4 +223,4 @@ The product page reads `window.__truapi_localhost.url` (set by the bootstrap scr
 
 - **xcframework** — `make xcframework` (repo root) builds `truapi-server` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
 - **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; the script copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up.
-- **container** — `npm run build` in `container/` bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.
+- **container** — `npm run build` in `js/container/` (repo root) bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.

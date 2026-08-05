@@ -1,7 +1,7 @@
 import Foundation
 
-/// Bundled truapi lockdown container built from `container/src/index.ts`.
-/// Rebuild with `npm run build` inside `container/` (or `scripts/rebuild.sh`).
+/// Bundled truapi lockdown container built from `js/container/src/index.ts`.
+/// Rebuild with `npm run build` inside `js/container/` (or `scripts/rebuild.sh`).
 public enum ContainerScriptBundle {
     public enum LoadError: Error, LocalizedError {
         case resourceNotFound

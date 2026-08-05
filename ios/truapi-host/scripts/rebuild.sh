@@ -2,7 +2,8 @@
 # Regenerate the TrUAPIHost package build outputs in place:
 #   * truapi_server.xcframework (Binaries/)
 #   * uniffi-generated Swift bindings (Sources/TrUAPIHost + Sources/truapi_serverFFI)
-#   * the bundled TS container (Sources/TrUAPIHost/Resources/truapi-container.js)
+#   * the bundled TS container (Sources/TrUAPIHost/Resources/truapi-container.js,
+#     built from js/container/)
 #
 # Run after checkout and after changing the Rust core or container sources.
 # Usage: ./scripts/rebuild.sh
@@ -35,7 +36,7 @@ cp -R "$TRUAPI_ROOT/target/truapi_server.xcframework" "$PACKAGE_ROOT/Binaries/"
 rm -f "$PACKAGE_ROOT/Binaries/truapi_server.xcframework/ios-arm64/Headers/module.modulemap"
 rm -f "$PACKAGE_ROOT/Binaries/truapi_server.xcframework/ios-arm64-simulator/Headers/module.modulemap"
 
-npm --prefix "$PACKAGE_ROOT/container" install --no-fund --no-audit
-npm --prefix "$PACKAGE_ROOT/container" run build
+npm --prefix "$TRUAPI_ROOT/js/container" install --no-fund --no-audit
+npm --prefix "$TRUAPI_ROOT/js/container" run build
 
 echo "TrUAPIHost package outputs rebuilt in $PACKAGE_ROOT"
