@@ -48,6 +48,14 @@ build still owns `XCBuildData/build.db`, making the next invocation fail with
 “database is locked”. Use the unpiped command (optionally with `-quiet`) and
 wait for its exit status.
 
+After merging iOS `main` or updating binary dependencies, Xcode can fail with
+“header has been modified since the module file was built” for a framework
+such as WebRTC (`RTCPeerConnection.h`). The copied framework header is newer
+than the explicit precompiled module cached in DerivedData. Run the same
+project, scheme, and simulator destination with `xcodebuild clean`, then
+rebuild; deleting the simulator or changing Rust code does not address this
+cache mismatch.
+
 Install the resulting signed Debug app:
 
 ```bash
