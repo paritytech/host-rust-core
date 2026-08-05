@@ -8,6 +8,8 @@ import {
 import {
   createDiagnosisPlan,
   diagnosisTimeoutMs,
+  expectedCliBatteryFailureReason,
+  knownUnsupportedReason,
   type DiagnosisCase,
   type DiagnosisRow,
 } from "./diagnosis.ts";
@@ -49,6 +51,26 @@ describe("generated-example battery", () => {
   test("allows interactive VRF approval to outlive the unary timeout", () => {
     expect(diagnosisTimeoutMs("Account/sign_vrf")).toBe(190_000);
     expect(diagnosisTimeoutMs("System/handshake")).toBe(10_000);
+  });
+
+  test("classifies only the committed unsupported CLI battery failures as expected", () => {
+    expect(expectedCliBatteryFailureReason("Chat")).toBe(
+      "Chat service not yet wired up by hosts",
+    );
+    expect(expectedCliBatteryFailureReason("Coin Payment")).toBe(
+      "Coin Payment service not yet wired up by hosts",
+    );
+    expect(expectedCliBatteryFailureReason("Payment")).toBe(
+      "Payment service not yet wired up by hosts",
+    );
+    expect(expectedCliBatteryFailureReason("Signing")).toBe(undefined);
+  });
+
+  test("does not ignore account proof failures", () => {
+    expect(
+      knownUnsupportedReason("Account", "Account/create_account_proof"),
+    ).toBe(undefined);
+    expect(expectedCliBatteryFailureReason("Account")).toBe(undefined);
   });
 
   test("prints failures as concise test-reporter rows", () => {
