@@ -205,6 +205,13 @@ where
         name == "VerifyMultiSignature" || self.supplied.iter().any(|extension| extension.id == name)
     }
 
+    fn is_authorization_extension(&self, name: &str) -> bool {
+        if name == <VerifySignature<SubstrateConfig> as FrameTransactionExtension<R>>::NAME {
+            return self.verify_signature.is_authorization_extension();
+        }
+        false
+    }
+
     fn encode_extension_value_to(
         &self,
         name: &str,
