@@ -65,20 +65,20 @@ js/packages/
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
-hosts/ios/                 polkadot-app-ios-v2, vendored as a submodule (build/test against the core)
-hosts/android/             polkadot-app-android-v2, vendored as a submodule (build/test against the core)
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
 
 The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
-UniFFI core) lives in its own repo,
-[paritytech/truapi-ios](https://github.com/paritytech/truapi-ios), so SPM
-consumers resolve it without this repo's submodules. Its `scripts/rebuild.sh`
-builds against a checkout of this repo (`make xcframework` + `make uniffi`).
+UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
+manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
+dependency. Its `scripts/rebuild.sh` regenerates the committed bindings and
+container bundle (`make xcframework` + `make uniffi`); see
+[`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 
 ### JS Host SDKs
 

@@ -19,6 +19,9 @@ js/packages/
                           `.` (shared host types), `/web` (iframe + Web
                           Worker), `/worker-runtime` (Worker entry).
                           WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
+                           SPM manifest at the repo root (Package.swift), rebuild via
+                           ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to truapi-playground.dot
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
