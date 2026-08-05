@@ -71,7 +71,7 @@ final class StubHostCallbacks: HostCallbacks, @unchecked Sendable {
     func chainConnect(genesisHash _: Data) throws -> UInt32? { nil }
     func chainSend(connectionId _: UInt32, request _: String) throws {}
     func chainClose(connectionId _: UInt32) throws {}
-    func confirmUserAction(review _: NativeUserConfirmationReview) async throws -> Bool { false }
+    func confirmUserAction(review _: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key _: Data) async throws -> Data? { nil }
     func currentTheme() throws -> HostTheme { .dark }
     func featureSupported(request _: FeatureSupportedRequest) async throws -> Bool { true }

@@ -225,7 +225,8 @@ xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulato
 		--features ws-bridge --target $(IOS_SIM_TARGET)
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
+	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(UNIFFI_SWIFT_TMP)/truapi_platformFFI.h \
+		$(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
 	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
 	xcodebuild -create-xcframework \
 		-library target/$(IOS_DEVICE_TARGET)/release/libtruapi_server.a \

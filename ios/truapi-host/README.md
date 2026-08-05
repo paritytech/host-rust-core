@@ -152,7 +152,7 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         /* close host connection */
     }
 
-    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool {
+    func confirmUserAction(review: UserConfirmationReview) async throws -> Bool {
         // Switch on the review variant (.signPayload, .createTransaction, ...)
         // to render the confirmation prompt with its typed fields.
         await MainActor.run { /* render review; */ false }

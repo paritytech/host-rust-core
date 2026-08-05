@@ -36,6 +36,18 @@ let package = Package(
     ],
     targets: [
         .systemLibrary(
+            name: "truapiFFI",
+            path: "ios/truapi-host/Sources/truapiFFI/include",
+            pkgConfig: nil,
+            providers: []
+        ),
+        .systemLibrary(
+            name: "truapi_platformFFI",
+            path: "ios/truapi-host/Sources/truapi_platformFFI/include",
+            pkgConfig: nil,
+            providers: []
+        ),
+        .systemLibrary(
             name: "truapi_serverFFI",
             path: "ios/truapi-host/Sources/truapi_serverFFI/include",
             pkgConfig: nil,
@@ -44,7 +56,9 @@ let package = Package(
         binaryTarget,
         .target(
             name: "TrUAPIHost",
-            dependencies: ["truapi_serverFFI", "truapi_serverFFI_binary"],
+            dependencies: [
+                "truapiFFI", "truapi_platformFFI", "truapi_serverFFI", "truapi_serverFFI_binary",
+            ],
             path: "ios/truapi-host/Sources/TrUAPIHost",
             resources: [.copy("Resources/truapi-container.js")]
         ),
