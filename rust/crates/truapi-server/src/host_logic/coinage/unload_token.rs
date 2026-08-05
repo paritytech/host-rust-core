@@ -9,6 +9,15 @@
 //! tokens make up any shortfall, because a free token costs nothing and expires
 //! unused at the end of its period.
 //!
+//! # The two classes count differently
+//!
+//! A free token is one `(period, counter)` pair, so a single personhood key covers
+//! a whole period's allowance. A paid token's context carries the period and *no*
+//! counter, so one paid member key is worth exactly one token per period. Wanting
+//! three paid tokens in a period means three keys, three joins and three fees —
+//! which is why a paid grant names a slot and the plan carries a list of joins
+//! rather than a single flag.
+//!
 //! This module is pure. It decides *which* tokens to use given a snapshot of
 //! what the chain reports consumed; fetching that snapshot, proving membership
 //! and joining the paid ring are the chain layer's work.
@@ -29,10 +38,18 @@ pub enum TokenGrant {
         /// Counter within that period.
         counter: u32,
     },
-    /// A token from the period's paid ring.
+    /// A token from the period's paid ring, held by one of the wallet's slots.
     Paid {
         /// Period whose paid ring backs the token.
         period: u32,
+        /// Which of the wallet's paid-token keys for that period proves it.
+        ///
+        /// A paid token's alias is produced in a context carrying the period and
+        /// **no counter**, so one key yields exactly one token per period. Two
+        /// tokens in the same period therefore mean two slots, two joins and two
+        /// fees. This is the difference between the paid ring and the free
+        /// allowance, where one personhood key covers the whole period.
+        slot: u32,
     },
 }
 
@@ -71,25 +88,95 @@ impl FreeTokenAvailability {
     }
 }
 
-/// What the chain reports about the paid-token ring.
+/// What one of the wallet's paid-token slots is worth right now.
+///
+/// Joining and becoming provable are two steps, not one, and the gap between them
+/// is why this carries both facts. `pay_for_recycler_unload_fee_token_with_*`
+/// registers the key immediately, but the members pallet onboards it into an actual
+/// ring afterwards — and a ring-VRF proof needs the ring. A slot between the two is
+/// paid for and unusable, and the correct response is to wait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaidSlot {
+    /// Index of the slot within the period.
+    pub slot: u32,
+    /// Whether the slot's key is registered as a paid-token member.
+    ///
+    /// Once true this is permanent: the pallet refuses a member key it has already
+    /// seen, so a registered key can never be joined again.
+    pub joined: bool,
+    /// Whether the key has been placed in a ring that can be proved against.
+    ///
+    /// Implies [`Self::joined`]. False while onboarding is outstanding.
+    pub onboarded: bool,
+    /// Whether the slot's one token for this period has already been spent.
+    ///
+    /// A spent slot is dead for the rest of the period: its alias is marked
+    /// consumed and its key cannot be re-registered.
+    pub spent: bool,
+}
+
+impl PaidSlot {
+    /// Whether this slot can back a token right now, with no join and no wait.
+    pub const fn is_ready(&self) -> bool {
+        self.onboarded && !self.spent
+    }
+
+    /// Whether paying to join this slot would give the wallet a token.
+    ///
+    /// A registered-but-not-yet-onboarded slot is neither ready nor joinable:
+    /// paying again is refused and there is nothing to do but wait.
+    pub const fn is_joinable(&self) -> bool {
+        !self.joined && !self.spent
+    }
+}
+
+/// What the chain reports about the period's paid-token ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaidRingState {
     /// Period the paid ring belongs to.
     pub period: u32,
-    /// Whether the user is already a member of that ring.
-    pub is_member: bool,
-    /// Whether the fee account can pay to join it.
+    /// Whether the pallet has created this period's collection. A ring that does
+    /// not exist cannot be joined, however well funded the wallet is.
+    pub collection_exists: bool,
+    /// Whether the fee account can pay to join, as a dry run answered it.
     pub can_fund_join: bool,
+    /// The wallet's slots for this period, in slot order.
+    pub slots: Vec<PaidSlot>,
 }
 
-/// Which tokens to use, and whether the paid ring must be joined first.
+impl PaidRingState {
+    /// A state in which the paid ring is unusable, whatever the reason.
+    pub fn unavailable(period: u32) -> Self {
+        Self {
+            period,
+            collection_exists: false,
+            can_fund_join: false,
+            slots: Vec::new(),
+        }
+    }
+
+    /// Record whether the layer can pay for a join.
+    ///
+    /// Separate from the chain read because the pallet prices a join from a weight
+    /// rather than publishing it, so affordability is the caller's judgement, not
+    /// a storage value.
+    pub fn with_fundable_joins(mut self, can_fund_join: bool) -> Self {
+        self.can_fund_join = can_fund_join;
+        self
+    }
+}
+
+/// Which tokens to use, and which paid slots must be joined first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnloadTokenPlan {
     /// One grant per unload group, in group order.
     pub grants: Vec<TokenGrant>,
-    /// Whether a pre-step extrinsic must join the paid ring before the grants
-    /// can be presented.
-    pub join_paid_ring: bool,
+    /// Slots whose join extrinsic must land — definitely — before the grants
+    /// naming them can be presented.
+    ///
+    /// One join per slot, each paying its own fee. Empty when every paid grant is
+    /// backed by a slot the wallet already holds.
+    pub joins: Vec<u32>,
 }
 
 impl UnloadTokenPlan {
@@ -115,7 +202,7 @@ pub fn resolve(
     if needed == 0 {
         return Ok(UnloadTokenPlan {
             grants: Vec::new(),
-            join_paid_ring: false,
+            joins: Vec::new(),
         });
     }
 
@@ -144,26 +231,47 @@ pub fn resolve(
     if grants.len() == needed {
         return Ok(UnloadTokenPlan {
             grants,
-            join_paid_ring: false,
+            joins: Vec::new(),
         });
     }
 
-    // Paid tokens make up the shortfall, joining the ring first if necessary.
-    if !paid.is_member && !paid.can_fund_join {
+    // Paid tokens make up the shortfall, one slot per remaining group. Slots the
+    // wallet has already joined come first: they are paid for, and a slot that
+    // needs joining costs both a fee and a wait for the join to become definite.
+    let mut joins = Vec::new();
+    let ready = paid.slots.iter().filter(|slot| slot.is_ready());
+    for slot in ready {
+        if grants.len() == needed {
+            break;
+        }
+        grants.push(TokenGrant::Paid {
+            period: paid.period,
+            slot: slot.slot,
+        });
+    }
+
+    if grants.len() < needed && paid.collection_exists && paid.can_fund_join {
+        let joinable = paid.slots.iter().filter(|slot| slot.is_joinable());
+        for slot in joinable {
+            if grants.len() == needed {
+                break;
+            }
+            joins.push(slot.slot);
+            grants.push(TokenGrant::Paid {
+                period: paid.period,
+                slot: slot.slot,
+            });
+        }
+    }
+
+    // Short even after the paid ring: the wallet waits for the next period.
+    // Reporting a partial plan would spend the free slots and the join fees and
+    // still fail, so nothing is committed.
+    if grants.len() < needed {
         return Err(CoinageError::NoUnloadToken);
     }
 
-    let join_paid_ring = !paid.is_member;
-    while grants.len() < needed {
-        grants.push(TokenGrant::Paid {
-            period: paid.period,
-        });
-    }
-
-    Ok(UnloadTokenPlan {
-        grants,
-        join_paid_ring,
-    })
+    Ok(UnloadTokenPlan { grants, joins })
 }
 
 /// How the network fee for an unload is settled.
@@ -210,11 +318,52 @@ mod tests {
         CoinageParameters::default()
     }
 
-    fn paid(is_member: bool, can_fund_join: bool) -> PaidRingState {
+    /// A paid ring with `ready` slots already joined and `joinable` more the
+    /// wallet could join if `can_fund_join`.
+    fn paid_with(ready: u32, joinable: u32, can_fund_join: bool) -> PaidRingState {
+        let mut slots = Vec::new();
+        for slot in 0..ready {
+            slots.push(PaidSlot {
+                slot,
+                joined: true,
+                onboarded: true,
+                spent: false,
+            });
+        }
+        for offset in 0..joinable {
+            slots.push(PaidSlot {
+                slot: ready + offset,
+                joined: false,
+                onboarded: false,
+                spent: false,
+            });
+        }
+
         PaidRingState {
             period: 42,
-            is_member,
+            collection_exists: true,
             can_fund_join,
+            slots,
+        }
+    }
+
+    /// The old two-flag shape, expressed in slots: a wallet that either already
+    /// holds plenty of paid tokens or can join for as many as it needs.
+    fn paid(is_member: bool, can_fund_join: bool) -> PaidRingState {
+        if is_member {
+            paid_with(8, 0, can_fund_join)
+        } else {
+            paid_with(0, 8, can_fund_join)
+        }
+    }
+
+    /// Every free slot in `period` spent, so only the paid ring is left.
+    fn no_free_slots(period: u32) -> FreeTokenAvailability {
+        FreeTokenAvailability {
+            eligible_periods: vec![period],
+            consumed: (0..params().free_token_counter_search_range)
+                .map(|counter| (period, counter))
+                .collect(),
         }
     }
 
@@ -236,7 +385,7 @@ mod tests {
         .expect("zero is always satisfiable");
 
         assert!(plan.grants.is_empty());
-        assert!(!plan.join_paid_ring);
+        assert!(plan.joins.is_empty());
     }
 
     #[test]
@@ -258,7 +407,7 @@ mod tests {
             ]
         );
         assert_eq!(plan.paid_count(), 0);
-        assert!(!plan.join_paid_ring);
+        assert!(plan.joins.is_empty());
     }
 
     #[test]
@@ -305,22 +454,134 @@ mod tests {
 
     #[test]
     fn paid_tokens_cover_a_shortfall() {
-        let mut free = FreeTokenAvailability::fresh(vec![7]);
-        for counter in 0..params().free_token_counter_search_range {
-            free.consumed.insert((7, counter));
-        }
+        let plan =
+            resolve_with(2, &no_free_slots(7), &paid(true, true)).expect("the paid ring covers it");
 
-        let plan = resolve_with(2, &free, &paid(true, true)).expect("the paid ring covers it");
+        // Two groups, two distinct slots: one key cannot back both, because its
+        // single alias is consumed by the first.
+        assert_eq!(
+            plan.grants,
+            vec![
+                TokenGrant::Paid {
+                    period: 42,
+                    slot: 0
+                },
+                TokenGrant::Paid {
+                    period: 42,
+                    slot: 1
+                },
+            ]
+        );
+        assert_eq!(plan.paid_count(), 2);
+        assert!(plan.joins.is_empty(), "both slots are already joined");
+    }
+
+    #[test]
+    fn each_paid_grant_names_its_own_slot() {
+        // The whole reason a grant carries a slot: reusing one key for two groups
+        // would have the second refused as an already-consumed alias, after the
+        // first had spent the fee.
+        let plan =
+            resolve_with(4, &no_free_slots(7), &paid_with(4, 0, false)).expect("four slots exist");
+
+        let slots: Vec<u32> = plan
+            .grants
+            .iter()
+            .map(|grant| match grant {
+                TokenGrant::Paid { slot, .. } => *slot,
+                TokenGrant::Free { .. } => unreachable!("no free slots remain"),
+            })
+            .collect();
+        assert_eq!(slots, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_spent_slot_is_not_offered_again() {
+        // A slot's token is gone once used, and its key cannot rejoin, so the
+        // wallet must reach past it to the next one.
+        let state = PaidRingState {
+            period: 42,
+            collection_exists: true,
+            can_fund_join: true,
+            slots: vec![
+                PaidSlot {
+                    slot: 0,
+                    joined: true,
+                    onboarded: true,
+                    spent: true,
+                },
+                PaidSlot {
+                    slot: 1,
+                    joined: true,
+                    onboarded: true,
+                    spent: false,
+                },
+            ],
+        };
+
+        let plan = resolve_with(1, &no_free_slots(7), &state).expect("slot 1 is unspent");
+
+        assert_eq!(
+            plan.grants,
+            vec![TokenGrant::Paid {
+                period: 42,
+                slot: 1
+            }]
+        );
+        assert!(plan.joins.is_empty());
+    }
+
+    #[test]
+    fn already_joined_slots_are_preferred_over_ones_needing_a_fee() {
+        let plan = resolve_with(2, &no_free_slots(7), &paid_with(1, 3, true))
+            .expect("one held slot plus one join");
 
         assert_eq!(
             plan.grants,
             vec![
-                TokenGrant::Paid { period: 42 },
-                TokenGrant::Paid { period: 42 }
+                TokenGrant::Paid {
+                    period: 42,
+                    slot: 0
+                },
+                TokenGrant::Paid {
+                    period: 42,
+                    slot: 1
+                },
             ]
         );
-        assert_eq!(plan.paid_count(), 2);
-        assert!(!plan.join_paid_ring);
+        assert_eq!(plan.joins, vec![1], "only the second slot costs a join");
+    }
+
+    #[test]
+    fn a_period_whose_collection_does_not_exist_cannot_be_joined() {
+        // The pallet creates a period's collection in its own `on_poll`. Until it
+        // has, a join has nothing to add a member to, however well funded.
+        let state = PaidRingState {
+            period: 42,
+            collection_exists: false,
+            can_fund_join: true,
+            slots: vec![PaidSlot {
+                slot: 0,
+                joined: false,
+                onboarded: false,
+                spent: false,
+            }],
+        };
+
+        assert_eq!(
+            resolve_with(1, &no_free_slots(7), &state),
+            Err(CoinageError::NoUnloadToken)
+        );
+    }
+
+    #[test]
+    fn running_out_of_slots_is_refused_rather_than_partly_planned() {
+        // A plan short of one token would spend every free slot and every join fee
+        // it did name, then fail on the last group.
+        assert_eq!(
+            resolve_with(3, &no_free_slots(7), &paid_with(1, 1, true)),
+            Err(CoinageError::NoUnloadToken)
+        );
     }
 
     #[test]
@@ -344,30 +605,23 @@ mod tests {
 
     #[test]
     fn joining_the_paid_ring_is_requested_when_not_a_member() {
-        let free = FreeTokenAvailability {
-            eligible_periods: vec![7],
-            consumed: (0..params().free_token_counter_search_range)
-                .map(|counter| (7, counter))
-                .collect(),
-        };
+        let plan =
+            resolve_with(1, &no_free_slots(7), &paid(false, true)).expect("the join can be funded");
 
-        let plan = resolve_with(1, &free, &paid(false, true)).expect("the join can be funded");
-
-        assert!(plan.join_paid_ring);
-        assert_eq!(plan.grants, vec![TokenGrant::Paid { period: 42 }]);
+        assert_eq!(plan.joins, vec![0]);
+        assert_eq!(
+            plan.grants,
+            vec![TokenGrant::Paid {
+                period: 42,
+                slot: 0
+            }]
+        );
     }
 
     #[test]
     fn no_free_slots_and_an_unfundable_join_is_a_dead_end() {
-        let free = FreeTokenAvailability {
-            eligible_periods: vec![7],
-            consumed: (0..params().free_token_counter_search_range)
-                .map(|counter| (7, counter))
-                .collect(),
-        };
-
         assert_eq!(
-            resolve_with(1, &free, &paid(false, false)),
+            resolve_with(1, &no_free_slots(7), &paid(false, false)),
             Err(CoinageError::NoUnloadToken)
         );
     }
@@ -378,7 +632,13 @@ mod tests {
 
         let plan = resolve_with(1, &free, &paid(true, true)).expect("paid covers it");
 
-        assert_eq!(plan.grants, vec![TokenGrant::Paid { period: 42 }]);
+        assert_eq!(
+            plan.grants,
+            vec![TokenGrant::Paid {
+                period: 42,
+                slot: 0
+            }]
+        );
     }
 
     #[test]

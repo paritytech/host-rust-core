@@ -184,6 +184,36 @@ impl LoadRecyclerWithCoinArgs {
     }
 }
 
+/// Arguments of `Coinage::pay_for_recycler_unload_fee_token_with_native`.
+///
+/// Joins one paid-token slot's key to the current period's ring, which is what
+/// buys the wallet one unload token for that period. The fee comes out of the
+/// signing account's native balance; the layer signs with its fee account.
+///
+/// The call takes no period. The pallet reads its *own* clock at dispatch and adds
+/// the member to whichever period is current then — so a join submitted close to a
+/// boundary can land in the next period, and the slot the layer planned for is not
+/// necessarily the slot it gets. That is why membership is re-read after a join
+/// rather than assumed, and why nothing about the join is written into the token's
+/// proof ahead of time.
+#[derive(Debug, Clone, PartialEq, Eq, Encode)]
+pub struct PayForUnloadFeeTokenArgs {
+    /// Bandersnatch member key the slot publishes into the paid ring.
+    pub member_key: [u8; 32],
+    /// Signature over the joining account, proving control of that member key.
+    pub proof_of_ownership: RawEncoded,
+}
+
+impl PayForUnloadFeeTokenArgs {
+    /// Buy one paid unload token for `member_key`.
+    pub fn new(member_key: [u8; 32], proof_of_ownership: RawEncoded) -> Self {
+        Self {
+            member_key,
+            proof_of_ownership,
+        }
+    }
+}
+
 /// Arguments of `Coinage::unload_recycler_into_coins`.
 ///
 /// One call per `(denomination, ring)` group, each consuming one unload token.

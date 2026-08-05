@@ -7,9 +7,12 @@
 //!   which the call carries in its `aliases` argument. The proof and the alias
 //!   come out of the same operation, so this module returns them together
 //!   rather than letting a caller pair up mismatched halves.
-//! * **The token proof** — one per extrinsic. Proves personhood, and signs a
-//!   message that includes the alias proofs, which is what binds a free unload
-//!   token to the exact set of entries it is spending on.
+//! * **The token proof** — one per extrinsic. Proves membership of whichever ring
+//!   backs the token, and signs a message that includes the alias proofs, which is
+//!   what binds the token to the exact set of entries it is spending on. A free
+//!   token proves personhood; a paid one proves membership of the period's paid
+//!   ring. The signed message is identical in both cases; only the ring, the key
+//!   and the context differ.
 //!
 //! Ring membership is the caller's input. Fetching the ring at a pinned block
 //! belongs to the chain layer; proving is deterministic given the members.
@@ -20,7 +23,9 @@ use verifiable::ring::RingDomainSize;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use super::call::RawEncoded;
-use super::extension::{RECYCLER_ALIAS_CONTEXT, free_token_signing_context};
+use super::extension::{
+    RECYCLER_ALIAS_CONTEXT, free_token_signing_context, paid_token_signing_context,
+};
 use crate::host_logic::coinage::derivation;
 use crate::host_logic::coinage::error::CoinageError;
 use crate::host_logic::coinage::types::{CoinAccountId, EntryIndex, PurseId};
@@ -133,6 +138,63 @@ pub fn free_token_proof(
     )?;
 
     Ok(RawEncoded(proof))
+}
+
+/// Prove membership of the paid ring for a paid unload token.
+///
+/// `members` must be the paid-token ring the slot's key was onboarded into — a
+/// different collection from both the recycler rings and the personhood ring — and
+/// the domain must come from that collection's own ring size.
+///
+/// The signed message is the same as a free token's, so a paid token is bound to
+/// its entries in exactly the same way. What differs is the context, which carries
+/// the period and no counter: the slot is expressed by *which key signs*, not by
+/// anything inside the proof.
+pub fn paid_token_proof(
+    domain: RingDomainSize,
+    entropy: &[u8],
+    members: &[[u8; 32]],
+    period: u32,
+    slot: u32,
+    alias_proofs: &[RawEncoded],
+    inherited_implication: &[u8],
+) -> Result<RawEncoded, CoinageError> {
+    let vrf_entropy = derivation::paid_token_ring_vrf_entropy(entropy, period, slot)?;
+    let context = paid_token_signing_context(period);
+
+    let mut signed = alias_proofs.encode();
+    signed.extend_from_slice(inherited_implication);
+    let message = blake2b256(&signed);
+
+    let proof = ring_vrf_proof(domain, vrf_entropy, members, &context, &message)
+        .map_err(|error| CoinageError::Internal(format!("paid-token proof failed: {error}")))?;
+
+    Ok(RawEncoded(proof))
+}
+
+/// Prove control of the member key a paid-token join publishes.
+///
+/// `pay_for_recycler_unload_fee_token_with_*` carries a `proof_of_ownership` beside
+/// the member key, checked by the call itself against the *origin account's*
+/// encoded bytes. Its purpose is anti-front-running: without it, watching the pool
+/// would let someone else's join publish your key.
+///
+/// The message is the joining account's 32 bytes, raw and unhashed — the same rule
+/// as [`entry_ownership_proof`], and for the same reason.
+pub fn paid_token_ownership_proof(
+    entropy: &[u8],
+    period: u32,
+    slot: u32,
+    joining_account: CoinAccountId,
+) -> Result<RawEncoded, CoinageError> {
+    let vrf_entropy = derivation::paid_token_ring_vrf_entropy(entropy, period, slot)?;
+    let secret = BandersnatchVrfVerifiable::new_secret(vrf_entropy);
+    let signature =
+        BandersnatchVrfVerifiable::sign(&secret, &joining_account.0).map_err(|error| {
+            CoinageError::Internal(format!("paid-token ownership signature failed: {error:?}"))
+        })?;
+
+    Ok(RawEncoded(signature.encode()))
 }
 
 /// Prove control of the member key an entry is about to publish.

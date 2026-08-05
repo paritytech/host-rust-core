@@ -29,6 +29,17 @@ const RECYCLER_COLLECTION_PREFIX: &[u8] = b"coinage/recycler";
 /// Byte holding the denomination inside a recycler collection identifier.
 const RECYCLER_COLLECTION_EXPONENT_OFFSET: usize = 16;
 
+/// Prefix of a paid unload-token ring's 32-byte collection identifier.
+///
+/// Note the trailing `!`: the prefix is exactly sixteen bytes, and the pallet pads
+/// it that way rather than leaving the sixteenth byte zero. Dropping it shifts the
+/// period and produces a collection nobody has ever created.
+const PAID_TOKEN_COLLECTION_PREFIX: &[u8] = b"coinage/paidtkn!";
+
+/// Offset of the little-endian `u32` period inside a paid-token collection
+/// identifier.
+const PAID_TOKEN_COLLECTION_PERIOD_OFFSET: usize = 16;
+
 /// `Blake2_128Concat(x)` = `blake2_128(x) ‖ x`.
 fn blake2_128_concat(x: &[u8]) -> Vec<u8> {
     [blake2_128(x).as_slice(), x].concat()
@@ -44,6 +55,21 @@ pub fn recycler_collection_id(exponent: DenominationExponent) -> [u8; 32] {
     let mut id = [0u8; 32];
     id[..RECYCLER_COLLECTION_PREFIX.len()].copy_from_slice(RECYCLER_COLLECTION_PREFIX);
     id[RECYCLER_COLLECTION_EXPONENT_OFFSET] = exponent.get() as u8;
+    id
+}
+
+/// The membership collection holding one period's paid unload-token ring.
+///
+/// `"coinage/paidtkn!" ‖ period_le ‖ zeros`, matching
+/// `Pallet::paid_token_collection_identifier`. One collection per period, created
+/// by the pallet's own `on_poll` ahead of time and deleted once the period has
+/// expired — so an identifier for a period that has come and gone resolves to
+/// nothing.
+pub fn paid_token_collection_id(period: u32) -> [u8; 32] {
+    let mut id = [0u8; 32];
+    id[..PAID_TOKEN_COLLECTION_PREFIX.len()].copy_from_slice(PAID_TOKEN_COLLECTION_PREFIX);
+    id[PAID_TOKEN_COLLECTION_PERIOD_OFFSET..PAID_TOKEN_COLLECTION_PERIOD_OFFSET + 4]
+        .copy_from_slice(&period.to_le_bytes());
     id
 }
 
@@ -177,6 +203,20 @@ pub fn collections_key(collection: &[u8; 32]) -> Vec<u8> {
     .concat()
 }
 
+/// `Members::CurrentRingIndex(collection)` — `Identity` over the identifier.
+///
+/// The newest ring of a collection, and so the upper bound on where a member key
+/// can have been placed. `ValueQuery`, so an absent value means ring zero rather
+/// than no rings.
+pub fn current_ring_index_key(collection: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Members").as_slice(),
+        twox_128(b"CurrentRingIndex").as_slice(),
+        collection.as_slice(),
+    ]
+    .concat()
+}
+
 /// `Coinage::ConsumedFreeUnloadTokens((period, alias))` — both keys
 /// `Twox64Concat`.
 ///
@@ -202,6 +242,43 @@ pub fn paid_unload_token_members_key(member_key: &[u8; 32]) -> Vec<u8> {
         twox_128(b"Coinage").as_slice(),
         twox_128(b"PaidUnloadTokenMembers").as_slice(),
         &twox_64_concat(member_key),
+    ]
+    .concat()
+}
+
+/// `Coinage::PaidTokenCollectionsCreated(period)` — `Identity` over a
+/// **big-endian** `u32`.
+///
+/// Presence means the pallet has created that period's collection, which is what
+/// makes the ring joinable. The pallet creates it proactively in `on_poll`, so
+/// absence normally means the period is in the future or already expired.
+///
+/// The period is big-endian here and little-endian inside
+/// [`paid_token_collection_id`]. That is the pallet's own inconsistency, and it is
+/// deliberate on its side: `Identity` keys are iterated in lexicographic order, so
+/// only big-endian bytes iterate in numeric order.
+pub fn paid_token_collections_created_key(period: u32) -> Vec<u8> {
+    [
+        twox_128(b"Coinage").as_slice(),
+        twox_128(b"PaidTokenCollectionsCreated").as_slice(),
+        &period.to_be_bytes(),
+    ]
+    .concat()
+}
+
+/// `Coinage::PaidUnloadTokenConsumed((period, ring, alias))` — `Identity` over a
+/// big-endian `u32`, then `Twox64Concat` over the ring index and the alias.
+///
+/// Presence means this token has already been spent. Since a paid member key
+/// yields exactly one alias per period, this is also the answer to "has this slot
+/// been used".
+pub fn paid_unload_token_consumed_key(period: u32, ring: RingIndex, alias: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Coinage").as_slice(),
+        twox_128(b"PaidUnloadTokenConsumed").as_slice(),
+        &period.to_be_bytes(),
+        &twox_64_concat(&ring.0.to_le_bytes()),
+        &twox_64_concat(alias),
     ]
     .concat()
 }
@@ -526,6 +603,56 @@ mod tests {
         assert_eq!(four[16], 4);
         assert_eq!(&four[17..], &[0u8; 15]);
         assert_ne!(four, five, "each denomination has its own ring collection");
+    }
+
+    #[test]
+    fn a_paid_token_collection_carries_a_little_endian_period_after_a_sixteen_byte_prefix() {
+        let collection = paid_token_collection_id(0x0102_0304);
+
+        // The `!` is part of the prefix. Treating it as padding would shift the
+        // period one byte left and name a collection that does not exist.
+        assert_eq!(&collection[..16], b"coinage/paidtkn!");
+        assert_eq!(&collection[16..20], &[0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(&collection[20..], &[0u8; 12]);
+
+        assert_ne!(
+            paid_token_collection_id(7),
+            paid_token_collection_id(8),
+            "each period has its own ring collection"
+        );
+    }
+
+    #[test]
+    fn the_paid_token_period_is_little_endian_in_the_collection_and_big_endian_in_its_keys() {
+        // The pallet spells the same period two ways, and a client that picks one
+        // and uses it everywhere reads an absent key as "not a member" — which is
+        // the failure that silently disables the paid fallback.
+        let period = 0x0102_0304u32;
+        let collection = paid_token_collection_id(period);
+        let created = paid_token_collections_created_key(period);
+        let consumed = paid_unload_token_consumed_key(period, RingIndex(1), &[9u8; 32]);
+
+        assert_eq!(&collection[16..20], &period.to_le_bytes());
+        assert_eq!(&created[32..36], &period.to_be_bytes());
+        assert_eq!(&consumed[32..36], &period.to_be_bytes());
+    }
+
+    #[test]
+    fn the_consumed_paid_token_key_layers_identity_then_two_twox_concats() {
+        let alias = [5u8; 32];
+        let key = paid_unload_token_consumed_key(9, RingIndex(3), &alias);
+
+        assert_eq!(&key[..16], twox_128(b"Coinage").as_slice());
+        assert_eq!(
+            &key[16..32],
+            twox_128(b"PaidUnloadTokenConsumed").as_slice()
+        );
+        // Identity: the period's four bytes go in raw, with no hash in front.
+        assert_eq!(&key[32..36], &9u32.to_be_bytes());
+        assert_eq!(&key[36..44], twox_64(&3u32.to_le_bytes()).as_slice());
+        assert_eq!(&key[44..48], &3u32.to_le_bytes());
+        assert_eq!(&key[48..56], twox_64(&alias).as_slice());
+        assert_eq!(&key[56..], &alias);
     }
 
     #[test]

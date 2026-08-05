@@ -49,9 +49,12 @@ const PALLET: &str = "Coinage";
 /// Values the layer must be told because the deployed runtime does not publish
 /// them, plus the local naming choice for the main purse.
 ///
-/// The two constants here are exactly the ones guarding the two fund-loss paths
-/// — coins ageing out, and entries expiring in a ring — so a deployment that
-/// gets them wrong loses value silently. See `coinage-layer.md` Appendix A.0.
+/// The first two are exactly the constants guarding the two fund-loss paths —
+/// coins ageing out, and entries expiring in a ring — so a deployment that gets
+/// them wrong loses value silently. See `coinage-layer.md` Appendix A.0.
+///
+/// The two paid-token values cannot lose value, but a wrong period spends a join
+/// fee on a token that proves against the wrong collection.
 #[derive(Debug, Clone)]
 pub struct CoinageConfig {
     /// `MaximumAge`: declared without `#[pallet::constant]`, so absent from
@@ -60,6 +63,11 @@ pub struct CoinageConfig {
     /// `RecyclerExpirationTime`: marked `#[pallet::constant]` in the pallet
     /// source but absent from the deployed runtime's metadata.
     pub recycler_expiration_time: Duration,
+    /// `PaidUnloadTokenTimePeriod`: as above. Distinct from the free-token
+    /// period, and longer on the reference runtime.
+    pub paid_unload_token_period: Duration,
+    /// `PaidUnloadTokenRingExpirationTime`: as above.
+    pub paid_unload_token_ring_expiration: Duration,
     /// Display name for the main purse on first run.
     pub main_purse_name: String,
 }
@@ -70,6 +78,8 @@ impl Default for CoinageConfig {
         Self {
             maximum_age: CoinAge(16),
             recycler_expiration_time: Duration::from_secs(90 * 24 * 60 * 60),
+            paid_unload_token_period: Duration::from_secs(3 * 24 * 60 * 60),
+            paid_unload_token_ring_expiration: Duration::from_secs(4 * 24 * 60 * 60),
             main_purse_name: "Main".to_string(),
         }
     }
@@ -405,7 +415,7 @@ impl CoinageLayer {
     }
 }
 
-/// Assemble the runtime's constants from metadata plus the two it cannot
+/// Assemble the runtime's constants from metadata plus the four it cannot
 /// publish.
 pub fn read_chain_constants(
     metadata: &Metadata,
@@ -427,6 +437,18 @@ pub fn read_chain_constants(
         )?,
         unload_token_period: required::<u32>(metadata, "UnloadTokenTimePeriodPeopleLitePeople")
             .map(|secs| Duration::from_secs(u64::from(secs)))?,
+        paid_unload_token_period: agreed(
+            metadata,
+            "PaidUnloadTokenTimePeriod",
+            config.paid_unload_token_period,
+            |secs: u32| Duration::from_secs(u64::from(secs)),
+        )?,
+        paid_unload_token_ring_expiration: agreed(
+            metadata,
+            "PaidUnloadTokenRingExpirationTime",
+            config.paid_unload_token_ring_expiration,
+            |secs: u32| Duration::from_secs(u64::from(secs)),
+        )?,
         max_free_unload_tokens_per_period: required(metadata, "MaxFreeUnloadTokensPerTimePeriod")?,
         max_batch_unpaid_load: required(metadata, "MaxBatchUnpaidLoad")?,
         underlying_asset_unit: required(metadata, "UnderlyingAssetUnit")?,
@@ -450,11 +472,10 @@ fn required<T: Decode>(metadata: &Metadata, name: &str) -> Result<T, CoinageErro
 
 /// Take a configured value, but refuse to disagree with the runtime.
 ///
-/// These two constants are absent from the deployed runtime, so configuration
-/// is the only source. A newer runtime that does publish one must agree with
-/// what the deployment was told, because both values drive a sweep whose whole
-/// job is to beat a chain deadline — being quietly wrong about either destroys
-/// value.
+/// These constants are absent from the deployed runtime, so configuration is the
+/// only source. A newer runtime that does publish one must agree with what the
+/// deployment was told: two of them drive a sweep whose whole job is to beat a
+/// chain deadline, and being quietly wrong about either destroys value.
 fn agreed<R, T>(
     metadata: &Metadata,
     name: &str,

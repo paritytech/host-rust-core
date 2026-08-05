@@ -1,7 +1,8 @@
-//! Reading a recycler ring so an unload can prove membership in it.
+//! Reading a membership ring so a proof can be built against it.
 //!
 //! Unloading an entry means proving, in ring-VRF, that the entry's member key is
-//! in its ring. The prover reconstructs the ring commitment from the member list,
+//! in its ring; presenting a paid unload token means the same thing in a different
+//! collection. The prover reconstructs the ring commitment from the member list,
 //! so it needs the same members the runtime verifies against: the `included`
 //! prefix of the ring, whole, in order.
 //!
@@ -17,6 +18,7 @@
 //! Every read is pinned to one block, so members, `included` and the ring's
 //! revision describe one state of the chain rather than three.
 
+use parity_scale_codec::Decode;
 use subxt::ext::scale_value::scale::decode_as_type;
 use subxt::ext::scale_value::{Composite, Value, ValueDef};
 use verifiable::ring::RingDomainSize;
@@ -62,15 +64,120 @@ pub async fn read_recycler_ring(
     location: RingLocation,
     at: &str,
 ) -> Result<RecyclerRing, CoinageError> {
-    let collection = storage::recycler_collection_id(exponent);
-    let domain = read_ring_domain(rpc, metadata, &collection, at).await?;
-    let members = read_ring_members(rpc, &collection, location.index, at).await?;
+    read_ring_in(
+        rpc,
+        metadata,
+        &storage::recycler_collection_id(exponent),
+        location,
+        at,
+    )
+    .await
+}
+
+/// Read one ring of an arbitrary membership collection, pinned to `at`.
+///
+/// The recycler rings and the paid unload-token rings are both `pallet-members`
+/// collections and differ only in their identifier, so both go through here: the
+/// paging rule, the `included` truncation and the domain-from-collection rule are
+/// properties of the members pallet, not of what the ring is for.
+pub async fn read_ring_in(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    collection: &[u8; 32],
+    location: RingLocation,
+    at: &str,
+) -> Result<RecyclerRing, CoinageError> {
+    let domain = read_ring_domain(rpc, metadata, collection, at).await?;
+    let members = read_ring_members(rpc, collection, location.index, at).await?;
 
     Ok(RecyclerRing {
         location,
         members,
         domain,
     })
+}
+
+/// The membership revision one ring of `collection` reports, pinned to `at`.
+pub async fn read_collection_ring_revision(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    collection: &[u8; 32],
+    ring: RingIndex,
+    at: &str,
+) -> Result<Option<RevisionIndex>, CoinageError> {
+    let Some(raw) = read(rpc, &storage::ring_root_key(collection, ring), at).await? else {
+        return Ok(None);
+    };
+    let type_id = metadata
+        .storage_value_type("Members", "Root")
+        .ok_or_else(|| {
+            CoinageError::Internal("Members.Root is absent from metadata".to_string())
+        })?;
+    let value = decode_as_type(&mut &raw[..], type_id, metadata.registry())
+        .map_err(|error| CoinageError::Internal(format!("decoding a ring root failed: {error}")))?;
+
+    revision_field(&value)
+        .map(Some)
+        .ok_or_else(|| CoinageError::Internal("a ring root carried no revision field".to_string()))
+}
+
+/// The newest ring index of a collection, pinned to `at`.
+///
+/// `ValueQuery` on the runtime side, so an absent entry is ring zero.
+pub async fn read_current_ring_index(
+    rpc: &RpcClient,
+    collection: &[u8; 32],
+    at: &str,
+) -> Result<RingIndex, CoinageError> {
+    let Some(raw) = read(rpc, &storage::current_ring_index_key(collection), at).await? else {
+        return Ok(RingIndex(0));
+    };
+    let index = u32::decode(&mut &raw[..]).map_err(|error| {
+        CoinageError::Internal(format!("decoding a current ring index failed: {error}"))
+    })?;
+
+    Ok(RingIndex(index))
+}
+
+/// Find the ring of `collection` whose included prefix holds `member_key`.
+///
+/// Scans downward from the collection's newest ring, because a key onboarded a
+/// while ago sits in an older ring and only a ring that actually contains it can
+/// be proved against. The paid ring's onboarding size is one, so a freshly joined
+/// key lands in a ring within a block or so — but *which* ring is the chain's
+/// choice, never the client's, so it has to be looked up rather than assumed.
+///
+/// `Ok(None)` is the ordinary answer for a key whose join has not been onboarded
+/// yet, and it is not an error: the caller's move is to wait, not to fail.
+pub async fn find_ring_including(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    collection: &[u8; 32],
+    member_key: &[u8; 32],
+    at: &str,
+) -> Result<Option<RecyclerRing>, CoinageError> {
+    let newest = read_current_ring_index(rpc, collection, at).await?;
+    for index in (0..=newest.0).rev() {
+        let ring = RingIndex(index);
+        let Some(revision) =
+            read_collection_ring_revision(rpc, metadata, collection, ring, at).await?
+        else {
+            continue;
+        };
+        let read = read_ring_in(
+            rpc,
+            metadata,
+            collection,
+            RingLocation::new(ring, revision),
+            at,
+        )
+        .await?;
+        if read.includes(member_key) {
+            return Ok(Some(read));
+        }
+    }
+
+    Ok(None)
 }
 
 /// The membership revision a ring's root currently reports, pinned to `at`.
@@ -85,21 +192,14 @@ pub async fn read_ring_revision(
     ring: RingIndex,
     at: &str,
 ) -> Result<Option<RevisionIndex>, CoinageError> {
-    let collection = storage::recycler_collection_id(exponent);
-    let Some(raw) = read(rpc, &storage::ring_root_key(&collection, ring), at).await? else {
-        return Ok(None);
-    };
-    let type_id = metadata
-        .storage_value_type("Members", "Root")
-        .ok_or_else(|| {
-            CoinageError::Internal("Members.Root is absent from metadata".to_string())
-        })?;
-    let value = decode_as_type(&mut &raw[..], type_id, metadata.registry())
-        .map_err(|error| CoinageError::Internal(format!("decoding a ring root failed: {error}")))?;
-
-    revision_field(&value)
-        .map(Some)
-        .ok_or_else(|| CoinageError::Internal("a ring root carried no revision field".to_string()))
+    read_collection_ring_revision(
+        rpc,
+        metadata,
+        &storage::recycler_collection_id(exponent),
+        ring,
+        at,
+    )
+    .await
 }
 
 /// Pull the `revision` field out of a decoded ring root.

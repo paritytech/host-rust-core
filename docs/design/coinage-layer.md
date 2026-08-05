@@ -308,12 +308,25 @@ Every unload of a recycler entry consumes exactly one unload token. Two classes 
 - **Free** — derived from the user's people / lite-people ring membership; per-period allowance.
 - **Paid** — derived from a period-specific paid-token ring that anyone may join by paying a fee (an on-chain extrinsic).
 
+**The two classes do not count the same way, and this drives everything below.** A free token's signing context is `"pop:polkadot.net/coinftk" ‖ period_le ‖ counter_le`, so one personhood key produces a fresh alias per counter and covers the whole period's allowance. A paid token's context is `"pop:polkadot.net/coinpaidtok" ‖ period_le` — **no counter**. One paid member key therefore yields exactly one alias, and so exactly one token, per period. `N` paid tokens in a period means `N` member keys, `N` join extrinsics and `N` fees.
+
+The layer consequently keeps a *series* of paid keys per period, derived at `//coinage//paidtkn//<period>//<slot>` in the ring-VRF tree. The period is part of the path because `Coinage::PaidUnloadTokenMembers` is global and the pallet refuses a member key it has already seen — a paid key is single-use across all time, not merely within its period.
+
 When the layer needs `N` tokens for a multi-group unload, it resolves them in this order:
 
 1. For each token slot needed, probe `ConsumedFreeUnloadTokens` (cached from chain) for the current period and any prior period within the lookback grace window (Appendix A.6). Pick the first counter in the search range (Appendix A.5) whose alias is not consumed.
-2. If free slots run out, fall back to paid tokens. If no paid-token ring membership exists for the current period, the layer first joins the current paid ring (a pre-step extrinsic), then derives the alias.
+2. If free slots run out, fall back to paid tokens, one slot per remaining group. Slots the wallet already holds are used before slots that need buying. Each remaining slot needs its own join extrinsic, which MUST reach *definite* success before the token it buys can be presented.
 
-If neither free nor paid tokens can be obtained (no people/lite-people ring membership and the fee account cannot fund joining the paid ring), the operation fails with `NoUnloadToken`.
+If neither free nor paid tokens can be obtained, the operation fails with `NoUnloadToken`. A plan that is short even one token MUST be refused whole rather than partially committed, since a partial plan spends its free slots and its join fees and then fails anyway.
+
+**Joining and becoming provable are two steps.** `pay_for_recycler_unload_fee_token_with_{coin,native,external_asset}` registers the key at once, but the members pallet onboards it into an actual ring afterwards, and a ring-VRF proof needs the ring. A slot between the two is paid for and unusable; the correct response is to wait, not to fail and not to pay again. Three facts per slot are therefore distinct: registered, onboarded, and spent.
+
+Two further consequences of the pallet's shape:
+
+- **The join call takes no period.** It reads the chain's own clock at dispatch and adds the member to whichever period is current *then*. A join submitted near a period boundary can land in the next period, so membership and ring index MUST be re-read after a join rather than assumed.
+- **A join cannot be priced by a client.** The pallet computes the fee as `WeightToFee(coin_lifecycle_weight())`, which is neither a published constant nor exposed by a runtime API. Whether a join is affordable is therefore a judgement the layer makes (for instance by dry-running the join), not a value it can read.
+
+The paid ring's collection identifier is `"coinage/paidtkn!" ‖ period_le ‖ zeros` — sixteen bytes of prefix, the `!` included, then the period as a little-endian `u32`. Note that the pallet spells the same period **big-endian** in `PaidTokenCollectionsCreated` and `PaidUnloadTokenConsumed`, whose `Identity` hashers need lexicographic order to match numeric order. An implementation that picks one endianness and uses it everywhere reads an absent key as "not a member", which silently disables the paid fallback.
 
 A token consumed by a transaction whose dispatch then failed is **not** returned (§5.6). Retry accounting MUST treat each attempt as consuming a token.
 

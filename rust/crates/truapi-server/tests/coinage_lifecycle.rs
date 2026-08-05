@@ -278,11 +278,7 @@ fn an_unload_runs_from_selection_through_to_a_submittable_extrinsic() {
     let token_plan = resolve(
         plan.unload_tokens_required(),
         &chain.free_tokens(),
-        &PaidRingState {
-            period: TOKEN_PERIOD,
-            is_member: false,
-            can_fund_join: true,
-        },
+        &PaidRingState::unavailable(TOKEN_PERIOD),
         &params(),
         &constants(),
     )
@@ -295,7 +291,10 @@ fn an_unload_runs_from_selection_through_to_a_submittable_extrinsic() {
             counter: 0
         }]
     );
-    assert!(!token_plan.join_paid_ring);
+    assert!(
+        token_plan.joins.is_empty(),
+        "a free slot covers it, so nothing is bought"
+    );
 
     let fee_mode = choose_fee_mode(1_000_000, 5_000);
     assert_eq!(fee_mode, FeeMode::Prepaid);

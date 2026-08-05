@@ -19,14 +19,27 @@
 //! roll over between planning a transaction and the runtime validating it, and a
 //! token from the period that just ended is still honoured for a while.
 //!
-//! # The paid ring is not implemented
+//! # A paid token is a whole key, not a slot in one
 //!
-//! §6.5's fallback to paid tokens needs the membership collection identifier the
-//! pallet derives per period, and that value is neither in metadata nor derivable
-//! from anything this layer can see. [`read_paid_ring_state`] therefore reports
-//! membership honestly — the one thing that *is* readable — and never claims the
-//! ring can be joined, so resolution fails with `NoUnloadToken` rather than
-//! building a token it cannot prove. Tracked as a known gap.
+//! The paid ring's collection is `"coinage/paidtkn!" ‖ period_le`, one per period,
+//! and its proof context carries the period and no counter. So a paid member key
+//! is worth exactly one token per period — where a free personhood key covers the
+//! period's whole allowance. The wallet therefore keeps a *series* of paid keys per
+//! period, derived at `//coinage//paidtkn//<period>//<slot>`, and each one has to
+//! be joined and paid for separately.
+//!
+//! [`read_paid_ring_state`] reports each slot's three independent facts: whether
+//! its key is registered (`PaidUnloadTokenMembers`), whether the members pallet has
+//! placed it in a provable ring, and whether its one token has already been spent
+//! (`PaidUnloadTokenConsumed`). Registered-and-in-a-ring-and-unspent is a token in
+//! hand; unregistered is a token the wallet can buy; spent is dead until the period
+//! rolls over, because the pallet refuses a member key it has already seen.
+//!
+//! Whether a join can be *afforded* is not readable at all. The pallet prices it as
+//! `WeightToFee(coin_lifecycle_weight())`, which is neither a published constant nor
+//! exposed by a runtime API, so this module does not guess: it reports
+//! `can_fund_join: false` and leaves the judgement to the caller through
+//! [`PaidRingState::with_fundable_joins`].
 
 use core::time::Duration;
 
@@ -36,14 +49,14 @@ use verifiable::GenerateVerifiable;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use crate::host_logic::coinage::chain_constants::CoinageChainConstants;
+use crate::host_logic::coinage::derivation;
 use crate::host_logic::coinage::error::CoinageError;
 use crate::host_logic::coinage::params::CoinageParameters;
 use crate::host_logic::coinage::types::{CoinAccountId, Timestamp};
-use crate::host_logic::coinage::unload_token::{FreeTokenAvailability, PaidRingState};
-use crate::runtime::coinage::extension::free_token_signing_context;
-use crate::runtime::coinage::storage;
+use crate::host_logic::coinage::unload_token::{FreeTokenAvailability, PaidRingState, PaidSlot};
+use crate::runtime::coinage::extension::{free_token_signing_context, paid_token_signing_context};
+use crate::runtime::coinage::{ring, storage};
 use crate::runtime::statement_allowance::extension::Metadata;
-use crate::runtime::statement_allowance::proof::member_key;
 use crate::runtime::statement_allowance::rpc::RpcClient;
 
 /// The alias the personhood key produces for one free-token slot.
@@ -138,33 +151,140 @@ pub async fn read_free_token_availability(
     Ok(availability)
 }
 
+/// The paid-token period `now` falls in.
+///
+/// Uses the *paid* period length, which is a different constant from the free
+/// one — three days against one on the reference runtime. Mixing them names a
+/// period whose collection the wallet is not proving against.
+pub fn paid_period(now: Timestamp, constants: &CoinageChainConstants) -> Result<u32, CoinageError> {
+    Ok(
+        *eligible_periods(now, constants.paid_unload_token_period, Duration::ZERO)?
+            .first()
+            .expect("eligible_periods always yields the current period; qed"),
+    )
+}
+
+/// When the chain stops honouring `period`'s paid tokens.
+///
+/// `(period + 1) * paid_period + ring_expiration`, matching the pallet's
+/// `period_expiration_time`. A token proved past this is refused as stale, so a
+/// join placed near the boundary buys very little.
+pub fn paid_period_expiry(
+    period: u32,
+    constants: &CoinageChainConstants,
+) -> Result<Timestamp, CoinageError> {
+    let length = constants.paid_unload_token_period.as_millis();
+    let end = u128::from(period)
+        .checked_add(1)
+        .and_then(|next| next.checked_mul(length))
+        .and_then(|end| end.checked_add(constants.paid_unload_token_ring_expiration.as_millis()))
+        .and_then(|end| u64::try_from(end).ok())
+        .ok_or_else(|| {
+            CoinageError::Internal("a paid-token period expiry overflows".to_string())
+        })?;
+
+    Ok(Timestamp(end))
+}
+
+/// The alias one paid-token slot's key produces for its period.
+///
+/// The context carries the period and nothing else, which is why one key is one
+/// token: there is no counter to vary.
+pub fn paid_token_alias(entropy: &[u8], period: u32, slot: u32) -> Result<[u8; 32], CoinageError> {
+    let vrf_entropy = derivation::paid_token_ring_vrf_entropy(entropy, period, slot)?;
+    let secret = BandersnatchVrfVerifiable::new_secret(vrf_entropy);
+    let context = paid_token_signing_context(period);
+    let alias =
+        BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|error| {
+            CoinageError::Internal(format!("paid-token alias derivation failed: {error:?}"))
+        })?;
+
+    alias
+        .as_ref()
+        .try_into()
+        .map_err(|_| CoinageError::Internal("paid-token alias is not 32 bytes".to_string()))
+}
+
 /// Read what the chain says about the paid unload-token ring, pinned to `at`.
 ///
-/// `can_fund_join` is always false: see the module documentation. Membership is
-/// read rather than assumed, so a wallet that already joined out of band is not
-/// told it has no tokens.
+/// Reports each slot's registration, onboarding and consumption, plus whether the
+/// period's collection exists at all.
+///
+/// A slot's consumption is checked against the ring its key actually sits in,
+/// since `PaidUnloadTokenConsumed` is keyed by ring index. A registered key whose
+/// onboarding has not completed has no ring yet, and its token is therefore
+/// unspent and unprovable at the same time. That is reported as `joined` without
+/// `onboarded` rather than as an error, because waiting is the correct response.
+///
+/// The returned state reports `can_fund_join: false`. Whether a join is affordable
+/// is not a storage read — the pallet prices it from a weight — so the caller
+/// decides and applies [`PaidRingState::with_fundable_joins`].
 pub async fn read_paid_ring_state(
     rpc: &RpcClient,
-    personhood_entropy: [u8; 32],
+    metadata: &Metadata,
+    entropy: &[u8],
     now: Timestamp,
+    params: &CoinageParameters,
     constants: &CoinageChainConstants,
     at: &str,
 ) -> Result<PaidRingState, CoinageError> {
-    let period = *eligible_periods(now, constants.unload_token_period, Duration::ZERO)?
-        .first()
-        .expect("eligible_periods always yields the current period; qed");
-    let is_member = read(
+    let period = paid_period(now, constants)?;
+    let collection = storage::paid_token_collection_id(period);
+    let collection_exists = read(
         rpc,
-        &storage::paid_unload_token_members_key(&member_key(personhood_entropy)),
+        &storage::paid_token_collections_created_key(period),
         at,
     )
     .await?
     .is_some();
 
+    let mut slots = Vec::with_capacity(params.paid_token_slot_search_range as usize);
+    for slot in 0..params.paid_token_slot_search_range {
+        let key = derivation::paid_token_member_key(entropy, period, slot)?;
+        let joined = read(rpc, &storage::paid_unload_token_members_key(&key), at)
+            .await?
+            .is_some();
+
+        // Only a registered key can be in a ring, and finding out costs a ring
+        // lookup — so an unregistered slot short-circuits.
+        let (onboarded, spent) = if joined {
+            match ring::find_ring_including(rpc, metadata, &collection, &key, at).await? {
+                Some(ring) => {
+                    let alias = paid_token_alias(entropy, period, slot)?;
+                    let spent = read(
+                        rpc,
+                        &storage::paid_unload_token_consumed_key(
+                            period,
+                            ring.location.index,
+                            &alias,
+                        ),
+                        at,
+                    )
+                    .await?
+                    .is_some();
+                    (true, spent)
+                }
+                // Registered but not in a ring yet, so nothing can have consumed
+                // its alias and nothing can prove it either.
+                None => (false, false),
+            }
+        } else {
+            (false, false)
+        };
+
+        slots.push(PaidSlot {
+            slot,
+            joined,
+            onboarded,
+            spent,
+        });
+    }
+
     Ok(PaidRingState {
         period,
-        is_member,
+        collection_exists,
         can_fund_join: false,
+        slots,
     })
 }
 
@@ -260,6 +380,7 @@ mod tests {
     fn params() -> CoinageParameters {
         CoinageParameters {
             free_token_counter_search_range: 3,
+            paid_token_slot_search_range: 2,
             ..CoinageParameters::default()
         }
     }
@@ -391,11 +512,7 @@ mod tests {
         let plan = resolve(
             1,
             &availability,
-            &PaidRingState {
-                period: 2,
-                is_member: false,
-                can_fund_join: false,
-            },
+            &PaidRingState::unavailable(2),
             &params(),
             &constants,
         )
@@ -412,28 +529,92 @@ mod tests {
     }
 
     #[test]
-    fn the_paid_ring_is_never_reported_as_joinable() {
-        // Claiming otherwise would produce a token this layer cannot prove.
-        let (_scripted, rpc) = scripted(&[ABSENT.to_string()]);
+    fn the_paid_period_is_measured_with_the_paid_period_length() {
+        // The two period lengths are different constants — one day free, three
+        // days paid on the reference runtime — and the paid one names the
+        // collection a token proves against. Measuring with the free length picks
+        // a period whose ring the wallet is not a member of, after paying to join.
         let constants = next_people_paseo();
+        let day = constants.unload_token_period.as_millis() as u64;
+
+        // Four days in: free period 4, paid period 1.
+        let now = Timestamp(4 * day + day / 2);
+
+        assert_eq!(
+            eligible_periods(now, constants.unload_token_period, Duration::ZERO).expect("computes"),
+            vec![4]
+        );
+        assert_eq!(paid_period(now, &constants).expect("computes"), 1);
+    }
+
+    #[test]
+    fn a_paid_period_expires_after_its_end_plus_the_ring_expiration() {
+        let constants = next_people_paseo();
+        let period_ms = constants.paid_unload_token_period.as_millis() as u64;
+        let expiration_ms = constants.paid_unload_token_ring_expiration.as_millis() as u64;
+
+        // Period 2 ends when period 3 begins, and the ring lingers past that.
+        assert_eq!(
+            paid_period_expiry(2, &constants).expect("computes"),
+            Timestamp(3 * period_ms + expiration_ms)
+        );
+    }
+
+    #[test]
+    fn a_slot_alias_is_bound_to_its_period_and_slot() {
+        // Each slot must produce its own alias, or two slots would be one token.
+        let first = paid_token_alias(&ENTROPY, 10, 0).expect("derives");
+        let same = paid_token_alias(&ENTROPY, 10, 0).expect("derives");
+        let other_slot = paid_token_alias(&ENTROPY, 10, 1).expect("derives");
+        let other_period = paid_token_alias(&ENTROPY, 11, 0).expect("derives");
+        let other_wallet = paid_token_alias(&[9u8; 32], 10, 0).expect("derives");
+
+        assert_eq!(first, same, "the same slot is the same alias");
+        assert_ne!(first, other_slot, "two slots are two tokens");
+        assert_ne!(first, other_period);
+        assert_ne!(first, other_wallet);
+
+        // And a paid alias is not a free alias for the same period, because the
+        // key and the context both differ.
+        assert_ne!(first, free_token_alias(ENTROPY, 10, 0).expect("derives"));
+    }
+
+    #[test]
+    fn an_unjoined_wallet_reports_every_slot_as_joinable_but_holds_no_token() {
+        // One read for the collection, then one membership read per slot. Nothing
+        // is joined, so no ring lookup happens.
+        let (scripted, rpc) =
+            scripted(&[ABSENT.to_string(), ABSENT.to_string(), ABSENT.to_string()]);
+        let constants = next_people_paseo();
+        let now = Timestamp(constants.paid_unload_token_period.as_millis() as u64 * 3);
 
         let state = block_on(read_paid_ring_state(
             &rpc,
-            ENTROPY,
-            Timestamp(constants.unload_token_period.as_millis() as u64),
+            &metadata(),
+            &ENTROPY,
+            now,
+            &params(),
             &constants,
             "0xfeed",
         ))
         .expect("reads");
 
-        assert!(!state.is_member);
+        assert_eq!(state.period, 3);
+        assert!(!state.collection_exists);
+        assert_eq!(state.slots.len(), 2);
+        assert!(state.slots.iter().all(|slot| slot.is_joinable()));
         assert!(
-            !state.can_fund_join,
-            "the paid ring's collection identifier is not derivable here"
+            !state.slots.iter().any(|slot| slot.is_ready()),
+            "joinable is not the same as held"
+        );
+        assert_eq!(
+            scripted.calls().len(),
+            3,
+            "an unjoined slot costs no ring lookup"
         );
 
-        // And so a wallet out of free slots is told it has no token at all,
-        // rather than being handed a grant that cannot be built.
+        // A wallet out of free slots that cannot fund a join is told it has no
+        // token, rather than handed a grant it cannot present.
         let exhausted = FreeTokenAvailability {
             eligible_periods: vec![state.period],
             consumed: (0..3).map(|counter| (state.period, counter)).collect(),
@@ -441,6 +622,46 @@ mod tests {
         assert_eq!(
             resolve(1, &exhausted, &state, &params(), &constants),
             Err(CoinageError::NoUnloadToken)
+        );
+    }
+
+    #[test]
+    fn a_joined_slot_awaiting_onboarding_is_unspent_and_not_yet_ready() {
+        // Joined, but the members pallet has not placed the key in a ring yet, so
+        // there is no ring index to check consumption against. The honest answer
+        // is "not spent" — and the slot is still not usable, because a proof needs
+        // a ring. Waiting is the caller's move, not failing.
+        let (_scripted, rpc) = scripted(&[
+            present(),          // the period's collection exists
+            present(),          // slot 0 is a member
+            ABSENT.to_string(), // CurrentRingIndex: defaults to ring 0
+            ABSENT.to_string(), // ring 0 has no root, so no ring holds the key
+            ABSENT.to_string(), // slot 1 is not a member
+        ]);
+        let constants = next_people_paseo();
+        let now = Timestamp(constants.paid_unload_token_period.as_millis() as u64);
+
+        let state = block_on(read_paid_ring_state(
+            &rpc,
+            &metadata(),
+            &ENTROPY,
+            now,
+            &params(),
+            &constants,
+            "0xfeed",
+        ))
+        .expect("reads");
+
+        assert!(state.collection_exists);
+        assert!(state.slots[0].joined);
+        assert!(!state.slots[0].spent);
+        assert!(
+            !state.slots[0].is_ready(),
+            "a key with no ring cannot be proved"
+        );
+        assert!(
+            !state.slots[0].is_joinable(),
+            "and it must not be joined twice; the pallet refuses a known key"
         );
     }
 

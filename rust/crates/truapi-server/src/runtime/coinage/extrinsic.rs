@@ -80,6 +80,8 @@ pub enum CoinageCall {
     UnloadRecyclerIntoExternalAssetAndVouchers,
     /// `Coinage::load_recycler_with_external_asset_unpaid_batch`.
     LoadRecyclerWithExternalAssetUnpaidBatch,
+    /// `Coinage::pay_for_recycler_unload_fee_token_with_native`.
+    PayForRecyclerUnloadFeeTokenWithNative,
 }
 
 impl CoinageCall {
@@ -95,6 +97,9 @@ impl CoinageCall {
             }
             Self::LoadRecyclerWithExternalAssetUnpaidBatch => {
                 "load_recycler_with_external_asset_unpaid_batch"
+            }
+            Self::PayForRecyclerUnloadFeeTokenWithNative => {
+                "pay_for_recycler_unload_fee_token_with_native"
             }
         }
     }

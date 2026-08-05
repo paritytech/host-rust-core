@@ -268,7 +268,11 @@ recycler entries: //coinage//<purse>//<page>//<index>         bandersnatch,
 - This is a clean break from the shipped `//pps//…` layout. Existing testnet
   coins become unreachable, which is accepted.
 
-## 6. Two pallet constants are not discoverable
+## 6. Four pallet constants are not discoverable
+
+Two were found first and are the dangerous pair; §6.4 adds two more from the
+paid-token work. All four are absent from `paseo-people-next`'s metadata and are
+carried as per-network configuration, refused if a newer runtime disagrees.
 
 Verified against `paseo-people-next` by
 `rust/crates/truapi-server/examples/coinage_chain_agreement.rs`. Eight of the
@@ -285,11 +289,17 @@ that **these are exactly the two values that guard the two fund-loss paths** —
 coins aging out, and entries expiring in a ring. Everything else the layer can
 verify against the chain at connection time; these two it must be told.
 
+`PaidUnloadTokenTimePeriod` and `PaidUnloadTokenRingExpirationTime` are the other
+two; see §6.4. Both are `#[pallet::constant]` in the source and absent from the
+deployment, so they share `RecyclerExpirationTime`'s diagnosis.
+
 Two asks worth raising with the pallet authors:
 
 1. Add `#[pallet::constant]` to `MaximumAge`.
-2. Confirm whether the `RecyclerExpirationTime` attribute is newer than the
-   deployed runtime, and if so when it lands.
+2. Confirm whether the `RecyclerExpirationTime`,
+   `PaidUnloadTokenTimePeriod` and `PaidUnloadTokenRingExpirationTime` attributes
+   are newer than the deployed runtime, and if so when they land. Three constants
+   with the same story suggests one runtime upgrade settles all of them.
 
 Until then the layer should treat a mismatch between configured and observed
 values as a hard failure wherever it *can* observe, and the RFC should state
@@ -357,24 +367,55 @@ only because the derivation break makes them so. Retiring the native engines is
 a third project after RFC-17-in-core and after the integrations, and it is real
 UI work in both apps.
 
-### 6.4 The paid unload-token ring cannot be built from what the layer can read
+### 6.4 The paid unload-token ring — resolved from the pallet source
 
-§6.5 falls back to paid tokens when a period's free allowance is exhausted. The
-fallback is not implemented, and cannot be without a pallet fact that is neither
-in metadata nor derivable from anything on chain: the 32-byte `Members`
-collection identifier the pallet uses for a period's paid-token ring. The
-recycler collections have a documented shape (`b"coinage/recycler"` with the
-exponent at byte 16); the paid-token collection's is unknown.
+**Closed.** Read out of `pallets/coinage/src/{lib.rs, paid_tkn_manager.rs}` in the
+sibling `individuality` checkout. Every fact the fallback needed:
 
-What the layer does today is read `Coinage::PaidUnloadTokenMembers` — so a wallet
-that joined out of band is not told it has no tokens — and never report the ring
-as joinable, so resolution fails with `NoUnloadToken` rather than building a
-token it cannot prove. Getting the identifier out of `pallets/coinage/src` closes
-this; until then a wallet that exhausts its free slots waits for the next period.
+| Fact | Value |
+|---|---|
+| Collection identifier | `b"coinage/paidtkn!"` (16 bytes, `!` included) ‖ period as LE `u32` ‖ zeros |
+| Proof context | `b"pop:polkadot.net/coinpaidtok"` (28 bytes) ‖ period as LE `u32` — **no counter** |
+| Signed message | `blake2_256(alias_proofs.encode() ‖ inherited_implication)` — identical to the free token's |
+| Period | `unix_secs / PaidUnloadTokenTimePeriod`, a **different constant** from the free period: 3 days against 1 |
+| Ring expiry | `(period + 1) * period_length + PaidUnloadTokenRingExpirationTime`; 4 days on the reference runtime |
+| Join calls | `pay_for_recycler_unload_fee_token_with_coin` (6), `_with_native` (7), `_with_external_asset` (8) |
+| Join arguments | `member_key` plus `proof_of_ownership`, the latter signing the origin account's encoded bytes — the same rule as §6.6 |
+| Onboarding size | 1, so a joined key reaches a ring quickly — but *which* ring is the chain's choice |
+| Ring exponent | `PaidUnloadTokenRingExponent`, `R2e10`; this one *is* in metadata |
 
-Note that from-output fees blunt this in practice: an unfunded fee account
-spends no free slot at all (§6.6), so the allowance is only consumed by wallets
-that *can* pay prepaid.
+Three things about it were not anticipated by the design doc, and all three are now
+folded into `coinage-layer.md` §6.5:
+
+1. **One paid key is one token per period,** because the context carries no
+   counter. `N` paid tokens means `N` keys, `N` joins and `N` fees. The design doc
+   described a single join per period, which is wrong.
+2. **Joining and becoming provable are two steps.** The key is registered
+   immediately; the members pallet onboards it into a ring afterwards, and the
+   proof needs the ring. In between, the slot is paid for and unusable.
+3. **The join call takes no period.** It uses the chain's clock at dispatch, so a
+   join near a boundary lands in the next period.
+
+Two smaller traps worth recording:
+
+- The pallet spells the period **little-endian** in the collection identifier and
+  **big-endian** in `PaidTokenCollectionsCreated` / `PaidUnloadTokenConsumed`,
+  whose `Identity` hashers need lexicographic order to match numeric order. Both
+  are pinned by golden tests.
+- `PaidUnloadTokenTimePeriod` and `PaidUnloadTokenRingExpirationTime` are marked
+  `#[pallet::constant]` in the source but are **absent from the deployed runtime's
+  metadata** — the same situation as `RecyclerExpirationTime` (§6). So the
+  configured-constant list grows from two to four. These two cannot lose value,
+  but a wrong paid period spends a join fee on a token that proves against a
+  collection nobody is verifying against.
+
+A third drift worth flagging to the pallet authors: the deployed runtime names the
+third join's event `PaidUnloadTokenRegisteredWithStable`, where the source says
+`...WithExternalAsset`. The source is ahead of the deployment here too.
+
+Note that from-output fees blunt the whole question in practice: an unfunded fee
+account spends no free slot at all (§6.6), so the allowance is only consumed by
+wallets that *can* pay prepaid.
 
 ### 6.5 Which side's index `MemoEntry::derivation_index` carries is unsettled
 

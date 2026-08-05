@@ -1941,10 +1941,29 @@ impl CoinageLayer {
             &at,
         )
         .await?;
-        let paid =
-            tokens::read_paid_ring_state(chain.rpc, personhood, now, self.constants(), &at).await?;
+        // `can_fund_join` is false because this engine cannot yet *submit* a join:
+        // buying a token is a separate signed extrinsic that has to reach definite
+        // success before the token it buys can be proved, which makes it a
+        // transaction in the operation's program rather than something resolution
+        // can do inline. Until that lands, resolution is told not to plan joins, so
+        // it uses the slots the wallet already holds and otherwise reports
+        // `NoUnloadToken` — never a grant it cannot present.
+        let paid = tokens::read_paid_ring_state(
+            chain.rpc,
+            chain.metadata,
+            self.entropy(),
+            now,
+            self.params(),
+            self.constants(),
+            &at,
+        )
+        .await?;
 
         let plan = resolve(needed, &free, &paid, self.params(), self.constants())?;
+        debug_assert!(
+            plan.joins.is_empty(),
+            "resolution must not plan a join while joins cannot be submitted"
+        );
         Ok(plan.grants)
     }
 
@@ -2195,10 +2214,45 @@ impl CoinageLayer {
                     alias_proofs,
                 })
             }
-            Some(TokenGrant::Paid { period }) => Err(CoinageError::Internal(format!(
-                "a paid unload token for period {period} cannot be built: the paid ring's \
-                 membership collection is not derivable from anything this layer can read"
-            ))),
+            Some(TokenGrant::Paid { period, slot }) => {
+                let at = chain
+                    .rpc
+                    .finalized_head()
+                    .await
+                    .map_err(|error| CoinageError::SubscriptionError(error.to_string()))?;
+                let collection = storage::paid_token_collection_id(period);
+                let member_key = derivation::paid_token_member_key(self.entropy(), period, slot)?;
+
+                // The ring the chain put this key in, not the one the join asked
+                // for: `add_member` picks the period from its own clock and the
+                // members pallet picks the ring.
+                let ring = ring::find_ring_including(
+                    chain.rpc,
+                    chain.metadata,
+                    &collection,
+                    &member_key,
+                    &at,
+                )
+                .await?
+                .ok_or(CoinageError::NoUnloadToken)?;
+
+                let token = proof::paid_token_proof(
+                    ring.domain,
+                    self.entropy(),
+                    &ring.members,
+                    period,
+                    slot,
+                    &alias_proofs,
+                    implication,
+                )?;
+
+                Ok(AsCoinageInfo::PaidUnloadToken {
+                    proof: token,
+                    period,
+                    ring: ring.location,
+                    alias_proofs,
+                })
+            }
             None => Err(CoinageError::NoUnloadToken),
         }
     }

@@ -61,7 +61,7 @@ warnings.
 | `selection` | The three tiers, deterministic ordering, three-way failure classification |
 | `store` | `CoinageStore` — the aggregate; `begin_operation` selects and locks atomically |
 | `derivation` | Appendix B paths, all hard junctions |
-| `unload_token` | Free-slot resolution, paid fallback, fee mode |
+| `unload_token` | Free-slot resolution, per-slot paid fallback, fee mode |
 | `event` | `LayerEvent` |
 
 ### `runtime/coinage/` — chain-facing, native-only
@@ -82,9 +82,9 @@ warnings.
 | `plan` | Selection plan → ordered transactions, with destinations and output records |
 | `offload` (host_logic) | The four-way phase decision an external offload re-runs |
 | `execute` | The submission engine: assemble, log, broadcast, grade, terminate; `begin_transfer` |
-| `ring` | Recycler ring members and the proof domain their size fixes |
+| `ring` | Members of any collection's ring and the proof domain its size fixes; finding the ring that holds a key |
 | `scan` | The gap-limit wallet rescan of Appendix C, reading in bulk |
-| `tokens` | Free-slot probing, paid-ring membership, fee-account balance |
+| `tokens` | Free-slot probing, paid-slot registration / onboarding / consumption, paid period arithmetic, fee-account balance |
 | `fee` | Pricing an extrinsic, and the from-output ceiling that covers its own bytes |
 | `testing` | `FakeChain`: an offline chain that answers by method, for driving whole operations |
 
@@ -171,12 +171,12 @@ the empty impl, and it is no longer blocked — D3 built the seam it composes on
   `FakeChain`, which answers what the tests tell it to. That proves the layer is
   self-consistent and that its bytes are what this crate believes they are; it
   cannot prove the runtime agrees. The two examples are how that gets settled.
-- **The paid unload-token ring is not implemented.** §6.5's fallback needs the
-  `Members` collection identifier the pallet derives per period, which is neither
-  in metadata nor derivable from anything the layer can read. Membership is read
-  honestly, joining is never claimed, and a wallet out of free slots is told
-  `NoUnloadToken` rather than handed a token it cannot prove. Details in
-  `coinage-rfc-notes.md` §6.4.
+- **The paid unload-token ring can be spent but not bought.** The collection
+  identifier and every other pallet fact are settled (§7.3), so a slot already in
+  the ring resolves, proves and encodes end to end. Nothing submits a join yet, so
+  `can_fund_join` is false and a wallet with no joined slot is still told
+  `NoUnloadToken` — the same outward behaviour as before, for a much smaller
+  reason. Details in `coinage-rfc-notes.md` §6.4.
 - **A coin-origin call is a signed transaction after all.** `AsCoinage::AsCoin`
   transmutes a signed origin rather than conjuring one, so `split`, `transfer` and
   `load_recycler_with_coin` carry a `VerifyMultiSignature` extra signed by the coin
@@ -201,10 +201,15 @@ the empty impl, and it is no longer blocked — D3 built the seam it composes on
   "nothing to do" and its doc names this trap — and a test pins it, including that
   advancing the clock by years changes nothing when the deadline is *missing*
   rather than distant.
-- **Two chain constants are not discoverable.** `MaximumAge` and
+- **Four chain constants are not discoverable.** `MaximumAge` and
   `RecyclerExpirationTime` are absent from metadata, so they are carried as
   configuration — and they are exactly the two values guarding the two
-  fund-loss paths. Details in `coinage-rfc-notes.md` §6.
+  fund-loss paths. `PaidUnloadTokenTimePeriod` and
+  `PaidUnloadTokenRingExpirationTime` join them: `#[pallet::constant]` in the
+  source, absent from the deployment. Those two cannot lose value, but a wrong
+  paid period buys a token that proves against the wrong collection. A configured
+  value that a newer runtime contradicts is a hard failure, not a silent override.
+  Details in `coinage-rfc-notes.md` §6.
 - **Balance streams need the driver to tick.** `refresh_subscriptions` is what
   turns time into a balance item, and nothing calls it on a schedule yet. Until a
   driver does, a purse whose only pending change is a jitter delay elapsing will
@@ -355,41 +360,29 @@ which confirmed the same reading D4 had already used for
 
 ## 6. Commit history on the branch
 
-Twelve commits carry the foundations, the durability layer and the observation
-driver. **The subscription streams, every §8 primitive and the live validation
-driver are uncommitted working-tree changes on top of them.** Nothing is pushed.
+The branch carries the foundations, the durability layer, the observation driver,
+the subscription streams, every §8 primitive, the live validation driver and the
+paid unload-token ring. Branched from `main` at `079ecd19`.
 
-Two items travel inside another commit because their whole diff lives in files
-that commit introduces, and both say so in their message: **B2** (dependency
+Two plan items travel inside another commit because their whole diff lives in
+files that commit introduces, and both say so in their message: **B2** (dependency
 ordering) is inside "add the durable operation log and its ordering rules", and
 **B3** (definite vs optimistic) is inside "submit coinage extrinsics and grade
 the outcome".
 
-**The branch does not bisect.** The tip is verified — 900 tests, clippy
-`-D warnings`, fmt, wasm32, zero coinage doc warnings — but the commits were
-split out of one finished working tree rather than replayed, and several do not
-build standalone: `runtime/coinage.rs` declares every module and only lands in
-the observation-driver commit, so earlier commits reference modules the mod list
-does not yet expose. Worth a replay rebase before the PR if `git bisect` should
-work on this branch; the history reads correctly either way.
+**The branch does not bisect.** The tip is verified — 874 tests in
+`truapi-server`, clippy `-D warnings`, fmt, wasm32, zero coinage doc warnings —
+but the early commits were split out of one finished working tree rather than
+replayed, and several do not build standalone: `runtime/coinage.rs` declares every
+module and only lands in the observation-driver commit, so earlier commits
+reference modules the mod list does not yet expose. Worth a replay rebase before
+this leaves draft if `git bisect` should work on the branch; the history reads
+correctly either way.
 
-
-```
-730cd1ab  feat(server): assemble unsigned coinage extrinsics
-dd7989e6  feat(server): observe coinage chain state into the record store
-156687ec  feat(server): generate ring-VRF proofs for entries and unload tokens
-126686a1  test(server): check the coinage layer's assumptions against a live runtime
-bb2d6bfb  test(server): add end-to-end scenarios over the coinage base layer
-3465fd43  docs: collect coinage RFC and design-doc corrections
-8138f2eb  feat(server): resolve unload tokens and choose the unload fee mode
-724957cf  feat(server): encode the AsCoinage transaction extension
-fadf0247  feat(server): add coinage key derivation and pallet call construction
-6365e180  fix(server): harmonize the coinage layer with pallet-coinage
-e83bbcdc  feat(server): add the coinage record store
-8b890342  feat(server): add the coinage domain layer and selection
-```
-
-Nothing pushed. Branched from `main` at `079ecd19`.
+One unrelated pre-existing failure is visible in the workspace and is **not**
+caused by this branch: `truapi-codegen`'s `golden_host_callbacks_ts` fails with
+`prettier failed`, identically on a stashed tree. It is a local tooling problem,
+not a golden mismatch.
 
 ## 7. What remains, and why it was not done
 
@@ -429,14 +422,57 @@ Until this lands, a host can drive the layer by calling `refresh_subscriptions` 
 integration point, and it belongs with layer 2 / host wiring, which this plan
 defers. Building a caller now would be product surface nobody asked for.
 
-### 7.3 Paid unload tokens (§6.5) — blocked on one pallet fact, not yet chased
+### 7.3 Paid unload tokens (§6.5) — unblocked; readable and provable, not yet buyable
 
-Blocked on the `Members` collection identifier the pallet derives per period, which
-is neither in metadata nor derivable from anything the layer reads. **The obvious
-next move has not been tried:** read
-`paritytech/individuality`'s `pallets/coinage/src/lib.rs` directly. Fetching source
-from GitHub worked for truapi#323, and it either closes this or confirms the gap in
-one step. See `coinage-rfc-notes.md` §6.4.
+**The blocking pallet fact is settled.** The collection identifier is
+`b"coinage/paidtkn!" ‖ period_le ‖ zeros`, read out of `pallets/coinage/src` in the
+sibling `individuality` checkout along with the proof context, the period
+arithmetic, the join calls and the ring exponent. Full table in
+`coinage-rfc-notes.md` §6.4.
+
+Reading it also corrected the design, which mattered more than the identifier did.
+Three facts the spec had wrong or missing, now folded into `coinage-layer.md` §6.5:
+
+1. **One paid key is one token per period.** The paid context carries the period
+   and no counter, so `N` paid tokens means `N` keys, `N` joins and `N` fees. The
+   spec described a single join per period.
+2. **Joining and becoming provable are two steps.** A registered key is unusable
+   until the members pallet onboards it into a ring; in between, the slot is paid
+   for and cannot be proved. Waiting is correct; paying again is refused.
+3. **The join takes no period argument** — it uses the chain's clock at dispatch,
+   so a join near a boundary lands in the next period. Membership and ring index
+   are therefore re-read after a join, never assumed.
+
+It also turned up a latent bug and two more configured constants: the old code
+measured the paid period with the *free* period length (one day against three), and
+`PaidUnloadTokenTimePeriod` / `PaidUnloadTokenRingExpirationTime` are absent from
+the deployed runtime's metadata, so the configured-constant list is now four.
+
+**What is built.** The pure resolution layer plans per-slot paid grants and a list
+of joins; the chain layer derives the keys at `//coinage//paidtkn//<period>//<slot>`,
+reads each slot's registration, onboarding and consumption, builds the ring-VRF
+proof against whichever ring the chain actually placed the key in, and encodes
+`AsUnloadTokenPaid`. A wallet whose slots are already in the ring can now spend a
+paid token end to end — which the previous state could not do at all.
+
+**What is not.** The layer cannot yet *buy* a token. `PayForUnloadFeeTokenArgs` and
+the `pay_for_recycler_unload_fee_token_with_native` call name exist, but nothing
+submits them, so `can_fund_join` is passed as false and resolution never plans a
+join. Three pieces remain, and they are one coherent increment:
+
+1. **A signed V4 builder for a plain `Signed` origin.** The join is not a coinage
+   origin at all — it carries `AsCoinage(None)` — so it needs neither
+   `build_coin_origin_extrinsic` nor the `InfallibleUnpaidSigned` path, but a third
+   shape close to `build_external_asset_load_extrinsic`.
+2. **Dry-run pricing, to answer `can_fund_join` exactly.** The pallet computes the
+   fee as `WeightToFee(coin_lifecycle_weight())`, which is neither a published
+   constant nor a runtime API, so a dry run is the only exact answer available.
+3. **A `TransactionKind::JoinPaidTokenRing` in the program.** This is the real work:
+   a join has to reach *definite* success before the token it buys can be presented,
+   which makes it a dependency-ordered transaction in the WAL — and that means
+   token resolution has to move from inside the submission loop (`resolve_tokens`)
+   to plan time, where dependencies are expressed. B2's ordering machinery already
+   does what is needed; the restructuring is what has not been done.
 
 ### 7.4 Live validation — environmental
 
@@ -448,8 +484,13 @@ wallet on top of that.
 
 ### Suggested order
 
-1. §7.3 — cheapest, and it either finishes §6.5 or closes the question.
-2. §7.4 — read-only, needs only a testnet endpoint.
-3. §7.1 — decide the ownership model first, then build it.
-4. §7.2 — with layer 2.
+1. ~~§7.3~~ — done as far as reading and proving go; buying a token is the
+   remaining increment and is scoped in §7.3.
+2. §7.4 — read-only, needs only a testnet endpoint. Now also the cheapest way to
+   check the paid-token collection identifier against a live chain, which is one
+   `state_getStorage` against `PaidTokenCollectionsCreated`.
+3. §7.3's join increment — the V4 builder, dry-run pricing, and moving token
+   resolution to plan time so a join can be a dependency-ordered transaction.
+4. §7.1 — decide the ownership model first, then build it.
+5. §7.2 — with layer 2.
 

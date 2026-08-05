@@ -6,6 +6,7 @@
 //! coins:            //coinage//coin//<purse>//<page>//<index>     (sr25519)
 //! recycler entries: //coinage//<purse>//<page>//<index>           (bandersnatch)
 //! fee account:      //coinage//fee                                (sr25519)
+//! paid tokens:      //coinage//paidtkn//<period>//<slot>           (bandersnatch)
 //! ```
 //!
 //! Splitting by key type lets recovery enumerate each side on its own — coins
@@ -64,6 +65,10 @@ const RING_VRF_TREE_KEY: &[u8] = b"ring-vrf";
 /// Junction of the layer-wide fee account. Not a purse identifier, so it cannot
 /// collide with one: purse junctions are decimal integers.
 const FEE_JUNCTION: &str = "fee";
+
+/// Junction of the paid unload-token subtree. Not a purse identifier, for the
+/// same reason as [`FEE_JUNCTION`].
+const PAID_TOKEN_JUNCTION: &str = "paidtkn";
 
 /// The sr25519 keypair controlling a coin.
 pub fn coin_keypair(
@@ -155,6 +160,66 @@ pub fn entry_member_key(
         .as_ref()
         .try_into()
         .map_err(|_| CoinageError::Internal("bandersnatch member key is not 32 bytes".to_string()))
+}
+
+/// The ring-VRF secret entropy behind one paid unload token.
+///
+/// # Why a token needs its own key, and why the slot is in the path
+///
+/// A paid token's alias is produced in the context `"pop:polkadot.net/coinpaidtok"
+/// ‖ period` — and unlike the free-token context, that carries **no counter**. So
+/// one key yields exactly one alias per period, and the pallet marks that alias
+/// consumed on first use. A wallet needing two paid tokens in one period therefore
+/// needs two keys, two joins and two fees; the slot junction is what gives it
+/// them.
+///
+/// The period is in the path as well, because `PaidUnloadTokenMembers` is global
+/// and the pallet refuses a key it has already seen (`MemberKeyAlreadyUsed`). A
+/// key is thus single-use across all time, not merely within its period.
+///
+/// This key is deliberately *not* the personhood key. Paid membership is open to
+/// anyone who pays, so binding it to personhood would publish a personhood key
+/// into a ring that does not need one — and free and paid tokens would then share
+/// a member key across two collections.
+pub fn paid_token_ring_vrf_entropy(
+    entropy: &[u8],
+    period: u32,
+    slot: u32,
+) -> Result<[u8; 32], CoinageError> {
+    let period = period.to_string();
+    let slot = slot.to_string();
+    let segments = [
+        COINAGE_DOMAIN,
+        PAID_TOKEN_JUNCTION,
+        period.as_str(),
+        slot.as_str(),
+    ];
+
+    let mut derived = blake2b256_keyed(entropy, RING_VRF_TREE_KEY);
+    for segment in segments {
+        let chain_code = create_chain_code(segment).map_err(|error| {
+            CoinageError::Internal(format!("paid-token derivation failed: {error}"))
+        })?;
+        derived = blake2b256_keyed(&derived, &chain_code);
+    }
+
+    Ok(derived)
+}
+
+/// The bandersnatch member key one paid unload token publishes into its ring.
+pub fn paid_token_member_key(
+    entropy: &[u8],
+    period: u32,
+    slot: u32,
+) -> Result<[u8; 32], CoinageError> {
+    let secret =
+        BandersnatchVrfVerifiable::new_secret(paid_token_ring_vrf_entropy(entropy, period, slot)?);
+    let member = BandersnatchVrfVerifiable::member_from_secret(&secret);
+
+    member
+        .as_ref()
+        .try_into()
+        .map_err(|_| CoinageError::Internal("paid-token member key is not 32 bytes".to_string()))
 }
 
 #[cfg(test)]

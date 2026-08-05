@@ -47,6 +47,13 @@ pub struct CoinageParameters {
     pub free_token_counter_search_range: u32,
     /// How far past a period boundary a prior period's tokens stay eligible.
     pub period_lookback_grace: Duration,
+    /// Paid-unload-token slots to track per period.
+    ///
+    /// One slot is one member key, one join, one fee and one token, so this is
+    /// the ceiling on paid tokens the layer will use in a single period. Kept
+    /// small deliberately: reaching the paid ring at all means the free allowance
+    /// is exhausted, and every extra slot probed costs two storage reads.
+    pub paid_token_slot_search_range: u32,
     /// Derivation indices scanned per batch during recovery.
     pub recovery_batch_size: u32,
     /// Consecutive empty batches after which a recovery scan stops.
@@ -94,6 +101,7 @@ impl Default for CoinageParameters {
             rescue_margin_minimum: Duration::from_secs(7 * 24 * 60 * 60),
             free_token_counter_search_range: 10,
             period_lookback_grace: Duration::from_secs(60 * 60),
+            paid_token_slot_search_range: 4,
             recovery_batch_size: 500,
             recovery_gap_limit: 4,
             external_offload_retry_interval: Duration::from_secs(30),

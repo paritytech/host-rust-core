@@ -5,10 +5,11 @@
 //! matters: a policy parameter can be tuned, whereas exceeding one of these
 //! makes an extrinsic invalid. Anything the layer builds has to fit inside them.
 //!
-//! Most are read from metadata. Two are not exposed there and must be carried
-//! as per-network configuration — see the field docs for `maximum_age` and
-//! `recycler_expiration_time`. `examples/coinage_chain_agreement.rs` checks the
-//! rest against a live node.
+//! Most are read from metadata. Four are not exposed there and must be carried
+//! as per-network configuration — see the field docs for `maximum_age`,
+//! `recycler_expiration_time`, `paid_unload_token_period` and
+//! `paid_unload_token_ring_expiration`. `examples/coinage_chain_agreement.rs`
+//! checks the rest against a live node.
 
 use core::time::Duration;
 
@@ -51,6 +52,26 @@ pub struct CoinageChainConstants {
     /// Length of a free-unload-token period
     /// (`UnloadTokenTimePeriodPeopleLitePeople`).
     pub unload_token_period: Duration,
+    /// Length of a paid-unload-token period (`PaidUnloadTokenTimePeriod`).
+    ///
+    /// **Not discoverable on the deployed runtime**, for the same reason as
+    /// `recycler_expiration_time`: the pallet source marks it
+    /// `#[pallet::constant]` but `paseo-people-next`'s metadata predates that.
+    /// Carried as configuration, and it is a longer period than the free one —
+    /// three days against one on the reference runtime — so reusing
+    /// `unload_token_period` for it names the wrong period entirely.
+    ///
+    /// The period is what the paid token's proof context commits to, so a wrong
+    /// value yields a proof against a collection the runtime is not verifying
+    /// against — after a join fee has been spent.
+    pub paid_unload_token_period: Duration,
+    /// How long after its period ends a paid-token ring keeps accepting proofs
+    /// (`PaidUnloadTokenRingExpirationTime`).
+    ///
+    /// **Not discoverable on the deployed runtime**, same reason as above. A
+    /// token proved past `(period + 1) * paid_unload_token_period +
+    /// paid_unload_token_ring_expiration` is refused as stale.
+    pub paid_unload_token_ring_expiration: Duration,
     /// Free unload tokens a member may consume per period
     /// (`MaxFreeUnloadTokensPerTimePeriod`).
     pub max_free_unload_tokens_per_period: u32,
@@ -137,6 +158,8 @@ pub fn next_people_paseo() -> CoinageChainConstants {
         max_consolidation: 64,
         recycler_expiration_time: Duration::from_secs(90 * 24 * 60 * 60),
         unload_token_period: Duration::from_secs(24 * 60 * 60),
+        paid_unload_token_period: Duration::from_secs(3 * 24 * 60 * 60),
+        paid_unload_token_ring_expiration: Duration::from_secs(4 * 24 * 60 * 60),
         max_free_unload_tokens_per_period: 1_000,
         max_batch_unpaid_load: 10,
         underlying_asset_unit: 10u128.pow(4),

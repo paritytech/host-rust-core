@@ -35,6 +35,13 @@ pub const AS_COINAGE: &str = "AsCoinage";
 /// little-endian `u32`s.
 pub const UNLOAD_TOKEN_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/coinftk";
 
+/// Signing context prefix for the membership proof backing a paid unload token.
+///
+/// The full context is this prefix followed by the period as a little-endian
+/// `u32` — and nothing else. There is no counter, which is what makes one paid
+/// member key worth exactly one token per period.
+pub const PAID_UNLOAD_TOKEN_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/coinpaidtok";
+
 /// Alias context for a recycler entry's contextual alias.
 pub const RECYCLER_ALIAS_CONTEXT: &[u8] = b"pop:polkadot.network/coinrecyclr";
 
@@ -220,12 +227,23 @@ pub fn free_token_signing_context(period: u32, counter: u32) -> Vec<u8> {
     context
 }
 
+/// The signing context for a paid unload token's membership proof.
+///
+/// `prefix ++ period_le`. Both prefixes are sized so that the context is exactly
+/// 32 bytes — 24 + 4 + 4 for the free one, 28 + 4 here — so the missing counter is
+/// not padding the layer may add back.
+pub fn paid_token_signing_context(period: u32) -> Vec<u8> {
+    let mut context = PAID_UNLOAD_TOKEN_CONTEXT_PREFIX.to_vec();
+    context.extend(period.to_le_bytes());
+    context
+}
+
 /// The message a free unload token's personhood proof signs.
 ///
 /// `blake2_256(alias_proofs.encode() ++ inherited_implication)`. The alias
 /// proofs are inside the signed message, which is what binds the token to the
 /// exact set of entries being unloaded.
-pub fn free_token_proof_message(
+pub fn unload_token_proof_message(
     alias_proofs: &[RawEncoded],
     inherited_implication: &[u8],
 ) -> [u8; 32] {
@@ -420,8 +438,8 @@ mod tests {
         // personhood proof signs, or a token could be replayed against a
         // different set.
         let implication = [9u8; 8];
-        let one = free_token_proof_message(&[proof(1)], &implication);
-        let two = free_token_proof_message(&[proof(1), proof(2)], &implication);
+        let one = unload_token_proof_message(&[proof(1)], &implication);
+        let two = unload_token_proof_message(&[proof(1), proof(2)], &implication);
 
         assert_ne!(one, two);
     }
@@ -431,8 +449,8 @@ mod tests {
         let proofs = [proof(1)];
 
         assert_ne!(
-            free_token_proof_message(&proofs, &[1u8; 8]),
-            free_token_proof_message(&proofs, &[2u8; 8])
+            unload_token_proof_message(&proofs, &[1u8; 8]),
+            unload_token_proof_message(&proofs, &[2u8; 8])
         );
     }
 
