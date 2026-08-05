@@ -422,21 +422,31 @@ pub enum NavigateDecision {
 }
 
 impl From<dotns::NavigateDecision> for NavigateDecision {
+    /// Total mapping: an open decision that yields no canonical URL becomes
+    /// `Reject` rather than panicking, so no unwrap can cross the FFI
+    /// boundary and crash the host app.
     fn from(decision: dotns::NavigateDecision) -> Self {
         let canonical_url = decision.canonical_url();
-        match decision {
-            dotns::NavigateDecision::DotName { identifier, path } => Self::DotName {
-                identifier,
-                path,
-                canonical_url: canonical_url.expect("DotName always has a canonical URL"),
+        match (decision, canonical_url) {
+            (dotns::NavigateDecision::DotName { identifier, path }, Some(canonical_url)) => {
+                Self::DotName {
+                    identifier,
+                    path,
+                    canonical_url,
+                }
+            }
+            (dotns::NavigateDecision::Localhost { host, path }, Some(canonical_url)) => {
+                Self::Localhost {
+                    host,
+                    path,
+                    canonical_url,
+                }
+            }
+            (dotns::NavigateDecision::External { url }, _) => Self::External { url },
+            (dotns::NavigateDecision::Reject { reason }, _) => Self::Reject { reason },
+            (open, None) => Self::Reject {
+                reason: format!("{open:?} produced no canonical URL"),
             },
-            dotns::NavigateDecision::Localhost { host, path } => Self::Localhost {
-                host,
-                path,
-                canonical_url: canonical_url.expect("Localhost always has a canonical URL"),
-            },
-            dotns::NavigateDecision::External { url } => Self::External { url },
-            dotns::NavigateDecision::Reject { reason } => Self::Reject { reason },
         }
     }
 }
