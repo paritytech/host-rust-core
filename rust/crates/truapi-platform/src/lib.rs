@@ -24,6 +24,7 @@ use truapi::latest::{
     ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
     RemotePermissionResponse, RingLocation, ThemeVariant,
 };
+use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
 
 /// Role-neutral runtime configuration supplied by the embedding host.
@@ -249,10 +250,85 @@ pub enum RuntimeConfigValidationError {
     },
 }
 
+const PRODUCT_STORAGE_KEY_PREFIX: &str = "truapi:product-storage:v1:";
+
+/// Decoded product scope and product-owned key used by [`ProductStorage`].
+///
+/// The string representation remains the host callback ABI. Native hosts that
+/// need separate backing stores can decode it without duplicating the wire
+/// format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductStorageKey {
+    product_id: String,
+    key: String,
+}
+
+impl ProductStorageKey {
+    /// Build a key with a validated, normalized product id.
+    pub fn new(
+        product_id: &str,
+        key: impl Into<String>,
+    ) -> Result<Self, RuntimeConfigValidationError> {
+        Ok(Self {
+            product_id: normalize_product_identifier(product_id)?,
+            key: key.into(),
+        })
+    }
+
+    /// Decode the opaque key passed through [`ProductStorage`].
+    pub fn decode(value: &str) -> Result<Self, String> {
+        let remainder = value
+            .strip_prefix(PRODUCT_STORAGE_KEY_PREFIX)
+            .ok_or_else(|| "product storage key has an unknown format".to_string())?;
+        let (length, scoped) = remainder
+            .split_once(':')
+            .ok_or_else(|| "product storage key is missing its scope length".to_string())?;
+        let product_length = length
+            .parse::<usize>()
+            .map_err(|_| "product storage key has an invalid scope length".to_string())?;
+        let product_id = scoped
+            .get(..product_length)
+            .ok_or_else(|| "product storage key has a truncated product id".to_string())?;
+        let separator = scoped
+            .as_bytes()
+            .get(product_length)
+            .copied()
+            .ok_or_else(|| "product storage key is missing its key separator".to_string())?;
+        if separator != b':' {
+            return Err("product storage key has an invalid key separator".to_string());
+        }
+        let key = scoped
+            .get(product_length + 1..)
+            .ok_or_else(|| "product storage key splits a UTF-8 character".to_string())?;
+        Self::new(product_id, key.to_string()).map_err(|error| error.to_string())
+    }
+
+    /// Product identifier owning this storage key.
+    pub fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    /// Product-local key without the host scope prefix.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Encode the stable opaque key used by existing host callbacks.
+    pub fn encode(&self) -> String {
+        format!(
+            "{PRODUCT_STORAGE_KEY_PREFIX}{}:{}:{}",
+            self.product_id.len(),
+            self.product_id,
+            self.key
+        )
+    }
+}
+
 /// Product-scoped key-value storage.
 ///
 /// The core namespaces product keys before calling this trait. Host
-/// implementations should treat `key` as an opaque OS-style storage key.
+/// implementations may treat `key` as opaque or decode it with
+/// [`ProductStorageKey`] when their physical storage is separated by product.
 #[async_trait]
 pub trait ProductStorage: Send + Sync {
     /// Read a value by key.
@@ -438,6 +514,7 @@ pub trait JsonRpcConnection: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum CoreStorageKey {
     /// Opaque SSO/auth session blob.
+    #[codec(index = 0)]
     AuthSession,
     /// Pairing device identity used during SSO flows.
     PairingDeviceIdentity,
@@ -455,6 +532,62 @@ pub enum CoreStorageKey {
     },
     /// Last processed SSO pairing response statement for the pairing device.
     LastProcessedPairingStatement,
+    /// Legacy unscoped RFC-0010 AutoSigning secret. Core only addresses this
+    /// slot to reject and erase pre-scoping entries.
+    AutoSigningKey {
+        /// Product whose hard subtree the legacy secret controlled.
+        product_id: String,
+    },
+    /// Wallet-bound RFC-0010 AutoSigning capabilities for the active pairing.
+    AutoSigningKeys,
+}
+/// Stable metadata describing one strictly decoded [`CoreStorageKey`].
+///
+/// `kind` is the Rust variant name and is part of the host embedding contract.
+/// `product_id` is present only for keys whose storage slot is directly
+/// product-indexed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreStorageKeyDescription {
+    /// Stable storage-key variant name.
+    pub kind: &'static str,
+    /// Product that owns this exact slot, when the key is product-indexed.
+    pub product_id: Option<String>,
+}
+
+/// Failure to decode exactly one [`CoreStorageKey`].
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
+pub enum CoreStorageKeyDescriptionError {
+    /// The bytes are not a valid SCALE-encoded key.
+    #[display("invalid CoreStorageKey encoding")]
+    InvalidEncoding,
+    /// A valid key was followed by additional bytes.
+    #[display("CoreStorageKey encoding contains trailing bytes")]
+    TrailingBytes,
+}
+
+/// Strictly decode one SCALE-encoded [`CoreStorageKey`] and return stable
+/// metadata suitable for choosing host-private storage policy.
+pub fn describe_core_storage_key(
+    encoded: &[u8],
+) -> Result<CoreStorageKeyDescription, CoreStorageKeyDescriptionError> {
+    let mut input = encoded;
+    let key = CoreStorageKey::decode(&mut input)
+        .map_err(|_| CoreStorageKeyDescriptionError::InvalidEncoding)?;
+    if !input.is_empty() {
+        return Err(CoreStorageKeyDescriptionError::TrailingBytes);
+    }
+    let (kind, product_id) = match key {
+        CoreStorageKey::AuthSession => ("AuthSession", None),
+        CoreStorageKey::PairingDeviceIdentity => ("PairingDeviceIdentity", None),
+        CoreStorageKey::PermissionAuthorization { product_id, .. } => {
+            ("PermissionAuthorization", Some(product_id))
+        }
+        CoreStorageKey::AllowanceKeys { .. } => ("AllowanceKeys", None),
+        CoreStorageKey::LastProcessedPairingStatement => ("LastProcessedPairingStatement", None),
+        CoreStorageKey::AutoSigningKey { product_id } => ("AutoSigningKey", Some(product_id)),
+        CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None),
+    };
+    Ok(CoreStorageKeyDescription { kind, product_id })
 }
 
 impl CoreStorageKey {
@@ -522,6 +655,73 @@ fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn auth_session_storage_key_has_stable_encoding() {
+        assert_eq!(CoreStorageKey::AuthSession.encode(), [0]);
+    }
+
+    #[test]
+    fn core_storage_key_description_is_strict_and_product_scoped() {
+        let permission = CoreStorageKey::device_permission_authorization(
+            "product.dot",
+            &HostDevicePermissionRequest::Camera,
+        )
+        .encode();
+        assert_eq!(
+            describe_core_storage_key(&permission),
+            Ok(CoreStorageKeyDescription {
+                kind: "PermissionAuthorization",
+                product_id: Some("product.dot".to_string()),
+            })
+        );
+        for (key, kind, product_id) in [
+            (CoreStorageKey::AuthSession, "AuthSession", None),
+            (
+                CoreStorageKey::PairingDeviceIdentity,
+                "PairingDeviceIdentity",
+                None,
+            ),
+            (
+                CoreStorageKey::AllowanceKeys {
+                    session_id: "session".to_string(),
+                },
+                "AllowanceKeys",
+                None,
+            ),
+            (
+                CoreStorageKey::LastProcessedPairingStatement,
+                "LastProcessedPairingStatement",
+                None,
+            ),
+            (
+                CoreStorageKey::AutoSigningKey {
+                    product_id: "product.dot".to_string(),
+                },
+                "AutoSigningKey",
+                Some("product.dot"),
+            ),
+            (CoreStorageKey::AutoSigningKeys, "AutoSigningKeys", None),
+        ] {
+            let description = describe_core_storage_key(&key.encode()).expect("valid key");
+            assert_eq!(description.kind, kind);
+            assert_eq!(description.product_id.as_deref(), product_id);
+        }
+
+        assert_eq!(
+            describe_core_storage_key(&[]),
+            Err(CoreStorageKeyDescriptionError::InvalidEncoding)
+        );
+        let mut trailing = CoreStorageKey::AuthSession.encode();
+        trailing.push(0);
+        assert_eq!(
+            describe_core_storage_key(&trailing),
+            Err(CoreStorageKeyDescriptionError::TrailingBytes)
+        );
+        assert_eq!(
+            describe_core_storage_key(&[u8::MAX]),
+            Err(CoreStorageKeyDescriptionError::InvalidEncoding)
+        );
+    }
 
     #[test]
     fn permission_authorization_keys_separate_product_and_request_variants() {
@@ -764,6 +964,15 @@ pub struct CreateProofReview {
     pub message: Vec<u8>,
 }
 
+/// Review shown before signing an RFC-0023 VRF transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct SignVrfReview {
+    /// Product making the request.
+    pub calling_product_id: String,
+    /// Product account and exact ordered transcript.
+    pub request: HostAccountSignVrfRequest,
+}
+
 /// Review shown before allocating resources for a product. Names the
 /// beneficiary product so the user knows which product receives the
 /// (signing-capable) allowance key they are approving.
@@ -822,6 +1031,8 @@ pub enum UserConfirmationReview {
     PreimageSubmit(PreimageSubmitReview),
     /// Allow a product to access another product account.
     AccountAccess(AccountAccessReview),
+    /// Sign an RFC-0023 VRF transcript with a product account.
+    SignVrf(SignVrfReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.

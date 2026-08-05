@@ -4,7 +4,8 @@ use crate::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
     HostAccountGetAliasRequest, HostAccountGetAliasResponse, HostAccountGetError,
-    HostAccountGetRequest, HostAccountGetResponse, HostGetLegacyAccountsError,
+    HostAccountGetRequest, HostAccountGetResponse, HostAccountSignVrfError,
+    HostAccountSignVrfRequest, HostAccountSignVrfResponse, HostGetLegacyAccountsError,
     HostGetLegacyAccountsRequest, HostGetLegacyAccountsResponse, HostGetUserIdError,
     HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
     HostRequestLoginResponse,
@@ -39,7 +40,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.getAccount({
     ///   productAccountId: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: 0,
+    ///     derivationIndex: { tag: "Left", value: 0 },
     ///   },
     /// });
     /// assert(result.isOk(), "getAccount failed:", result);
@@ -48,7 +49,7 @@ pub trait Account: Send + Sync {
     /// const otherProduct = await truapi.account.getAccount({
     ///   productAccountId: {
     ///     dotNsIdentifier: "other-product.dot",
-    ///     derivationIndex: 0,
+    ///     derivationIndex: { tag: "Left", value: 0 },
     ///   },
     /// });
     /// assert(otherProduct.isOk(), "cross-product getAccount was denied or failed:", otherProduct);
@@ -72,7 +73,7 @@ pub trait Account: Send + Sync {
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
     ///
     /// const result = await truapi.account.getAccountAlias({
-    ///   context: { productId: "truapi-playground.dot", suffix: "0x00" },
+    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Left", value: 0 } },
     ///   ringLocation: {
     ///     chainId: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
     ///     junctions: [
@@ -102,7 +103,7 @@ pub trait Account: Send + Sync {
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
     ///
     /// const result = await truapi.account.createAccountProof({
-    ///   context: { productId: "truapi-playground.dot", suffix: "0x00" },
+    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Left", value: 0 } },
     ///   ringLocation: {
     ///     chainId: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
     ///     junctions: [
@@ -121,6 +122,37 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostAccountCreateProofRequest,
     ) -> Result<HostAccountCreateProofResponse, CallError<HostAccountCreateProofError>> {
+        Err(CallError::unavailable())
+    }
+
+    /// Produce an sr25519 (schnorrkel) VRF signature from a product account.
+    ///
+    /// The host builds a Merlin transcript from `transcriptLabel` and `items`
+    /// and signs it with the account's key, returning the VRF pre-output and
+    /// proof. Authorized like signing: local when `AutoSigning` covers the
+    /// account, otherwise a per-call user confirmation.
+    ///
+    /// ```ts
+    /// const result = await truapi.account.signVrf({
+    ///   account: {
+    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///   },
+    ///   transcriptLabel: "0x706f703a61697264726f70",
+    ///   items: [
+    ///     { label: "0x646f6d61696e", value: "0x706f703a61697264726f70" },
+    ///     { label: "0x7369676e6572", value: "0x00" },
+    ///   ],
+    /// });
+    /// assert(result.isOk(), "signVrf failed:", result);
+    /// console.log("vrf signature:", result.value);
+    /// ```
+    #[wire(request_id = 164)]
+    async fn sign_vrf(
+        &self,
+        _cx: &CallContext,
+        _request: HostAccountSignVrfRequest,
+    ) -> Result<HostAccountSignVrfResponse, CallError<HostAccountSignVrfError>> {
         Err(CallError::unavailable())
     }
 

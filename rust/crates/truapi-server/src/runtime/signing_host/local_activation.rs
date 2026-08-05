@@ -1,6 +1,6 @@
 use super::{SigningHost, product_authority_error};
 use crate::host_logic::product_account::{
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+    derive_identity_keypair, derive_root_keypair_from_entropy,
 };
 use crate::host_logic::session::SessionInfo;
 use crate::runtime::authority::AuthorityError;
@@ -43,14 +43,10 @@ impl LocalActivation for SigningHost {
         let secret = Zeroizing::new(secret);
         let root = derive_root_keypair_from_entropy(&secret).map_err(product_authority_error)?;
         let public_key = root.public.to_bytes();
-        let identity_account_id = derive_sr25519_hard_path(&secret, &["wallet", "sso"])
+        let identity_account_id = derive_identity_keypair(&secret)
             .map_err(product_authority_error)?
             .public
             .to_bytes();
-        *self
-            .root_entropy
-            .lock()
-            .expect("signing host entropy mutex poisoned") = Some(secret);
         let session = SessionInfo {
             public_key,
             sso: None,
@@ -59,9 +55,9 @@ impl LocalActivation for SigningHost {
             lite_username,
             full_username: None,
         };
-        self.session_state.set_session(session.clone());
-        self.auth_state
-            .connected(&connected_session_ui_info(&session));
+        let ui_info = connected_session_ui_info(&session);
+        self.install_local_session(secret, session);
+        self.auth_state.connected(&ui_info);
         Ok(())
     }
 }

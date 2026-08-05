@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli headless install matrix explorer
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli headless install matrix explorer
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -22,13 +22,7 @@ DOTLI_TRUAPI_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi
 DOTLI_HOST_WASM_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi-host
 DOTLI_UI_TRUAPI_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi
 DOTLI_UI_HOST_WASM_SHADOW := $(DOTLI_UI)/node_modules/@parity/truapi-host
-SIGNER_BOT_BASE_URL ?= https://signing-bot-dev.novasama-tech.org/
-SIGNER_BOT_NETWORK ?= paseo-next-v2
-SIGNER_BOT_BASE_URL_ORIGIN := $(origin SIGNER_BOT_BASE_URL)
-SIGNER_BOT_NETWORK_ORIGIN := $(origin SIGNER_BOT_NETWORK)
 VITE_NETWORKS ?= paseo-next-v2,previewnet
-export SIGNER_BOT_BASE_URL
-export SIGNER_BOT_NETWORK
 export VITE_NETWORKS
 
 # Local product URLs (`http://localhost:5173/localhost:3000`) are intentionally
@@ -55,6 +49,18 @@ build: ## Build the Rust workspace and the TypeScript client.
 	cargo build --workspace
 	cd $(TRUAPI_PKG) && npm run build
 	cd $(HOST_WASM_PKG) && npm run build
+
+headless: ## Build the truapi-host CLI and generated TypeScript client.
+	# The client build shells out to tsc, which `ensure-generated.sh` looks for at
+	# the root or in the package. Install workspace deps when neither is present so
+	# this target works on a checkout that has not run `make setup`.
+	@[ -x node_modules/.bin/tsc ] || [ -x $(TRUAPI_PKG)/node_modules/.bin/tsc ] \
+		|| npm ci --ignore-scripts
+	cargo build -p truapi-host-cli
+	cd $(TRUAPI_PKG) && npm run build
+
+install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `make headless install`.
+	cargo install --path rust/crates/truapi-host-cli --bin truapi-host --locked --force
 
 codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 	./scripts/codegen.sh
@@ -207,21 +213,16 @@ dev: dev-bootstrap ## Start dotli host (:5173) + playground (:3000) together; op
 	( until curl -fsS http://localhost:3000/ >/dev/null 2>&1; do sleep 1; done; curl -fsS http://localhost:3000/diagnostics >/dev/null 2>&1 || true ) & \
 	wait
 
-e2e-dotli: ## Fully automated dotli + playground diagnosis e2e. Requires SIGNER_BOT_SVC_TOKEN unless E2E_DOTLI_SMOKE=1.
-	@SIGNER_BOT_SVC_TOKEN_ENV="$$SIGNER_BOT_SVC_TOKEN"; \
-	SIGNER_BOT_BASE_URL_ENV="$$SIGNER_BOT_BASE_URL"; \
-	SIGNER_BOT_NETWORK_ENV="$$SIGNER_BOT_NETWORK"; \
-	SIGNER_BOT_BASE_URL_ORIGIN="$(SIGNER_BOT_BASE_URL_ORIGIN)"; \
-	SIGNER_BOT_NETWORK_ORIGIN="$(SIGNER_BOT_NETWORK_ORIGIN)"; \
-	set -a; \
-	if [ -f .env ]; then . ./.env; fi; \
-	set +a; \
-	if [ -n "$$SIGNER_BOT_SVC_TOKEN_ENV" ]; then SIGNER_BOT_SVC_TOKEN="$$SIGNER_BOT_SVC_TOKEN_ENV"; export SIGNER_BOT_SVC_TOKEN; fi; \
-	if [ "$$SIGNER_BOT_BASE_URL_ORIGIN" != "file" ] && [ -n "$$SIGNER_BOT_BASE_URL_ENV" ]; then SIGNER_BOT_BASE_URL="$$SIGNER_BOT_BASE_URL_ENV"; export SIGNER_BOT_BASE_URL; fi; \
-	if [ "$$SIGNER_BOT_NETWORK_ORIGIN" != "file" ] && [ -n "$$SIGNER_BOT_NETWORK_ENV" ]; then SIGNER_BOT_NETWORK="$$SIGNER_BOT_NETWORK_ENV"; export SIGNER_BOT_NETWORK; fi; \
-	if [ "$$E2E_DOTLI_SMOKE" != "1" ]; then test -n "$$SIGNER_BOT_SVC_TOKEN" || (echo "Missing SIGNER_BOT_SVC_TOKEN. e2e-dotli requires signer-bot; without it a human phone scan is required."; exit 1); fi; \
-	$(MAKE) dev-bootstrap; \
+e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local signing-host CLI.
+	@$(MAKE) dev-bootstrap
+	cargo build -p truapi-host-cli
 	cd $(PLAYGROUND) && bun tests/e2e/dotli-diagnosis.ts
+
+e2e-signing-cli: ## Run the generated battery against the direct signing-host CLI.
+	scripts/battery.sh --signing-host
+
+e2e-pairing-cli: ## Run the generated battery against the paired pairing-host CLI.
+	scripts/battery.sh --pairing-host
 
 matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-reports.
 	cd $(EXPLORER) && npm run generate-matrix
