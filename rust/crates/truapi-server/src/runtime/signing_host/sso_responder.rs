@@ -290,6 +290,7 @@ pub(crate) async fn answer_pairing(
 }
 
 /// Reconstruct responder session material for a previously persisted peer.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn session_for_peer(
     signing_host: &Arc<SigningHost>,
     peer: &ResponderPeer,
@@ -319,6 +320,7 @@ fn responder_material(signing_host: &Arc<SigningHost>) -> Result<ResponderMateri
 }
 
 /// Best-effort notification that the signing host ended one paired session.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn submit_disconnected(
     services: &Arc<RuntimeServices>,
     session: &SsoSessionInfo,

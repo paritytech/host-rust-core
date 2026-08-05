@@ -25,11 +25,16 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::session::SsoSessionInfo;
 use crate::runtime::{
     LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
-    ResponderPeer, RuntimeServices, SigningHostRole, answer_pairing, respond_to_pairing,
-    responder_session_for_peer, serve_responder_session, submit_responder_disconnected,
+    RuntimeServices, SigningHostRole, respond_to_pairing,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::{
+    ResponderPeer, answer_pairing, responder_session_for_peer, serve_responder_session,
+    submit_responder_disconnected,
 };
 use crate::subscription::Spawner;
 use crate::transport::Transport;
@@ -326,6 +331,7 @@ impl SigningHostRuntime {
 
     /// Submit a pairing response and return immediately-servable session
     /// material. Used by native shells that own the background task lifecycle.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn answer_pairing(
         &self,
         deeplink: &str,
@@ -336,6 +342,7 @@ impl SigningHostRuntime {
     }
 
     /// Rebuild session channels for a persisted pairing host.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn responder_session_for_peer(
         &self,
         peer: &ResponderPeer,
@@ -346,6 +353,7 @@ impl SigningHostRuntime {
 
     /// Drive one responder subscription until the peer disconnects or the
     /// underlying subscription ends.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn serve_responder_session(
         &self,
         session: SsoSessionInfo,
@@ -356,6 +364,7 @@ impl SigningHostRuntime {
     }
 
     /// Notify one paired host that this signing host ended its session.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn disconnect_responder_session(
         &self,
         session: &SsoSessionInfo,

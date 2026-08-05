@@ -22,9 +22,13 @@ use parity_scale_codec::Encode;
 use subxt::utils::{AccountId32, MultiSignature};
 
 pub(crate) use local_activation::LocalActivation;
-pub use sso_responder::{ResponderExit, ResponderPeer};
+pub use sso_responder::ResponderExit;
+#[cfg(not(target_arch = "wasm32"))]
+pub use sso_responder::ResponderPeer;
+pub(crate) use sso_responder::respond_to_pairing;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use sso_responder::{
-    answer_pairing, respond_to_pairing, serve_session, session_for_peer, submit_disconnected,
+    answer_pairing, serve_session, session_for_peer, submit_disconnected,
 };
 
 use super::authority::{
