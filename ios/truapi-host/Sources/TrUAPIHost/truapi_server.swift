@@ -556,14 +556,20 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 /**
  * Callback surface that iOS and Android implement.
  *
- * Threading contract: async callbacks (`navigate_to`, `push_notification`,
- * `device_permission`, `remote_permission`, `feature_supported`,
- * `confirm_user_action`, `lookup_preimage`) are awaited by the core —
- * implementations hop to the main thread for any UI and may take
- * arbitrarily long; dropping the returned future cancels the foreign task.
- * The remaining sync callbacks run inline on the dispatcher thread and must
- * return promptly; in particular `auth_state_changed` should only hand the
- * state to the host UI thread, never wait for the user.
+ * Threading contract: every callback executes on the shared bridge
+ * executor's worker threads, and blocking one of those threads can stall
+ * the entire bridge — not just the request being served. Async callbacks
+ * (`navigate_to`, `push_notification`, `device_permission`,
+ * `remote_permission`, `feature_supported`, `confirm_user_action`,
+ * `lookup_preimage`) are awaited by the core — implementations hop to the
+ * main thread for any UI and may keep the future pending arbitrarily long,
+ * but must suspend rather than block the polling thread (foreign
+ * implementations bridged through UniFFI suspend naturally; the rule
+ * chiefly binds Rust implementations). Dropping the returned future
+ * cancels the foreign task. The remaining sync callbacks run inline on the
+ * dispatcher thread and must return promptly without blocking; in
+ * particular `auth_state_changed` should only hand the state to the host
+ * UI thread, never wait for the user.
  */
 public protocol HostCallbacks: AnyObject, Sendable {
     
@@ -682,14 +688,20 @@ public protocol HostCallbacks: AnyObject, Sendable {
 /**
  * Callback surface that iOS and Android implement.
  *
- * Threading contract: async callbacks (`navigate_to`, `push_notification`,
- * `device_permission`, `remote_permission`, `feature_supported`,
- * `confirm_user_action`, `lookup_preimage`) are awaited by the core —
- * implementations hop to the main thread for any UI and may take
- * arbitrarily long; dropping the returned future cancels the foreign task.
- * The remaining sync callbacks run inline on the dispatcher thread and must
- * return promptly; in particular `auth_state_changed` should only hand the
- * state to the host UI thread, never wait for the user.
+ * Threading contract: every callback executes on the shared bridge
+ * executor's worker threads, and blocking one of those threads can stall
+ * the entire bridge — not just the request being served. Async callbacks
+ * (`navigate_to`, `push_notification`, `device_permission`,
+ * `remote_permission`, `feature_supported`, `confirm_user_action`,
+ * `lookup_preimage`) are awaited by the core — implementations hop to the
+ * main thread for any UI and may keep the future pending arbitrarily long,
+ * but must suspend rather than block the polling thread (foreign
+ * implementations bridged through UniFFI suspend naturally; the rule
+ * chiefly binds Rust implementations). Dropping the returned future
+ * cancels the foreign task. The remaining sync callbacks run inline on the
+ * dispatcher thread and must return promptly without blocking; in
+ * particular `auth_state_changed` should only hand the state to the host
+ * UI thread, never wait for the user.
  */
 open class HostCallbacksImpl: HostCallbacks, @unchecked Sendable {
     fileprivate let pointer: UnsafeMutableRawPointer!
