@@ -39,7 +39,7 @@ import uniffi.truapi_server.NativePermissionAuthorizationStatus
 import uniffi.truapi_server.NativeRemotePermission
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
-import uniffi.truapi_server.NativeUserConfirmationReview
+import uniffi.truapi_server.UserConfirmationReview
 import uniffi.truapi_server.PushNotificationRequest
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
@@ -268,7 +268,7 @@ interface HostBridge {
      * thread until the user decides.
      */
     @Throws(HostRejection::class)
-    suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean = false
+    suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = false
 
     /** Return the current preimage value for [key], or null for a miss. */
     @Throws(HostRejection::class)
@@ -337,7 +337,7 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun chainClose(connectionId: UInt) =
         bridge.chainClose(connectionId)
 
-    override suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean =
+    override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
         bridge.confirmUserAction(review)
 
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =

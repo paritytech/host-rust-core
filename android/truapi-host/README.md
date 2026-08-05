@@ -109,7 +109,7 @@ import uniffi.truapi_server.FeatureSupportedRequest
 import uniffi.truapi_server.HostTheme
 import uniffi.truapi_server.NativeDevicePermission
 import uniffi.truapi_server.NativeRemotePermission
-import uniffi.truapi_server.NativeUserConfirmationReview
+import uniffi.truapi_server.UserConfirmationReview
 import uniffi.truapi_server.PushNotificationRequest
 
 class MyStorage : HostStorage {
@@ -186,7 +186,7 @@ class MyBridge(private val webView: WebView) : HostBridge {
     // review variant (SignPayload / SignRaw / CreateTransaction / AccountAlias /
     // ResourceAllocation / PreimageSubmit / ...) to render the prompt with its
     // typed fields.
-    override suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean {
+    override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean {
         return withContext(Dispatchers.Main) { /* show prompt; */ false }
     }
 }

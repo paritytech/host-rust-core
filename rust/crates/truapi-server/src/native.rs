@@ -29,8 +29,6 @@ use truapi_platform::{
 
 pub mod reviews;
 
-pub use reviews::NativeUserConfirmationReview;
-
 use crate::SigningHostRuntime;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
@@ -653,7 +651,7 @@ pub trait HostCallbacks: Send + Sync {
     /// Confirm one user-reviewed core action.
     async fn confirm_user_action(
         &self,
-        review: NativeUserConfirmationReview,
+        review: UserConfirmationReview,
     ) -> Result<bool, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
@@ -1261,7 +1259,7 @@ impl UserConfirmation for CallbackPlatform {
             String::new(),
         );
         self.callbacks
-            .confirm_user_action(review.into())
+            .confirm_user_action(review)
             .await
             .map_err(v01::GenericError::from)
     }
@@ -1392,7 +1390,7 @@ mod tests {
         }
         async fn confirm_user_action(
             &self,
-            _review: NativeUserConfirmationReview,
+            _review: UserConfirmationReview,
         ) -> Result<bool, HostRejection> {
             Ok(false)
         }
@@ -1733,7 +1731,7 @@ mod tests {
             }
             async fn confirm_user_action(
                 &self,
-                _review: NativeUserConfirmationReview,
+                _review: UserConfirmationReview,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
@@ -1871,7 +1869,7 @@ mod tests {
             }
             async fn confirm_user_action(
                 &self,
-                _review: NativeUserConfirmationReview,
+                _review: UserConfirmationReview,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
