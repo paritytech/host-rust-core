@@ -27,14 +27,20 @@
 package io.parity.truapi
 
 import uniffi.truapi_server.AuthState
+import uniffi.truapi_server.FeatureSupportedRequest
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_server.HostTheme
+import uniffi.truapi_server.NativeDevicePermission
+import uniffi.truapi_server.NativePermissionAuthorizationRequest
 import uniffi.truapi_server.NativePermissionAuthorizationStatus
+import uniffi.truapi_server.NativeRemotePermission
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
+import uniffi.truapi_server.NativeUserConfirmationReview
+import uniffi.truapi_server.PushNotificationRequest
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
 import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDeeplinkScheme
@@ -169,15 +175,12 @@ interface HostCoreStorage {
  * keeps the permission split explicit:
  *
  *   * [devicePermission] handles camera / mic / push prompts and similar
- *     OS-scoped grants. `request` is a SCALE-encoded
- *     `v01::HostDevicePermissionRequest`.
- *   * [remotePermission] handles per-product capability bundles requested by
- *     the application running inside the WebView. `request` is a SCALE-encoded
- *     `v01::RemotePermissionRequest`.
+ *     OS-scoped grants.
+ *   * [remotePermission] handles per-product capabilities requested by the
+ *     application running inside the WebView.
  *
- * Embedders typically wire the SCALE payloads through the generated
- * `@parity/truapi` client running on the JS side for UI rendering, then report
- * the user's decision as a `Boolean`.
+ * Embedders render the typed request values in their own UI, then report the
+ * user's decision as a `Boolean`.
  *
  * Threading: the Rust core invokes every callback on a background thread it
  * owns, never the UI (main) thread. These six each run on their own thread from
@@ -203,15 +206,15 @@ interface HostBridge {
      * block the calling thread if the user has to approve the navigation.
      */
     @Throws(HostNavigateRejection::class)
-    fun navigateTo(url: String)
+    suspend fun navigateTo(url: String)
 
     /**
-     * Deliver a push notification (SCALE-encoded `HostPushNotificationRequest`)
-     * and return the host-assigned notification id. Invoked on the dispatcher
-     * thread; marshal any UI work to the main thread and return promptly.
+     * Deliver a push notification and return the host-assigned notification
+     * id. Invoked on the dispatcher thread; marshal any UI work to the main
+     * thread and return promptly.
      */
     @Throws(HostRejection::class)
-    fun pushNotification(payload: ByteArray): UInt = 0u
+    suspend fun pushNotification(request: PushNotificationRequest): UInt = 0u
 
     /** Cancel a previously scheduled notification id. */
     @Throws(HostRejection::class)
@@ -224,7 +227,7 @@ interface HostBridge {
      * not stall other TrUAPI traffic.
      */
     @Throws(HostRejection::class)
-    fun devicePermission(request: ByteArray): Boolean
+    suspend fun devicePermission(request: NativeDevicePermission): Boolean
 
     /**
      * Prompt for a remote (product-scoped) permission bundle. Invoked on a
@@ -233,7 +236,7 @@ interface HostBridge {
      * TrUAPI traffic.
      */
     @Throws(HostRejection::class)
-    fun remotePermission(request: ByteArray): Boolean
+    suspend fun remotePermission(request: NativeRemotePermission): Boolean
 
     /**
      * Observe an auth state change. The core emits states only when they
@@ -258,18 +261,18 @@ interface HostBridge {
     fun chainClose(connectionId: UInt) {}
 
     /**
-     * Confirm one user-reviewed core action. `review` is a SCALE-encoded
-     * `UserConfirmationReview`; decode it to pick the prompt (sign payload,
-     * sign raw, create transaction, account alias, resource allocation, or
-     * preimage submit). Invoked on a blocking-pool thread; present the prompt on
-     * the main thread and block the calling thread until the user decides.
+     * Confirm one user-reviewed core action; the review variant picks the
+     * prompt (sign payload, sign raw, create transaction, account alias,
+     * resource allocation, or preimage submit). Invoked on a blocking-pool
+     * thread; present the prompt on the main thread and block the calling
+     * thread until the user decides.
      */
     @Throws(HostRejection::class)
-    fun confirmUserAction(review: ByteArray): Boolean = false
+    suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean = false
 
     /** Return the current preimage value for [key], or null for a miss. */
     @Throws(HostRejection::class)
-    fun lookupPreimage(key: ByteArray): ByteArray? = null
+    suspend fun lookupPreimage(key: ByteArray): ByteArray? = null
 
     /** Return the current host theme. */
     @Throws(HostRejection::class)
@@ -280,7 +283,7 @@ interface HostBridge {
      * return promptly.
      */
     @Throws(HostRejection::class)
-    fun featureSupported(request: ByteArray): Boolean
+    suspend fun featureSupported(request: FeatureSupportedRequest): Boolean
 
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
@@ -298,19 +301,19 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun onCoreLog(marker: String, detail: String) =
         bridge.onCoreLog(marker, detail)
 
-    override fun navigateTo(url: String) =
+    override suspend fun navigateTo(url: String) =
         bridge.navigateTo(url)
 
-    override fun pushNotification(payload: ByteArray): UInt =
-        bridge.pushNotification(payload)
+    override suspend fun pushNotification(request: PushNotificationRequest): UInt =
+        bridge.pushNotification(request)
 
     override fun cancelNotification(id: UInt) =
         bridge.cancelNotification(id)
 
-    override fun devicePermission(request: ByteArray): Boolean =
+    override suspend fun devicePermission(request: NativeDevicePermission): Boolean =
         bridge.devicePermission(request)
 
-    override fun remotePermission(request: ByteArray): Boolean =
+    override suspend fun remotePermission(request: NativeRemotePermission): Boolean =
         bridge.remotePermission(request)
 
     override fun authStateChanged(state: AuthState) =
@@ -334,16 +337,16 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun chainClose(connectionId: UInt) =
         bridge.chainClose(connectionId)
 
-    override fun confirmUserAction(review: ByteArray): Boolean =
+    override suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean =
         bridge.confirmUserAction(review)
 
-    override fun lookupPreimage(key: ByteArray): ByteArray? =
+    override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         bridge.lookupPreimage(key)
 
     override fun currentTheme(): HostTheme =
         bridge.currentTheme()
 
-    override fun featureSupported(request: ByteArray): Boolean =
+    override suspend fun featureSupported(request: FeatureSupportedRequest): Boolean =
         bridge.featureSupported(request)
 
     override fun localStorageRead(key: String): ByteArray? =
@@ -555,12 +558,11 @@ class TrUAPIHostCore private constructor(
         inner.activateLocalSession(secret, liteUsername)
     }
 
-    /**
-     * Read a stored permission authorization status without prompting.
-     * [request] is a SCALE-encoded `PermissionAuthorizationRequest`.
-     */
+    /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)
-    fun permissionAuthorizationStatus(request: ByteArray): NativePermissionAuthorizationStatus =
+    fun permissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest,
+    ): NativePermissionAuthorizationStatus =
         inner.permissionAuthorizationStatus(request)
 
     /**
@@ -569,7 +571,7 @@ class TrUAPIHostCore private constructor(
      */
     @Throws(HostRejection::class)
     fun setPermissionAuthorizationStatus(
-        request: ByteArray,
+        request: NativePermissionAuthorizationRequest,
         status: NativePermissionAuthorizationStatus,
     ) {
         inner.setPermissionAuthorizationStatus(request, status)
