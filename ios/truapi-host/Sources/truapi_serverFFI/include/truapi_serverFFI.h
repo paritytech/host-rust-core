@@ -601,6 +601,11 @@ RustBuffer uniffi_truapi_server_fn_method_nativetruapicore_start_ws_bridge(void*
 void uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FUNC_PARSE_NAVIGATE
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FUNC_PARSE_NAVIGATE
+RustBuffer uniffi_truapi_server_fn_func_parse_navigate(RustBuffer input, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FUNC_SET_LOG_LEVEL
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FUNC_SET_LOG_LEVEL
 void uniffi_truapi_server_fn_func_set_log_level(RustBuffer level, RustCallStatus *_Nonnull out_status
@@ -884,6 +889,12 @@ void ffi_truapi_server_rust_future_free_void(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_COMPLETE_VOID
 void ffi_truapi_server_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_FUNC_PARSE_NAVIGATE
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_FUNC_PARSE_NAVIGATE
+uint16_t uniffi_truapi_server_checksum_func_parse_navigate(void
+    
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_FUNC_SET_LOG_LEVEL

@@ -3932,6 +3932,152 @@ extension NativeRuntimeConfigError: Foundation.LocalizedError {
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * How the input URL should be opened. Kept in one enum rather than passing
+ * a raw string so the dispatcher can reject invalid input before reaching
+ * any platform callback. The open variants carry the ready-to-load canonical
+ * URL; `DotName` and `Localhost` keep the dotns/localhost identity visible so
+ * env-aware hosts can rewrite `.dot` names for their active environment and
+ * re-parse without losing information.
+ */
+
+public enum NavigateDecision {
+    
+    /**
+     * A `.dot` identifier plus path/query/hash suffix (no leading `/`).
+     */
+    case dotName(
+        /**
+         * Lower-cased `.dot` host (e.g. `mytestapp.dot`).
+         */identifier: String, 
+        /**
+         * Path/query/hash suffix without a leading `/`.
+         */path: String, 
+        /**
+         * Loadable `https://` URL for this decision.
+         */canonicalUrl: String
+    )
+    /**
+     * A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
+     */
+    case localhost(
+        /**
+         * `localhost` with optional `:port` suffix.
+         */host: String, 
+        /**
+         * Path/query/hash suffix without a leading `/`.
+         */path: String, 
+        /**
+         * Loadable `http://` URL for this decision.
+         */canonicalUrl: String
+    )
+    /**
+     * An absolute external URL with an `http(s):` scheme prepended if missing.
+     */
+    case external(
+        /**
+         * Canonical URL string.
+         */url: String
+    )
+    /**
+     * Input that fails every branch: empty, unparseable, or a `.dot` URL
+     * carrying port/userinfo (both forbidden since dotns resolves via the
+     * chain and has no notion of either).
+     */
+    case reject(
+        /**
+         * Human-readable reason for the rejection.
+         */reason: String
+    )
+}
+
+
+#if compiler(>=6)
+extension NavigateDecision: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNavigateDecision: FfiConverterRustBuffer {
+    typealias SwiftType = NavigateDecision
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NavigateDecision {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .dotName(identifier: try FfiConverterString.read(from: &buf), path: try FfiConverterString.read(from: &buf), canonicalUrl: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .localhost(host: try FfiConverterString.read(from: &buf), path: try FfiConverterString.read(from: &buf), canonicalUrl: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .external(url: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 4: return .reject(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NavigateDecision, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .dotName(identifier,path,canonicalUrl):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(identifier, into: &buf)
+            FfiConverterString.write(path, into: &buf)
+            FfiConverterString.write(canonicalUrl, into: &buf)
+            
+        
+        case let .localhost(host,path,canonicalUrl):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(host, into: &buf)
+            FfiConverterString.write(path, into: &buf)
+            FfiConverterString.write(canonicalUrl, into: &buf)
+            
+        
+        case let .external(url):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(url, into: &buf)
+            
+        
+        case let .reject(reason):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNavigateDecision_lift(_ buf: RustBuffer) throws -> NavigateDecision {
+    return try FfiConverterTypeNavigateDecision.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNavigateDecision_lower(_ value: NavigateDecision) -> RustBuffer {
+    return FfiConverterTypeNavigateDecision.lower(value)
+}
+
+
+extension NavigateDecision: Equatable, Hashable {}
+
+
+
+
+
+
 
 /**
  * Failure modes returned from host-facing `start_ws_bridge` wrappers.
@@ -4275,6 +4421,19 @@ public func uniffiForeignFutureHandleCountTruapiServer() -> Int {
     UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.count
 }
 /**
+ * Classify a navigation input exactly like the core's internal navigate host
+ * call: `.dot` first, then `localhost`, then normalized external, with
+ * everything else rejected. Pure and stateless; hosts call it on every
+ * webview-internal navigation.
+ */
+public func parseNavigate(input: String) -> NavigateDecision  {
+    return try!  FfiConverterTypeNavigateDecision_lift(try! rustCall() {
+    uniffi_truapi_server_fn_func_parse_navigate(
+        FfiConverterString.lower(input),$0
+    )
+})
+}
+/**
  * Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`) for
  * the `tracing` output, which on native routes to stderr (system logs on
  * iOS/Android). Most native diagnostics flow through `on_core_log` instead;
@@ -4301,6 +4460,9 @@ private let initializationResult: InitializationResult = {
     let scaffolding_contract_version = ffi_truapi_server_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
+    }
+    if (uniffi_truapi_server_checksum_func_parse_navigate() != 57451) {
+        return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_func_set_log_level() != 50415) {
         return InitializationResult.apiChecksumMismatch

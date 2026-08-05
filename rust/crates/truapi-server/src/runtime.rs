@@ -780,14 +780,9 @@ impl System for ProductRuntimeHost {
                     v01::HostNavigateToError::Unknown { reason },
                 )));
             }
-            decision => match decision.canonical_url() {
-                Some(url) => url,
-                None => {
-                    return Err(CallError::HostFailure {
-                        reason: "navigate decision produced no canonical URL".to_string(),
-                    });
-                }
-            },
+            NavigateDecision::DotName { canonical_url, .. }
+            | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
+            NavigateDecision::External { url } => url,
         };
         self.services
             .platform

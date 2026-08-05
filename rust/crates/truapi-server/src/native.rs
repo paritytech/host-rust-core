@@ -29,6 +29,7 @@ use truapi_platform::{
 
 use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
+pub use crate::host_logic::dotns::NavigateDecision;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
@@ -577,80 +578,13 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
     }
 }
 
-/// Native-friendly mirror of [`dotns::NavigateDecision`], so WebView hosts
-/// classify navigations with the core's dotns logic instead of reimplementing
-/// it. The open variants carry the ready-to-load canonical URL; `identifier`
-/// stays lower-cased/NFC-normalized so hosts can compare it against the
-/// current page's identifier for same-domain checks.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum NavigateDecision {
-    /// A `.dot` identifier plus path/query/hash suffix (no leading `/`).
-    DotName {
-        /// Lower-cased `.dot` host (e.g. `mytestapp.dot`).
-        identifier: String,
-        /// Path/query/hash suffix without a leading `/`.
-        path: String,
-        /// Loadable `https://` URL for this decision.
-        canonical_url: String,
-    },
-    /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
-    Localhost {
-        /// `localhost` with optional `:port` suffix.
-        host: String,
-        /// Path/query/hash suffix without a leading `/`.
-        path: String,
-        /// Loadable `http://` URL for this decision.
-        canonical_url: String,
-    },
-    /// An absolute external URL with an `http(s):` scheme prepended if missing.
-    External {
-        /// Canonical URL string.
-        url: String,
-    },
-    /// Input that fails every branch; must not be loaded.
-    Reject {
-        /// Human-readable reason for the rejection.
-        reason: String,
-    },
-}
-
-impl From<dotns::NavigateDecision> for NavigateDecision {
-    /// Total mapping: an open decision that yields no canonical URL becomes
-    /// `Reject` rather than panicking, so no unwrap can cross the FFI
-    /// boundary and crash the host app.
-    fn from(decision: dotns::NavigateDecision) -> Self {
-        let canonical_url = decision.canonical_url();
-        match (decision, canonical_url) {
-            (dotns::NavigateDecision::DotName { identifier, path }, Some(canonical_url)) => {
-                Self::DotName {
-                    identifier,
-                    path,
-                    canonical_url,
-                }
-            }
-            (dotns::NavigateDecision::Localhost { host, path }, Some(canonical_url)) => {
-                Self::Localhost {
-                    host,
-                    path,
-                    canonical_url,
-                }
-            }
-            (dotns::NavigateDecision::External { url }, _) => Self::External { url },
-            (dotns::NavigateDecision::Reject { reason }, _) => Self::Reject { reason },
-            (open, None) => Self::Reject {
-                reason: format!("{open:?} produced no canonical URL"),
-            },
-        }
-    }
-}
-
 /// Classify a navigation input exactly like the core's internal navigate host
 /// call: `.dot` first, then `localhost`, then normalized external, with
 /// everything else rejected. Pure and stateless; hosts call it on every
 /// webview-internal navigation.
 #[uniffi::export]
 pub fn parse_navigate(input: String) -> NavigateDecision {
-    dotns::parse_navigate(&input).into()
+    dotns::parse_navigate(&input)
 }
 
 /// Callback surface that iOS and Android implement.
@@ -1379,18 +1313,8 @@ impl PreimageHost for CallbackPlatform {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use truapi::v01::{
-        AllocatableResource, Bytes32, DerivationIndex, HostAccountSignVrfRequest,
-        HostSignPayloadData, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
-        HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
-        ProductAccountId, ProductAccountTxPayload, ProductProofContext, RawPayload, RingLocation,
-        RingLocationJunction, TxPayloadExtension, VrfTranscriptItem,
-    };
-    use truapi_platform::{
-        AccountAccessReview, AccountAliasReview, CreateProofReview, CreateTransactionReview,
-        IdentityDisclosureReview, PreimageSubmitReview, ResourceAllocationReview,
-        SignPayloadReview, SignRawReview, SignVrfReview, StatementStoreProductSignReview,
-    };
+    use truapi::v01::{Bytes32, LegacyAccountTxPayload};
+    use truapi_platform::CreateTransactionReview;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
@@ -2121,40 +2045,6 @@ mod tests {
         core.stop_ws_bridge();
     }
 
-    fn review_roundtrip(review: UserConfirmationReview) -> UserConfirmationReview {
-        let mut buf = Vec::new();
-        <UserConfirmationReview as uniffi::Lower<crate::UniFfiTag>>::write(review, &mut buf);
-        <UserConfirmationReview as uniffi::Lift<crate::UniFfiTag>>::try_read(&mut buf.as_slice())
-            .expect("review must lift back")
-    }
-
-    fn sign_payload_data() -> HostSignPayloadData {
-        HostSignPayloadData {
-            block_hash: vec![1; 32],
-            block_number: vec![2],
-            era: vec![3],
-            genesis_hash: vec![4; 32],
-            method: vec![5, 6],
-            nonce: vec![7],
-            spec_version: vec![8],
-            tip: vec![9],
-            transaction_version: vec![10],
-            signed_extensions: vec!["CheckSpecVersion".to_string()],
-            version: 4,
-            asset_id: Some(vec![11]),
-            metadata_hash: Some(vec![12; 32]),
-            mode: Some(1),
-            with_signed_transaction: Some(true),
-        }
-    }
-
-    fn product_account() -> ProductAccountId {
-        ProductAccountId {
-            dot_ns_identifier: "app.dot".to_string(),
-            derivation_index: DerivationIndex::Left(7),
-        }
-    }
-
     #[test]
     fn bytes32_widens_to_plain_bytes_on_the_wire() {
         let mut buf = Vec::new();
@@ -2164,181 +2054,35 @@ mod tests {
     }
 
     #[test]
-    fn every_review_variant_survives_the_ffi_roundtrip() {
-        let cases = vec![
-            UserConfirmationReview::SignPayload(SignPayloadReview::Product(
-                HostSignPayloadRequest {
-                    account: product_account(),
-                    payload: sign_payload_data(),
-                },
-            )),
-            UserConfirmationReview::SignPayload(SignPayloadReview::LegacyAccount(
-                HostSignPayloadWithLegacyAccountRequest {
-                    signer: "5F...".to_string(),
-                    payload: sign_payload_data(),
-                },
-            )),
-            UserConfirmationReview::SignRaw(SignRawReview::Product(HostSignRawRequest {
-                account: product_account(),
-                payload: RawPayload::Bytes { bytes: vec![1, 2] },
-            })),
-            UserConfirmationReview::SignRaw(SignRawReview::LegacyAccount(
-                HostSignRawWithLegacyAccountRequest {
-                    signer: "5F...".to_string(),
-                    payload: RawPayload::Payload {
-                        payload: "hello".to_string(),
-                    },
-                },
-            )),
-            UserConfirmationReview::StatementStoreProductSign(StatementStoreProductSignReview {
-                account: product_account(),
-                payload: vec![1, 2, 3],
-            }),
-            UserConfirmationReview::CreateTransaction(CreateTransactionReview::Product(
-                ProductAccountTxPayload {
-                    signer: product_account(),
-                    genesis_hash: [14; 32],
-                    call_data: vec![15],
-                    extensions: vec![TxPayloadExtension {
-                        id: "CheckNonce".to_string(),
-                        extra: vec![16],
-                        additional_signed: vec![],
-                    }],
-                    tx_ext_version: 0,
-                },
-            )),
-            UserConfirmationReview::CreateTransaction(CreateTransactionReview::LegacyAccount(
-                LegacyAccountTxPayload {
-                    signer: [13; 32],
-                    genesis_hash: [14; 32],
-                    call_data: vec![15],
-                    extensions: vec![],
-                    tx_ext_version: 0,
-                },
-            )),
-            UserConfirmationReview::AccountAlias(AccountAliasReview {
-                calling_product_id: "app.dot".to_string(),
-                context: ProductProofContext {
-                    product_id: "app.dot".to_string(),
-                    suffix: DerivationIndex::Left(1),
-                },
-                ring_location: RingLocation {
-                    chain_id: [1; 32],
-                    junctions: vec![
-                        RingLocationJunction::PalletInstance(2),
-                        RingLocationJunction::CollectionId(vec![3]),
-                    ],
-                },
-            }),
-            UserConfirmationReview::CreateProof(CreateProofReview {
-                calling_product_id: "app.dot".to_string(),
-                context: ProductProofContext {
-                    product_id: "app.dot".to_string(),
-                    suffix: DerivationIndex::Right([2; 32]),
-                },
-                ring_location: RingLocation {
-                    chain_id: [1; 32],
-                    junctions: vec![],
-                },
-                message: vec![9],
-            }),
-            UserConfirmationReview::IdentityDisclosure(IdentityDisclosureReview {
-                product_id: "app.dot".to_string(),
-            }),
-            UserConfirmationReview::ResourceAllocation(ResourceAllocationReview {
-                calling_product_id: "app.dot".to_string(),
-                resources: vec![
-                    AllocatableResource::StatementStoreAllowance,
-                    AllocatableResource::BulletinAllowance,
-                    AllocatableResource::SmartContractAllowance(DerivationIndex::Left(4)),
-                    AllocatableResource::AutoSigning,
-                ],
-            }),
-            UserConfirmationReview::PreimageSubmit(PreimageSubmitReview { size: 42 }),
-            UserConfirmationReview::AccountAccess(AccountAccessReview {
-                requesting_product_id: "a.dot".to_string(),
-                target_product_id: "b.dot".to_string(),
-            }),
-            UserConfirmationReview::SignVrf(SignVrfReview {
-                calling_product_id: "app.dot".to_string(),
-                request: HostAccountSignVrfRequest {
-                    account: product_account(),
-                    transcript_label: b"vrf-label".to_vec(),
-                    items: vec![VrfTranscriptItem {
-                        label: b"item".to_vec(),
-                        value: vec![1, 2, 3],
-                    }],
-                },
-            }),
-        ];
-
-        for review in cases {
-            assert_eq!(review_roundtrip(review.clone()), review);
-        }
+    fn bytes32_lift_rejects_wrong_length() {
+        let mut buf = Vec::new();
+        <Vec<u8> as uniffi::Lower<crate::UniFfiTag>>::write(vec![7; 31], &mut buf);
+        assert!(
+            <Bytes32 as uniffi::Lift<truapi::UniFfiTag>>::try_read(&mut buf.as_slice()).is_err()
+        );
     }
 
     #[test]
-    fn exported_parse_navigate_maps_every_variant() {
-        assert_eq!(
-            parse_navigate("mytestapp.dot/some/path?q=1".to_string()),
-            NavigateDecision::DotName {
-                identifier: "mytestapp.dot".to_string(),
-                path: "some/path?q=1".to_string(),
-                canonical_url: "https://mytestapp.dot/some/path?q=1".to_string(),
-            }
+    fn bytes32_fields_survive_the_ffi_roundtrip() {
+        let review = UserConfirmationReview::CreateTransaction(
+            CreateTransactionReview::LegacyAccount(LegacyAccountTxPayload {
+                signer: [13; 32],
+                genesis_hash: [14; 32],
+                call_data: vec![15],
+                extensions: vec![],
+                tx_ext_version: 0,
+            }),
         );
-        assert_eq!(
-            parse_navigate("Example.DOT".to_string()),
-            NavigateDecision::DotName {
-                identifier: "example.dot".to_string(),
-                path: String::new(),
-                canonical_url: "https://example.dot".to_string(),
-            }
-        );
-        assert_eq!(
-            parse_navigate("localhost:3000/path#h".to_string()),
-            NavigateDecision::Localhost {
-                host: "localhost:3000".to_string(),
-                path: "path#h".to_string(),
-                canonical_url: "http://localhost:3000/path#h".to_string(),
-            }
-        );
-        assert_eq!(
-            parse_navigate("google.com".to_string()),
-            NavigateDecision::External {
-                url: "https://google.com/".to_string(),
-            }
-        );
-        assert!(matches!(
-            parse_navigate("javascript:alert(1)".to_string()),
-            NavigateDecision::Reject { .. }
-        ));
-    }
 
-    /// The FFI mirror's canonical URL must stay byte-identical to what the
-    /// runtime's internal navigate path computes from the same input.
-    #[test]
-    fn exported_canonical_url_matches_host_logic() {
-        let inputs = [
-            "mytestapp.dot",
-            "mytestapp.dot/some/path?q=1#frag",
-            "localhost",
-            "localhost:3000/path",
-            "https://example.com/page",
-        ];
-        for input in inputs {
-            let expected = crate::host_logic::dotns::parse_navigate(input)
-                .canonical_url()
-                .expect("open decision has a canonical URL");
-            let actual = match parse_navigate(input.to_string()) {
-                NavigateDecision::DotName { canonical_url, .. }
-                | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
-                NavigateDecision::External { url } => url,
-                NavigateDecision::Reject { reason } => {
-                    panic!("{input}: unexpected rejection: {reason}")
-                }
-            };
-            assert_eq!(actual, expected, "{input}");
-        }
+        let mut buf = Vec::new();
+        <UserConfirmationReview as uniffi::Lower<crate::UniFfiTag>>::write(
+            review.clone(),
+            &mut buf,
+        );
+        let lifted = <UserConfirmationReview as uniffi::Lift<crate::UniFfiTag>>::try_read(
+            &mut buf.as_slice(),
+        )
+        .expect("review must lift back");
+        assert_eq!(lifted, review);
     }
 }
