@@ -9,6 +9,7 @@
 | `Account/get_legacy_accounts` | ✅ |  |
 | `Account/get_user_id` | ✅ |  |
 | `Account/request_login` | ✅ |  |
+| `Account/sign_vrf` | ✅ |  |
 | `Chain/follow_head_subscribe` | ✅ |  |
 | `Chain/get_head_header` | ✅ |  |
 | `Chain/get_head_body` | ✅ |  |
@@ -66,3 +67,4 @@
 | `System/feature_supported` | ✅ |  |
 | `System/navigate_to` | ✅ |  |
 | `Theme/subscribe` | ✅ |  |
+| `Resource Allocation/auto_signing_e2e` | ✅ |  |
