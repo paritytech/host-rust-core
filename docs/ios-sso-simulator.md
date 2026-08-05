@@ -36,17 +36,48 @@ xcodebuild \
   ARCHS=arm64 \
   ONLY_ACTIVE_ARCH=YES \
   TRUAPI_SWIFT_FLAGS='-DF_DEV -DNIGHTLY -DTESTNET_FEATURE -DIOS_PASEO_E2E' \
+  RUN_IN_CI=true \
   build
 ```
 
 Do not set `CODE_SIGNING_ALLOWED=NO`: that produces an app the simulator will
-not launch. The Xcode pre-actions run SwiftFormat across the checkout; inspect
-`git status` afterward and restore formatting-only changes outside the files
-you intentionally edited. Do not pipe `xcodebuild` through `tail` or a similar
-filter while automating this run: the wrapper can return while the underlying
-build still owns `XCBuildData/build.db`, making the next invocation fail with
-“database is locked”. Use the unpiped command (optionally with `-quiet`) and
-wait for its exit status.
+not launch. Without `RUN_IN_CI=true`, the Xcode pre-actions run SwiftFormat
+across the checkout; inspect `git status` afterward if the safeguard was
+omitted. Do not pipe `xcodebuild` through `tail` or a similar filter while
+automating this run: the wrapper can return while the underlying build still
+owns `XCBuildData/build.db`, making the next invocation fail with “database is
+locked”. Use the unpiped command (optionally with `-quiet`) and wait for its
+exit status.
+
+Keep `RUN_IN_CI=true` even for the local simulator build. It skips the
+format/lint build phases, which otherwise recurse into a local
+`source_packages` checkout: formatting roughly 9,500 dependency and project
+files took almost ten minutes, rewrote unrelated tracked files, and SwiftLint
+then failed on dependency-owned violations. Run formatting and linting as
+separate, intentionally scoped checks instead.
+
+If that formatter has already touched an ignored `source_packages` directory,
+do not reuse it: generated bridge sources in dependencies can become invalid
+Swift (for example, a `get(index:)` call can be reformatted as an accessor).
+Move the tainted cache aside for recovery and give Xcode a clean package-cache
+path outside the checkout together with fresh DerivedData:
+
+```bash
+mv source_packages "/tmp/truapi-ios-source-packages-formatted-$(date +%s)"
+
+xcodebuild \
+  -project polkadot-app.xcodeproj \
+  -scheme polkadot-app \
+  -configuration Debug \
+  -destination "platform=iOS Simulator,id=${IOS_SSO_SIMULATOR_ID}" \
+  -derivedDataPath /tmp/truapi-ios-sso-clean-dd \
+  -clonedSourcePackagesDirPath /tmp/truapi-ios-source-packages-clean \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=YES \
+  TRUAPI_SWIFT_FLAGS='-DF_DEV -DNIGHTLY -DTESTNET_FEATURE -DIOS_PASEO_E2E' \
+  RUN_IN_CI=true \
+  build
+```
 
 After merging iOS `main` or updating binary dependencies, Xcode can fail with
 “header has been modified since the module file was built” for a framework
@@ -55,6 +86,27 @@ than the explicit precompiled module cached in DerivedData. Run the same
 project, scheme, and simulator destination with `xcodebuild clean`, then
 rebuild; deleting the simulator or changing Rust code does not address this
 cache mismatch.
+
+For integration tests that use `@testable import Products`, do not reuse
+DerivedData from a normal app build. The package module in that cache was
+compiled without testability and Xcode reports it as incompatible. Use a
+dedicated test DerivedData directory, pass `ENABLE_TESTABILITY=YES` for the
+`DevCI` configuration, and give the integration-test target the Rust archive
+search path explicitly:
+
+```bash
+xcodebuild test \
+  -project polkadot-app.xcodeproj \
+  -scheme polkadot-appIntegrationTests \
+  -configuration DevCI \
+  -destination "platform=iOS Simulator,id=${IOS_SSO_SIMULATOR_ID}" \
+  -derivedDataPath /tmp/truapi-ios-integration-tests \
+  ENABLE_TESTABILITY=YES \
+  LIBRARY_SEARCH_PATHS="$(pwd)/../../target/aarch64-apple-ios-sim/release"
+```
+
+Without the explicit library path the app target can compile while the test
+bundle still fails to link with `library 'truapi_server' not found`.
 
 Install the resulting signed Debug app:
 
