@@ -1,4 +1,4 @@
-use crate::v01::transaction::{Bytes32, GenesisHash};
+use crate::v01::transaction::GenesisHash;
 use parity_scale_codec::{Decode, Encode};
 
 /// Account selector within a product subtree: `Either<u32, [u8; 32]>`.
@@ -13,7 +13,7 @@ pub enum DerivationIndex {
     /// Plain account index.
     Left(u32),
     /// Raw 32-byte derivation index.
-    Right(Bytes32),
+    Right([u8; 32]),
 }
 
 /// Identifies a product-specific account by combining a dotNS domain name with a

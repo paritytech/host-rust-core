@@ -1564,7 +1564,7 @@ impl Signing for ProductRuntimeHost {
                 payload: inner.payload,
             }),
             LegacySigner::Identity(account) => SignRawAuthorityRequest::LegacyAccount {
-                account: account.into(),
+                account,
                 request: inner,
             },
         };
@@ -1595,7 +1595,7 @@ impl Signing for ProductRuntimeHost {
             ));
         };
         let signer = self
-            .classify_legacy_signer(cx, &session, inner.signer.0)
+            .classify_legacy_signer(cx, &session, inner.signer)
             .await
             .map_err(|err| {
                 CallError::Domain(HostCreateTransactionWithLegacyAccountError::V1(
@@ -4213,8 +4213,8 @@ mod tests {
         let cx = CallContext::default();
         let request =
             HostCreateTransactionWithLegacyAccountRequest::V1(v01::LegacyAccountTxPayload {
-                signer: [0; 32].into(),
-                genesis_hash: [1; 32].into(),
+                signer: [0; 32],
+                genesis_hash: [1; 32],
                 call_data: vec![0],
                 extensions: vec![],
                 tx_ext_version: 0,
@@ -4261,8 +4261,8 @@ mod tests {
         let cx = CallContext::with_request_id("identity-create-tx-1".to_string());
         let request =
             HostCreateTransactionWithLegacyAccountRequest::V1(v01::LegacyAccountTxPayload {
-                signer: identity.into(),
-                genesis_hash: [1; 32].into(),
+                signer: identity,
+                genesis_hash: [1; 32],
                 call_data: vec![0],
                 extensions: vec![],
                 tx_ext_version: 0,
@@ -4319,8 +4319,8 @@ mod tests {
         let cx = CallContext::with_request_id("legacy-create-tx-1".to_string());
         let request =
             HostCreateTransactionWithLegacyAccountRequest::V1(v01::LegacyAccountTxPayload {
-                signer: signer.into(),
-                genesis_hash: [1; 32].into(),
+                signer,
+                genesis_hash: [1; 32],
                 call_data: vec![0],
                 extensions: vec![],
                 tx_ext_version: 0,

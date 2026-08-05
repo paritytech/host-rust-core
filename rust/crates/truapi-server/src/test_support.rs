@@ -611,7 +611,7 @@ pub(crate) fn product_proof_context(product_id: &str) -> v01::ProductProofContex
 /// Ring-location fixture addressing a single pallet-instance ring.
 pub(crate) fn ring_location_fixture() -> v01::RingLocation {
     v01::RingLocation {
-        chain_id: [1; 32].into(),
+        chain_id: [1; 32],
         junctions: vec![v01::RingLocationJunction::PalletInstance(42)],
     }
 }
@@ -658,7 +658,7 @@ pub(crate) fn sign_payload_data() -> v01::HostSignPayloadData {
 pub(crate) fn product_tx_payload(identifier: &str) -> v01::ProductAccountTxPayload {
     v01::ProductAccountTxPayload {
         signer: account_id(identifier, 0),
-        genesis_hash: [1; 32].into(),
+        genesis_hash: [1; 32],
         call_data: vec![0],
         extensions: vec![],
         tx_ext_version: 0,

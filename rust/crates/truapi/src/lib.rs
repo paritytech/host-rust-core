@@ -34,8 +34,8 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, Bytes32, ContextualAlias,
-        DerivationIndex, GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
+        AccountId, AllocatableResource, AllocationOutcome, ContextualAlias, DerivationIndex,
+        GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
         ProductAccountId, ProductProofContext, RawPayload, RemotePermission,
         RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
         RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,

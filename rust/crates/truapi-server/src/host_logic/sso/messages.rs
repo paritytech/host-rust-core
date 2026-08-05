@@ -1129,20 +1129,17 @@ mod tests {
         let legacy_tx = create_transaction_legacy_message(
             String::new(),
             LegacyAccountTxPayload {
-                signer: [1; 32].into(),
-                genesis_hash: [2; 32].into(),
+                signer: [1; 32],
+                genesis_hash: [2; 32],
                 call_data: Vec::new(),
                 extensions: Vec::new(),
                 tx_ext_version: 0,
             },
         )
         .encode();
-        let legacy_raw = sign_raw_legacy_message(
-            String::new(),
-            [1; 32].into(),
-            RawPayload::Bytes { bytes: vec![] },
-        )
-        .encode();
+        let legacy_raw =
+            sign_raw_legacy_message(String::new(), [1; 32], RawPayload::Bytes { bytes: vec![] })
+                .encode();
 
         assert_eq!(legacy_tx[..3], [0, 0, 9]);
         assert_eq!(legacy_raw[..3], [0, 0, 10]);
@@ -1155,7 +1152,7 @@ mod tests {
             suffix: DerivationIndex::Left(0),
         };
         let ring_location = RingLocation {
-            chain_id: [0x11; 32].into(),
+            chain_id: [0x11; 32],
             junctions: vec![
                 RingLocationJunction::PalletInstance(67),
                 RingLocationJunction::CollectionId(b"pop".to_vec()),
@@ -1432,7 +1429,7 @@ mod tests {
                     dot_ns_identifier: "truapi-playground.dot".to_string(),
                     derivation_index: DerivationIndex::Left(0),
                 },
-                genesis_hash: sequential_bytes(32).into(),
+                genesis_hash: sequential_bytes(32),
                 call_data: vec![0, 0],
                 extensions: vec![TxPayloadExtension {
                     id: "CheckNonce".to_string(),
@@ -1462,8 +1459,7 @@ mod tests {
                     0xbf, 0x04, 0x88, 0xdb, 0xe9, 0xda, 0xa1, 0xde, 0x1c, 0x08, 0xc5, 0xf7, 0x43,
                     0xe2, 0x6f, 0xdc, 0x2a, 0x4e, 0xcd, 0x74, 0xcf, 0x87, 0xdd, 0x1b, 0x4b, 0x1e,
                     0xeb, 0x99, 0xae, 0x4e, 0xf1, 0x9f,
-                ]
-                .into(),
+                ],
                 call_data: vec![0, 0],
                 extensions: vec![],
                 tx_ext_version: 0,
@@ -1481,8 +1477,8 @@ mod tests {
         let message = create_transaction_legacy_message(
             "m-legacy-tx".to_string(),
             LegacyAccountTxPayload {
-                signer: sequential_bytes(0).into(),
-                genesis_hash: sequential_bytes(32).into(),
+                signer: sequential_bytes(0),
+                genesis_hash: sequential_bytes(32),
                 call_data: vec![0, 0],
                 extensions: vec![TxPayloadExtension {
                     id: "CheckNonce".to_string(),
@@ -1504,7 +1500,7 @@ mod tests {
         assert_host_papp_0_8_11_fixture(
             sign_raw_legacy_message(
                 "m-legacy-raw".to_string(),
-                sequential_bytes(0).into(),
+                sequential_bytes(0),
                 RawPayload::Bytes {
                     bytes: b"Hi".to_vec(),
                 },
@@ -1514,7 +1510,7 @@ mod tests {
         assert_host_papp_0_8_11_fixture(
             sign_raw_legacy_message(
                 "m-legacy-raw-payload".to_string(),
-                sequential_bytes(0).into(),
+                sequential_bytes(0),
                 RawPayload::Payload {
                     payload: "<Bytes>Hi</Bytes>".to_string(),
                 },

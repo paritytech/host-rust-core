@@ -2081,7 +2081,7 @@ mod tests {
     #[test]
     fn bytes32_widens_to_plain_bytes_on_the_wire() {
         let mut buf = Vec::new();
-        <Bytes32 as uniffi::Lower<crate::UniFfiTag>>::write([7; 32].into(), &mut buf);
+        <Bytes32 as uniffi::Lower<truapi::UniFfiTag>>::write([7; 32], &mut buf);
         assert_eq!(buf[..4], 32i32.to_be_bytes());
         assert_eq!(buf[4..], [7; 32]);
     }
@@ -2120,7 +2120,7 @@ mod tests {
             UserConfirmationReview::CreateTransaction(CreateTransactionReview::Product(
                 ProductAccountTxPayload {
                     signer: product_account(),
-                    genesis_hash: [14; 32].into(),
+                    genesis_hash: [14; 32],
                     call_data: vec![15],
                     extensions: vec![TxPayloadExtension {
                         id: "CheckNonce".to_string(),
@@ -2132,8 +2132,8 @@ mod tests {
             )),
             UserConfirmationReview::CreateTransaction(CreateTransactionReview::LegacyAccount(
                 LegacyAccountTxPayload {
-                    signer: [13; 32].into(),
-                    genesis_hash: [14; 32].into(),
+                    signer: [13; 32],
+                    genesis_hash: [14; 32],
                     call_data: vec![15],
                     extensions: vec![],
                     tx_ext_version: 0,
@@ -2146,7 +2146,7 @@ mod tests {
                     suffix: DerivationIndex::Left(1),
                 },
                 ring_location: RingLocation {
-                    chain_id: [1; 32].into(),
+                    chain_id: [1; 32],
                     junctions: vec![
                         RingLocationJunction::PalletInstance(2),
                         RingLocationJunction::CollectionId(vec![3]),
@@ -2157,10 +2157,10 @@ mod tests {
                 calling_product_id: "app.dot".to_string(),
                 context: ProductProofContext {
                     product_id: "app.dot".to_string(),
-                    suffix: DerivationIndex::Right([2; 32].into()),
+                    suffix: DerivationIndex::Right([2; 32]),
                 },
                 ring_location: RingLocation {
-                    chain_id: [1; 32].into(),
+                    chain_id: [1; 32],
                     junctions: vec![],
                 },
                 message: vec![9],
