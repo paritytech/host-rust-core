@@ -1,927 +1,1568 @@
-# Headless Host CLI specification
+# TrUAPI Headless Host CLI v0.1 specification
 
-Status: implementation contract for the `headless-host` worktree  
-Target: `truapi-host` v0.1  
-Reference implementation: `rust/crates/truapi-host-cli/`  
-Protocol source of truth: `truapi` and `truapi-server`
+- Status: as-built behavior reference
+- Binary: `truapi-host`
+- Implementation: `rust/crates/truapi-host-cli/`
+- Protocol implementation: `truapi` and `truapi-server`
 
-This document defines the product and engineering contract for completing the
-native headless TrUAPI host CLI. The crate README is the user guide; this file
-is the implementation and acceptance specification. If code, help text, tests,
-and this document disagree, an agent must resolve the disagreement explicitly
-rather than silently preserving both behaviors.
+This document specifies the first complete version of the native headless
+TrUAPI host CLI. It was derived from the Rust and TypeScript implementation,
+the test suite, the checked-in compatibility reports, and observed runs of both
+host roles.
 
-The key words **MUST**, **MUST NOT**, **SHOULD**, and **MAY** are normative.
+The crate [README](README.md) is the user guide. This document is the complete
+behavioral and engineering reference. It describes what v0.1 does, including
+its operational limits; it does not contain a roadmap or requirements for
+unimplemented features.
 
-## 1. Product definition
+## 1. Purpose and scope
 
-`truapi-host` is a native developer tool for running real TrUAPI host roles
-without a browser UI or phone automation service. It is intended for local
-development, protocol diagnosis, and end-to-end product tests.
+`truapi-host` runs real TrUAPI host roles without a browser UI, desktop shell,
+phone automation service, or external signing bot. It is intended for:
 
-The CLI runs the real `truapi-server` dispatcher, services, signing logic, SSO
-logic, and protocol frames. It replaces only the operating-system seam with a
-CLI platform and adds process orchestration around it.
+- local product development;
+- protocol and host diagnosis;
+- direct signing-host tests;
+- paired end-to-end tests; and
+- generation of CLI host compatibility reports.
 
-The primary success case is:
+It embeds the real `truapi-server` dispatcher and host logic. Product scripts
+use the public `@parity/truapi` client and exchange the same SCALE protocol
+messages as a product connected to another host.
 
-1. A seedless pairing host serves a product and publishes a Polkadot Mobile
-   pairing deeplink.
-2. A wallet-local signing host answers that deeplink over the real SSO
-   transport.
-3. A product script calls the public `@parity/truapi` client exactly as a real
-   product would.
-4. The script exit status is the test result.
+The CLI replaces the platform/operating-system seam with native implementations
+for persistence, chain RPC, approvals, notifications, navigation, theme, and
+terminal presentation. It also owns account onboarding, process orchestration,
+the product-frame WebSocket bridge, and the Bun script runner.
 
-The CLI is experimental test infrastructure. It is not a production wallet,
-general-purpose key manager, mock host, or replacement for dot.li.
+It is local test infrastructure, not:
 
-## 2. Goals and non-goals
+- a production wallet or secure custody product;
+- a general-purpose mnemonic manager;
+- a mock protocol server;
+- a replacement for dot.li or Polkadot Desktop;
+- a Chat, Coin Payment, or Payment backend; or
+- an arbitrary-network RPC proxy.
 
-### 2.1 Goals
+## 2. Roles and runtime topologies
 
-The v0.1 CLI MUST:
+### 2.1 Pairing host
 
-- exercise the real Rust core and SCALE protocol frame path;
-- support both paired and direct signing-host product execution;
-- pair over the selected network's real Statement Store;
-- manage a reusable local signer without requiring an external signing bot;
-- expose safe interactive approvals and explicit unattended auto-approval;
-- provide persistent, isolated signing-host sessions;
-- run JS or TS product scripts and faithfully return their status;
-- provide enough stable machine output for shell and CI orchestration;
-- terminate predictably under errors, timeouts, cancellation, and signals;
-- be installable and runnable without retaining the repository checkout; and
-- have deterministic local tests plus a separately identified live-network
-  acceptance suite.
-
-### 2.2 Non-goals
-
-The v0.1 CLI MUST NOT:
-
-- redefine protocol payloads, wire ids, signing rules, SSO messages, allowance
-  proofs, or Bulletin submission logic;
-- add CLI-only cryptographic implementations when the behavior belongs in
-  `truapi-server`;
-- present itself as secure custody for production funds;
-- make Chat, Coin Payment, or Payment services work without their real host
-  backends;
-- accept arbitrary RPC URLs as a normal user-facing configuration surface;
-- emulate push delivery or navigation beyond reporting the host action; or
-- make live-network tests part of the deterministic unit-test contract.
-
-### 2.3 Implementation baseline
-
-This status snapshot is based on worktree commit `c19c22ab`. Agents must update
-it when a work package lands.
-
-Implemented and expected to be preserved:
-
-- [x] four top-level commands and the current flag-conflict validation;
-- [x] real paired and direct signing-host runtimes;
-- [x] real People-chain SSO, Statement Store allowance, and Bulletin flows;
-- [x] auto-managed signer creation, onboarding, caching, and slot rotation;
-- [x] signing-host TUI, slash commands, serialized approvals, and plain `exec`;
-- [x] persistent named sessions and runtime replacement on session switch;
-- [x] durable scratch scripts opened through the configured editor;
-- [x] product scripts with injected `truapi` and `host` globals; and
-- [x] SSO request/response outcome reporting.
-
-Known completion work:
-
-- [ ] define the documented Make build/install targets;
-- [ ] package a relocatable script runner and client dependencies;
-- [ ] add named deadlines, setup-time cancellation, and signal-driven cleanup;
-- [ ] add session-level locking and atomic restrictive storage writes;
-- [ ] bound frame/chain queues and enforce binary product frames;
-- [ ] add structured automation output and centralized redaction;
-- [ ] expand deterministic process and transport tests;
-- [ ] harden the live E2E harness and CI artifact handling; and
-- [ ] reconcile stale README/help statements, including removed `/whoami`
-      references.
-
-## 3. Ownership boundaries
-
-### 3.1 `truapi-server` owns
-
-- protocol dispatch and frame encoding;
-- product, pairing, signing, and authorization semantics;
-- SSO request and response encoding;
-- product-account derivation and signing;
-- ring-VRF aliases and proofs;
-- Statement Store and Bulletin allowance proof/extrinsic logic;
-- Bulletin preimage construction, submission, and lookup;
-- subscription lifecycle rules; and
-- reusable runtime errors.
-
-Logic in this list MUST be fixed or extended in `truapi-server`, then consumed
-by the CLI. It MUST NOT be duplicated in `truapi-host-cli`.
-
-### 3.2 `truapi-host-cli` owns
-
-- command-line parsing and validation;
-- network presets;
-- process, task, timeout, cancellation, and signal orchestration;
-- terminal UI and plain `exec` output;
-- approval prompts and `--auto-accept` policy;
-- local state paths, locking, persistence, and file permissions;
-- auto-managed test signer selection and onboarding orchestration;
-- the product-frame WebSocket listener;
-- product-script packaging and execution; and
-- CLI-specific diagnostics and exit codes.
-
-### 3.3 Product scripts own
-
-- the sequence of public TrUAPI calls under test;
-- assertions over typed protocol results;
-- test-specific output; and
-- success or failure through normal process completion or a thrown error.
-
-A script MUST NOT reach into the Rust runtime, session files, or private CLI
-state to make an assertion pass.
-
-## 4. Runtime topologies
-
-### 4.1 Paired topology
+The pairing host is seedless and product-facing:
 
 ```text
-product script
-    │ binary SCALE frames over loopback WebSocket
-    ▼
-pairing-host ── People-chain Statement Store / SSO ── signing-host
-    │                                                    │
-    └── seedless product/core state                      └── signer + wallet state
+product script or client
+       │
+       │ TrUAPI SCALE frames over WebSocket
+       ▼
+pairing-host
+       │
+       │ People-chain Statement Store / SSO
+       ▼
+signing-host
+       │
+       └── wallet entropy, product accounts, signing, aliases, proofs
 ```
 
-The pairing host MUST own the product-facing session. The signing host MUST own
-wallet entropy and answer SSO requests. Neither process may bypass the real SSO
-request/response path for paired tests.
+The pairing host:
 
-### 4.2 Direct signing-host topology
+- serves product connections;
+- starts SSO login and emits a `polkadotapp://pair?...` deeplink;
+- persists the paired session and product state;
+- receives a root entropy source from the signing host;
+- delegates signing and other authority operations over SSO; and
+- can run scripts before, during, or after pairing.
+
+It never stores the signing host's raw mnemonic or raw root entropy.
+
+### 2.2 Direct signing host
+
+The signing host can also be product-facing:
 
 ```text
-product script
-    │ binary SCALE frames over loopback WebSocket
-    ▼
-signing-host ── selected network RPCs
+product script or client
+       │
+       │ TrUAPI SCALE frames over WebSocket
+       ▼
+signing-host
+       │
+       ├── local wallet entropy and product authority
+       ├── People-chain Statement Store
+       └── Bulletin and optional product-chain RPC
 ```
 
-This topology is for focused signing-host diagnosis. It MUST use the same
-signing runtime services as the paired topology. Results that differ between
-the direct and paired paths require an explicit test or documented capability
-difference.
+This path is used for focused diagnosis without SSO. It uses the same Rust
+signing, account, entropy, Statement Store, Bulletin, and product runtime logic
+as the paired path.
 
-## 5. Command surface
+### 2.3 Ownership boundaries
 
-One binary named `truapi-host` MUST expose these commands:
+`truapi-server` owns:
 
-| Command | Contract |
+- protocol dispatch and SCALE encoding;
+- product and role semantics;
+- product-account derivation;
+- signing and transaction construction;
+- product-scoped entropy derivation;
+- Ring-VRF aliases and proofs;
+- SSO request/response encoding and transport;
+- Statement Store proof, submission, and allowance logic;
+- Bulletin preimage submission and resource allocation;
+- subscriptions and runtime errors; and
+- typed unavailable behavior for unsupported services.
+
+`truapi-host-cli` owns:
+
+- argument and slash-command parsing;
+- the single supported network preset;
+- local signer selection and onboarding;
+- local persistence and account-store locking;
+- approvals and `--auto-accept`;
+- the terminal UI and plain output;
+- product-frame WebSocket listening;
+- session and product switching;
+- child editor and Bun processes; and
+- CLI-specific diagnostics.
+
+Product scripts own:
+
+- the TrUAPI calls under test;
+- assertions over typed results;
+- test output; and
+- success or failure through normal completion or a thrown error.
+
+## 3. Build, installation, and runtime dependencies
+
+### 3.1 Build
+
+From the repository root:
+
+```sh
+make headless
+```
+
+This builds:
+
+- the Rust `truapi-host` binary; and
+- the generated `@parity/truapi` TypeScript client used by the script runner.
+
+The direct Cargo equivalent for the binary is:
+
+```sh
+cargo build -p truapi-host-cli
+```
+
+### 3.2 Installation
+
+```sh
+make headless install
+```
+
+The `install` target depends on `headless` and runs:
+
+```sh
+cargo install \
+  --path rust/crates/truapi-host-cli \
+  --bin truapi-host \
+  --locked \
+  --force
+```
+
+### 3.3 Runtime dependencies
+
+Host-only commands need the installed Rust binary. Product scripts additionally
+need:
+
+- `bun` on `PATH`;
+- `js/runner.ts`; and
+- the repository's generated `@parity/truapi` TypeScript sources and their
+  dependencies.
+
+By default, the runner path is compiled from `CARGO_MANIFEST_DIR` and therefore
+points into the source checkout. `TRUAPI_HOST_RUNNER` can select another
+`runner.ts`. The v0.1 install is not a self-contained relocatable script
+runtime: deleting or moving the checkout without supplying a replacement
+runner breaks `/script` and `--script`.
+
+The binary has `--help` but no `--version` option.
+
+## 4. Top-level command line
+
+```text
+truapi-host [--log-level <level>] <command>
+```
+
+Commands:
+
+| Command | Purpose |
 | --- | --- |
-| `pairing-host` | Run the seedless, product-facing host. |
-| `signing-host` | Run the wallet-local host and optional product endpoint. |
-| `identity-check` | Diagnose the registered identity derived from a mnemonic. |
-| `alloc-check` | Diagnose or submit Statement Store allowance registration. |
+| `pairing-host` | Run the seedless product-facing host. |
+| `signing-host` | Run the wallet-local signing host. |
+| `identity-check` | Probe People-chain identity records for a mnemonic. |
+| `alloc-check` | Inspect or submit Statement Store allowance registration. |
 
-Global options MUST be accepted before or after the subcommand.
+### 4.1 Global logging option
 
-### 5.1 Global options
+`--log-level` accepts:
 
-| Option | Default | Requirement |
+- `error`
+- `warn`
+- `info`
+- `debug`
+- `trace`
+
+The default is `info`. `TRUAPI_HOST_LOG` supplies an environment default. The
+option is global and is accepted before or after a subcommand.
+
+If `RUST_LOG` contains a valid tracing filter, it takes precedence at startup.
+The interactive `/log` command later replaces the active filter with the
+selected CLI level.
+
+## 5. `pairing-host`
+
+```text
+truapi-host pairing-host [options]
+```
+
+| Option | Default | Behavior |
 | --- | --- | --- |
-| `--log-level <level>` | `info` | Accept `error`, `warn`, `info`, `debug`, `trace`. `TRUAPI_HOST_LOG` supplies the default. |
-| `--output <mode>` | `human` | Target completion item: accept `human` or `jsonl`; see section 13. Existing human output remains the default. |
+| `--script <path>` | none | Run one JS/TS product script and exit with its status. |
+| `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
+| `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
+| `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--auto-accept` | off | Approve platform confirmations automatically. |
 
-`RUST_LOG` MAY provide module-specific startup filtering. CLI filters MUST
-always suppress protocol-noise targets known to flood ordinary operation,
-including `rustls` and `tungstenite::protocol`. `/log` MAY replace the runtime
-filter after startup.
+Without `--script`, both stdin and stdout must be terminals. The command enters
+the full-screen terminal UI and remains active until `/quit`, idle Ctrl-C, or
+terminal input ends.
 
-### 5.2 `pairing-host`
+With `--script`, the command:
 
-| Option | Default | Requirement |
+1. builds the pairing runtime;
+2. binds and reports the product-frame listener;
+3. starts the frame accept loop;
+4. starts Bun with inherited stdio;
+5. keeps the host alive until Bun exits;
+6. stops the accept loop; and
+7. exits with the child status.
+
+The script must call `truapi.account.requestLogin()` or the operator must use
+`/login` in interactive mode to initiate pairing.
+
+There is no pairing-host `exec` subcommand.
+
+## 6. `signing-host`
+
+```text
+truapi-host signing-host [options] [exec '<slash-command>']
+```
+
+| Option | Default | Behavior |
 | --- | --- | --- |
-| `--script <path>` | none | Run one product script and exit with its status. |
-| `--product-id <id>` | `headless-playground.dot` | Scope frames, storage, permissions, and product accounts. Validate at startup. |
-| `--frame-listen <addr>` | `127.0.0.1:9955` | Product-frame listener. Port `0` MUST select an available port. |
-| `--base-path <path>` | platform state dir | Root of CLI-managed state. `TRUAPI_HOST_BASE_PATH` supplies the default. |
-| `--network <preset>` | `paseo-next-v2` | Select a complete network preset. |
-| `--auto-accept` | off | Approve confirmations without prompting and report each decision. |
-| `--script-timeout <duration>` | none | Target completion item: bound a one-shot script without changing interactive mode. |
+| `--script <path>` | none | Run one direct product script and exit with its status. |
+| `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
+| `--deeplink <url>` | none | Answer a pairing deeplink after initialization. |
+| `--mnemonic <phrase>` | none | Use raw BIP-39 entropy as an ephemeral local signer. |
+| `--account <name>` | none | Use one named account from the default account store. |
+| `--session <name>` | remembered session | Restore or create a managed session. |
+| `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
+| `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
+| `--auto-accept` | off | Approve platform confirmations automatically. |
 
-With `--script`, the command MUST start the frame listener before starting the
-runner, keep the listener alive for the script lifetime, and return the script
-status. Without `--script`, it MUST remain available for repeated script runs
-until EOF, `quit`, `exit`, `q`, or a termination signal.
+`HOST_CLI_SIGNER_MNEMONIC` supplies `--mnemonic` when the option is omitted.
 
-The pairing-host interactive surface MAY remain a plain line REPL in v0.1. It
-MUST support `script <path>` and MUST NOT claim to provide the signing-host TUI.
+### 6.1 Argument conflicts
 
-### 5.3 `signing-host`
-
-| Option | Default | Requirement |
-| --- | --- | --- |
-| `--script <path>` | none | Run one direct product script and return its status. |
-| `--product-id <id>` | `headless-playground.dot` | Product scope for direct scripts. Validate at startup. |
-| `--deeplink <url>` | none | Validate and answer one pairing deeplink after initialization. |
-| `--mnemonic <phrase>` | environment or none | Use an explicit ephemeral signer. `HOST_CLI_SIGNER_MNEMONIC` supplies it. |
-| `--account <name>` | none | Use a named account in the default-session account store. |
-| `--session <name>` | remembered session | Select or create a persistent session. |
-| `--lite-username-prefix <prefix>` | session-derived | Prefix new auto-managed Lite usernames. |
-| `--base-path <path>` | platform state dir | Root of accounts, sessions, scripts, and runtime state. |
-| `--network <preset>` | `paseo-next-v2` | Select identity, People, Bulletin, and chain configuration together. |
-| `--frame-listen <addr>` | `127.0.0.1:9956` | Direct product-frame listener. Port `0` MUST work. |
-| `--auto-accept` | off | Auto-approve and report each decision. |
-| `--script-timeout <duration>` | none | Target completion item: bound a one-shot script without changing interactive mode. |
-
-Invocation validation MUST reject ambiguous ownership combinations before
-starting network or filesystem onboarding:
+The CLI rejects these combinations with invocation status `2` before runtime
+startup:
 
 - `--script` with `exec`;
-- `--mnemonic` with `--account`, `--session`, or
-  `--lite-username-prefix`;
-- `--account` with `--session` or `--lite-username-prefix`; and
-- invalid session names.
+- `--mnemonic` with `--account`;
+- `--mnemonic` with `--session`;
+- `--mnemonic` with `--lite-username-prefix`;
+- `--account` with `--session`; and
+- `--account` with `--lite-username-prefix`.
 
-When neither `--script` nor `exec` is present, stdin and stdout MUST both be
-TTYs. Otherwise the command MUST exit with invocation status `2` and explain
-how to use `exec` or `--script`.
+The same conflicts apply when the mnemonic came from
+`HOST_CLI_SIGNER_MNEMONIC`.
 
-### 5.4 `signing-host exec`
+An explicit session name is validated before startup. Empty strings are treated
+as absent after trimming.
 
-`truapi-host signing-host [OPTIONS] exec '<slash-command>'` MUST:
+### 6.2 Interactive mode
 
-- avoid raw mode, alternate screens, cursor control, and ANSI output;
-- write command results to stdout and diagnostics to stderr;
-- execute exactly one slash command;
-- never wait indefinitely for an approval on non-TTY stdin;
-- exit when that command and its owned cleanup complete; and
-- use the same parser and business logic as the interactive TUI.
+When neither `--script` nor `exec` is present, stdin and stdout must be
+terminals. The signing host:
 
-### 5.5 `identity-check`
+1. resolves the selected session and any locally cached signer;
+2. creates the signing runtime;
+3. activates a cached signer without a network onboarding round trip;
+4. binds and reports the product-frame listener;
+5. starts `--deeplink`, when supplied, as an initial `/pair` operation; and
+6. enters the command loop.
 
-`identity-check` MUST validate the BIP-39 mnemonic locally, derive the same
-identity paths used by the signing runtime, query the selected People chain,
-and print enough information to identify the derivation carrying a username.
-It MUST NOT persist the supplied mnemonic.
+Signer provisioning is otherwise lazy. Merely starting the UI, using `/help`,
+using `/product`, or inspecting sessions does not create a new account.
 
-### 5.6 `alloc-check`
+### 6.3 One-shot `--script`
 
-`alloc-check` MUST report network runtime versions, genesis, ring membership,
-the selected slot, and the registration outcome. `--submit` MUST require a
-32-byte `--target`; the all-zero default is scan-only and MUST never be
-submitted. Failures from the shared allowance implementation MUST retain their
-specific reason.
+The host binds its product listener, optionally starts a background responder
+for `--deeplink`, ensures and activates a signer, runs Bun with inherited stdio,
+aborts the responder after the script, and exits with the child status.
 
-## 6. Signing-host terminal UI
+### 6.4 `signing-host exec`
 
-The signing-host TUI MUST provide a scrollable transcript and one command bar.
-Background logs, SSO events, script output, commands, and approval requests
-MUST enter the transcript rather than overwrite user input.
+```sh
+truapi-host signing-host [parent options] exec '<slash-command>'
+```
 
-Required slash commands:
+`exec`:
 
-| Command | Behavior |
+- parses exactly one slash command;
+- starts the same signing runtime and product-frame listener;
+- does not enter raw mode or the alternate screen;
+- writes human output to normal stdout/stderr;
+- optionally runs `--deeplink` in the background for the command lifetime;
+- aborts that responder when the command completes; and
+- exits after the command.
+
+Parent options must appear before `exec`.
+
+`exec '/script'` needs a TTY because it opens an editor. In non-TTY execution,
+use `exec '/script <path>'` instead. `/copy` is unavailable. `/clear` and
+`/quit` are successful no-ops in one-shot mode.
+
+## 7. Product identifiers and switching
+
+Accepted product identifiers are:
+
+- a name ending in `.dot`;
+- `localhost`; or
+- a string beginning with `localhost:`.
+
+Identifiers are trimmed, Unicode-NFC normalized, and lowercased. For example,
+`" Dotli.DOT "` becomes `dotli.dot`.
+
+Other identifiers, including an ordinary `example.com`, are rejected.
+
+The product id scopes:
+
+- product accounts and signatures;
+- Ring-VRF context and cross-product policy;
+- derived entropy;
+- local product storage;
+- permissions and authority checks;
+- product-frame runtime context; and
+- `host.productId` and `host.productAccount()` in scripts.
+
+`/product` prints the current normalized id.
+
+`/product <id>` changes only the process-local product selection. It does not
+change:
+
+- the network;
+- the active signer or paired user;
+- the signing session;
+- the SSO relationship; or
+- another product's stored data.
+
+Changing the product invalidates all active product WebSockets. Clients must
+reconnect; new connections receive the new product context. Selecting the
+already-current normalized id does not reset connections.
+
+Product-scoped entropy is intentionally different for different product ids
+even when the account and caller context bytes are identical.
+
+## 8. Slash commands
+
+Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
+
+| Command | Pairing host | Signing host | Behavior |
+| --- | :---: | :---: | --- |
+| `/script` | yes | yes | Edit and run the remembered script, creating a scratch script when needed. |
+| `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
+| `/login` | yes | no | Start or join pairing for the current product and copy the new link. |
+| `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
+| `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
+| `/product` | yes | yes | Print the current product id. |
+| `/product <id>` | yes | yes | Switch product and reset product connections. |
+| `/session` | no | yes | Show current session, user, and path. |
+| `/session <name>` | no | yes | Switch to or create and provision a session. |
+| `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
+| `/log <level>` | yes | yes | Replace the runtime log filter. |
+| `/help` | yes | yes | Show role-specific commands and key bindings. |
+| `/clear` | yes | yes | Clear the retained visible transcript. |
+| `/copy` | yes | yes | Copy the retained, redacted transcript. TUI only. |
+| `/quit` | yes | yes | Leave the command loop. |
+
+The shared parser recognizes every command, then the active role rejects
+commands it cannot execute. `/pair` performs a fast prefix check; the Rust core
+then fully decodes and validates the V2 handshake.
+
+Unknown commands, missing required arguments, invalid log levels, invalid
+products, invalid session names, and arguments passed to no-argument commands
+produce explicit errors.
+
+## 9. Terminal UI
+
+### 9.1 Layout
+
+Both roles use the same full-screen ratatui/crossterm surface:
+
+```text
+scrollable transcript
+
+command completion list, when open
+› command input or idle placeholder
+TrUAPI <role> host · 👤 <state-or-name> · 🌐 <network> · 📦 <product>
+```
+
+The role label is omitted at narrow widths so user, network, and product remain
+visible. Values are ellipsized to fit, with the product consuming the remaining
+space after the user and network. Session and log level are not shown. Idle
+command guidance appears as a dim placeholder inside the empty prompt instead
+of consuming status-bar space. Operational hints temporarily use the right side
+of the status line while a command, approval, completion menu, or scroll is
+active.
+
+The composer:
+
+- has one column of horizontal padding when width permits;
+- adds vertical padding on terminals at least seven rows high;
+- blends a subtle surface color from `COLORFGBG`;
+- uses true color when `COLORTERM` is `truecolor` or `24bit`;
+- falls back to an ANSI-256 approximation; and
+- becomes unstyled when `NO_COLOR` exists.
+
+### 9.2 Transcript
+
+The transcript contains:
+
+- host lifecycle events;
+- submitted commands;
+- script stdout and stderr;
+- approvals;
+- SSO request/response summaries; and
+- tracing output allowed by the active log filter.
+
+Submitted commands become bold, full-width divider titles. `/pair` arguments
+are rendered as `/pair <pairing link>`.
+
+Status symbols are:
+
+| Symbol | Meaning |
 | --- | --- |
-| `/deeplink <url>` | Validate and answer a Polkadot Mobile pairing URL. |
-| `/script` | Create, edit, save, then run a session-local TS scratch script. |
-| `/script <path>` | Run an existing JS/TS product script. |
-| `/log <level>` | Change runtime tracing level. |
-| `/session` | Show session name, path, and user id without provisioning it. |
-| `/session <name>` | Prepare and atomically switch to a persistent session. |
-| `/session --list` | List sessions for the active network and mark the current one. |
-| `/help` | Show commands and keyboard controls. |
-| `/clear` | Clear the visible transcript, not retained process state. |
-| `/copy` | Copy the retained transcript. TUI only. |
-| `/quit` | Shut down cleanly. |
+| `•` | informational |
+| `◌` | running |
+| `✓` | success |
+| `!` | warning |
+| `×` | failure |
+| `–` | cancelled |
 
-Required interaction rules:
+Running activities are keyed and updated in place. For example, `Script
+running` becomes `Script finished` or `Script failed`, and pairing progresses
+from link generation through authentication to its final state.
 
-- Typing `/` opens completion.
-- Up/Down selects completion; with the menu closed it navigates process-local
-  history.
-- Tab accepts completion.
-- `/script` completes filesystem paths; `/session` completes known sessions.
-- Ctrl-U/Ctrl-D scroll by half a viewport; End resumes auto-follow.
-- Esc closes completion or rejects the active approval.
-- Ctrl-C clears input, cancels the active command, or exits when idle.
-- Pairing deeplinks MUST NOT be retained in cross-process history.
-- Only one operator command runs at once, but SSO traffic and approvals MUST
-  continue while it runs.
-- Concurrent approvals MUST be serialized.
-- Suspending the TUI for `$VISUAL`, `$EDITOR`, or the platform editor MUST
-  restore terminal state even when the editor fails.
+### 9.3 Input and completion
 
-The bare `/script` template MUST use only the public `truapi` and `host` script
-API. Scratch files are durable under the active session and MUST be retained
-after editor or script failure.
+- Typing `/` opens role-specific completion.
+- Up/Down cycles completion while it is visible.
+- Up/Down navigates process-local command history when completion is closed.
+- Tab accepts the selected completion.
+- Enter first accepts a differing selected completion; a later Enter submits.
+- `/script` followed by a space completes filesystem entries.
+- `/session` followed by a space completes known signing sessions and `--list`.
+- Left/Right, Home/End, Backspace, and Delete edit by Unicode character.
+- Long input scrolls horizontally and retains a native terminal cursor.
+- Bracketed paste is enabled; pasted control characters are discarded.
+- At most eight completion rows are visible.
 
-## 7. Product script contract
+Command history is in memory only and disappears when the process exits.
 
-The runner MUST execute a JS or TS ES module with these globals:
+### 9.4 Scrolling and cancellation
+
+- Ctrl-U scrolls up by half the transcript viewport.
+- Ctrl-D scrolls down by half the viewport.
+- End moves the input cursor to the end and resumes latest-output view.
+- Esc dismisses completion.
+- Ctrl-C clears non-empty input.
+- Idle Ctrl-C exits the command loop when input is empty.
+- Busy Ctrl-C drops the active operation future.
+
+Only one operator command runs at once. Input may be prepared while a command
+runs, but Enter reports that another command is active. Host events and
+approval input continue to be processed during the operation.
+
+Captured script children use `kill_on_drop`, so cancelling an interactive
+script terminates Bun. Pairing-host `/login` additionally calls the core's
+pairing cancellation method.
+
+### 9.5 Approvals in the TUI
+
+An approval temporarily saves and clears the command draft. The operator can:
+
+- press `y` or `Y` with an empty input to approve;
+- press `n`, `N`, or Esc to reject; or
+- type `yes`/`no` and press Enter.
+
+Invalid typed answers show `Answer yes or no`. The saved draft is restored
+after the decision. Approval requests are serialized by the platform prompt
+lock.
+
+### 9.6 Clipboard and redaction
+
+`/copy` lazily opens the system clipboard and copies plain transcript text
+without the full-screen UI. Complete pairing links are replaced by
+`<pairing link>`.
+
+Operator `/login` copies the first generated pairing link automatically. A
+clipboard failure is reported as a warning and does not cancel pairing.
+Product-driven `requestLogin()` does not automatically copy its link.
+
+### 9.7 Output safety and bounds
+
+Captured script and log text is sanitized before rendering:
+
+- CSI escape sequences are removed;
+- OSC escape sequences are removed;
+- other control characters are removed except newline and tab; and
+- individual child-output lines are truncated at 16 KiB.
+
+Consequently Chalk color, bold, and other ANSI styling are not rendered inside
+the TUI. One-shot `--script` inherits stdout and can render ANSI normally.
+
+The retained transcript is pruned from the oldest item when any limit is
+exceeded:
+
+- 10,000 feed items;
+- 10,000 logical lines; or
+- 1 MiB of retained plain text.
+
+Adjacent output is chunked at 256 lines or 64 KiB.
+
+## 10. Product scripts
+
+### 10.1 Execution contract
+
+A product script is a JavaScript or TypeScript ES module executed by Bun.
+Before importing it, the runner:
+
+1. reads its required environment;
+2. opens the product-frame WebSocket over its Unix or TCP endpoint, with a
+   15-second connection timeout;
+3. creates the public `@parity/truapi` client;
+4. injects the script globals; and
+5. imports the absolute script URL.
+
+Top-level module code is awaited. If the module's default export is a function,
+the runner calls and awaits it with the host context.
+
+The provider is disposed on success or failure.
+
+### 10.2 Injected globals
 
 ```ts
 declare const truapi: TrUApiClient;
+
 declare const host: {
   productId: string;
   productAccount(index?: number): ProductAccountId;
 };
+
+declare function assert(
+  condition: unknown,
+  ...message: unknown[]
+): asserts condition;
 ```
 
-`truapi` MUST be the public generated client connected through the product
-frame endpoint and scoped to `--product-id`. `host.productAccount()` MUST use
-the same product id and default to derivation index `0`.
+`host.productAccount()` defaults to derivation index `0` and uses the exact
+active product id.
 
-The runner MUST:
+`assert` joins string arguments directly and formats other values with
+`node:util.inspect` without color. A false condition throws either the joined
+message or `assertion failed`.
 
-- connect before importing the user module;
-- execute top-level module code;
-- await a default export when it is a function;
-- close its provider on success and failure;
-- preserve script stdout and stderr;
-- return `0` on success and nonzero on a thrown/rejected error; and
-- kill the child when its owning CLI operation is cancelled.
+### 10.3 Internal child environment
 
-The public CLI artifact MUST contain a bundled runner and its TrUAPI client
-dependencies. The default runner MUST NOT import files through
-`CARGO_MANIFEST_DIR` or require the source repository to remain at its build
-path. `TRUAPI_HOST_RUNNER` MAY remain as an explicit development override.
-Using the packaged runner may require a documented Bun runtime, but all missing
-runtime/asset errors MUST be detected before starting a live host flow.
+The Rust parent sets:
 
-## 8. Pairing and signing lifecycle
+| Variable | Meaning |
+| --- | --- |
+| `TRUAPI_FRAME_URL` | Bound product-frame endpoint: `ws+unix:/path` by default or `ws://address` in TCP mode. |
+| `TRUAPI_PRODUCT_ID` | Normalized active product id. |
+| `TRUAPI_SCRIPT` | Canonical absolute script path. |
+| `TRUAPI_CLI_HOST_ROLE` | `pairing-host` or `signing-host`. |
 
-### 8.1 Pairing host states
+These variables are runner internals, not CLI configuration inputs.
+
+### 10.4 Script status
+
+- Successful completion exits `0`.
+- A thrown error or rejected promise is printed as `[script error] ...` and
+  exits `1`.
+- Failure to open the product socket within 15 seconds exits `2`.
+- Failure to locate the runner, canonicalize the script, or spawn Bun is a CLI
+  error.
+
+The CLI emits `Script running` before Bun starts and `Script finished` or
+`Script failed` afterward.
+
+One-shot `--script` preserves the child's normal numeric status. Interactive
+script failures are displayed and the TUI remains active. `exec '/script
+<path>'` reports the child code but returns the CLI's general error status when
+the child failed.
+
+### 10.5 Remembered scripts and editor behavior
+
+`/script <path>` resolves a relative path against the CLI process's current
+working directory, remembers the resulting absolute path in the current host
+session, and runs it.
+
+A later bare `/script`:
+
+1. reuses the remembered file when it still exists;
+2. otherwise creates a unique `script-<time>-<pid>-<sequence>.ts` under the
+   current state directory's `scripts/`;
+3. stores that selection;
+4. leaves the TUI;
+5. opens the file in the configured editor;
+6. restores the TUI; and
+7. runs the script when the editor exits successfully.
+
+Editor selection order:
+
+1. non-empty `VISUAL`;
+2. non-empty `EDITOR`;
+3. `notepad` on Windows; or
+4. `vi` elsewhere.
+
+The editor specification is parsed with shell-like quoting but is launched
+directly, without a shell. Values such as `EDITOR='code --wait'` work.
+
+An editor failure retains the script and does not run it.
+
+Scratch scripts store only their filename in `session.json`, so they remain
+valid if a session directory is promoted. Explicit scripts outside the session
+store their absolute path. A missing remembered file is ignored and replaced
+by a new scratch file.
+
+Mnemonic-backed ephemeral signing sessions remember a path only for the
+current process and create scratch files under the system temporary
+`truapi-host/scripts` directory.
+
+The top-level `--script` option does not update remembered `/script` state.
+
+### 10.6 Shipped scripts
+
+`rust/crates/truapi-host-cli/js/scripts/` contains:
+
+| Script | Purpose |
+| --- | --- |
+| `battery.ts` | Run every generated Playground example and write the role-specific compatibility report. |
+| `whoami.ts` | Print the primary username. |
+| `signing-smoke.ts` | Focused product-account signing test. |
+| `ring-vrf-smoke.ts` | Verify alias/proof behavior for the Paseo Next v2 LitePeople ring. |
+| `preimage-smoke.ts` | Exercise Bulletin preimage submission and lookup. |
+
+`battery.ts` writes to `explorer/diagnosis-reports/<role>-cli.md` unless
+`TRUAPI_BATTERY_REPORT_PATH` overrides the destination. `scripts/battery.sh` in
+the repository root produces both reports in one invocation: it runs the direct
+signing-host phase, then starts a pairing host and answers its emitted link
+with a second signing host using the same product id and forwarded host flags
+so the paired phase can complete. Known unsupported service families remain
+reported as failures but do not fail the process; any other generated-example
+failure is a nonzero exit. Its custom reporter uses terminal color when stdout
+is a TTY or `FORCE_COLOR` is nonzero, unless `NO_COLOR` exists.
+
+Beyond the generated examples, `battery.ts` runs one hand-written
+`Resource Allocation/auto_signing_e2e` case: it allocates `AutoSigning`, then
+requires two `sign_vrf` calls for the granting product to succeed without any
+confirmation being consulted. When `TRUAPI_APPROVALS_LOG` names a file, every
+host process appends one `<approved|denied> <action>` line per decided
+confirmation there before the confirmation resolves; the case reads the file
+to prove the prompt-free window (and is reported as skipped when the variable
+is unset). `scripts/battery.sh` exports the variable for each phase, sharing
+one file across both paired-phase host processes.
+
+## 11. Pairing lifecycle
+
+### 11.1 Login
+
+Login may start from:
+
+- a product calling `truapi.account.requestLogin()`;
+- operator `/login`; or
+- an already-running product script.
+
+The pairing host generates or reuses its current pairing device identity,
+publishes the handshake proposal through the People-chain Statement Store, and
+emits a `polkadotapp://pair?...` link.
+
+The observable states are:
 
 ```text
-starting -> frames-ready -> disconnected
-                         -> pairing -> authenticating -> connected
-                                                   \-> failed -> disconnected
+disconnected
+  -> pairing link ready
+  -> authenticating
+  -> paired with <user>
 ```
 
-Every state transition MUST be observable. A new login MAY replace a failed or
-disconnected attempt. Disposal MUST stop subscriptions and release transport
-resources.
+Failures become `Pairing failed`. A rejected login returns `Rejected`; a
+connected session can return `AlreadyConnected`.
 
-### 8.2 Signing host states
+`/login` uses the product selected at the moment the command starts. Ctrl-C
+cancels that login attempt.
 
-```text
-starting -> session-loaded -> signer-ready -> allowance-ready
-                                      \-> pairing-response-running -> completed
-```
+### 11.2 Signing-host response
 
-Reading or listing a session MUST stop at `session-loaded`; it MUST NOT trigger
-identity registration or ring onboarding. A command that needs a signer MUST
-resolve and activate it lazily.
+Before a signing host answers a link, it:
 
-Before answering a deeplink, the signing host MUST register Statement Store
-allowance for both submitting accounts:
+1. ensures a signer;
+2. decodes the V2 handshake;
+3. derives its RFC-0022 `uid.dot` identity account;
+4. reads the pairing device Statement Store account from the proposal;
+5. finds the signer's LitePeople ring through the `peopl.dot` index-1 key,
+   scanning back from the current ring;
+6. grants or reuses Statement Store allowance for the identity account;
+7. grants or reuses allowance for the pairing device; and
+8. starts the real SSO responder.
 
-- the signing host's `//wallet//sso` account; and
-- the pairing host's per-pairing device key.
+`/pair` replaces an existing background responder after preparation succeeds.
+The old task is aborted. The responder reports its final protocol outcome or
+failure.
 
-Pairing MUST NOT continue if allowance registration fails. If an auto-managed
-account has no free slot for the active period, the CLI MUST mark that account
-exhausted for the period, choose or create another account, activate it, and
-retry within a bounded attempt count. Explicit mnemonic and named-account
-modes MUST surface exhaustion without silently changing identity.
+In `exec`, `/pair` waits for the responder to finish. With `--deeplink` plus
+another `exec` command or a script, the responder runs only for that command's
+lifetime and is then aborted.
 
-Bulletin long-term storage allocation MUST use the real SSO/runtime path. It
-MUST NOT be faked through CLI sentinel storage.
+### 11.3 Logout and re-pairing
 
-### 8.3 Deadlines and cancellation
+Pairing-host `/logout`:
 
-All external waits MUST have named, testable deadlines and cancellation:
+- invalidates an in-flight login;
+- disconnects the active account-authority session;
+- clears the persisted auth session;
+- tries to publish the disconnected SSO message;
+- deletes `PairingDeviceIdentity`; and
+- deletes `LastProcessedPairingStatement`.
 
-- frame listener startup;
-- script-runner connection;
-- identity-backend requests;
-- identity record visibility;
-- ring-membership visibility;
-- RPC connection and request;
-- subscription acknowledgement;
-- extrinsic submit acknowledgement and finality;
-- allowance visibility;
-- pairing response; and
-- child script completion when a script timeout is configured.
+The next login generates a fresh pairing keypair/topic and can pair with a
+different signing host.
 
-Cancellation MUST propagate through setup as well as steady-state operation.
-Ctrl-C, `/quit`, process termination, session switching, or owner-task failure
-MUST stop child processes, responders, subscriptions, frame connections, and
-poll loops owned by that operation. Cancellation MUST NOT become effective
-only after setup finishes.
+Logout does not clear:
 
-Timeout errors MUST identify the operation, endpoint or network, and elapsed
-deadline without printing secrets.
+- product storage;
+- non-auth core state;
+- scripts;
+- the selected product; or
+- another user's identity-scoped directory.
 
-## 9. Sessions, accounts, and persistence
+## 12. Signing identities, accounts, and sessions
 
-### 9.1 Base path
+### 12.1 Base path
 
-Default state root:
+Host commands choose their base path in this order:
 
-1. `$TRUAPI_HOST_BASE_PATH` or `--base-path`;
-2. `$XDG_STATE_HOME/truapi-host`;
-3. `$HOME/.local/state/truapi-host`; or
-4. `.truapi-host` when neither platform location is available.
+1. explicit `--base-path`;
+2. `TRUAPI_HOST_BASE_PATH`;
+3. `$XDG_STATE_HOME/truapi-host`;
+4. `$HOME/.local/state/truapi-host`; or
+5. `.truapi-host`.
 
-Relative explicit paths MUST be resolved to absolute paths once at startup.
+The signing session catalog converts a relative base path to an absolute path
+at startup. Pairing storage uses the supplied/default path directly.
 
-### 9.2 Layout
+### 12.2 Signer selection
 
-The v0.1 layout is:
+Signing-host signer selection order is:
+
+1. explicit `--mnemonic` or `HOST_CLI_SIGNER_MNEMONIC`;
+2. explicit `--account`;
+3. the first attested, non-exhausted auto account for the network and current
+   Statement Store period;
+4. the first pending auto account for the network; or
+5. a newly generated auto account.
+
+Explicit mnemonic mode:
+
+- parses a 12/15/18/21/24-word BIP-39 phrase;
+- uses the raw BIP-39 entropy, not the PBKDF2 seed;
+- does not read or write an account record;
+- has no cached username;
+- reports the session as `ephemeral`; and
+- disables `/session <name>`.
+
+Explicit account mode looks up a named record in the default account store and
+ensures its on-chain identity and ring readiness. It is not considered
+auto-managed for slot rotation.
+
+### 12.3 Auto-account onboarding
+
+A new auto account:
+
+1. acquires `accounts.json.lock`;
+2. generates a 12-word mnemonic;
+3. derives the RFC-0022 `uid.dot` index-0 sr25519 identity account;
+4. chooses `auto-<n>` as its local name;
+5. tries up to eight available Lite username bases;
+6. saves a pending account record;
+7. builds and submits identity-backend registration proofs;
+8. polls `Resources.Consumers` for the final `name.discriminator`;
+9. waits for inclusion in a LitePeople ring; and
+10. marks and saves the account as attested.
+
+Identity and ring polling each allow 10 attempts with four seconds between
+attempts. Identity-backend HTTP clients use a 30-second timeout.
+
+The default Lite username prefix is `headless`. For a non-default session, the
+prefix is its lowercase letters with digits and separators removed; a name
+with no letters becomes `session`. `--lite-username-prefix` overrides this and
+must contain lowercase ASCII letters only.
+
+The generated base is at least 12 characters and, for prefixes of six or more
+characters, appends six pseudo-random lowercase letters.
+
+### 12.4 Cached startup
+
+An attested account with a resolved Lite username can be loaded and activated
+from `accounts.json` without contacting the identity backend or checking ring
+membership on every restart. The current Statement Store period is still used
+to skip locally marked exhausted accounts.
+
+### 12.5 Statement Store slot rotation
+
+Before pairing, allowance is registered for both the signing wallet and device
+accounts. If registration reports no free slot and the signer is auto-managed,
+the CLI:
+
+1. records the current Statement Store period in that account;
+2. selects or creates another account;
+3. activates the new signer; and
+4. retries pairing preparation.
+
+At most eight rotations are attempted. Explicit mnemonic and explicit account
+modes return the slot error instead of changing identity.
+
+### 12.6 Session identity and naming
+
+Managed session names must:
+
+- contain 1 to 64 ASCII characters;
+- start with a lowercase letter or digit;
+- contain only lowercase letters, digits, `.`, `_`, and `-`; and
+- not be `.` or `..`.
+
+At startup the initial session is:
+
+1. `ephemeral` for explicit mnemonic mode;
+2. explicit `--session`;
+3. `default` for explicit `--account`; or
+4. the network's remembered `current-session`.
+
+`default` is a compatibility/bootstrap session. Once an auto-managed signer is
+known, the public and durable session name becomes its Lite username and its
+directory becomes `<username>_signing_host`. The bootstrap name is not
+user-selectable and is omitted from session completion and listing.
+
+### 12.7 Session inspection and switching
+
+`/session` reports:
+
+- `ephemeral` or the profile name;
+- `<not provisioned>` or the known Lite username; and
+- `<none>` or the filesystem path.
+
+When a managed session has no connected user, startup and bare `/session` add
+an actionable transcript notice directing the user to `/session <name>`.
+
+`/session --list` includes:
+
+- legacy directories under `signing-host/sessions/`; and
+- network directories ending in `_signing_host`.
+
+The active session is marked with `*`.
+
+`/session <name>` provisions the target before replacing the current runtime:
+
+1. validate and create its provisional profile;
+2. resolve or create its signer;
+3. promote it to the resolved username directory;
+4. load its remembered script and storage;
+5. build and activate the replacement runtime;
+6. persist `current-session`;
+7. stop any pairing responder;
+8. swap the runtime;
+9. disconnect product WebSockets using the old runtime; and
+10. update status and completion.
+
+If activation fails, the previous `current-session` pointer is restored and the
+old in-memory runtime remains active. Files created while preparing the target
+may remain.
+
+## 13. Persistence
+
+### 13.1 Current layout
+
+The layout may contain compatibility paths as well as identity-owned paths:
 
 ```text
 <base-path>/
-  accounts.json                         # default-session account pool
+  accounts.json
   accounts.json.lock
+
   <network>/
-    pairing-host/
-      product-storage.json
-      core-storage.json
-    signing-host/                       # default session runtime state
+    signing-host/
       current-session
+      session.json                    # default/bootstrap metadata, when used
+      core-storage.json               # default/bootstrap core state
+      scripts/
+      storage/
+        default/
+          <product-file>.json
+      sessions/                       # accepted legacy session layout
+        <legacy-name>/
+
+    pairing-host/
+      current-user
+      session.json                    # bootstrap script metadata, when used
+      core-storage.json               # bootstrap auth/core state
+      scripts/
+      storage/                        # or legacy storage/default/
+
+    <username>_signing_host/
+      accounts.json
+      accounts.json.lock
       session.json
-      product-storage.json
       core-storage.json
       scripts/
-      sessions/
-        <name>/
-          accounts.json
-          accounts.json.lock
-          session.json
-          product-storage.json
-          core-storage.json
-          scripts/
+      storage/
+        <product-file>.json
+
+    <username>_pairing_host/
+      session.json
+      core-storage.json
+      scripts/
+      storage/
+        <product-file>.json
 ```
 
-The `default` session preserves the root account pool and signing-host runtime
-paths. A mnemonic-backed host is named `ephemeral`, MUST NOT allow session
-switching, and MUST NOT write the mnemonic into a managed session.
+An explicit mnemonic has no account profile, but its signing runtime uses the
+default/bootstrap signing storage path for core and product state.
 
-### 9.3 Session names and switching
+### 13.2 Pairing-user storage switching
 
-A persistent session name MUST:
+Before the first resolved user, pairing state uses
+`<network>/pairing-host`. On connection:
 
-- contain 1 to 64 ASCII characters;
-- begin with a lowercase letter or digit;
-- contain only lowercase letters, digits, `.`, `_`, or `-`; and
-- not be `.` or `..`.
+- storage identity prefers the Lite username and falls back to the full
+  username;
+- display identity prefers the full username and falls back to the Lite
+  username;
+- the target is `<username>_pairing_host`; and
+- `pairing-host/current-user` is updated atomically.
 
-Switching MUST be transactional from the operator's perspective:
+For the first bootstrap migration, in-memory bootstrap core and product values
+move into the resolved user's directory.
 
-1. validate and prepare the target path;
-2. load or build the target runtime without disturbing the active one;
-3. stop the old pairing responder;
-4. atomically replace the runtime;
-5. disconnect product sockets bound to the old runtime so clients reconnect;
-6. persist `current-session`; and
-7. update TUI status and completion data.
+When switching from one resolved user to another, only transient authentication
+keys move:
 
-A failed preparation MUST leave the prior session active.
+- `AuthSession`;
+- `PairingDeviceIdentity`; and
+- `LastProcessedPairingStatement`.
 
-Only one process MAY mutate a named session at a time. Completion work MUST add
-a session-scoped process lock and a clear contention error. Read-only
-diagnostics MAY operate without the mutation lock when safe.
+The previous user's product KV and other core state remain in that user's
+directory. The new user's existing product/core state is loaded.
 
-### 9.4 Account resolution
+Remembered pairing scripts are scoped to whichever bootstrap/user directory is
+active. Resolving another user loads that directory's `session.json`.
 
-Signer selection order is normative:
+### 13.3 Session metadata
 
-1. explicit mnemonic;
-2. explicit named account;
-3. an attested, non-exhausted account in the active session; or
-4. a pending or newly generated auto-managed account.
+`session.json` is version `1` and may contain:
 
-Auto-managed accounts MUST be network- and session-scoped, registered through
-the configured identity backend, and verified for People-chain ring membership
-before use. Newly generated Lite username prefixes come from the lowercase
-letters in the session name, fall back to `session`, and use `headless` for the
-default session unless explicitly overridden.
+```json
+{
+  "version": 1,
+  "user_id": "alice.dot",
+  "last_script": "script-....ts"
+}
+```
 
-### 9.5 Persistence safety
+Scratch scripts use a single portable filename and must resolve inside the
+session's `scripts/` directory. Explicit external scripts use an absolute path.
+Invalid multi-component relative values are rejected. Missing scripts are
+treated as not remembered.
 
-- Files containing mnemonics or runtime authentication state MUST be `0600` on
-  Unix and use the closest platform equivalent elsewhere.
-- Directories containing them SHOULD be user-only.
-- Writes MUST use a temporary file, flush, atomic rename, and parent-directory
-  sync where supported.
-- Account-store mutation MUST hold an inter-process lock.
-- Product/core storage mutation MUST not lose updates through concurrent
-  writes.
-- Corrupt state MUST produce a path-specific error; it MUST NOT be silently
-  replaced with empty authentication state.
-- Mnemonics, signing payloads, and private transport material MUST be redacted
-  from normal logs and JSONL events. A full pairing deeplink may appear only in
-  its dedicated lifecycle marker/event because the companion process needs it.
+### 13.4 Product storage
 
-Plaintext mnemonics remain acceptable only because this is explicitly local
-test state. The README and first account creation MUST warn about that boundary.
+Each normalized product has one file:
 
-## 10. Network configuration
+```text
+storage/<slug>--<sha256(product-id)>.json
+```
 
-A network preset MUST define one coherent set of:
+The slug:
 
-- stable network id;
-- identity-backend base URL;
-- People RPC URL and genesis hash;
-- Bulletin RPC URL and genesis hash; and
-- allowed live-chain genesis-to-RPC routes.
+- retains ASCII letters, digits, `.`, and `-`;
+- replaces other characters with `-`;
+- is limited to 48 characters;
+- trims leading/trailing `.` and `-`; and
+- falls back to `product`.
 
-`paseo-next-v2` is the required v0.1 preset. Adding another preset MUST include
-unit tests for literal genesis values, state namespace isolation, and endpoint
-routing.
+The full SHA-256 digest prevents slug collisions.
 
-There MUST be no ordinary `--statement-store` URL override. This prevents a
-mixed configuration where SSO, identity, allowance, and product chain calls
-refer to different networks. Test-only endpoint injection belongs in internal
-configuration or test fixtures.
+The version `1` JSON document is:
 
-Live product Chain routing SHOULD become an explicit discoverable CLI option.
-Until then, `E2E_LIVE_CHAIN=1` is a test-runner switch. Disabled live routing
-MUST return a clear unavailable/unsupported result; it MUST NOT silently route
-an unknown genesis to the People endpoint.
+```json
+{
+  "version": 1,
+  "productId": "example.dot",
+  "values": {
+    "raw-product-key": "hex-encoded-value"
+  }
+}
+```
 
-## 11. Product-frame transport
+The core has already removed its product namespace before the CLI stores the
+raw key. Identity and host role are isolated by the parent directory.
 
-The frame server MUST:
+Legacy combined `product-storage.json` keys are decoded with
+`ProductStorageKey` and split into per-product files. A fully safe migration is
+retained as `product-storage.v1.json.migrated`. An undecodable legacy key or
+document prevents the backup rename.
 
-- bind before advertising readiness;
-- default to loopback;
-- create one `ProductRuntime` per WebSocket connection;
-- associate every connection with the validated configured product id;
-- carry exactly one SCALE `ProtocolMessage` in each binary WebSocket message;
-- reject text frames rather than treating UTF-8 text as protocol bytes;
-- dispose the product runtime when the socket closes;
-- disconnect old runtimes during session replacement;
-- bound outbound buffering or apply backpressure; and
-- stop accepting connections when the owner is cancelled.
+Noncanonical product filenames, unsupported versions, invalid ids, and invalid
+hex values are ignored with warnings.
 
-Binding a non-loopback address exposes an unauthenticated host capability and
-MUST require an explicit unsafe opt-in plus a prominent warning. This behavior
-is a completion item before non-loopback listening is documented.
+### 13.5 Core storage
 
-## 12. Capability behavior
+`core-storage.json` is a versionless JSON object whose keys and values are hex:
 
-The diagnosis reports demonstrate protocol reachability, but a green row may
-mean a well-typed unavailable result rather than a native implementation. The
-v0.1 behavior contract is:
+```json
+{
+  "values": {
+    "<SCALE-encoded CoreStorageKey hex>": "<value hex>"
+  }
+}
+```
 
-| Capability | Headless-host behavior |
+Core state includes auth sessions, pairing bootstrap material, permission
+state, and other role-owned runtime data.
+
+### 13.6 Account store
+
+`accounts.json` is versioned and stores records containing:
+
+- local name;
+- network id;
+- plaintext BIP-39 mnemonic;
+- final Lite username;
+- RFC-0022 `uid.dot` index-0 public key and address;
+- creation timestamp;
+- attested state; and
+- exhausted Statement Store periods.
+
+Account mutations hold an exclusive `accounts.json.lock`. Secret-file writes
+use a temporary file, flush, atomic rename, and `0600` permissions on Unix.
+The lock file can be created during a read-only cached-signer lookup.
+
+### 13.7 Write and corruption behavior
+
+Product and core storage writes:
+
+- create parent directories;
+- write a process/id-specific temporary file;
+- flush file data;
+- atomically rename;
+- and sync the parent directory on Unix.
+
+Session metadata and current-user/session pointers use temporary-file rename
+but do not apply the account file's explicit secret permissions.
+
+Malformed account or session JSON is a startup/command error. Malformed core
+JSON is warned about and loaded as empty. Malformed product files are warned
+about and skipped.
+
+There is no session-wide process lock. The account store is locked, but
+simultaneous processes can still race on session, core, product, and current
+selection files.
+
+## 14. Network and transport
+
+### 14.1 Network preset
+
+v0.1 supports only `paseo-next-v2`.
+
+| Purpose | Value |
 | --- | --- |
-| Account/session | Real core state, SSO login, product accounts, username resolution, aliases, and proofs. |
-| Signing | Real host-owned signing and transaction assembly, including supported legacy calls. |
-| Statement Store | Real selected-network subscribe, proof, authorized proof, submit, and allowance. |
-| Preimage/Bulletin | Real core construction, Bulletin submit/lookup, and SSO resource allocation. |
-| Chain | Real preset RPC routing only when live routing is enabled; otherwise explicit unavailable behavior. |
-| Entropy | Real signing-host derivation policy. |
-| Product/core storage | Persistent, session-scoped local state. |
-| Permissions/confirmation | Interactive deny-by-default prompt or reported `--auto-accept`. |
-| Theme | A stable CLI theme value; dark is the v0.1 default. |
-| Navigation | Report the requested URL; do not launch it implicitly. |
-| Notifications | Return a typed unavailable result; do not pretend delivery occurred. |
-| Feature support | Report actual CLI capabilities rather than blanket success. |
-| Chat, Coin Payment, Payment | Typed unsupported/unavailable until a real backend exists. |
+| Identity backend | `https://identity-backend-next.parity-testnet.parity.io/api/v1` |
+| People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
+| People genesis | `0xc5af1826b31493f08b7e2a823842f98575b806a784126f28da9608c68665afa5` |
+| Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
+| Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
+| Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
+| Asset Hub genesis | `0xbf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f` |
 
-The checked-in pairing and signing diagnosis reports MUST remain free of
-unexpected failures. Skipped methods MUST correspond to deliberate capability
-gaps, not crashes, hangs, undecodable frames, or missing host wiring.
+There are no public endpoint override flags.
 
-## 13. Output, events, and logging
+People and Bulletin routes are always enabled because host internals require
+them. Asset Hub routing is enabled only when `E2E_LIVE_CHAIN=1`.
 
-### 13.1 Human mode
+The all-zero SSO sentinel and every genesis hash not present in the active
+route map fall back to the People RPC.
 
-Human mode is the default. Outside the TUI:
+A rustls ring crypto provider is installed at process startup for `wss://`
+connections.
 
-- command results and sentence-case lifecycle events go to stdout;
-- diagnostics, warnings, approvals, and tracing go to stderr;
-- sensitive values are redacted unless the value is the explicit operator
-  input or capability required for the workflow; and
-- `exec` emits no ANSI control sequences.
+### 14.2 Product-frame WebSocket
 
-Streaming and TUI modes MUST share the same human wording and status symbols.
-For example:
+The listener uses plain `ws://`. Defaults are loopback, but any
+`SocketAddr` accepted by the OS can be supplied. v0.1 has no authentication,
+TLS, origin check, or non-loopback warning.
+
+Each accepted WebSocket:
+
+- snapshots the current normalized product;
+- creates one `ProductRuntime`;
+- forwards each incoming binary message as one protocol frame;
+- also forwards a text message's UTF-8 bytes as a protocol frame;
+- sends each emitted runtime frame as one binary message;
+- disposes the runtime on close/error/reset; and
+- closes on product selection or signing-runtime replacement.
+
+Product WebSocket connections do not survive `/product` or signing-session
+switches.
+
+The frame writer uses an unbounded channel. The accept loop retries listener
+accept errors. Each connection runs independently on the Tokio worker pool;
+the shared service-trait contract requires dispatch futures to be `Send`.
+
+### 14.3 Chain JSON-RPC
+
+Every chain connection opens a fresh WebSocket. Outgoing requests use an
+unbounded channel. Incoming text frames and UTF-8 binary frames enter a
+1,024-message broadcast buffer.
+
+The first response receiver is created before the reader task, preventing a
+fast initial RPC response from being lost. A lagged subscriber drops missed
+responses and emits a warning. `close()` prevents further sends; background
+socket tasks end when their channels or sockets close.
+
+## 15. TrUAPI capability surface
+
+The direct and paired compatibility reports currently expose the same method
+surface.
+
+| Service | Implemented behavior |
+| --- | --- |
+| Account | Connection status, product accounts, aliases, proofs, empty legacy-account list, user id, and login. |
+| Chain | chainHead-v1 follow/header/body/storage/call/unpin/continue/stop, chain spec queries, transaction broadcast/stop. Asset Hub needs `E2E_LIVE_CHAIN=1`. |
+| Entropy | Product-scoped deterministic entropy from the active account/session. |
+| Local Storage | Persistent product-scoped read, write, and clear. |
+| Notifications | In-process immediate/scheduled delivery and cancellation with transcript events. |
+| Permissions | Device and remote permission approval through the CLI policy. |
+| Preimage | Real Bulletin submission/lookup path plus bounded in-core read-after-write cache. |
+| Resource Allocation | Real host-managed allocation, including Bulletin long-term storage over SSO. |
+| Signing | Product and legacy transaction construction, raw signing, and payload signing. |
+| Statement Store | Real subscribe, proof, authorized proof, and submit over People. |
+| System | Handshake, feature query, and no-op navigation. |
+| Theme | One `Dark` subscription value. |
+| Chat | Typed unavailable/empty-subscription behavior. |
+| Coin Payment | Typed unavailable/interrupted-subscription behavior. |
+| Payment | Typed unsupported/interrupted-subscription behavior. |
+
+### 15.1 Exact reported methods
+
+Implemented-success methods in the checked-in direct and paired battery
+reports:
+
+- `Account/connection_status_subscribe`
+- `Account/get_account`
+- `Account/get_account_alias`
+- `Account/create_account_proof`
+- `Account/get_legacy_accounts`
+- `Account/get_user_id`
+- `Account/request_login`
+- `Chain/follow_head_subscribe`
+- `Chain/get_head_header`
+- `Chain/get_head_body`
+- `Chain/get_head_storage`
+- `Chain/call_head`
+- `Chain/unpin_head`
+- `Chain/continue_head`
+- `Chain/stop_head_operation`
+- `Chain/get_spec_genesis_hash`
+- `Chain/get_spec_chain_name`
+- `Chain/get_spec_properties`
+- `Chain/broadcast_transaction`
+- `Chain/stop_transaction`
+- `Entropy/derive`
+- `Local Storage/read`
+- `Local Storage/write`
+- `Local Storage/clear`
+- `Notifications/send_push_notification`
+- `Notifications/cancel_push_notification`
+- `Permissions/request_device_permission`
+- `Permissions/request_remote_permission`
+- `Preimage/lookup_subscribe`
+- `Preimage/submit`
+- `Resource Allocation/request`
+- `Signing/create_transaction`
+- `Signing/create_transaction_with_legacy_account`
+- `Signing/sign_raw_with_legacy_account`
+- `Signing/sign_payload_with_legacy_account`
+- `Signing/sign_raw`
+- `Signing/sign_payload`
+- `Statement Store/subscribe`
+- `Statement Store/create_proof`
+- `Statement Store/submit`
+- `Statement Store/create_proof_authorized`
+- `System/handshake`
+- `System/feature_supported`
+- `System/navigate_to`
+- `Theme/subscribe`
+
+Deliberately unavailable methods:
+
+- all six generated Chat methods;
+- all nine generated Coin Payment methods; and
+- all four generated Payment methods.
+
+A successful `System/feature_supported` call returns `supported: false` for
+every queried feature in the CLI platform. Success means the method is wired,
+not that every feature is present.
+
+### 15.2 Platform-specific semantics
+
+Navigation logs the requested URL at debug level and returns success; it does
+not open a browser.
+
+Notification ids start at `1` per process. A future `scheduledAt` value is
+treated as Unix milliseconds and delivered by a Tokio timer. At most 64
+notifications may be pending. Cancelling an unknown/already-delivered id is a
+successful no-op.
+
+The platform-level preimage lookup map is in memory. The core also owns the
+real Bulletin client and a separate 16 MiB insertion-ordered preimage bridge
+for read-after-write behavior.
+
+Statement Store keeps up to 64 accepted statements in an insertion-ordered
+read-after-write bridge until the remote subscription reports them.
+
+## 16. Entropy, accounts, and authority policy
+
+The signing host uses raw BIP-39 entropy. Product entropy applies three
+BLAKE2b-256 layers:
+
+1. keyed root source using domain `product-entropy-derivation`;
+2. a product layer keyed by the hash of the normalized product id; and
+3. a caller-context layer keyed by 1 to 32 context bytes.
+
+During pairing, only the pre-hashed root entropy source is shared with the
+pairing host. Therefore paired and direct hosts derive the same value only
+when all three are the same:
+
+- signing account/root entropy;
+- normalized product id; and
+- context bytes.
+
+Product accounts, entropy, and Ring-VRF contexts reject cross-product use
+unless the core policy and any required user confirmation allow it.
+
+Same-product Ring-VRF alias/proof requests follow the signing-runtime policy
+and do not add a CLI-only prompt.
+
+## 17. Approvals and security behavior
+
+### 17.1 Prompt policy
+
+Without `--auto-accept`, platform approval is deny-by-default.
+
+In the TUI it uses the approval card described in section 9. In plain mode:
+
+- stdin must be a TTY;
+- the prompt is `Approve? [y/N]`;
+- only `y` or `yes` approves; and
+- EOF, invalid input, or non-TTY stdin rejects.
+
+Approval summaries exist for:
+
+- SCALE payload signing;
+- raw-data signing;
+- transaction construction;
+- account alias derivation;
+- account proof creation;
+- identity disclosure;
+- resource allocation;
+- preimage submission;
+- cross-product account access;
+- device permission; and
+- remote permission.
+
+Raw signing payloads are hidden from approval summaries. Proof summaries show
+only product and message length.
+
+### 17.2 Auto-accept
+
+`--auto-accept` returns `true` for each platform prompt and emits:
+
+```text
+✓ Approved <action> automatically
+  <redacted summary>
+```
+
+It does not bypass product-id validation or core authorization rules.
+
+### 17.3 Sensitive state and output
+
+The dedicated pairing-link event necessarily prints the complete deeplink in
+plain mode and shows it in the live TUI. Treat captured output as sensitive.
+Transcript copies and submitted-command dividers redact it.
+
+Mnemonics are never intentionally printed, but auto-managed mnemonics are
+stored in plaintext `accounts.json`. That file is local test secret material,
+not production custody.
+
+`debug` and especially `trace` can include decoded product payloads and
+transport metadata. Do not publish trace logs from sensitive test accounts
+without review.
+
+## 18. Events, output, and logging
+
+### 18.1 Human output
+
+v0.1 has one human output format. There is no JSON or JSONL mode.
+
+Outside the TUI:
+
+- lifecycle and command results use stdout;
+- tracing and many diagnostics use stderr through the tracing writer;
+- Clap and explicit invocation errors use stderr; and
+- script stdio is inherited in top-level `--script` mode.
+
+Representative output:
 
 ```text
 • Listening for product frames
-  <ws-url>
-• Pairing link
-  <url>
-◌ Authenticating pairing
-✓ Paired with <user>
+  ws+unix:/tmp/truapi-host-…/frames.sock
+✓ Paired
 ✓ Signing host ready
+◌ Script running
 ✓ Script finished
 ```
 
-Events MUST be emitted once per corresponding transition and MUST not be
-assembled by scraping tracing prose. Automation MAY extract the explicit
-`polkadotapp://pair?...` URL, but MUST NOT depend on a second machine-only copy
-of the lifecycle text.
+The same `SystemEvent` presentation code supplies plain and TUI wording.
+Passing `--frame-listen 127.0.0.1:0` instead reports
+`ws://127.0.0.1:<allocated-port>`.
 
-Inside the interactive TUI, those events use the same copy with richer layout.
-Machine markers and repeated source labels such as `HOST ·` and `SCRIPT ·`
-MUST NOT appear. Submitted commands MUST be visually grouped with
-their output, script stdout MUST use the terminal's default foreground, and
-pending pairing/onboarding work MUST update a keyed activity rather than append
-one transcript row per poll. The command prompt MUST use the native terminal
-cursor after the insertion point, including for wide Unicode and horizontally
-scrolled input. Color MUST be supplemental, honor `NO_COLOR`, and remain
-understandable through symbols and wording alone.
+### 18.2 Lifecycle events
 
-### 13.2 JSONL mode
+The CLI exposes events for:
 
-Before v0.1 is treated as a stable CI tool, `--output jsonl` SHOULD emit one
-versioned object per lifecycle event:
+- frame listener readiness;
+- signing-host readiness;
+- exhausted signer-account rotation;
+- responder start/stop/failure;
+- product connection reset after session/profile replacement;
+- LitePeople ring discovery;
+- wallet and device allowance preparation/results;
+- notification scheduling/delivery/cancellation;
+- pairing link/authentication/connection/disconnection/failure;
+- script start/exit;
+- session status/create/switch;
+- log-level change; and
+- transcript copy.
 
-```json
-{"version":1,"event":"frames_listening","role":"pairing-host","url":"ws://127.0.0.1:9955"}
+### 18.3 SSO transcript
+
+SSO summaries use a dedicated tracing layer and remain visible at every log
+level. Request and response events with the same Statement Store request id
+update one transcript row.
+
+When available, rows contain:
+
+- humanized request name;
+- statement request id;
+- remote/response message id;
+- protocol outcome;
+- elapsed milliseconds; and
+- encoded error reason.
+
+Fallback SSO summary text is still shown when structured fields are absent.
+
+### 18.4 Log filtering
+
+Without `RUST_LOG`, the selected CLI level applies to:
+
+- `truapi`
+- `truapi_host`
+- `truapi_platform`
+- `truapi_server`
+
+Other targets remain at `warn`.
+
+The following noisy targets are always hidden from the ordinary CLI log layer:
+
+- `truapi_server::sso_transcript` (handled by its dedicated layer);
+- `rustls` and its children; and
+- `tungstenite::protocol` and its children.
+
+Logging ANSI is disabled before messages enter the transcript.
+
+## 19. Diagnostic commands
+
+### 19.1 `identity-check`
+
+```text
+truapi-host identity-check \
+  --mnemonic <BIP-39> \
+  [--network paseo-next-v2]
 ```
 
-Every object MUST contain `version` and `event`; applicable objects SHOULD
-contain `role`, `network`, `session`, `operation_id`, and `elapsed_ms`. Script
-stdout/stderr MUST use explicit `script_stdout` and `script_stderr` events or a
-documented passthrough mode. Mnemonics, signing payloads, and private transport
-material MUST never appear in JSONL. The full deeplink is allowed only in the
-dedicated `pairing_deeplink` event and consumers MUST treat captured output as
-sensitive.
+The command derives and queries two accounts:
 
-### 13.3 SSO transcript
+- root; and
+- RFC-0022 `//product//uid.dot/index_bytes(0)`.
 
-Decoded inbound request names and response outcomes MUST remain visible at
-normal verbosity. Stable response entries SHOULD include request name,
-statement id, remote message id, outcome, and elapsed time. Encoded protocol
-errors SHOULD include their reason. Full payload and transport metadata belong
-only at `trace` and still require secret redaction.
+For each it prints one of:
 
-## 14. Approvals and security
+```text
+IDENTITY_FOUND path=<path> account=<ss58> username=<name>
+IDENTITY_NONE path=<path> account=<ss58>
+IDENTITY_ERROR path=<path> account=<ss58> error=<reason>
+```
 
-Without `--auto-accept`, sensitive actions MUST require an explicit affirmative
-`y` or `yes`; EOF, invalid input, non-TTY input, Esc, and cancellation reject.
-The prompt MUST identify the action and enough review detail to make the
-decision meaningful.
+Per-path RPC errors are printed and do not make the command itself fail.
+Mnemonic parsing failures do fail the command. The mnemonic is not persisted.
 
-`--auto-accept` MUST:
+### 19.2 `alloc-check`
 
-- be opt-in on every invocation;
-- approve only actions that already pass core permission and scope checks;
-- print or emit one decision record per approval; and
-- never weaken product-id, session, or cross-product authorization.
+```text
+truapi-host alloc-check \
+  --mnemonic <BIP-39> \
+  [--network paseo-next-v2] \
+  [--target <32-byte-hex>] \
+  [--lookback 8] \
+  [--submit]
+```
 
-Same-product Ring-VRF behavior MUST match the signing runtime policy.
-Cross-product requests MUST retain the appropriate confirmation path.
+It prints:
 
-The CLI MUST NOT print mnemonics. Tracing and general transcript entries MUST
-NOT print complete pairing deeplinks or raw signing payloads. The one dedicated
-pairing-deeplink marker/event is required for handoff and MUST be documented as
-sensitive output. Help and docs MUST label explicit mnemonic use and
-auto-managed account files as local test functionality.
+- runtime spec version;
+- transaction version;
+- genesis hash;
+- derived bandersnatch member key;
+- current ring index;
+- matching ring details or onboarding-pending status;
+- current allowance period;
+- target account;
+- free/already-allocated slot or scan error; and
+- submission result when requested.
 
-## 15. Exit codes and shutdown
+Without `--target`, the target is all zeroes and the command is scan-only.
+`--submit` requires an explicit 32-byte target. `0x` is optional on target
+hex.
 
-| Code | Meaning |
+Submission uses the shared metadata-driven
+`set_statement_store_account` implementation and reuses an existing allocation
+when present.
+
+## 20. Exit status and shutdown
+
+| Status | Meaning |
 | --- | --- |
-| `0` | Command or script completed successfully. |
-| `1` | Runtime, network, state, approval, or script failure without a more specific child status. |
-| `2` | Invalid invocation, missing required runtime/asset, or usage error. |
-| child code | One-shot `--script` SHOULD preserve a normal child exit code when representable. |
-| `128 + signal` | MAY be used for conventional signal termination on Unix. |
+| `0` | Successful command, diagnostic, or script. |
+| `1` | General runtime/state/network error, invalid product at runtime construction, or failed `exec` script. |
+| `2` | Clap/explicit invocation error, non-TTY interactive use, malformed slash command passed to `exec`, or runner connection timeout in top-level script mode. |
+| child status | Top-level pairing/signing `--script` preserves a normal Bun exit status. |
 
-Graceful shutdown MUST stop accepting product connections, cancel owned
-operations, terminate child scripts, stop pairing responders, dispose product
-runtimes, restore the terminal, flush durable state, and then exit. Shutdown
-MUST itself have a short deadline; stuck cleanup may be forcefully aborted
-after reporting what did not stop.
+Interactive command errors do not terminate the host. They finalize running
+activities, display the error, and return to the command bar.
 
-`std::process::exit` SHOULD NOT bypass required cleanup or terminal restoration.
+Dropping a `SigningHostSession` aborts its background responder. Leaving the
+TUI restores the cursor, bracketed-paste mode, alternate screen, and raw mode.
+The frame accept task is aborted when its owning command body completes.
 
-## 16. Installation and packaging
+The CLI has no explicit SIGTERM/SIGINT signal orchestration. Interactive
+Ctrl-C is handled as a terminal key; external process termination follows
+normal operating-system behavior.
 
-The supported developer flow MUST be real and tested:
+Top-level `--script` uses `std::process::exit` after the frame-server scope has
+ended. This preserves the child status but bypasses later Rust destructors.
+
+## 21. Environment variable reference
+
+| Variable | Scope |
+| --- | --- |
+| `TRUAPI_HOST_LOG` | Default `--log-level`. |
+| `RUST_LOG` | Full startup tracing filter. |
+| `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
+| `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
+| `XDG_STATE_HOME` | Preferred default state parent. |
+| `HOME` | Fallback default state parent. |
+| `VISUAL` | Preferred script editor. |
+| `EDITOR` | Fallback script editor. |
+| `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
+| `E2E_LIVE_CHAIN` | Value `1` enables optional Asset Hub routing. |
+| `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
+| `COLORFGBG` | Infer TUI background color. |
+| `COLORTERM` | Select true-color TUI rendering. |
+| `FORCE_COLOR` | Force battery reporter color in non-TTY output. |
+| `TRUAPI_BATTERY_REPORT_PATH` | Override battery report destination. |
+| `TRUAPI_APPROVALS_LOG` | Append one line per decided confirmation to this file. |
+
+## 22. Current v0.1 operational constraints
+
+These are part of the as-built specification:
+
+- only `paseo-next-v2` is selectable;
+- product scripts require Bun and, by default, the source checkout;
+- there is no structured/JSON output mode;
+- there is no `--version`;
+- there is no script timeout option;
+- there is no global signal-aware graceful-shutdown controller;
+- onboarding can wait for the fixed identity/ring polling windows;
+- session/core/product state has no inter-process mutation lock;
+- corrupt core storage is treated as empty after a warning;
+- non-loopback product listeners have no authentication or warning;
+- product text WebSocket frames are accepted as protocol bytes;
+- product-frame and chain outbound queues are unbounded;
+- unknown chain genesis hashes fall back to People;
+- interactive child ANSI styling is stripped rather than parsed; and
+- pairing and signing state are local plaintext test state.
+
+## 23. Verification contract
+
+The implementation is covered by:
+
+- CLI unit tests for parsing, completion, TUI rendering, storage, accounts,
+  products, sessions, approvals, and platform behavior;
+- process-boundary tests for help, non-TTY rejection, product reporting,
+  session restore, cached signer activation, and bare-script safety;
+- `truapi-server` runtime, protocol, cryptographic vector, and integration
+  tests;
+- script-runner/Bun diagnosis tests;
+- paired and direct `battery.ts` runs, both driven by `scripts/battery.sh`; and
+- checked-in compatibility reports:
+  - `explorer/diagnosis-reports/pairing-host-cli.md`
+  - `explorer/diagnosis-reports/signing-host-cli.md`
+
+The reports currently have identical method results apart from their title:
+
+- 45 implemented-success methods;
+- 6 unavailable Chat methods;
+- 9 unavailable Coin Payment methods; and
+- 4 unavailable Payment methods.
+
+Recommended local verification after CLI changes:
 
 ```sh
-make headless
-make install-headless
-truapi-host --help
-```
-
-These target names are normative. README, help, CI, and this document MUST
-agree. The existing prose `make headless install` is not an acceptable contract
-because it names two unrelated Make targets and neither is defined in the
-current worktree.
-
-An installed CLI MUST work after moving or deleting the source checkout. The
-packaging test MUST run a product script from a temporary directory using only:
-
-- the installed `truapi-host` binary;
-- documented runtime dependencies such as Bun; and
-- the user-provided script.
-
-It MUST NOT resolve `js/runner.ts` or `@parity/truapi` through repository-
-relative imports. Release artifacts SHOULD include checksums and the version
-reported through `--version`.
-
-## 17. Test and acceptance specification
-
-### 17.1 Required deterministic checks
-
-Every implementation slice MUST pass the narrow tests it changes. The final
-branch MUST pass:
-
-```sh
-cargo +nightly fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
-cargo build -p truapi-host-cli --release
+cargo fmt --all -- --check
+cargo clippy -p truapi-host-cli --all-targets -- -D warnings
+cargo test -p truapi-host-cli
 git diff --check
 ```
-
-No deterministic test may depend on a public RPC, identity backend, real clock
-period boundary, phone, signing bot, or pre-existing user state.
-
-### 17.2 Unit tests
-
-Unit coverage MUST include:
-
-- clap conflicts and defaults;
-- slash-command and approval parsing;
-- session-name validation and username-prefix derivation;
-- session layout, current selection, identity cache, and failed-switch rollback;
-- account selection, locking, atomic persistence, exhaustion, and permissions;
-- network preset genesis and routing;
-- frame transport binary-only behavior, disconnect, and reset;
-- output marker/JSONL serialization and redaction;
-- timeout and cancellation propagation; and
-- editor/runner path handling without shell injection.
-
-### 17.3 Process-boundary tests
-
-Process tests MUST cover:
-
-- non-TTY interactive rejection with exit `2`;
-- plain `exec /help`, `/session`, `/session --list`, and invalid commands;
-- no ANSI in `exec` stdout or stderr;
-- session restoration and isolated state;
-- two-process session lock contention;
-- child script success, thrown error, timeout, and Ctrl-C cleanup;
-- missing Bun/runner failure before network onboarding;
-- graceful SIGINT/SIGTERM behavior on supported platforms; and
-- installation from a temporary prefix followed by source-checkout removal.
-
-### 17.4 Through-core integration tests
-
-Tests MUST send real encoded product frames through `ProductRuntime`; mocks may
-replace only network/platform boundaries. Required cases:
-
-- product storage round trip and session isolation;
-- permission accept/reject;
-- direct signing-host product account flow;
-- pairing state transitions and responder failure;
-- runtime replacement disconnects stale product sockets;
-- SSO request and response transcript outcomes; and
-- cancellation during connection, subscription setup, and submit watch.
-
-### 17.5 Live acceptance tests
-
-Live tests are opt-in and MUST clearly identify the selected preset. They MUST
-cover:
-
-1. `battery.ts` in paired mode, covering every generated playground example
-   and writing `explorer/diagnosis-reports/pairing-host-cli.md`;
-2. `battery.ts` in direct signing-host mode, covering the same generated
-   examples and writing `explorer/diagnosis-reports/signing-host-cli.md`;
-3. focused direct signing-host product-account flows;
-4. focused signing, ring-VRF, and preimage scripts;
-5. account onboarding and cached restart;
-6. Statement Store slot exhaustion and auto-account rotation; and
-7. one cancellation/restart recovery scenario.
-
-The two reports MUST be measured independently. The paired report exercises
-remote SSO allocation and signing, while the direct signing-host report uses
-the same native allocation and signing implementations locally. Their supported
-method sets should agree; a changed method count MUST be reviewed against the
-canonical generated API rather than updating the expected number blindly.
-
-Live failures MUST preserve logs and reports with secrets redacted. CI MAY mark
-a known external network outage separately from a product failure, but it MUST
-not convert a protocol assertion failure into a skip.
-
-## 18. Definition of done for v0.1
-
-The CLI is complete when all of the following are true:
-
-- [ ] CLI help, crate README, root README, Make targets, and this spec describe
-      the same commands and slash-command surface.
-- [ ] Product ids and incompatible flags fail before starting external work.
-- [ ] `pairing-host`, `signing-host`, `exec`, and script modes satisfy their
-      lifecycle and exit-code contracts.
-- [ ] The signing TUI restores the terminal under success, failure,
-      cancellation, editor use, and signals.
-- [ ] Persistent sessions are isolated, locked, atomically switched, and safe
-      from concurrent mutation.
-- [ ] Sensitive state uses atomic, restrictive persistence and logs are
-      redacted.
-- [ ] Every external wait is bounded and cancellable during setup.
-- [ ] Product-frame queues are bounded and text frames are rejected.
-- [ ] The CLI installs with a bundled runner and operates without the source
-      checkout.
-- [ ] Deterministic tests and process-boundary tests pass in CI.
-- [ ] Paired and direct live acceptance runs have no unexpected diagnosis
-      failures.
-- [ ] Unsupported capability results are deliberate, typed, and documented.
-- [ ] No CLI-only workaround duplicates logic that belongs in `truapi-server`.
-
-## 19. Suggested agent work packages
-
-These packages are designed to minimize overlapping edits. Agents MUST rebase
-or coordinate before touching a file owned by another active package.
-
-### A. Distribution and install contract
-
-Primary files: `Makefile`, `Cargo.toml`, `rust/crates/truapi-host-cli/js/`,
-`script_runner.rs`, crate/root READMEs.
-
-Deliverables:
-
-- bundle the runner and generated client dependencies;
-- add consistent build/install targets and `--version`;
-- add the relocation acceptance test; and
-- remove source-checkout assumptions from normal execution.
-
-### B. Lifecycle, deadlines, and cancellation
-
-Primary files: `main.rs`, `attestation.rs`, `accounts.rs`, `chain.rs`, and
-shared runtime APIs only where cancellation must cross into `truapi-server`.
-
-Deliverables:
-
-- named deadline policy;
-- cancellation tokens/ownership for startup and subscriptions;
-- signal-aware graceful shutdown;
-- child/responder cleanup; and
-- deterministic timeout/cancellation tests.
-
-### C. State safety and session locking
-
-Primary files: `sessions.rs`, `accounts.rs`, `platform.rs`.
-
-Deliverables:
-
-- session process lock;
-- atomic and restrictive product/core/session persistence;
-- corruption errors instead of silent auth reset;
-- failed-switch rollback tests; and
-- concurrent writer tests.
-
-### D. Product-frame transport hardening
-
-Primary files: `frame_server.rs`, `chain.rs`, transport-focused tests.
-
-Deliverables:
-
-- binary-only frame enforcement;
-- bounded queues/backpressure;
-- cancellation-aware accept/connect loops;
-- safe non-loopback policy; and
-- disconnect/reset/lag tests.
-
-### E. Automation output and TUI conformance
-
-Primary files: `terminal_ui.rs`, `signing_shell.rs`, output helpers, process
-tests.
-
-Deliverables:
-
-- centralized lifecycle events;
-- optional versioned JSONL renderer;
-- stable human markers and stream separation;
-- redaction tests;
-- cancellation and approval interaction tests; and
-- removal of stale `/whoami` documentation.
-
-### F. Deterministic and live E2E harness
-
-Primary files: `e2e/`, `tests/`, `.github/workflows/`, diagnosis scripts and
-reports.
-
-Deliverables:
-
-- replace unbounded polling and process-kill assumptions in `run.sh`;
-- preserve artifacts and classify external outages;
-- add direct and paired gates;
-- add installation/relocation coverage; and
-- document exact local and CI commands.
-
-### G. Capability audit
-
-Primary files: `platform.rs`, network/runtime integration, diagnosis scripts.
-
-Deliverables:
-
-- make unsupported capabilities return deliberate typed results;
-- replace blanket feature reporting with actual support;
-- expose live chain routing clearly and reject unknown genesis hashes; and
-- keep paired/signing diagnosis reports aligned with the generated API.
-
-Package A should land before the final E2E packaging tests in F. Packages B, C,
-D, E, and G can proceed independently when they avoid shared `main.rs` edits;
-integration should centralize orchestration changes once their local APIs are
-settled.

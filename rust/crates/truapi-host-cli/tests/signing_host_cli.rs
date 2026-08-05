@@ -25,8 +25,11 @@ fn interactive_mode_rejects_non_tty_stdio_with_usage_exit() {
 fn exec_help_is_plain_and_exits_successfully() {
     let base_path =
         std::env::temp_dir().join(format!("truapi-host-cli-exec-help-{}", std::process::id()));
-    let output = command()
-        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+    let mut invocation = command();
+    invocation.arg("signing-host");
+    #[cfg(not(unix))]
+    invocation.args(["--frame-listen", "127.0.0.1:0"]);
+    let output = invocation
         .arg("--base-path")
         .arg(&base_path)
         .args(["exec", "/help"])
@@ -39,7 +42,34 @@ fn exec_help_is_plain_and_exits_successfully() {
     assert!(!String::from_utf8_lossy(&output.stdout).contains("/whoami"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/script"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/copy"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/product"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session"));
+    #[cfg(unix)]
+    assert!(String::from_utf8_lossy(&output.stdout).contains("ws+unix:"));
+    assert!(!output.stdout.contains(&0x1b));
+    assert!(!output.stderr.contains(&0x1b));
+}
+
+#[test]
+fn exec_product_reports_the_normalized_selected_product() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let output = command()
+        .args([
+            "signing-host",
+            "--frame-listen",
+            "127.0.0.1:0",
+            "--product-id",
+            "Dotli.DOT",
+        ])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["exec", "/product"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run signing-host exec /product");
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("dotli.dot"));
     assert!(!output.stdout.contains(&0x1b));
     assert!(!output.stderr.contains(&0x1b));
 }
@@ -84,8 +114,10 @@ fn startup_session_is_reported_and_restored() {
     assert!(first.status.success());
     let first_stdout = String::from_utf8_lossy(&first.stdout);
     assert!(first_stdout.contains("Session alice"));
-    assert!(first_stdout.contains("signing-host/sessions/alice"));
+    assert!(first_stdout.contains("alice_signing_host"));
     assert!(first_stdout.contains("User <not provisioned>"));
+    assert!(first_stdout.contains("No connected user"));
+    assert!(first_stdout.contains("Use /session <name> to start a session."));
 
     let restored = command()
         .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
@@ -98,8 +130,27 @@ fn startup_session_is_reported_and_restored() {
     assert!(restored.status.success());
     let restored_stdout = String::from_utf8_lossy(&restored.stdout);
     assert!(restored_stdout.contains("* alice"));
-    assert!(restored_stdout.contains("  default"));
+    assert!(!restored_stdout.contains("default"));
     assert!(!restored.stdout.contains(&0x1b));
+}
+
+#[test]
+fn default_session_is_not_user_selectable() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let output = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["exec", "/session default"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("reject the internal default session");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("session name `default` is reserved for bootstrap state")
+    );
 }
 
 #[test]
@@ -114,7 +165,7 @@ fn existing_local_signer_is_activated_and_cached_at_startup() {
     "name": "auto-1",
     "network": "paseo-next-v2",
     "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-    "lite_username": "cachedalice",
+    "lite_username": "cachedalice.01",
     "public_key_hex": "0x00",
     "address": "5GrwvaEF5zXb26Fz9rcQpDWSKfwVwqNxyvE9uZunJMtBEw2s",
     "created_at_unix": 1,
@@ -136,9 +187,10 @@ fn existing_local_signer_is_activated_and_cached_at_startup() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Signing host ready"));
-    assert!(stdout.contains("User cachedalice"));
-    let metadata =
-        std::fs::read_to_string(base_path.join("paseo-next-v2/signing-host/session.json"))
-            .expect("read persisted session identity");
-    assert!(metadata.contains("cachedalice"));
+    assert!(stdout.contains("User cachedalice.01"));
+    let metadata = std::fs::read_to_string(
+        base_path.join("paseo-next-v2/cachedalice.01_signing_host/session.json"),
+    )
+    .expect("read persisted session identity");
+    assert!(metadata.contains("cachedalice.01"));
 }

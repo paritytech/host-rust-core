@@ -1,5 +1,27 @@
 # @parity/truapi
 
+## 0.7.0
+
+### Minor Changes
+
+- Publish the package version paired with the RFC-0022 mobile host cutover and
+  the completed RFC-0023 account VRF signing flow.
+
+## 0.6.0
+
+### Minor Changes
+
+- Represent product-account derivation indexes as tagged selectors that support
+  both compact numeric values and raw 32-byte values. Add the general-purpose
+  sr25519 `account.signVrf` API and its generated request, response, transcript,
+  error, and callback types.
+
+## 0.5.1
+
+### Patch Changes
+
+- Support the sandbox client in legacy Nova and dotli iframe hosts while the Rust Core transport migration rolls out.
+
 ## 0.5.0
 
 ### Minor Changes

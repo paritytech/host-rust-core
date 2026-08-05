@@ -13,6 +13,7 @@ use crate::wire;
 use crate::{CallContext, CallError, Subscription};
 
 /// Statement store methods.
+#[crate::async_trait]
 pub trait StatementStore: Send + Sync {
     /// Subscribe to statements matching a topic filter.
     ///
@@ -85,7 +86,7 @@ pub trait StatementStore: Send + Sync {
     /// const result = await truapi.statementStore.createProof({
     ///   productAccountId: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: 0,
+    ///     derivationIndex: { tag: "Left", value: 0 },
     ///   },
     ///   statement,
     /// });

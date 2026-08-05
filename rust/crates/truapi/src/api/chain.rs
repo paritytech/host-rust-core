@@ -22,6 +22,7 @@ use crate::wire;
 use crate::{CallContext, CallError, Subscription};
 
 /// Chain interaction methods.
+#[crate::async_trait]
 pub trait Chain: Send + Sync {
     /// Follow the chain head and receive block events.
     ///
@@ -362,22 +363,22 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
     ///
-    /// // Start a broadcast, then stop it using the returned operation id.
     /// const broadcast = await truapi.chain.broadcastTransaction({
     ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
     ///   transaction: "0x",
     /// });
     /// assert(broadcast.isOk(), "broadcastTransaction failed:", broadcast);
-    /// if (broadcast.value.operationId) {
-    ///   const result = await truapi.chain.stopTransaction({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
-    ///     operationId: broadcast.value.operationId,
-    ///   });
-    ///   assert(result.isOk(), "stopTransaction failed:", result);
-    ///   console.log("transaction broadcast stopped");
-    /// } else {
-    ///   console.log("broadcast completed before a stop operation was created");
-    /// }
+    /// assert(
+    ///   broadcast.value.operationId,
+    ///   "broadcastTransaction returned no operation id",
+    /// );
+    ///
+    /// const result = await truapi.chain.stopTransaction({
+    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   operationId: broadcast.value.operationId,
+    /// });
+    /// assert(result.isOk(), "stopTransaction failed:", result);
+    /// console.log("transaction broadcast stopped");
     /// ```
     #[wire(request_id = 102)]
     async fn stop_transaction(

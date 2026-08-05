@@ -1,7 +1,7 @@
 //! Network-scoped signing-host session directories and current selection.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -13,15 +13,30 @@ const SESSION_INFO_FILE: &str = "session.json";
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionInfo {
     version: u32,
-    user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_script: Option<String>,
+}
+
+impl Default for SessionInfo {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            user_id: None,
+            last_script: None,
+        }
+    }
 }
 
 /// Filesystem locations owned by one managed signing-host session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionProfile {
     pub name: String,
-    /// Product/core storage directory shown by `/session`.
+    /// Core/session state directory shown by `/session`.
     pub path: PathBuf,
+    /// Product-local KV directory for this named session.
+    pub product_storage_dir: PathBuf,
     /// Directory containing this session's `accounts.json`.
     pub account_base_path: PathBuf,
 }
@@ -30,17 +45,20 @@ pub struct SessionProfile {
 #[derive(Debug, Clone)]
 pub struct SessionCatalog {
     base_path: PathBuf,
+    network_path: PathBuf,
     role_path: PathBuf,
 }
 
 impl SessionCatalog {
     pub fn new(base_path: PathBuf, network_id: &str) -> Result<Self> {
         let base_path = absolute_path(base_path)?;
-        let role_path = base_path.join(network_id).join("signing-host");
+        let network_path = base_path.join(network_id);
+        let role_path = network_path.join("signing-host");
         fs::create_dir_all(&role_path)
             .with_context(|| format!("create session root {}", role_path.display()))?;
         Ok(Self {
             base_path,
+            network_path,
             role_path,
         })
     }
@@ -51,14 +69,27 @@ impl SessionCatalog {
             return Ok(SessionProfile {
                 name: name.to_string(),
                 path: self.role_path.clone(),
+                product_storage_dir: self.role_path.join("storage").join(name),
                 // Preserve the pre-session account store for compatibility.
                 account_base_path: self.base_path.clone(),
             });
         }
-        let path = self.role_path.join("sessions").join(name);
+        let identity_path = self.identity_path(name);
+        let legacy_path = self.role_path.join("sessions").join(name);
+        let path = if legacy_path.is_dir() && !identity_path.is_dir() {
+            legacy_path
+        } else {
+            identity_path
+        };
+        let product_storage_dir = if path.starts_with(self.role_path.join("sessions")) {
+            self.role_path.join("storage").join(name)
+        } else {
+            path.join("storage")
+        };
         Ok(SessionProfile {
             name: name.to_string(),
             path: path.clone(),
+            product_storage_dir,
             account_base_path: path,
         })
     }
@@ -103,66 +134,232 @@ impl SessionCatalog {
     }
 
     pub fn list(&self) -> Result<Vec<String>> {
-        let mut names = vec![DEFAULT_SESSION_NAME.to_string()];
+        let mut names = Vec::new();
         let sessions_path = self.role_path.join("sessions");
-        let entries = match fs::read_dir(&sessions_path) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(names),
+        match fs::read_dir(&sessions_path) {
+            Ok(entries) => {
+                for entry in entries.filter_map(std::result::Result::ok) {
+                    if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                        continue;
+                    }
+                    let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                        continue;
+                    };
+                    if validate_name(&name).is_ok() && name != DEFAULT_SESSION_NAME {
+                        names.push(name);
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(error)
                     .with_context(|| format!("list sessions {}", sessions_path.display()));
             }
-        };
-        for entry in entries.filter_map(std::result::Result::ok) {
+        }
+        for entry in fs::read_dir(&self.network_path)
+            .with_context(|| format!("list host profiles {}", self.network_path.display()))?
+            .filter_map(std::result::Result::ok)
+        {
             if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
-            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            let Some(filename) = entry.file_name().to_str().map(ToOwned::to_owned) else {
                 continue;
             };
-            if validate_name(&name).is_ok() && name != DEFAULT_SESSION_NAME {
-                names.push(name);
+            let Some(name) = filename.strip_suffix("_signing_host") else {
+                continue;
+            };
+            if validate_name(name).is_ok() && name != DEFAULT_SESSION_NAME {
+                names.push(name.to_string());
             }
         }
         names.sort();
+        names.dedup();
         Ok(names)
     }
 
-    pub fn cached_user_id(&self, profile: &SessionProfile) -> Result<Option<String>> {
-        let path = profile.path.join(SESSION_INFO_FILE);
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("read session identity {}", path.display()));
+    /// Move a provisional or legacy session into the user-owned host root.
+    ///
+    /// The public session name is the Lite username. The suffix is only a
+    /// filesystem discriminator so pairing and signing state cannot collide.
+    pub fn promote_to_user(
+        &self,
+        profile: &SessionProfile,
+        user_id: &str,
+    ) -> Result<SessionProfile> {
+        validate_name(user_id).map_err(anyhow::Error::msg)?;
+        let target_path = self.identity_path(user_id);
+        if profile.path != target_path && !target_path.exists() {
+            if profile.path == self.role_path {
+                fs::create_dir_all(&target_path)
+                    .with_context(|| format!("create user host {}", target_path.display()))?;
+                migrate_default_profile(profile, &target_path)?;
+            } else {
+                fs::rename(&profile.path, &target_path).with_context(|| {
+                    format!(
+                        "move host profile {} to {}",
+                        profile.path.display(),
+                        target_path.display()
+                    )
+                })?;
+                if profile.product_storage_dir.exists()
+                    && !profile.product_storage_dir.starts_with(&profile.path)
+                {
+                    let target_storage = target_path.join("storage");
+                    fs::create_dir_all(&target_path)?;
+                    fs::rename(&profile.product_storage_dir, &target_storage).with_context(
+                        || {
+                            format!(
+                                "move product storage {} to {}",
+                                profile.product_storage_dir.display(),
+                                target_storage.display()
+                            )
+                        },
+                    )?;
+                }
             }
+        }
+        let promoted = SessionProfile {
+            name: user_id.to_string(),
+            path: target_path.clone(),
+            product_storage_dir: target_path.join("storage"),
+            account_base_path: target_path,
         };
-        let info: SessionInfo = serde_json::from_str(&text)
-            .with_context(|| format!("decode session identity {}", path.display()))?;
-        Ok((!info.user_id.is_empty()).then_some(info.user_id))
+        fs::create_dir_all(&promoted.path)
+            .with_context(|| format!("create user host {}", promoted.path.display()))?;
+        self.store_user_id(&promoted, user_id)?;
+        Ok(promoted)
+    }
+
+    pub fn cached_user_id(&self, profile: &SessionProfile) -> Result<Option<String>> {
+        Ok(read_session_info(&profile.path)?
+            .user_id
+            .filter(|user_id| !user_id.is_empty()))
     }
 
     pub fn store_user_id(&self, profile: &SessionProfile, user_id: &str) -> Result<()> {
         if user_id.is_empty() {
             return Ok(());
         }
-        fs::create_dir_all(&profile.path)
-            .with_context(|| format!("create session {}", profile.path.display()))?;
-        let path = profile.path.join(SESSION_INFO_FILE);
-        let temporary = profile
-            .path
-            .join(format!(".{SESSION_INFO_FILE}.{}.tmp", std::process::id()));
-        let text = serde_json::to_string_pretty(&SessionInfo {
-            version: 1,
-            user_id: user_id.to_string(),
-        })?;
-        fs::write(&temporary, format!("{text}\n"))
-            .with_context(|| format!("write session identity {}", temporary.display()))?;
-        fs::rename(&temporary, &path)
-            .with_context(|| format!("persist session identity {}", path.display()))?;
-        Ok(())
+        let mut info = read_session_info(&profile.path)?;
+        info.user_id = Some(user_id.to_string());
+        write_session_info(&profile.path, &info)
     }
+
+    /// Return the last script used in this session, if it still exists.
+    pub fn last_script(&self, profile: &SessionProfile) -> Result<Option<PathBuf>> {
+        session_last_script(&profile.path)
+    }
+
+    /// Remember the last script used in this session.
+    pub fn store_last_script(&self, profile: &SessionProfile, script: &Path) -> Result<()> {
+        store_session_last_script(&profile.path, script)
+    }
+
+    fn identity_path(&self, user_id: &str) -> PathBuf {
+        self.network_path.join(format!("{user_id}_signing_host"))
+    }
+}
+
+fn migrate_default_profile(profile: &SessionProfile, target_path: &Path) -> Result<()> {
+    for name in [
+        "core-storage.json",
+        "product-storage.json",
+        SESSION_INFO_FILE,
+    ] {
+        let source = profile.path.join(name);
+        if source.is_file() {
+            fs::rename(&source, target_path.join(name))
+                .with_context(|| format!("move {}", source.display()))?;
+        }
+    }
+    let scripts = profile.path.join("scripts");
+    if scripts.is_dir() {
+        fs::rename(&scripts, target_path.join("scripts"))
+            .with_context(|| format!("move {}", scripts.display()))?;
+    }
+    if profile.product_storage_dir.is_dir() {
+        fs::rename(&profile.product_storage_dir, target_path.join("storage"))
+            .with_context(|| format!("move {}", profile.product_storage_dir.display()))?;
+    }
+    let account_store = profile.account_base_path.join("accounts.json");
+    if account_store.is_file() {
+        fs::copy(&account_store, target_path.join("accounts.json"))
+            .with_context(|| format!("copy {}", account_store.display()))?;
+    }
+    Ok(())
+}
+
+/// Return the last script recorded in a host/session state directory.
+pub fn session_last_script(session_path: &Path) -> Result<Option<PathBuf>> {
+    let info = read_session_info(session_path)?;
+    let Some(filename) = info.last_script else {
+        return Ok(None);
+    };
+    let configured = Path::new(&filename);
+    if configured.is_absolute() {
+        return Ok(configured.is_file().then(|| configured.to_path_buf()));
+    }
+
+    let relative = configured;
+    let mut components = relative.components();
+    let Some(Component::Normal(filename)) = components.next() else {
+        anyhow::bail!("session last script is not a portable filename");
+    };
+    if components.next().is_some() {
+        anyhow::bail!("session last script must stay inside its scripts directory");
+    }
+    let script = session_path.join("scripts").join(filename);
+    Ok(script.is_file().then_some(script))
+}
+
+/// Record a script in a host/session state directory.
+///
+/// Scratch scripts are stored by filename so existing session directories stay
+/// portable. Explicit scripts outside that directory are stored as absolute
+/// paths so a later bare `/script` reopens the same file.
+pub fn store_session_last_script(session_path: &Path, script: &Path) -> Result<()> {
+    let script = absolute_path(script.to_path_buf())?;
+    let scripts = session_path.join("scripts");
+    let stored_path = if script.parent() == Some(scripts.as_path()) {
+        script
+            .file_name()
+            .and_then(|filename| filename.to_str())
+            .context("scratch script filename is not valid UTF-8")?
+    } else {
+        script.to_str().context("script path is not valid UTF-8")?
+    };
+    let mut info = read_session_info(session_path)?;
+    info.last_script = Some(stored_path.to_string());
+    write_session_info(session_path, &info)
+}
+
+fn read_session_info(session_path: &Path) -> Result<SessionInfo> {
+    let path = session_path.join(SESSION_INFO_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SessionInfo::default());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("read session metadata {}", path.display()));
+        }
+    };
+    serde_json::from_str(&text)
+        .with_context(|| format!("decode session metadata {}", path.display()))
+}
+
+fn write_session_info(session_path: &Path, info: &SessionInfo) -> Result<()> {
+    fs::create_dir_all(session_path)
+        .with_context(|| format!("create session {}", session_path.display()))?;
+    let path = session_path.join(SESSION_INFO_FILE);
+    let temporary = session_path.join(format!(".{SESSION_INFO_FILE}.{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(info)?;
+    fs::write(&temporary, format!("{text}\n"))
+        .with_context(|| format!("write session metadata {}", temporary.display()))?;
+    fs::rename(&temporary, &path)
+        .with_context(|| format!("persist session metadata {}", path.display()))?;
+    Ok(())
 }
 
 /// Validate a portable session name before using it as a path component.
@@ -187,6 +384,21 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     }
     if matches!(name, "." | "..") {
         return Err("session name cannot be `.` or `..`".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a user-selectable session name.
+///
+/// `default` remains a private bootstrap profile and must not be exposed as a
+/// session users can create or switch to.
+pub fn validate_selectable_name(name: &str) -> Result<(), String> {
+    validate_name(name)?;
+    if name == DEFAULT_SESSION_NAME {
+        return Err(
+            "session name `default` is reserved for bootstrap state; choose a user session name such as `alice`"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -240,6 +452,13 @@ mod tests {
     }
 
     #[test]
+    fn default_is_internal_and_not_user_selectable() {
+        assert!(validate_name(DEFAULT_SESSION_NAME).is_ok());
+        assert!(validate_selectable_name(DEFAULT_SESSION_NAME).is_err());
+        assert!(validate_selectable_name("alice").is_ok());
+    }
+
+    #[test]
     fn derives_lite_username_prefix_from_session_name() {
         assert_eq!(
             lite_username_prefix("pgtest", None).as_deref(),
@@ -267,14 +486,34 @@ mod tests {
         catalog.set_current("alice")?;
 
         assert_eq!(catalog.current_name(), "alice");
-        assert_eq!(catalog.list()?, vec!["alice", "default"]);
+        assert_eq!(catalog.list()?, vec!["alice"]);
         let profile = catalog.profile("alice")?;
+        assert!(profile.path.ends_with("testnet/alice_signing_host"));
         assert!(
             profile
-                .path
-                .ends_with("testnet/signing-host/sessions/alice")
+                .product_storage_dir
+                .ends_with("testnet/alice_signing_host/storage")
         );
         assert_eq!(profile.path, profile.account_base_path);
+        Ok(())
+    }
+
+    #[test]
+    fn promotes_a_provisional_profile_to_the_username_host_root() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let provisional = catalog.ensure_profile("pgtest")?;
+        fs::write(provisional.path.join("accounts.json"), "{}")?;
+        fs::create_dir_all(&provisional.product_storage_dir)?;
+        fs::write(provisional.product_storage_dir.join("product.json"), "{}")?;
+
+        let promoted = catalog.promote_to_user(&provisional, "alice.dot")?;
+
+        assert_eq!(promoted.name, "alice.dot");
+        assert!(promoted.path.ends_with("testnet/alice.dot_signing_host"));
+        assert!(promoted.path.join("accounts.json").is_file());
+        assert!(promoted.product_storage_dir.join("product.json").is_file());
+        assert!(!provisional.path.exists());
         Ok(())
     }
 
@@ -286,23 +525,82 @@ mod tests {
 
         assert_eq!(profile.account_base_path, temporary.path());
         assert!(profile.path.ends_with("testnet/signing-host"));
+        assert!(
+            profile
+                .product_storage_dir
+                .ends_with("testnet/signing-host/storage/default")
+        );
         Ok(())
     }
 
     #[test]
-    fn session_user_id_round_trips_in_the_profile_path() -> Result<()> {
+    fn session_metadata_preserves_user_id_and_last_script() -> Result<()> {
         let temporary = tempdir()?;
         let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
         let profile = catalog.ensure_profile("alice")?;
+        let scripts = profile.path.join("scripts");
+        fs::create_dir_all(&scripts)?;
+        let script = scripts.join("script.ts");
+        fs::write(&script, "console.log('test');")?;
 
         assert_eq!(catalog.cached_user_id(&profile)?, None);
+        assert_eq!(catalog.last_script(&profile)?, None);
+        catalog.store_last_script(&profile, &script)?;
         catalog.store_user_id(&profile, "alice.dot")?;
+        let replacement = scripts.join("replacement.ts");
+        fs::write(&replacement, "console.log('replacement');")?;
+        catalog.store_last_script(&profile, &replacement)?;
 
         assert_eq!(
             catalog.cached_user_id(&profile)?.as_deref(),
             Some("alice.dot")
         );
+        assert_eq!(
+            catalog.last_script(&profile)?.as_deref(),
+            Some(replacement.as_path())
+        );
+        let metadata = fs::read_to_string(profile.path.join(SESSION_INFO_FILE))?;
+        assert!(metadata.contains("\"user_id\": \"alice.dot\""));
+        assert!(metadata.contains("\"last_script\": \"replacement.ts\""));
         assert!(profile.path.join(SESSION_INFO_FILE).is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn stale_or_escaping_last_script_is_never_opened() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        let scripts = profile.path.join("scripts");
+        fs::create_dir_all(&scripts)?;
+        let stale = scripts.join("missing.ts");
+        catalog.store_last_script(&profile, &stale)?;
+
+        assert_eq!(catalog.last_script(&profile)?, None);
+        fs::write(
+            profile.path.join(SESSION_INFO_FILE),
+            r#"{"version":1,"last_script":"../outside.ts"}"#,
+        )?;
+        assert!(catalog.last_script(&profile).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn session_metadata_preserves_an_explicit_script_outside_scratch_storage() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        let script = temporary.path().join("product-script.ts");
+        fs::write(&script, "console.log('product');")?;
+
+        catalog.store_last_script(&profile, &script)?;
+
+        assert_eq!(
+            catalog.last_script(&profile)?.as_deref(),
+            Some(script.as_path())
+        );
+        let metadata = fs::read_to_string(profile.path.join(SESSION_INFO_FILE))?;
+        assert!(metadata.contains(script.to_str().context("temporary path is not UTF-8")?));
         Ok(())
     }
 }

@@ -1,17 +1,25 @@
 import { describe, expect, test } from "bun:test";
 import { services } from "../../../../js/packages/truapi/src/playground/codegen/services.ts";
-import { BatteryReporter } from "./battery-reporter.ts";
+import { BatteryReporter, shouldUseColor } from "./battery-reporter.ts";
 import {
   cliDiagnosisReportMetadata,
   renderDiagnosisReport,
 } from "./diagnosis-report.ts";
 import {
   createDiagnosisPlan,
+  expectedCliBatteryFailureReason,
+  knownUnsupportedReason,
   type DiagnosisCase,
   type DiagnosisRow,
 } from "./diagnosis.ts";
 
 describe("generated-example battery", () => {
+  test("honors forced color for recorded non-TTY output", () => {
+    expect(shouldUseColor(false, undefined, "1")).toBe(true);
+    expect(shouldUseColor(false, undefined, "0")).toBe(false);
+    expect(shouldUseColor(true, "1", "1")).toBe(false);
+  });
+
   test("uses a distinct committed report for each CLI host role", () => {
     expect(cliDiagnosisReportMetadata("pairing-host")).toEqual({
       filename: "pairing-host-cli.md",
@@ -37,6 +45,26 @@ describe("generated-example battery", () => {
     expect(plan.every((testCase) => testCase.skipReason === undefined)).toBe(
       true,
     );
+  });
+
+  test("classifies only the committed unsupported CLI battery failures as expected", () => {
+    expect(expectedCliBatteryFailureReason("Chat")).toBe(
+      "Chat service not yet wired up by hosts",
+    );
+    expect(expectedCliBatteryFailureReason("Coin Payment")).toBe(
+      "Coin Payment service not yet wired up by hosts",
+    );
+    expect(expectedCliBatteryFailureReason("Payment")).toBe(
+      "Payment service not yet wired up by hosts",
+    );
+    expect(expectedCliBatteryFailureReason("Signing")).toBe(undefined);
+  });
+
+  test("does not ignore account proof failures", () => {
+    expect(
+      knownUnsupportedReason("Account", "Account/create_account_proof"),
+    ).toBe(undefined);
+    expect(expectedCliBatteryFailureReason("Account")).toBe(undefined);
   });
 
   test("prints failures as concise test-reporter rows", () => {

@@ -16,7 +16,7 @@ use super::extension::{ChainState, Metadata};
 use super::ring::RingParams;
 use super::rpc::RpcClient;
 use super::slot::STATEMENT_STORE_PERIOD_SECONDS;
-use super::{RegistrationOutcome, register_statement_account};
+use super::{RegistrationOutcome, RegistrationParams, register_statement_account};
 
 /// Cap between renewal ticks, mirroring the on-chain grace period after a
 /// period boundary.
@@ -103,11 +103,15 @@ pub async fn renew_targets(
                 context.metadata,
                 context.chain_state,
                 entropy,
-                &target.account_id,
-                period,
-                context.ring,
+                RegistrationParams {
+                    target: &target.account_id,
+                    period,
+                    ring: context.ring,
+                    reuse_existing: true,
+                },
             )
             .await
+            .map_err(|err| err.to_string())
         };
         log_target_result(period, &target.label, &result);
         let exhausted = matches!(&result, Err(reason) if is_slot_exhaustion(reason));

@@ -169,8 +169,11 @@ CoreStorageKey::PermissionAuthorization { product_id, request }
 The embedder builds a role handle, `PairingHostRuntime::new(...)` or
 `SigningHostRuntime::new(...)`, then calls `product_runtime(product, sink)` for
 each product connection. Role-specific operations live only on the matching handle:
-`cancel_pairing` and `notify_session_store_changed` on the pairing handle,
-`activate_local_session` on the signing handle. Calling the wrong operation is
+`cancel_pairing`, `notify_session_store_changed`, `activate_stored_session`,
+`activate_external_session`, and `reset_session_state` on the pairing handle,
+`activate_local_session` on the signing handle. Both handles expose
+`clear_product_state` to revoke one product's capability material without
+touching the session or other products. Calling the wrong operation is
 a compile error, not a runtime `Unavailable`.
 
 ### The two roles
@@ -180,18 +183,22 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 
 - **`PairingHost`** (seedless): the user's keys live in an external wallet, so
   signing/aliases/entropy relay over an encrypted SSO channel (statement store
-  on the People chain; the channel lives in `pairing_host/sso_channel.rs`). It
-  owns pairing/login state, persisted auth-session reload, and remote
-  signing-host liveness monitoring.
+  on the People chain; the channel lives in `pairing_host/sso_channel.rs`). The
+  v2 wire protocol uses raw X25519 keys, HKDF-SHA256, and
+  ChaCha20-Poly1305. It owns pairing/login state, persisted auth-session reload,
+  and remote signing-host liveness monitoring.
 - **`SigningHost`** (wallet-local): signs on device from local BIP-39 entropy,
   no pairing flow. `signing_host/local_activation.rs` establishes a session
-  from host-held secret material. It derives the same full- and lite-person
-  Bandersnatch keys as Nova, resolves RFC-0004 `RingLocation` values against
-  the chain's `Members` pallet, and pins membership, ring pages, exponent, and
-  revision reads to one finalized block before creating an alias or proof.
-  Full personhood is preferred over lite personhood. Extrinsic-payload signing
-  and resource allocation still return `Unavailable` pending chain-metadata
-  and on-chain support.
+  from host-held secret material. Its public identity is the RFC-0022
+  `uid.dot` index-0 product account; full and lite person ring-VRF keys are
+  `peopl.dot` indices 0 and 1 under the keyed-hash `ring-vrf` tree. It resolves
+  RFC-0004 `RingLocation` values against the chain's `Members` pallet and pins
+  membership, ring pages, exponent, and revision reads to one finalized block
+  before creating an alias or proof. Full personhood is preferred over lite
+  personhood. Extrinsic-payload signing and v4 transaction construction work
+  from pre-encoded payload fields, so no chain metadata is needed;
+  statement-store and Bulletin allowance allocation are native-only (wasm
+  builds report them as unavailable).
 
 `host_logic` stays pure: the orchestrators above call into it for codecs,
 session/SSO crypto, key derivation, and permission policy, while all I/O

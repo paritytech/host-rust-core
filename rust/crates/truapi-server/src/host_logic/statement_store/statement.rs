@@ -1,11 +1,38 @@
 use parity_scale_codec::{Compact, Decode, Encode};
 use schnorrkel::{PublicKey, Signature};
+use thiserror::Error;
 use truapi::v01;
 
 use super::StatementStoreParseError;
 use crate::host_logic::extrinsic::sr25519_secret_from_bytes;
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 use crate::host_logic::session::SsoSessionInfo;
+
+/// Error validating an exact unsigned statement-store signing payload.
+#[derive(Debug, Error)]
+pub enum StatementSigningPayloadError {
+    /// Payload bytes are not a sequence of SCALE statement fields.
+    #[error("invalid statement signing payload: {0}")]
+    InvalidScale(#[source] parity_scale_codec::Error),
+    /// Payload contains no fields.
+    #[error("statement signing payload has no fields")]
+    Empty,
+    /// Payload contains a proof field, but only unsigned payloads are accepted.
+    #[error("statement signing payload must not include proof")]
+    ContainsProof,
+    /// Payload contains the same singleton field more than once.
+    #[error("statement signing payload has duplicate {field}")]
+    DuplicateField {
+        /// Duplicated field name.
+        field: &'static str,
+    },
+    /// Topic fields are not Topic1, Topic2, ... without gaps.
+    #[error("statement signing payload topics are not contiguous")]
+    NonContiguousTopics,
+    /// Payload decodes to a statement but is not the canonical field encoding.
+    #[error("statement signing payload is not canonical")]
+    NonCanonical,
+}
 
 /// Verified statement payload plus the sr25519 signer recovered from proof.
 ///
@@ -32,21 +59,34 @@ pub struct VerifiedStatementData {
 /// <https://github.com/paritytech/polkadot-sdk/blob/7d525248d594c79dcc5e30217becbd56d2fcda40/substrate/primitives/statement-store/src/lib.rs#L260-L289>
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum StatementProof {
+    /// Statement signed with an sr25519 key.
     Sr25519 {
+        /// Signature over the sorted non-proof fields.
         signature: [u8; 64],
+        /// sr25519 public key that produced the signature.
         signer: [u8; 32],
     },
+    /// Statement signed with an ed25519 key.
     Ed25519 {
+        /// Signature over the sorted non-proof fields.
         signature: [u8; 64],
+        /// ed25519 public key that produced the signature.
         signer: [u8; 32],
     },
+    /// Statement signed with an ECDSA secp256k1 key.
     Ecdsa {
+        /// Signature over the sorted non-proof fields.
         signature: [u8; 65],
+        /// Compressed secp256k1 public key that produced the signature.
         signer: [u8; 33],
     },
+    /// Statement anchored by a pallet-statement chain event instead of a signature.
     OnChain {
+        /// Account that submitted the statement on chain.
         who: [u8; 32],
+        /// Block containing the statement event.
         block_hash: [u8; 32],
+        /// Event index within that block.
         event: u64,
     },
 }
@@ -57,14 +97,23 @@ pub enum StatementProof {
 /// <https://github.com/paritytech/polkadot-sdk/blob/f2f3aa6a8fda8ea52282da9711b3c5da4ba82529/substrate/primitives/statement-store/src/lib.rs#L314-L337>
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum StatementField {
+    /// Authenticity proof over the other fields.
     Proof(StatementProof),
+    /// Identifier of the key able to decrypt the `Data` field.
     DecryptionKey([u8; 32]),
+    /// Expiry, unix seconds in the upper 32 bits.
     Expiry(u64),
+    /// Per-signer channel; the store keeps one live statement per channel.
     Channel([u8; 32]),
+    /// First matching topic.
     Topic1([u8; 32]),
+    /// Second matching topic.
     Topic2([u8; 32]),
+    /// Third matching topic.
     Topic3([u8; 32]),
+    /// Fourth matching topic.
     Topic4([u8; 32]),
+    /// Statement payload bytes.
     Data(Vec<u8>),
 }
 
@@ -224,15 +273,21 @@ pub fn unsigned_statement_signing_payload(
 /// without the surrounding SCALE vector length. Accept only payloads that
 /// round-trip from the public unsigned statement shape, so a paired peer cannot
 /// reuse the statement-signing path as a generic product-account signing oracle.
-pub fn validate_unsigned_statement_signing_payload(payload: &[u8]) -> Result<(), String> {
+pub fn validate_unsigned_statement_signing_payload(
+    payload: &[u8],
+) -> Result<(), StatementSigningPayloadError> {
     let fields = decode_unsigned_statement_signing_payload_fields(payload)?;
     if fields.is_empty() {
-        return Err("statement signing payload has no fields".to_string());
+        return Err(StatementSigningPayloadError::Empty);
     }
     let statement = unsigned_statement_from_fields(fields)?;
-    let canonical = unsigned_statement_signing_payload(statement_fields_from_v01(statement)?)?;
+    let fields = statement_fields_from_v01(statement)
+        .expect("unsigned_statement_from_fields emits at most four topics and no proof; qed");
+    let canonical = unsigned_statement_signing_payload(fields).expect(
+        "statement_fields_from_v01 emitted unsigned fields, and SCALE vector encoding is decodable; qed",
+    );
     if canonical != payload {
-        return Err("statement signing payload is not canonical".to_string());
+        return Err(StatementSigningPayloadError::NonCanonical);
     }
     Ok(())
 }
@@ -249,12 +304,12 @@ pub fn statement_signing_payload(fields: &[StatementField]) -> Result<Vec<u8>, S
 
 fn decode_unsigned_statement_signing_payload_fields(
     mut input: &[u8],
-) -> Result<Vec<StatementField>, String> {
+) -> Result<Vec<StatementField>, StatementSigningPayloadError> {
     let mut fields = Vec::new();
     while !input.is_empty() {
         fields.push(
             StatementField::decode(&mut input)
-                .map_err(|err| format!("invalid statement signing payload: {err}"))?,
+                .map_err(StatementSigningPayloadError::InvalidScale)?,
         );
     }
     Ok(fields)
@@ -339,7 +394,9 @@ fn verify_statement_proof(
     Ok(signer)
 }
 
-fn unsigned_statement_from_fields(fields: Vec<StatementField>) -> Result<v01::Statement, String> {
+fn unsigned_statement_from_fields(
+    fields: Vec<StatementField>,
+) -> Result<v01::Statement, StatementSigningPayloadError> {
     let mut decryption_key = None;
     let mut expiry = None;
     let mut channel = None;
@@ -349,23 +406,23 @@ fn unsigned_statement_from_fields(fields: Vec<StatementField>) -> Result<v01::St
     for field in fields {
         match field {
             StatementField::Proof(_) => {
-                return Err("statement signing payload must not include proof".to_string());
+                return Err(StatementSigningPayloadError::ContainsProof);
             }
             StatementField::DecryptionKey(value) => {
                 if decryption_key.replace(value).is_some() {
-                    return Err(
-                        "statement signing payload has duplicate decryption key".to_string()
-                    );
+                    return Err(StatementSigningPayloadError::DuplicateField {
+                        field: "decryption key",
+                    });
                 }
             }
             StatementField::Expiry(value) => {
                 if expiry.replace(value).is_some() {
-                    return Err("statement signing payload has duplicate expiry".to_string());
+                    return Err(StatementSigningPayloadError::DuplicateField { field: "expiry" });
                 }
             }
             StatementField::Channel(value) => {
                 if channel.replace(value).is_some() {
-                    return Err("statement signing payload has duplicate channel".to_string());
+                    return Err(StatementSigningPayloadError::DuplicateField { field: "channel" });
                 }
             }
             StatementField::Topic1(value) => push_unsigned_statement_topic(&mut topics, 0, value)?,
@@ -374,7 +431,7 @@ fn unsigned_statement_from_fields(fields: Vec<StatementField>) -> Result<v01::St
             StatementField::Topic4(value) => push_unsigned_statement_topic(&mut topics, 3, value)?,
             StatementField::Data(value) => {
                 if data.replace(value).is_some() {
-                    return Err("statement signing payload has duplicate data".to_string());
+                    return Err(StatementSigningPayloadError::DuplicateField { field: "data" });
                 }
             }
         }
@@ -394,9 +451,9 @@ fn push_unsigned_statement_topic(
     topics: &mut Vec<[u8; 32]>,
     expected_index: usize,
     value: [u8; 32],
-) -> Result<(), String> {
+) -> Result<(), StatementSigningPayloadError> {
     if topics.len() != expected_index {
-        return Err("statement signing payload topics are not contiguous".to_string());
+        return Err(StatementSigningPayloadError::NonContiguousTopics);
     }
     topics.push(value);
     Ok(())
@@ -622,7 +679,7 @@ mod tests {
             ss_secret: keypair.secret.to_bytes(),
             ss_public_key: keypair.public.to_bytes(),
             enc_secret: [1; 32],
-            peer_enc_pubkey: [2; 65],
+            peer_enc_pubkey: [2; 32],
             identity_account_id: [3; 32],
             session_id_own: [4; 32],
             session_id_peer: [5; 32],
@@ -730,7 +787,11 @@ mod tests {
 
         let err = validate_unsigned_statement_signing_payload(&tx_preimage).unwrap_err();
 
-        assert!(err.contains("invalid statement signing payload"));
+        assert!(matches!(err, StatementSigningPayloadError::InvalidScale(_)));
+        assert!(
+            err.to_string()
+                .contains("invalid statement signing payload")
+        );
     }
 
     #[test]
@@ -742,10 +803,10 @@ mod tests {
             })])
             .unwrap();
 
-        assert_eq!(
+        assert!(matches!(
             validate_unsigned_statement_signing_payload(&payload).unwrap_err(),
-            "statement signing payload must not include proof"
-        );
+            StatementSigningPayloadError::ContainsProof
+        ));
     }
 
     #[test]
@@ -756,10 +817,10 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(
+        assert!(matches!(
             validate_unsigned_statement_signing_payload(&payload).unwrap_err(),
-            "statement signing payload topics are not contiguous"
-        );
+            StatementSigningPayloadError::NonContiguousTopics
+        ));
     }
 
     #[test]

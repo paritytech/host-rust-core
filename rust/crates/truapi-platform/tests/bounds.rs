@@ -4,7 +4,7 @@
 
 use truapi_platform::{
     HostInfo, HostRuntimeConfig, PairingHostConfig, Platform, PlatformInfo, ProductContext,
-    RuntimeConfigValidationError,
+    ProductStorageKey, RuntimeConfigValidationError,
 };
 
 fn _assert_platform_bounds<T: Platform + Send + Sync + 'static>() {}
@@ -40,7 +40,7 @@ fn runtime_config_validation_cases() {
             host_name: "Polkadot Web",
             host_icon: Some("/dotli.png"),
             expected: Err(RuntimeConfigValidationError::InvalidHostIcon {
-                reason: "relative URL without a base".to_string(),
+                source: url::ParseError::RelativeUrlWithoutBase,
             }),
         },
         TestCase {
@@ -133,4 +133,16 @@ fn product_context_validation_cases() {
             field: "product_id",
         })
     );
+}
+
+#[test]
+fn product_storage_key_round_trips_scopes_and_arbitrary_keys() {
+    let key = ProductStorageKey::new("Tést.DOT", "settings:theme").expect("valid product key");
+    let encoded = key.encode();
+    let decoded = ProductStorageKey::decode(&encoded).expect("decode product key");
+
+    assert_eq!(decoded.product_id(), "tést.dot");
+    assert_eq!(decoded.key(), "settings:theme");
+    assert_eq!(decoded, key);
+    assert!(ProductStorageKey::decode("unknown:key").is_err());
 }

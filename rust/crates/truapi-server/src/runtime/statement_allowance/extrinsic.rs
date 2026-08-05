@@ -1,20 +1,14 @@
 //! `Resources.set_statement_store_account` call + unsigned General (v5)
 //! extrinsic assembly. Mirrors signing-bot `allocation.ts` / `extrinsic-submit.ts`.
+//! Dispatch and variant indices are resolved by name from the fetched runtime
+//! metadata, so a re-indexed runtime fails loudly instead of encoding a wrong
+//! call.
 
-use parity_scale_codec::{Compact, Encode};
+use parity_scale_codec::{Decode, Encode};
 
-use super::extension::{ChainState, Metadata};
+use super::StatementAllowanceError;
+use super::extension::{ChainState, Metadata, MetadataError};
 
-/// Pallet + call index for `Resources.set_statement_store_account` (63 / 10).
-pub const SET_STATEMENT_STORE_ACCOUNT_CALL: [u8; 2] = [0x3f, 0x0a];
-/// Pallet + call index for `Resources.claim_long_term_storage` (63 / 12).
-pub const CLAIM_LONG_TERM_STORAGE_CALL: [u8; 2] = [0x3f, 0x0c];
-/// `AsResourcesInfo::RegisterStatementStoreAllowance` variant index.
-const REGISTER_STATEMENT_STORE_ALLOWANCE: u8 = 0x02;
-/// `AsResourcesInfo::ClaimLongTermStorage` variant index.
-const CLAIM_LONG_TERM_STORAGE: u8 = 0x03;
-/// `MembershipCollection::LitePeople` variant index.
-const MEMBERSHIP_COLLECTION_LITE_PEOPLE: u8 = 0x01;
 /// General-transaction preamble byte: `0b01` (General) | version 5.
 const GENERAL_V5_PREAMBLE: u8 = 0x45;
 /// Current signed-extension version byte.
@@ -22,57 +16,121 @@ const EXTENSION_VERSION: u8 = 0x00;
 /// `Option::Some` discriminant for the `AsResources` extension `extra`.
 const OPTION_SOME: u8 = 0x01;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+struct SetStatementStoreAccountCallArgs {
+    period: u32,
+    seq: u32,
+    target: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+struct ClaimLongTermStorageCallArgs {
+    period: u32,
+    counter: u8,
+    account_id: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+struct RegisterStatementStoreAllowanceInfo {
+    proof: Vec<u8>,
+    ring_index: u32,
+    personhood: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+struct ClaimLongTermStorageInfo {
+    proof: Vec<u8>,
+    ring_index: u32,
+    revision: u32,
+    personhood: u8,
+}
+
 /// Encode `Resources.set_statement_store_account(period, seq, target)`:
-/// `3f 0a ‖ period_u32LE ‖ seq_u32LE ‖ target[32]`.
-pub fn build_set_statement_store_account_call(period: u32, seq: u32, target: &[u8; 32]) -> Vec<u8> {
+/// `pallet ‖ call ‖ period_u32LE ‖ seq_u32LE ‖ target[32]`, with the dispatch
+/// indices resolved from `metadata`.
+pub fn build_set_statement_store_account_call(
+    metadata: &Metadata,
+    period: u32,
+    seq: u32,
+    target: &[u8; 32],
+) -> Result<Vec<u8>, StatementAllowanceError> {
+    let indices = metadata.call_indices("Resources", "set_statement_store_account")?;
     let mut call = Vec::with_capacity(2 + 4 + 4 + 32);
-    call.extend_from_slice(&SET_STATEMENT_STORE_ACCOUNT_CALL);
-    call.extend_from_slice(&period.to_le_bytes());
-    call.extend_from_slice(&seq.to_le_bytes());
-    call.extend_from_slice(target);
-    call
+    call.extend_from_slice(&indices);
+    SetStatementStoreAccountCallArgs {
+        period,
+        seq,
+        target: *target,
+    }
+    .encode_to(&mut call);
+    Ok(call)
 }
 
 /// Encode `Resources.claim_long_term_storage(period, counter, account_id)`:
-/// `3f 0c ‖ period_u32LE ‖ counter_u8 ‖ account_id[32]`.
+/// `pallet ‖ call ‖ period_u32LE ‖ counter_u8 ‖ account_id[32]`, with the
+/// dispatch indices resolved from `metadata`.
 pub fn build_claim_long_term_storage_call(
+    metadata: &Metadata,
     period: u32,
     counter: u8,
     account_id: &[u8; 32],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
+    let indices = metadata.call_indices("Resources", "claim_long_term_storage")?;
     let mut call = Vec::with_capacity(2 + 4 + 1 + 32);
-    call.extend_from_slice(&CLAIM_LONG_TERM_STORAGE_CALL);
-    call.extend_from_slice(&period.to_le_bytes());
-    call.push(counter);
-    call.extend_from_slice(account_id);
-    call
+    call.extend_from_slice(&indices);
+    ClaimLongTermStorageCallArgs {
+        period,
+        counter,
+        account_id: *account_id,
+    }
+    .encode_to(&mut call);
+    Ok(call)
 }
 
 /// Encode the `AsResources` extension `extra` for a statement-store allowance:
-/// `Some(RegisterStatementStoreAllowance { proof, ring_index, LitePeople })`.
-pub fn build_as_resources_extra(proof: &[u8], ring_index: u32) -> Vec<u8> {
+/// `Some(RegisterStatementStoreAllowance { proof, ring_index, LitePeople })`,
+/// with the variant indices resolved from `metadata`.
+pub fn build_as_resources_extra(
+    metadata: &Metadata,
+    proof: &[u8],
+    ring_index: u32,
+) -> Result<Vec<u8>, StatementAllowanceError> {
+    let (info_index, lite_people) =
+        metadata.as_resources_variant_indices("RegisterStatementStoreAllowance")?;
     let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 1);
     extra.push(OPTION_SOME);
-    extra.push(REGISTER_STATEMENT_STORE_ALLOWANCE);
-    extra.extend_from_slice(&Compact(proof.len() as u32).encode());
-    extra.extend_from_slice(proof);
-    extra.extend_from_slice(&ring_index.to_le_bytes());
-    extra.push(MEMBERSHIP_COLLECTION_LITE_PEOPLE);
-    extra
+    extra.push(info_index);
+    RegisterStatementStoreAllowanceInfo {
+        proof: proof.to_vec(),
+        ring_index,
+        personhood: lite_people,
+    }
+    .encode_to(&mut extra);
+    Ok(extra)
 }
 
 /// Encode the `AsResources` extension `extra` for a long-term storage claim:
-/// `Some(ClaimLongTermStorage { proof, ring_index, revision, LitePeople })`.
-pub fn build_long_term_storage_extra(proof: &[u8], ring_index: u32, revision: u32) -> Vec<u8> {
+/// `Some(ClaimLongTermStorage { proof, ring_index, revision, LitePeople })`,
+/// with the variant indices resolved from `metadata`.
+pub fn build_long_term_storage_extra(
+    metadata: &Metadata,
+    proof: &[u8],
+    ring_index: u32,
+    revision: u32,
+) -> Result<Vec<u8>, StatementAllowanceError> {
+    let (info_index, lite_people) =
+        metadata.as_resources_variant_indices("ClaimLongTermStorage")?;
     let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 4 + 1);
     extra.push(OPTION_SOME);
-    extra.push(CLAIM_LONG_TERM_STORAGE);
-    extra.extend_from_slice(&Compact(proof.len() as u32).encode());
-    extra.extend_from_slice(proof);
-    extra.extend_from_slice(&ring_index.to_le_bytes());
-    extra.extend_from_slice(&revision.to_le_bytes());
-    extra.push(MEMBERSHIP_COLLECTION_LITE_PEOPLE);
-    extra
+    extra.push(info_index);
+    ClaimLongTermStorageInfo {
+        proof: proof.to_vec(),
+        ring_index,
+        revision,
+        personhood: lite_people,
+    }
+    .encode_to(&mut extra);
+    Ok(extra)
 }
 
 /// Assemble the unsigned General (v5) extrinsic:
@@ -82,11 +140,11 @@ pub fn build_unsigned_extrinsic(
     state: &ChainState,
     call_data: &[u8],
     as_resources_extra: &[u8],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
     let as_resources_index = metadata
         .as_resources_index()
-        .ok_or_else(|| "AsResources extension not found in metadata".to_string())?;
+        .ok_or(MetadataError::MissingAsResourcesExtension)?;
 
     let mut body = vec![GENERAL_V5_PREAMBLE, EXTENSION_VERSION];
     for (i, ext) in all.iter().enumerate() {
@@ -98,14 +156,13 @@ pub fn build_unsigned_extrinsic(
     }
     body.extend_from_slice(call_data);
 
-    let mut extrinsic = Compact(body.len() as u32).encode();
-    extrinsic.extend_from_slice(&body);
-    Ok(extrinsic)
+    Ok(body.encode())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parity_scale_codec::Compact;
 
     const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
 
@@ -120,7 +177,8 @@ mod tests {
 
     #[test]
     fn call_layout_is_pallet_call_period_seq_target() {
-        let call = build_set_statement_store_account_call(7, 0, &[0u8; 32]);
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let call = build_set_statement_store_account_call(&metadata, 7, 0, &[0u8; 32]).unwrap();
         assert_eq!(
             call,
             [
@@ -131,11 +189,20 @@ mod tests {
             ]
             .concat()
         );
+        assert_eq!(
+            SetStatementStoreAccountCallArgs::decode(&mut &call[2..]).unwrap(),
+            SetStatementStoreAccountCallArgs {
+                period: 7,
+                seq: 0,
+                target: [0; 32],
+            }
+        );
     }
 
     #[test]
     fn long_term_storage_call_layout_is_pallet_call_period_counter_account() {
-        let call = build_claim_long_term_storage_call(7, 3, &[0u8; 32]);
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let call = build_claim_long_term_storage_call(&metadata, 7, 3, &[0u8; 32]).unwrap();
         assert_eq!(
             call,
             [
@@ -146,39 +213,78 @@ mod tests {
             ]
             .concat()
         );
+        assert_eq!(
+            ClaimLongTermStorageCallArgs::decode(&mut &call[2..]).unwrap(),
+            ClaimLongTermStorageCallArgs {
+                period: 7,
+                counter: 3,
+                account_id: [0; 32],
+            }
+        );
     }
 
     #[test]
     fn as_resources_extra_wraps_proof_as_bytes() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
         let proof = vec![0xEE; 785];
-        let extra = build_as_resources_extra(&proof, 3);
+        let extra = build_as_resources_extra(&metadata, &proof, 3).unwrap();
         // Some(0x01) ‖ variant(0x02) ‖ compact(785)=0x45,0x0c ‖ 785 bytes ‖ ringIndex LE ‖ LitePeople.
-        assert_eq!(&extra[..2], &[0x01, 0x02]);
-        assert_eq!(&extra[2..4], &Compact(785u32).encode()[..]);
-        assert_eq!(&extra[4..4 + 785], &proof[..]);
-        assert_eq!(&extra[4 + 785..4 + 785 + 4], &3u32.to_le_bytes());
-        assert_eq!(extra[4 + 785 + 4], MEMBERSHIP_COLLECTION_LITE_PEOPLE);
+        assert_eq!(
+            extra,
+            [
+                vec![0x01, 0x02],
+                Compact(785u32).encode(),
+                proof,
+                3u32.to_le_bytes().to_vec(),
+                vec![0x01],
+            ]
+            .concat()
+        );
+        assert_eq!(
+            RegisterStatementStoreAllowanceInfo::decode(&mut &extra[2..]).unwrap(),
+            RegisterStatementStoreAllowanceInfo {
+                proof: vec![0xEE; 785],
+                ring_index: 3,
+                personhood: 1,
+            }
+        );
     }
 
     #[test]
     fn long_term_storage_extra_wraps_revision() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
         let proof = vec![0xEE; 785];
-        let extra = build_long_term_storage_extra(&proof, 3, 9);
+        let extra = build_long_term_storage_extra(&metadata, &proof, 3, 9).unwrap();
         // Some(0x01) ‖ variant(0x03) ‖ compact(785)=0x45,0x0c ‖ proof
         // ‖ ringIndex LE ‖ revision LE ‖ LitePeople.
-        assert_eq!(&extra[..2], &[0x01, 0x03]);
-        assert_eq!(&extra[2..4], &Compact(785u32).encode()[..]);
-        assert_eq!(&extra[4..4 + 785], &proof[..]);
-        assert_eq!(&extra[4 + 785..4 + 785 + 4], &3u32.to_le_bytes());
-        assert_eq!(&extra[4 + 785 + 4..4 + 785 + 8], &9u32.to_le_bytes());
-        assert_eq!(extra[4 + 785 + 8], MEMBERSHIP_COLLECTION_LITE_PEOPLE);
+        assert_eq!(
+            extra,
+            [
+                vec![0x01, 0x03],
+                Compact(785u32).encode(),
+                proof,
+                3u32.to_le_bytes().to_vec(),
+                9u32.to_le_bytes().to_vec(),
+                vec![0x01],
+            ]
+            .concat()
+        );
+        assert_eq!(
+            ClaimLongTermStorageInfo::decode(&mut &extra[2..]).unwrap(),
+            ClaimLongTermStorageInfo {
+                proof: vec![0xEE; 785],
+                ring_index: 3,
+                revision: 9,
+                personhood: 1,
+            }
+        );
     }
 
     #[test]
     fn extrinsic_has_general_v5_preamble_and_embeds_call() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
-        let call = build_set_statement_store_account_call(7, 0, &[0u8; 32]);
-        let extra = build_as_resources_extra(&vec![0xEE; 785], 0);
+        let call = build_set_statement_store_account_call(&metadata, 7, 0, &[0u8; 32]).unwrap();
+        let extra = build_as_resources_extra(&metadata, &[0xEE; 785], 0).unwrap();
         let xt = build_unsigned_extrinsic(&metadata, &fixture_state(), &call, &extra).unwrap();
 
         // Strip the compact length prefix and check the body head + tail.

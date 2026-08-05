@@ -5,8 +5,6 @@
 //! without knowing where the key material lives.
 
 use async_trait::async_trait;
-use core::fmt;
-use core::time::Duration;
 use std::sync::Arc;
 use truapi::latest::{
     AccountId, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
@@ -16,6 +14,7 @@ use truapi::latest::{
     HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, ProductAccountId,
     ProductAccountTxPayload, ProductProofContext, RingLocation,
 };
+use truapi::v01::{HostAccountSignVrfRequest, VrfSignature};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
@@ -35,6 +34,7 @@ pub(crate) struct BulletinAllowanceKey {
 }
 
 impl BulletinAllowanceKey {
+    /// Wrap a 64-byte sr25519 secret; other lengths are `Unavailable`.
     pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
         let secret: [u8; 64] =
             secret
@@ -48,11 +48,33 @@ impl BulletinAllowanceKey {
         Ok(Self { secret })
     }
 
+    /// Raw secret for the in-core Bulletin signer.
     pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
         &self.secret
     }
 }
 
+/// Persisted AutoSigning capability for one hard product subtree.
+#[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
+pub(crate) struct AutoSigningKey {
+    #[debug("\"<redacted>\"")]
+    secret: [u8; 64],
+}
+
+impl AutoSigningKey {
+    pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
+        let secret = secret
+            .try_into()
+            .map_err(|secret: Vec<u8>| AuthorityError::Unavailable {
+                reason: format!("AutoSigning key must be 64 bytes, got {}", secret.len()),
+            })?;
+        Ok(Self { secret })
+    }
+
+    pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
+        &self.secret
+    }
+}
 /// Snapshot of an account-authority session selected by the authority.
 ///
 /// This is the neutral session projection product runtimes can use while
@@ -73,6 +95,7 @@ pub(crate) struct AuthoritySession {
 }
 
 impl AuthoritySession {
+    /// Project the neutral snapshot out of a concrete session.
     pub(crate) fn from_session_info(info: &SessionInfo, validation_id: Vec<u8>) -> Self {
         Self {
             public_key: info.public_key,
@@ -83,6 +106,7 @@ impl AuthoritySession {
         }
     }
 
+    /// Preferred display username: full over lite, skipping empty values.
     pub(crate) fn primary_username(&self) -> Option<&str> {
         self.full_username
             .as_deref()
@@ -119,64 +143,35 @@ pub(crate) enum AuthorityError {
     Unknown { reason: String },
 }
 
-impl AuthorityError {
-    pub(crate) fn reason(self) -> String {
-        self.to_string()
-    }
-}
-
 impl From<AuthorityError> for RingVrfError {
     fn from(err: AuthorityError) -> Self {
         match err {
             AuthorityError::Rejected => RingVrfError::Rejected,
             other => RingVrfError::Unknown {
-                reason: other.reason(),
+                reason: other.to_string(),
             },
         }
     }
 }
 
 /// Cancellation cause for an account-authority call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[display(
+    "Account authority request {reason}{}",
+    if request_id.is_empty() { String::new() } else { format!(" for {request_id}") }
+)]
 pub(crate) struct AuthorityCancelError {
     request_id: String,
     reason: CancellationReason,
 }
 
 impl AuthorityCancelError {
+    /// Cancellation attributed to the request it interrupted.
     pub(crate) fn new(request_id: &str, reason: CancellationReason) -> Self {
         Self {
             request_id: request_id.to_string(),
             reason,
         }
-    }
-}
-
-impl fmt::Display for AuthorityCancelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let request = if self.request_id.is_empty() {
-            String::new()
-        } else {
-            format!(" for {}", self.request_id)
-        };
-        match &self.reason {
-            CancellationReason::Cancelled => {
-                write!(f, "Account authority request cancelled{request}")
-            }
-            CancellationReason::TimedOut { timeout } => write!(
-                f,
-                "Account authority request timed out after {}{request}",
-                format_timeout_duration(*timeout)
-            ),
-        }
-    }
-}
-
-fn format_timeout_duration(duration: Duration) -> String {
-    if duration.subsec_millis() == 0 {
-        format!("{}s", duration.as_secs())
-    } else {
-        format!("{}ms", duration.as_millis())
     }
 }
 
@@ -220,6 +215,8 @@ pub(crate) enum CreateTransactionAuthorityRequest {
         /// Original legacy-account transaction request.
         request: LegacyAccountTxPayload,
     },
+    /// Create a transaction with the active wallet's identity account.
+    IdentityAccount(LegacyAccountTxPayload),
 }
 
 /// Contextual-alias request forwarded to the account authority (RFC 0004).
@@ -249,11 +246,15 @@ pub(crate) struct CreateProofAuthorityRequest {
 /// Statement-store allowance signing material held by the authority layer.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct StatementStoreAllowanceKey {
+    /// sr25519 secret used to sign allowance statements.
     pub(crate) secret: [u8; 64],
+    /// Public key derived from `secret`.
     pub(crate) public_key: [u8; 32],
 }
 
 impl StatementStoreAllowanceKey {
+    /// Wrap a 64-byte sr25519 secret and derive its public key; other lengths
+    /// are `Unavailable`.
     pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
         let secret: [u8; 64] =
             secret
@@ -286,6 +287,16 @@ pub(crate) trait ProductAuthority: Send + Sync {
     /// concrete authority keeps ownership of the actual session material.
     fn session_state(&self) -> Arc<SessionState>;
 
+    /// Seed a paired product subtree in unit tests that exercise later authority calls.
+    #[cfg(test)]
+    fn cache_product_subtree_for_test(
+        &self,
+        _session: &SessionInfo,
+        _product_id: &str,
+        _public_key: [u8; 32],
+    ) {
+    }
+
     /// Request account connection for the calling product.
     async fn request_login(
         &self,
@@ -300,6 +311,26 @@ pub(crate) trait ProductAuthority: Send + Sync {
     async fn refresh_session_identity(&self) -> Option<AuthoritySession> {
         self.current_session()
     }
+
+    /// Return the public key of `//product//{product_id}`.
+    ///
+    /// Pairing hosts obtain this consent-free value from the Account Holder;
+    /// signing hosts derive it locally from root entropy.
+    async fn product_subtree_public_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<[u8; 32], AuthorityError>;
+
+    /// Sign an RFC-0023 Merlin transcript with a product account.
+    async fn sign_vrf(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        calling_product_id: String,
+        request: HostAccountSignVrfRequest,
+    ) -> Result<VrfSignature, AuthorityError>;
 
     /// Sign a SCALE transaction payload for a product account.
     async fn sign_payload(

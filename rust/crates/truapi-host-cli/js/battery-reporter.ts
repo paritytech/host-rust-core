@@ -9,7 +9,11 @@ export class BatteryReporter {
 
   constructor(
     write: WriteLine = (line) => console.log(line),
-    color = Boolean(process.stdout.isTTY && !process.env.NO_COLOR),
+    color = shouldUseColor(
+      Boolean(process.stdout.isTTY),
+      process.env.NO_COLOR,
+      process.env.FORCE_COLOR,
+    ),
   ) {
     this.#write = write;
     this.#color = color;
@@ -112,6 +116,15 @@ export class BatteryReporter {
   #style(code: string, value: string): string {
     return this.#color ? `\u001b[${code}m${value}\u001b[0m` : value;
   }
+}
+
+export function shouldUseColor(
+  isTTY: boolean,
+  noColor: string | undefined,
+  forceColor: string | undefined,
+): boolean {
+  const forced = Boolean(forceColor && forceColor !== "0");
+  return noColor === undefined && (isTTY || forced);
 }
 
 export function formatDuration(milliseconds: number): string {

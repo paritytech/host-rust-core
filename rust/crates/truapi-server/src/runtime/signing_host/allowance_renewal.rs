@@ -18,7 +18,9 @@ use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use super::SigningHost;
 use super::sso_responder::current_unix_secs;
-use crate::host_logic::product_account::derive_sr25519_hard_path;
+use crate::host_logic::product_account::{
+    derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
+};
 use crate::runtime::RuntimeServices;
 use crate::runtime::statement_allowance::renewal::{
     RenewalChainContext, ResolvedRenewalTarget, StatementRenewalReport, next_tick_delay,
@@ -154,8 +156,10 @@ pub(super) async fn renew_now(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
 ) -> Result<StatementRenewalReport, String> {
-    let entropy = signing_host.root_entropy().map_err(|err| err.reason())?;
-    let period = statement_allowance::slot::current_period(current_unix_secs()?);
+    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
+    let period = statement_allowance::slot::current_period(
+        current_unix_secs().map_err(|err| err.to_string())?,
+    );
     let targets = read_targets(signing_host.platform.as_ref()).await?;
     let resolved = targets
         .iter()
@@ -169,18 +173,24 @@ pub(super) async fn renew_now(
         });
     }
 
-    let bandersnatch = statement_allowance::bandersnatch_entropy(&entropy);
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
     let rpc = statement_allowance::rpc::RpcClient::new(
         services
             .statement_store
             .client("statement-allowance renewal")
-            .await?,
+            .await
+            .map_err(|err| err.to_string())?,
     );
-    let metadata = fetch_metadata(&rpc).await?;
-    let chain_state = fetch_chain_state(&rpc).await?;
-    let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
+    let metadata = fetch_metadata(&rpc).await.map_err(|err| err.to_string())?;
+    let chain_state = fetch_chain_state(&rpc)
+        .await
+        .map_err(|err| err.to_string())?;
+    let current = statement_allowance::ring::read_current_ring_index(&rpc)
+        .await
+        .map_err(|err| err.to_string())?;
     let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
-        .await?
+        .await
+        .map_err(|err| err.to_string())?
         .ok_or_else(|| {
             "signing account is not a LitePeople ring member; cannot renew statement-store allowances"
                 .to_string()

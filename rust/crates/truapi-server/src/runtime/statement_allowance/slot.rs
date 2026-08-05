@@ -6,11 +6,15 @@
 //! derived from OUR bandersnatch entropy in that slot context. Mirrors
 //! signing-bot `allowance.ts` / `allowance-slots.ts`.
 
+use parity_scale_codec::{Decode, Encode};
 use sp_crypto_hashing::twox_128;
+use thiserror::Error;
+use verifiable::Error as VerifiableError;
 use verifiable::GenerateVerifiable;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
-use super::extension::Metadata;
+use super::StatementAllowanceError;
+use super::extension::{Metadata, MetadataError};
 use super::ring::blake2_128_concat;
 use super::rpc::RpcClient;
 
@@ -18,6 +22,57 @@ use super::rpc::RpcClient;
 pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;
 /// Bulletin long-term-storage claim context prefix.
 const LONG_TERM_STORAGE_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/rsc-lts";
+
+/// Error while deriving aliases or selecting allowance slots.
+#[derive(Debug, Error)]
+pub enum SlotError {
+    /// Long-term storage period duration constant was zero.
+    #[error("Resources.LongTermStoragePeriodDuration is zero")]
+    LongTermStoragePeriodDurationZero,
+    /// Bandersnatch alias derivation failed.
+    #[error("{context} alias_in_context failed: {error:?}")]
+    AliasInContext {
+        /// Alias context name.
+        context: &'static str,
+        /// Alias derivation failure.
+        error: VerifiableError,
+    },
+    /// No free statement-store slot was found.
+    #[error("no free StatementStore slot in period {period} (max {max})")]
+    NoFreeStatementStoreSlot {
+        /// Period scanned.
+        period: u32,
+        /// Maximum slot count.
+        max: u32,
+    },
+    /// No free long-term-storage slot was found.
+    #[error("no free long-term-storage slot in period {period} (max {max})")]
+    NoFreeLongTermStorageSlot {
+        /// Period scanned.
+        period: u32,
+        /// Maximum slot count.
+        max: u8,
+    },
+    /// Registration reached a block but the slot was not held by the target.
+    #[error(
+        "registration reached block {block_hash} but slot (period {period}, seq {seq}) is not held by the target account"
+    )]
+    RegistrationVerificationMismatch {
+        /// Block hash the registration reached.
+        block_hash: String,
+        /// Registration period.
+        period: u32,
+        /// Slot sequence.
+        seq: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+struct StatementStoreAllowanceEntry {
+    account_id: [u8; 32],
+    seq: u32,
+    since: u64,
+}
 
 /// The current allowance period for `now_seconds`.
 pub fn current_period(now_seconds: u64) -> u32 {
@@ -28,9 +83,9 @@ pub fn current_period(now_seconds: u64) -> u32 {
 pub fn current_long_term_storage_period(
     now_seconds: u64,
     period_duration: u32,
-) -> Result<u32, String> {
+) -> Result<u32, StatementAllowanceError> {
     if period_duration == 0 {
-        return Err("Resources.LongTermStoragePeriodDuration is zero".to_string());
+        return Err(SlotError::LongTermStoragePeriodDurationZero.into());
     }
     Ok((now_seconds / u64::from(period_duration)) as u32)
 }
@@ -57,11 +112,20 @@ pub fn derive_long_term_storage_context(period: u32, counter: u8) -> [u8; 32] {
 }
 
 /// The slot alias for our `entropy` at `(period, seq)`.
-pub fn slot_alias(entropy: [u8; 32], period: u32, seq: u32) -> Result<[u8; 32], String> {
+pub fn slot_alias(
+    entropy: [u8; 32],
+    period: u32,
+    seq: u32,
+) -> Result<[u8; 32], StatementAllowanceError> {
     let secret = BandersnatchVrfVerifiable::new_secret(entropy);
     let context = derive_slot_context(period, seq);
-    BandersnatchVrfVerifiable::alias_in_context(&secret, &context)
-        .map_err(|err| format!("alias_in_context failed: {err:?}"))
+    BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
+        SlotError::AliasInContext {
+            context: "statement-store slot",
+            error: err,
+        }
+        .into()
+    })
 }
 
 /// The long-term-storage slot alias for our `entropy` at `(period, counter)`.
@@ -69,11 +133,16 @@ pub fn long_term_storage_alias(
     entropy: [u8; 32],
     period: u32,
     counter: u8,
-) -> Result<[u8; 32], String> {
+) -> Result<[u8; 32], StatementAllowanceError> {
     let secret = BandersnatchVrfVerifiable::new_secret(entropy);
     let context = derive_long_term_storage_context(period, counter);
-    BandersnatchVrfVerifiable::alias_in_context(&secret, &context)
-        .map_err(|err| format!("alias_in_context failed: {err:?}"))
+    BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
+        SlotError::AliasInContext {
+            context: "long-term-storage slot",
+            error: err,
+        }
+        .into()
+    })
 }
 
 /// `Resources.StatementStoreAllowances[period][alias]` storage key.
@@ -101,10 +170,13 @@ fn spent_long_term_storage_alias_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
 }
 
 /// Max StatementStore slots per period from `Resources.LiteStmtStoreSlotsPerPeriod`.
-fn max_slots(metadata: &Metadata) -> Result<u32, String> {
+fn max_slots(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
     let bytes = metadata
         .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
-        .ok_or_else(|| "Resources.LiteStmtStoreSlotsPerPeriod constant missing".to_string())?;
+        .ok_or(MetadataError::MissingConstant {
+            pallet: "Resources",
+            constant: "LiteStmtStoreSlotsPerPeriod",
+        })?;
     let mut buf = [0u8; 4];
     let n = bytes.len().min(4);
     buf[..n].copy_from_slice(&bytes[..n]);
@@ -113,19 +185,30 @@ fn max_slots(metadata: &Metadata) -> Result<u32, String> {
 
 /// Max long-term-storage claims per period from
 /// `Resources.LongTermStorageClaimsPerPeriod`.
-fn long_term_storage_claims_per_period(metadata: &Metadata) -> Result<u8, String> {
+fn long_term_storage_claims_per_period(metadata: &Metadata) -> Result<u8, StatementAllowanceError> {
     metadata
         .constant("Resources", "LongTermStorageClaimsPerPeriod")
         .and_then(|bytes| bytes.first().copied())
-        .ok_or_else(|| "Resources.LongTermStorageClaimsPerPeriod constant missing".to_string())
+        .ok_or_else(|| {
+            MetadataError::MissingConstant {
+                pallet: "Resources",
+                constant: "LongTermStorageClaimsPerPeriod",
+            }
+            .into()
+        })
 }
 
 /// Long-term-storage period duration in seconds from
 /// `Resources.LongTermStoragePeriodDuration`.
-pub fn long_term_storage_period_duration(metadata: &Metadata) -> Result<u32, String> {
+pub fn long_term_storage_period_duration(
+    metadata: &Metadata,
+) -> Result<u32, StatementAllowanceError> {
     let bytes = metadata
         .constant("Resources", "LongTermStoragePeriodDuration")
-        .ok_or_else(|| "Resources.LongTermStoragePeriodDuration constant missing".to_string())?;
+        .ok_or(MetadataError::MissingConstant {
+            pallet: "Resources",
+            constant: "LongTermStoragePeriodDuration",
+        })?;
     let mut buf = [0u8; 4];
     let n = bytes.len().min(4);
     buf[..n].copy_from_slice(&bytes[..n]);
@@ -135,7 +218,27 @@ pub fn long_term_storage_period_duration(metadata: &Metadata) -> Result<u32, Str
 /// The account id occupying a slot entry, if the storage value is present.
 /// Entry = `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
 fn entry_account_id(bytes: &[u8]) -> Option<[u8; 32]> {
-    bytes.get(..32).map(|s| s.try_into().expect("32 bytes"))
+    let mut input = bytes;
+    let entry = StatementStoreAllowanceEntry::decode(&mut input).ok()?;
+    let _ = (entry.seq, entry.since);
+    Some(entry.account_id)
+}
+
+/// The account holding our alias slot `(period, seq)`, read pinned to
+/// `block_hash` (`None` when the slot entry is absent).
+pub async fn read_slot_account_at(
+    rpc: &RpcClient,
+    entropy: [u8; 32],
+    period: u32,
+    seq: u32,
+    block_hash: &str,
+) -> Result<Option<[u8; 32]>, StatementAllowanceError> {
+    let alias = slot_alias(entropy, period, seq)?;
+    let key = statement_store_allowance_key(period, &alias);
+    Ok(rpc
+        .get_storage_at(&key, block_hash)
+        .await?
+        .and_then(|bytes| entry_account_id(&bytes)))
 }
 
 /// Outcome of scanning for a slot to register `target` in.
@@ -156,20 +259,21 @@ pub async fn scan_slot_excluding(
     period: u32,
     target: &[u8; 32],
     excluded: &[u32],
-) -> Result<SlotSelection, String> {
+    reuse_existing: bool,
+) -> Result<SlotSelection, StatementAllowanceError> {
     let max = max_slots(metadata)?;
     let mut first_free: Option<u32> = None;
     for seq in 0..max {
         let alias = slot_alias(entropy, period, seq)?;
         let key = statement_store_allowance_key(period, &alias);
-        match rpc.get_storage(&key).await.map_err(|e| e.to_string())? {
+        match rpc.get_storage(&key).await? {
             None => {
                 if first_free.is_none() && !excluded.contains(&seq) {
                     first_free = Some(seq);
                 }
             }
             Some(bytes) => {
-                if entry_account_id(&bytes) == Some(*target) {
+                if reuse_existing && entry_account_id(&bytes) == Some(*target) {
                     return Ok(SlotSelection::AlreadyAllocated(seq));
                 }
             }
@@ -177,7 +281,7 @@ pub async fn scan_slot_excluding(
     }
     first_free
         .map(SlotSelection::Free)
-        .ok_or_else(|| format!("no free StatementStore slot in period {period} (max {max})"))
+        .ok_or_else(|| SlotError::NoFreeStatementStoreSlot { period, max }.into())
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -188,7 +292,7 @@ pub async fn scan_long_term_storage_counter_excluding(
     entropy: [u8; 32],
     period: u32,
     excluded: &[u8],
-) -> Result<u8, String> {
+) -> Result<u8, StatementAllowanceError> {
     let max = long_term_storage_claims_per_period(metadata)?;
     for counter in 0..max {
         if excluded.contains(&counter) {
@@ -196,18 +300,11 @@ pub async fn scan_long_term_storage_counter_excluding(
         }
         let alias = long_term_storage_alias(entropy, period, counter)?;
         let key = spent_long_term_storage_alias_key(period, &alias);
-        if rpc
-            .get_storage(&key)
-            .await
-            .map_err(|e| e.to_string())?
-            .is_none()
-        {
+        if rpc.get_storage(&key).await?.is_none() {
             return Ok(counter);
         }
     }
-    Err(format!(
-        "no free long-term-storage slot in period {period} (max {max})"
-    ))
+    Err(SlotError::NoFreeLongTermStorageSlot { period, max }.into())
 }
 
 #[cfg(test)]
@@ -243,5 +340,27 @@ mod tests {
             current_long_term_storage_period(1_209_600 * 20 + 5, 1_209_600).unwrap(),
             20,
         );
+    }
+
+    #[test]
+    fn allowance_entry_matches_runtime_field_codec() {
+        let entry = StatementStoreAllowanceEntry {
+            account_id: [0x42; 32],
+            seq: 7,
+            since: 99,
+        };
+        let encoded = entry.encode();
+
+        assert_eq!(encoded, (entry.account_id, entry.seq, entry.since).encode());
+        assert_eq!(entry_account_id(&encoded), Some(entry.account_id));
+        assert_eq!(
+            StatementStoreAllowanceEntry::decode(&mut encoded.as_slice()).unwrap(),
+            entry
+        );
+    }
+
+    #[test]
+    fn truncated_allowance_entry_has_no_account() {
+        assert_eq!(entry_account_id(&[0x42; 32]), None);
     }
 }

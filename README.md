@@ -44,7 +44,7 @@ const transport = createTransport(createMessagePortProvider(port));
 const truapi = createClient(transport);
 
 const result = await truapi.accountManagement.accountGet({
-  productAccountId: { dotNsIdentifier: "my-product.dot", derivationIndex: 0 },
+  productAccountId: { dotNsIdentifier: "my-product.dot", derivationIndex: { tag: "Left", value: 0 } },
 });
 ```
 
@@ -54,20 +54,25 @@ See [`js/packages/truapi/README.md`](js/packages/truapi/README.md) for the full 
 
 ```
 rust/crates/
-  truapi/                Rust trait and type definitions (v01, v02)
+  truapi/                Rust traits, versioned envelopes, and latest payload re-exports
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         #[wire(id = N)] proc-macro
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
-  truapi-server/         Rust runtime that hosts implement: dispatcher, frames, SCALE, WASM surface
+  truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
+ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
+hosts/ios/                 polkadot-app-ios-v2, vendored as a submodule (build/test against the core)
+hosts/android/             polkadot-app-android-v2, vendored as a submodule (build/test against the core)
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
+scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
 
 ### JS Host SDKs
@@ -106,11 +111,27 @@ CI regenerates the shared bindings before building and testing both npm
 packages, so generated client and host callback changes are checked together.
 
 The native `truapi-host` utility can run pairing and signing hosts against the
-real SSO transport for local end-to-end work. Its signing-host command provides
-a transcript-based terminal UI, slash commands such as `/whoami`, `/deeplink`,
-and `/script`, plus a non-interactive `exec` form for automation. See the
+real SSO transport for local end-to-end work. Both roles provide a
+transcript-based terminal UI with commands such as `/product` and `/script`;
+the signing host also provides `/pair` and a non-interactive `exec` form for
+automation. See the
 [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup,
 controls, and examples.
+
+`scripts/battery.sh` drives that CLI from source over every code-generated
+example and writes both committed compatibility reports:
+`explorer/diagnosis-reports/signing-host-cli.md` from a direct signing-host run,
+and `pairing-host-cli.md` from a pairing host that the script pairs with a
+signing host it starts itself under the same product id. Known unsupported
+service families remain visible in the reports without making the command fail.
+
+```bash
+scripts/battery.sh                  # both phases
+scripts/battery.sh --signing-host   # direct phase only
+scripts/battery.sh --pairing-host   # paired phase only
+make e2e-signing-cli                # same direct signing-host phase
+make e2e-pairing-cli                # same paired pairing-host phase
+```
 
 To run the playground locally:
 
@@ -132,6 +153,12 @@ make playground   # rebuild the playground against the refreshed snapshot
 
 This repopulates the ignored generated TS under `js/packages/truapi/`, including the playground metadata.
 `make dev` and `make e2e-dotli` run this generation step unconditionally before starting their local stacks.
+The full `make e2e-dotli` diagnosis builds and launches the local
+`truapi-host signing-host` CLI to answer dotli's pairing QR and auto-approve
+remote signing requests. It does not require the external signer-bot service.
+When `HOST_CLI_SIGNER_MNEMONIC` is absent, the CLI manages a reusable isolated
+test identity under `.e2e-dotli/`. Set `E2E_DOTLI_SIGNING_HOST_BASE_PATH` to
+use a different state directory while debugging.
 
 ## Protocol versions
 

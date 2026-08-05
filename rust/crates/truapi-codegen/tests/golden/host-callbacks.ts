@@ -7,13 +7,15 @@
 import * as S from "@parity/truapi/scale";
 
 import {
+  AllocatableResource,
+  HostAccountSignVrfRequest,
   HostDevicePermissionRequest,
-  HostRequestResourceAllocationRequest,
   HostSignPayloadRequest,
   HostSignPayloadWithLegacyAccountRequest,
   HostSignRawRequest,
   HostSignRawWithLegacyAccountRequest,
   LegacyAccountTxPayload,
+  ProductAccountId,
   ProductAccountTxPayload,
   ProductProofContext,
   RemotePermissionRequest,
@@ -131,6 +133,15 @@ export type CoreStorageKey =
    */
   | { tag: "LastProcessedPairingStatement"; value?: undefined }
   /**
+   * Legacy unscoped RFC-0010 AutoSigning secret. Core only addresses this
+   * slot to reject and erase pre-scoping entries.
+   */
+  | { tag: "AutoSigningKey"; value: { productId: string } }
+  /**
+   * Wallet-bound RFC-0010 AutoSigning capabilities for the active pairing.
+   */
+  | { tag: "AutoSigningKeys"; value?: undefined }
+  /**
    * Statement-store allowance targets the signing host keeps renewed.
    */
   | { tag: "StatementRenewalTargets"; value?: undefined };
@@ -199,7 +210,11 @@ export type PermissionAuthorizationRequest =
   /**
    * Product-scoped permission to disclose the user's primary identity.
    */
-  | { tag: "IdentityDisclosure"; value?: undefined };
+  | { tag: "IdentityDisclosure"; value?: undefined }
+  /**
+   * Product-scoped permission to access another product's account context.
+   */
+  | { tag: "AccountAccess"; value: { targetProductId: string } };
 
 /**
  * Authorization status for a permission request.
@@ -220,6 +235,23 @@ export interface PreimageSubmitReview {
    * Size of the preimage in bytes.
    */
   size: bigint;
+}
+
+/**
+ * Review shown before allocating resources for a product. Names the
+ * beneficiary product so the user knows which product receives the
+ * (signing-capable) allowance key they are approving.
+ */
+export interface ResourceAllocationReview {
+  /**
+   * Product the allocation is requested for.
+   */
+  callingProductId: string;
+
+  /**
+   * Resources to allocate.
+   */
+  resources: Array<AllocatableResource>;
 }
 
 /**
@@ -275,6 +307,39 @@ export type SignRawReview =
   | { tag: "LegacyAccount"; value: HostSignRawWithLegacyAccountRequest };
 
 /**
+ * Review shown before signing an RFC-0023 VRF transcript.
+ */
+export interface SignVrfReview {
+  /**
+   * Product making the request.
+   */
+  callingProductId: string;
+
+  /**
+   * Product account and exact ordered transcript.
+   */
+  request: HostAccountSignVrfRequest;
+}
+
+/**
+ * Review shown before a product account signs a Statement Store proof
+ * payload. Distinct from raw-message signing: the payload is the exact
+ * unsigned statement, signed as-is (no `<Bytes>` envelope), so the host must
+ * not present it with the raw-signing convention.
+ */
+export interface StatementStoreProductSignReview {
+  /**
+   * Product account that will sign the statement payload.
+   */
+  account: ProductAccountId;
+
+  /**
+   * Exact unsigned statement payload to be signed.
+   */
+  payload: Uint8Array;
+}
+
+/**
  * Review shown before a user-confirmed core action continues.
  */
 export type UserConfirmationReview =
@@ -286,6 +351,10 @@ export type UserConfirmationReview =
    * Sign raw bytes with a product or legacy account.
    */
   | { tag: "SignRaw"; value: SignRawReview }
+  /**
+   * Sign a Statement Store proof payload with a product account.
+   */
+  | { tag: "StatementStoreProductSign"; value: StatementStoreProductSignReview }
   /**
    * Create a transaction with a product or legacy account.
    */
@@ -305,7 +374,7 @@ export type UserConfirmationReview =
   /**
    * Allocate resources for the requesting product.
    */
-  | { tag: "ResourceAllocation"; value: HostRequestResourceAllocationRequest }
+  | { tag: "ResourceAllocation"; value: ResourceAllocationReview }
   /**
    * Submit a preimage to the host-selected backend.
    */
@@ -313,7 +382,11 @@ export type UserConfirmationReview =
   /**
    * Allow a product to access another product account.
    */
-  | { tag: "AccountAccess"; value: AccountAccessReview };
+  | { tag: "AccountAccess"; value: AccountAccessReview }
+  /**
+   * Sign an RFC-0023 VRF transcript with a product account.
+   */
+  | { tag: "SignVrf"; value: SignVrfReview };
 
 /**
  * Review shown before a product asks to access another product account.
@@ -377,6 +450,10 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         sessionId: string;
       }>,
       LastProcessedPairingStatement: S._void,
+      AutoSigningKey: S.Struct({ productId: S.str }) as S.Codec<{
+        productId: string;
+      }>,
+      AutoSigningKeys: S._void,
       StatementRenewalTargets: S._void,
     }),
 );
@@ -425,6 +502,9 @@ export const PermissionAuthorizationRequest: S.Codec<PermissionAuthorizationRequ
         Device: HostDevicePermissionRequest,
         Remote: RemotePermissionRequest,
         IdentityDisclosure: S._void,
+        AccountAccess: S.Struct({ targetProductId: S.str }) as S.Codec<{
+          targetProductId: string;
+        }>,
       }),
   );
 
@@ -447,6 +527,20 @@ export const PreimageSubmitReview: S.Codec<PreimageSubmitReview> = S.lazy(
   (): S.Codec<PreimageSubmitReview> =>
     S.Struct({ size: S.u64 }) as S.Codec<PreimageSubmitReview>,
 );
+
+/**
+ * Review shown before allocating resources for a product. Names the
+ * beneficiary product so the user knows which product receives the
+ * (signing-capable) allowance key they are approving.
+ */
+export const ResourceAllocationReview: S.Codec<ResourceAllocationReview> =
+  S.lazy(
+    (): S.Codec<ResourceAllocationReview> =>
+      S.Struct({
+        callingProductId: S.str,
+        resources: S.Vector(AllocatableResource),
+      }) as S.Codec<ResourceAllocationReview>,
+  );
 
 /**
  * Decoded session fields a host shell needs to render account UI without
@@ -485,6 +579,32 @@ export const SignRawReview: S.Codec<SignRawReview> = S.lazy(
 );
 
 /**
+ * Review shown before signing an RFC-0023 VRF transcript.
+ */
+export const SignVrfReview: S.Codec<SignVrfReview> = S.lazy(
+  (): S.Codec<SignVrfReview> =>
+    S.Struct({
+      callingProductId: S.str,
+      request: HostAccountSignVrfRequest,
+    }) as S.Codec<SignVrfReview>,
+);
+
+/**
+ * Review shown before a product account signs a Statement Store proof
+ * payload. Distinct from raw-message signing: the payload is the exact
+ * unsigned statement, signed as-is (no `<Bytes>` envelope), so the host must
+ * not present it with the raw-signing convention.
+ */
+export const StatementStoreProductSignReview: S.Codec<StatementStoreProductSignReview> =
+  S.lazy(
+    (): S.Codec<StatementStoreProductSignReview> =>
+      S.Struct({
+        account: ProductAccountId,
+        payload: S.Bytes(),
+      }) as S.Codec<StatementStoreProductSignReview>,
+  );
+
+/**
  * Review shown before a user-confirmed core action continues.
  */
 export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
@@ -492,13 +612,15 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
     S.TaggedUnion({
       SignPayload: SignPayloadReview,
       SignRaw: SignRawReview,
+      StatementStoreProductSign: StatementStoreProductSignReview,
       CreateTransaction: CreateTransactionReview,
       AccountAlias: AccountAliasReview,
       CreateProof: CreateProofReview,
       IdentityDisclosure: IdentityDisclosureReview,
-      ResourceAllocation: HostRequestResourceAllocationRequest,
+      ResourceAllocation: ResourceAllocationReview,
       PreimageSubmit: PreimageSubmitReview,
       AccountAccess: AccountAccessReview,
+      SignVrf: SignVrfReview,
     }),
 );
 
@@ -714,7 +836,8 @@ export interface PreimageHost {
  * Product-scoped key-value storage.
  *
  * The core namespaces product keys before calling this trait. Host
- * implementations should treat `key` as an opaque OS-style storage key.
+ * implementations may treat `key` as opaque or decode it with
+ * `ProductStorageKey` when their physical storage is separated by product.
  */
 export interface ProductStorage {
   /**

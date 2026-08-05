@@ -40,6 +40,7 @@ const STREAM_CHUNK_BYTE_LIMIT: usize = 64 * 1024;
 const STREAM_LINE_BYTE_LIMIT: usize = 16 * 1024;
 const EVENT_BATCH_LIMIT: usize = 256;
 const MAX_VISIBLE_COMPLETIONS: usize = 8;
+const COMPOSER_HORIZONTAL_PADDING: u16 = 1;
 
 /// Tracing target reserved for SSO summaries that must remain visible at every log level.
 pub const SSO_TRANSCRIPT_TARGET: &str = "truapi_server::sso_transcript";
@@ -110,6 +111,7 @@ pub enum SystemEvent {
         url: String,
     },
     SigningHostReady,
+    SigningHostNeedsSession,
     SigningHostAccountExhausted {
         name: String,
         period: u32,
@@ -121,7 +123,6 @@ pub enum SystemEvent {
         reason: String,
     },
     SigningHostResponderStarted,
-    ProductConnectionsReset,
     RingInfo {
         ring_index: u32,
         members: usize,
@@ -170,6 +171,7 @@ pub enum SystemEvent {
     PairingFailed {
         reason: String,
     },
+    ScriptStarted,
     ScriptExit {
         code: i32,
     },
@@ -503,7 +505,7 @@ impl UiHandle {
         });
     }
 
-    /// Update the connection label shown in the transcript panel title.
+    /// Update the user or transitional auth label shown in the status bar.
     pub fn connection(&self, state: impl Into<String>) {
         let _ = self.sender.send(UiEvent::Connection(state.into()));
     }
@@ -545,6 +547,7 @@ impl TerminalUi {
     /// Create a terminal transcript and its cloneable host bridge.
     pub fn new(
         network: impl Into<String>,
+        product_id: impl Into<String>,
         session: impl Into<String>,
         session_names: Vec<String>,
         log_level: LogLevel,
@@ -557,7 +560,13 @@ impl TerminalUi {
             Self {
                 sender,
                 receiver,
-                app: App::new(network.into(), session.into(), session_names, log_level),
+                app: App::new(
+                    network.into(),
+                    product_id.into(),
+                    session.into(),
+                    session_names,
+                    log_level,
+                ),
             },
             handle,
         )
@@ -598,6 +607,7 @@ impl TerminalUi {
             sender: self.sender,
             app: self.app,
             clipboard: None,
+            copy_next_pairing_deeplink: false,
         })
     }
 }
@@ -620,6 +630,7 @@ pub struct ActiveTerminalUi {
     sender: mpsc::UnboundedSender<UiEvent>,
     app: App,
     clipboard: Option<arboard::Clipboard>,
+    copy_next_pairing_deeplink: bool,
 }
 
 impl ActiveTerminalUi {
@@ -667,6 +678,11 @@ impl ActiveTerminalUi {
     pub fn copy_transcript(&mut self) -> Result<usize> {
         let text = self.app.transcript_text();
         let entries = self.app.entries.len();
+        self.copy_text(text, "copy transcript to system clipboard")?;
+        Ok(entries)
+    }
+
+    fn copy_text(&mut self, text: String, context: &'static str) -> Result<()> {
         if self.clipboard.is_none() {
             self.clipboard = Some(arboard::Clipboard::new().context("open system clipboard")?);
         }
@@ -674,13 +690,17 @@ impl ActiveTerminalUi {
             .as_mut()
             .expect("clipboard was initialized above")
             .set_text(text)
-            .context("copy transcript to system clipboard")?;
-        Ok(entries)
+            .context(context)
     }
 
     /// Update the displayed log level after `/log` succeeds.
     pub fn set_log_level(&mut self, level: LogLevel) {
         self.app.log_level = level;
+    }
+
+    /// Update the product shown in the host status bar.
+    pub fn set_product(&mut self, product_id: impl Into<String>) {
+        self.app.product = product_id.into();
     }
 
     /// Return an activity id boundary for one operational command.
@@ -728,7 +748,7 @@ impl ActiveTerminalUi {
             tokio::select! {
                 event = self.receiver.recv() => {
                     let Some(event) = event else { return Ok(None); };
-                    self.app.handle_event(event);
+                    self.handle_ui_event(event);
                     self.drain_pending_events();
                 }
                 event = self.events.as_mut().expect("terminal events are active").next() => {
@@ -762,7 +782,7 @@ impl ActiveTerminalUi {
                 }
                 event = self.receiver.recv() => {
                     if let Some(event) = event {
-                        self.app.handle_event(event);
+                        self.handle_ui_event(event);
                         self.drain_pending_events();
                     }
                 }
@@ -781,6 +801,21 @@ impl ActiveTerminalUi {
         }
     }
 
+    /// Drive `/login` while copying the first typed pairing deeplink event.
+    pub async fn drive_pairing_login<F, T>(
+        &mut self,
+        label: impl Into<String>,
+        future: F,
+    ) -> Result<DriveResult<T>>
+    where
+        F: Future<Output = T>,
+    {
+        self.copy_next_pairing_deeplink = true;
+        let result = self.drive(label, future).await;
+        self.copy_next_pairing_deeplink = false;
+        result
+    }
+
     fn draw(&mut self) -> Result<()> {
         let app = &mut self.app;
         self.terminal
@@ -796,8 +831,40 @@ impl ActiveTerminalUi {
             let Ok(event) = self.receiver.try_recv() else {
                 break;
             };
-            self.app.handle_event(event);
+            self.handle_ui_event(event);
         }
+    }
+
+    fn handle_ui_event(&mut self, event: UiEvent) {
+        let deeplink = pairing_deeplink_to_copy(self.copy_next_pairing_deeplink, &event)
+            .map(ToOwned::to_owned);
+        self.app.handle_event(event);
+        let Some(deeplink) = deeplink else {
+            return;
+        };
+        self.copy_next_pairing_deeplink = false;
+        match self.copy_text(deeplink, "copy pairing link to system clipboard") {
+            Ok(()) => self.app.notice(
+                NoticeTone::Success,
+                "Pairing link copied".to_string(),
+                Some("Clipboard updated".to_string()),
+            ),
+            Err(error) => self.app.notice(
+                NoticeTone::Warning,
+                "Could not copy pairing link".to_string(),
+                Some(error.to_string()),
+            ),
+        }
+    }
+}
+
+fn pairing_deeplink_to_copy(enabled: bool, event: &UiEvent) -> Option<&str> {
+    if !enabled {
+        return None;
+    }
+    match event {
+        UiEvent::System(SystemEvent::PairingDeeplink { url }) => Some(url),
+        _ => None,
     }
 }
 
@@ -860,6 +927,7 @@ enum HostRole {
 struct App {
     role: HostRole,
     network: String,
+    product: String,
     session: String,
     connection: String,
     log_level: LogLevel,
@@ -877,6 +945,7 @@ struct App {
 impl App {
     fn new(
         network: String,
+        product_id: String,
         session: String,
         session_names: Vec<String>,
         log_level: LogLevel,
@@ -884,6 +953,7 @@ impl App {
         Self::with_role(
             HostRole::Signing,
             network,
+            product_id,
             session,
             session_names,
             log_level,
@@ -895,6 +965,7 @@ impl App {
             HostRole::Pairing,
             network,
             product_id,
+            String::new(),
             Vec::new(),
             log_level,
         )
@@ -903,6 +974,7 @@ impl App {
     fn with_role(
         role: HostRole,
         network: String,
+        product: String,
         session: String,
         session_names: Vec<String>,
         log_level: LogLevel,
@@ -915,6 +987,7 @@ impl App {
         Self {
             role,
             network,
+            product,
             session,
             connection: "disconnected".to_string(),
             log_level,
@@ -1211,6 +1284,11 @@ impl App {
                 None,
                 ActivityState::Succeeded,
             ),
+            SystemEvent::SigningHostNeedsSession => self.notice(
+                NoticeTone::Warning,
+                "No connected user".to_string(),
+                Some("Use /session <name> to start a session.".to_string()),
+            ),
             SystemEvent::SigningHostAccountExhausted { name, period } => self.notice(
                 NoticeTone::Warning,
                 format!("Account {name} has no free slots; switching accounts"),
@@ -1232,11 +1310,6 @@ impl App {
                 "Waiting for the pairing host".to_string(),
                 None,
                 ActivityState::Running,
-            ),
-            SystemEvent::ProductConnectionsReset => self.notice(
-                NoticeTone::Warning,
-                "Session changed".to_string(),
-                Some("Reconnect product clients to continue.".to_string()),
             ),
             SystemEvent::RingInfo {
                 ring_index,
@@ -1359,13 +1432,23 @@ impl App {
                 Some(reason),
                 ActivityState::Failed,
             ),
-            SystemEvent::ScriptExit { code: 0 } => {
-                self.notice(NoticeTone::Success, "Script finished".to_string(), None)
-            }
-            SystemEvent::ScriptExit { code } => self.notice(
-                NoticeTone::Error,
+            SystemEvent::ScriptStarted => self.activity(
+                "script".to_string(),
+                "Script running".to_string(),
+                None,
+                ActivityState::Running,
+            ),
+            SystemEvent::ScriptExit { code: 0 } => self.activity(
+                "script".to_string(),
+                "Script finished".to_string(),
+                None,
+                ActivityState::Succeeded,
+            ),
+            SystemEvent::ScriptExit { code } => self.activity(
+                "script".to_string(),
                 "Script failed".to_string(),
                 Some(format!("Exit code {code}")),
+                ActivityState::Failed,
             ),
             SystemEvent::SessionStatus {
                 name,
@@ -1636,9 +1719,10 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         app.editor.completions()
     };
     let height = frame.area().height;
-    let show_padding = height >= 7;
-    let show_footer = height >= 5;
-    let base_composer_height = 1 + u16::from(show_padding) + u16::from(show_footer);
+    let show_vertical_padding = height >= 7;
+    let show_footer = height >= 3;
+    let vertical_padding = u16::from(show_vertical_padding);
+    let base_composer_height = 1 + vertical_padding * 2 + u16::from(show_footer);
     let available_completion_height = if height <= 4 {
         0
     } else {
@@ -1655,32 +1739,45 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     );
     let completion_height = completion_range.len() as u16;
     let composer_height = base_composer_height.saturating_add(completion_height);
-    let areas = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(composer_height),
-    ])
-    .split(frame.area());
-    app.transcript_height = areas[1].height as usize;
-
-    frame.render_widget(Paragraph::new(header_line(app, areas[0].width)), areas[0]);
+    let areas = Layout::vertical([Constraint::Min(1), Constraint::Length(composer_height)])
+        .split(frame.area());
+    app.transcript_height = areas[0].height as usize;
 
     let transcript_lines = app
         .entries
         .iter()
-        .flat_map(feed_item_lines)
+        .flat_map(|item| feed_item_lines(item, usize::from(areas[0].width)))
         .collect::<Vec<_>>();
     let transcript = Paragraph::new(transcript_lines).wrap(Wrap { trim: false });
-    let content_height = transcript.line_count(areas[1].width);
+    let content_height = transcript.line_count(areas[0].width);
     let top = content_height
         .saturating_sub(app.transcript_height)
         .saturating_sub(app.scroll_from_bottom)
         .min(u16::MAX as usize) as u16;
-    frame.render_widget(transcript.scroll((top, 0)), areas[1]);
+    frame.render_widget(transcript.scroll((top, 0)), areas[0]);
 
-    let surface_area = areas[2];
+    let surface_area = areas[1];
     let surface_style = input_surface_style();
-    frame.render_widget(Block::default().style(surface_style), surface_area);
+    let input_surface_area = Rect::new(
+        surface_area.x,
+        surface_area.y,
+        surface_area.width,
+        surface_area.height.saturating_sub(u16::from(show_footer)),
+    );
+    frame.render_widget(Block::default().style(surface_style), input_surface_area);
+    let content_padding = if surface_area.width >= 4 {
+        COMPOSER_HORIZONTAL_PADDING
+    } else {
+        0
+    };
+    let composer_content_area = Rect::new(
+        surface_area.x.saturating_add(content_padding),
+        surface_area.y,
+        surface_area
+            .width
+            .saturating_sub(content_padding.saturating_mul(2)),
+        surface_area.height,
+    );
 
     if completion_height > 0 {
         let selected = app.editor.completion_index();
@@ -1701,7 +1798,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
                     completion.value.clone(),
                     semantic_style(Color::Cyan).add_modifier(Modifier::BOLD),
                 )];
-                if surface_area.width >= 40 {
+                if composer_content_area.width >= 40 {
                     let padding =
                         command_column_width.saturating_sub(text_display_width(&completion.value));
                     spans.push(Span::raw(" ".repeat(padding.saturating_add(2))));
@@ -1716,9 +1813,9 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         let mut state = ListState::default()
             .with_selected(Some(selected.saturating_sub(completion_range.start)));
         let completion_area = Rect::new(
-            surface_area.x,
-            surface_area.y.saturating_add(u16::from(show_padding)),
-            surface_area.width,
+            composer_content_area.x,
+            surface_area.y.saturating_add(vertical_padding),
+            composer_content_area.width,
             completion_height,
         );
         frame.render_stateful_widget(
@@ -1735,11 +1832,11 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let approval = app.pending_approval.is_some();
     let input = app.editor.text();
     let prompt_area = Rect::new(
-        surface_area.x,
+        composer_content_area.x,
         surface_area
             .bottom()
-            .saturating_sub(1 + u16::from(show_footer)),
-        surface_area.width,
+            .saturating_sub(1 + u16::from(show_footer) + vertical_padding),
+        composer_content_area.width,
         1,
     );
     let viewport = input_viewport(
@@ -1747,20 +1844,28 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         app.editor.cursor(),
         prompt_area.width.saturating_sub(2),
     );
+    let (prompt_text, prompt_style) = if input.is_empty() && !approval {
+        (
+            "Type / for commands".to_string(),
+            Style::default().add_modifier(Modifier::DIM),
+        )
+    } else {
+        (
+            viewport.text,
+            if approval {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        )
+    };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
                 "› ",
                 semantic_style(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                viewport.text,
-                if approval {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                },
-            ),
+            Span::styled(prompt_text, prompt_style),
         ]))
         .style(surface_style),
         prompt_area,
@@ -1773,7 +1878,6 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     frame.set_cursor_position((cursor_x, prompt_area.y));
 
     if show_footer {
-        let footer = footer_text(app, approval, completion_height > 0, surface_area.width);
         let footer_area = Rect::new(
             surface_area.x,
             surface_area.bottom().saturating_sub(1),
@@ -1781,9 +1885,46 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
             1,
         );
         frame.render_widget(
-            Paragraph::new(format!("  {footer}")).style(surface_style.add_modifier(Modifier::DIM)),
+            Paragraph::new(composer_status_line(
+                app,
+                approval,
+                completion_height > 0,
+                surface_area.width,
+            )),
             footer_area,
         );
+    }
+}
+
+fn composer_status_line(
+    app: &App,
+    approval: bool,
+    autocomplete: bool,
+    width: u16,
+) -> Line<'static> {
+    let mut status = header_line(app, width);
+    let hint = footer_text(app, approval, autocomplete, width);
+    if hint.is_empty() {
+        return status;
+    }
+    let status_width = status
+        .spans
+        .iter()
+        .map(|span| text_display_width(span.content.as_ref()))
+        .sum::<usize>();
+    let hint_width = text_display_width(&hint);
+    let width = usize::from(width);
+    if status_width.saturating_add(hint_width).saturating_add(3) <= width {
+        status
+            .spans
+            .push(Span::raw(" ".repeat(width - status_width - hint_width)));
+        status.spans.push(Span::styled(
+            hint,
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+        status
+    } else {
+        status
     }
 }
 
@@ -1800,11 +1941,7 @@ fn footer_text(app: &App, approval: bool, autocomplete: bool, width: u16) -> Str
     if autocomplete && width >= 70 {
         return "↑↓ select · Tab/Enter complete".to_string();
     }
-    match width {
-        0..40 => "/ commands".to_string(),
-        40..70 => "/ commands · Tab complete".to_string(),
-        _ => "Type / for commands · ↑↓ history · Tab complete".to_string(),
-    }
+    String::new()
 }
 
 fn input_surface_style() -> Style {
@@ -1891,36 +2028,106 @@ fn rgb_to_ansi256(red: u8, green: u8, blue: u8) -> u8 {
 }
 
 fn header_line(app: &App, width: u16) -> Line<'static> {
-    let connection_style = if app.connection.starts_with("connected") {
-        semantic_style(Color::Green)
-    } else if app.connection == "failed" {
-        semantic_style(Color::Red)
-    } else {
-        Style::default().add_modifier(Modifier::DIM)
+    let user_style = match app.connection.as_str() {
+        "failed" => semantic_style(Color::Red),
+        "disconnected" | "pairing" | "authenticating" | "connected" => {
+            Style::default().add_modifier(Modifier::DIM)
+        }
+        _ => semantic_style(Color::Green),
     };
-    let mut spans = vec![
-        Span::styled(
-            " TrUAPI ",
-            semantic_style(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("· "),
-        Span::styled(app.connection.clone(), connection_style),
-    ];
-    if width >= 55 {
-        spans.push(Span::raw(format!(" · {}", app.network)));
+    let role = match app.role {
+        HostRole::Pairing => "pairing",
+        HostRole::Signing => "signing",
+    };
+    let title = format!(" TrUAPI {role} host");
+    let user_prefix = " · 👤 ";
+    let network_prefix = " · 🌐 ";
+    let product_prefix = " · 📦 ";
+    let width = usize::from(width);
+    let full_prefix_width = text_display_width(&title)
+        .saturating_add(text_display_width(user_prefix))
+        .saturating_add(text_display_width(&app.connection))
+        .saturating_add(text_display_width(network_prefix))
+        .saturating_add(text_display_width(&app.network))
+        .saturating_add(text_display_width(product_prefix));
+
+    if full_prefix_width < width {
+        let product = ellipsize_display_width(&app.product, width - full_prefix_width);
+        return Line::from(vec![
+            Span::styled(
+                title,
+                semantic_style(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(user_prefix),
+            Span::styled(app.connection.clone(), user_style),
+            Span::raw(network_prefix),
+            Span::styled(
+                app.network.clone(),
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+            Span::raw(product_prefix),
+            Span::styled(product, semantic_style(Color::Cyan)),
+        ]);
     }
-    if width >= 80 {
-        let context = match app.role {
-            HostRole::Pairing => "product",
-            HostRole::Signing => "session",
-        };
-        spans.push(Span::raw(format!(" · {context} {}", app.session)));
-        spans.push(Span::styled(
-            format!(" · log {}", app.log_level),
-            Style::default().add_modifier(Modifier::DIM),
+
+    let fixed_width = text_display_width(" 👤 ")
+        .saturating_add(text_display_width(network_prefix))
+        .saturating_add(text_display_width(product_prefix));
+    if fixed_width >= width {
+        return Line::from(Span::styled(
+            ellipsize_display_width(&title, width),
+            semantic_style(Color::Cyan).add_modifier(Modifier::BOLD),
         ));
     }
-    Line::from(spans)
+    let mut remaining = width - fixed_width;
+    let user_budget = text_display_width(&app.connection).min(remaining / 3);
+    remaining = remaining.saturating_sub(user_budget);
+    let network_budget = text_display_width(&app.network).min(remaining / 2);
+    remaining = remaining.saturating_sub(network_budget);
+    let product_budget = remaining;
+
+    Line::from(vec![
+        Span::raw(" 👤 "),
+        Span::styled(
+            ellipsize_display_width(&app.connection, user_budget),
+            user_style,
+        ),
+        Span::raw(network_prefix),
+        Span::styled(
+            ellipsize_display_width(&app.network, network_budget),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::raw(product_prefix),
+        Span::styled(
+            ellipsize_display_width(&app.product, product_budget),
+            semantic_style(Color::Cyan),
+        ),
+    ])
+}
+
+fn ellipsize_display_width(value: &str, max_width: usize) -> String {
+    if text_display_width(value) <= max_width {
+        return value.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let content_width = max_width - 1;
+    let mut result = String::new();
+    let mut width = 0usize;
+    for character in value.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width.saturating_add(character_width) > content_width {
+            break;
+        }
+        result.push(character);
+        width = width.saturating_add(character_width);
+    }
+    result.push('…');
+    result
 }
 
 fn semantic_style(color: Color) -> Style {
@@ -1951,7 +2158,7 @@ fn feed_item_cost(item: &FeedItem) -> (usize, usize) {
     (lines.len().max(1), bytes)
 }
 
-fn feed_item_lines(item: &FeedItem) -> Vec<Line<'static>> {
+fn feed_item_lines(item: &FeedItem, width: usize) -> Vec<Line<'static>> {
     match item {
         FeedItem::Log(text) => text
             .lines()
@@ -1967,20 +2174,13 @@ fn feed_item_lines(item: &FeedItem) -> Vec<Line<'static>> {
             title,
             detail,
         } => status_lines(*tone, title, detail.as_deref()),
-        FeedItem::Command(command) => vec![
-            Line::default(),
-            Line::from(vec![
-                Span::styled(
-                    "┃ ",
-                    semantic_style(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    command.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::default(),
-        ],
+        FeedItem::Command(command) => {
+            vec![
+                Line::default(),
+                command_divider_line(command, width),
+                Line::default(),
+            ]
+        }
         FeedItem::Stream { kind, lines } => lines
             .iter()
             .enumerate()
@@ -2055,6 +2255,54 @@ fn feed_item_lines(item: &FeedItem) -> Vec<Line<'static>> {
     }
 }
 
+fn command_divider_line(command: &str, width: usize) -> Line<'static> {
+    let divider_style = Style::default().add_modifier(Modifier::DIM);
+    if width == 0 {
+        return Line::from(vec![
+            Span::styled("─ ", divider_style),
+            Span::styled(
+                command.to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+    if width <= 3 {
+        return Line::from(Span::styled("─".repeat(width), divider_style));
+    }
+    let title = truncate_display_width(command, width - 3);
+    let used = 3 + text_display_width(&title);
+    Line::from(vec![
+        Span::styled("─ ", divider_style),
+        Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {}", "─".repeat(width.saturating_sub(used))),
+            divider_style,
+        ),
+    ])
+}
+
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    if text_display_width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let content_width = max_width - 1;
+    let mut result = String::new();
+    let mut width = 0;
+    for character in text.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width + character_width > content_width {
+            break;
+        }
+        result.push(character);
+        width += character_width;
+    }
+    result.push('…');
+    result
+}
+
 fn status_lines(tone: NoticeTone, title: &str, detail: Option<&str>) -> Vec<Line<'static>> {
     let (symbol, color) = match tone {
         NoticeTone::Info => ("•", Color::Cyan),
@@ -2103,7 +2351,7 @@ fn activity_lines(state: ActivityState, label: &str, detail: Option<&str>) -> Ve
 }
 
 fn feed_item_plain_lines(item: &FeedItem) -> Vec<String> {
-    feed_item_lines(item)
+    feed_item_lines(item, 0)
         .into_iter()
         .map(|line| {
             let line = line
@@ -2179,8 +2427,8 @@ fn text_display_width(text: &str) -> usize {
 }
 
 fn redact_command(command: &str) -> String {
-    if command.trim_start().starts_with("/deeplink ") {
-        "/deeplink <pairing link>".to_string()
+    if command.trim_start().starts_with("/pair ") {
+        "/pair <pairing link>".to_string()
     } else {
         sanitize_terminal_text(command)
     }
@@ -2243,7 +2491,7 @@ fn truncate_utf8(text: &str, max_bytes: usize) -> String {
 
 fn allowance_name(target: &str) -> &'static str {
     match target {
-        "wallet-sso" => "Wallet",
+        "identity" => "Identity",
         "device" => "Device",
         _ => "Product",
     }
@@ -2325,6 +2573,7 @@ mod tests {
     fn test_app() -> App {
         App::new(
             "testnet".to_string(),
+            "playground.dot".to_string(),
             "default".to_string(),
             vec!["default".to_string()],
             LogLevel::Info,
@@ -2378,15 +2627,27 @@ mod tests {
     fn transcript_copy_uses_natural_grouped_output_and_redacts_deeplinks() {
         let mut app = test_app();
         app.handle_system_event(SystemEvent::SigningHostReady);
-        app.push_command("/deeplink polkadotapp://pair?handshake=secret".to_string());
+        app.push_command("/pair polkadotapp://pair?handshake=secret".to_string());
         app.stream(StreamKind::Stdout, "user id: alice.dot".to_string());
 
         let transcript = app.transcript_text();
         assert!(transcript.contains("✓ Signing host ready"));
-        assert!(transcript.contains("┃ /deeplink <pairing link>"));
+        assert!(transcript.contains("─ /pair <pairing link>"));
         assert!(transcript.contains("  user id: alice.dot"));
         assert!(!transcript.contains("handshake=secret"));
         assert!(!transcript.contains("SCRIPT ·"));
+    }
+
+    #[test]
+    fn missing_signing_session_explains_how_to_connect_a_user() {
+        let mut app = test_app();
+
+        app.handle_system_event(SystemEvent::SigningHostNeedsSession);
+
+        assert_eq!(
+            app.transcript_text(),
+            "! No connected user\n  Use /session <name> to start a session."
+        );
     }
 
     #[test]
@@ -2509,10 +2770,16 @@ mod tests {
             app.editor.completion_index(),
             MAX_VISIBLE_COMPLETIONS,
         );
+        assert!(visible.len() <= MAX_VISIBLE_COMPLETIONS);
         assert!(
-            completions[visible]
+            completions
                 .iter()
                 .any(|completion| completion.value == "/copy")
+        );
+        assert!(
+            completions
+                .iter()
+                .any(|completion| completion.value == "/renew")
         );
 
         assert_eq!(completion_window(12, 0, 8), 0..8);
@@ -2532,7 +2799,7 @@ mod tests {
             .context("render deeplink completion")?;
         let script = screen
             .lines()
-            .find(|line| line.contains("edit a new"))
+            .find(|line| line.contains("edit the last"))
             .context("render script completion")?;
         let clear = screen
             .lines()
@@ -2549,7 +2816,7 @@ mod tests {
     }
 
     #[test]
-    fn session_event_updates_header_state_and_completions() {
+    fn session_event_updates_status_state_and_completions() {
         let mut app = test_app();
         app.handle_event(UiEvent::Session {
             name: "alice".to_string(),
@@ -2562,7 +2829,7 @@ mod tests {
     }
 
     #[test]
-    fn pairing_host_uses_product_context_in_the_shared_renderer() -> Result<()> {
+    fn pairing_host_status_names_the_role_without_product_or_log_noise() -> Result<()> {
         let mut app = App::new_pairing(
             "paseo-next-v2".to_string(),
             "playground.dot".to_string(),
@@ -2571,11 +2838,64 @@ mod tests {
         app.editor.set_text("/");
 
         let (screen, _) = render_app(&mut app, 120, 14)?;
+        let status = line_text(header_line(&app, 120));
 
-        assert!(screen.contains("product playground.dot"));
+        assert_eq!(
+            status,
+            " TrUAPI pairing host · 👤 disconnected · 🌐 paseo-next-v2 · 📦 playground.dot"
+        );
+        assert!(!screen.contains("log info"));
         assert!(screen.contains("/script"));
-        assert!(!screen.contains("/deeplink"));
+        assert!(!screen.contains("/pair"));
         assert!(!screen.contains("/session"));
+        Ok(())
+    }
+
+    #[test]
+    fn signing_host_status_shows_user_network_and_product_without_labels() -> Result<()> {
+        let mut app = test_app();
+        app.connection = "alice.dot".to_string();
+
+        let (screen, _) = render_app(&mut app, 120, 8)?;
+        let status = line_text(header_line(&app, 120));
+
+        assert_eq!(
+            status,
+            " TrUAPI signing host · 👤 alice.dot · 🌐 testnet · 📦 playground.dot"
+        );
+        assert!(!screen.contains("session default"));
+        assert!(!screen.contains("log info"));
+        Ok(())
+    }
+
+    #[test]
+    fn long_product_name_is_ellipsized_in_the_status_bar() -> Result<()> {
+        let mut app = test_app();
+        app.product = "product-name-that-is-far-too-long-for-the-status-bar".to_string();
+
+        let status = line_text(header_line(&app, 80));
+
+        assert!(status.contains('…'));
+        assert!(!status.contains(&app.product));
+        assert!(text_display_width(&status) <= 80);
+        for width in 1..=120 {
+            let status = line_text(header_line(&app, width));
+            assert!(text_display_width(&status) <= usize::from(width));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn idle_command_guidance_is_an_input_placeholder() -> Result<()> {
+        let mut app = test_app();
+
+        let (idle, _) = render_app(&mut app, 80, 7)?;
+        assert!(idle.contains("› Type / for commands"));
+        assert!(!idle.contains("↑↓ history"));
+
+        app.editor.set_text("/session");
+        let (editing, _) = render_app(&mut app, 80, 7)?;
+        assert!(!editing.contains("Type / for commands"));
         Ok(())
     }
 
@@ -2641,15 +2961,38 @@ mod tests {
     }
 
     #[test]
+    fn operator_login_copies_only_the_typed_pairing_deeplink_event() {
+        let event = UiEvent::System(SystemEvent::PairingDeeplink {
+            url: "polkadotapp://pair?handshake=0123".to_string(),
+        });
+
+        assert_eq!(
+            pairing_deeplink_to_copy(true, &event),
+            Some("polkadotapp://pair?handshake=0123")
+        );
+        assert_eq!(pairing_deeplink_to_copy(false, &event), None);
+        assert_eq!(
+            pairing_deeplink_to_copy(true, &UiEvent::Connection("pairing".to_string())),
+            None
+        );
+    }
+
+    #[test]
     fn prompt_cursor_is_after_ascii_and_wide_input() -> Result<()> {
         let mut app = test_app();
         app.editor.set_text("/d");
-        let (_, cursor) = render_app(&mut app, 80, 12)?;
-        assert_eq!(cursor.x, 4);
+        let (screen, cursor) = render_app(&mut app, 80, 12)?;
+        assert!(
+            screen
+                .lines()
+                .find(|line| line.contains("/d"))
+                .is_some_and(|line| line.starts_with(" › /d"))
+        );
+        assert_eq!(cursor.x, 5);
 
         app.editor.set_text("/界");
         let (_, cursor) = render_app(&mut app, 80, 12)?;
-        assert_eq!(cursor.x, 5);
+        assert_eq!(cursor.x, 6);
         Ok(())
     }
 
@@ -2665,16 +3008,37 @@ mod tests {
     fn rendered_command_and_script_output_use_a_quiet_transcript() -> Result<()> {
         let mut app = test_app();
         app.push_command("/script demo.ts".to_string());
+        app.handle_system_event(SystemEvent::ScriptStarted);
         app.stream(StreamKind::Stdout, "head follow event {".to_string());
         app.stream(StreamKind::Stdout, "  tag: Initialized".to_string());
         app.handle_system_event(SystemEvent::ScriptExit { code: 0 });
 
         let (screen, _) = render_app(&mut app, 80, 14)?;
-        assert!(screen.contains("┃ /script demo.ts"));
+        let divider = screen
+            .lines()
+            .find(|line| line.contains("/script demo.ts"))
+            .expect("render command divider");
+        assert!(divider.starts_with("─ /script demo.ts "));
+        assert!(divider.ends_with('─'));
         assert!(screen.contains("  head follow event {"));
         assert!(screen.contains("✓ Script finished"));
         assert!(!screen.contains("SCRIPT ·"));
         assert!(!screen.contains("┌ command"));
+        Ok(())
+    }
+
+    #[test]
+    fn script_lifecycle_replaces_running_label_with_outcome() -> Result<()> {
+        let mut app = test_app();
+        app.handle_system_event(SystemEvent::ScriptStarted);
+
+        let (running, _) = render_app(&mut app, 80, 8)?;
+        assert!(running.contains("◌ Script running"));
+
+        app.handle_system_event(SystemEvent::ScriptExit { code: 0 });
+        let (finished, _) = render_app(&mut app, 80, 8)?;
+        assert!(finished.contains("✓ Script finished"));
+        assert!(!finished.contains("Script running"));
         Ok(())
     }
 
@@ -2691,28 +3055,49 @@ mod tests {
 
             let (screen, cursor) = render_app(&mut app, width, 12)?;
 
-            assert!(screen.contains("TrUAPI"));
-            assert!(screen.contains("disconnected"));
+            assert!(screen.contains("👤"));
+            assert!(screen.contains("🌐"));
+            assert!(screen.contains("📦"));
+            if width >= 80 {
+                assert!(screen.contains("TrUAPI signing host"));
+                assert!(screen.contains("disconnected"));
+            }
             assert!(cursor.x < width);
         }
         Ok(())
     }
 
     #[test]
-    fn composer_preserves_input_before_optional_padding_and_footer() -> Result<()> {
+    fn host_status_is_rendered_below_the_composer() -> Result<()> {
         let mut app = test_app();
 
         let (short, short_cursor) = render_app(&mut app, 80, 4)?;
-        assert_eq!(short_cursor.y, 3);
-        assert!(!short.contains("Type / for commands"));
+        assert_eq!(short_cursor.y, 2);
+        assert!(
+            short
+                .lines()
+                .nth(3)
+                .is_some_and(|line| line.contains("TrUAPI"))
+        );
 
         let (medium, medium_cursor) = render_app(&mut app, 80, 5)?;
         assert_eq!(medium_cursor.y, 3);
-        assert!(medium.contains("Type / for commands"));
+        assert!(
+            medium
+                .lines()
+                .nth(4)
+                .is_some_and(|line| line.contains("TrUAPI"))
+        );
 
         let (normal, normal_cursor) = render_app(&mut app, 80, 7)?;
-        assert_eq!(normal_cursor.y, 5);
-        assert!(normal.contains("Type / for commands"));
+        assert_eq!(normal_cursor.y, 4);
+        assert_eq!(normal.lines().nth(5), Some(""));
+        assert!(
+            normal
+                .lines()
+                .nth(6)
+                .is_some_and(|line| line.contains("TrUAPI"))
+        );
         Ok(())
     }
 
@@ -2901,5 +3286,12 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         Ok((screen, cursor))
+    }
+
+    fn line_text(line: Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 }

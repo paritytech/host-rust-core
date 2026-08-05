@@ -3,8 +3,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use truapi_platform::normalize_product_identifier;
+
 use crate::LogLevel;
 use crate::sessions;
+
+/// Operation selected through `/product`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProductCommand {
+    /// Print the currently selected product.
+    Current,
+    /// Switch to the validated, normalized product id.
+    Switch(String),
+}
 
 /// Operation selected through `/session`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,9 +32,9 @@ pub enum SessionCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellCommand {
     /// Answer a Polkadot Mobile pairing deeplink.
-    Deeplink(String),
-    /// Edit a new product script, or run an existing one, through the public
-    /// frame endpoint.
+    Pair(String),
+    /// Edit the remembered product script, or run an explicit one, through the
+    /// public frame endpoint.
     Script(Option<PathBuf>),
     /// Show command and keyboard help.
     Help,
@@ -31,8 +42,14 @@ pub enum ShellCommand {
     Clear,
     /// Copy the retained transcript to the system clipboard.
     Copy,
+    /// Start the pairing-host login flow for the selected product.
+    Login,
+    /// Disconnect a pairing host and discard its old pairing keypair.
+    Logout,
     /// Replace the active tracing filter with a log level.
     Log(LogLevel),
+    /// Inspect or switch the product used by scripts and frame connections.
+    Product(ProductCommand),
     /// Inspect, list, or switch the active persistent session.
     Session(SessionCommand),
     /// Renew tracked statement-store allowances for the current period.
@@ -55,14 +72,14 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
         .split_once(char::is_whitespace)
         .map_or((input, ""), |(name, argument)| (name, argument.trim()));
     match name {
-        "/deeplink" => {
+        "/pair" => {
             if argument.is_empty() {
-                return Err("usage: /deeplink <polkadotapp://pair?...>".to_string());
+                return Err("usage: /pair <polkadotapp://pair?...>".to_string());
             }
             if !argument.starts_with("polkadotapp://pair?") {
-                return Err("/deeplink expects a polkadotapp://pair?... URL".to_string());
+                return Err("/pair expects a polkadotapp://pair?... URL".to_string());
             }
-            Ok(ShellCommand::Deeplink(argument.to_string()))
+            Ok(ShellCommand::Pair(argument.to_string()))
         }
         "/script" => {
             if argument.is_empty() {
@@ -73,11 +90,21 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
         "/help" => no_argument(name, argument, ShellCommand::Help),
         "/clear" => no_argument(name, argument, ShellCommand::Clear),
         "/copy" => no_argument(name, argument, ShellCommand::Copy),
+        "/login" => no_argument(name, argument, ShellCommand::Login),
+        "/logout" => no_argument(name, argument, ShellCommand::Logout),
         "/log" => {
             if argument.is_empty() {
                 return Err("usage: /log <error|warn|info|debug|trace>".to_string());
             }
             Ok(ShellCommand::Log(argument.parse::<LogLevel>()?))
+        }
+        "/product" => {
+            if argument.is_empty() {
+                return Ok(ShellCommand::Product(ProductCommand::Current));
+            }
+            let product_id =
+                normalize_product_identifier(argument).map_err(|error| error.to_string())?;
+            Ok(ShellCommand::Product(ProductCommand::Switch(product_id)))
         }
         "/session" => {
             if argument.is_empty() {
@@ -86,7 +113,7 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             if argument == "--list" {
                 return Ok(ShellCommand::Session(SessionCommand::List));
             }
-            sessions::validate_name(argument)?;
+            sessions::validate_selectable_name(argument)?;
             Ok(ShellCommand::Session(SessionCommand::Switch(
                 argument.to_string(),
             )))
@@ -117,9 +144,10 @@ pub struct Completion {
 }
 
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
-    ("/deeplink ", "answer a Polkadot Mobile pairing URL"),
-    ("/script", "edit a new or run an existing product script"),
-    ("/log ", "set error, warn, info, debug, or trace"),
+    ("/pair", "answer a Polkadot Mobile pairing URL"),
+    ("/script", "edit the last or run an existing product script"),
+    ("/log", "set error, warn, info, debug, or trace"),
+    ("/product", "show or switch the active product"),
     ("/session", "show or switch the active session"),
     ("/renew", "renew statement-store allowances now"),
     ("/help", "show commands and keyboard shortcuts"),
@@ -129,12 +157,23 @@ const SIGNING_COMMANDS: &[(&str, &str)] = &[
 ];
 
 const PAIRING_COMMANDS: &[(&str, &str)] = &[
-    ("/script", "edit a new or run an existing product script"),
-    ("/log ", "set error, warn, info, debug, or trace"),
+    ("/script", "edit the last or run an existing product script"),
+    ("/login", "pair with a signing host"),
+    ("/logout", "disconnect and reset pairing keys"),
+    ("/log", "set error, warn, info, debug, or trace"),
+    ("/product", "show or switch the active product"),
     ("/help", "show commands and keyboard shortcuts"),
     ("/clear", "clear the visible transcript"),
     ("/copy", "copy the transcript to the clipboard"),
     ("/quit", "shut down the pairing host"),
+];
+
+const LOG_ARGUMENTS: &[(&str, &str)] = &[
+    ("error", "show only errors"),
+    ("warn", "show warnings and errors"),
+    ("info", "show informational host activity"),
+    ("debug", "show detailed host activity"),
+    ("trace", "show all host and protocol activity"),
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -151,6 +190,9 @@ fn completions_for_scope(
 ) -> Vec<Completion> {
     if let Some(path) = input.strip_prefix("/script ") {
         return path_completions(path);
+    }
+    if let Some(prefix) = input.strip_prefix("/log ") {
+        return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
     }
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/session ")
@@ -189,6 +231,24 @@ fn completions_for_scope(
         .filter(|(command, _)| command.trim_end().starts_with(input))
         .map(|(command, description)| Completion {
             value: (*command).to_string(),
+            description,
+        })
+        .collect()
+}
+
+fn fixed_argument_completions(
+    command: &str,
+    prefix: &str,
+    arguments: &[(&str, &'static str)],
+) -> Vec<Completion> {
+    if prefix.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    arguments
+        .iter()
+        .filter(|(argument, _)| argument.starts_with(prefix))
+        .map(|(argument, description)| Completion {
+            value: format!("{command} {argument}"),
             description,
         })
         .collect()
@@ -467,10 +527,12 @@ pub fn parse_approval(input: &str) -> Option<bool> {
 
 /// Text displayed by `/help` in either presentation mode.
 pub const HELP_TEXT: &str = "\
-/deeplink <url>         answer a Polkadot Mobile pairing URL
-/script                 edit and run a new Bun TypeScript product script
+/pair <url>             answer a Polkadot Mobile pairing URL
+/script                 edit and run the session's last Bun TypeScript script
 /script <path>          run an existing JS/TS product script with Bun
 /log <level>            set error, warn, info, debug, or trace
+/product                show the current product
+/product <id>           switch product and reconnect product clients
 /session                show the current session and path
 /session <name>         switch to or create a session
 /session --list         list sessions for this network
@@ -485,9 +547,13 @@ Esc close completion or reject approval, Ctrl-C clear/cancel/quit";
 
 /// Help shown by the pairing-host command bar.
 pub const PAIRING_HELP_TEXT: &str = "\
-/script                 edit and run a new Bun TypeScript product script
+/script                 edit and run the last Bun TypeScript product script
 /script <path>          run an existing JS/TS product script with Bun
+/login                  pair with a signing host for the current product
+/logout                 disconnect and reset pairing keys
 /log <level>            set error, warn, info, debug, or trace
+/product                show the current product
+/product <id>           switch product and reconnect product clients
 /help                   show this help
 /clear                  clear the visible transcript
 /copy                   copy the transcript to the clipboard
@@ -503,8 +569,8 @@ mod tests {
     #[test]
     fn parses_all_operational_commands() {
         assert_eq!(
-            parse_command("/deeplink polkadotapp://pair?handshake=01"),
-            Ok(ShellCommand::Deeplink(
+            parse_command("/pair polkadotapp://pair?handshake=01"),
+            Ok(ShellCommand::Pair(
                 "polkadotapp://pair?handshake=01".to_string()
             ))
         );
@@ -515,9 +581,21 @@ mod tests {
             ))))
         );
         assert_eq!(parse_command("/script"), Ok(ShellCommand::Script(None)));
+        assert_eq!(parse_command("/login"), Ok(ShellCommand::Login));
+        assert_eq!(parse_command("/logout"), Ok(ShellCommand::Logout));
         assert_eq!(
             parse_command("/log trace"),
             Ok(ShellCommand::Log(LogLevel::Trace))
+        );
+        assert_eq!(
+            parse_command("/product"),
+            Ok(ShellCommand::Product(ProductCommand::Current))
+        );
+        assert_eq!(
+            parse_command("/product Dotli.DOT"),
+            Ok(ShellCommand::Product(ProductCommand::Switch(
+                "dotli.dot".to_string()
+            )))
         );
         assert_eq!(parse_command("/copy"), Ok(ShellCommand::Copy));
         assert_eq!(parse_command("/renew"), Ok(ShellCommand::Renew));
@@ -542,10 +620,19 @@ mod tests {
         );
         assert!(parse_command("/whoami").is_err());
         assert!(parse_command("/copy now").is_err());
+        assert!(parse_command("/login now").is_err());
+        assert!(parse_command("/logout now").is_err());
+        assert!(parse_command("/pair https://example.com").is_err());
+        assert!(parse_command("/deeplink polkadotapp://pair?handshake=01").is_err());
         assert!(parse_command("/renew now").is_err());
-        assert!(parse_command("/deeplink https://example.com").is_err());
         assert!(parse_command("/log noisy").is_err());
+        assert!(parse_command("/product example.com").is_err());
         assert!(parse_command("/session ../escape").is_err());
+        assert!(
+            parse_command("/session default")
+                .unwrap_err()
+                .contains("reserved for bootstrap state")
+        );
     }
 
     #[test]
@@ -628,16 +715,49 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(commands.contains(&"/script".to_string()));
+        assert!(commands.contains(&"/login".to_string()));
+        assert!(commands.contains(&"/logout".to_string()));
+        assert!(commands.contains(&"/product".to_string()));
         assert!(commands.contains(&"/copy".to_string()));
-        assert!(
-            !commands
-                .iter()
-                .any(|command| command.starts_with("/deeplink"))
-        );
+        assert!(!commands.iter().any(|command| command.starts_with("/pair")));
         assert!(
             !commands
                 .iter()
                 .any(|command| command.starts_with("/session"))
         );
+    }
+
+    #[test]
+    fn log_completion_offers_levels_after_command_for_both_hosts() {
+        for scope in [CommandScope::SigningHost, CommandScope::PairingHost] {
+            let root_matches = completions_for_scope("/log", &[], scope);
+            assert_eq!(
+                root_matches
+                    .iter()
+                    .filter(|completion| completion.value == "/log")
+                    .count(),
+                1
+            );
+            assert!(
+                !root_matches
+                    .iter()
+                    .any(|completion| completion.value.starts_with("/log "))
+            );
+
+            let argument_matches = completions_for_scope("/log ", &[], scope);
+            assert_eq!(
+                argument_matches
+                    .into_iter()
+                    .map(|completion| completion.value)
+                    .collect::<Vec<_>>(),
+                [
+                    "/log error",
+                    "/log warn",
+                    "/log info",
+                    "/log debug",
+                    "/log trace",
+                ]
+            );
+        }
     }
 }

@@ -9,10 +9,13 @@ use thiserror::Error;
 
 const DOMAIN_SEPARATOR: &[u8] = b"product-entropy-derivation";
 
+/// Error deriving product-scoped entropy.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProductEntropyError {
+    /// Caller key is outside the 1..=32 byte range the contract allows.
     #[error("\"key\" must be between 1 and 32 bytes, got {0}")]
     InvalidKeyLength(usize),
+    /// Session has no entropy secret to derive from.
     #[error("entropy secret is missing")]
     MissingSecret,
 }
@@ -56,7 +59,7 @@ fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
         .hash(message)
         .as_bytes()
         .try_into()
-        .expect("BLAKE2b-256 returns 32 bytes")
+        .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed")
 }
 
 #[cfg(test)]

@@ -325,7 +325,7 @@ changes.
   real Bulletin metadata, genesis-binding, call pinning, the extension-encoding
   rules, and the inclusion-watch cycle guard.
 - Host TS: `tsc` + `bun` tests green. WASM bundle grows ~0.5 MB (subxt offline).
-- **Manual / e2e gates** (network + signer-bot, not in CI): the live-chain
+- **Manual / e2e gates** (network + signing-host CLI, not in CI): the live-chain
   dry-run encoding proof and `make e2e-dotli` preimage flow.
 
 ## Follow-ups

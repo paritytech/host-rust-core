@@ -3,8 +3,8 @@
 //! Ports signing-bot `attestation.ts`: fetch the backend verifier, build the
 //! client proofs (`truapi_server::host_logic::attestation`), POST them to
 //! `/usernames`, then poll People-chain `Resources.Consumers` until the record
-//! lands. Registers the signing host's root account so the paired host can
-//! resolve its username via `get_user_id`.
+//! lands. Registers the signing host's RFC-0022 `uid.dot` identity account so
+//! the paired host can resolve its username via `get_user_id`.
 
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use truapi_server::host_logic::identity::{
     decode_people_identity, resources_consumers_storage_key,
 };
 use truapi_server::host_logic::product_account::{
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path, product_public_key_to_address,
+    derive_identity_keypair, derive_root_keypair_from_entropy, product_public_key_to_address,
 };
 
 /// Inputs for one attestation run.
@@ -59,8 +59,8 @@ pub async fn lite_username_available(backend_base: &str, username_base: &str) ->
 }
 
 /// Register (or confirm) the signing host's lite username and wait until the
-/// People-chain `Resources.Consumers` record exists. Returns the candidate
-/// account's SS58 address.
+/// People-chain `Resources.Consumers` record exists. Returns the Lite username
+/// assigned on chain (including its discriminator).
 pub async fn attest(config: &AttestConfig) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -89,26 +89,48 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
             &registration.candidate_public_key
         ))
     );
-    wait_for_consumer_record(&config.people_ws, &storage_key).await?;
+    let identity = wait_for_consumer_record(&config.people_ws, &storage_key).await?;
     debug!("lite username registered and confirmed on-chain");
-    Ok(registration.candidate_account_id)
+    identity
+        .lite_username
+        .context("registered People-chain identity has no Lite username")
 }
 
-/// Probe the People chain for which derivation of `entropy` (bare root,
-/// `//wallet`, `//wallet//sso`) has a `Resources.Consumers` record, printing
-/// the account and decoded username. Used to confirm a pre-onboarded account.
+/// Resolve the on-chain Lite username for an already-attested signer.
+///
+/// Older CLI account records stored the requested username base rather than
+/// the final `name.discriminator` assigned by the People chain. Reading the
+/// consumer record repairs those records without re-attesting the account.
+pub async fn registered_lite_username(people_ws: &str, entropy: &[u8]) -> Result<String> {
+    let identity = derive_identity_keypair(entropy)
+        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let storage_key = format!(
+        "0x{}",
+        hex::encode(resources_consumers_storage_key(&identity.public.to_bytes()))
+    );
+    let value = query_storage(people_ws, &storage_key)
+        .await?
+        .context("attested signer has no Resources.Consumers record")?;
+    decode_identity_hex(&value)?
+        .lite_username
+        .context("registered People-chain identity has no Lite username")
+}
+
+/// Probe the People chain for the bare root and canonical RFC-0022 `uid.dot`
+/// identity account, printing any `Resources.Consumers` record. Used to
+/// confirm a pre-onboarded account.
 pub async fn check_identity(people_ws: &str, entropy: &[u8]) -> Result<()> {
     let root = derive_root_keypair_from_entropy(entropy)
         .map_err(|err| anyhow::anyhow!("invalid entropy: {err}"))?;
-    let wallet = derive_sr25519_hard_path(entropy, &["wallet"])
-        .map_err(|err| anyhow::anyhow!("//wallet derivation failed: {err}"))?;
-    let wallet_sso = derive_sr25519_hard_path(entropy, &["wallet", "sso"])
-        .map_err(|err| anyhow::anyhow!("//wallet//sso derivation failed: {err}"))?;
+    let identity = derive_identity_keypair(entropy)
+        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
 
     for (label, public) in [
         ("<root>", root.public.to_bytes()),
-        ("//wallet", wallet.public.to_bytes()),
-        ("//wallet//sso", wallet_sso.public.to_bytes()),
+        (
+            "//product//uid.dot/index_bytes(0)",
+            identity.public.to_bytes(),
+        ),
     ] {
         let key = format!(
             "0x{}",
@@ -195,21 +217,24 @@ fn hex0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-async fn wait_for_consumer_record(people_ws: &str, storage_key: &str) -> Result<()> {
-    // First-time lite registration is backend-async and can take minutes
-    // (ring onboarding). The record is permanent once written, so later runs
-    // resolve on the first poll.
-    const MAX_ATTEMPTS: usize = 90;
+async fn wait_for_consumer_record(
+    people_ws: &str,
+    storage_key: &str,
+) -> Result<truapi_server::host_logic::identity::PeopleIdentity> {
+    // First-time lite registration is backend-async and can lag the HTTP
+    // response. The record is permanent once written, so later runs resolve on
+    // the first poll.
+    const MAX_ATTEMPTS: usize = 10;
     for attempt in 1..=MAX_ATTEMPTS {
         match query_storage(people_ws, storage_key).await {
-            Ok(Some(_)) => {
+            Ok(Some(value)) => {
                 crate::terminal_ui::update_activity(
                     "signer",
                     "Setting up signer",
                     Some("People-chain identity ready".to_string()),
                     crate::terminal_ui::ActivityState::Running,
                 );
-                return Ok(());
+                return decode_identity_hex(&value);
             }
             Ok(None) => {
                 crate::terminal_ui::update_activity(
@@ -229,6 +254,12 @@ async fn wait_for_consumer_record(people_ws: &str, storage_key: &str) -> Result<
         }
     }
     bail!("Resources.Consumers record did not appear after attestation")
+}
+
+fn decode_identity_hex(value: &str) -> Result<truapi_server::host_logic::identity::PeopleIdentity> {
+    let bytes = hex::decode(value.strip_prefix("0x").unwrap_or(value))
+        .context("Resources.Consumers value is not valid hex")?;
+    decode_people_identity(&bytes).map_err(anyhow::Error::msg)
 }
 
 /// One `state_getStorage` request over a fresh RPC connection; returns the value

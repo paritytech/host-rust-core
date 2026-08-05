@@ -6,8 +6,8 @@
 //! statement-store RPC.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -88,6 +88,10 @@ impl ChainProvider for WsChainProvider {
 pub struct WsJsonRpcConnection {
     outbound: mpsc::UnboundedSender<Message>,
     inbound: broadcast::Sender<String>,
+    /// Receiver created before the reader task starts. The first response
+    /// stream takes it so an immediate RPC response cannot race subscription
+    /// setup and disappear while the broadcast channel has no receivers.
+    initial_inbound: Mutex<Option<broadcast::Receiver<String>>>,
     closed: Arc<AtomicBool>,
 }
 
@@ -98,7 +102,7 @@ impl WsJsonRpcConnection {
             .map_err(|err| format!("statement-store websocket connect failed: {err}"))?;
         let (mut write, mut read) = stream.split();
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
-        let (inbound_tx, _inbound_rx) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
+        let (inbound_tx, initial_inbound) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
         let closed = Arc::new(AtomicBool::new(false));
 
         tokio::spawn(async move {
@@ -133,6 +137,7 @@ impl WsJsonRpcConnection {
         Ok(Self {
             outbound: outbound_tx,
             inbound: inbound_tx,
+            initial_inbound: Mutex::new(Some(initial_inbound)),
             closed,
         })
     }
@@ -147,7 +152,13 @@ impl JsonRpcConnection for WsJsonRpcConnection {
     }
 
     fn responses(&self) -> BoxStream<'static, String> {
-        BroadcastStream::new(self.inbound.subscribe())
+        let receiver = self
+            .initial_inbound
+            .lock()
+            .expect("initial chain response receiver mutex poisoned")
+            .take()
+            .unwrap_or_else(|| self.inbound.subscribe());
+        BroadcastStream::new(receiver)
             .filter_map(|item| async move {
                 match item {
                     Ok(response) => Some(response),
@@ -171,6 +182,26 @@ impl JsonRpcConnection for WsJsonRpcConnection {
 mod tests {
     use super::*;
     use crate::network::Network;
+
+    #[test]
+    fn first_response_stream_receives_frames_buffered_during_setup() {
+        let (outbound, _outbound_rx) = mpsc::unbounded_channel();
+        let (inbound, initial_inbound) = broadcast::channel(INBOUND_CHANNEL_CAPACITY);
+        let connection = WsJsonRpcConnection {
+            outbound,
+            inbound: inbound.clone(),
+            initial_inbound: Mutex::new(Some(initial_inbound)),
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+
+        inbound
+            .send(r#"{"jsonrpc":"2.0","id":1,"result":"ready"}"#.to_string())
+            .expect("initial receiver keeps the frame buffered");
+
+        let mut responses = connection.responses();
+        let frame = futures::executor::block_on(responses.next()).expect("buffered response");
+        assert_eq!(frame, r#"{"jsonrpc":"2.0","id":1,"result":"ready"}"#);
+    }
 
     #[test]
     fn required_bulletin_route_is_enabled_without_optional_live_chains() {
