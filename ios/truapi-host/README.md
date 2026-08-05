@@ -2,17 +2,55 @@
 
 *Thin Swift shell over the Rust TrUAPI core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
 
+The package lives in the truapi repo next to the Rust core it wraps. `Package.swift` sits at the **repo root** (SPM requires that for git-URL dependencies), with all target paths pointing into `ios/truapi-host/`; the build scripts regenerate the committed outputs from this repo's workspace.
+
 ## What this package is for
 
-The public surface lives in [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift):
+The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 
-- `HostBridge` - callback bundle the embedding app implements. Split into device permissions, remote permissions, navigation, push, feature support, and scoped storage.
-- `HostStorageBackend` - product-scoped read/write/clear protocol the host backs with its own persistence.
-- `HostCoreStorageBackend` - core-owned read/write/clear protocol for auth session, pairing identity, and persisted permission decisions.
-- `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, and native change notifications for core storage, theme, and preimage updates.
-- `LocalhostBridgeBootstrap` - helper that produces a JS snippet publishing the WS bridge endpoint to the product page so it can dial back in.
+- [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostCore` (owning wrapper around the UniFFI-generated `NativeTrUApiCore`, with the localhost WS bridge, session controls, and native change notifications), `TrUAPIHostCoreProtocol`, `RuntimeConfig`, and `LocalhostBridgeBootstrap`.
+- the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
+- `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
+- [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
+- `Tests/` — WS-bridge round-trip tests that boot the real Rust core.
 
-The generated UniFFI bindings live alongside the shell in `Sources/TrUAPIHost/truapi_server.swift` and the C header / module map in `Sources/truapi_serverFFI/include/`. They are ignored build outputs; regenerate them before building or publishing the Swift package.
+The generated bindings and the container bundle are committed build outputs; the xcframework is **gitignored** and distributed as a GitHub release asset. Two scripts split the lifecycle:
+
+```bash
+./scripts/rebuild.sh            # regenerate xcframework + bindings + container
+                                # from this repo (make xcframework at the root)
+./scripts/publish.sh <version>  # zip the built xcframework, upload it to the
+                                # "@parity/ios-host <version>" GitHub release,
+                                # and point the root Package.swift at it
+                                # (URL + checksum)
+```
+
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. When the binary should reach consumers, run `publish.sh` and commit the manifest bump **after** the upload succeeds (a manifest pushed before its asset is live breaks resolution).
+
+For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
+
+The embedding app implements the UniFFI-generated `HostCallbacks` protocol directly (defined in `truapi_server.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, and feature support. UI-decision callbacks are `async` and awaited by the Rust core.
+
+## Integrating in an iOS app
+
+Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
+
+```swift
+.package(url: "https://github.com/paritytech/truapi.git", branch: "main")
+```
+
+```swift
+.product(name: "TrUAPIHost", package: "truapi")
+```
+
+Release tags follow the repo-wide `@parity/ios-host@<version>` naming, which SPM's semver resolution does not consume — depend by `branch:` or `revision:` instead. SPM pins the resolved revision in the app's `Package.resolved`; update it (File > Packages > Update in Xcode, or `xcodebuild -resolvePackageDependencies`) after new commits land on the branch.
+
+Run the package tests against an iOS simulator (the xcframework has no macOS slice):
+
+```bash
+# from the repo root
+xcodebuild test -scheme TrUAPIHost -destination 'platform=iOS Simulator,name=iPhone 16'
+```
 
 ## Architecture
 
@@ -26,29 +64,29 @@ TrUAPIHostCore.startWsBridge()
   → Rust dispatcher
 ```
 
-The product running in the `WKWebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, confirmations, preimage, theme, `featureSupported`, `storage`) reach the embedder through `HostBridge`.
+The product running in the `WKWebView` opens a `WebSocket` to the localhost port + token returned by `startWsBridge`. From there the Rust core handles the wire protocol directly. Outbound responses and host-side capability callbacks (`navigateTo`, `pushNotification`, `cancelNotification`, `devicePermission`, `remotePermission`, `authStateChanged`, core storage, chain JSON-RPC, confirmations, preimage, theme, `featureSupported`, `storage`) reach the embedder through `HostCallbacks`.
 
 ## Permissions split
 
-The core's `Permissions` platform trait has two methods, and so does the bridge:
+The core's `Permissions` platform trait has two methods, and so does `HostCallbacks`:
 
-- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a SCALE-encoded `v01::HostDevicePermissionRequest`.
-- `remotePermission(request:)` - per-product capability bundles. `request` is a SCALE-encoded `v01::RemotePermissionRequest`.
+- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
+- `remotePermission(request:)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
 
-Both return a `Bool` granted flag. SCALE decoding for the UI prompt is done by the `@parity/truapi` JS client (or any consumer that links the protocol crate's types directly).
+Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## Example
 
-> **Threading:** the Rust core invokes every `HostBridge` callback on a
+> **Threading:** the Rust core invokes every `HostCallbacks` method on a
 > background thread it owns, never the main thread. Hop to the main thread
-> (`DispatchQueue.main` / `MainActor`) before touching UIKit, WebKit, or the
-> `WKWebView`. Six callbacks each run on their own blocking-pool thread, so it
-> is safe to use `DispatchQueue.main.sync` (or a semaphore) to present the
-> prompt on the main thread and block the calling thread until the user
-> decides; other TrUAPI traffic keeps flowing while you wait:
-> `navigateTo`, `pushNotification`, `devicePermission`, `remotePermission`,
-> `featureSupported`, and `confirmUserAction`. The remaining callbacks (auth
-> state, storage, core storage, chain, theme, preimage lookups, and
+> (`MainActor` / `DispatchQueue.main`) before touching UIKit, WebKit, or the
+> `WKWebView`. The `async` callbacks (`navigateTo`, `pushNotification`,
+> `devicePermission`, `remotePermission`, `featureSupported`,
+> `confirmUserAction`, `lookupPreimage`) are awaited by the core, so an
+> implementation may suspend for as long as the user takes to decide (e.g.
+> `await MainActor.run { ... }` or an `withCheckedContinuation` around a
+> prompt); other TrUAPI traffic keeps flowing while you wait. The remaining
+> sync callbacks (auth state, storage, core storage, chain, theme,
 > `cancelNotification`) run inline on the dispatcher thread and must return
 > promptly without blocking.
 
@@ -57,33 +95,19 @@ import Foundation
 import WebKit
 import TrUAPIHost
 
-final class MyStorage: HostStorageBackend, @unchecked Sendable {
-    private var map: [String: Data] = [:]
-    func read(key: String) throws -> Data? { map[key] }
-    func write(key: String, value: Data) throws { map[key] = value }
-    func clear(key: String) throws { map.removeValue(forKey: key) }
-}
+final class MyCallbacks: HostCallbacks, @unchecked Sendable {
+    private var storage: [String: Data] = [:]
+    private var coreStorage: [Data: Data] = [:]
 
-final class MyCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
-    private var map: [Data: Data] = [:]
-    func read(key: Data) throws -> Data? { map[key] }
-    func write(key: Data, value: Data) throws { map[key] = value }
-    func clear(key: Data) throws { map.removeValue(forKey: key) }
-}
+    func onCoreLog(marker: String, detail: String) { /* log */ }
 
-final class MyBridge: HostBridge, @unchecked Sendable {
-    let storage: HostStorageBackend = MyStorage()
-    let coreStorage: HostCoreStorageBackend = MyCoreStorage()
-
-    // Callbacks arrive on background threads, never the main thread.
-    // Hop to the main thread before touching UIKit/WebKit.
-    func navigateTo(url: String) throws {
-        DispatchQueue.main.async { /* UIApplication.shared.open(...) */ }
+    func navigateTo(url: String) async throws {
+        await MainActor.run { /* UIApplication.shared.open(...) */ }
     }
 
-    func pushNotification(payload: Data) throws -> UInt32 {
+    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 {
         let id: UInt32 = 1
-        DispatchQueue.main.async { /* schedule notification */ }
+        await MainActor.run { /* schedule request.text / request.deeplink / request.scheduledAt */ }
         return id
     }
 
@@ -91,15 +115,14 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         DispatchQueue.main.async { /* cancel notification */ }
     }
 
-    func devicePermission(request: Data) throws -> Bool {
-        // Called on a blocking-pool thread; present synchronously on the main
-        // thread and return the decision. Blocking here does not stall other
-        // TrUAPI traffic.
-        DispatchQueue.main.sync { /* show prompt; */ false }
+    func devicePermission(request: NativeDevicePermission) async throws -> Bool {
+        // Awaited by the core: present the prompt and suspend until the user
+        // decides. Other TrUAPI traffic keeps flowing while suspended.
+        await MainActor.run { /* show prompt for request (.camera, .microphone, ...); */ false }
     }
 
-    func remotePermission(request: Data) throws -> Bool {
-        DispatchQueue.main.sync { /* show prompt; */ false }
+    func remotePermission(request: NativeRemotePermission) async throws -> Bool {
+        await MainActor.run { /* show prompt for request (.chainSubmit, .remote(domains:), ...); */ false }
     }
 
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
@@ -111,7 +134,9 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         DispatchQueue.main.async { /* render the state */ }
     }
 
-    func featureSupported(request: Data) throws -> Bool { false }
+    func coreStorageRead(key: Data) throws -> Data? { coreStorage[key] }
+    func coreStorageWrite(key: Data, value: Data) throws { coreStorage[key] = value }
+    func coreStorageClear(key: Data) throws { coreStorage.removeValue(forKey: key) }
 
     func chainConnect(genesisHash: Data) throws -> UInt32? {
         let id: UInt32 = 1
@@ -127,38 +152,59 @@ final class MyBridge: HostBridge, @unchecked Sendable {
         /* close host connection */
     }
 
-    func confirmUserAction(review: Data) throws -> Bool {
-        DispatchQueue.main.sync { /* render decoded UserConfirmationReview; */ false }
+    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool {
+        // Switch on the review variant (.signPayload, .createTransaction, ...)
+        // to render the confirmation prompt with its typed fields.
+        await MainActor.run { /* render review; */ false }
     }
+
+    func lookupPreimage(key: Data) async throws -> Data? { nil }
+
+    func currentTheme() throws -> HostTheme { .dark }
+
+    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool { false }
+
+    func localStorageRead(key: String) throws -> Data? { storage[key] }
+    func localStorageWrite(key: String, value: Data) throws { storage[key] = value }
+    func localStorageClear(key: String) throws { storage.removeValue(forKey: key) }
 }
 
-let bridge = MyBridge()
+let callbacks = MyCallbacks()
 let runtimeConfig = RuntimeConfig(
     productId: "my-product.dot",
     hostName: "My Host",
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),
+    bulletinChainGenesisHash: Data(repeating: 0, count: 32),
     pairingDeeplinkScheme: .polkadotApp
 )
-let core = try TrUAPIHostCore(bridge: bridge, runtimeConfig: runtimeConfig)
+let core = try TrUAPIHostCore(callbacks: callbacks, runtimeConfig: runtimeConfig)
+try core.activateLocalSession(secret: entropyBytes, liteUsername: nil)
 let endpoint = try core.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates
 // after their immediate current item.
-core.notifySessionStoreChanged()
 core.notifyThemeChanged(theme: .dark)
 core.notifyPreimageChanged(key: preimageKey, value: preimageBytesOrNil)
 core.notifyChainResponse(connectionId: chainConnectionId, json: jsonRpcResponse)
 core.notifyChainClosed(connectionId: chainConnectionId)
 
+// Both scripts must be registered before the web view loads the product page,
+// and in this order: the bootstrap publishes the bridge endpoint on
+// `window.__truapi_localhost`; the container script then locks down the
+// page's platform APIs and reads that endpoint at eval time.
 let contentController = WKUserContentController()
 let bootstrapScript = LocalhostBridgeBootstrap.script(port: endpoint.port, token: endpoint.token)
-let userScript = WKUserScript(
+contentController.addUserScript(WKUserScript(
     source: bootstrapScript,
     injectionTime: .atDocumentStart,
     forMainFrameOnly: true
-)
-contentController.addUserScript(userScript)
+))
+contentController.addUserScript(WKUserScript(
+    source: try ContainerScriptBundle.load(),
+    injectionTime: .atDocumentStart,
+    forMainFrameOnly: true
+))
 
 let configuration = WKWebViewConfiguration()
 configuration.userContentController = contentController
@@ -171,36 +217,10 @@ core.disconnect()
 
 The product page reads `window.__truapi_localhost.url` (set by the bootstrap script) and passes it to `@parity/truapi`'s `createWebSocketProvider(url)`.
 
-## Linking the cdylib
+## Build outputs in detail
 
-This package does not vendor `libtruapi_server` - integrators link a prebuilt static or dynamic library when building the app target. Typical workflow:
+`./scripts/rebuild.sh` orchestrates everything; the underlying pieces, should you need one in isolation:
 
-```bash
-cargo build -p truapi-server --release --features ws-bridge \
-  --target aarch64-apple-ios
-cargo build -p truapi-server --release --features ws-bridge \
-  --target aarch64-apple-ios-sim
-```
-
-Then either bundle the `.a` files as a `.xcframework` and add it under "Frameworks, Libraries, and Embedded Content" in the app target, or link directly via `OTHER_LDFLAGS`.
-
-## Regenerating the bindings
-
-The ignored bindings under `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` are produced from the workspace `uniffi-bindgen-cli`. Regenerate them before building or publishing the Swift package. The CLI emits `truapi_server.swift`, `truapi_serverFFI.h`, and `truapi_serverFFI.modulemap` into a single output directory; the modulemap is renamed to `module.modulemap` and the header is colocated under `Sources/truapi_serverFFI/include/` so SwiftPM's `systemLibrary` target picks them up.
-
-```bash
-cargo build -p truapi-server --release --features ws-bridge
-mkdir -p /tmp/uniffi-swift-out
-cargo run -p uniffi-bindgen-cli -- generate \
-  --library target/release/libtruapi_server.so \
-  --language swift \
-  --out-dir /tmp/uniffi-swift-out
-cp /tmp/uniffi-swift-out/truapi_server.swift \
-   ios/truapi-host/Sources/TrUAPIHost/truapi_server.swift
-cp /tmp/uniffi-swift-out/truapi_serverFFI.h \
-   ios/truapi-host/Sources/truapi_serverFFI/include/truapi_serverFFI.h
-cp /tmp/uniffi-swift-out/truapi_serverFFI.modulemap \
-   ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
-```
-
-Or run `make uniffi` from the repo root.
+- **xcframework** — `make xcframework` (repo root) builds `truapi-server` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
+- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; the script copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up.
+- **container** — `npm run build` in `js/container/` (repo root) bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.
