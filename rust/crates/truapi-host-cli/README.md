@@ -251,6 +251,13 @@ Five scripts ship under `js/scripts/`:
   direct signing-host run writes `signing-host-cli.md`. Override the artifact
   path with `TRUAPI_BATTERY_REPORT_PATH`.
 
+  On top of the generated examples it runs one hand-written
+  `Resource Allocation/auto_signing_e2e` case: allocate `AutoSigning`, then
+  prove through the hosts' consulted-approval transcript
+  (`TRUAPI_APPROVALS_LOG`, exported per phase by `scripts/battery.sh`) that
+  follow-up `sign_vrf` calls for the granting product run without a
+  confirmation prompt.
+
   `scripts/battery.sh` at the repo root is the supported entry point. It
   prepares the codegen output and playground dependencies the battery imports,
   builds the host from source, and produces both reports in one invocation: the

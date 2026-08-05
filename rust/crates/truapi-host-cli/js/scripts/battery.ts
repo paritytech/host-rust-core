@@ -10,6 +10,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runAutoSigningE2e } from "../auto-signing-e2e.ts";
 import { BatteryReporter } from "../battery-reporter.ts";
 import {
   cliDiagnosisReportMetadata,
@@ -58,6 +59,15 @@ const rows = await runDiagnosis(truapi, {
   ...options,
   onResult: (row) => reporter.result(row),
 });
+// Beyond the generated per-method examples: AutoSigning must make follow-up
+// sign_vrf calls prompt-free, observed through the host's approvals transcript.
+const autoSigning = await runAutoSigningE2e(
+  truapi,
+  host.productId,
+  process.env.TRUAPI_APPROVALS_LOG,
+);
+reporter.result(autoSigning);
+rows.push(autoSigning);
 reporter.finish(rows, Math.round(performance.now() - startedAt));
 mkdirSync(dirname(REPORT_PATH), { recursive: true });
 writeFileSync(REPORT_PATH, renderDiagnosisReport(report.title, rows));
