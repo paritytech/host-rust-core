@@ -10,7 +10,6 @@ export {
 
 export type { CustomRendererNode } from "@parity/truapi";
 
-// React renderer
 export { createRenderer } from "./renderer.js";
 export type {
   ChatCustomMessageRenderer,

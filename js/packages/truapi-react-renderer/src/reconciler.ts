@@ -197,6 +197,6 @@ export const reconciler = ReactReconciler(hostConfig);
 
 reconciler.injectIntoDevTools({
   bundleType: 0,
-  version: "0.6.4",
+  version: "0.0.0",
   rendererPackageName: "@parity/truapi-react-renderer",
 });
