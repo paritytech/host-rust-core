@@ -14,7 +14,7 @@ Widget tree (CustomRendererNode)
 Native Desktop/Mobile UI
 ```
 
-All widget and style types come from [`@parity/truapi`](../truapi), the canonical TypeScript bindings for the TrUAPI protocol.
+All widget and style types come from [`@parity/truapi`](https://github.com/paritytech/truapi/tree/main/js/packages/truapi), the canonical TypeScript bindings for the TrUAPI protocol.
 
 ## Installation
 
@@ -39,6 +39,8 @@ Configure your `tsconfig.json` to use React JSX:
 ## `registerChatMessageRenderer`
 
 The primary entry point for rendering custom chat messages. Pass a `mapPayload` function that decodes the raw bytes sent by the host, and a `renderFn` that returns the React element tree. The return value is a `ChatCustomMessageRenderer` callback you hand to your transport's custom message rendering request handler.
+
+> **Note:** the `chat.onCustomMessageRenderingRequest(...)` calls in the examples below are illustrative — the host-side registration API is provided by your transport layer, not by this package. This package only defines the `ChatCustomMessageRenderer` callback shape that such a handler accepts.
 
 ### Static message
 
@@ -163,13 +165,13 @@ All components accept the [shared layout props](#layout-props) in addition to th
 
 ### `<Button>`
 
-| Prop      | Type            | Description             |
-| --------- | --------------- | ----------------------- |
-| `text`    | `string`        | Label (required)        |
-| `onClick` | `() => void`    | Tap handler (required)  |
-| `variant` | `ButtonVariant` | Visual style            |
-| `enabled` | `boolean`       | Defaults to `true`      |
-| `loading` | `boolean`       | Shows loading indicator |
+| Prop      | Type            | Description               |
+| --------- | --------------- | ------------------------- |
+| `text`    | `string`        | Label (required)          |
+| `onClick` | `() => void`    | Tap handler (required)    |
+| `variant` | `ButtonVariant` | Visual style              |
+| `enabled` | `boolean`       | Host default when omitted |
+| `loading` | `boolean`       | Shows loading indicator   |
 
 **`ButtonVariant`**: `Primary` · `Secondary` · `Text`
 
@@ -185,7 +187,7 @@ All components accept the [shared layout props](#layout-props) in addition to th
 | `onValueChange` | `(value: string) => void` | Change handler (required) |
 | `placeholder`   | `string`                  | Placeholder text          |
 | `label`         | `string`                  | Field label               |
-| `enabled`       | `boolean`                 | Defaults to `true`        |
+| `enabled`       | `boolean`                 | Host default when omitted |
 
 ```tsx
 <TextField value={query} placeholder="Search…" onValueChange={setQuery} />
