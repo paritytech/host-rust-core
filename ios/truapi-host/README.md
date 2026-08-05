@@ -70,8 +70,8 @@ The product running in the `WKWebView` opens a `WebSocket` to the localhost port
 
 The core's `Permissions` platform trait has two methods, and so does `HostCallbacks`:
 
-- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
-- `remotePermission(request:)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
+- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
+- `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
@@ -105,7 +105,7 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         await MainActor.run { /* UIApplication.shared.open(...) */ }
     }
 
-    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 {
+    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32 {
         let id: UInt32 = 1
         await MainActor.run { /* schedule request.text / request.deeplink / request.scheduledAt */ }
         return id
@@ -115,13 +115,13 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         DispatchQueue.main.async { /* cancel notification */ }
     }
 
-    func devicePermission(request: NativeDevicePermission) async throws -> Bool {
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool {
         // Awaited by the core: present the prompt and suspend until the user
         // decides. Other TrUAPI traffic keeps flowing while suspended.
         await MainActor.run { /* show prompt for request (.camera, .microphone, ...); */ false }
     }
 
-    func remotePermission(request: NativeRemotePermission) async throws -> Bool {
+    func remotePermission(request: RemotePermission) async throws -> Bool {
         await MainActor.run { /* show prompt for request (.chainSubmit, .remote(domains:), ...); */ false }
     }
 
@@ -162,7 +162,7 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
 
     func currentTheme() throws -> HostTheme { .dark }
 
-    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool { false }
+    func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool { false }
 
     func localStorageRead(key: String) throws -> Data? { storage[key] }
     func localStorageWrite(key: String, value: Data) throws { storage[key] = value }

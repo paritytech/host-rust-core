@@ -1,15 +1,5 @@
 //! TrUAPI Protocol v0.1 type definitions.
 
-/// A 32-byte value, passed as plain bytes on FFI surfaces.
-pub type Bytes32 = [u8; 32];
-
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(Bytes32, Vec<u8>, {
-    remote,
-    lower: |bytes| bytes.to_vec(),
-    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
-});
-
 mod account;
 mod chain;
 mod chat;

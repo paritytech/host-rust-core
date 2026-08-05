@@ -432,6 +432,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
+    typealias FfiType = UInt64
+    typealias SwiftType = UInt64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -610,6 +626,113 @@ public func FfiConverterTypeHostAccountSignVrfRequest_lift(_ buf: RustBuffer) th
 #endif
 public func FfiConverterTypeHostAccountSignVrfRequest_lower(_ value: HostAccountSignVrfRequest) -> RustBuffer {
     return FfiConverterTypeHostAccountSignVrfRequest.lower(value)
+}
+
+
+/**
+ * Push notification payload.
+ *
+ * When `scheduled_at` is `Some`, the notification is deferred to the given
+ * wall-clock instant (Unix milliseconds UTC). `None` fires immediately,
+ * preserving prior behaviour. See [RFC 0019].
+ *
+ * [RFC 0019]: https://github.com/paritytech/truapi/blob/main/docs/rfcs/0019-scheduled-notifications.md
+ */
+public struct HostPushNotificationRequest {
+    /**
+     * Notification text.
+     */
+    public var text: String
+    /**
+     * Optional URL to open on tap.
+     */
+    public var deeplink: String?
+    /**
+     * Optional Unix timestamp in milliseconds (UTC) at which the notification
+     * should fire. `None` fires immediately.
+     */
+    public var scheduledAt: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Notification text.
+         */text: String, 
+        /**
+         * Optional URL to open on tap.
+         */deeplink: String?, 
+        /**
+         * Optional Unix timestamp in milliseconds (UTC) at which the notification
+         * should fire. `None` fires immediately.
+         */scheduledAt: UInt64?) {
+        self.text = text
+        self.deeplink = deeplink
+        self.scheduledAt = scheduledAt
+    }
+}
+
+#if compiler(>=6)
+extension HostPushNotificationRequest: Sendable {}
+#endif
+
+
+extension HostPushNotificationRequest: Equatable, Hashable {
+    public static func ==(lhs: HostPushNotificationRequest, rhs: HostPushNotificationRequest) -> Bool {
+        if lhs.text != rhs.text {
+            return false
+        }
+        if lhs.deeplink != rhs.deeplink {
+            return false
+        }
+        if lhs.scheduledAt != rhs.scheduledAt {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(text)
+        hasher.combine(deeplink)
+        hasher.combine(scheduledAt)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostPushNotificationRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostPushNotificationRequest {
+        return
+            try HostPushNotificationRequest(
+                text: FfiConverterString.read(from: &buf), 
+                deeplink: FfiConverterOptionString.read(from: &buf), 
+                scheduledAt: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostPushNotificationRequest, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.text, into: &buf)
+        FfiConverterOptionString.write(value.deeplink, into: &buf)
+        FfiConverterOptionUInt64.write(value.scheduledAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostPushNotificationRequest_lift(_ buf: RustBuffer) throws -> HostPushNotificationRequest {
+    return try FfiConverterTypeHostPushNotificationRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostPushNotificationRequest_lower(_ value: HostPushNotificationRequest) -> RustBuffer {
+    return FfiConverterTypeHostPushNotificationRequest.lower(value)
 }
 
 
@@ -2133,6 +2256,234 @@ extension DerivationIndex: Equatable, Hashable {}
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Device-capability permission requested from the host (RFC 0002).
+ *
+ * The user's decision is persisted indefinitely after the first prompt and
+ * survives app restarts, whether the decision was grant or deny; the host
+ * does not re-prompt on subsequent requests for the same capability.
+ */
+
+public enum HostDevicePermissionRequest {
+    
+    /**
+     * Showing system notifications.
+     */
+    case notifications
+    /**
+     * Camera capture access.
+     */
+    case camera
+    /**
+     * Microphone capture access.
+     */
+    case microphone
+    /**
+     * Bluetooth device access.
+     */
+    case bluetooth
+    /**
+     * NFC reader access.
+     */
+    case nfc
+    /**
+     * Geolocation access.
+     */
+    case location
+    /**
+     * Clipboard access.
+     */
+    case clipboard
+    /**
+     * Opening URLs outside the host.
+     */
+    case openUrl
+    /**
+     * Biometric authentication.
+     */
+    case biometrics
+}
+
+
+#if compiler(>=6)
+extension HostDevicePermissionRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostDevicePermissionRequest: FfiConverterRustBuffer {
+    typealias SwiftType = HostDevicePermissionRequest
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostDevicePermissionRequest {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .notifications
+        
+        case 2: return .camera
+        
+        case 3: return .microphone
+        
+        case 4: return .bluetooth
+        
+        case 5: return .nfc
+        
+        case 6: return .location
+        
+        case 7: return .clipboard
+        
+        case 8: return .openUrl
+        
+        case 9: return .biometrics
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: HostDevicePermissionRequest, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .notifications:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .camera:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .microphone:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .bluetooth:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .nfc:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .location:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .clipboard:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .openUrl:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .biometrics:
+            writeInt(&buf, Int32(9))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostDevicePermissionRequest_lift(_ buf: RustBuffer) throws -> HostDevicePermissionRequest {
+    return try FfiConverterTypeHostDevicePermissionRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostDevicePermissionRequest_lower(_ value: HostDevicePermissionRequest) -> RustBuffer {
+    return FfiConverterTypeHostDevicePermissionRequest.lower(value)
+}
+
+
+extension HostDevicePermissionRequest: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Request to query whether a feature is supported by the host.
+ */
+
+public enum HostFeatureSupportedRequest {
+    
+    /**
+     * Ask whether the host can interact with the chain identified by genesis hash.
+     */
+    case chain(
+        /**
+         * Chain genesis hash.
+         */genesisHash: Data
+    )
+}
+
+
+#if compiler(>=6)
+extension HostFeatureSupportedRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostFeatureSupportedRequest: FfiConverterRustBuffer {
+    typealias SwiftType = HostFeatureSupportedRequest
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostFeatureSupportedRequest {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .chain(genesisHash: try FfiConverterData.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: HostFeatureSupportedRequest, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .chain(genesisHash):
+            writeInt(&buf, Int32(1))
+            FfiConverterData.write(genesisHash, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostFeatureSupportedRequest_lift(_ buf: RustBuffer) throws -> HostFeatureSupportedRequest {
+    return try FfiConverterTypeHostFeatureSupportedRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostFeatureSupportedRequest_lower(_ value: HostFeatureSupportedRequest) -> RustBuffer {
+    return FfiConverterTypeHostFeatureSupportedRequest.lower(value)
+}
+
+
+extension HostFeatureSupportedRequest: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Raw data to sign -- either binary bytes or a string message.
  */
 
@@ -2215,6 +2566,124 @@ public func FfiConverterTypeRawPayload_lower(_ value: RawPayload) -> RustBuffer 
 
 
 extension RawPayload: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * One remote-operation permission requested by the product (RFC 0002).
+ *
+ * `ChainSubmit`, `PreimageSubmit`, and `StatementSubmit` are also triggered
+ * implicitly by the corresponding business calls when not yet granted.
+ */
+
+public enum RemotePermission {
+    
+    /**
+     * Outbound HTTP/WebSocket access to a set of domains.
+     */
+    case remote(
+        /**
+         * Domain patterns requested by the product.
+         */domains: [String]
+    )
+    /**
+     * WebRTC media access.
+     */
+    case webRtc
+    /**
+     * Submitting transactions on behalf of the user via `remote_chain_transaction_broadcast`.
+     */
+    case chainSubmit
+    /**
+     * Submitting preimages on behalf of the user via `remote_preimage_submit`.
+     */
+    case preimageSubmit
+    /**
+     * Submitting statements on behalf of the user via `remote_statement_store_submit`.
+     */
+    case statementSubmit
+}
+
+
+#if compiler(>=6)
+extension RemotePermission: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRemotePermission: FfiConverterRustBuffer {
+    typealias SwiftType = RemotePermission
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RemotePermission {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .remote(domains: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        case 2: return .webRtc
+        
+        case 3: return .chainSubmit
+        
+        case 4: return .preimageSubmit
+        
+        case 5: return .statementSubmit
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RemotePermission, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .remote(domains):
+            writeInt(&buf, Int32(1))
+            FfiConverterSequenceString.write(domains, into: &buf)
+            
+        
+        case .webRtc:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .chainSubmit:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .preimageSubmit:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .statementSubmit:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRemotePermission_lift(_ buf: RustBuffer) throws -> RemotePermission {
+    return try FfiConverterTypeRemotePermission.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRemotePermission_lower(_ value: RemotePermission) -> RustBuffer {
+    return FfiConverterTypeRemotePermission.lower(value)
+}
+
+
+extension RemotePermission: Equatable, Hashable {}
 
 
 
@@ -2333,6 +2802,30 @@ fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
     typealias SwiftType = Bool?
 
@@ -2349,6 +2842,30 @@ fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterBool.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

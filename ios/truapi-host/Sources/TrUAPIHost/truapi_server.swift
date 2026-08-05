@@ -570,7 +570,7 @@ public protocol HostCallbacks: AnyObject, Sendable {
     /**
      * Deliver a push notification.
      */
-    func pushNotification(request: PushNotificationRequest) async throws  -> UInt32
+    func pushNotification(request: HostPushNotificationRequest) async throws  -> UInt32
     
     /**
      * Cancel a notification by id.
@@ -581,12 +581,12 @@ public protocol HostCallbacks: AnyObject, Sendable {
      * Prompt the user for a device-level permission (camera, mic, ...);
      * the host returns whether the permission was granted.
      */
-    func devicePermission(request: NativeDevicePermission) async throws  -> Bool
+    func devicePermission(request: HostDevicePermissionRequest) async throws  -> Bool
     
     /**
      * Prompt the user for a remote (product-scoped) permission.
      */
-    func remotePermission(request: NativeRemotePermission) async throws  -> Bool
+    func remotePermission(request: RemotePermission) async throws  -> Bool
     
     /**
      * Observe an auth state change. Emitted only when the state actually
@@ -651,7 +651,7 @@ public protocol HostCallbacks: AnyObject, Sendable {
     /**
      * Answer a feature-support query.
      */
-    func featureSupported(request: FeatureSupportedRequest) async throws  -> Bool
+    func featureSupported(request: HostFeatureSupportedRequest) async throws  -> Bool
     
     /**
      * Read a value from the host's scoped key-value store.
@@ -773,13 +773,13 @@ open func navigateTo(url: String)async throws   {
     /**
      * Deliver a push notification.
      */
-open func pushNotification(request: PushNotificationRequest)async throws  -> UInt32  {
+open func pushNotification(request: HostPushNotificationRequest)async throws  -> UInt32  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_push_notification(
                     self.uniffiClonePointer(),
-                    FfiConverterTypePushNotificationRequest_lower(request)
+                    FfiConverterTypeHostPushNotificationRequest_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_u32,
@@ -804,13 +804,13 @@ open func cancelNotification(id: UInt32)throws   {try rustCallWithError(FfiConve
      * Prompt the user for a device-level permission (camera, mic, ...);
      * the host returns whether the permission was granted.
      */
-open func devicePermission(request: NativeDevicePermission)async throws  -> Bool  {
+open func devicePermission(request: HostDevicePermissionRequest)async throws  -> Bool  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_device_permission(
                     self.uniffiClonePointer(),
-                    FfiConverterTypeNativeDevicePermission_lower(request)
+                    FfiConverterTypeHostDevicePermissionRequest_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_i8,
@@ -824,13 +824,13 @@ open func devicePermission(request: NativeDevicePermission)async throws  -> Bool
     /**
      * Prompt the user for a remote (product-scoped) permission.
      */
-open func remotePermission(request: NativeRemotePermission)async throws  -> Bool  {
+open func remotePermission(request: RemotePermission)async throws  -> Bool  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_remote_permission(
                     self.uniffiClonePointer(),
-                    FfiConverterTypeNativeRemotePermission_lower(request)
+                    FfiConverterTypeRemotePermission_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_i8,
@@ -978,13 +978,13 @@ open func currentTheme()throws  -> HostTheme  {
     /**
      * Answer a feature-support query.
      */
-open func featureSupported(request: FeatureSupportedRequest)async throws  -> Bool  {
+open func featureSupported(request: HostFeatureSupportedRequest)async throws  -> Bool  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_feature_supported(
                     self.uniffiClonePointer(),
-                    FfiConverterTypeFeatureSupportedRequest_lower(request)
+                    FfiConverterTypeHostFeatureSupportedRequest_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_i8,
@@ -1120,7 +1120,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.pushNotification(
-                     request: try FfiConverterTypePushNotificationRequest_lift(request)
+                     request: try FfiConverterTypeHostPushNotificationRequest_lift(request)
                 )
             }
 
@@ -1188,7 +1188,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.devicePermission(
-                     request: try FfiConverterTypeNativeDevicePermission_lift(request)
+                     request: try FfiConverterTypeHostDevicePermissionRequest_lift(request)
                 )
             }
 
@@ -1231,7 +1231,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.remotePermission(
-                     request: try FfiConverterTypeNativeRemotePermission_lift(request)
+                     request: try FfiConverterTypeRemotePermission_lift(request)
                 )
             }
 
@@ -1561,7 +1561,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.featureSupported(
-                     request: try FfiConverterTypeFeatureSupportedRequest_lift(request)
+                     request: try FfiConverterTypeHostFeatureSupportedRequest_lift(request)
                 )
             }
 
@@ -2332,107 +2332,6 @@ public func FfiConverterTypeNativeRuntimeConfig_lower(_ value: NativeRuntimeConf
 
 
 /**
- * Native-friendly mirror of [`v01::HostPushNotificationRequest`].
- */
-public struct PushNotificationRequest {
-    /**
-     * Notification text.
-     */
-    public var text: String
-    /**
-     * Optional URL to open on tap.
-     */
-    public var deeplink: String?
-    /**
-     * Optional Unix timestamp in milliseconds (UTC) at which the
-     * notification should fire. `None` fires immediately.
-     */
-    public var scheduledAt: UInt64?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Notification text.
-         */text: String, 
-        /**
-         * Optional URL to open on tap.
-         */deeplink: String?, 
-        /**
-         * Optional Unix timestamp in milliseconds (UTC) at which the
-         * notification should fire. `None` fires immediately.
-         */scheduledAt: UInt64?) {
-        self.text = text
-        self.deeplink = deeplink
-        self.scheduledAt = scheduledAt
-    }
-}
-
-#if compiler(>=6)
-extension PushNotificationRequest: Sendable {}
-#endif
-
-
-extension PushNotificationRequest: Equatable, Hashable {
-    public static func ==(lhs: PushNotificationRequest, rhs: PushNotificationRequest) -> Bool {
-        if lhs.text != rhs.text {
-            return false
-        }
-        if lhs.deeplink != rhs.deeplink {
-            return false
-        }
-        if lhs.scheduledAt != rhs.scheduledAt {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(text)
-        hasher.combine(deeplink)
-        hasher.combine(scheduledAt)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypePushNotificationRequest: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PushNotificationRequest {
-        return
-            try PushNotificationRequest(
-                text: FfiConverterString.read(from: &buf), 
-                deeplink: FfiConverterOptionString.read(from: &buf), 
-                scheduledAt: FfiConverterOptionUInt64.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: PushNotificationRequest, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.text, into: &buf)
-        FfiConverterOptionString.write(value.deeplink, into: &buf)
-        FfiConverterOptionUInt64.write(value.scheduledAt, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePushNotificationRequest_lift(_ buf: RustBuffer) throws -> PushNotificationRequest {
-    return try FfiConverterTypePushNotificationRequest.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePushNotificationRequest_lower(_ value: PushNotificationRequest) -> RustBuffer {
-    return FfiConverterTypePushNotificationRequest.lower(value)
-}
-
-
-/**
  * Native-friendly mirror of [`truapi_platform::SessionUiInfo`]: decoded
  * session fields for host account UI, with byte arrays widened to `Vec<u8>`
  * for the FFI surface.
@@ -2756,81 +2655,6 @@ public func FfiConverterTypeAuthState_lower(_ value: AuthState) -> RustBuffer {
 
 
 extension AuthState: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`v01::HostFeatureSupportedRequest`].
- */
-
-public enum FeatureSupportedRequest {
-    
-    /**
-     * Ask whether the host can interact with the chain identified by genesis hash.
-     */
-    case chain(
-        /**
-         * Chain genesis hash.
-         */genesisHash: Data
-    )
-}
-
-
-#if compiler(>=6)
-extension FeatureSupportedRequest: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeFeatureSupportedRequest: FfiConverterRustBuffer {
-    typealias SwiftType = FeatureSupportedRequest
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FeatureSupportedRequest {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .chain(genesisHash: try FfiConverterData.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: FeatureSupportedRequest, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .chain(genesisHash):
-            writeInt(&buf, Int32(1))
-            FfiConverterData.write(genesisHash, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFeatureSupportedRequest_lift(_ buf: RustBuffer) throws -> FeatureSupportedRequest {
-    return try FfiConverterTypeFeatureSupportedRequest.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFeatureSupportedRequest_lower(_ value: FeatureSupportedRequest) -> RustBuffer {
-    return FfiConverterTypeFeatureSupportedRequest.lower(value)
-}
-
-
-extension FeatureSupportedRequest: Equatable, Hashable {}
 
 
 
@@ -3194,155 +3018,6 @@ extension HostTheme: Equatable, Hashable {}
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
- * Native-friendly mirror of [`v01::HostDevicePermissionRequest`].
- */
-
-public enum NativeDevicePermission {
-    
-    /**
-     * Showing system notifications.
-     */
-    case notifications
-    /**
-     * Camera capture access.
-     */
-    case camera
-    /**
-     * Microphone capture access.
-     */
-    case microphone
-    /**
-     * Bluetooth device access.
-     */
-    case bluetooth
-    /**
-     * NFC reader access.
-     */
-    case nfc
-    /**
-     * Geolocation access.
-     */
-    case location
-    /**
-     * Clipboard access.
-     */
-    case clipboard
-    /**
-     * Opening URLs outside the host.
-     */
-    case openUrl
-    /**
-     * Biometric authentication.
-     */
-    case biometrics
-}
-
-
-#if compiler(>=6)
-extension NativeDevicePermission: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeDevicePermission: FfiConverterRustBuffer {
-    typealias SwiftType = NativeDevicePermission
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeDevicePermission {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .notifications
-        
-        case 2: return .camera
-        
-        case 3: return .microphone
-        
-        case 4: return .bluetooth
-        
-        case 5: return .nfc
-        
-        case 6: return .location
-        
-        case 7: return .clipboard
-        
-        case 8: return .openUrl
-        
-        case 9: return .biometrics
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeDevicePermission, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .notifications:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .camera:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .microphone:
-            writeInt(&buf, Int32(3))
-        
-        
-        case .bluetooth:
-            writeInt(&buf, Int32(4))
-        
-        
-        case .nfc:
-            writeInt(&buf, Int32(5))
-        
-        
-        case .location:
-            writeInt(&buf, Int32(6))
-        
-        
-        case .clipboard:
-            writeInt(&buf, Int32(7))
-        
-        
-        case .openUrl:
-            writeInt(&buf, Int32(8))
-        
-        
-        case .biometrics:
-            writeInt(&buf, Int32(9))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeDevicePermission_lift(_ buf: RustBuffer) throws -> NativeDevicePermission {
-    return try FfiConverterTypeNativeDevicePermission.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeDevicePermission_lower(_ value: NativeDevicePermission) -> RustBuffer {
-    return FfiConverterTypeNativeDevicePermission.lower(value)
-}
-
-
-extension NativeDevicePermission: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
  * Native-friendly SSO deeplink scheme.
  */
 
@@ -3431,12 +3106,12 @@ public enum NativePermissionAuthorizationRequest {
     /**
      * Device-level permission such as camera, microphone, or location.
      */
-    case device(NativeDevicePermission
+    case device(HostDevicePermissionRequest
     )
     /**
      * Remote/product-scoped permission such as chain submit or HTTP access.
      */
-    case remote(NativeRemotePermission
+    case remote(RemotePermission
     )
     /**
      * Product-scoped permission to disclose the user's primary identity.
@@ -3467,10 +3142,10 @@ public struct FfiConverterTypeNativePermissionAuthorizationRequest: FfiConverter
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .device(try FfiConverterTypeNativeDevicePermission.read(from: &buf)
+        case 1: return .device(try FfiConverterTypeHostDevicePermissionRequest.read(from: &buf)
         )
         
-        case 2: return .remote(try FfiConverterTypeNativeRemotePermission.read(from: &buf)
+        case 2: return .remote(try FfiConverterTypeRemotePermission.read(from: &buf)
         )
         
         case 3: return .identityDisclosure
@@ -3488,12 +3163,12 @@ public struct FfiConverterTypeNativePermissionAuthorizationRequest: FfiConverter
         
         case let .device(v1):
             writeInt(&buf, Int32(1))
-            FfiConverterTypeNativeDevicePermission.write(v1, into: &buf)
+            FfiConverterTypeHostDevicePermissionRequest.write(v1, into: &buf)
             
         
         case let .remote(v1):
             writeInt(&buf, Int32(2))
-            FfiConverterTypeNativeRemotePermission.write(v1, into: &buf)
+            FfiConverterTypeRemotePermission.write(v1, into: &buf)
             
         
         case .identityDisclosure:
@@ -3614,121 +3289,6 @@ public func FfiConverterTypeNativePermissionAuthorizationStatus_lower(_ value: N
 
 
 extension NativePermissionAuthorizationStatus: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`v01::RemotePermission`].
- */
-
-public enum NativeRemotePermission {
-    
-    /**
-     * Outbound HTTP/WebSocket access to a set of domains.
-     */
-    case remote(
-        /**
-         * Domain patterns requested by the product.
-         */domains: [String]
-    )
-    /**
-     * WebRTC media access.
-     */
-    case webRtc
-    /**
-     * Submitting chain transactions on behalf of the user.
-     */
-    case chainSubmit
-    /**
-     * Submitting preimages on behalf of the user.
-     */
-    case preimageSubmit
-    /**
-     * Submitting statements on behalf of the user.
-     */
-    case statementSubmit
-}
-
-
-#if compiler(>=6)
-extension NativeRemotePermission: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeRemotePermission: FfiConverterRustBuffer {
-    typealias SwiftType = NativeRemotePermission
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeRemotePermission {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .remote(domains: try FfiConverterSequenceString.read(from: &buf)
-        )
-        
-        case 2: return .webRtc
-        
-        case 3: return .chainSubmit
-        
-        case 4: return .preimageSubmit
-        
-        case 5: return .statementSubmit
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeRemotePermission, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .remote(domains):
-            writeInt(&buf, Int32(1))
-            FfiConverterSequenceString.write(domains, into: &buf)
-            
-        
-        case .webRtc:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .chainSubmit:
-            writeInt(&buf, Int32(3))
-        
-        
-        case .preimageSubmit:
-            writeInt(&buf, Int32(4))
-        
-        
-        case .statementSubmit:
-            writeInt(&buf, Int32(5))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRemotePermission_lift(_ buf: RustBuffer) throws -> NativeRemotePermission {
-    return try FfiConverterTypeNativeRemotePermission.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRemotePermission_lower(_ value: NativeRemotePermission) -> RustBuffer {
-    return FfiConverterTypeNativeRemotePermission.lower(value)
-}
-
-
-extension NativeRemotePermission: Equatable, Hashable {}
 
 
 
@@ -4198,30 +3758,6 @@ fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
-    typealias SwiftType = UInt64?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterUInt64.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterUInt64.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -4264,31 +3800,6 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
         case 1: return try FfiConverterData.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
-    typealias SwiftType = [String]
-
-    public static func write(_ value: [String], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterString.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [String]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterString.read(from: &buf))
-        }
-        return seq
     }
 }
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
@@ -4473,16 +3984,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_navigate_to() != 33889) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_push_notification() != 20620) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_push_notification() != 31129) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_cancel_notification() != 218) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 11113) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 64016) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 56574) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 65180) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 7746) {
@@ -4515,7 +4026,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 4919) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 35425) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 10783) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 9400) {
@@ -4568,6 +4079,7 @@ private let initializationResult: InitializationResult = {
     }
 
     uniffiCallbackInitHostCallbacks()
+    uniffiEnsureTruapiInitialized()
     uniffiEnsureTruapiPlatformInitialized()
     return InitializationResult.ok
 }()

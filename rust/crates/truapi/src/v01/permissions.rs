@@ -8,6 +8,7 @@ use parity_scale_codec::{Decode, Encode};
 /// does not re-prompt on subsequent requests for the same capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Display)]
 #[allow(clippy::upper_case_acronyms)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostDevicePermissionRequest {
     /// Showing system notifications.
     #[display("notifications")]
@@ -43,6 +44,7 @@ pub enum HostDevicePermissionRequest {
 /// `ChainSubmit`, `PreimageSubmit`, and `StatementSubmit` are also triggered
 /// implicitly by the corresponding business calls when not yet granted.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RemotePermission {
     /// Outbound HTTP/WebSocket access to a set of domains.
     #[display("access to {}", domains.join(", "))]

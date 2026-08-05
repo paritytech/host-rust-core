@@ -4,6 +4,7 @@ use super::common::GenericError;
 
 /// Request to query whether a feature is supported by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostFeatureSupportedRequest {
     /// Ask whether the host can interact with the chain identified by genesis hash.
     Chain {

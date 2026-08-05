@@ -25,8 +25,20 @@ pub mod api;
 pub mod v01;
 pub mod versioned;
 
+/// A 32-byte value, passed as plain bytes on FFI surfaces. Version-neutral:
+/// the FFI conversion below applies to `[u8; 32]` fields in every protocol
+/// version.
+pub type Bytes32 = [u8; 32];
+
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
+
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(Bytes32, Vec<u8>, {
+    remote,
+    lower: |bytes| bytes.to_vec(),
+    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
+});
 
 /// Latest-version protocol payload types, unwrapped from their versioned
 /// envelopes. Runtime code should use these instead of per-version modules.
