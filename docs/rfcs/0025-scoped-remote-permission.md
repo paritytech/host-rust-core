@@ -70,10 +70,10 @@ Hosts canonicalise `domain` to lower case and `method` to upper case before keyi
 
 Same shape as any remote permission, with rules 2 and 3 specific to this variant:
 
-1. **No session** → denied ([RFC-0009](0009-unauthenticated-product-access.md)); the host does not auto-prompt login.
-2. **The requests the grant would cover are not `https`** → denied. `domain` carries no scheme, so the host applies this to the scheme it would use for covered requests. The proof would otherwise travel in plaintext.
-3. **The user is not a people-set member** → denied. The host cannot produce the proof the grant requires, and `create_account_proof` returns `NotMember` for the same reason.
-4. **Otherwise** → a prompt naming the method, the domain, the path, and the fact that this endpoint will receive a personhood alias. Granted on approval, denied on decline.
+1. **No session.** Denied ([RFC-0009](0009-unauthenticated-product-access.md)), and the host does not auto-prompt login.
+2. **The requests the grant would cover are not `https`.** Denied. `domain` carries no scheme, so the host applies this to the scheme it would use for covered requests. The proof would otherwise travel in plaintext.
+3. **The user is not a people-set member.** Denied. The host cannot produce the proof the grant requires, and `create_account_proof` returns `NotMember` for the same reason.
+4. **Otherwise.** A prompt naming the method, the domain, the path, and the fact that this endpoint will receive a personhood alias. Granted on approval, denied on decline.
 
 `RemotePermissionResponse` carries only `granted: bool`, so all four collapse to one answer. A product cannot distinguish "the user declined" from "the user is not verified" and route to onboarding. See Unresolved Questions.
 
@@ -119,13 +119,15 @@ A `Credential` grant authorises the host to produce these proofs for covered req
 
 A backend behind a `Credential` grant MUST:
 
-> Verify the ring VRF proof against the People chain, and derive the per-person key it rate limits from the contextual alias that proof carries, never from any other field of the request.
+> Verify the ring VRF proof against the People chain under the context derived from the endpoint being called and the digest of the request as received. Derive the per-person key it rate limits from the alias that verification returns, never from any other field of the request.
 
-The proof binds both a context and a message, and both have to be checked. A context other than the one derived from the endpoint being called is one the product could have obtained against a different endpoint, so the alias it carries says nothing about this one. A message other than the digest of the request as received is one the product could have obtained earlier, so the proof would authorise a request it was never made over. Rejecting a timestamp outside an accepted window, and a nonce already seen inside it, is what bounds how long a captured proof stays useful.
+Passing the context and message as verification inputs is what makes those bindings enforced rather than checked. A proof obtained against a different endpoint, or over an earlier request, does not verify under the ones the backend supplies. Rejecting a timestamp outside an accepted window, and a nonce already seen inside it, is what bounds how long a captured proof stays useful.
 
 ## Implementation notes
 
-Verification needs a bandersnatch ring-VRF implementation, in practice `paritytech/verifiable`, and the ring itself: the member set is rebuilt from People chain storage and committed, which is expensive per request and wants caching per ring revision. No JavaScript port exists, so a Node backend cannot verify today. That covers the motivating onramp case and is the largest obstacle to adoption here.
+Verification is one call. `verifiablejs`, a WASM binding of `paritytech/verifiable` published for both Node and bundlers, exposes `validate(proof, members, context, message)` returning the alias to key on. `web3-citizenship-web` already uses it for the ring-VRF flows against People. Note that the caller supplies `context`, so a proof made under any other context fails to verify rather than needing a separate check.
+
+What a backend must supply is `members`. The ring is rebuilt from People chain storage and committed, which is too expensive to redo per request and wants caching keyed on the ring revision the request carries. That, rather than the cryptography, is the integration cost.
 
 **Recommended backend implementation.**
 
@@ -136,7 +138,7 @@ Verification needs a bandersnatch ring-VRF implementation, in practice `parityte
 ## Drawbacks
 
 - **Non-members cannot hold a `Credential` grant.** Personhood is mandatory, so anyone still verifying is refused. [RFC-0023](0023-account-sign-vrf.md) exists because that population needs a different path, and this design has no equivalent.
-- **Backends must implement ring-VRF verification.** That is a real integration cost, and unavailable in JavaScript today.
+- **Backends need a chain connection, not just a verifier.** Verifying a proof is one library call, but obtaining and refreshing the ring member set is not, so a backend needs a People chain connection and a cache.
 - **More prompts for chatty products.** One grant per operation is what buys a legible prompt. `Remote` remains for products that prefer one broad grant.
 - **No bound on use after the grant.** [RFC-0002](0002-permission-model.md) persists a decision indefinitely and defines no revocation protocol, so a `Credential` grant authorises an unlimited number of proved requests until the user clears it in host settings.
 - **The alias is per product.** A backend reached by several products sees a different alias per product for the same person, because [RFC-0004](0004-ringlocation-redesign.md) scopes contexts by product deliberately.
