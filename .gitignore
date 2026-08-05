@@ -11,6 +11,11 @@ lerna-debug.log*
 node_modules
 target
 
+# SwiftPM (root Package.swift for ios/truapi-host)
+/.build/
+/.swiftpm/
+/Package.resolved
+
 # Gradle (Android workspace at repo root)
 /.gradle/
 /build/
