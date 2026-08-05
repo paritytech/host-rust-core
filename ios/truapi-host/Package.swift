@@ -29,7 +29,10 @@ let package = Package(
         .target(
             name: "TrUAPIHost",
             dependencies: ["truapi_serverFFI"],
-            path: "Sources/TrUAPIHost"
+            path: "Sources/TrUAPIHost",
+            linkerSettings: [
+                .linkedLibrary("truapi_server"),
+            ]
         ),
     ]
 )
