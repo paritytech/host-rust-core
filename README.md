@@ -64,16 +64,23 @@ js/packages/
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
-ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+js/container/              TS lockdown container for the iOS host web view; bundles into
+                           ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
-hosts/ios/                 polkadot-app-ios-v2, vendored as a submodule (build/test against the core)
-hosts/android/             polkadot-app-android-v2, vendored as a submodule (build/test against the core)
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
 scripts/battery.sh         Run the generated battery against both headless CLI host roles
 ```
+
+The Swift host adapter (the `TrUAPIHost` SPM package over the truapi-server
+UniFFI core) lives under [`ios/truapi-host/`](ios/truapi-host), with its SPM
+manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
+dependency. Its `scripts/rebuild.sh` regenerates the committed bindings and
+container bundle (`make xcframework` + `make uniffi`); see
+[`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 
 ### JS Host SDKs
 
@@ -122,12 +129,15 @@ controls, and examples.
 example and writes both committed compatibility reports:
 `explorer/diagnosis-reports/signing-host-cli.md` from a direct signing-host run,
 and `pairing-host-cli.md` from a pairing host that the script pairs with a
-signing host it starts itself.
+signing host it starts itself under the same product id. Known unsupported
+service families remain visible in the reports without making the command fail.
 
 ```bash
 scripts/battery.sh                  # both phases
 scripts/battery.sh --signing-host   # direct phase only
 scripts/battery.sh --pairing-host   # paired phase only
+make e2e-signing-cli                # same direct signing-host phase
+make e2e-pairing-cli                # same paired pairing-host phase
 ```
 
 To run the playground locally:
