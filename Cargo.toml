@@ -10,6 +10,9 @@ exclude = ["hosts"]
 edition = "2024"
 license = "MIT"
 
+[workspace.dependencies]
+uniffi = "0.32.0"
+
 [workspace.lints.rust]
 missing_docs = "warn"
 unsafe_code = "deny"

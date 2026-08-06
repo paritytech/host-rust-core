@@ -39,6 +39,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -352,19 +398,29 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
+// Initial value and increment amount for handles.
+// These ensure that SWIFT handles always have the lowest bit set
+fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
+fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
+
 fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
     // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
     private var map: [UInt64: T] = [:]
-    private var currentHandle: UInt64 = 1
+    private var currentHandle: UInt64 = UNIFFI_HANDLEMAP_INITIAL
 
     func insert(obj: T) -> UInt64 {
         lock.withLock {
-            let handle = currentHandle
-            currentHandle += 1
-            map[handle] = obj
-            return handle
+            return doInsert(obj)
         }
+    }
+
+    // Low-level insert function, this assumes `lock` is held.
+    private func doInsert(_ obj: T) -> UInt64 {
+        let handle = currentHandle
+        currentHandle += UNIFFI_HANDLEMAP_DELTA
+        map[handle] = obj
+        return handle
     }
 
      func get(handle: UInt64) throws -> T {
@@ -373,6 +429,15 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
                 throw UniffiInternalError.unexpectedStaleHandle
             }
             return obj
+        }
+    }
+
+     func clone(handle: UInt64) throws -> UInt64 {
+        try lock.withLock {
+            guard let obj = map[handle] else {
+                throw UniffiInternalError.unexpectedStaleHandle
+            }
+            return doInsert(obj)
         }
     }
 
@@ -484,7 +549,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -500,7 +569,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -533,7 +603,7 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
  * Request to produce an sr25519 VRF signature from a product account over a
  * caller-supplied Merlin transcript.
  */
-public struct HostAccountSignVrfRequest {
+public struct HostAccountSignVrfRequest: Equatable, Hashable {
     /**
      * Account whose key signs the VRF.
      */
@@ -552,10 +622,10 @@ public struct HostAccountSignVrfRequest {
     public init(
         /**
          * Account whose key signs the VRF.
-         */account: ProductAccountId, 
+         */account: ProductAccountId,
         /**
          * Root domain-separation label: `Transcript::new(transcript_label)`.
-         */transcriptLabel: Data, 
+         */transcriptLabel: Data,
         /**
          * Transcript items replayed in order as `append_message(label, value)`.
          */items: [VrfTranscriptItem]) {
@@ -563,35 +633,15 @@ public struct HostAccountSignVrfRequest {
         self.transcriptLabel = transcriptLabel
         self.items = items
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension HostAccountSignVrfRequest: Sendable {}
 #endif
-
-
-extension HostAccountSignVrfRequest: Equatable, Hashable {
-    public static func ==(lhs: HostAccountSignVrfRequest, rhs: HostAccountSignVrfRequest) -> Bool {
-        if lhs.account != rhs.account {
-            return false
-        }
-        if lhs.transcriptLabel != rhs.transcriptLabel {
-            return false
-        }
-        if lhs.items != rhs.items {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account)
-        hasher.combine(transcriptLabel)
-        hasher.combine(items)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -600,8 +650,8 @@ public struct FfiConverterTypeHostAccountSignVrfRequest: FfiConverterRustBuffer 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostAccountSignVrfRequest {
         return
             try HostAccountSignVrfRequest(
-                account: FfiConverterTypeProductAccountId.read(from: &buf), 
-                transcriptLabel: FfiConverterData.read(from: &buf), 
+                account: FfiConverterTypeProductAccountId.read(from: &buf),
+                transcriptLabel: FfiConverterData.read(from: &buf),
                 items: FfiConverterSequenceTypeVrfTranscriptItem.read(from: &buf)
         )
     }
@@ -638,7 +688,7 @@ public func FfiConverterTypeHostAccountSignVrfRequest_lower(_ value: HostAccount
  *
  * [RFC 0019]: https://github.com/paritytech/truapi/blob/main/docs/rfcs/0019-scheduled-notifications.md
  */
-public struct HostPushNotificationRequest {
+public struct HostPushNotificationRequest: Equatable, Hashable {
     /**
      * Notification text.
      */
@@ -658,10 +708,10 @@ public struct HostPushNotificationRequest {
     public init(
         /**
          * Notification text.
-         */text: String, 
+         */text: String,
         /**
          * Optional URL to open on tap.
-         */deeplink: String?, 
+         */deeplink: String?,
         /**
          * Optional Unix timestamp in milliseconds (UTC) at which the notification
          * should fire. `None` fires immediately.
@@ -670,35 +720,15 @@ public struct HostPushNotificationRequest {
         self.deeplink = deeplink
         self.scheduledAt = scheduledAt
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension HostPushNotificationRequest: Sendable {}
 #endif
-
-
-extension HostPushNotificationRequest: Equatable, Hashable {
-    public static func ==(lhs: HostPushNotificationRequest, rhs: HostPushNotificationRequest) -> Bool {
-        if lhs.text != rhs.text {
-            return false
-        }
-        if lhs.deeplink != rhs.deeplink {
-            return false
-        }
-        if lhs.scheduledAt != rhs.scheduledAt {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(text)
-        hasher.combine(deeplink)
-        hasher.combine(scheduledAt)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -707,8 +737,8 @@ public struct FfiConverterTypeHostPushNotificationRequest: FfiConverterRustBuffe
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostPushNotificationRequest {
         return
             try HostPushNotificationRequest(
-                text: FfiConverterString.read(from: &buf), 
-                deeplink: FfiConverterOptionString.read(from: &buf), 
+                text: FfiConverterString.read(from: &buf),
+                deeplink: FfiConverterOptionString.read(from: &buf),
                 scheduledAt: FfiConverterOptionUInt64.read(from: &buf)
         )
     }
@@ -740,7 +770,7 @@ public func FfiConverterTypeHostPushNotificationRequest_lower(_ value: HostPushN
  * Full Substrate extrinsic signing payload with all fields needed for signature
  * generation.
  */
-public struct HostSignPayloadData {
+public struct HostSignPayloadData: Equatable, Hashable {
     /**
      * Reference block hash.
      */
@@ -807,46 +837,46 @@ public struct HostSignPayloadData {
     public init(
         /**
          * Reference block hash.
-         */blockHash: Data, 
+         */blockHash: Data,
         /**
          * Reference block number.
-         */blockNumber: Data, 
+         */blockNumber: Data,
         /**
          * Mortality era encoding.
-         */era: Data, 
+         */era: Data,
         /**
          * Chain genesis hash.
-         */genesisHash: Data, 
+         */genesisHash: Data,
         /**
          * SCALE-encoded call data.
-         */method: Data, 
+         */method: Data,
         /**
          * Account nonce.
-         */nonce: Data, 
+         */nonce: Data,
         /**
          * Runtime spec version.
-         */specVersion: Data, 
+         */specVersion: Data,
         /**
          * Transaction tip.
-         */tip: Data, 
+         */tip: Data,
         /**
          * Transaction format version.
-         */transactionVersion: Data, 
+         */transactionVersion: Data,
         /**
          * Extension identifiers.
-         */signedExtensions: [String], 
+         */signedExtensions: [String],
         /**
          * Extrinsic version.
-         */version: UInt32, 
+         */version: UInt32,
         /**
          * For multi-asset tips.
-         */assetId: Data?, 
+         */assetId: Data?,
         /**
          * CheckMetadataHash extension.
-         */metadataHash: Data?, 
+         */metadataHash: Data?,
         /**
          * Metadata mode.
-         */mode: UInt32?, 
+         */mode: UInt32?,
         /**
          * Request signed transaction back.
          */withSignedTransaction: Bool?) {
@@ -866,83 +896,15 @@ public struct HostSignPayloadData {
         self.mode = mode
         self.withSignedTransaction = withSignedTransaction
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension HostSignPayloadData: Sendable {}
 #endif
-
-
-extension HostSignPayloadData: Equatable, Hashable {
-    public static func ==(lhs: HostSignPayloadData, rhs: HostSignPayloadData) -> Bool {
-        if lhs.blockHash != rhs.blockHash {
-            return false
-        }
-        if lhs.blockNumber != rhs.blockNumber {
-            return false
-        }
-        if lhs.era != rhs.era {
-            return false
-        }
-        if lhs.genesisHash != rhs.genesisHash {
-            return false
-        }
-        if lhs.method != rhs.method {
-            return false
-        }
-        if lhs.nonce != rhs.nonce {
-            return false
-        }
-        if lhs.specVersion != rhs.specVersion {
-            return false
-        }
-        if lhs.tip != rhs.tip {
-            return false
-        }
-        if lhs.transactionVersion != rhs.transactionVersion {
-            return false
-        }
-        if lhs.signedExtensions != rhs.signedExtensions {
-            return false
-        }
-        if lhs.version != rhs.version {
-            return false
-        }
-        if lhs.assetId != rhs.assetId {
-            return false
-        }
-        if lhs.metadataHash != rhs.metadataHash {
-            return false
-        }
-        if lhs.mode != rhs.mode {
-            return false
-        }
-        if lhs.withSignedTransaction != rhs.withSignedTransaction {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(blockHash)
-        hasher.combine(blockNumber)
-        hasher.combine(era)
-        hasher.combine(genesisHash)
-        hasher.combine(method)
-        hasher.combine(nonce)
-        hasher.combine(specVersion)
-        hasher.combine(tip)
-        hasher.combine(transactionVersion)
-        hasher.combine(signedExtensions)
-        hasher.combine(version)
-        hasher.combine(assetId)
-        hasher.combine(metadataHash)
-        hasher.combine(mode)
-        hasher.combine(withSignedTransaction)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -951,20 +913,20 @@ public struct FfiConverterTypeHostSignPayloadData: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostSignPayloadData {
         return
             try HostSignPayloadData(
-                blockHash: FfiConverterData.read(from: &buf), 
-                blockNumber: FfiConverterData.read(from: &buf), 
-                era: FfiConverterData.read(from: &buf), 
-                genesisHash: FfiConverterData.read(from: &buf), 
-                method: FfiConverterData.read(from: &buf), 
-                nonce: FfiConverterData.read(from: &buf), 
-                specVersion: FfiConverterData.read(from: &buf), 
-                tip: FfiConverterData.read(from: &buf), 
-                transactionVersion: FfiConverterData.read(from: &buf), 
-                signedExtensions: FfiConverterSequenceString.read(from: &buf), 
-                version: FfiConverterUInt32.read(from: &buf), 
-                assetId: FfiConverterOptionData.read(from: &buf), 
-                metadataHash: FfiConverterOptionData.read(from: &buf), 
-                mode: FfiConverterOptionUInt32.read(from: &buf), 
+                blockHash: FfiConverterData.read(from: &buf),
+                blockNumber: FfiConverterData.read(from: &buf),
+                era: FfiConverterData.read(from: &buf),
+                genesisHash: FfiConverterData.read(from: &buf),
+                method: FfiConverterData.read(from: &buf),
+                nonce: FfiConverterData.read(from: &buf),
+                specVersion: FfiConverterData.read(from: &buf),
+                tip: FfiConverterData.read(from: &buf),
+                transactionVersion: FfiConverterData.read(from: &buf),
+                signedExtensions: FfiConverterSequenceString.read(from: &buf),
+                version: FfiConverterUInt32.read(from: &buf),
+                assetId: FfiConverterOptionData.read(from: &buf),
+                metadataHash: FfiConverterOptionData.read(from: &buf),
+                mode: FfiConverterOptionUInt32.read(from: &buf),
                 withSignedTransaction: FfiConverterOptionBool.read(from: &buf)
         )
     }
@@ -1007,7 +969,7 @@ public func FfiConverterTypeHostSignPayloadData_lower(_ value: HostSignPayloadDa
 /**
  * Request to sign an extrinsic payload with a product account.
  */
-public struct HostSignPayloadRequest {
+public struct HostSignPayloadRequest: Equatable, Hashable {
     /**
      * Product account that will sign this payload.
      */
@@ -1022,38 +984,22 @@ public struct HostSignPayloadRequest {
     public init(
         /**
          * Product account that will sign this payload.
-         */account: ProductAccountId, 
+         */account: ProductAccountId,
         /**
          * The extrinsic payload to sign.
          */payload: HostSignPayloadData) {
         self.account = account
         self.payload = payload
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension HostSignPayloadRequest: Sendable {}
 #endif
-
-
-extension HostSignPayloadRequest: Equatable, Hashable {
-    public static func ==(lhs: HostSignPayloadRequest, rhs: HostSignPayloadRequest) -> Bool {
-        if lhs.account != rhs.account {
-            return false
-        }
-        if lhs.payload != rhs.payload {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account)
-        hasher.combine(payload)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1062,7 +1008,7 @@ public struct FfiConverterTypeHostSignPayloadRequest: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostSignPayloadRequest {
         return
             try HostSignPayloadRequest(
-                account: FfiConverterTypeProductAccountId.read(from: &buf), 
+                account: FfiConverterTypeProductAccountId.read(from: &buf),
                 payload: FfiConverterTypeHostSignPayloadData.read(from: &buf)
         )
     }
@@ -1094,7 +1040,7 @@ public func FfiConverterTypeHostSignPayloadRequest_lower(_ value: HostSignPayloa
  * Contains the same fields as [`HostSignPayloadRequest`] minus `address`
  * (replaced by `signer`).
  */
-public struct HostSignPayloadWithLegacyAccountRequest {
+public struct HostSignPayloadWithLegacyAccountRequest: Equatable, Hashable {
     /**
      * Signer address (SS58 or hex) of the legacy account.
      */
@@ -1109,38 +1055,22 @@ public struct HostSignPayloadWithLegacyAccountRequest {
     public init(
         /**
          * Signer address (SS58 or hex) of the legacy account.
-         */signer: String, 
+         */signer: String,
         /**
          * The extrinsic payload to sign.
          */payload: HostSignPayloadData) {
         self.signer = signer
         self.payload = payload
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension HostSignPayloadWithLegacyAccountRequest: Sendable {}
 #endif
-
-
-extension HostSignPayloadWithLegacyAccountRequest: Equatable, Hashable {
-    public static func ==(lhs: HostSignPayloadWithLegacyAccountRequest, rhs: HostSignPayloadWithLegacyAccountRequest) -> Bool {
-        if lhs.signer != rhs.signer {
-            return false
-        }
-        if lhs.payload != rhs.payload {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(signer)
-        hasher.combine(payload)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1149,7 +1079,7 @@ public struct FfiConverterTypeHostSignPayloadWithLegacyAccountRequest: FfiConver
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostSignPayloadWithLegacyAccountRequest {
         return
             try HostSignPayloadWithLegacyAccountRequest(
-                signer: FfiConverterString.read(from: &buf), 
+                signer: FfiConverterString.read(from: &buf),
                 payload: FfiConverterTypeHostSignPayloadData.read(from: &buf)
         )
     }
@@ -1179,7 +1109,7 @@ public func FfiConverterTypeHostSignPayloadWithLegacyAccountRequest_lower(_ valu
 /**
  * A raw signing request pairing an account with the payload to sign.
  */
-public struct HostSignRawRequest {
+public struct HostSignRawRequest: Equatable, Hashable {
     /**
      * Product account that will sign this payload.
      */
@@ -1194,38 +1124,22 @@ public struct HostSignRawRequest {
     public init(
         /**
          * Product account that will sign this payload.
-         */account: ProductAccountId, 
+         */account: ProductAccountId,
         /**
          * The payload to sign.
          */payload: RawPayload) {
         self.account = account
         self.payload = payload
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension HostSignRawRequest: Sendable {}
 #endif
-
-
-extension HostSignRawRequest: Equatable, Hashable {
-    public static func ==(lhs: HostSignRawRequest, rhs: HostSignRawRequest) -> Bool {
-        if lhs.account != rhs.account {
-            return false
-        }
-        if lhs.payload != rhs.payload {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account)
-        hasher.combine(payload)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1234,7 +1148,7 @@ public struct FfiConverterTypeHostSignRawRequest: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostSignRawRequest {
         return
             try HostSignRawRequest(
-                account: FfiConverterTypeProductAccountId.read(from: &buf), 
+                account: FfiConverterTypeProductAccountId.read(from: &buf),
                 payload: FfiConverterTypeRawPayload.read(from: &buf)
         )
     }
@@ -1265,7 +1179,7 @@ public func FfiConverterTypeHostSignRawRequest_lower(_ value: HostSignRawRequest
  * Sign raw bytes with a non-product (legacy) account. The signer field
  * identifies which legacy account to use.
  */
-public struct HostSignRawWithLegacyAccountRequest {
+public struct HostSignRawWithLegacyAccountRequest: Equatable, Hashable {
     /**
      * Signer address (SS58 or hex) of the legacy account.
      */
@@ -1280,38 +1194,22 @@ public struct HostSignRawWithLegacyAccountRequest {
     public init(
         /**
          * Signer address (SS58 or hex) of the legacy account.
-         */signer: String, 
+         */signer: String,
         /**
          * The data to sign.
          */payload: RawPayload) {
         self.signer = signer
         self.payload = payload
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension HostSignRawWithLegacyAccountRequest: Sendable {}
 #endif
-
-
-extension HostSignRawWithLegacyAccountRequest: Equatable, Hashable {
-    public static func ==(lhs: HostSignRawWithLegacyAccountRequest, rhs: HostSignRawWithLegacyAccountRequest) -> Bool {
-        if lhs.signer != rhs.signer {
-            return false
-        }
-        if lhs.payload != rhs.payload {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(signer)
-        hasher.combine(payload)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1320,7 +1218,7 @@ public struct FfiConverterTypeHostSignRawWithLegacyAccountRequest: FfiConverterR
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostSignRawWithLegacyAccountRequest {
         return
             try HostSignRawWithLegacyAccountRequest(
-                signer: FfiConverterString.read(from: &buf), 
+                signer: FfiConverterString.read(from: &buf),
                 payload: FfiConverterTypeRawPayload.read(from: &buf)
         )
     }
@@ -1353,7 +1251,7 @@ public func FfiConverterTypeHostSignRawWithLegacyAccountRequest_lower(_ value: H
  * Identical to [`ProductAccountTxPayload`] except the signer is a raw
  * 32-byte [`AccountId`].
  */
-public struct LegacyAccountTxPayload {
+public struct LegacyAccountTxPayload: Equatable, Hashable {
     /**
      * Raw 32-byte public key of the legacy account.
      */
@@ -1380,16 +1278,16 @@ public struct LegacyAccountTxPayload {
     public init(
         /**
          * Raw 32-byte public key of the legacy account.
-         */signer: Bytes32, 
+         */signer: Bytes32,
         /**
          * Chain where the transaction will execute.
-         */genesisHash: Bytes32, 
+         */genesisHash: Bytes32,
         /**
          * SCALE-encoded Call data.
-         */callData: Data, 
+         */callData: Data,
         /**
          * Transaction extensions supplied by the caller.
-         */extensions: [TxPayloadExtension], 
+         */extensions: [TxPayloadExtension],
         /**
          * 0 for Extrinsic V4, runtime-supported value for V5.
          */txExtVersion: UInt8) {
@@ -1399,43 +1297,15 @@ public struct LegacyAccountTxPayload {
         self.extensions = extensions
         self.txExtVersion = txExtVersion
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension LegacyAccountTxPayload: Sendable {}
 #endif
-
-
-extension LegacyAccountTxPayload: Equatable, Hashable {
-    public static func ==(lhs: LegacyAccountTxPayload, rhs: LegacyAccountTxPayload) -> Bool {
-        if lhs.signer != rhs.signer {
-            return false
-        }
-        if lhs.genesisHash != rhs.genesisHash {
-            return false
-        }
-        if lhs.callData != rhs.callData {
-            return false
-        }
-        if lhs.extensions != rhs.extensions {
-            return false
-        }
-        if lhs.txExtVersion != rhs.txExtVersion {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(signer)
-        hasher.combine(genesisHash)
-        hasher.combine(callData)
-        hasher.combine(extensions)
-        hasher.combine(txExtVersion)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1444,10 +1314,10 @@ public struct FfiConverterTypeLegacyAccountTxPayload: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LegacyAccountTxPayload {
         return
             try LegacyAccountTxPayload(
-                signer: FfiConverterTypeBytes32.read(from: &buf), 
-                genesisHash: FfiConverterTypeBytes32.read(from: &buf), 
-                callData: FfiConverterData.read(from: &buf), 
-                extensions: FfiConverterSequenceTypeTxPayloadExtension.read(from: &buf), 
+                signer: FfiConverterTypeBytes32.read(from: &buf),
+                genesisHash: FfiConverterTypeBytes32.read(from: &buf),
+                callData: FfiConverterData.read(from: &buf),
+                extensions: FfiConverterSequenceTypeTxPayloadExtension.read(from: &buf),
                 txExtVersion: FfiConverterUInt8.read(from: &buf)
         )
     }
@@ -1481,7 +1351,7 @@ public func FfiConverterTypeLegacyAccountTxPayload_lower(_ value: LegacyAccountT
  * Identifies a product-specific account by combining a dotNS domain name with a
  * derivation index.
  */
-public struct ProductAccountId {
+public struct ProductAccountId: Equatable, Hashable {
     /**
      * A dotNS domain name identifier (e.g., `"my-product.dot"`).
      */
@@ -1496,38 +1366,22 @@ public struct ProductAccountId {
     public init(
         /**
          * A dotNS domain name identifier (e.g., `"my-product.dot"`).
-         */dotNsIdentifier: String, 
+         */dotNsIdentifier: String,
         /**
          * Account selector within the product subtree.
          */derivationIndex: DerivationIndex) {
         self.dotNsIdentifier = dotNsIdentifier
         self.derivationIndex = derivationIndex
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension ProductAccountId: Sendable {}
 #endif
-
-
-extension ProductAccountId: Equatable, Hashable {
-    public static func ==(lhs: ProductAccountId, rhs: ProductAccountId) -> Bool {
-        if lhs.dotNsIdentifier != rhs.dotNsIdentifier {
-            return false
-        }
-        if lhs.derivationIndex != rhs.derivationIndex {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(dotNsIdentifier)
-        hasher.combine(derivationIndex)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1536,7 +1390,7 @@ public struct FfiConverterTypeProductAccountId: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductAccountId {
         return
             try ProductAccountId(
-                dotNsIdentifier: FfiConverterString.read(from: &buf), 
+                dotNsIdentifier: FfiConverterString.read(from: &buf),
                 derivationIndex: FfiConverterTypeDerivationIndex.read(from: &buf)
         )
     }
@@ -1570,7 +1424,7 @@ public func FfiConverterTypeProductAccountId_lower(_ value: ProductAccountId) ->
  * The signer is a [`ProductAccountId`]; the host resolves the
  * corresponding key pair through its account management layer.
  */
-public struct ProductAccountTxPayload {
+public struct ProductAccountTxPayload: Equatable, Hashable {
     /**
      * Product account that will sign the transaction.
      */
@@ -1597,16 +1451,16 @@ public struct ProductAccountTxPayload {
     public init(
         /**
          * Product account that will sign the transaction.
-         */signer: ProductAccountId, 
+         */signer: ProductAccountId,
         /**
          * Chain where the transaction will execute.
-         */genesisHash: Bytes32, 
+         */genesisHash: Bytes32,
         /**
          * SCALE-encoded Call data.
-         */callData: Data, 
+         */callData: Data,
         /**
          * Transaction extensions supplied by the caller.
-         */extensions: [TxPayloadExtension], 
+         */extensions: [TxPayloadExtension],
         /**
          * 0 for Extrinsic V4, runtime-supported value for V5.
          */txExtVersion: UInt8) {
@@ -1616,43 +1470,15 @@ public struct ProductAccountTxPayload {
         self.extensions = extensions
         self.txExtVersion = txExtVersion
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension ProductAccountTxPayload: Sendable {}
 #endif
-
-
-extension ProductAccountTxPayload: Equatable, Hashable {
-    public static func ==(lhs: ProductAccountTxPayload, rhs: ProductAccountTxPayload) -> Bool {
-        if lhs.signer != rhs.signer {
-            return false
-        }
-        if lhs.genesisHash != rhs.genesisHash {
-            return false
-        }
-        if lhs.callData != rhs.callData {
-            return false
-        }
-        if lhs.extensions != rhs.extensions {
-            return false
-        }
-        if lhs.txExtVersion != rhs.txExtVersion {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(signer)
-        hasher.combine(genesisHash)
-        hasher.combine(callData)
-        hasher.combine(extensions)
-        hasher.combine(txExtVersion)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1661,10 +1487,10 @@ public struct FfiConverterTypeProductAccountTxPayload: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductAccountTxPayload {
         return
             try ProductAccountTxPayload(
-                signer: FfiConverterTypeProductAccountId.read(from: &buf), 
-                genesisHash: FfiConverterTypeBytes32.read(from: &buf), 
-                callData: FfiConverterData.read(from: &buf), 
-                extensions: FfiConverterSequenceTypeTxPayloadExtension.read(from: &buf), 
+                signer: FfiConverterTypeProductAccountId.read(from: &buf),
+                genesisHash: FfiConverterTypeBytes32.read(from: &buf),
+                callData: FfiConverterData.read(from: &buf),
+                extensions: FfiConverterSequenceTypeTxPayloadExtension.read(from: &buf),
                 txExtVersion: FfiConverterUInt8.read(from: &buf)
         )
     }
@@ -1701,7 +1527,7 @@ public func FfiConverterTypeProductAccountTxPayload_lower(_ value: ProductAccoun
  * to a ring VRF proof, so contexts cannot collide across products and the same
  * member key under different contexts yields unlinkable aliases.
  */
-public struct ProductProofContext {
+public struct ProductProofContext: Equatable, Hashable {
     /**
      * dotNS product identifier (e.g. `"my-product.dot"`) scoping the context.
      */
@@ -1717,7 +1543,7 @@ public struct ProductProofContext {
     public init(
         /**
          * dotNS product identifier (e.g. `"my-product.dot"`) scoping the context.
-         */productId: String, 
+         */productId: String,
         /**
          * Selector distinguishing contexts within the product; expands to the
          * same 32-byte derivation index as [`ProductAccountId::derivation_index`].
@@ -1725,31 +1551,15 @@ public struct ProductProofContext {
         self.productId = productId
         self.suffix = suffix
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension ProductProofContext: Sendable {}
 #endif
-
-
-extension ProductProofContext: Equatable, Hashable {
-    public static func ==(lhs: ProductProofContext, rhs: ProductProofContext) -> Bool {
-        if lhs.productId != rhs.productId {
-            return false
-        }
-        if lhs.suffix != rhs.suffix {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(productId)
-        hasher.combine(suffix)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1758,7 +1568,7 @@ public struct FfiConverterTypeProductProofContext: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductProofContext {
         return
             try ProductProofContext(
-                productId: FfiConverterString.read(from: &buf), 
+                productId: FfiConverterString.read(from: &buf),
                 suffix: FfiConverterTypeDerivationIndex.read(from: &buf)
         )
     }
@@ -1788,7 +1598,7 @@ public func FfiConverterTypeProductProofContext_lower(_ value: ProductProofConte
 /**
  * remote-permission request (RFC 0002).
  */
-public struct RemotePermissionRequest {
+public struct RemotePermissionRequest: Equatable, Hashable {
     /**
      * Permission requested by the product.
      */
@@ -1802,27 +1612,15 @@ public struct RemotePermissionRequest {
          */permission: RemotePermission) {
         self.permission = permission
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension RemotePermissionRequest: Sendable {}
 #endif
-
-
-extension RemotePermissionRequest: Equatable, Hashable {
-    public static func ==(lhs: RemotePermissionRequest, rhs: RemotePermissionRequest) -> Bool {
-        if lhs.permission != rhs.permission {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(permission)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1860,7 +1658,7 @@ public func FfiConverterTypeRemotePermissionRequest_lower(_ value: RemotePermiss
  * Locates a ring for ring VRF operations using only identifiers that are
  * stable across membership changes.
  */
-public struct RingLocation {
+public struct RingLocation: Equatable, Hashable {
     /**
      * Genesis hash of the chain hosting the ring.
      */
@@ -1875,38 +1673,22 @@ public struct RingLocation {
     public init(
         /**
          * Genesis hash of the chain hosting the ring.
-         */chainId: Bytes32, 
+         */chainId: Bytes32,
         /**
          * Path addressing the ring within the chain.
          */junctions: [RingLocationJunction]) {
         self.chainId = chainId
         self.junctions = junctions
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension RingLocation: Sendable {}
 #endif
-
-
-extension RingLocation: Equatable, Hashable {
-    public static func ==(lhs: RingLocation, rhs: RingLocation) -> Bool {
-        if lhs.chainId != rhs.chainId {
-            return false
-        }
-        if lhs.junctions != rhs.junctions {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(chainId)
-        hasher.combine(junctions)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1915,7 +1697,7 @@ public struct FfiConverterTypeRingLocation: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RingLocation {
         return
             try RingLocation(
-                chainId: FfiConverterTypeBytes32.read(from: &buf), 
+                chainId: FfiConverterTypeBytes32.read(from: &buf),
                 junctions: FfiConverterSequenceTypeRingLocationJunction.read(from: &buf)
         )
     }
@@ -1945,7 +1727,7 @@ public func FfiConverterTypeRingLocation_lower(_ value: RingLocation) -> RustBuf
 /**
  * A signed extension for a transaction payload.
  */
-public struct TxPayloadExtension {
+public struct TxPayloadExtension: Equatable, Hashable {
     /**
      * Extension name (e.g., `"CheckSpecVersion"`).
      */
@@ -1964,10 +1746,10 @@ public struct TxPayloadExtension {
     public init(
         /**
          * Extension name (e.g., `"CheckSpecVersion"`).
-         */id: String, 
+         */id: String,
         /**
          * SCALE-encoded extra data (in extrinsic body).
-         */extra: Data, 
+         */extra: Data,
         /**
          * SCALE-encoded implicit data (signed, not in body).
          */additionalSigned: Data) {
@@ -1975,35 +1757,15 @@ public struct TxPayloadExtension {
         self.extra = extra
         self.additionalSigned = additionalSigned
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension TxPayloadExtension: Sendable {}
 #endif
-
-
-extension TxPayloadExtension: Equatable, Hashable {
-    public static func ==(lhs: TxPayloadExtension, rhs: TxPayloadExtension) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.extra != rhs.extra {
-            return false
-        }
-        if lhs.additionalSigned != rhs.additionalSigned {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(extra)
-        hasher.combine(additionalSigned)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2012,8 +1774,8 @@ public struct FfiConverterTypeTxPayloadExtension: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TxPayloadExtension {
         return
             try TxPayloadExtension(
-                id: FfiConverterString.read(from: &buf), 
-                extra: FfiConverterData.read(from: &buf), 
+                id: FfiConverterString.read(from: &buf),
+                extra: FfiConverterData.read(from: &buf),
                 additionalSigned: FfiConverterData.read(from: &buf)
         )
     }
@@ -2044,7 +1806,7 @@ public func FfiConverterTypeTxPayloadExtension_lower(_ value: TxPayloadExtension
 /**
  * One `append_message` call replayed against the signing transcript.
  */
-public struct VrfTranscriptItem {
+public struct VrfTranscriptItem: Equatable, Hashable {
     /**
      * Merlin `append_message` label.
      */
@@ -2059,38 +1821,22 @@ public struct VrfTranscriptItem {
     public init(
         /**
          * Merlin `append_message` label.
-         */label: Data, 
+         */label: Data,
         /**
          * Merlin `append_message` value.
          */value: Data) {
         self.label = label
         self.value = value
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension VrfTranscriptItem: Sendable {}
 #endif
-
-
-extension VrfTranscriptItem: Equatable, Hashable {
-    public static func ==(lhs: VrfTranscriptItem, rhs: VrfTranscriptItem) -> Bool {
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.value != rhs.value {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(label)
-        hasher.combine(value)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2099,7 +1845,7 @@ public struct FfiConverterTypeVrfTranscriptItem: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VrfTranscriptItem {
         return
             try VrfTranscriptItem(
-                label: FfiConverterData.read(from: &buf), 
+                label: FfiConverterData.read(from: &buf),
                 value: FfiConverterData.read(from: &buf)
         )
     }
@@ -2125,8 +1871,7 @@ public func FfiConverterTypeVrfTranscriptItem_lower(_ value: VrfTranscriptItem) 
     return FfiConverterTypeVrfTranscriptItem.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 /**
  * A resource the host can pre-allocate on behalf of the product (RFC 0010).
  *
@@ -2137,8 +1882,8 @@ public func FfiConverterTypeVrfTranscriptItem_lower(_ value: VrfTranscriptItem) 
  * call.
  */
 
-public enum AllocatableResource {
-    
+public enum AllocatableResource: Equatable, Hashable {
+
     /**
      * Statement Store slot allowance for the product's own allowance account.
      */
@@ -2157,8 +1902,12 @@ public enum AllocatableResource {
      * Permission to sign on the product's behalf without per-call user prompts.
      */
     case autoSigning
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension AllocatableResource: Sendable {}
@@ -2173,40 +1922,40 @@ public struct FfiConverterTypeAllocatableResource: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AllocatableResource {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .statementStoreAllowance
-        
+
         case 2: return .bulletinAllowance
-        
+
         case 3: return .smartContractAllowance(try FfiConverterTypeDerivationIndex.read(from: &buf)
         )
-        
+
         case 4: return .autoSigning
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: AllocatableResource, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .statementStoreAllowance:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .bulletinAllowance:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case let .smartContractAllowance(v1):
             writeInt(&buf, Int32(3))
             FfiConverterTypeDerivationIndex.write(v1, into: &buf)
-            
-        
+
+
         case .autoSigning:
             writeInt(&buf, Int32(4))
-        
+
         }
     }
 }
@@ -2227,15 +1976,7 @@ public func FfiConverterTypeAllocatableResource_lower(_ value: AllocatableResour
 }
 
 
-extension AllocatableResource: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Account selector within a product subtree. Encodes as
  * `Either<u32, [u8; 32]>` on the wire (`Index` = left, `Raw` = right).
@@ -2246,8 +1987,8 @@ extension AllocatableResource: Equatable, Hashable {}
  * 32-byte index (`u32` little-endian plus the index magic).
  */
 
-public enum DerivationIndex {
-    
+public enum DerivationIndex: Equatable, Hashable {
+
     /**
      * Plain account index.
      */
@@ -2258,8 +1999,12 @@ public enum DerivationIndex {
      */
     case raw(Bytes32
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension DerivationIndex: Sendable {}
@@ -2274,30 +2019,30 @@ public struct FfiConverterTypeDerivationIndex: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DerivationIndex {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .index(try FfiConverterUInt32.read(from: &buf)
         )
-        
+
         case 2: return .raw(try FfiConverterTypeBytes32.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: DerivationIndex, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .index(v1):
             writeInt(&buf, Int32(1))
             FfiConverterUInt32.write(v1, into: &buf)
-            
-        
+
+
         case let .raw(v1):
             writeInt(&buf, Int32(2))
             FfiConverterTypeBytes32.write(v1, into: &buf)
-            
+
         }
     }
 }
@@ -2318,15 +2063,7 @@ public func FfiConverterTypeDerivationIndex_lower(_ value: DerivationIndex) -> R
 }
 
 
-extension DerivationIndex: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Device-capability permission requested from the host (RFC 0002).
  *
@@ -2335,8 +2072,8 @@ extension DerivationIndex: Equatable, Hashable {}
  * does not re-prompt on subsequent requests for the same capability.
  */
 
-public enum HostDevicePermissionRequest {
-    
+public enum HostDevicePermissionRequest: Equatable, Hashable {
+
     /**
      * Showing system notifications.
      */
@@ -2373,8 +2110,12 @@ public enum HostDevicePermissionRequest {
      * Biometric authentication.
      */
     case biometrics
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension HostDevicePermissionRequest: Sendable {}
@@ -2389,68 +2130,68 @@ public struct FfiConverterTypeHostDevicePermissionRequest: FfiConverterRustBuffe
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostDevicePermissionRequest {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .notifications
-        
+
         case 2: return .camera
-        
+
         case 3: return .microphone
-        
+
         case 4: return .bluetooth
-        
+
         case 5: return .nfc
-        
+
         case 6: return .location
-        
+
         case 7: return .clipboard
-        
+
         case 8: return .openUrl
-        
+
         case 9: return .biometrics
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: HostDevicePermissionRequest, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .notifications:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .camera:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .microphone:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .bluetooth:
             writeInt(&buf, Int32(4))
-        
-        
+
+
         case .nfc:
             writeInt(&buf, Int32(5))
-        
-        
+
+
         case .location:
             writeInt(&buf, Int32(6))
-        
-        
+
+
         case .clipboard:
             writeInt(&buf, Int32(7))
-        
-        
+
+
         case .openUrl:
             writeInt(&buf, Int32(8))
-        
-        
+
+
         case .biometrics:
             writeInt(&buf, Int32(9))
-        
+
         }
     }
 }
@@ -2471,21 +2212,13 @@ public func FfiConverterTypeHostDevicePermissionRequest_lower(_ value: HostDevic
 }
 
 
-extension HostDevicePermissionRequest: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Request to query whether a feature is supported by the host.
  */
 
-public enum HostFeatureSupportedRequest {
-    
+public enum HostFeatureSupportedRequest: Equatable, Hashable {
+
     /**
      * Ask whether the host can interact with the chain identified by genesis hash.
      */
@@ -2494,8 +2227,12 @@ public enum HostFeatureSupportedRequest {
          * Chain genesis hash.
          */genesisHash: Data
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension HostFeatureSupportedRequest: Sendable {}
@@ -2510,22 +2247,22 @@ public struct FfiConverterTypeHostFeatureSupportedRequest: FfiConverterRustBuffe
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostFeatureSupportedRequest {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .chain(genesisHash: try FfiConverterData.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: HostFeatureSupportedRequest, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .chain(genesisHash):
             writeInt(&buf, Int32(1))
             FfiConverterData.write(genesisHash, into: &buf)
-            
+
         }
     }
 }
@@ -2546,21 +2283,13 @@ public func FfiConverterTypeHostFeatureSupportedRequest_lower(_ value: HostFeatu
 }
 
 
-extension HostFeatureSupportedRequest: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Local storage operation error.
  */
 
-public enum HostLocalStorageReadError {
-    
+public enum HostLocalStorageReadError: Equatable, Hashable {
+
     /**
      * Storage quota exceeded.
      */
@@ -2573,8 +2302,12 @@ public enum HostLocalStorageReadError {
          * Human-readable failure reason.
          */reason: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension HostLocalStorageReadError: Sendable {}
@@ -2589,28 +2322,28 @@ public struct FfiConverterTypeHostLocalStorageReadError: FfiConverterRustBuffer 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostLocalStorageReadError {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .full
-        
+
         case 2: return .unknown(reason: try FfiConverterString.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: HostLocalStorageReadError, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .full:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case let .unknown(reason):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(reason, into: &buf)
-            
+
         }
     }
 }
@@ -2631,21 +2364,13 @@ public func FfiConverterTypeHostLocalStorageReadError_lower(_ value: HostLocalSt
 }
 
 
-extension HostLocalStorageReadError: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Error from [`crate::api::System::navigate_to`].
  */
 
-public enum HostNavigateToError {
-    
+public enum HostNavigateToError: Equatable, Hashable {
+
     /**
      * User denied the navigation prompt.
      */
@@ -2658,8 +2383,12 @@ public enum HostNavigateToError {
          * Human-readable failure reason.
          */reason: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension HostNavigateToError: Sendable {}
@@ -2674,28 +2403,28 @@ public struct FfiConverterTypeHostNavigateToError: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostNavigateToError {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .permissionDenied
-        
+
         case 2: return .unknown(reason: try FfiConverterString.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: HostNavigateToError, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .permissionDenied:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case let .unknown(reason):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(reason, into: &buf)
-            
+
         }
     }
 }
@@ -2716,21 +2445,13 @@ public func FfiConverterTypeHostNavigateToError_lower(_ value: HostNavigateToErr
 }
 
 
-extension HostNavigateToError: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Raw data to sign -- either binary bytes or a string message.
  */
 
-public enum RawPayload {
-    
+public enum RawPayload: Equatable, Hashable {
+
     /**
      * Raw binary data to sign.
      */
@@ -2747,8 +2468,12 @@ public enum RawPayload {
          * String payload to sign.
          */payload: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension RawPayload: Sendable {}
@@ -2763,30 +2488,30 @@ public struct FfiConverterTypeRawPayload: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RawPayload {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .bytes(bytes: try FfiConverterData.read(from: &buf)
         )
-        
+
         case 2: return .payload(payload: try FfiConverterString.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: RawPayload, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .bytes(bytes):
             writeInt(&buf, Int32(1))
             FfiConverterData.write(bytes, into: &buf)
-            
-        
+
+
         case let .payload(payload):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(payload, into: &buf)
-            
+
         }
     }
 }
@@ -2807,15 +2532,7 @@ public func FfiConverterTypeRawPayload_lower(_ value: RawPayload) -> RustBuffer 
 }
 
 
-extension RawPayload: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * One remote-operation permission requested by the product (RFC 0002).
  *
@@ -2823,8 +2540,8 @@ extension RawPayload: Equatable, Hashable {}
  * implicitly by the corresponding business calls when not yet granted.
  */
 
-public enum RemotePermission {
-    
+public enum RemotePermission: Equatable, Hashable {
+
     /**
      * Outbound HTTP/WebSocket access to a set of domains.
      */
@@ -2849,8 +2566,12 @@ public enum RemotePermission {
      * Submitting statements on behalf of the user via `remote_statement_store_submit`.
      */
     case statementSubmit
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension RemotePermission: Sendable {}
@@ -2865,46 +2586,46 @@ public struct FfiConverterTypeRemotePermission: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RemotePermission {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .remote(domains: try FfiConverterSequenceString.read(from: &buf)
         )
-        
+
         case 2: return .webRtc
-        
+
         case 3: return .chainSubmit
-        
+
         case 4: return .preimageSubmit
-        
+
         case 5: return .statementSubmit
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: RemotePermission, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .remote(domains):
             writeInt(&buf, Int32(1))
             FfiConverterSequenceString.write(domains, into: &buf)
-            
-        
+
+
         case .webRtc:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .chainSubmit:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case .preimageSubmit:
             writeInt(&buf, Int32(4))
-        
-        
+
+
         case .statementSubmit:
             writeInt(&buf, Int32(5))
-        
+
         }
     }
 }
@@ -2925,21 +2646,13 @@ public func FfiConverterTypeRemotePermission_lower(_ value: RemotePermission) ->
 }
 
 
-extension RemotePermission: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * A single step in a [`RingLocation`] path, addressing a ring within a chain.
  */
 
-public enum RingLocationJunction {
-    
+public enum RingLocationJunction: Equatable, Hashable {
+
     /**
      * Pallet instance hosting the ring collection.
      */
@@ -2950,8 +2663,12 @@ public enum RingLocationJunction {
      */
     case collectionId(Data
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension RingLocationJunction: Sendable {}
@@ -2966,30 +2683,30 @@ public struct FfiConverterTypeRingLocationJunction: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RingLocationJunction {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .palletInstance(try FfiConverterUInt8.read(from: &buf)
         )
-        
+
         case 2: return .collectionId(try FfiConverterData.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: RingLocationJunction, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .palletInstance(v1):
             writeInt(&buf, Int32(1))
             FfiConverterUInt8.write(v1, into: &buf)
-            
-        
+
+
         case let .collectionId(v1):
             writeInt(&buf, Int32(2))
             FfiConverterData.write(v1, into: &buf)
-            
+
         }
     }
 }
@@ -3010,21 +2727,13 @@ public func FfiConverterTypeRingLocationJunction_lower(_ value: RingLocationJunc
 }
 
 
-extension RingLocationJunction: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Light or dark variant.
  */
 
-public enum ThemeVariant {
-    
+public enum ThemeVariant: Equatable, Hashable {
+
     /**
      * Light appearance.
      */
@@ -3033,8 +2742,12 @@ public enum ThemeVariant {
      * Dark appearance.
      */
     case dark
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension ThemeVariant: Sendable {}
@@ -3049,26 +2762,26 @@ public struct FfiConverterTypeThemeVariant: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ThemeVariant {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .light
-        
+
         case 2: return .dark
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: ThemeVariant, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .light:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .dark:
             writeInt(&buf, Int32(2))
-        
+
         }
     }
 }
@@ -3087,13 +2800,6 @@ public func FfiConverterTypeThemeVariant_lift(_ buf: RustBuffer) throws -> Theme
 public func FfiConverterTypeThemeVariant_lower(_ value: ThemeVariant) -> RustBuffer {
     return FfiConverterTypeThemeVariant.lower(value)
 }
-
-
-extension ThemeVariant: Equatable, Hashable {}
-
-
-
-
 
 
 #if swift(>=5.8)
@@ -3317,10 +3023,6 @@ fileprivate struct FfiConverterSequenceTypeRingLocationJunction: FfiConverterRus
 }
 
 
-/**
- * Typealias from the type name used in the UDL file to the builtin type.  This
- * is needed because the UDL type name is used in function/method signatures.
- */
 public typealias Bytes32 = Data
 
 #if swift(>=5.8)
@@ -3369,7 +3071,7 @@ private enum InitializationResult {
 // the code inside is only computed once.
 private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
-    let bindings_contract_version = 29
+    let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     let scaffolding_contract_version = ffi_truapi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {

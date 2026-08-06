@@ -39,6 +39,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -352,19 +398,29 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
+// Initial value and increment amount for handles.
+// These ensure that SWIFT handles always have the lowest bit set
+fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
+fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
+
 fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
     // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
     private var map: [UInt64: T] = [:]
-    private var currentHandle: UInt64 = 1
+    private var currentHandle: UInt64 = UNIFFI_HANDLEMAP_INITIAL
 
     func insert(obj: T) -> UInt64 {
         lock.withLock {
-            let handle = currentHandle
-            currentHandle += 1
-            map[handle] = obj
-            return handle
+            return doInsert(obj)
         }
+    }
+
+    // Low-level insert function, this assumes `lock` is held.
+    private func doInsert(_ obj: T) -> UInt64 {
+        let handle = currentHandle
+        currentHandle += UNIFFI_HANDLEMAP_DELTA
+        map[handle] = obj
+        return handle
     }
 
      func get(handle: UInt64) throws -> T {
@@ -373,6 +429,15 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
                 throw UniffiInternalError.unexpectedStaleHandle
             }
             return obj
+        }
+    }
+
+     func clone(handle: UInt64) throws -> UInt64 {
+        try lock.withLock {
+            guard let obj = map[handle] else {
+                throw UniffiInternalError.unexpectedStaleHandle
+            }
+            return doInsert(obj)
         }
     }
 
@@ -428,7 +493,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -444,7 +513,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -476,7 +546,7 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 /**
  * Review shown before a product asks to access another product account.
  */
-public struct AccountAccessReview {
+public struct AccountAccessReview: Equatable, Hashable {
     /**
      * Product currently handling the request.
      */
@@ -491,38 +561,22 @@ public struct AccountAccessReview {
     public init(
         /**
          * Product currently handling the request.
-         */requestingProductId: String, 
+         */requestingProductId: String,
         /**
          * Product whose account is being requested.
          */targetProductId: String) {
         self.requestingProductId = requestingProductId
         self.targetProductId = targetProductId
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension AccountAccessReview: Sendable {}
 #endif
-
-
-extension AccountAccessReview: Equatable, Hashable {
-    public static func ==(lhs: AccountAccessReview, rhs: AccountAccessReview) -> Bool {
-        if lhs.requestingProductId != rhs.requestingProductId {
-            return false
-        }
-        if lhs.targetProductId != rhs.targetProductId {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(requestingProductId)
-        hasher.combine(targetProductId)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -531,7 +585,7 @@ public struct FfiConverterTypeAccountAccessReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccountAccessReview {
         return
             try AccountAccessReview(
-                requestingProductId: FfiConverterString.read(from: &buf), 
+                requestingProductId: FfiConverterString.read(from: &buf),
                 targetProductId: FfiConverterString.read(from: &buf)
         )
     }
@@ -561,7 +615,7 @@ public func FfiConverterTypeAccountAccessReview_lower(_ value: AccountAccessRevi
 /**
  * Review shown before a product derives a contextual alias (RFC 0004).
  */
-public struct AccountAliasReview {
+public struct AccountAliasReview: Equatable, Hashable {
     /**
      * Product requesting the alias.
      */
@@ -580,10 +634,10 @@ public struct AccountAliasReview {
     public init(
         /**
          * Product requesting the alias.
-         */callingProductId: String, 
+         */callingProductId: String,
         /**
          * Product-scoped context the alias is bound to.
-         */context: ProductProofContext, 
+         */context: ProductProofContext,
         /**
          * Ring the alias is derived against.
          */ringLocation: RingLocation) {
@@ -591,35 +645,15 @@ public struct AccountAliasReview {
         self.context = context
         self.ringLocation = ringLocation
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension AccountAliasReview: Sendable {}
 #endif
-
-
-extension AccountAliasReview: Equatable, Hashable {
-    public static func ==(lhs: AccountAliasReview, rhs: AccountAliasReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.context != rhs.context {
-            return false
-        }
-        if lhs.ringLocation != rhs.ringLocation {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(context)
-        hasher.combine(ringLocation)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -628,8 +662,8 @@ public struct FfiConverterTypeAccountAliasReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccountAliasReview {
         return
             try AccountAliasReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
-                context: FfiConverterTypeProductProofContext.read(from: &buf), 
+                callingProductId: FfiConverterString.read(from: &buf),
+                context: FfiConverterTypeProductProofContext.read(from: &buf),
                 ringLocation: FfiConverterTypeRingLocation.read(from: &buf)
         )
     }
@@ -660,7 +694,7 @@ public func FfiConverterTypeAccountAliasReview_lower(_ value: AccountAliasReview
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
  */
-public struct CreateProofReview {
+public struct CreateProofReview: Equatable, Hashable {
     /**
      * Product requesting the proof.
      */
@@ -683,13 +717,13 @@ public struct CreateProofReview {
     public init(
         /**
          * Product requesting the proof.
-         */callingProductId: String, 
+         */callingProductId: String,
         /**
          * Product-scoped context the proof's alias is bound to.
-         */context: ProductProofContext, 
+         */context: ProductProofContext,
         /**
          * Ring the proof is generated against.
-         */ringLocation: RingLocation, 
+         */ringLocation: RingLocation,
         /**
          * Opaque message bound into the proof.
          */message: Data) {
@@ -698,39 +732,15 @@ public struct CreateProofReview {
         self.ringLocation = ringLocation
         self.message = message
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension CreateProofReview: Sendable {}
 #endif
-
-
-extension CreateProofReview: Equatable, Hashable {
-    public static func ==(lhs: CreateProofReview, rhs: CreateProofReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.context != rhs.context {
-            return false
-        }
-        if lhs.ringLocation != rhs.ringLocation {
-            return false
-        }
-        if lhs.message != rhs.message {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(context)
-        hasher.combine(ringLocation)
-        hasher.combine(message)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -739,9 +749,9 @@ public struct FfiConverterTypeCreateProofReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CreateProofReview {
         return
             try CreateProofReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
-                context: FfiConverterTypeProductProofContext.read(from: &buf), 
-                ringLocation: FfiConverterTypeRingLocation.read(from: &buf), 
+                callingProductId: FfiConverterString.read(from: &buf),
+                context: FfiConverterTypeProductProofContext.read(from: &buf),
+                ringLocation: FfiConverterTypeRingLocation.read(from: &buf),
                 message: FfiConverterData.read(from: &buf)
         )
     }
@@ -773,7 +783,7 @@ public func FfiConverterTypeCreateProofReview_lower(_ value: CreateProofReview) 
 /**
  * Review shown before a product learns the user's primary identity.
  */
-public struct IdentityDisclosureReview {
+public struct IdentityDisclosureReview: Equatable, Hashable {
     /**
      * Product currently handling the request.
      */
@@ -787,27 +797,15 @@ public struct IdentityDisclosureReview {
          */productId: String) {
         self.productId = productId
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension IdentityDisclosureReview: Sendable {}
 #endif
-
-
-extension IdentityDisclosureReview: Equatable, Hashable {
-    public static func ==(lhs: IdentityDisclosureReview, rhs: IdentityDisclosureReview) -> Bool {
-        if lhs.productId != rhs.productId {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(productId)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -844,7 +842,7 @@ public func FfiConverterTypeIdentityDisclosureReview_lower(_ value: IdentityDisc
 /**
  * Review shown before a preimage is submitted.
  */
-public struct PreimageSubmitReview {
+public struct PreimageSubmitReview: Equatable, Hashable {
     /**
      * Size of the preimage in bytes.
      */
@@ -858,27 +856,15 @@ public struct PreimageSubmitReview {
          */size: UInt64) {
         self.size = size
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension PreimageSubmitReview: Sendable {}
 #endif
-
-
-extension PreimageSubmitReview: Equatable, Hashable {
-    public static func ==(lhs: PreimageSubmitReview, rhs: PreimageSubmitReview) -> Bool {
-        if lhs.size != rhs.size {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(size)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -917,7 +903,7 @@ public func FfiConverterTypePreimageSubmitReview_lower(_ value: PreimageSubmitRe
  * beneficiary product so the user knows which product receives the
  * (signing-capable) allowance key they are approving.
  */
-public struct ResourceAllocationReview {
+public struct ResourceAllocationReview: Equatable, Hashable {
     /**
      * Product the allocation is requested for.
      */
@@ -932,38 +918,22 @@ public struct ResourceAllocationReview {
     public init(
         /**
          * Product the allocation is requested for.
-         */callingProductId: String, 
+         */callingProductId: String,
         /**
          * Resources to allocate.
          */resources: [AllocatableResource]) {
         self.callingProductId = callingProductId
         self.resources = resources
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension ResourceAllocationReview: Sendable {}
 #endif
-
-
-extension ResourceAllocationReview: Equatable, Hashable {
-    public static func ==(lhs: ResourceAllocationReview, rhs: ResourceAllocationReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.resources != rhs.resources {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(resources)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -972,7 +942,7 @@ public struct FfiConverterTypeResourceAllocationReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ResourceAllocationReview {
         return
             try ResourceAllocationReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
+                callingProductId: FfiConverterString.read(from: &buf),
                 resources: FfiConverterSequenceTypeAllocatableResource.read(from: &buf)
         )
     }
@@ -1003,7 +973,7 @@ public func FfiConverterTypeResourceAllocationReview_lower(_ value: ResourceAllo
  * Decoded session fields a host shell needs to render account UI without
  * parsing the opaque session blob the core persists through [`CoreStorage`].
  */
-public struct SessionUiInfo {
+public struct SessionUiInfo: Equatable, Hashable {
     /**
      * 32-byte sr25519 root public key of the active session.
      */
@@ -1026,13 +996,13 @@ public struct SessionUiInfo {
     public init(
         /**
          * 32-byte sr25519 root public key of the active session.
-         */publicKey: Bytes32, 
+         */publicKey: Bytes32,
         /**
          * Wallet identity account id used for People-chain username lookup.
-         */identityAccountId: Bytes32?, 
+         */identityAccountId: Bytes32?,
         /**
          * Short username from the People-chain identity record.
-         */liteUsername: String?, 
+         */liteUsername: String?,
         /**
          * Fully qualified username from the People-chain identity record.
          */fullUsername: String?) {
@@ -1041,39 +1011,15 @@ public struct SessionUiInfo {
         self.liteUsername = liteUsername
         self.fullUsername = fullUsername
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension SessionUiInfo: Sendable {}
 #endif
-
-
-extension SessionUiInfo: Equatable, Hashable {
-    public static func ==(lhs: SessionUiInfo, rhs: SessionUiInfo) -> Bool {
-        if lhs.publicKey != rhs.publicKey {
-            return false
-        }
-        if lhs.identityAccountId != rhs.identityAccountId {
-            return false
-        }
-        if lhs.liteUsername != rhs.liteUsername {
-            return false
-        }
-        if lhs.fullUsername != rhs.fullUsername {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(publicKey)
-        hasher.combine(identityAccountId)
-        hasher.combine(liteUsername)
-        hasher.combine(fullUsername)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1082,9 +1028,9 @@ public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionUiInfo {
         return
             try SessionUiInfo(
-                publicKey: FfiConverterTypeBytes32.read(from: &buf), 
-                identityAccountId: FfiConverterOptionTypeBytes32.read(from: &buf), 
-                liteUsername: FfiConverterOptionString.read(from: &buf), 
+                publicKey: FfiConverterTypeBytes32.read(from: &buf),
+                identityAccountId: FfiConverterOptionTypeBytes32.read(from: &buf),
+                liteUsername: FfiConverterOptionString.read(from: &buf),
                 fullUsername: FfiConverterOptionString.read(from: &buf)
         )
     }
@@ -1116,7 +1062,7 @@ public func FfiConverterTypeSessionUiInfo_lower(_ value: SessionUiInfo) -> RustB
 /**
  * Review shown before signing an RFC-0023 VRF transcript.
  */
-public struct SignVrfReview {
+public struct SignVrfReview: Equatable, Hashable {
     /**
      * Product making the request.
      */
@@ -1131,38 +1077,22 @@ public struct SignVrfReview {
     public init(
         /**
          * Product making the request.
-         */callingProductId: String, 
+         */callingProductId: String,
         /**
          * Product account and exact ordered transcript.
          */request: HostAccountSignVrfRequest) {
         self.callingProductId = callingProductId
         self.request = request
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension SignVrfReview: Sendable {}
 #endif
-
-
-extension SignVrfReview: Equatable, Hashable {
-    public static func ==(lhs: SignVrfReview, rhs: SignVrfReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.request != rhs.request {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(request)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1171,7 +1101,7 @@ public struct FfiConverterTypeSignVrfReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignVrfReview {
         return
             try SignVrfReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
+                callingProductId: FfiConverterString.read(from: &buf),
                 request: FfiConverterTypeHostAccountSignVrfRequest.read(from: &buf)
         )
     }
@@ -1204,7 +1134,7 @@ public func FfiConverterTypeSignVrfReview_lower(_ value: SignVrfReview) -> RustB
  * unsigned statement, signed as-is (no `<Bytes>` envelope), so the host must
  * not present it with the raw-signing convention.
  */
-public struct StatementStoreProductSignReview {
+public struct StatementStoreProductSignReview: Equatable, Hashable {
     /**
      * Product account that will sign the statement payload.
      */
@@ -1219,38 +1149,22 @@ public struct StatementStoreProductSignReview {
     public init(
         /**
          * Product account that will sign the statement payload.
-         */account: ProductAccountId, 
+         */account: ProductAccountId,
         /**
          * Exact unsigned statement payload to be signed.
          */payload: Data) {
         self.account = account
         self.payload = payload
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension StatementStoreProductSignReview: Sendable {}
 #endif
-
-
-extension StatementStoreProductSignReview: Equatable, Hashable {
-    public static func ==(lhs: StatementStoreProductSignReview, rhs: StatementStoreProductSignReview) -> Bool {
-        if lhs.account != rhs.account {
-            return false
-        }
-        if lhs.payload != rhs.payload {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account)
-        hasher.combine(payload)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1259,7 +1173,7 @@ public struct FfiConverterTypeStatementStoreProductSignReview: FfiConverterRustB
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StatementStoreProductSignReview {
         return
             try StatementStoreProductSignReview(
-                account: FfiConverterTypeProductAccountId.read(from: &buf), 
+                account: FfiConverterTypeProductAccountId.read(from: &buf),
                 payload: FfiConverterData.read(from: &buf)
         )
     }
@@ -1285,16 +1199,15 @@ public func FfiConverterTypeStatementStoreProductSignReview_lower(_ value: State
     return FfiConverterTypeStatementStoreProductSignReview.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 /**
  * Auth/session lifecycle state the core projects for host UI. The core owns
  * every transition and emits states in order; hosts render the current state
  * and never derive auth UI from any other signal.
  */
 
-public enum AuthState {
-    
+public enum AuthState: Equatable, Hashable {
+
     /**
      * No active session and no login in progress.
      */
@@ -1328,8 +1241,12 @@ public enum AuthState {
      * in-progress presentation until a terminal state is emitted.
      */
     case authenticating
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension AuthState: Sendable {}
@@ -1344,50 +1261,50 @@ public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AuthState {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .disconnected
-        
+
         case 2: return .pairing(deeplink: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 3: return .connected(try FfiConverterTypeSessionUiInfo.read(from: &buf)
         )
-        
+
         case 4: return .loginFailed(reason: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 5: return .authenticating
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: AuthState, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .disconnected:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case let .pairing(deeplink):
             writeInt(&buf, Int32(2))
             FfiConverterString.write(deeplink, into: &buf)
-            
-        
+
+
         case let .connected(v1):
             writeInt(&buf, Int32(3))
             FfiConverterTypeSessionUiInfo.write(v1, into: &buf)
-            
-        
+
+
         case let .loginFailed(reason):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(reason, into: &buf)
-            
-        
+
+
         case .authenticating:
             writeInt(&buf, Int32(5))
-        
+
         }
     }
 }
@@ -1408,21 +1325,13 @@ public func FfiConverterTypeAuthState_lower(_ value: AuthState) -> RustBuffer {
 }
 
 
-extension AuthState: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Review shown before a transaction-creation request is sent to the paired wallet.
  */
 
-public enum CreateTransactionReview {
-    
+public enum CreateTransactionReview: Equatable, Hashable {
+
     /**
      * Product-account transaction request.
      */
@@ -1433,8 +1342,12 @@ public enum CreateTransactionReview {
      */
     case legacyAccount(LegacyAccountTxPayload
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension CreateTransactionReview: Sendable {}
@@ -1449,30 +1362,30 @@ public struct FfiConverterTypeCreateTransactionReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CreateTransactionReview {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .product(try FfiConverterTypeProductAccountTxPayload.read(from: &buf)
         )
-        
+
         case 2: return .legacyAccount(try FfiConverterTypeLegacyAccountTxPayload.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: CreateTransactionReview, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .product(v1):
             writeInt(&buf, Int32(1))
             FfiConverterTypeProductAccountTxPayload.write(v1, into: &buf)
-            
-        
+
+
         case let .legacyAccount(v1):
             writeInt(&buf, Int32(2))
             FfiConverterTypeLegacyAccountTxPayload.write(v1, into: &buf)
-            
+
         }
     }
 }
@@ -1493,22 +1406,14 @@ public func FfiConverterTypeCreateTransactionReview_lower(_ value: CreateTransac
 }
 
 
-extension CreateTransactionReview: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Permission request whose authorization status can be inspected or updated
  * by host administration UI.
  */
 
-public enum PermissionAuthorizationRequest {
-    
+public enum PermissionAuthorizationRequest: Equatable, Hashable {
+
     /**
      * Device-level permission such as camera, microphone, or location.
      */
@@ -1531,8 +1436,12 @@ public enum PermissionAuthorizationRequest {
          * Product whose account context may be accessed.
          */targetProductId: String
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension PermissionAuthorizationRequest: Sendable {}
@@ -1547,44 +1456,44 @@ public struct FfiConverterTypePermissionAuthorizationRequest: FfiConverterRustBu
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PermissionAuthorizationRequest {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .device(try FfiConverterTypeHostDevicePermissionRequest.read(from: &buf)
         )
-        
+
         case 2: return .remote(try FfiConverterTypeRemotePermissionRequest.read(from: &buf)
         )
-        
+
         case 3: return .identityDisclosure
-        
+
         case 4: return .accountAccess(targetProductId: try FfiConverterString.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: PermissionAuthorizationRequest, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .device(v1):
             writeInt(&buf, Int32(1))
             FfiConverterTypeHostDevicePermissionRequest.write(v1, into: &buf)
-            
-        
+
+
         case let .remote(v1):
             writeInt(&buf, Int32(2))
             FfiConverterTypeRemotePermissionRequest.write(v1, into: &buf)
-            
-        
+
+
         case .identityDisclosure:
             writeInt(&buf, Int32(3))
-        
-        
+
+
         case let .accountAccess(targetProductId):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(targetProductId, into: &buf)
-            
+
         }
     }
 }
@@ -1605,15 +1514,7 @@ public func FfiConverterTypePermissionAuthorizationRequest_lower(_ value: Permis
 }
 
 
-extension PermissionAuthorizationRequest: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Authorization status for a permission request.
  *
@@ -1621,8 +1522,8 @@ extension PermissionAuthorizationRequest: Equatable, Hashable {}
  * host the next time the product requests this permission.
  */
 
-public enum PermissionAuthorizationStatus {
-    
+public enum PermissionAuthorizationStatus: Equatable, Hashable {
+
     /**
      * No persisted authorization exists.
      */
@@ -1635,8 +1536,12 @@ public enum PermissionAuthorizationStatus {
      * Access is authorized.
      */
     case authorized
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension PermissionAuthorizationStatus: Sendable {}
@@ -1651,32 +1556,32 @@ public struct FfiConverterTypePermissionAuthorizationStatus: FfiConverterRustBuf
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PermissionAuthorizationStatus {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .notDetermined
-        
+
         case 2: return .denied
-        
+
         case 3: return .authorized
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: PermissionAuthorizationStatus, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .notDetermined:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .denied:
             writeInt(&buf, Int32(2))
-        
-        
+
+
         case .authorized:
             writeInt(&buf, Int32(3))
-        
+
         }
     }
 }
@@ -1697,21 +1602,13 @@ public func FfiConverterTypePermissionAuthorizationStatus_lower(_ value: Permiss
 }
 
 
-extension PermissionAuthorizationStatus: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Review shown before a sign-payload request is sent to the paired wallet.
  */
 
-public enum SignPayloadReview {
-    
+public enum SignPayloadReview: Equatable, Hashable {
+
     /**
      * Product-account signing request.
      */
@@ -1722,8 +1619,12 @@ public enum SignPayloadReview {
      */
     case legacyAccount(HostSignPayloadWithLegacyAccountRequest
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension SignPayloadReview: Sendable {}
@@ -1738,30 +1639,30 @@ public struct FfiConverterTypeSignPayloadReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignPayloadReview {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .product(try FfiConverterTypeHostSignPayloadRequest.read(from: &buf)
         )
-        
+
         case 2: return .legacyAccount(try FfiConverterTypeHostSignPayloadWithLegacyAccountRequest.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: SignPayloadReview, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .product(v1):
             writeInt(&buf, Int32(1))
             FfiConverterTypeHostSignPayloadRequest.write(v1, into: &buf)
-            
-        
+
+
         case let .legacyAccount(v1):
             writeInt(&buf, Int32(2))
             FfiConverterTypeHostSignPayloadWithLegacyAccountRequest.write(v1, into: &buf)
-            
+
         }
     }
 }
@@ -1782,21 +1683,13 @@ public func FfiConverterTypeSignPayloadReview_lower(_ value: SignPayloadReview) 
 }
 
 
-extension SignPayloadReview: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Review shown before a sign-raw request is sent to the paired wallet.
  */
 
-public enum SignRawReview {
-    
+public enum SignRawReview: Equatable, Hashable {
+
     /**
      * Product-account raw signing request.
      */
@@ -1807,8 +1700,12 @@ public enum SignRawReview {
      */
     case legacyAccount(HostSignRawWithLegacyAccountRequest
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension SignRawReview: Sendable {}
@@ -1823,30 +1720,30 @@ public struct FfiConverterTypeSignRawReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignRawReview {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .product(try FfiConverterTypeHostSignRawRequest.read(from: &buf)
         )
-        
+
         case 2: return .legacyAccount(try FfiConverterTypeHostSignRawWithLegacyAccountRequest.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: SignRawReview, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .product(v1):
             writeInt(&buf, Int32(1))
             FfiConverterTypeHostSignRawRequest.write(v1, into: &buf)
-            
-        
+
+
         case let .legacyAccount(v1):
             writeInt(&buf, Int32(2))
             FfiConverterTypeHostSignRawWithLegacyAccountRequest.write(v1, into: &buf)
-            
+
         }
     }
 }
@@ -1867,21 +1764,13 @@ public func FfiConverterTypeSignRawReview_lower(_ value: SignRawReview) -> RustB
 }
 
 
-extension SignRawReview: Equatable, Hashable {}
 
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Review shown before a user-confirmed core action continues.
  */
 
-public enum UserConfirmationReview {
-    
+public enum UserConfirmationReview: Equatable, Hashable {
+
     /**
      * Sign a SCALE payload with a product or legacy account.
      */
@@ -1937,8 +1826,12 @@ public enum UserConfirmationReview {
      */
     case signVrf(SignVrfReview
     )
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension UserConfirmationReview: Sendable {}
@@ -1953,102 +1846,102 @@ public struct FfiConverterTypeUserConfirmationReview: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UserConfirmationReview {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .signPayload(try FfiConverterTypeSignPayloadReview.read(from: &buf)
         )
-        
+
         case 2: return .signRaw(try FfiConverterTypeSignRawReview.read(from: &buf)
         )
-        
+
         case 3: return .statementStoreProductSign(try FfiConverterTypeStatementStoreProductSignReview.read(from: &buf)
         )
-        
+
         case 4: return .createTransaction(try FfiConverterTypeCreateTransactionReview.read(from: &buf)
         )
-        
+
         case 5: return .accountAlias(try FfiConverterTypeAccountAliasReview.read(from: &buf)
         )
-        
+
         case 6: return .createProof(try FfiConverterTypeCreateProofReview.read(from: &buf)
         )
-        
+
         case 7: return .identityDisclosure(try FfiConverterTypeIdentityDisclosureReview.read(from: &buf)
         )
-        
+
         case 8: return .resourceAllocation(try FfiConverterTypeResourceAllocationReview.read(from: &buf)
         )
-        
+
         case 9: return .preimageSubmit(try FfiConverterTypePreimageSubmitReview.read(from: &buf)
         )
-        
+
         case 10: return .accountAccess(try FfiConverterTypeAccountAccessReview.read(from: &buf)
         )
-        
+
         case 11: return .signVrf(try FfiConverterTypeSignVrfReview.read(from: &buf)
         )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: UserConfirmationReview, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case let .signPayload(v1):
             writeInt(&buf, Int32(1))
             FfiConverterTypeSignPayloadReview.write(v1, into: &buf)
-            
-        
+
+
         case let .signRaw(v1):
             writeInt(&buf, Int32(2))
             FfiConverterTypeSignRawReview.write(v1, into: &buf)
-            
-        
+
+
         case let .statementStoreProductSign(v1):
             writeInt(&buf, Int32(3))
             FfiConverterTypeStatementStoreProductSignReview.write(v1, into: &buf)
-            
-        
+
+
         case let .createTransaction(v1):
             writeInt(&buf, Int32(4))
             FfiConverterTypeCreateTransactionReview.write(v1, into: &buf)
-            
-        
+
+
         case let .accountAlias(v1):
             writeInt(&buf, Int32(5))
             FfiConverterTypeAccountAliasReview.write(v1, into: &buf)
-            
-        
+
+
         case let .createProof(v1):
             writeInt(&buf, Int32(6))
             FfiConverterTypeCreateProofReview.write(v1, into: &buf)
-            
-        
+
+
         case let .identityDisclosure(v1):
             writeInt(&buf, Int32(7))
             FfiConverterTypeIdentityDisclosureReview.write(v1, into: &buf)
-            
-        
+
+
         case let .resourceAllocation(v1):
             writeInt(&buf, Int32(8))
             FfiConverterTypeResourceAllocationReview.write(v1, into: &buf)
-            
-        
+
+
         case let .preimageSubmit(v1):
             writeInt(&buf, Int32(9))
             FfiConverterTypePreimageSubmitReview.write(v1, into: &buf)
-            
-        
+
+
         case let .accountAccess(v1):
             writeInt(&buf, Int32(10))
             FfiConverterTypeAccountAccessReview.write(v1, into: &buf)
-            
-        
+
+
         case let .signVrf(v1):
             writeInt(&buf, Int32(11))
             FfiConverterTypeSignVrfReview.write(v1, into: &buf)
-            
+
         }
     }
 }
@@ -2067,13 +1960,6 @@ public func FfiConverterTypeUserConfirmationReview_lift(_ buf: RustBuffer) throw
 public func FfiConverterTypeUserConfirmationReview_lower(_ value: UserConfirmationReview) -> RustBuffer {
     return FfiConverterTypeUserConfirmationReview.lower(value)
 }
-
-
-extension UserConfirmationReview: Equatable, Hashable {}
-
-
-
-
 
 
 #if swift(>=5.8)
@@ -2158,7 +2044,7 @@ private enum InitializationResult {
 // the code inside is only computed once.
 private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
-    let bindings_contract_version = 29
+    let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     let scaffolding_contract_version = ffi_truapi_platform_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {

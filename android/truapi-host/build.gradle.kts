@@ -56,6 +56,8 @@ android {
 dependencies {
     // UniFFI Kotlin bindings use JNA for FFI.
     api("net.java.dev.jna:jna:5.14.0@aar")
+    // UniFFI 0.32 uses coroutines to bridge async Rust functions and callbacks.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 }
 
 // Coordinates for the local Maven publication (`publishToMavenLocal`).

@@ -8,6 +8,7 @@ import * as S from "@parity/truapi/scale";
 
 import {
   AllocatableResource,
+  Bytes32,
   HostAccountSignVrfRequest,
   HostDevicePermissionRequest,
   HostSignPayloadRequest,
@@ -23,7 +24,6 @@ import {
 } from "@parity/truapi";
 
 import type {
-  Bytes32,
   GenericError,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,

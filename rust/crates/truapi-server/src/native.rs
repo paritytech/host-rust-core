@@ -35,9 +35,10 @@ use crate::subscription::Spawner;
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
 
 /// Host-thrown storage failure wrapping the canonical error payload, so the
-/// payload variants are defined once in `truapi`. The wrapper enum itself
-/// must live in this crate: uniffi's Kotlin backend requires callback error
-/// types to be namespace-local.
+/// payload variants are defined once in `truapi`. This wrapper stays local
+/// because uniffi 0.32's Kotlin callback bridge expects this namespace's
+/// `RustBuffer`, while an external error converter returns the canonical
+/// namespace's distinct `RustBuffer` type.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostStorageError {
     /// Canonical storage failure payload.
@@ -78,8 +79,8 @@ impl From<v01::GenericError> for HostRejection {
 }
 
 /// Host-thrown navigation failure wrapping the canonical error payload; the
-/// wrapper is namespace-local for the same uniffi Kotlin constraint as
-/// [`HostStorageError`].
+/// wrapper is namespace-local for the same uniffi 0.32 Kotlin callback bridge
+/// constraint as [`HostStorageError`].
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostNavigateRejection {
     /// Canonical navigation failure payload.
@@ -280,7 +281,7 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
 /// dispatcher thread and must return promptly without blocking; in
 /// particular `auth_state_changed` should only hand the state to the host
 /// UI thread, never wait for the user.
-#[uniffi::export(with_foreign)]
+#[uniffi::export(rust, foreign)]
 #[async_trait::async_trait]
 pub trait HostCallbacks: Send + Sync {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.
