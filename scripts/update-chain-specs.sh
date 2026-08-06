@@ -25,8 +25,9 @@ SPECS_DIR="$PROJECT_DIR/rust/crates/truapi-provider/networks"
 # Timeout (seconds) for all curl calls.
 TIMEOUT=30
 
-# Set when endpoints disagree about a genesis or a checkpoint. An unreachable endpoint is a routine
-# outage, but a reachable one serving a different chain is not, so it fails the whole run.
+# Set when a spec could not be trusted: endpoints disagreed about its genesis or checkpoint, or no
+# second endpoint could corroborate the checkpoint at all. Either way the spec is left unchanged and
+# the run fails, so a trust anchor is never taken from one endpoint on its own.
 INTEGRITY_FAILURES=0
 
 # Health-check the candidate bootNodes (env var BOOTNODES) and keep only the reachable ones.
@@ -111,20 +112,25 @@ function testBootnode(ma, timeoutMs = 5000) {
 
 # Corroborate a relay's warp-sync checkpoint against endpoints other than the one that served it.
 #
-# The checkpoint is the light client's root of trust, so it is not taken on one endpoint's word. Two
-# things are checked against each peer in PEER_RPCS:
+# The checkpoint is what a light client trusts in place of syncing from genesis, so it is never taken
+# on one endpoint's word. Each peer in PEER_RPCS is asked to confirm two things about the block
+# CHECKPOINT_HEADER pins (its first 32 bytes are the parent hash, the compact integer after them the
+# block number):
 #
-#   * The block it pins. CHECKPOINT_HEADER is the SCALE-encoded finalized header: its first 32 bytes
-#     are the parent hash and the compact integer after them is the block number. The peer must
-#     report the same parent hash for the canonical block at that height. Finalized blocks do not
-#     reorg, so a peer that answers and disagrees is serving a different chain.
-#   * The GRANDPA authority set, which is what the light client verifies finality against. A header
-#     alone is not enough: a compromised endpoint could pair a genuine header with a forged
-#     authority set. CHECKPOINT_AUTHORITY_SET is compared against the peer's own checkpoint. The
-#     set id is compared first, because a peer that has crossed a set change legitimately reports a
-#     different set; only a matching set id with differing authorities is an alarm.
+#   * The block itself. The peer must report the same parent hash for the canonical block at that
+#     height. Finalized blocks do not reorg, so a peer that answers and disagrees is serving a
+#     different chain.
+#   * The GRANDPA authorities at that block, which is what finality is verified against. A genuine
+#     header paired with a forged authority set would otherwise pass. The authorities are read from
+#     the peer with a runtime call at the pinned block hash, so the two sides describe the same
+#     block and compare byte for byte, with no set-id bookkeeping to reason about. That call also
+#     keeps the response small; asking a peer for its whole chain spec would return the raw genesis
+#     storage with it.
 #
-# A peer that is behind the pinned height, or that cannot answer, is skipped.
+# Corroboration requires a peer that confirms the block. A peer that is unreachable, that has not
+# reached the pinned height, or that cannot serve state for it is skipped, and if no peer is left
+# the refresh fails rather than accepting the primary alone. Only a network configured with a single
+# endpoint is allowed through uncorroborated, because there is nothing to ask.
 CHECKPOINT_JS='
 const header = process.env.CHECKPOINT_HEADER.replace(/^0x/, "");
 const authoritySet = (process.env.CHECKPOINT_AUTHORITY_SET || "").replace(/^0x/, "");
@@ -144,24 +150,15 @@ function compactAt(hex, offset) {
   return { value: value >>> 2, width };
 }
 
-// A GRANDPA AuthoritySet begins with current_authorities (a vector of 32-byte public key plus
-// 8-byte weight), followed by the u64 set id. Both are needed: the id says whether two snapshots
-// are even comparable, the authorities are what finality is checked against.
-function splitAuthoritySet(hex) {
-  if (hex.length === 0) return null;
-  const count = compactAt(hex, 0);
-  const authoritiesEnd = count.width + count.value * 40;
-  if (hex.length < (authoritiesEnd + 8) * 2) return null;
-  const setId = hex.slice(authoritiesEnd * 2, (authoritiesEnd + 8) * 2);
-  const bytes = setId.match(/../g).map((b) => parseInt(b, 16));
-  let number = 0n;
-  for (let i = bytes.length - 1; i >= 0; i--) number = number * 256n + BigInt(bytes[i]);
-  return {
-    count: count.value,
-    authorities: hex.slice(count.width * 2, authoritiesEnd * 2),
-    setId,
-    setNumber: number.toString(),
-  };
+// A GRANDPA AuthoritySet is current_authorities (32-byte public key plus 8-byte weight each)
+// followed by the set id and pending changes. Its leading authority vector is encoded exactly as
+// GrandpaApi_grandpa_authorities returns it, so that prefix is what a peer can be asked to confirm.
+function checkpointAuthorities() {
+  if (authoritySet.length === 0) return null;
+  const count = compactAt(authoritySet, 0);
+  const end = count.width + count.value * 40;
+  if (authoritySet.length < end * 2) return null;
+  return { hex: authoritySet.slice(0, end * 2), count: count.value };
 }
 
 async function rpc(url, method, params) {
@@ -171,69 +168,54 @@ async function rpc(url, method, params) {
     body: JSON.stringify({ id: 1, jsonrpc: "2.0", method, params }),
     signal: AbortSignal.timeout(Number(process.env.TIMEOUT || 30) * 1000),
   });
-  return (await response.json()).result;
+  const body = await response.json();
+  if (body.error) throw new Error(body.error.message || "RPC error");
+  return body.result;
 }
 
-// Compare the authority set the peer carries in its own checkpoint. Returns an error string when
-// the peer contradicts ours, or null when it agrees or cannot be compared.
-async function authorityMismatch(peer) {
-  const ours = splitAuthoritySet(authoritySet);
-  if (ours === null) {
-    console.log("    ? checkpoint carries no readable authority set, comparing the header only");
-    return null;
+// Compare the authorities the peer reports at the pinned block. A peer that cannot serve them
+// (pruned state, unsupported call, a blip) downgrades this peer to block-only corroboration rather
+// than discarding a parent hash that already matched.
+async function authoritiesDisagree(peer, blockHash, ours) {
+  let theirs;
+  try {
+    const raw = await rpc(peer, "state_call", ["GrandpaApi_grandpa_authorities", "0x", blockHash]);
+    theirs = raw ? raw.replace(/^0x/, "") : "";
+  } catch (error) {
+    console.log("    ? " + peer + " served no authorities (" + (error.message || error) + ")");
+    return false;
   }
-  const theirSpec = await rpc(peer, "sync_state_genSyncSpec", [true]);
-  const theirs = splitAuthoritySet(
-    ((theirSpec || {}).lightSyncState || {}).grandpaAuthoritySet
-      ? theirSpec.lightSyncState.grandpaAuthoritySet.replace(/^0x/, "")
-      : "",
-  );
-  if (theirs === null) {
-    console.log("    ? " + peer + " served no authority set, comparing the header only");
-    return null;
+  if (theirs.length === 0) {
+    console.log("    ? " + peer + " served no authorities, confirming the block only");
+    return false;
   }
-  if (ours.setId !== theirs.setId) {
-    console.log(
-      "    ? " +
-        peer +
-        " is on GRANDPA set " +
-        theirs.setNumber +
-        ", the checkpoint is on " +
-        ours.setNumber +
-        "; cannot compare authorities",
-    );
-    return null;
+  if (theirs !== ours.hex) {
+    console.log("    x " + peer + " reports different GRANDPA authorities at the pinned block");
+    console.log("      checkpoint carries " + ours.count + " authorities");
+    console.log("      peer reports " + compactAt(theirs, 0).value);
+    return true;
   }
-  if (ours.authorities !== theirs.authorities) {
-    return (
-      "authority sets differ within GRANDPA set " +
-      ours.setNumber +
-      " (" +
-      ours.count +
-      " vs " +
-      theirs.count +
-      " authorities)"
-    );
-  }
-  console.log(
-    "    ok " + ours.count + " GRANDPA authorities in set " + ours.setNumber + " agree with " + peer,
-  );
-  return null;
+  console.log("    ok " + ours.count + " GRANDPA authorities agree with " + peer);
+  return false;
 }
 
 (async () => {
   const number = compactAt(header, 32).value;
+  const ours = checkpointAuthorities();
+  if (ours === null) {
+    console.log("    ? checkpoint carries no readable authority set, confirming the block only");
+  }
+
   for (const peer of peers) {
+    let blockHash;
     let peerParent;
-    let mismatch;
     try {
-      const hash = await rpc(peer, "chain_getBlockHash", [number]);
-      if (!hash) {
-        console.log("    ? " + peer + " is behind block " + number + ", cannot corroborate");
+      blockHash = await rpc(peer, "chain_getBlockHash", [number]);
+      if (!blockHash) {
+        console.log("    ? " + peer + " has not reached block " + number);
         continue;
       }
-      peerParent = (await rpc(peer, "chain_getHeader", [hash])).parentHash;
-      mismatch = await authorityMismatch(peer);
+      peerParent = (await rpc(peer, "chain_getHeader", [blockHash])).parentHash;
     } catch (error) {
       console.log("    ? " + peer + " did not answer (" + (error.message || error) + ")");
       continue;
@@ -244,14 +226,25 @@ async function authorityMismatch(peer) {
       console.log("      peer parent       " + peerParent);
       process.exit(1);
     }
-    if (mismatch !== null) {
-      console.log("    x " + peer + " " + mismatch);
+    if (ours !== null && (await authoritiesDisagree(peer, blockHash, ours))) {
       process.exit(1);
     }
     console.log("    ok corroborated at block " + number + " by " + peer);
     return;
   }
-  console.log("  WARNING: no independent endpoint could corroborate the checkpoint.");
+
+  if (peers.length > 0) {
+    console.log(
+      "  ERROR: none of the " +
+        peers.length +
+        " other endpoint(s) confirmed block " +
+        number +
+        ". They were unreachable, behind it, or both; either way the checkpoint rests on one" +
+        " endpoint alone, which is also how a checkpoint pinned ahead of every peer would look.",
+    );
+    process.exit(1);
+  }
+  console.log("  WARNING: only one endpoint is configured, so the checkpoint cannot be corroborated.");
 })();
 '
 
@@ -401,8 +394,9 @@ refresh_spec "previewnet-bulletin.json"       false "https://previewnet.substrat
 refresh_spec "previewnet-people.json"         false "https://previewnet.substrate.dev/people" || true
 
 if [ "$INTEGRITY_FAILURES" -gt 0 ]; then
-  echo "FAILED: $INTEGRITY_FAILURES spec(s) had endpoints disagreeing about the chain they serve."
-  echo "Those specs were left unchanged. Investigate before publishing anything from this run."
+  echo "FAILED: $INTEGRITY_FAILURES spec(s) could not be trusted, either because endpoints"
+  echo "disagreed about the chain they serve or because no second endpoint could corroborate the"
+  echo "checkpoint. Those specs were left unchanged. Investigate before publishing this run."
   exit 1
 fi
 
