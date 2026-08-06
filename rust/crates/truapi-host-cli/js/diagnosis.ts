@@ -18,6 +18,15 @@ const UNARY_TIMEOUT_MS = 10_000;
 const REMOTE_RESPONSE_TIMEOUT_MS = 190_000;
 const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
 const SKIPPED_SERVICES = new Set(["Chat", "Coin Payment", "Payment"]);
+const STATEMENT_PROVIDER_DEPENDENT_METHODS = new Set([
+  "Statement Store/subscribe",
+  "Statement Store/submit",
+  "Statement Store/create_proof_authorized",
+]);
+const PREIMAGE_PROVIDER_DEPENDENT_METHODS = new Set([
+  "Preimage/lookup_subscribe",
+  "Preimage/submit",
+]);
 const LONG_TIMEOUT_METHODS = new Set([
   "Account/get_account",
   "Account/get_account_alias",
@@ -98,12 +107,102 @@ export function knownUnsupportedReason(
 }
 
 export function expectedCliBatteryFailureReason(
-  serviceName: string,
+  row: Pick<DiagnosisRow, "id" | "serviceName" | "output">,
 ): string | undefined {
-  if (SKIPPED_SERVICES.has(serviceName)) {
-    return `${serviceName} service not yet wired up by hosts`;
+  if (SKIPPED_SERVICES.has(row.serviceName)) {
+    return `${row.serviceName} service not yet wired up by hosts`;
+  }
+  const noPeopleProvider =
+    "RFC-0024 People Lite provider is not installed in the CLI battery";
+  const explicitlyReportsNoProvider = row.output.includes(
+    "no ring-VRF provider is registered for People Lite",
+  );
+  if (
+    row.id === "Resource Allocation/request" &&
+    (explicitlyReportsNoProvider ||
+      isProviderAbsentAllocationFailure(row.output))
+  ) {
+    return noPeopleProvider;
+  }
+  if (
+    STATEMENT_PROVIDER_DEPENDENT_METHODS.has(row.id) &&
+    (explicitlyReportsNoProvider || isUnableToSignFailure(row.output))
+  ) {
+    return noPeopleProvider;
+  }
+  if (
+    PREIMAGE_PROVIDER_DEPENDENT_METHODS.has(row.id) &&
+    (isDomainUnknownFailure(
+      row.output,
+      "no ring-VRF provider is registered for People Lite",
+    ) ||
+      isDomainUnknownFailure(row.output, "bulletin allowance is not available"))
+  ) {
+    return noPeopleProvider;
   }
   return undefined;
+}
+
+function isProviderAbsentAllocationFailure(output: string): boolean {
+  if (
+    !output.startsWith(
+      "statement-store or bulletin allowance was not allocated:",
+    )
+  ) {
+    return false;
+  }
+  const payload = parseTrailingJson(output);
+  if (!isRecord(payload) || Object.keys(payload).length !== 1) return false;
+  return (
+    Array.isArray(payload.outcomes) &&
+    payload.outcomes.length === 4 &&
+    payload.outcomes[0] === "NotAvailable" &&
+    payload.outcomes[1] === "NotAvailable" &&
+    payload.outcomes[2] === "NotAvailable" &&
+    payload.outcomes[3] === "Allocated"
+  );
+}
+
+function isUnableToSignFailure(output: string): boolean {
+  const payload = parseTrailingJson(output);
+  if (!isRecord(payload) || !isRecord(payload.error)) return false;
+  const error = payload.error;
+  return (
+    error.tag === "Domain" &&
+    isRecord(error.value) &&
+    error.value.tag === "V1" &&
+    isRecord(error.value.value) &&
+    error.value.value.tag === "UnableToSign"
+  );
+}
+
+function isDomainUnknownFailure(output: string, reason: string): boolean {
+  const payload = parseTrailingJson(output);
+  if (!isRecord(payload) || !isRecord(payload.error)) return false;
+  const error = payload.error;
+  return (
+    error.tag === "Domain" &&
+    isRecord(error.value) &&
+    error.value.tag === "V1" &&
+    isRecord(error.value.value) &&
+    error.value.value.tag === "Unknown" &&
+    isRecord(error.value.value.value) &&
+    error.value.value.value.reason === reason
+  );
+}
+
+function parseTrailingJson(output: string): unknown {
+  const jsonStart = output.indexOf("{");
+  if (jsonStart < 0) return undefined;
+  try {
+    return JSON.parse(output.slice(jsonStart));
+  } catch {
+    return undefined;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function runOne(

@@ -2,6 +2,7 @@
 
 | Method | Status | Details |
 | --- | --- | --- |
+| `Account/ring_vrf_registry_e2e` | ✅ |  |
 | `Account/connection_status_subscribe` | ✅ |  |
 | `Account/get_account` | ✅ |  |
 | `Account/get_account_alias` | ✅ |  |
@@ -10,6 +11,9 @@
 | `Account/get_user_id` | ✅ |  |
 | `Account/request_login` | ✅ |  |
 | `Account/sign_vrf` | ✅ |  |
+| `Account/register_ring_vrf_key` | ✅ |  |
+| `Account/list_ring_vrf_keys` | ✅ |  |
+| `Account/ring_vrf_sign` | ✅ |  |
 | `Chain/follow_head_subscribe` | ✅ |  |
 | `Chain/get_head_header` | ✅ |  |
 | `Chain/get_head_body` | ✅ |  |
@@ -50,21 +54,22 @@
 | `Payment/status_subscribe` | ❌ | topUp failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "Payments are not supported in dot.li" } } } } } |
 | `Permissions/request_device_permission` | ✅ |  |
 | `Permissions/request_remote_permission` | ✅ |  |
-| `Preimage/lookup_subscribe` | ✅ |  |
-| `Preimage/submit` | ✅ |  |
-| `Resource Allocation/request` | ✅ |  |
+| `Preimage/lookup_subscribe` | ❌ | submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "bulletin allowance is not available" } } } } } |
+| `Preimage/submit` | ❌ | submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "bulletin allowance is not available" } } } } } |
+| `Resource Allocation/request` | ❌ | statement-store or bulletin allowance was not allocated: { "outcomes": [ "NotAvailable", "NotAvailable", "NotAvailable", "Allocated" ] } |
 | `Signing/create_transaction` | ✅ |  |
 | `Signing/create_transaction_with_legacy_account` | ✅ |  |
 | `Signing/sign_raw_with_legacy_account` | ✅ |  |
 | `Signing/sign_payload_with_legacy_account` | ✅ |  |
 | `Signing/sign_raw` | ✅ |  |
 | `Signing/sign_payload` | ✅ |  |
-| `Statement Store/subscribe` | ✅ |  |
+| `Statement Store/subscribe` | ❌ | createProofAuthorized failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
 | `Statement Store/create_proof` | ✅ |  |
-| `Statement Store/submit` | ✅ |  |
-| `Statement Store/create_proof_authorized` | ✅ |  |
+| `Statement Store/submit` | ❌ | createProofAuthorized failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
+| `Statement Store/create_proof_authorized` | ❌ | createProof failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
 | `System/handshake` | ✅ |  |
 | `System/feature_supported` | ✅ |  |
 | `System/navigate_to` | ✅ |  |
 | `Theme/subscribe` | ✅ |  |
 | `Resource Allocation/auto_signing_e2e` | ✅ |  |
+| `Account/auto_signing_ring_vrf_e2e` | ✅ |  |

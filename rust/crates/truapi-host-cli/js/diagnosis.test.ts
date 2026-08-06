@@ -48,23 +48,140 @@ describe("generated-example battery", () => {
   });
 
   test("classifies only the committed unsupported CLI battery failures as expected", () => {
-    expect(expectedCliBatteryFailureReason("Chat")).toBe(
-      "Chat service not yet wired up by hosts",
-    );
-    expect(expectedCliBatteryFailureReason("Coin Payment")).toBe(
-      "Coin Payment service not yet wired up by hosts",
-    );
-    expect(expectedCliBatteryFailureReason("Payment")).toBe(
-      "Payment service not yet wired up by hosts",
-    );
-    expect(expectedCliBatteryFailureReason("Signing")).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow("Chat/create_room", "unavailable"),
+      ),
+    ).toBe("Chat service not yet wired up by hosts");
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow("Coin Payment/create_purse", "unavailable"),
+      ),
+    ).toBe("Coin Payment service not yet wired up by hosts");
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow("Payment/top_up", "unavailable"),
+      ),
+    ).toBe("Payment service not yet wired up by hosts");
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow("Signing/sign_raw", "Rejected"),
+      ),
+    ).toBe(undefined);
+  });
+
+  test("accepts only the exact RFC-0024 provider-absent battery failures", () => {
+    const reason =
+      "RFC-0024 People Lite provider is not installed in the CLI battery";
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow(
+          "Resource Allocation/request",
+          `statement-store or bulletin allowance was not allocated: ${JSON.stringify(
+            {
+              outcomes: [
+                "NotAvailable",
+                "NotAvailable",
+                "NotAvailable",
+                "Allocated",
+              ],
+            },
+            null,
+            2,
+          )}`,
+        ),
+      ),
+    ).toBe(reason);
+    for (const id of [
+      "Statement Store/subscribe",
+      "Statement Store/submit",
+      "Statement Store/create_proof_authorized",
+    ]) {
+      expect(
+        expectedCliBatteryFailureReason(
+          failedRow(
+            id,
+            'failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } }',
+          ),
+        ),
+      ).toBe(reason);
+    }
+    for (const id of ["Preimage/lookup_subscribe", "Preimage/submit"]) {
+      for (const providerFailure of [
+        "no ring-VRF provider is registered for People Lite",
+        "bulletin allowance is not available",
+      ]) {
+        expect(
+          expectedCliBatteryFailureReason(
+            failedRow(
+              id,
+              `submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "${providerFailure}" } } } } }`,
+            ),
+          ),
+        ).toBe(reason);
+      }
+    }
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow("Resource Allocation/request", "request timed out"),
+      ),
+    ).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow(
+          "Resource Allocation/request",
+          'failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } }',
+        ),
+      ),
+    ).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow(
+          "Resource Allocation/request",
+          'statement-store or bulletin allowance was not allocated: { "outcomes": [ "Allocated", "NotAvailable", "NotAvailable", "Allocated" ] }',
+        ),
+      ),
+    ).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow("Statement Store/submit", "subscription failed"),
+      ),
+    ).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow(
+          "Statement Store/submit",
+          'statement-store or bulletin allowance was not allocated: { "outcomes": [ "NotAvailable", "NotAvailable", "NotAvailable", "Allocated" ] }',
+        ),
+      ),
+    ).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow(
+          "Preimage/submit",
+          'submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "no allowance" } } } } }',
+        ),
+      ),
+    ).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow(
+          "Account/register_ring_vrf_key",
+          'failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "no ring-VRF provider is registered for People Lite" } } } } }',
+        ),
+      ),
+    ).toBe(undefined);
   });
 
   test("does not ignore account proof failures", () => {
     expect(
       knownUnsupportedReason("Account", "Account/create_account_proof"),
     ).toBe(undefined);
-    expect(expectedCliBatteryFailureReason("Account")).toBe(undefined);
+    expect(
+      expectedCliBatteryFailureReason(
+        failedRow("Account/create_account_proof", "NotMember"),
+      ),
+    ).toBe(undefined);
   });
 
   test("prints failures as concise test-reporter rows", () => {
@@ -187,5 +304,16 @@ function row(
     status,
     output,
     durationMs,
+  };
+}
+
+function failedRow(
+  id: string,
+  output: string,
+): Pick<DiagnosisRow, "id" | "serviceName" | "output"> {
+  return {
+    id,
+    serviceName: id.slice(0, id.indexOf("/")),
+    output,
   };
 }

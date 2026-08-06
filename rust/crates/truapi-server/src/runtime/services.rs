@@ -32,6 +32,8 @@ pub(crate) struct RuntimeServices {
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
     pub(crate) statement_store: StatementStoreRpc,
+    /// People-chain genesis hash used for ring locations and statement-store protocols.
+    pub(crate) people_chain_genesis_hash: [u8; 32],
     /// In-core Bulletin submission over the configured Bulletin chain.
     pub(crate) bulletin: BulletinRpc,
     /// Values from confirmed in-core submissions, served to `lookup_subscribe`
@@ -66,6 +68,7 @@ impl RuntimeServices {
             platform,
             chain,
             statement_store,
+            people_chain_genesis_hash,
             bulletin,
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
