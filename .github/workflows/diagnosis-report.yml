@@ -38,27 +38,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Host mode and modality from the report title
-          # (`## Truapi <mode> [Chat] Diagnosis`).
+          # Host mode from the report title (`## Truapi <mode> Diagnosis`).
           mode=$(printf '%s' "$BODY" \
-            | grep -ioP '##\s+Truapi\s+\K(Web|Desktop|Android|iOS)(?=\s+(?:Chat\s+)?Diagnosis)' \
+            | grep -ioP '##\s+Truapi\s+\K(Web|Desktop|Android|iOS)(?=\s+Diagnosis)' \
             | head -1 || true)
           if [ -z "$mode" ]; then
             gh issue comment "$ISSUE" --body \
-              "Could not read a host from this report (expected a \`## Truapi <Web|Desktop|Android|iOS> [Chat] Diagnosis\` heading). Not filing a PR."
+              "Could not read a host from this report (expected a \`## Truapi <Web|Desktop|Android|iOS> Diagnosis\` heading). Not filing a PR."
             exit 1
           fi
-          modality=spa
-          if printf '%s' "$BODY" | grep -iqP '##\s+Truapi\s+(Web|Desktop|Android|iOS)\s+Chat\s+Diagnosis'; then
-            modality=chat
-          fi
           host=$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')
-          branch="diagnosis-report/$modality-$host"
-          file="explorer/diagnosis-reports/$modality/$host.md"
+          branch="diagnosis-report/$host"
+          file="explorer/diagnosis-reports/$host.md"
 
           git fetch origin main
           git switch -C "$branch" origin/main
-          mkdir -p "$(dirname "$file")"
           printf '%s\n' "$BODY" > "$file"
 
           git config user.name "github-actions[bot]"
@@ -70,7 +64,7 @@ jobs:
             exit 0
           fi
           git add "$file"
-          git commit -m "diagnosis: update $modality/$host report (from #$ISSUE)"
+          git commit -m "diagnosis: update $host report (from #$ISSUE)"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$branch"
 
           # One open PR per host branch: reuse it while it is open, open a new
@@ -79,7 +73,7 @@ jobs:
           url=$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')
           if [ -z "$url" ]; then
             url=$(gh pr create --base main --head "$branch" \
-              --title "diagnosis: $mode $modality report" \
+              --title "diagnosis: $mode host report" \
               --body "Updates \`$file\` from the diagnosis in #$ISSUE. The compatibility matrix is regenerated from the reports at build time.")
           fi
 
