@@ -111,6 +111,9 @@ for (const marker of [...connectionMarkers, customRendererMarker]) {
     unlinkSync(marker);
   }
 }
+const initialRendererMarker = existsSync(customRendererMarker)
+  ? fileVersion(customRendererMarker)
+  : undefined;
 const workerDestination = resolve(
   appData,
   "Library/Application Support/Products",
@@ -122,7 +125,8 @@ const contentHashPreferences = resolve(
   appData,
   "Library/Preferences/io.products.dotns.cache.plist",
 );
-if (existsSync(contentHashPreferences)) {
+const currentCachedWorkerDestination = () => {
+  if (!existsSync(contentHashPreferences)) return undefined;
   try {
     const contentHash = capture("/usr/libexec/PlistBuddy", [
       "-c",
@@ -130,28 +134,38 @@ if (existsSync(contentHashPreferences)) {
       contentHashPreferences,
     ]).trim();
     if (/^[0-9a-f]+$/i.test(contentHash)) {
-      workerDestinations.push(
-        resolve(
-          appData,
-          "Library/Application Support/DotNsContent",
-          contentHash,
-          "worker/index.js",
-        ),
+      return resolve(
+        appData,
+        "Library/Application Support/DotNsContent",
+        contentHash,
+        "worker/index.js",
       );
     }
   } catch {
     // This product has no cached DotNs content, so the fallback is authoritative.
   }
+  return undefined;
+};
+const initialCachedWorkerDestination = currentCachedWorkerDestination();
+if (initialCachedWorkerDestination) {
+  workerDestinations.push(initialCachedWorkerDestination);
 }
 for (const destination of workerDestinations) {
   mkdirSync(resolve(destination, ".."), { recursive: true });
   cpSync(worker, destination);
 }
 
-const userDataDatabase = resolve(
-  appData,
-  "Library/Application Support/group.pcf.polkadotapp/CoreData/UserDataModel.sqlite",
-);
+const appGroupId = bundle.endsWith(".develop")
+  ? "group.pcf.polkadotapp.develop"
+  : "group.pcf.polkadotapp";
+const appGroup = capture("xcrun", [
+  "simctl",
+  "get_app_container",
+  device.udid,
+  bundle,
+  appGroupId,
+]).trim();
+const userDataDatabase = resolve(appGroup, "CoreData/UserDataModel.sqlite");
 const chatIdentifier = `1:${productHost}:${roomId}`;
 const messageWatermark = existsSync(userDataDatabase)
   ? latestMessageId(userDataDatabase, chatIdentifier)
@@ -162,36 +176,56 @@ const productServer = await startProductServer(
   resolve(productRoot, "out"),
 );
 try {
-  run(
-    "xcrun",
-    ["simctl", "launch", "--terminate-running-process", device.udid, bundle],
-    {
-      env: {
-        ...process.env,
-        SIMCTL_CHILD_RUST_BACKTRACE: "1",
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_BROWSE: "1",
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_PRODUCT_HOST: productHost,
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_PRODUCT_URL: productUrl,
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST: productHost,
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME: productName,
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_ROOM_ID: roomId,
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_MESSAGE: message,
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_OPEN_CHAT: "1",
-        SIMCTL_CHILD_TRUAPI_IOS_E2E_RUNTIME_MARKERS: "1",
+  const launchApp = () =>
+    run(
+      "xcrun",
+      ["simctl", "launch", "--terminate-running-process", device.udid, bundle],
+      {
+        env: {
+          ...process.env,
+          SIMCTL_CHILD_RUST_BACKTRACE: "1",
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_BROWSE: "1",
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_PRODUCT_HOST: productHost,
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_PRODUCT_URL: productUrl,
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST: productHost,
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME: productName,
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_ROOM_ID: roomId,
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_CHAT_MESSAGE: message,
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_OPEN_CHAT: "1",
+          SIMCTL_CHILD_TRUAPI_IOS_E2E_RUNTIME_MARKERS: "1",
+        },
       },
-    },
-  );
+    );
+
+  launchApp();
 
   await waitForFiles(
     connectionMarkers,
     60_000,
     "Ensure the selected simulator has completed Polkadot onboarding.",
   );
-  let initialRendererMarker;
-  if (expectCustomRenderer) {
-    await waitForFiles([customRendererMarker], 30_000);
-    initialRendererMarker = fileVersion(customRendererMarker);
+
+  const activeCachedWorkerDestination = currentCachedWorkerDestination();
+  if (
+    activeCachedWorkerDestination &&
+    !filesHaveEqualContents(worker, activeCachedWorkerDestination)
+  ) {
+    mkdirSync(resolve(activeCachedWorkerDestination, ".."), { recursive: true });
+    cpSync(worker, activeCachedWorkerDestination);
+    if (!workerDestinations.includes(activeCachedWorkerDestination)) {
+      workerDestinations.push(activeCachedWorkerDestination);
+    }
+    for (const marker of [...connectionMarkers, customRendererMarker]) {
+      if (existsSync(marker)) unlinkSync(marker);
+    }
+    launchApp();
+    await waitForFiles(
+      connectionMarkers,
+      60_000,
+      "Ensure the selected simulator has completed Polkadot onboarding.",
+    );
   }
+
   if (expectDiagnosis) {
     const report = await waitForTextPrefix(
       userDataDatabase,
@@ -353,6 +387,14 @@ async function waitForFileChange(file, initialVersion, timeoutMs) {
 function fileVersion(file) {
   const stat = statSync(file);
   return `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+function filesHaveEqualContents(first, second) {
+  return (
+    existsSync(first) &&
+    existsSync(second) &&
+    readFileSync(first).equals(readFileSync(second))
+  );
 }
 
 function latestMessageId(database, identifier) {

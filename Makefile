@@ -99,7 +99,6 @@ uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uni
 
 IOS_HOST ?= ../polkadot-app-ios-v2
 IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
-IOS_SIMULATOR_TARGET ?= aarch64-apple-ios-sim
 IOS_CONFIGURATION ?= Debug
 IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
 IOS_SIMULATOR_DEVICE ?=
@@ -118,15 +117,16 @@ IOS_HOST_PLAYGROUND_NAME ?= Host Playground
 IOS_HOST_PLAYGROUND_URL ?= http://127.0.0.1:3101
 IOS_APP := $(abspath $(IOS_DERIVED_DATA)/Build/Products/$(IOS_CONFIGURATION)-iphonesimulator/polkadot-app.app)
 
-ios-build: uniffi ## Build matching Rust/Swift bindings and the TestFlight-configured iOS simulator app.
+ios-build: ## Rebuild the local Rust package and the TestFlight-configured iOS simulator app.
 	@test -d "$(IOS_HOST)/.git" || { \
 		echo "Missing iOS checkout at $(IOS_HOST); set IOS_HOST to polkadot-app-ios-v2"; \
 		exit 1; \
 	}
-	rustup target add $(IOS_SIMULATOR_TARGET)
-	$(CARGO) build -p truapi-server --release --features ws-bridge \
-		--target $(IOS_SIMULATOR_TARGET)
-	cd $(IOS_HOST) && RUN_IN_CI=true xcodebuild \
+	./ios/truapi-host/scripts/rebuild.sh
+	cd $(IOS_HOST) && \
+		TRUAPI_LOCAL_PATH="$(CURDIR)" \
+		TRUAPI_USE_LOCAL_BINARY=1 \
+		RUN_IN_CI=true xcodebuild \
 		-project polkadot-app.xcodeproj \
 		-scheme polkadot-app \
 		-configuration $(IOS_CONFIGURATION) \
@@ -134,10 +134,10 @@ ios-build: uniffi ## Build matching Rust/Swift bindings and the TestFlight-confi
 		-derivedDataPath $(abspath $(IOS_DERIVED_DATA)) \
 		ARCHS=arm64 \
 		ONLY_ACTIVE_ARCH=YES \
-		TRUAPI_SWIFT_FLAGS='$(IOS_SWIFT_FLAGS)' \
+		BASE_SWIFT_FLAGS='$(IOS_SWIFT_FLAGS)' \
 		clean build
 	cp "$(IOS_GOOGLE_SERVICE_PLIST)" "$(IOS_APP)/GoogleService-Info.plist"
-	codesign --force --sign - "$(IOS_APP)"
+	codesign --force --sign - --preserve-metadata=entitlements "$(IOS_APP)"
 
 ios-run: ios-build ## Build and launch the local TrUAPI playground in an iPhone simulator.
 	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
@@ -166,11 +166,12 @@ ios-chat-host-playground-run: ios-build ## Verify Host Playground Chat through t
 	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_HOST_PLAYGROUND_NAME)" \
 	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_HOST_PLAYGROUND_URL)" \
 	TRUAPI_IOS_E2E_CHAT_ROOM_ID="host-playground-room" \
-	TRUAPI_IOS_E2E_CHAT_MESSAGE="!echo hello" \
+	TRUAPI_IOS_E2E_CHAT_MESSAGE="!flip" \
+	TRUAPI_IOS_E2E_CHAT_EXPECTED_REPLY="Flipping the coin!" \
 	TRUAPI_IOS_E2E_CHAT_DIAGNOSIS="0" \
 	TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE="" \
-	TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER="0" \
-	TRUAPI_IOS_E2E_CHAT_SCREENSHOT="artifacts/host-playground-chat.png" \
+	TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER="1" \
+	TRUAPI_IOS_E2E_CHAT_SCREENSHOT="artifacts/host-playground-coin-flip-chat.png" \
 	TRUAPI_IOS_E2E_CHAT_TRUAPI_DIR="$(abspath js/packages/truapi)" \
 	node scripts/launch-ios-chat-playground.mjs
 

@@ -318,6 +318,13 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func notifyChainClosed(connectionId: UInt32)
 }
 
+/// Product-scoped key-value storage provided by the embedding host.
+public protocol HostStorageBackend: AnyObject, Sendable {
+    func read(key: String) throws -> Data?
+    func write(key: String, value: Data) throws
+    func clear(key: String) throws
+}
+
 /// Core-owned host-private storage backend. Keys are SCALE-encoded
 /// `truapi_platform::CoreStorageKey` values, so embedders can persist them
 /// opaquely or decode them to choose a secure backing store per slot.
@@ -873,6 +880,12 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
             callbacks: callbacks,
             runtimeConfig: runtimeConfig.native
         )
+        LiveSessionStoreForwarder.register(self)
+        notifySessionStoreChanged()
+    }
+
+    deinit {
+        LiveSessionStoreForwarder.unregister(self)
     }
 
     /// Start the localhost WebSocket bridge. Requires the `ws-bridge`
@@ -915,6 +928,11 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     /// account-status subscribers.
     public func disconnect() {
         inner.disconnect()
+    }
+
+    /// Notify the core after its host-private session storage changes.
+    public func notifySessionStoreChanged() {
+        inner.notifySessionStoreChanged()
     }
 
     /// Cancel an in-flight pairing login.

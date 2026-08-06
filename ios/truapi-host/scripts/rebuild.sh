@@ -23,6 +23,13 @@ cp "$UNIFFI_OUT/truapi_serverFFI.h" \
 cp "$UNIFFI_OUT/truapi_serverFFI.modulemap" \
     "$PACKAGE_ROOT/Sources/truapi_serverFFI/include/module.modulemap"
 
+# UniFFI templates emit trailing spaces around optional fragments. Keep the
+# committed bindings stable so rebuilding locally only records API changes.
+perl -pi -e 's/[ \t]+$//' \
+    "$PACKAGE_ROOT/Sources/TrUAPIHost/truapi_server.swift" \
+    "$PACKAGE_ROOT/Sources/truapi_serverFFI/include/truapi_serverFFI.h" \
+    "$PACKAGE_ROOT/Sources/truapi_serverFFI/include/module.modulemap"
+
 rm -rf "$PACKAGE_ROOT/Binaries/truapi_server.xcframework"
 mkdir -p "$PACKAGE_ROOT/Binaries"
 cp -R "$TRUAPI_ROOT/target/truapi_server.xcframework" "$PACKAGE_ROOT/Binaries/"
