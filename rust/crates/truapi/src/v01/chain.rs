@@ -1,5 +1,7 @@
 use parity_scale_codec::{Decode, Encode};
 
+use super::common::GenericError;
+
 /// One entry of a runtime's supported API list.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RuntimeApi {
@@ -352,4 +354,47 @@ pub struct RemoteChainSpecPropertiesResponse {
 pub struct RemoteChainTransactionBroadcastResponse {
     /// Broadcast operation identifier, if available.
     pub operation_id: Option<String>,
+}
+
+/// One chain a host serves.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostChainDescriptor {
+    /// Stable machine key for the chain's role, e.g. "asset-hub".
+    pub name: String,
+    /// Ecosystem the chain belongs to, e.g. "polkadot", "kusama", "paseo".
+    pub network: String,
+    /// Genesis hash identifying the chain in all chain-scoped calls.
+    pub genesis_hash: Vec<u8>,
+}
+
+/// Response listing every chain the host serves.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RemoteChainSupportedChainsResponse {
+    /// Complete set of chains available through this host.
+    pub chains: Vec<HostChainDescriptor>,
+}
+
+/// Request to resolve a named chain within a network.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RemoteChainResolveChainRequest {
+    /// Stable machine key, e.g. "asset-hub".
+    pub name: String,
+    /// Ecosystem string, e.g. "polkadot", "paseo".
+    pub network: String,
+}
+
+/// Response carrying the resolved genesis hash.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RemoteChainResolveChainResponse {
+    /// Genesis hash of the resolved chain.
+    pub genesis_hash: Vec<u8>,
+}
+
+/// Error from [`crate::api::Chain::resolve_chain`].
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum RemoteChainResolveChainError {
+    /// No supported chain matches the requested (name, network) pair.
+    NotFound,
+    /// Catch-all.
+    Unknown(GenericError),
 }

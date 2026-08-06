@@ -9,14 +9,16 @@ use crate::versioned::chain::{
     RemoteChainHeadStopOperationRequest, RemoteChainHeadStopOperationResponse,
     RemoteChainHeadStorageError, RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse,
     RemoteChainHeadUnpinError, RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse,
+    RemoteChainResolveChainError, RemoteChainResolveChainRequest, RemoteChainResolveChainResponse,
     RemoteChainSpecChainNameError, RemoteChainSpecChainNameRequest,
     RemoteChainSpecChainNameResponse, RemoteChainSpecGenesisHashError,
     RemoteChainSpecGenesisHashRequest, RemoteChainSpecGenesisHashResponse,
     RemoteChainSpecPropertiesError, RemoteChainSpecPropertiesRequest,
-    RemoteChainSpecPropertiesResponse, RemoteChainTransactionBroadcastError,
-    RemoteChainTransactionBroadcastRequest, RemoteChainTransactionBroadcastResponse,
-    RemoteChainTransactionStopError, RemoteChainTransactionStopRequest,
-    RemoteChainTransactionStopResponse,
+    RemoteChainSpecPropertiesResponse, RemoteChainSupportedChainsError,
+    RemoteChainSupportedChainsRequest, RemoteChainSupportedChainsResponse,
+    RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
+    RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopError,
+    RemoteChainTransactionStopRequest, RemoteChainTransactionStopResponse,
 };
 use crate::wire;
 use crate::{CallContext, CallError, Subscription};
@@ -387,6 +389,42 @@ pub trait Chain: Send + Sync {
         _request: RemoteChainTransactionStopRequest,
     ) -> Result<RemoteChainTransactionStopResponse, CallError<RemoteChainTransactionStopError>>
     {
+        Err(CallError::unavailable())
+    }
+
+    /// Enumerate the chains this host serves (RFC 0026).
+    ///
+    /// ```ts
+    /// const result = await truapi.chain.getSupportedChains();
+    /// assert(result.isOk(), "getSupportedChains failed:", result);
+    /// console.log("supported chains:", result.value.chains);
+    /// ```
+    #[wire(request_id = 166)]
+    async fn get_supported_chains(
+        &self,
+        _cx: &CallContext,
+        _request: RemoteChainSupportedChainsRequest,
+    ) -> Result<RemoteChainSupportedChainsResponse, CallError<RemoteChainSupportedChainsError>>
+    {
+        Err(CallError::unavailable())
+    }
+
+    /// Resolve a (name, network) pair to the chain's genesis hash (RFC 0026).
+    ///
+    /// ```ts
+    /// const result = await truapi.chain.resolveChain({
+    ///   name: "asset-hub",
+    ///   network: "paseo",
+    /// });
+    /// assert(result.isOk(), "resolveChain failed:", result);
+    /// console.log("genesis hash:", result.value.genesisHash);
+    /// ```
+    #[wire(request_id = 168)]
+    async fn resolve_chain(
+        &self,
+        _cx: &CallContext,
+        _request: RemoteChainResolveChainRequest,
+    ) -> Result<RemoteChainResolveChainResponse, CallError<RemoteChainResolveChainError>> {
         Err(CallError::unavailable())
     }
 }

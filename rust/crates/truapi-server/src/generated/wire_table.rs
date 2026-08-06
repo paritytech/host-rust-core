@@ -466,6 +466,18 @@ pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
     response_id: 165,
 };
 
+/// Wire discriminants for `chain_get_supported_chains`.
+pub const CHAIN_GET_SUPPORTED_CHAINS: RequestFrameIds = RequestFrameIds {
+    request_id: 166,
+    response_id: 167,
+};
+
+/// Wire discriminants for `chain_resolve_chain`.
+pub const CHAIN_RESOLVE_CHAIN: RequestFrameIds = RequestFrameIds {
+    request_id: 168,
+    response_id: 169,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -728,5 +740,13 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "account_sign_vrf",
         kind: WireKind::Request(ACCOUNT_SIGN_VRF),
+    },
+    WireEntry {
+        method: "chain_get_supported_chains",
+        kind: WireKind::Request(CHAIN_GET_SUPPORTED_CHAINS),
+    },
+    WireEntry {
+        method: "chain_resolve_chain",
+        kind: WireKind::Request(CHAIN_RESOLVE_CHAIN),
     },
 ];
