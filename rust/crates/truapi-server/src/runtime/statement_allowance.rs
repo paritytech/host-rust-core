@@ -135,6 +135,7 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
         transaction_version,
         genesis_hash,
         nonce: 0,
+        restrict_origins: false,
     })
 }
 
@@ -237,7 +238,13 @@ pub async fn find_including_ring(
     let current = ring::read_current_ring_index_at(rpc, &at).await?;
     let oldest = current.saturating_sub(lookback);
     for ring_index in (oldest..=current).rev() {
-        let members = ring::read_ring_members_at(rpc, ring_index, &at).await?;
+        let members = ring::read_collection_ring_members_at(
+            rpc,
+            ring::LITE_PEOPLE_IDENTIFIER,
+            ring_index,
+            &at,
+        )
+        .await?;
         if members.contains(&member) {
             return Ok(Some(RingParams {
                 members,
@@ -285,14 +292,20 @@ pub async fn register_statement_account(
             seq,
             params.target,
         )?;
-        let message = extension::build_proof_message(metadata, &call, chain_state)?;
+        let message =
+            extension::build_proof_message(metadata, &call, chain_state, extension::AS_RESOURCES)?;
         let domain = proof::domain_for_ring_exponent(params.ring.exponent)?;
         let ring_proof =
             proof::ring_vrf_proof(domain, entropy, &params.ring.members, &context, &message)?;
         let as_resources_extra =
             extrinsic::build_as_resources_extra(metadata, &ring_proof, params.ring.ring_index)?;
-        let extrinsic =
-            extrinsic::build_unsigned_extrinsic(metadata, chain_state, &call, &as_resources_extra)?;
+        let extrinsic = extrinsic::build_unsigned_extrinsic(
+            metadata,
+            chain_state,
+            &call,
+            extension::AS_RESOURCES,
+            &as_resources_extra,
+        )?;
 
         match rpc.submit_and_watch(&extrinsic).await {
             Ok(block_hash) => {
@@ -347,7 +360,8 @@ pub async fn claim_long_term_storage(
         let context = slot::derive_long_term_storage_context(period, counter);
         let call =
             extrinsic::build_claim_long_term_storage_call(metadata, period, counter, target)?;
-        let message = extension::build_proof_message(metadata, &call, chain_state)?;
+        let message =
+            extension::build_proof_message(metadata, &call, chain_state, extension::AS_RESOURCES)?;
         let domain = proof::domain_for_ring_exponent(ring.exponent)?;
         let ring_proof = proof::ring_vrf_proof(domain, entropy, &ring.members, &context, &message)?;
         let as_resources_extra = extrinsic::build_long_term_storage_extra(
@@ -356,8 +370,13 @@ pub async fn claim_long_term_storage(
             ring.ring_index,
             revision,
         )?;
-        let extrinsic =
-            extrinsic::build_unsigned_extrinsic(metadata, chain_state, &call, &as_resources_extra)?;
+        let extrinsic = extrinsic::build_unsigned_extrinsic(
+            metadata,
+            chain_state,
+            &call,
+            extension::AS_RESOURCES,
+            &as_resources_extra,
+        )?;
         debug!(
             period,
             counter,
@@ -626,6 +645,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {

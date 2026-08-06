@@ -27,6 +27,10 @@ use super::StatementAllowanceError;
 /// Signed-extension identifier that carries the `AsResources` authorization.
 pub const AS_RESOURCES: &str = "AsResources";
 
+/// Signed-extension identifier that carries the `AsDotnsGateway`
+/// authorization on Asset Hub.
+pub const AS_DOTNS_GATEWAY: &str = "AsDotnsGateway";
+
 /// Error while decoding runtime metadata or resolving allowance-specific
 /// metadata entries.
 #[derive(Debug, Error)]
@@ -63,9 +67,21 @@ pub enum MetadataError {
         /// Call name.
         call: String,
     },
-    /// `AsResources` extension is absent from metadata.
-    #[error("{AS_RESOURCES} extension not found in metadata")]
-    MissingAsResourcesExtension,
+    /// A named transaction extension is absent from metadata.
+    #[error("{identifier} extension not found in metadata")]
+    MissingExtension {
+        /// Extension identifier.
+        identifier: &'static str,
+    },
+    /// `RegisterFullName` did not have the expected field shape.
+    #[error(
+        "AsDotnsGatewayInfo::RegisterFullName fields are [{actual}], expected \
+         [proof, ring_index, signature]; the runtime shape drifted"
+    )]
+    RegisterFullNameShapeDrift {
+        /// Actual comma-separated field names.
+        actual: String,
+    },
     /// `AsResources` extra type did not contain the expected `Option`.
     #[error("{AS_RESOURCES} extra is not an Option")]
     AsResourcesExtraNotOption,
@@ -139,6 +155,11 @@ pub struct ChainState {
     pub genesis_hash: [u8; 32],
     /// Account nonce (CheckNonce extra); ignored by the unsigned path.
     pub nonce: u32,
+    /// `RestrictOrigins` extra value. `false` for statement-store allowance
+    /// calls on People. `true` for restricted-origin dotNS gateway registrations
+    /// on Asset Hub. It is part of both the signed digest and the extrinsic
+    /// body, so it lives here to keep the two in lockstep.
+    pub restrict_origins: bool,
 }
 
 /// A signed extension's identifier plus the type ids of its `extra` and
@@ -334,26 +355,22 @@ impl Metadata {
         Ok([pallet_index, variant.index])
     }
 
-    /// Resolve `AsResourcesInfo::<info_variant>` and the
-    /// `MembershipCollection::LitePeople` index it carries, by name, from the
-    /// `AsResources` extension type.
-    pub fn as_resources_variant_indices(
+    /// Resolves the info-enum type carried by extension `identifier`. Its extra
+    /// is `Option<Info>`, with or without a struct wrapper.
+    fn extension_info_type(
         &self,
-        info_variant: &str,
-    ) -> Result<(u8, u8), StatementAllowanceError> {
+        identifier: &'static str,
+    ) -> Result<u32, StatementAllowanceError> {
         let ext = self
             .extensions
             .iter()
-            .find(|e| e.identifier == AS_RESOURCES)
-            .ok_or(MetadataError::MissingAsResourcesExtension)?;
-        // extra = `AsResources(Option<AsResourcesInfo>)`, with or without the
-        // struct wrapper.
+            .find(|e| e.identifier == identifier)
+            .ok_or(MetadataError::MissingExtension { identifier })?;
         let option_type = match &self.resolve_type(ext.extra_type)?.type_def {
             TypeDef::Composite(_) => self.single_field_type(ext.extra_type)?,
             _ => ext.extra_type,
         };
-        let info_type = self
-            .resolve_variant(option_type)?
+        self.resolve_variant(option_type)?
             .variants
             .iter()
             .find(|v| v.name == "Some")
@@ -361,7 +378,46 @@ impl Metadata {
                 [field] => Some(field.ty.id),
                 _ => None,
             })
-            .ok_or(MetadataError::AsResourcesExtraNotOption)?;
+            .ok_or(MetadataError::AsResourcesExtraNotOption.into())
+    }
+
+    /// Resolves `AsDotnsGatewayInfo::RegisterFullName` to its variant index.
+    ///
+    /// Asserts the exact `{proof, ring_index, signature}` field shape. A runtime
+    /// that grows the variant, say with a `revision` field, then fails loudly
+    /// instead of mis-encoding.
+    pub fn dotns_register_full_name_variant(&self) -> Result<u8, StatementAllowanceError> {
+        let info_type = self.extension_info_type(AS_DOTNS_GATEWAY)?;
+        let variant = self
+            .resolve_variant(info_type)?
+            .variants
+            .iter()
+            .find(|v| v.name == "RegisterFullName")
+            .ok_or_else(|| MetadataError::MissingAsResourcesInfoVariant {
+                variant: "RegisterFullName".to_string(),
+            })?;
+        let fields: Vec<&str> = variant
+            .fields
+            .iter()
+            .map(|field| field.name.as_deref().unwrap_or("<unnamed>"))
+            .collect();
+        if fields != ["proof", "ring_index", "signature"] {
+            return Err(MetadataError::RegisterFullNameShapeDrift {
+                actual: fields.join(", "),
+            }
+            .into());
+        }
+        Ok(variant.index)
+    }
+
+    /// Resolves `AsResourcesInfo::<info_variant>` and the
+    /// `MembershipCollection::LitePeople` index it carries. Both are looked up by
+    /// name from the `AsResources` extension type.
+    pub fn as_resources_variant_indices(
+        &self,
+        info_variant: &str,
+    ) -> Result<(u8, u8), StatementAllowanceError> {
+        let info_type = self.extension_info_type(AS_RESOURCES)?;
         let variant = self
             .resolve_variant(info_type)?
             .variants
@@ -466,8 +522,8 @@ impl Metadata {
             "VerifyMultiSignature" => (vec![0x00], Vec::new()),
             // extra = { tip: compact(0), asset_id: None } = 0x00 0x00.
             "ChargeAssetTxPayment" => (vec![0x00, 0x00], Vec::new()),
-            // extra = bool false = 0x00.
-            "RestrictOrigins" => (vec![0x00], Vec::new()),
+            // extra = bool. See `ChainState::restrict_origins`.
+            "RestrictOrigins" => (vec![state.restrict_origins as u8], Vec::new()),
             _ => (
                 self.encode_default(ext.extra_type),
                 self.encode_default(ext.additional_signed_type),
@@ -531,28 +587,33 @@ impl Metadata {
         }
     }
 
-    /// Index of `AsResources` in the extension list, if present.
-    pub fn as_resources_index(&self) -> Option<usize> {
+    /// Index of the named extension in the extension list, if present.
+    pub fn extension_index(&self, identifier: &str) -> Option<usize> {
         self.extensions
             .iter()
-            .position(|e| e.identifier == AS_RESOURCES)
+            .position(|e| e.identifier == identifier)
     }
 }
 
-/// Build the ring-VRF proof message for an `AsResources`-authorized call:
-/// `blake2b256(0x00 ‖ call ‖ Σ tail.extra ‖ Σ tail.additional_signed)`, where
-/// the tail is the extensions ordered strictly after `AsResources`. The leading
-/// `0x00` is the General-transaction extension-version byte.
+/// Builds the inherited-implication digest for a call authorized by the `pivot`
+/// extension.
+///
+/// The digest is `blake2b256(0x00 ‖ call ‖ Σ tail.extra ‖ Σ
+/// tail.additional_signed)`. The tail is the extensions ordered strictly after
+/// `pivot`. The leading `0x00` is the General-transaction extension-version byte.
+/// This digest is the ring-VRF message for `AsResources` calls and the
+/// sr25519-signed message for `AsDotnsGateway` registrations.
 pub fn build_proof_message(
     metadata: &Metadata,
     call_data: &[u8],
     state: &ChainState,
+    pivot: &'static str,
 ) -> Result<[u8; 32], StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
     let tail_start = metadata
-        .as_resources_index()
+        .extension_index(pivot)
         .map(|i| i + 1)
-        .ok_or(MetadataError::MissingAsResourcesExtension)?;
+        .ok_or(MetadataError::MissingExtension { identifier: pivot })?;
     let tail = &all[tail_start..];
 
     let mut payload = Vec::with_capacity(1 + call_data.len());
@@ -591,6 +652,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         }
     }
 
@@ -606,7 +668,8 @@ mod tests {
     #[test]
     fn proof_message_matches_frozen_known_answer() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
-        let msg = build_proof_message(&metadata, &fixture_call(), &fixture_state()).unwrap();
+        let msg = build_proof_message(&metadata, &fixture_call(), &fixture_state(), AS_RESOURCES)
+            .unwrap();
         assert_eq!(
             hex::encode(msg),
             "1d2e6d8d8f421b0857097c6076115507432d66fea47ebe0c3be282a369f6743c",
@@ -616,7 +679,7 @@ mod tests {
     #[test]
     fn as_resources_tail_is_indices_10_through_20() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
-        let idx = metadata.as_resources_index().unwrap();
+        let idx = metadata.extension_index(AS_RESOURCES).unwrap();
         // AsResources sits at index 9; the proof tail is everything after it.
         assert_eq!(idx, 9);
         let ids = metadata.extension_ids();
@@ -677,13 +740,66 @@ mod tests {
         );
     }
 
+    /// Asset Hub fixture metadata captured from paseo-next-v2. That is the
+    /// runtime the dotNS gateway flows were validated against.
+    const AH_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-asset-hub-metadata.scale");
+
+    #[test]
+    fn dotns_gateway_pipeline_matches_the_reference_transaction_layout() {
+        let metadata = Metadata::decode(AH_FIXTURE).unwrap();
+        let state = ChainState {
+            restrict_origins: true,
+            ..fixture_state()
+        };
+
+        // RegisterFullName resolves with the asserted 3-field shape.
+        assert_eq!(metadata.dotns_register_full_name_variant().unwrap(), 0);
+        assert!(
+            metadata
+                .call_indices("DotnsGateway", "register_name")
+                .is_ok()
+        );
+
+        // The extension tail after AsDotnsGateway encodes exactly the bytes the
+        // reference implementation registerTx.ts hand-builds. Extras are
+        // RestrictOrigin(true) ‖ CheckEra(Immortal) ‖ CheckNonce(0) ‖
+        // ChargePGAS(tip 0, asset None) ‖ CheckMetadataHash(Disabled). The
+        // implicit half is specVersion ‖ txVersion ‖ genesis ‖ genesis ‖
+        // metadata-hash None.
+        let all = metadata.encode_signed_extensions(&state);
+        let tail_start = metadata.extension_index(AS_DOTNS_GATEWAY).unwrap() + 1;
+        let tail = &all[tail_start..];
+        let extras: Vec<u8> = tail.iter().flat_map(|e| e.extra.clone()).collect();
+        assert_eq!(
+            hex::encode(extras),
+            "010000000000",
+            "tail extras: RestrictOrigin true, era, nonce, tip, asset, metadata hash"
+        );
+        let implicit: Vec<u8> = tail
+            .iter()
+            .flat_map(|e| e.additional_signed.clone())
+            .collect();
+        assert_eq!(
+            implicit,
+            [
+                state.spec_version.to_le_bytes().to_vec(),
+                state.transaction_version.to_le_bytes().to_vec(),
+                state.genesis_hash.to_vec(),
+                state.genesis_hash.to_vec(),
+                vec![0x00],
+            ]
+            .concat()
+        );
+    }
+
     #[test]
     fn dropping_the_version_byte_changes_the_hash() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let state = fixture_state();
         let call = fixture_call();
         let all = metadata.encode_signed_extensions(&state);
-        let tail = &all[metadata.as_resources_index().unwrap() + 1..];
+        let tail = &all[metadata.extension_index(AS_RESOURCES).unwrap() + 1..];
         let mut without = call.clone();
         for e in tail {
             without.extend_from_slice(&e.extra);
@@ -692,7 +808,7 @@ mod tests {
             without.extend_from_slice(&e.additional_signed);
         }
         assert_ne!(
-            build_proof_message(&metadata, &call, &state).unwrap(),
+            build_proof_message(&metadata, &call, &state, AS_RESOURCES).unwrap(),
             blake2b256(&without),
         );
     }

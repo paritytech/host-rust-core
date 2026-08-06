@@ -12,9 +12,11 @@
 mod accounts;
 mod attestation;
 mod chain;
+mod dotns_read;
 mod frame_server;
 mod network;
 mod platform;
+mod register_name;
 mod script_runner;
 mod sessions;
 mod signing_shell;
@@ -147,7 +149,8 @@ enum Command {
     /// specified, and can accept pairing deeplinks. With `--script`, exits with
     /// the script's status; otherwise stays interactive.
     SigningHost(SigningHostArgs),
-    /// Probe the People chain for a mnemonic's registered identity/username.
+    /// Probe the dotNS contracts on Asset Hub for a mnemonic's registered
+    /// identity/username.
     IdentityCheck {
         /// BIP-39 mnemonic to probe.
         #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
@@ -155,6 +158,28 @@ enum Command {
         /// Network preset to probe.
         #[arg(long, value_enum, default_value = "paseo-next-v2")]
         network: Network,
+    },
+    /// Register a full-person username on dotNS via
+    /// `DotnsGateway.register_name` on Asset Hub. Requires a recognized full
+    /// person. That person's People ring must have propagated to Asset Hub.
+    RegisterName {
+        /// BIP-39 mnemonic of the recognized full person.
+        #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
+        mnemonic: String,
+        /// Network preset to use.
+        #[arg(long, value_enum, default_value = "paseo-next-v2")]
+        network: Network,
+        /// Base label to register (no digits).
+        #[arg(long)]
+        label: String,
+        /// Dotted lite username to link (`name.NN`). Defaults to the
+        /// account's own lite username.
+        #[arg(long, conflicts_with = "chat_key")]
+        link_lite: Option<String>,
+        /// 65-byte ECDH chat key (hex). Use it for a standalone registration
+        /// with no lite-username link.
+        #[arg(long)]
+        chat_key: Option<String>,
     },
     /// Check (and optionally submit) a statement-store allowance registration
     /// against the real People chain: ring membership, the chosen slot, and
@@ -295,7 +320,35 @@ async fn main() -> Result<()> {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
                 .to_entropy();
-            attestation::check_identity(network.config().people_ws, &entropy).await
+            attestation::check_identity(network.config().asset_hub_ws, &entropy).await
+        }
+        Command::RegisterName {
+            mnemonic,
+            network,
+            label,
+            link_lite,
+            chat_key,
+        } => {
+            let entropy = bip39::Mnemonic::parse(mnemonic.trim())
+                .context("invalid BIP-39 mnemonic")?
+                .to_entropy();
+            let chat_key = chat_key
+                .map(|value| -> Result<[u8; 65]> {
+                    let bytes = hex::decode(value.strip_prefix("0x").unwrap_or(&value))
+                        .context("chat key is not valid hex")?;
+                    bytes.try_into().map_err(|bytes: Vec<u8>| {
+                        anyhow::anyhow!("chat key must be 65 bytes, got {}", bytes.len())
+                    })
+                })
+                .transpose()?;
+            register_name::register_name(&register_name::RegisterNameConfig {
+                network: network.config(),
+                entropy,
+                label,
+                link_lite,
+                chat_key,
+            })
+            .await
         }
         Command::AllocCheck {
             mnemonic,
@@ -499,13 +552,14 @@ async fn run_pairing_host(
         approval_policy(args.auto_accept),
         ui_handle,
     );
-    // SSO and identity both run over the real People chain, so usernames always
-    // resolve from `Resources.Consumers` (host-spec G).
+    // SSO runs over the real People chain. Usernames resolve from the dotNS
+    // contracts on Asset Hub.
     let config = PairingHostConfig::new(
         host_info("Headless Pairing Host"),
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.asset_hub_genesis,
         DEEPLINK_SCHEME.to_string(),
     )
     .context("invalid pairing host config")?;
@@ -801,12 +855,12 @@ async fn start_signing_host(
             lite_username_prefix: None,
         })
         .await?;
-        match attestation::registered_lite_username(network.people_ws, &explicit_signer.entropy)
+        match attestation::registered_lite_username(network.asset_hub_ws, &explicit_signer.entropy)
             .await
         {
             Ok(user_id) => explicit_signer.lite_username = Some(user_id),
             Err(error) => {
-                tracing::warn!(%error, "explicit signer has no resolvable People-chain username")
+                tracing::warn!(%error, "explicit signer has no resolvable dotNS username")
             }
         }
         signer = Some(explicit_signer);
@@ -896,6 +950,7 @@ fn build_signing_runtime(
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.asset_hub_genesis,
     )
     .context("invalid signing host config")?;
     Ok(Arc::new(SigningHostRuntime::new(

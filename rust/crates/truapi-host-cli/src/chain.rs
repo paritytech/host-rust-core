@@ -217,9 +217,11 @@ mod tests {
             network.bulletin_ws
         );
         assert_eq!(provider.url_for(&network.people_genesis), network.people_ws);
+        // Asset Hub is a required host route. Session usernames resolve from
+        // the dotNS contracts there.
         assert_eq!(
-            provider.url_for(&network.live_chain_endpoints[0].genesis),
-            network.people_ws
+            provider.url_for(&network.asset_hub_genesis),
+            network.asset_hub_ws
         );
     }
 

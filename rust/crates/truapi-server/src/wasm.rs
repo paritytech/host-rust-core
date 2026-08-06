@@ -441,6 +441,7 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+    let asset_hub = get_required_object(value, "assetHub", "runtimeConfig.assetHub")?;
     let pairing = get_required_object(value, "pairing", "runtimeConfig.pairing")?;
 
     PairingHostConfig::new(
@@ -466,6 +467,11 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
             &bulletin,
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
+        )?,
+        get_required_bytes32_at(
+            &asset_hub,
+            "genesisHash",
+            "runtimeConfig.assetHub.genesisHash",
         )?,
         get_required_string_at(
             &pairing,
@@ -495,6 +501,7 @@ fn runtime_config_field_to_js(field: &str) -> &str {
         "pairing_deeplink_scheme" => "pairing.deeplinkScheme",
         "people_chain_genesis_hash" => "people.genesisHash",
         "bulletin_chain_genesis_hash" => "bulletin.genesisHash",
+        "asset_hub_chain_genesis_hash" => "assetHub.genesisHash",
         other => other,
     }
 }

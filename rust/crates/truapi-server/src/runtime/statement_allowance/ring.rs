@@ -43,10 +43,24 @@ pub enum RingError {
     /// Ring status included field failed to decode.
     #[error("ring status: {0}")]
     RingStatus(#[source] parity_scale_codec::Error),
+    /// Member has no `Members.Members` record for the collection.
+    #[error("member has no Members.Members record for the collection")]
+    MemberRecordMissing,
+    /// Member is not included in a ring yet.
+    #[error("member is not included in a ring (status: {status})")]
+    MemberNotIncluded {
+        /// Onboarding or suspended.
+        status: &'static str,
+    },
+    /// Subscriber ring exponent was absent for the collection.
+    #[error("MembersSubscriber.RingCollectionExponents missing for the collection")]
+    SubscriberExponentMissing,
 }
 
 /// LitePeople collection identifier: ASCII, exactly 32 bytes.
-const LITE_PEOPLE_IDENTIFIER: &[u8; 32] = b"pop:polkadot.network/people-lite";
+pub const LITE_PEOPLE_IDENTIFIER: &[u8; 32] = b"pop:polkadot.network/people-lite";
+/// Full-person People collection identifier. ASCII, space-padded to 32 bytes.
+pub const PEOPLE_IDENTIFIER: &[u8; 32] = b"pop:polkadot.network/people     ";
 /// Ring member public key length.
 const MEMBER_LEN: usize = 32;
 
@@ -113,17 +127,6 @@ fn collections_key() -> Vec<u8> {
     .concat()
 }
 
-/// `Members.RingKeysStatus[(id, ring_index)]` storage key.
-fn ring_keys_status_key(ring_index: u32) -> Vec<u8> {
-    [
-        twox_128(b"Members").as_slice(),
-        twox_128(b"RingKeysStatus").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
-        &blake2_128_concat(&ring_index.to_le_bytes()),
-    ]
-    .concat()
-}
-
 /// `Members.Root[(id, ring_index)]` storage key.
 fn ring_root_key(ring_index: u32) -> Vec<u8> {
     [
@@ -135,14 +138,48 @@ fn ring_root_key(ring_index: u32) -> Vec<u8> {
     .concat()
 }
 
-/// `Members.RingKeys[(id, ring_index, page)]` storage key.
-fn ring_keys_key(ring_index: u32, page: u32) -> Vec<u8> {
+/// `Members.RingKeys[(identifier, ring_index, page)]` storage key.
+fn collection_ring_keys_key(identifier: &[u8; 32], ring_index: u32, page: u32) -> Vec<u8> {
     [
         twox_128(b"Members").as_slice(),
         twox_128(b"RingKeys").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
+        identifier.as_slice(),
         &blake2_128_concat(&ring_index.to_le_bytes()),
         &twox_64_concat(&page.to_le_bytes()),
+    ]
+    .concat()
+}
+
+/// `Members.RingKeysStatus[(identifier, ring_index)]` storage key.
+fn collection_ring_keys_status_key(identifier: &[u8; 32], ring_index: u32) -> Vec<u8> {
+    [
+        twox_128(b"Members").as_slice(),
+        twox_128(b"RingKeysStatus").as_slice(),
+        identifier.as_slice(),
+        &blake2_128_concat(&ring_index.to_le_bytes()),
+    ]
+    .concat()
+}
+
+/// `Members.Members[(identifier, member)]` storage key.
+/// The hashers are `Identity` then `Blake2_128Concat`.
+fn member_record_key(identifier: &[u8; 32], member: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Members").as_slice(),
+        twox_128(b"Members").as_slice(),
+        identifier.as_slice(),
+        &blake2_128_concat(member),
+    ]
+    .concat()
+}
+
+/// `MembersSubscriber.RingCollectionExponents[identifier]` storage key.
+/// It lives on the subscriber chain, Asset Hub.
+fn subscriber_exponent_key(identifier: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"MembersSubscriber").as_slice(),
+        twox_128(b"RingCollectionExponents").as_slice(),
+        &blake2_128_concat(identifier),
     ]
     .concat()
 }
@@ -209,11 +246,12 @@ pub async fn read_ring_exponent(
         })
 }
 
-/// Read the members of `ring_index`, sliced to the baked-in `included`
-/// prefix, with every read pinned to block `at` so pages and status come from
-/// one consistent snapshot.
-pub async fn read_ring_members_at(
+/// Reads the members of collection `identifier`'s `ring_index`, sliced to the
+/// baked-in `included` prefix. Every read is pinned to block `at`, so pages and
+/// status come from one consistent snapshot.
+pub async fn read_collection_ring_members_at(
     rpc: &RpcClient,
+    identifier: &[u8; 32],
     ring_index: u32,
     at: &str,
 ) -> Result<Vec<[u8; 32]>, StatementAllowanceError> {
@@ -221,7 +259,7 @@ pub async fn read_ring_members_at(
     let mut members = Vec::new();
     for page in 0.. {
         let Some(bytes) = rpc
-            .get_storage_at(&ring_keys_key(ring_index, page), at)
+            .get_storage_at(&collection_ring_keys_key(identifier, ring_index, page), at)
             .await?
         else {
             break;
@@ -244,7 +282,7 @@ pub async fn read_ring_members_at(
 
     // 2. Slice to the baked-in `included` prefix (absent status => all included).
     if let Some(status) = rpc
-        .get_storage_at(&ring_keys_status_key(ring_index), at)
+        .get_storage_at(&collection_ring_keys_status_key(identifier, ring_index), at)
         .await?
     {
         // RingStatus = { total: u32 LE, included: u32 LE, .. }.
@@ -254,6 +292,98 @@ pub async fn read_ring_members_at(
     }
 
     Ok(members)
+}
+
+/// Ring coordinates of one member. Projected from the runtime's `RingPosition`
+/// enum.
+#[derive(Debug, PartialEq, Eq, DecodeAsType)]
+enum MemberRingPosition {
+    /// Waiting in the onboarding queue.
+    Onboarding {
+        #[allow(dead_code)]
+        queue_page: u32,
+        #[allow(dead_code)]
+        queued_at: u64,
+    },
+    /// Included in a built ring.
+    Included {
+        ring_index: u32,
+        #[allow(dead_code)]
+        ring_page: u32,
+        #[allow(dead_code)]
+        ring_position: u32,
+    },
+    /// Suspended from all rings.
+    Suspended,
+}
+
+/// Reads the ring index `member` is included in for collection `identifier`,
+/// from `Members.Members`, pinned to block `at`. Errors when the member has no
+/// record. Errors too when the member is not `Included` yet.
+pub async fn read_member_ring_index(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    identifier: &[u8; 32],
+    member: &[u8; 32],
+    at: &str,
+) -> Result<u32, StatementAllowanceError> {
+    let value = rpc
+        .get_storage_at(&member_record_key(identifier, member), at)
+        .await?
+        .ok_or(RingError::MemberRecordMissing)?;
+    let value_type = metadata.storage_value_type("Members", "Members").ok_or(
+        MetadataError::MissingStorageType {
+            pallet: "Members",
+            entry: "Members",
+        },
+    )?;
+    let mut input = value.as_slice();
+    let position = MemberRingPosition::decode_as_type(&mut input, value_type, metadata.registry())
+        .map_err(|err| RingError::DecodeAsType {
+            context: "Members.Members",
+            source: err,
+        })?;
+    match position {
+        MemberRingPosition::Included { ring_index, .. } => Ok(ring_index),
+        MemberRingPosition::Onboarding { .. } => Err(RingError::MemberNotIncluded {
+            status: "onboarding",
+        }
+        .into()),
+        MemberRingPosition::Suspended => Err(RingError::MemberNotIncluded {
+            status: "suspended",
+        }
+        .into()),
+    }
+}
+
+/// Reads the ring exponent the subscriber chain, Asset Hub, verifies collection
+/// `identifier` against. The source is
+/// `MembersSubscriber.RingCollectionExponents` at the current best block.
+pub async fn read_subscriber_ring_exponent(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    identifier: &[u8; 32],
+) -> Result<u8, StatementAllowanceError> {
+    let value = rpc
+        .get_storage(&subscriber_exponent_key(identifier))
+        .await?
+        .ok_or(RingError::SubscriberExponentMissing)?;
+    let value_type = metadata
+        .storage_value_type("MembersSubscriber", "RingCollectionExponents")
+        .ok_or(MetadataError::MissingStorageType {
+            pallet: "MembersSubscriber",
+            entry: "RingCollectionExponents",
+        })?;
+    let mut input = value.as_slice();
+    RingExponent::decode_as_type(&mut input, value_type, metadata.registry())
+        .map(RingExponent::exponent)
+        .map_err(|err| {
+            RingError::DecodeAsType {
+                context: "MembersSubscriber.RingCollectionExponents",
+                source: err,
+            }
+            .into()
+        })
 }
 
 /// Read `Members.Root[LitePeople][ring_index].revision` pinned to block `at`
@@ -374,13 +504,19 @@ mod tests {
         let scripted = ScriptedRpc::new([page.as_str(), "null", status]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
-        let members = futures::executor::block_on(read_ring_members_at(&rpc, 3, "0xat")).unwrap();
+        let members = futures::executor::block_on(read_collection_ring_members_at(
+            &rpc,
+            LITE_PEOPLE_IDENTIFIER,
+            3,
+            "0xat",
+        ))
+        .unwrap();
 
         assert_eq!(members, vec![[0xaa; 32]]);
         let expected: Vec<(String, String)> = [
-            ring_keys_key(3, 0),
-            ring_keys_key(3, 1),
-            ring_keys_status_key(3),
+            collection_ring_keys_key(LITE_PEOPLE_IDENTIFIER, 3, 0),
+            collection_ring_keys_key(LITE_PEOPLE_IDENTIFIER, 3, 1),
+            collection_ring_keys_status_key(LITE_PEOPLE_IDENTIFIER, 3),
         ]
         .into_iter()
         .map(|key| {

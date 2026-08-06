@@ -391,21 +391,22 @@ cleans up a unique temporary Unix socket.
 
 ## Scope / gaps
 
-- **Chain methods** route to real `wss://` nodes from the selected `--network`
-  when `E2E_LIVE_CHAIN=1`; off by default. A rustls crypto provider is
-  installed at startup for the TLS connections.
+- **Chain methods** route to real `wss://` nodes from the selected `--network`.
+  People, Bulletin, and Asset Hub are host-required and always enabled.
+  `E2E_LIVE_CHAIN=1` additionally enables any preset route marked optional. A
+  rustls crypto provider is installed at startup for the TLS connections.
 - **Ring-VRF product-account aliases and proofs** are implemented by the
   signing host via the `verifiable` crate (`get_account_alias` and
   `create_account_proof`).
-- **`get_user_id`** resolves the signing account's username from People-chain
-  `Resources.Consumers`. Auto-managed signing accounts register fresh lite
-  usernames via the identity backend (`src/attestation.rs`); first registration
-  is backend-async and can take minutes (ring onboarding). `truapi-host
-  identity-check --mnemonic <m>` probes which derivation carries a username.
+- **`get_user_id`** resolves the signing account's username from the dotNS
+  contracts on Asset Hub. Auto-managed signing accounts register fresh lite
+  usernames via the identity backend (`src/attestation.rs`). First registration
+  is backend-async and can take minutes, waiting on ring onboarding.
+  `truapi-host identity-check --mnemonic <m>` probes which derivation carries a
+  username.
 - `set_statement_store_account` and Bulletin long-term-storage resource
   allocation are implemented over SSO on native headless hosts.
 - Everything else the browser host exercises passes: signing (raw, payload,
   create-transaction, and their legacy variants), statement store, entropy,
-  aliases, preimage, storage, permissions, notifications, theme, system, chain
-  (with `E2E_LIVE_CHAIN=1`), and user id, subject to live chain availability
-  and allowance-slot capacity.
+  aliases, preimage, storage, permissions, notifications, theme, system, chain,
+  and user id, subject to live chain availability and allowance-slot capacity.

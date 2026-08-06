@@ -133,23 +133,28 @@ pub fn build_long_term_storage_extra(
     Ok(extra)
 }
 
-/// Assemble the unsigned General (v5) extrinsic:
-/// `compact(len) ‖ 0x45 ‖ 0x00 ‖ Σ(all extra, AsResources = Some(info)) ‖ call`.
+/// Assembles the unsigned General (v5) extrinsic.
+///
+/// The layout is
+/// `compact(len) ‖ 0x45 ‖ 0x00 ‖ Σ(all extra, pivot = Some(info)) ‖ call`.
+/// `pivot` names the extension whose `extra` is replaced by `pivot_extra`:
+/// `AsResources` on People, `AsDotnsGateway` on Asset Hub.
 pub fn build_unsigned_extrinsic(
     metadata: &Metadata,
     state: &ChainState,
     call_data: &[u8],
-    as_resources_extra: &[u8],
+    pivot: &'static str,
+    pivot_extra: &[u8],
 ) -> Result<Vec<u8>, StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
-    let as_resources_index = metadata
-        .as_resources_index()
-        .ok_or(MetadataError::MissingAsResourcesExtension)?;
+    let pivot_index = metadata
+        .extension_index(pivot)
+        .ok_or(MetadataError::MissingExtension { identifier: pivot })?;
 
     let mut body = vec![GENERAL_V5_PREAMBLE, EXTENSION_VERSION];
     for (i, ext) in all.iter().enumerate() {
-        if i == as_resources_index {
-            body.extend_from_slice(as_resources_extra);
+        if i == pivot_index {
+            body.extend_from_slice(pivot_extra);
         } else {
             body.extend_from_slice(&ext.extra);
         }
@@ -172,6 +177,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         }
     }
 
@@ -285,7 +291,14 @@ mod tests {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let call = build_set_statement_store_account_call(&metadata, 7, 0, &[0u8; 32]).unwrap();
         let extra = build_as_resources_extra(&metadata, &[0xEE; 785], 0).unwrap();
-        let xt = build_unsigned_extrinsic(&metadata, &fixture_state(), &call, &extra).unwrap();
+        let xt = build_unsigned_extrinsic(
+            &metadata,
+            &fixture_state(),
+            &call,
+            crate::runtime::statement_allowance::extension::AS_RESOURCES,
+            &extra,
+        )
+        .unwrap();
 
         // Strip the compact length prefix and check the body head + tail.
         let body = &xt[compact_prefix_len(&xt)..];

@@ -107,6 +107,8 @@ pub mod latest {
     pub type PreimageSubmitError = LatestOf<versioned::preimage::RemotePreimageSubmitError>;
     /// Transaction creation payload for a product account.
     pub type ProductAccountTxPayload = LatestOf<versioned::signing::HostCreateTransactionRequest>;
+    /// Chain-head runtime-API call request.
+    pub type RemoteChainHeadCallRequest = LatestOf<versioned::chain::RemoteChainHeadCallRequest>;
     /// Chain-head subscription item.
     pub type RemoteChainHeadFollowItem = LatestOf<versioned::chain::RemoteChainHeadFollowItem>;
     /// Chain-head subscription request.

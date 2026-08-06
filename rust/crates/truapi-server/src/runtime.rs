@@ -349,6 +349,7 @@ impl ProductRuntimeHost {
             truapi_platform::PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("compat runtime config is valid")

@@ -114,7 +114,7 @@ as the paired path.
 `truapi-host-cli` owns:
 
 - argument and slash-command parsing;
-- the single supported network preset;
+- the supported network presets (`paseo-next-v2`, `previewnet`);
 - local signer selection and onboarding;
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
@@ -198,7 +198,8 @@ Commands:
 | --- | --- |
 | `pairing-host` | Run the seedless product-facing host. |
 | `signing-host` | Run the wallet-local signing host. |
-| `identity-check` | Probe People-chain identity records for a mnemonic. |
+| `identity-check` | Probe dotNS identity records on Asset Hub for a mnemonic. |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name`. |
 | `alloc-check` | Inspect or submit Statement Store allowance registration. |
 
 ### 4.1 Global logging option
@@ -230,7 +231,7 @@ truapi-host pairing-host [options]
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
 | `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
 Without `--script`, both stdin and stdout must be terminals. The command enters
@@ -268,7 +269,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--session <name>` | remembered session | Restore or create a managed session. |
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
 | `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
@@ -797,13 +798,26 @@ A new auto account:
 4. chooses `auto-<n>` as its local name;
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
-7. builds and submits identity-backend registration proofs;
-8. polls `Resources.Consumers` for the final `name.discriminator`;
+7. builds and submits identity-backend registration proofs, including the dotNS
+   gateway reservation signature timestamped with Asset Hub chain time;
+8. polls the dotNS contracts on Asset Hub for the final `name.discriminator`;
 9. waits for inclusion in a LitePeople ring; and
 10. marks and saves the account as attested.
 
 Identity and ring polling each allow 10 attempts with four seconds between
 attempts. Identity-backend HTTP clients use a 30-second timeout.
+
+The backend's username routes are bearer-gated. Unless
+`HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies one, the CLI mints an access token
+once per process. It takes a challenge from `auth/challenges`. It answers
+`auth/token` with an sr25519 proof over
+`SHA256(challenge || clientId || SHA256(body))`, signed by a throwaway keypair.
+
+The token's subject only identifies the calling app instance. The username claim
+carries its own candidate account. A fresh subject per run therefore stays clear
+of the backend's per-subject device gate and rate limit. Availability answers are
+read from both wire shapes: the `{_tag, value: {base: {status}}}` record and the
+flat `{base: "AVAILABLE"}` map.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
@@ -1097,8 +1111,9 @@ v0.1 supports only `paseo-next-v2`.
 
 There are no public endpoint override flags.
 
-People and Bulletin routes are always enabled because host internals require
-them. Asset Hub routing is enabled only when `E2E_LIVE_CHAIN=1`.
+People, Bulletin, and Asset Hub routes are always enabled because host
+internals require them. `E2E_LIVE_CHAIN=1` additionally enables any preset
+route marked optional.
 
 The all-zero SSO sentinel and every genesis hash not present in the active
 route map fall back to the People RPC.
@@ -1148,7 +1163,7 @@ surface.
 | Service | Implemented behavior |
 | --- | --- |
 | Account | Connection status, product accounts, aliases, proofs, empty legacy-account list, user id, and login. |
-| Chain | chainHead-v1 follow/header/body/storage/call/unpin/continue/stop, chain spec queries, transaction broadcast/stop. Asset Hub needs `E2E_LIVE_CHAIN=1`. |
+| Chain | chainHead-v1 follow/header/body/storage/call/unpin/continue/stop, chain spec queries, transaction broadcast/stop. People, Bulletin, and Asset Hub all route to the preset's live nodes. |
 | Entropy | Product-scoped deterministic entropy from the active account/session. |
 | Local Storage | Persistent product-scoped read, write, and clear. |
 | Notifications | In-process immediate/scheduled delivery and cancellation with transcript events. |
@@ -1490,12 +1505,15 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
+| `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
+| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery. Required on networks whose deployed dispatcher exposes no target getter. On paseo-next-v2 that address is `0x1c858C31497a7715C0D56A11208feB6b74FaB2aB`. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |
 | `EDITOR` | Fallback script editor. |
 | `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
-| `E2E_LIVE_CHAIN` | Value `1` enables optional Asset Hub routing. |
+| `E2E_LIVE_CHAIN` | Value `1` enables optional live-chain routing. Every preset route is currently host-required, so this is a no-op. |
 | `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
 | `COLORFGBG` | Infer TUI background color. |
 | `COLORTERM` | Select true-color TUI rendering. |

@@ -1,35 +1,149 @@
 //! Lite-username attestation against the People-chain identity backend.
 //!
-//! Ports signing-bot `attestation.ts`: fetch the backend verifier, build the
-//! client proofs (`truapi_server::host_logic::attestation`), POST them to
-//! `/usernames`, then poll People-chain `Resources.Consumers` until the record
-//! lands. Registers the signing host's RFC-0022 `uid.dot` identity account so
-//! the paired host can resolve its username via `get_user_id`.
+//! Fetches the backend verifier. Builds the client proofs
+//! (`truapi_server::host_logic::attestation`), including the dotNS gateway
+//! reservation signature timestamped with Asset Hub chain time. POSTs them to
+//! `/usernames`. Polls the dotNS contracts on Asset Hub until the lite username
+//! lands.
+//!
+//! Registers the signing host's RFC-0022 `uid.dot` identity account. The paired
+//! host can then resolve its username via `get_user_id`.
 
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use bip39::Mnemonic;
 use serde_json::{Value, json};
-use subxt_rpcs::client::{RpcClient, rpc_params};
+use sha2::{Digest as _, Sha256};
+use tokio::sync::OnceCell;
 use tracing::{debug, warn};
 use truapi_server::host_logic::attestation::build_lite_registration;
-use truapi_server::host_logic::identity::{
-    decode_people_identity, resources_consumers_storage_key,
-};
 use truapi_server::host_logic::product_account::{
-    derive_identity_keypair, derive_root_keypair_from_entropy, product_public_key_to_address,
+    SR25519_SIGNING_CONTEXT, derive_identity_keypair, derive_root_keypair_from_entropy,
+    product_public_key_to_address,
 };
+
+use crate::dotns_read::AssetHubReader;
+
+/// Env var carrying an optional bearer token for the identity backend.
+/// Set it to reuse a token minted elsewhere. Unset, the CLI runs the sr25519
+/// auth handshake itself ([`backend_token`]).
+pub const IDENTITY_BACKEND_TOKEN_ENV: &str = "HOST_CLI_IDENTITY_BACKEND_TOKEN";
+
+/// Access token for the username routes, minted once per process.
+static BACKEND_TOKEN: OnceCell<String> = OnceCell::const_new();
+
+/// Bearer token for the identity backend's username routes.
+///
+/// The explicit env token wins. Otherwise the CLI completes the backend's
+/// `challenges` → `token` sr25519 handshake with a throwaway keypair. The JWT
+/// subject only identifies the calling app instance. The username claim carries
+/// its own candidate account. A fresh subject each run keeps repeat
+/// registrations clear of the per-subject device gate and rate limit.
+async fn backend_token(client: &reqwest::Client, backend_base: &str) -> Result<&'static str> {
+    if let Ok(token) = std::env::var(IDENTITY_BACKEND_TOKEN_ENV) {
+        let token = token.trim();
+        if !token.is_empty() {
+            return Ok(Box::leak(token.to_string().into_boxed_str()));
+        }
+    }
+    BACKEND_TOKEN
+        .get_or_try_init(|| mint_backend_token(client, backend_base))
+        .await
+        .map(String::as_str)
+}
+
+/// Runs the backend's auth handshake and returns its access JWT.
+async fn mint_backend_token(client: &reqwest::Client, backend_base: &str) -> Result<String> {
+    let url = format!("{backend_base}/auth/challenges");
+    let body: Value = client
+        .post(&url)
+        .json(&json!({}))
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?
+        .error_for_status()?
+        .json()
+        .await
+        .context("decoding challenge response")?;
+    let challenge = body
+        .get("challenge")
+        .and_then(Value::as_str)
+        .context("challenge response missing 'challenge' field")?
+        .to_string();
+    let challenge_bytes = BASE64
+        .decode(&challenge)
+        .context("challenge is not valid base64")?;
+
+    let entropy = Mnemonic::generate(12)
+        .context("generate throwaway auth mnemonic")?
+        .to_entropy();
+    let keypair = derive_root_keypair_from_entropy(&entropy)
+        .map_err(|err| anyhow::anyhow!("auth keypair derivation failed: {err}"))?;
+    let client_id = keypair.public.to_bytes();
+
+    // The proof signs SHA256(challenge || clientId || SHA256(body)). It must
+    // cover the exact bytes the request carries, so the body is serialized once.
+    let payload = b"{}";
+    let mut hasher = Sha256::new();
+    hasher.update(&challenge_bytes);
+    hasher.update(client_id);
+    hasher.update(Sha256::digest(payload));
+    let message: [u8; 32] = hasher.finalize().into();
+    let proof = keypair
+        .secret
+        .sign_simple(SR25519_SIGNING_CONTEXT, &message, &keypair.public)
+        .to_bytes();
+
+    let url = format!("{backend_base}/auth/token");
+    let response = client
+        .post(&url)
+        .header("Auth-ClientId", BASE64.encode(client_id))
+        .header("Auth-ClientProof", BASE64.encode(proof))
+        .header("Auth-Challenge", &challenge)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(payload.as_slice())
+        .send()
+        .await
+        .with_context(|| format!("POST {url}"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("identity backend auth handshake failed ({status}): {body}");
+    }
+    let body: Value = serde_json::from_str(&body).context("decoding token response")?;
+    let token = body
+        .get("token")
+        .and_then(Value::as_str)
+        .context("token response missing 'token' field")?;
+    debug!("minted identity backend access token");
+    Ok(token.to_string())
+}
+
+/// Attaches the identity backend bearer token to `request`.
+async fn with_backend_auth(
+    client: &reqwest::Client,
+    backend_base: &str,
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::RequestBuilder> {
+    Ok(request.bearer_auth(backend_token(client, backend_base).await?))
+}
 
 /// Inputs for one attestation run.
 pub struct AttestConfig {
     /// Identity backend base URL including `/api/v1`.
     pub backend_base: String,
-    /// People-chain WebSocket URL for the `Resources.Consumers` poll.
-    pub people_ws: String,
+    /// Asset Hub WebSocket URL for the reservation timestamp and the dotNS
+    /// username poll.
+    pub asset_hub_ws: String,
     /// BIP-39 entropy of the signing host's root account.
     pub entropy: Vec<u8>,
     /// Requested lite username base (6+ lowercase letters, no digits).
     pub username_base: String,
+    /// Optional base name to queue on dotNS for a later full-person claim.
+    pub reserved_username: Option<String>,
 }
 
 /// Check whether a lite username base is available through the identity
@@ -40,35 +154,62 @@ pub async fn lite_username_available(backend_base: &str, username_base: &str) ->
         .build()?;
     let url = format!("{backend_base}/usernames/available");
     let body = json!({ "usernames": [username_base] });
-    let response = client
-        .post(&url)
-        .json(&body)
+    let response = with_backend_auth(&client, backend_base, client.post(&url).json(&body))
+        .await?
         .send()
         .await
-        .with_context(|| format!("POST {url}"))?
-        .error_for_status()
-        .with_context(|| format!("username availability check failed for {username_base}"))?;
+        .with_context(|| format!("POST {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        bail!("username availability check failed for {username_base} ({status}): {text}");
+    }
     let body: Value = response
         .json()
         .await
         .context("decoding availability response")?;
-    Ok(body
-        .get(username_base)
-        .and_then(Value::as_str)
-        .is_some_and(|status| status == "AVAILABLE"))
+    Ok(availability_status(&body, username_base) == Some("AVAILABLE"))
 }
 
-/// Register (or confirm) the signing host's lite username and wait until the
-/// People-chain `Resources.Consumers` record exists. Returns the Lite username
-/// assigned on chain (including its discriminator).
+/// Reads one base's availability status out of either wire shape. Those are the
+/// v1 record `{_tag, value: {base: {status, …}}}` and the flat
+/// `{base: "AVAILABLE"}` the preset backends serve.
+fn availability_status<'a>(body: &'a Value, username_base: &str) -> Option<&'a str> {
+    let entry = body
+        .get("value")
+        .and_then(|value| value.get(username_base))
+        .or_else(|| body.get(username_base))?;
+    match entry {
+        Value::String(status) => Some(status),
+        entry => entry.get("status").and_then(Value::as_str),
+    }
+}
+
+/// Registers (or confirms) the signing host's lite username. Waits until the
+/// dotNS contracts on Asset Hub record it. Returns the lite username assigned on
+/// chain, including its discriminator.
 pub async fn attest(config: &AttestConfig) -> Result<String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
 
+    let mut reader = AssetHubReader::connect(&config.asset_hub_ws).await?;
+    // Timestamping the reservation signature with Asset Hub chain time. The
+    // gateway rejects values ahead of the chain.
+    let signed_at = reader
+        .timestamp_secs()
+        .await
+        .context("read Asset Hub Timestamp.Now")?;
+
     let verifier = fetch_verifier(&client, &config.backend_base).await?;
-    let registration = build_lite_registration(&config.entropy, verifier, &config.username_base)
-        .map_err(|reason| anyhow::anyhow!("failed to build registration params: {reason}"))?;
+    let registration = build_lite_registration(
+        &config.entropy,
+        verifier,
+        &config.username_base,
+        config.reserved_username.as_deref(),
+        signed_at,
+    )
+    .map_err(|reason| anyhow::anyhow!("failed to build registration params: {reason}"))?;
     debug!(
         candidate = %registration.candidate_account_id,
         "attesting lite username '{}'",
@@ -79,51 +220,44 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
         &client,
         &config.backend_base,
         &config.username_base,
+        config.reserved_username.as_deref(),
+        signed_at,
         &registration,
     )
     .await?;
 
-    let storage_key = format!(
-        "0x{}",
-        hex::encode(resources_consumers_storage_key(
-            &registration.candidate_public_key
-        ))
-    );
-    let identity = wait_for_consumer_record(&config.people_ws, &storage_key).await?;
+    let identity = wait_for_dotns_username(&mut reader, &registration.candidate_public_key).await?;
     debug!("lite username registered and confirmed on-chain");
     identity
         .lite_username
-        .context("registered People-chain identity has no Lite username")
+        .context("registered dotNS identity has no lite username")
 }
 
-/// Resolve the on-chain Lite username for an already-attested signer.
+/// Resolves the on-chain lite username for an already-attested signer.
 ///
-/// Older CLI account records stored the requested username base rather than
-/// the final `name.discriminator` assigned by the People chain. Reading the
-/// consumer record repairs those records without re-attesting the account.
-pub async fn registered_lite_username(people_ws: &str, entropy: &[u8]) -> Result<String> {
+/// Older CLI account records stored the requested username base rather than the
+/// final `name.discriminator` assigned on chain. Reading the dotNS record repairs
+/// those records without re-attesting the account.
+pub async fn registered_lite_username(asset_hub_ws: &str, entropy: &[u8]) -> Result<String> {
     let identity = derive_identity_keypair(entropy)
         .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
-    let storage_key = format!(
-        "0x{}",
-        hex::encode(resources_consumers_storage_key(&identity.public.to_bytes()))
-    );
-    let value = query_storage(people_ws, &storage_key)
+    let mut reader = AssetHubReader::connect(asset_hub_ws).await?;
+    reader
+        .dotns_identity(&identity.public.to_bytes())
         .await?
-        .context("attested signer has no Resources.Consumers record")?;
-    decode_identity_hex(&value)?
         .lite_username
-        .context("registered People-chain identity has no Lite username")
+        .context("attested signer has no dotNS lite username")
 }
 
-/// Probe the People chain for the bare root and canonical RFC-0022 `uid.dot`
-/// identity account, printing any `Resources.Consumers` record. Used to
-/// confirm a pre-onboarded account.
-pub async fn check_identity(people_ws: &str, entropy: &[u8]) -> Result<()> {
+/// Probes the dotNS contracts for the bare root and canonical RFC-0022 `uid.dot`
+/// identity account. Prints any recorded usernames. Used to confirm a
+/// pre-onboarded account.
+pub async fn check_identity(asset_hub_ws: &str, entropy: &[u8]) -> Result<()> {
     let root = derive_root_keypair_from_entropy(entropy)
         .map_err(|err| anyhow::anyhow!("invalid entropy: {err}"))?;
     let identity = derive_identity_keypair(entropy)
         .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let mut reader = AssetHubReader::connect(asset_hub_ws).await?;
 
     for (label, public) in [
         ("<root>", root.public.to_bytes()),
@@ -132,23 +266,15 @@ pub async fn check_identity(people_ws: &str, entropy: &[u8]) -> Result<()> {
             identity.public.to_bytes(),
         ),
     ] {
-        let key = format!(
-            "0x{}",
-            hex::encode(resources_consumers_storage_key(&public))
-        );
         let address = product_public_key_to_address(public);
-        match query_storage(people_ws, &key).await {
-            Ok(Some(value)) => {
-                let decoded = hex::decode(value.strip_prefix("0x").unwrap_or(&value))
-                    .ok()
-                    .and_then(|bytes| decode_people_identity(&bytes).ok());
-                let username = decoded
-                    .and_then(|id| id.full_username.or(id.lite_username))
-                    .unwrap_or_else(|| "<record present, no username>".to_string());
-                println!("IDENTITY_FOUND path={label} account={address} username={username}");
-            }
-            Ok(None) => println!("IDENTITY_NONE path={label} account={address}"),
-            Err(err) => println!("IDENTITY_ERROR path={label} account={address} error={err}"),
+        match reader.dotns_identity(&public).await {
+            Ok(identity) => match identity.full_username.or(identity.lite_username) {
+                Some(username) => {
+                    println!("IDENTITY_FOUND path={label} account={address} username={username}")
+                }
+                None => println!("IDENTITY_NONE path={label} account={address}"),
+            },
+            Err(err) => println!("IDENTITY_ERROR path={label} account={address} error={err:#}"),
         }
     }
     Ok(())
@@ -179,9 +305,18 @@ async fn submit_registration(
     client: &reqwest::Client,
     backend_base: &str,
     username_base: &str,
+    reserved_username: Option<&str>,
+    signed_at: u64,
     reg: &truapi_server::host_logic::attestation::LiteRegistration,
 ) -> Result<()> {
     let url = format!("{backend_base}/usernames");
+    let mut dotns = json!({
+        "signature": hex0x(&reg.dotns_signature),
+        "signedAt": signed_at,
+    });
+    if let Some(reserved) = reserved_username {
+        dotns["reservedUsername"] = json!(reserved);
+    }
     let body = json!({
         "username": username_base,
         "candidateAccountId": reg.candidate_account_id,
@@ -190,10 +325,10 @@ async fn submit_registration(
         "proofOfOwnership": hex0x(&reg.proof_of_ownership),
         "identifierKey": hex0x(&reg.identifier_key),
         "consumerRegistrationSignature": hex0x(&reg.consumer_registration_signature),
+        "dotns": dotns,
     });
-    let response = client
-        .post(&url)
-        .json(&body)
+    let response = with_backend_auth(client, backend_base, client.post(&url).json(&body))
+        .await?
         .send()
         .await
         .with_context(|| format!("POST {url}"))?;
@@ -217,60 +352,62 @@ fn hex0x(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
-async fn wait_for_consumer_record(
-    people_ws: &str,
-    storage_key: &str,
-) -> Result<truapi_server::host_logic::identity::PeopleIdentity> {
+async fn wait_for_dotns_username(
+    reader: &mut AssetHubReader,
+    candidate: &[u8; 32],
+) -> Result<truapi_server::host_logic::dotns_gateway::DotnsIdentity> {
     // First-time lite registration is backend-async and can lag the HTTP
-    // response. The record is permanent once written, so later runs resolve on
-    // the first poll.
+    // response. The record is permanent once written. Later runs therefore
+    // resolve on the first poll.
     const MAX_ATTEMPTS: usize = 10;
     for attempt in 1..=MAX_ATTEMPTS {
-        match query_storage(people_ws, storage_key).await {
-            Ok(Some(value)) => {
+        match reader.dotns_identity(candidate).await {
+            Ok(identity) if identity.lite_username.is_some() => {
                 crate::terminal_ui::update_activity(
                     "signer",
                     "Setting up signer",
-                    Some("People-chain identity ready".to_string()),
+                    Some("dotNS identity ready".to_string()),
                     crate::terminal_ui::ActivityState::Running,
                 );
-                return decode_identity_hex(&value);
+                return Ok(identity);
             }
-            Ok(None) => {
+            Ok(_) => {
                 crate::terminal_ui::update_activity(
                     "signer",
                     "Setting up signer",
                     Some(format!(
-                        "Waiting for People-chain identity · attempt {attempt}/{MAX_ATTEMPTS}"
+                        "Waiting for dotNS username · attempt {attempt}/{MAX_ATTEMPTS}"
                     )),
                     crate::terminal_ui::ActivityState::Running,
                 );
-                debug!("Resources.Consumers poll {attempt}/{MAX_ATTEMPTS}: empty");
+                debug!("dotNS username poll {attempt}/{MAX_ATTEMPTS}: empty");
             }
-            Err(err) => warn!(%err, "Resources.Consumers poll attempt {attempt} failed"),
+            Err(err) => warn!(%err, "dotNS username poll attempt {attempt} failed"),
         }
         if attempt < MAX_ATTEMPTS {
             tokio::time::sleep(Duration::from_secs(4)).await;
         }
     }
-    bail!("Resources.Consumers record did not appear after attestation")
+    bail!("dotNS username did not appear on Asset Hub after attestation")
 }
 
-fn decode_identity_hex(value: &str) -> Result<truapi_server::host_logic::identity::PeopleIdentity> {
-    let bytes = hex::decode(value.strip_prefix("0x").unwrap_or(value))
-        .context("Resources.Consumers value is not valid hex")?;
-    decode_people_identity(&bytes).map_err(anyhow::Error::msg)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// One `state_getStorage` request over a fresh RPC connection; returns the value
-/// hex when present.
-async fn query_storage(people_ws: &str, storage_key: &str) -> Result<Option<String>> {
-    let rpc = RpcClient::from_insecure_url(people_ws)
-        .await
-        .with_context(|| format!("connect {people_ws}"))?;
-    let value = rpc
-        .request::<Value>("state_getStorage", rpc_params![storage_key])
-        .await
-        .context("rpc state_getStorage")?;
-    Ok(value.as_str().map(str::to_string))
+    /// Both backends the CLI talks to are understood. Those are the identity
+    /// backend's v1 record and the flat map the preset backends serve.
+    #[test]
+    fn availability_reads_both_wire_shapes() {
+        let v1 = json!({
+            "_tag": "v1",
+            "value": { "pntest": { "status": "AVAILABLE", "availableDigits": [1, 2] } },
+        });
+        assert_eq!(availability_status(&v1, "pntest"), Some("AVAILABLE"));
+
+        let flat = json!({ "pntest": "EXHAUSTED" });
+        assert_eq!(availability_status(&flat, "pntest"), Some("EXHAUSTED"));
+
+        assert_eq!(availability_status(&v1, "other"), None);
+    }
 }
