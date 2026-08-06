@@ -1342,6 +1342,16 @@ impl NativeProductExecution {
         self.events.notify_preimage_changed(&key, value);
     }
 
+    /// Notify this execution's chain adapter of one JSON-RPC response.
+    pub fn notify_chain_response(&self, connection_id: u32, json: String) {
+        self.events.notify_chain_response(connection_id, json);
+    }
+
+    /// Notify this execution's chain adapter that a connection closed.
+    pub fn notify_chain_closed(&self, connection_id: u32) {
+        self.events.notify_chain_closed(connection_id);
+    }
+
     /// Push a complete native Chat room-list replacement to this execution.
     pub fn notify_chat_rooms_changed(&self, rooms: Vec<NativeChatRoom>) {
         self.events.notify_chat_rooms_changed(rooms);
@@ -1576,12 +1586,12 @@ impl NativeTrUApiCore {
 
     /// Push a JSON-RPC response from a native chain connection into the core.
     pub fn notify_chain_response(&self, connection_id: u32, json: String) {
-        self.host.notify_chain_response(connection_id, json);
+        self.execution.notify_chain_response(connection_id, json);
     }
 
     /// Notify the core that a native chain connection closed externally.
     pub fn notify_chain_closed(&self, connection_id: u32) {
-        self.host.notify_chain_closed(connection_id);
+        self.execution.notify_chain_closed(connection_id);
     }
 
     /// Push a complete replacement of the current native Chat room list.

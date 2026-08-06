@@ -332,14 +332,9 @@ public protocol HostCoreStorageBackend: AnyObject, Sendable {
 /// trait:
 ///
 ///   * ``devicePermission(request:)`` handles OS-scoped grants (camera,
-///     mic, location). `request` is a SCALE-encoded
-///     `v01::HostDevicePermissionRequest`.
+///     mic, location).
 ///   * ``remotePermission(request:)`` handles per-product capability
-///     bundles. `request` is a SCALE-encoded `v01::RemotePermissionRequest`.
-///
-/// Embedders typically forward the SCALE payloads through the
-/// `@parity/truapi` JS client for UI prompts, then return the boolean
-/// granted flag.
+///     bundles.
 ///
 /// Threading: the Rust core invokes every callback on a background thread it
 /// owns, never the main thread. These six each run on their own thread from a
@@ -362,12 +357,12 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Open a URL in the system browser. Invoked on a blocking-pool thread;
     /// hop to the main thread to present UI. May block the calling thread if
     /// the user has to approve the navigation.
-    func navigateTo(url: String) throws
+    func navigateTo(url: String) async throws
 
     /// Deliver a push notification (SCALE-encoded `HostPushNotificationRequest`)
     /// and return the host-assigned notification id. Invoked on the dispatcher
     /// thread; hop to the main thread for any UI work and return promptly.
-    func pushNotification(payload: Data) throws -> UInt32
+    func pushNotification(request: PushNotificationRequest) async throws -> UInt32
 
     /// Cancel a previously scheduled notification id.
     func cancelNotification(id: UInt32) throws
@@ -376,13 +371,13 @@ public protocol HostBridge: AnyObject, Sendable {
     /// on a blocking-pool thread; present the prompt on the main thread and
     /// block the calling thread until the user decides. Blocking here does
     /// not stall other TrUAPI traffic.
-    func devicePermission(request: Data) throws -> Bool
+    func devicePermission(request: NativeDevicePermission) async throws -> Bool
 
     /// Prompt for a remote (product-scoped) permission bundle. Invoked on a
     /// blocking-pool thread; present the prompt on the main thread and block
     /// the calling thread until the user decides. Blocking here does not
     /// stall other TrUAPI traffic.
-    func remotePermission(request: Data) throws -> Bool
+    func remotePermission(request: NativeRemotePermission) async throws -> Bool
 
     /// Observe an auth state change. The core emits states only when they
     /// actually change, in transition order: render `.pairing` as the pairing
@@ -402,19 +397,18 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Close a native chain connection.
     func chainClose(connectionId: UInt32) throws
 
-    /// Confirm one user-reviewed core action before it continues. `review` is
-    /// a SCALE-encoded `UserConfirmationReview`.
-    func confirmUserAction(review: Data) throws -> Bool
+    /// Confirm one user-reviewed core action before it continues.
+    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool
 
     /// Return the current preimage value for `key`, or nil for a miss.
-    func lookupPreimage(key: Data) throws -> Data?
+    func lookupPreimage(key: Data) async throws -> Data?
 
     /// Return the current host theme.
     func currentTheme() throws -> HostTheme
 
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
-    func featureSupported(request: Data) throws -> Bool
+    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool
 
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
@@ -447,14 +441,14 @@ public protocol HostBridge: AnyObject, Sendable {
 public extension HostBridge {
     /// Default no-op logger. Override to plumb into your logging framework.
     func onCoreLog(marker: String, detail: String) {}
-    func pushNotification(payload: Data) throws -> UInt32 { 0 }
+    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 { 0 }
     func cancelNotification(id: UInt32) throws {}
     func authStateChanged(state: AuthState) {}
     func chainConnect(genesisHash: Data) throws -> UInt32? { nil }
     func chainSend(connectionId: UInt32, request: String) throws {}
     func chainClose(connectionId: UInt32) throws {}
-    func confirmUserAction(review: Data) throws -> Bool { false }
-    func lookupPreimage(key: Data) throws -> Data? { nil }
+    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool { false }
+    func lookupPreimage(key: Data) async throws -> Data? { nil }
     func currentTheme() throws -> HostTheme { .dark }
     var supportsChat: Bool { false }
     func chatCreateRoom(
@@ -491,15 +485,15 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         bridge.onCoreLog(marker: marker, detail: detail)
     }
 
-    func navigateTo(url: String) throws {
-        try withNavigationRejection {
-            try bridge.navigateTo(url: url)
+    func navigateTo(url: String) async throws {
+        try await withNavigationRejection {
+            try await bridge.navigateTo(url: url)
         }
     }
 
-    func pushNotification(payload: Data) throws -> UInt32 {
-        try withHostRejection {
-            try bridge.pushNotification(payload: payload)
+    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 {
+        try await withHostRejection {
+            try await bridge.pushNotification(request: request)
         }
     }
 
@@ -509,15 +503,15 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func devicePermission(request: Data) throws -> Bool {
-        try withHostRejection {
-            try bridge.devicePermission(request: request)
+    func devicePermission(request: NativeDevicePermission) async throws -> Bool {
+        try await withHostRejection {
+            try await bridge.devicePermission(request: request)
         }
     }
 
-    func remotePermission(request: Data) throws -> Bool {
-        try withHostRejection {
-            try bridge.remotePermission(request: request)
+    func remotePermission(request: NativeRemotePermission) async throws -> Bool {
+        try await withHostRejection {
+            try await bridge.remotePermission(request: request)
         }
     }
 
@@ -563,15 +557,15 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func confirmUserAction(review: Data) throws -> Bool {
-        try withHostRejection {
-            try bridge.confirmUserAction(review: review)
+    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool {
+        try await withHostRejection {
+            try await bridge.confirmUserAction(review: review)
         }
     }
 
-    func lookupPreimage(key: Data) throws -> Data? {
-        try withHostRejection {
-            try bridge.lookupPreimage(key: key)
+    func lookupPreimage(key: Data) async throws -> Data? {
+        try await withHostRejection {
+            try await bridge.lookupPreimage(key: key)
         }
     }
 
@@ -581,9 +575,9 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func featureSupported(request: Data) throws -> Bool {
-        try withHostRejection {
-            try bridge.featureSupported(request: request)
+    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool {
+        try await withHostRejection {
+            try await bridge.featureSupported(request: request)
         }
     }
 
@@ -653,9 +647,29 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
+    private func withHostRejection<T>(_ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
+        } catch let error as HostRejection {
+            throw error
+        } catch {
+            throw HostRejection.Rejected(reason: error.localizedDescription)
+        }
+    }
+
     private func withNavigationRejection<T>(_ operation: () throws -> T) throws -> T {
         do {
             return try operation()
+        } catch let error as HostNavigateRejection {
+            throw error
+        } catch {
+            throw HostNavigateRejection.Unknown(reason: error.localizedDescription)
+        }
+    }
+
+    private func withNavigationRejection<T>(_ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
         } catch let error as HostNavigateRejection {
             throw error
         } catch {
@@ -779,16 +793,16 @@ public final class TrUAPIProductExecution: @unchecked Sendable {
     }
 
     public func permissionAuthorizationStatus(
-        request: Data
+        request: NativePermissionAuthorizationRequest
     ) throws -> NativePermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(payload: request)
+        try inner.permissionAuthorizationStatus(request: request)
     }
 
     public func setPermissionAuthorizationStatus(
-        request: Data,
+        request: NativePermissionAuthorizationRequest,
         status: NativePermissionAuthorizationStatus
     ) throws {
-        try inner.setPermissionAuthorizationStatus(payload: request, status: status)
+        try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
     public func notifyThemeChanged(theme: HostTheme) {
@@ -797,6 +811,14 @@ public final class TrUAPIProductExecution: @unchecked Sendable {
 
     public func notifyPreimageChanged(key: Data, value: Data?) {
         inner.notifyPreimageChanged(key: key, value: value)
+    }
+
+    public func notifyChainResponse(connectionId: UInt32, json: String) {
+        inner.notifyChainResponse(connectionId: connectionId, json: json)
+    }
+
+    public func notifyChainClosed(connectionId: UInt32) {
+        inner.notifyChainClosed(connectionId: connectionId)
     }
 
     public func notifyChatRoomsChanged(rooms: [NativeChatRoom]) {
