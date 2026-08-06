@@ -104,7 +104,7 @@ import io.parity.truapi.RuntimeConfig
 import io.parity.truapi.TrUAPIHostCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import uniffi.truapi_server.AuthState
+import uniffi.truapi_platform.AuthState
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi.HostDevicePermissionRequest

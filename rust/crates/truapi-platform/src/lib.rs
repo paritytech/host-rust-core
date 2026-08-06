@@ -18,6 +18,15 @@ pub use async_trait::async_trait;
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
 
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(Bytes32, Vec<u8>, {
+    remote,
+    lower: |bytes| bytes.to_vec(),
+    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
+});
+
+#[cfg(feature = "uniffi")]
+use truapi::Bytes32;
 use truapi::latest::{
     AllocatableResource, GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
@@ -392,6 +401,7 @@ pub trait Permissions: Send + Sync {
 /// Permission request whose authorization status can be inspected or updated
 /// by host administration UI.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum PermissionAuthorizationRequest {
     /// Device-level permission such as camera, microphone, or location.
     Device(HostDevicePermissionRequest),
@@ -856,6 +866,7 @@ pub trait CoreStorage: Send + Sync {
 /// Decoded session fields a host shell needs to render account UI without
 /// parsing the opaque session blob the core persists through [`CoreStorage`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct SessionUiInfo {
     /// 32-byte sr25519 root public key of the active session.
     pub public_key: [u8; 32],
@@ -871,6 +882,7 @@ pub struct SessionUiInfo {
 /// every transition and emits states in order; hosts render the current state
 /// and never derive auth UI from any other signal.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum AuthState {
     /// No active session and no login in progress.
     #[default]

@@ -31,14 +31,14 @@ import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeVariant
+import uniffi.truapi_platform.AuthState
+import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
-import uniffi.truapi_server.AuthState
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
-import uniffi.truapi_server.NativePermissionAuthorizationRequest
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.WsBridgeEndpoint
@@ -561,7 +561,7 @@ class TrUAPIHostCore private constructor(
     /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)
     fun permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
+        request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus =
         inner.permissionAuthorizationStatus(request)
 
@@ -571,7 +571,7 @@ class TrUAPIHostCore private constructor(
      */
     @Throws(HostRejection::class)
     fun setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
+        request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) {
         inner.setPermissionAuthorizationStatus(request, status)

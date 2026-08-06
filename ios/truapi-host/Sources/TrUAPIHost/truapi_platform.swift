@@ -1000,6 +1000,120 @@ public func FfiConverterTypeResourceAllocationReview_lower(_ value: ResourceAllo
 
 
 /**
+ * Decoded session fields a host shell needs to render account UI without
+ * parsing the opaque session blob the core persists through [`CoreStorage`].
+ */
+public struct SessionUiInfo {
+    /**
+     * 32-byte sr25519 root public key of the active session.
+     */
+    public var publicKey: Bytes32
+    /**
+     * Wallet identity account id used for People-chain username lookup.
+     */
+    public var identityAccountId: Bytes32?
+    /**
+     * Short username from the People-chain identity record.
+     */
+    public var liteUsername: String?
+    /**
+     * Fully qualified username from the People-chain identity record.
+     */
+    public var fullUsername: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 32-byte sr25519 root public key of the active session.
+         */publicKey: Bytes32, 
+        /**
+         * Wallet identity account id used for People-chain username lookup.
+         */identityAccountId: Bytes32?, 
+        /**
+         * Short username from the People-chain identity record.
+         */liteUsername: String?, 
+        /**
+         * Fully qualified username from the People-chain identity record.
+         */fullUsername: String?) {
+        self.publicKey = publicKey
+        self.identityAccountId = identityAccountId
+        self.liteUsername = liteUsername
+        self.fullUsername = fullUsername
+    }
+}
+
+#if compiler(>=6)
+extension SessionUiInfo: Sendable {}
+#endif
+
+
+extension SessionUiInfo: Equatable, Hashable {
+    public static func ==(lhs: SessionUiInfo, rhs: SessionUiInfo) -> Bool {
+        if lhs.publicKey != rhs.publicKey {
+            return false
+        }
+        if lhs.identityAccountId != rhs.identityAccountId {
+            return false
+        }
+        if lhs.liteUsername != rhs.liteUsername {
+            return false
+        }
+        if lhs.fullUsername != rhs.fullUsername {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(publicKey)
+        hasher.combine(identityAccountId)
+        hasher.combine(liteUsername)
+        hasher.combine(fullUsername)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionUiInfo {
+        return
+            try SessionUiInfo(
+                publicKey: FfiConverterTypeBytes32.read(from: &buf), 
+                identityAccountId: FfiConverterOptionTypeBytes32.read(from: &buf), 
+                liteUsername: FfiConverterOptionString.read(from: &buf), 
+                fullUsername: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SessionUiInfo, into buf: inout [UInt8]) {
+        FfiConverterTypeBytes32.write(value.publicKey, into: &buf)
+        FfiConverterOptionTypeBytes32.write(value.identityAccountId, into: &buf)
+        FfiConverterOptionString.write(value.liteUsername, into: &buf)
+        FfiConverterOptionString.write(value.fullUsername, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionUiInfo_lift(_ buf: RustBuffer) throws -> SessionUiInfo {
+    return try FfiConverterTypeSessionUiInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSessionUiInfo_lower(_ value: SessionUiInfo) -> RustBuffer {
+    return FfiConverterTypeSessionUiInfo.lower(value)
+}
+
+
+/**
  * Review shown before signing an RFC-0023 VRF transcript.
  */
 public struct SignVrfReview {
@@ -1174,6 +1288,136 @@ public func FfiConverterTypeStatementStoreProductSignReview_lower(_ value: State
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Auth/session lifecycle state the core projects for host UI. The core owns
+ * every transition and emits states in order; hosts render the current state
+ * and never derive auth UI from any other signal.
+ */
+
+public enum AuthState {
+    
+    /**
+     * No active session and no login in progress.
+     */
+    case disconnected
+    /**
+     * A login is in progress: present the pairing deeplink/QR. Leave this
+     * state only on a subsequent emission (connected, failed, or
+     * disconnected after cancellation).
+     */
+    case pairing(
+        /**
+         * Wallet pairing deeplink to render as a QR code or open directly.
+         */deeplink: String
+    )
+    /**
+     * A session is active.
+     */
+    case connected(SessionUiInfo
+    )
+    /**
+     * The last login attempt failed; show the reason and offer a retry.
+     */
+    case loginFailed(
+        /**
+         * Human-readable failure reason.
+         */reason: String
+    )
+    /**
+     * The wallet accepted the pairing request and the core is resolving and
+     * persisting the session. Hosts should replace the pairing QR with an
+     * in-progress presentation until a terminal state is emitted.
+     */
+    case authenticating
+}
+
+
+#if compiler(>=6)
+extension AuthState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
+    typealias SwiftType = AuthState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AuthState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .disconnected
+        
+        case 2: return .pairing(deeplink: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .connected(try FfiConverterTypeSessionUiInfo.read(from: &buf)
+        )
+        
+        case 4: return .loginFailed(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 5: return .authenticating
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AuthState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .disconnected:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .pairing(deeplink):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(deeplink, into: &buf)
+            
+        
+        case let .connected(v1):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeSessionUiInfo.write(v1, into: &buf)
+            
+        
+        case let .loginFailed(reason):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case .authenticating:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAuthState_lift(_ buf: RustBuffer) throws -> AuthState {
+    return try FfiConverterTypeAuthState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAuthState_lower(_ value: AuthState) -> RustBuffer {
+    return FfiConverterTypeAuthState.lower(value)
+}
+
+
+extension AuthState: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Review shown before a transaction-creation request is sent to the paired wallet.
  */
 
@@ -1250,6 +1494,118 @@ public func FfiConverterTypeCreateTransactionReview_lower(_ value: CreateTransac
 
 
 extension CreateTransactionReview: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Permission request whose authorization status can be inspected or updated
+ * by host administration UI.
+ */
+
+public enum PermissionAuthorizationRequest {
+    
+    /**
+     * Device-level permission such as camera, microphone, or location.
+     */
+    case device(HostDevicePermissionRequest
+    )
+    /**
+     * Remote/product-scoped permission such as chain submit or HTTP access.
+     */
+    case remote(RemotePermissionRequest
+    )
+    /**
+     * Product-scoped permission to disclose the user's primary identity.
+     */
+    case identityDisclosure
+    /**
+     * Product-scoped permission to access another product's account context.
+     */
+    case accountAccess(
+        /**
+         * Product whose account context may be accessed.
+         */targetProductId: String
+    )
+}
+
+
+#if compiler(>=6)
+extension PermissionAuthorizationRequest: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePermissionAuthorizationRequest: FfiConverterRustBuffer {
+    typealias SwiftType = PermissionAuthorizationRequest
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PermissionAuthorizationRequest {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .device(try FfiConverterTypeHostDevicePermissionRequest.read(from: &buf)
+        )
+        
+        case 2: return .remote(try FfiConverterTypeRemotePermissionRequest.read(from: &buf)
+        )
+        
+        case 3: return .identityDisclosure
+        
+        case 4: return .accountAccess(targetProductId: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PermissionAuthorizationRequest, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .device(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeHostDevicePermissionRequest.write(v1, into: &buf)
+            
+        
+        case let .remote(v1):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeRemotePermissionRequest.write(v1, into: &buf)
+            
+        
+        case .identityDisclosure:
+            writeInt(&buf, Int32(3))
+        
+        
+        case let .accountAccess(targetProductId):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(targetProductId, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePermissionAuthorizationRequest_lift(_ buf: RustBuffer) throws -> PermissionAuthorizationRequest {
+    return try FfiConverterTypePermissionAuthorizationRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePermissionAuthorizationRequest_lower(_ value: PermissionAuthorizationRequest) -> RustBuffer {
+    return FfiConverterTypePermissionAuthorizationRequest.lower(value)
+}
+
+
+extension PermissionAuthorizationRequest: Equatable, Hashable {}
 
 
 
@@ -1723,6 +2079,54 @@ extension UserConfirmationReview: Equatable, Hashable {}
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeBytes32: FfiConverterRustBuffer {
+    typealias SwiftType = Bytes32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBytes32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBytes32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeAllocatableResource: FfiConverterRustBuffer {
     typealias SwiftType = [AllocatableResource]
 
@@ -1744,6 +2148,50 @@ fileprivate struct FfiConverterSequenceTypeAllocatableResource: FfiConverterRust
         return seq
     }
 }
+
+
+/**
+ * Typealias from the type name used in the UDL file to the builtin type.  This
+ * is needed because the UDL type name is used in function/method signatures.
+ */
+public typealias Bytes32 = Data
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBytes32: FfiConverter {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bytes32 {
+        return try FfiConverterData.read(from: &buf)
+    }
+
+    public static func write(_ value: Bytes32, into buf: inout [UInt8]) {
+        return FfiConverterData.write(value, into: &buf)
+    }
+
+    public static func lift(_ value: RustBuffer) throws -> Bytes32 {
+        return try FfiConverterData.lift(value)
+    }
+
+    public static func lower(_ value: Bytes32) -> RustBuffer {
+        return FfiConverterData.lower(value)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBytes32_lift(_ value: RustBuffer) throws -> Bytes32 {
+    return try FfiConverterTypeBytes32.lift(value)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBytes32_lower(_ value: Bytes32) -> RustBuffer {
+    return FfiConverterTypeBytes32.lower(value)
+}
+
 
 private enum InitializationResult {
     case ok

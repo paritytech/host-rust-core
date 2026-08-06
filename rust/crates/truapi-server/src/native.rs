@@ -20,7 +20,7 @@ use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
 use truapi::v01;
 use truapi_platform::{
-    AuthPresenter, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
+    AuthPresenter, AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
     JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Permissions, PlatformInfo, PreimageHost, ProductContext,
     ProductStorage, RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
@@ -99,71 +99,6 @@ pub enum HostNavigateRejection {
     },
 }
 
-/// Native-friendly mirror of [`truapi_platform::SessionUiInfo`]: decoded
-/// session fields for host account UI, with byte arrays widened to `Vec<u8>`
-/// for the FFI surface.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct SessionUiInfo {
-    /// 32-byte sr25519 root public key of the active session.
-    pub public_key: Vec<u8>,
-    /// Wallet identity account id used for People-chain username lookup.
-    pub identity_account_id: Option<Vec<u8>>,
-    /// Short username from the People-chain identity record.
-    pub lite_username: Option<String>,
-    /// Fully qualified username from the People-chain identity record.
-    pub full_username: Option<String>,
-}
-
-impl From<truapi_platform::SessionUiInfo> for SessionUiInfo {
-    fn from(info: truapi_platform::SessionUiInfo) -> Self {
-        Self {
-            public_key: info.public_key.to_vec(),
-            identity_account_id: info.identity_account_id.map(|id| id.to_vec()),
-            lite_username: info.lite_username,
-            full_username: info.full_username,
-        }
-    }
-}
-
-/// Native-friendly mirror of [`truapi_platform::AuthState`]. The core emits
-/// these in transition order through `HostCallbacks::auth_state_changed`.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum AuthState {
-    /// No active session and no login in progress.
-    Disconnected,
-    /// A login is in progress: present the pairing deeplink/QR.
-    Pairing {
-        /// Wallet pairing deeplink to render as a QR code or open directly.
-        deeplink: String,
-    },
-    /// A session is active.
-    Connected {
-        /// Decoded session fields for host account UI.
-        info: SessionUiInfo,
-    },
-    /// The last login attempt failed; show the reason and offer a retry.
-    LoginFailed {
-        /// Human-readable failure reason.
-        reason: String,
-    },
-    /// The wallet accepted pairing and the core is resolving the session.
-    Authenticating,
-}
-
-impl From<truapi_platform::AuthState> for AuthState {
-    fn from(state: truapi_platform::AuthState) -> Self {
-        match state {
-            truapi_platform::AuthState::Disconnected => AuthState::Disconnected,
-            truapi_platform::AuthState::Pairing { deeplink } => AuthState::Pairing { deeplink },
-            truapi_platform::AuthState::Connected(info) => {
-                AuthState::Connected { info: info.into() }
-            }
-            truapi_platform::AuthState::LoginFailed { reason } => AuthState::LoginFailed { reason },
-            truapi_platform::AuthState::Authenticating => AuthState::Authenticating,
-        }
-    }
-}
-
 /// Native-friendly SSO deeplink scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum NativePairingDeeplinkScheme {
@@ -171,51 +106,6 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotApp,
     /// Development Polkadot app.
     PolkadotAppDev,
-}
-
-/// Native-friendly mirror of [`PermissionAuthorizationRequest`]. Flattens the
-/// one-field `RemotePermissionRequest` wrapper into the `Remote` payload.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum NativePermissionAuthorizationRequest {
-    /// Device-level permission such as camera, microphone, or location.
-    Device(v01::HostDevicePermissionRequest),
-    /// Remote/product-scoped permission such as chain submit or HTTP access.
-    Remote(v01::RemotePermission),
-    /// Product-scoped permission to disclose the user's primary identity.
-    IdentityDisclosure,
-    /// Product-scoped permission to access another product's account context.
-    AccountAccess {
-        /// Product whose account context may be accessed.
-        target_product_id: String,
-    },
-}
-
-impl From<PermissionAuthorizationRequest> for NativePermissionAuthorizationRequest {
-    fn from(request: PermissionAuthorizationRequest) -> Self {
-        match request {
-            PermissionAuthorizationRequest::Device(device) => Self::Device(device),
-            PermissionAuthorizationRequest::Remote(remote) => Self::Remote(remote.permission),
-            PermissionAuthorizationRequest::IdentityDisclosure => Self::IdentityDisclosure,
-            PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
-                Self::AccountAccess { target_product_id }
-            }
-        }
-    }
-}
-
-impl From<NativePermissionAuthorizationRequest> for PermissionAuthorizationRequest {
-    fn from(request: NativePermissionAuthorizationRequest) -> Self {
-        match request {
-            NativePermissionAuthorizationRequest::Device(device) => Self::Device(device),
-            NativePermissionAuthorizationRequest::Remote(permission) => {
-                Self::Remote(v01::RemotePermissionRequest { permission })
-            }
-            NativePermissionAuthorizationRequest::IdentityDisclosure => Self::IdentityDisclosure,
-            NativePermissionAuthorizationRequest::AccountAccess { target_product_id } => {
-                Self::AccountAccess { target_product_id }
-            }
-        }
-    }
 }
 
 /// Native runtime configuration supplied before product calls are handled.
@@ -561,11 +451,10 @@ impl NativeTrUApiCore {
     /// main/UI thread.
     pub fn permission_authorization_status(
         &self,
-        request: NativePermissionAuthorizationRequest,
+        request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, HostRejection> {
         let admin = self.runtime.product_admin(self.product.clone());
-        let status =
-            futures::executor::block_on(admin.permission_authorization_status(request.into()))?;
+        let status = futures::executor::block_on(admin.permission_authorization_status(request))?;
         Ok(status)
     }
 
@@ -577,13 +466,11 @@ impl NativeTrUApiCore {
     /// main/UI thread.
     pub fn set_permission_authorization_status(
         &self,
-        request: NativePermissionAuthorizationRequest,
+        request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
         let admin = self.runtime.product_admin(self.product.clone());
-        futures::executor::block_on(
-            admin.set_permission_authorization_status(request.into(), status),
-        )?;
+        futures::executor::block_on(admin.set_permission_authorization_status(request, status))?;
         Ok(())
     }
 
@@ -1062,7 +949,7 @@ impl AuthPresenter for CallbackPlatform {
             "truapi.native.callback.auth_state_changed".to_string(),
             String::new(),
         );
-        self.callbacks.auth_state_changed(state.into());
+        self.callbacks.auth_state_changed(state);
     }
 }
 
@@ -1311,8 +1198,8 @@ mod tests {
         });
 
         for case in cases {
-            let native = NativePermissionAuthorizationRequest::from(case.clone());
-            assert_eq!(PermissionAuthorizationRequest::from(native), case);
+            let native = case.clone();
+            assert_eq!(native, case);
         }
     }
 
@@ -1343,14 +1230,12 @@ mod tests {
                 AuthState::Pairing {
                     deeplink: "polkadotapp://pair?handshake=00".to_string(),
                 },
-                AuthState::Connected {
-                    info: SessionUiInfo {
-                        public_key: vec![7; 32],
-                        identity_account_id: None,
-                        lite_username: Some("alice".to_string()),
-                        full_username: None,
-                    },
-                },
+                AuthState::Connected(truapi_platform::SessionUiInfo {
+                    public_key: [7; 32],
+                    identity_account_id: None,
+                    lite_username: Some("alice".to_string()),
+                    full_username: None,
+                }),
                 AuthState::Disconnected,
             ]
         );

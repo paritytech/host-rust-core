@@ -216,10 +216,10 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func cancelLogin()
     func activateLocalSession(secret: Data, liteUsername: String?) throws
     func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
+        request: PermissionAuthorizationRequest
     ) throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
+        request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
     ) throws
     func notifyThemeChanged(theme: ThemeVariant)
@@ -289,7 +289,7 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
 
     /// Read a stored permission authorization status without prompting.
     public func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
+        request: PermissionAuthorizationRequest
     ) throws -> PermissionAuthorizationStatus {
         try inner.permissionAuthorizationStatus(request: request)
     }
@@ -297,7 +297,7 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     /// Update a stored permission authorization status. `.notDetermined`
     /// clears the stored value so the next product request prompts again.
     public func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
+        request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
     ) throws {
         try inner.setPermissionAuthorizationStatus(request: request, status: status)

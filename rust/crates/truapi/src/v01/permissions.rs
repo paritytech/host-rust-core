@@ -69,6 +69,7 @@ pub enum RemotePermission {
 /// remote-permission request (RFC 0002).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[display("{permission}")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RemotePermissionRequest {
     /// Permission requested by the product.
     pub permission: RemotePermission,

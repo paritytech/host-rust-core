@@ -1786,6 +1786,77 @@ public func FfiConverterTypeProductProofContext_lower(_ value: ProductProofConte
 
 
 /**
+ * remote-permission request (RFC 0002).
+ */
+public struct RemotePermissionRequest {
+    /**
+     * Permission requested by the product.
+     */
+    public var permission: RemotePermission
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Permission requested by the product.
+         */permission: RemotePermission) {
+        self.permission = permission
+    }
+}
+
+#if compiler(>=6)
+extension RemotePermissionRequest: Sendable {}
+#endif
+
+
+extension RemotePermissionRequest: Equatable, Hashable {
+    public static func ==(lhs: RemotePermissionRequest, rhs: RemotePermissionRequest) -> Bool {
+        if lhs.permission != rhs.permission {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(permission)
+    }
+}
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRemotePermissionRequest: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RemotePermissionRequest {
+        return
+            try RemotePermissionRequest(
+                permission: FfiConverterTypeRemotePermission.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RemotePermissionRequest, into buf: inout [UInt8]) {
+        FfiConverterTypeRemotePermission.write(value.permission, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRemotePermissionRequest_lift(_ buf: RustBuffer) throws -> RemotePermissionRequest {
+    return try FfiConverterTypeRemotePermissionRequest.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRemotePermissionRequest_lower(_ value: RemotePermissionRequest) -> RustBuffer {
+    return FfiConverterTypeRemotePermissionRequest.lower(value)
+}
+
+
+/**
  * Locates a ring for ring VRF operations using only identifiers that are
  * stable across membership changes.
  */

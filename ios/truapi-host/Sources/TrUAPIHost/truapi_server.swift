@@ -1814,7 +1814,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
      */
-    func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
     
     /**
      * Update a stored permission authorization status. Passing
@@ -1824,7 +1824,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Blocks the calling thread on the storage write, so call it off the host's
      * main/UI thread.
      */
-    func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws 
+    func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws 
     
     /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
@@ -2019,10 +2019,10 @@ open func notifyThemeChanged(theme: ThemeVariant)  {try! rustCall() {
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
      */
-open func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
     return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
     uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(self.uniffiClonePointer(),
-        FfiConverterTypeNativePermissionAuthorizationRequest_lower(request),$0
+        FfiConverterTypePermissionAuthorizationRequest_lower(request),$0
     )
 })
 }
@@ -2035,9 +2035,9 @@ open func permissionAuthorizationStatus(request: NativePermissionAuthorizationRe
      * Blocks the calling thread on the storage write, so call it off the host's
      * main/UI thread.
      */
-open func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: PermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
     uniffi_truapi_server_fn_method_nativetruapicore_set_permission_authorization_status(self.uniffiClonePointer(),
-        FfiConverterTypeNativePermissionAuthorizationRequest_lower(request),
+        FfiConverterTypePermissionAuthorizationRequest_lower(request),
         FfiConverterTypePermissionAuthorizationStatus_lower(status),$0
     )
 }
@@ -2332,121 +2332,6 @@ public func FfiConverterTypeNativeRuntimeConfig_lower(_ value: NativeRuntimeConf
 
 
 /**
- * Native-friendly mirror of [`truapi_platform::SessionUiInfo`]: decoded
- * session fields for host account UI, with byte arrays widened to `Vec<u8>`
- * for the FFI surface.
- */
-public struct SessionUiInfo {
-    /**
-     * 32-byte sr25519 root public key of the active session.
-     */
-    public var publicKey: Data
-    /**
-     * Wallet identity account id used for People-chain username lookup.
-     */
-    public var identityAccountId: Data?
-    /**
-     * Short username from the People-chain identity record.
-     */
-    public var liteUsername: String?
-    /**
-     * Fully qualified username from the People-chain identity record.
-     */
-    public var fullUsername: String?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * 32-byte sr25519 root public key of the active session.
-         */publicKey: Data, 
-        /**
-         * Wallet identity account id used for People-chain username lookup.
-         */identityAccountId: Data?, 
-        /**
-         * Short username from the People-chain identity record.
-         */liteUsername: String?, 
-        /**
-         * Fully qualified username from the People-chain identity record.
-         */fullUsername: String?) {
-        self.publicKey = publicKey
-        self.identityAccountId = identityAccountId
-        self.liteUsername = liteUsername
-        self.fullUsername = fullUsername
-    }
-}
-
-#if compiler(>=6)
-extension SessionUiInfo: Sendable {}
-#endif
-
-
-extension SessionUiInfo: Equatable, Hashable {
-    public static func ==(lhs: SessionUiInfo, rhs: SessionUiInfo) -> Bool {
-        if lhs.publicKey != rhs.publicKey {
-            return false
-        }
-        if lhs.identityAccountId != rhs.identityAccountId {
-            return false
-        }
-        if lhs.liteUsername != rhs.liteUsername {
-            return false
-        }
-        if lhs.fullUsername != rhs.fullUsername {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(publicKey)
-        hasher.combine(identityAccountId)
-        hasher.combine(liteUsername)
-        hasher.combine(fullUsername)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionUiInfo {
-        return
-            try SessionUiInfo(
-                publicKey: FfiConverterData.read(from: &buf), 
-                identityAccountId: FfiConverterOptionData.read(from: &buf), 
-                liteUsername: FfiConverterOptionString.read(from: &buf), 
-                fullUsername: FfiConverterOptionString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: SessionUiInfo, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.publicKey, into: &buf)
-        FfiConverterOptionData.write(value.identityAccountId, into: &buf)
-        FfiConverterOptionString.write(value.liteUsername, into: &buf)
-        FfiConverterOptionString.write(value.fullUsername, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSessionUiInfo_lift(_ buf: RustBuffer) throws -> SessionUiInfo {
-    return try FfiConverterTypeSessionUiInfo.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSessionUiInfo_lower(_ value: SessionUiInfo) -> RustBuffer {
-    return FfiConverterTypeSessionUiInfo.lower(value)
-}
-
-
-/**
  * Per-session descriptor returned to the host: product uses `port + token`
  * to build its WebSocket URL (e.g. `ws://127.0.0.1:<port>/?t=<token>`).
  */
@@ -2532,134 +2417,6 @@ public func FfiConverterTypeWsBridgeEndpoint_lift(_ buf: RustBuffer) throws -> W
 public func FfiConverterTypeWsBridgeEndpoint_lower(_ value: WsBridgeEndpoint) -> RustBuffer {
     return FfiConverterTypeWsBridgeEndpoint.lower(value)
 }
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`truapi_platform::AuthState`]. The core emits
- * these in transition order through `HostCallbacks::auth_state_changed`.
- */
-
-public enum AuthState {
-    
-    /**
-     * No active session and no login in progress.
-     */
-    case disconnected
-    /**
-     * A login is in progress: present the pairing deeplink/QR.
-     */
-    case pairing(
-        /**
-         * Wallet pairing deeplink to render as a QR code or open directly.
-         */deeplink: String
-    )
-    /**
-     * A session is active.
-     */
-    case connected(
-        /**
-         * Decoded session fields for host account UI.
-         */info: SessionUiInfo
-    )
-    /**
-     * The last login attempt failed; show the reason and offer a retry.
-     */
-    case loginFailed(
-        /**
-         * Human-readable failure reason.
-         */reason: String
-    )
-    /**
-     * The wallet accepted pairing and the core is resolving the session.
-     */
-    case authenticating
-}
-
-
-#if compiler(>=6)
-extension AuthState: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
-    typealias SwiftType = AuthState
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AuthState {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .disconnected
-        
-        case 2: return .pairing(deeplink: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 3: return .connected(info: try FfiConverterTypeSessionUiInfo.read(from: &buf)
-        )
-        
-        case 4: return .loginFailed(reason: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 5: return .authenticating
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: AuthState, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .disconnected:
-            writeInt(&buf, Int32(1))
-        
-        
-        case let .pairing(deeplink):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(deeplink, into: &buf)
-            
-        
-        case let .connected(info):
-            writeInt(&buf, Int32(3))
-            FfiConverterTypeSessionUiInfo.write(info, into: &buf)
-            
-        
-        case let .loginFailed(reason):
-            writeInt(&buf, Int32(4))
-            FfiConverterString.write(reason, into: &buf)
-            
-        
-        case .authenticating:
-            writeInt(&buf, Int32(5))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAuthState_lift(_ buf: RustBuffer) throws -> AuthState {
-    return try FfiConverterTypeAuthState.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAuthState_lower(_ value: AuthState) -> RustBuffer {
-    return FfiConverterTypeAuthState.lower(value)
-}
-
-
-extension AuthState: Equatable, Hashable {}
-
-
-
-
-
 
 
 /**
@@ -3009,118 +2766,6 @@ public func FfiConverterTypeNativePairingDeeplinkScheme_lower(_ value: NativePai
 
 
 extension NativePairingDeeplinkScheme: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`PermissionAuthorizationRequest`]. Flattens the
- * one-field `RemotePermissionRequest` wrapper into the `Remote` payload.
- */
-
-public enum NativePermissionAuthorizationRequest {
-    
-    /**
-     * Device-level permission such as camera, microphone, or location.
-     */
-    case device(HostDevicePermissionRequest
-    )
-    /**
-     * Remote/product-scoped permission such as chain submit or HTTP access.
-     */
-    case remote(RemotePermission
-    )
-    /**
-     * Product-scoped permission to disclose the user's primary identity.
-     */
-    case identityDisclosure
-    /**
-     * Product-scoped permission to access another product's account context.
-     */
-    case accountAccess(
-        /**
-         * Product whose account context may be accessed.
-         */targetProductId: String
-    )
-}
-
-
-#if compiler(>=6)
-extension NativePermissionAuthorizationRequest: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativePermissionAuthorizationRequest: FfiConverterRustBuffer {
-    typealias SwiftType = NativePermissionAuthorizationRequest
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePermissionAuthorizationRequest {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .device(try FfiConverterTypeHostDevicePermissionRequest.read(from: &buf)
-        )
-        
-        case 2: return .remote(try FfiConverterTypeRemotePermission.read(from: &buf)
-        )
-        
-        case 3: return .identityDisclosure
-        
-        case 4: return .accountAccess(targetProductId: try FfiConverterString.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativePermissionAuthorizationRequest, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .device(v1):
-            writeInt(&buf, Int32(1))
-            FfiConverterTypeHostDevicePermissionRequest.write(v1, into: &buf)
-            
-        
-        case let .remote(v1):
-            writeInt(&buf, Int32(2))
-            FfiConverterTypeRemotePermission.write(v1, into: &buf)
-            
-        
-        case .identityDisclosure:
-            writeInt(&buf, Int32(3))
-        
-        
-        case let .accountAccess(targetProductId):
-            writeInt(&buf, Int32(4))
-            FfiConverterString.write(targetProductId, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationRequest_lift(_ buf: RustBuffer) throws -> NativePermissionAuthorizationRequest {
-    return try FfiConverterTypeNativePermissionAuthorizationRequest.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationRequest_lower(_ value: NativePermissionAuthorizationRequest) -> RustBuffer {
-    return FfiConverterTypeNativePermissionAuthorizationRequest.lower(value)
-}
-
-
-extension NativePermissionAuthorizationRequest: Equatable, Hashable {}
 
 
 
@@ -3828,7 +3473,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 65180) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 7746) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 7105) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 64217) {
@@ -3894,10 +3539,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 47257) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 41596) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 24537) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 20488) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 57556) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 64697) {
