@@ -528,12 +528,11 @@ fn product_context_from_js(value: &JsValue) -> Result<ProductContext, JsValue> {
         match get_optional_string_at(value, "executionKind", "runtimeConfig.executionKind")?
             .as_deref()
         {
-            None | Some("App") => ProductExecutionKind::App,
-            Some("Widget") => ProductExecutionKind::Widget,
+            None | Some("Spa") => ProductExecutionKind::Spa,
             Some("Chat") => ProductExecutionKind::Chat,
             Some(other) => {
                 return Err(JsValue::from_str(&format!(
-                    "runtimeConfig.executionKind must be App, Widget, or Chat, got {other:?}"
+                    "runtimeConfig.executionKind must be Spa or Chat, got {other:?}"
                 )));
             }
         };

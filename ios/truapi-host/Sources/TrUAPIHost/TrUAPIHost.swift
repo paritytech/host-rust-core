@@ -41,14 +41,12 @@ public enum PairingDeeplinkScheme: Sendable {
 
 /// Trusted kind of executable attached to a product connection.
 public enum ProductExecutionKind: Sendable, Equatable {
-    case app
-    case widget
+    case spa
     case chat
 
     fileprivate var native: NativeProductExecutionKind {
         switch self {
-        case .app: .app
-        case .widget: .widget
+        case .spa: .spa
         case .chat: .chat
         }
     }
@@ -77,7 +75,7 @@ public struct RuntimeConfig: Sendable {
 
     public init(
         productId: String,
-        executionKind: ProductExecutionKind = .app,
+        executionKind: ProductExecutionKind = .spa,
         hostName: String,
         hostIcon: String? = nil,
         hostVersion: String? = nil,
@@ -779,7 +777,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func notifyChatRoomsChanged(rooms: [NativeChatRoom])
 }
 
-/// One App, Widget, or Chat executable connected to a shared host runtime.
+/// One SPA or Chat executable connected to a shared host runtime.
 public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sendable {
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks

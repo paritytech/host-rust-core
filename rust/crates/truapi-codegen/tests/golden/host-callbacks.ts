@@ -263,7 +263,7 @@ export interface ProductContext {
 /**
  * Trusted kind of product executable attached to a TrUAPI connection.
  */
-export type ProductExecutionKind = "App" | "Widget" | "Chat";
+export type ProductExecutionKind = "Spa" | "Chat";
 
 /**
  * Review shown before allocating resources for a product. Names the
@@ -573,7 +573,7 @@ export const ProductContext: S.Codec<ProductContext> = S.lazy(
  * Trusted kind of product executable attached to a TrUAPI connection.
  */
 export const ProductExecutionKind: S.Codec<ProductExecutionKind> = S.lazy(
-  (): S.Codec<ProductExecutionKind> => S.Status("App", "Widget", "Chat"),
+  (): S.Codec<ProductExecutionKind> => S.Status("Spa", "Chat"),
 );
 
 /**

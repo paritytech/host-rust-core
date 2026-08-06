@@ -240,11 +240,9 @@ pub enum NativePairingDeeplinkScheme {
 /// Trusted executable kind selected by the native host.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, uniffi::Enum)]
 pub enum NativeProductExecutionKind {
-    /// Visible application entrypoint.
+    /// Visible single-page application entrypoint.
     #[default]
-    App,
-    /// Host-embedded product widget entrypoint.
-    Widget,
+    Spa,
     /// Headless Chat worker entrypoint.
     Chat,
 }
@@ -252,8 +250,7 @@ pub enum NativeProductExecutionKind {
 impl From<NativeProductExecutionKind> for ProductExecutionKind {
     fn from(kind: NativeProductExecutionKind) -> Self {
         match kind {
-            NativeProductExecutionKind::App => Self::App,
-            NativeProductExecutionKind::Widget => Self::Widget,
+            NativeProductExecutionKind::Spa => Self::Spa,
             NativeProductExecutionKind::Chat => Self::Chat,
         }
     }
@@ -2367,7 +2364,7 @@ mod tests {
     fn native_runtime_config(product_id: &str) -> NativeRuntimeConfig {
         NativeRuntimeConfig {
             product_id: product_id.to_string(),
-            execution_kind: NativeProductExecutionKind::App,
+            execution_kind: NativeProductExecutionKind::Spa,
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
@@ -2412,12 +2409,12 @@ mod tests {
             native_host_runtime_config(),
         )
         .expect("host runtime config should be valid");
-        let app = host
+        let spa = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
-                native_execution_config("shared.dot", NativeProductExecutionKind::App),
+                native_execution_config("shared.dot", NativeProductExecutionKind::Spa),
             )
-            .expect("App execution should open");
+            .expect("SPA execution should open");
         let chat = host
             .open_product_execution(
                 Arc::new(EventCallbacks::with_chat()),
@@ -2425,9 +2422,9 @@ mod tests {
             )
             .expect("Chat execution should open");
 
-        assert!(Arc::ptr_eq(&app.runtime, &chat.runtime));
+        assert!(Arc::ptr_eq(&spa.runtime, &chat.runtime));
         assert!(matches!(
-            app.publish_chat_action(NativeChatAction::MessagePostedText {
+            spa.publish_chat_action(NativeChatAction::MessagePostedText {
                 room_id: "room".to_string(),
                 peer: "native".to_string(),
                 text: "denied".to_string(),

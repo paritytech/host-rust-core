@@ -1,18 +1,18 @@
 # TrUAPI Playground
 
-_Browse, edit, and call App-compatible TrUAPI methods live against a connected Polkadot host._
+_Browse, edit, and call SPA-compatible TrUAPI methods live against a connected Polkadot host._
 
-The playground is an interactive reference for the App-compatible TrUAPI surface: methods are grouped by domain, with live request payload editing, one-click calls, and live subscriptions. It must be opened from inside a TrUAPI host so it can talk to the host over the wire.
+The playground is an interactive reference for the SPA-compatible TrUAPI surface: methods are grouped by domain, with live request payload editing, one-click calls, and live subscriptions. It must be opened from inside a TrUAPI host so it can talk to the host over the wire.
 
 **Live app:** [https://truapi-playground.dot.li/](https://truapi-playground.dot.li/)
 
 ## Features
 
-- **Execution-aware method browser**: every TrUAPI service available to an `App` execution, each with a description and a Request / Response or Subscription badge.
+- **Execution-aware method browser**: every TrUAPI service available to a `Spa` execution, each with a description and a Request / Response or Subscription badge.
 - **Live calls**: edit a JSON request payload and fire the call against the connected host.
 - **Subscriptions**: open and close streaming methods and watch events arrive in real time.
 - **Auto-test view**: runs every listed method and reports pass / fail in one pass.
-- **Diagnosis view**: runs the App surface and produces a copy-pasteable markdown report per host. The explorer's Compatibility page aggregates those into a cross-host matrix. See [Diagnosis](#diagnosis).
+- **Diagnosis view**: runs the SPA surface and produces a copy-pasteable markdown report per host. The explorer's Compatibility page aggregates those into a cross-host matrix. See [Diagnosis](#diagnosis).
 - **Wiring status**: methods that are not yet bound are flagged "Not supported" so you can see protocol coverage at a glance.
 - **Chat diagnosis**: the same build emits `out/worker/index.js`, a native Chat
   application that tests room creation and idempotency, live room-list updates,
@@ -65,7 +65,7 @@ An example **passes** when its promise resolves and **fails** when it throws. Us
 
 ## Diagnosis
 
-The Diagnosis view exercises every App-compatible TrUAPI method against the connected host and emits a per-host pass/fail report you can copy out. Per-host reports feed the explorer's **Compatibility** page, which renders the host × method matrix; aggregation lives in the explorer (see [`explorer/README.md`](../explorer/README.md#host-compatibility-matrix)). Chat APIs are diagnosed separately by the native Chat worker.
+The Diagnosis view exercises every SPA-compatible TrUAPI method against the connected host and emits a per-host pass/fail report you can copy out. Per-host reports feed the explorer's **Compatibility** page, which renders the host × method matrix; aggregation lives in the explorer (see [`explorer/README.md`](../explorer/README.md#host-compatibility-matrix)). Chat APIs are diagnosed separately by the native Chat worker.
 
 Run the iOS Chat diagnosis from the repository root:
 

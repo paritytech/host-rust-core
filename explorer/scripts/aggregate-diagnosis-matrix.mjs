@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Aggregate per-host TrUAPI diagnosis reports into the explorer's committed
-// App and Chat host × method compatibility matrices (columns = hosts, rows =
+// SPA and Chat host × method compatibility matrices (columns = hosts, rows =
 // methods), MDN browser-compat style.
 //
 // Each input is a diagnosis report as produced by the playground's "Copy
@@ -14,7 +14,7 @@
 //   ...
 //
 // Reports live in the explorer's `diagnosis-reports/` directory, organized by
-// modality: `spa/<host>.md` for App executions and `chat/<host>.md` for Chat
+// modality: `spa/<host>.md` for SPA executions and `chat/<host>.md` for Chat
 // workers. Run from `explorer/`:
 //
 //   npm run generate-matrix
@@ -31,7 +31,7 @@
 // Flags:
 //   --explorer-out <file>   write `compatibility` and `chatCompatibility`
 //
-// The parent directory selects the matrix: `spa/` reports feed the App matrix
+// The parent directory selects the matrix: `spa/` reports feed the SPA matrix
 // and `chat/` reports the Chat matrix. For ad-hoc files outside those
 // directories, a `... Chat Diagnosis` title selects the Chat matrix and a
 // host-agnostic `Truapi Chat Diagnosis` title derives the host from the
@@ -94,15 +94,15 @@ function reportIdentity(file, title) {
   if (value.endsWith(" Chat")) {
     return { mode: value.slice(0, -" Chat".length), modality: "Chat" };
   }
-  return { mode: value, modality: "App" };
+  return { mode: value, modality: "Spa" };
 }
 
 // Modality from the report's parent directories: `chat/` -> Chat, `spa/` ->
-// App, anything else -> null (fall back to the title heuristics above).
+// SPA, anything else -> null (fall back to the title heuristics above).
 function modalityFromPath(file) {
   const directories = file.split(/[\\/]/).slice(0, -1);
   if (directories.includes("chat")) return "Chat";
-  if (directories.includes("spa")) return "App";
+  if (directories.includes("spa")) return "Spa";
   return null;
 }
 
@@ -271,9 +271,9 @@ function main() {
   const generatedAt = new Date().toISOString();
 
   if (explorerOut) {
-    const appReports = reports.filter(({ modality }) => modality === "App");
+    const spaReports = reports.filter(({ modality }) => modality === "Spa");
     const chatReports = reports.filter(({ modality }) => modality === "Chat");
-    const matrix = matrixForReports(appReports, generatedAt);
+    const matrix = matrixForReports(spaReports, generatedAt);
     const chatMatrix = matrixForReports(chatReports, generatedAt);
     writeFileSync(explorerOut, renderTypeScript(matrix, chatMatrix));
     console.error(`Wrote ${explorerOut} from ${reports.length} report(s).`);

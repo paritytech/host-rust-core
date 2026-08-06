@@ -40,13 +40,13 @@ The Diagnosis screen emits a per-host markdown report via "Copy report". Aggrega
 
 | File | Role |
 | --- | --- |
-| `src/lib/services.ts` | Filters the generated service metadata to APIs available to an `App` execution. Services requiring `Chat` are owned by the worker diagnosis instead. |
+| `src/lib/services.ts` | Filters the generated service metadata to APIs available to a `Spa` execution. Services requiring `Chat` are owned by the worker diagnosis instead. |
 | `src/lib/transport.ts` | Singleton `Provider`/`Transport`/`TrUApiClient` over iframe postMessage or webview MessagePort. Owns the handshake and connection status. |
 | `src/lib/example-runner.ts` | Transpiles each rustdoc `ts` example via sucrase, runs it inside an `AsyncFunction` with `truapi`, `console`, rxjs, and an ambient `assert` as bindings. Failure is explicit: an example fails iff it throws (via `assert(...)`, a timeout, or any uncaught error); `console.*` is pure output. A tracking Proxy auto-unsubscribes inner `.subscribe(...)` calls so subscriptions clean up when the run ends or the user navigates away. |
 | `src/lib/monaco-setup.ts` | Configures Monaco's TS worker: registers the bundled `@parity/truapi` types (`truapi-dts`), every rxjs `.d.ts`, and an ambient block (`declare const truapi: Client`, `assert`, `crypto`, `Uint8Array` hex helpers) so examples typecheck without manual imports. Defines the light/dark themes that match the design tokens. |
 | `src/lib/auto-test.ts` | Runs each method's example and reports pass / fail. A method passes when its example resolves within the timeout and fails when it throws (the thrown/`assert` message plus any logs become the failure output); unary and subscription examples are awaited identically. `runDiagnosis` runs every method one at a time, in service order; methods that prompt the user (signing, permission/resource requests) block on their host dialog before the run continues. `runSingleTest` replays one method (used by the Diagnosis row replay). |
-| `src/lib/diagnosis-report.ts` | Adapts App results to the shared deterministic Markdown formatter and adds host-mode detection and issue submission. |
-| `shared/diagnosis.ts` | Framework-independent diagnosis result model and Markdown formatter shared by the App and Chat executables. |
+| `src/lib/diagnosis-report.ts` | Adapts SPA results to the shared deterministic Markdown formatter and adds host-mode detection and issue submission. |
+| `shared/diagnosis.ts` | Framework-independent diagnosis result model and Markdown formatter shared by the SPA and Chat executables. |
 | `worker/index.ts` | Coordinates the native Chat diagnosis over the generated Chat API. |
 | `worker/diagnosis.ts` | Owns ordered Chat-only result state and renders both Markdown and native custom-renderer trees. |
 | `src/lib/host-api-bridge.ts` | Just `stringify`, the JSON-with-bigint helper shared across components. |

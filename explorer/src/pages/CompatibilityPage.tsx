@@ -86,8 +86,8 @@ export default function CompatibilityPage() {
 
       <div className="space-y-10">
         <CompatibilitySection
-          title="App compatibility"
-          description="API coverage measured from the visible App execution."
+          title="SPA compatibility"
+          description="API coverage measured from the visible SPA execution."
           matrix={compatibility}
           version={version}
           expandedId={expandedId}

@@ -10,7 +10,7 @@ created: 2026-07-30
 ## Summary
 
 Chat products run on the same TrUAPI execution path as SPA products: the
-visible app and a headless Chat worker are separate executions, each with its
+visible SPA and a headless Chat worker are separate executions, each with its
 own connection into a single host-owned Rust runtime, speaking the same
 SCALE protocol and generated client. This replaces the mobile `container.js`
 bridges and evaluated JavaScript globals.
@@ -54,7 +54,7 @@ The architecture has three structural rules:
 - the host owns one long-lived Rust runtime, shared by all of its product
   executions
 - each executable has its own connection and per-connection runtime
-- `app/index.html` connects as `App`, while `worker/index.js` connects as
+- `app/index.html` connects as `Spa`, while `worker/index.js` connects as
   `Chat`; both share host services
 - product executions initiate all ordinary calls and subscriptions; the
   runtime initiates only per-message render subscriptions, into Chat
@@ -62,9 +62,9 @@ The architecture has three structural rules:
 
 ```text
 +---------------+---------------+           +---------------+---------------+
-| App execution                 |           | Chat execution                |
+| SPA execution                 |           | Chat execution                |
 | app/index.html                |           | worker/index.js               |
-| ProductContext(App)           |           | ProductContext(Chat)          |
+| ProductContext(Spa)           |           | ProductContext(Chat)          |
 +---------------+---------------+           +---------------+---------------+
                 | connection A                              | connection B
                 +---------------------+---------------------+
@@ -74,7 +74,7 @@ The architecture has three structural rules:
          +---------------------------------------------------------+
          | Shared Rust HostRuntime                                 |
          |                                                         |
-         | ProductRuntime(App)       ProductRuntime(Chat)          |
+         | ProductRuntime(Spa)       ProductRuntime(Chat)          |
          | dispatches product calls and live subscriptions         |
          | opens per-message render subscriptions into Chat        |
          | shared authentication, storage, and chain resources     |
@@ -149,13 +149,10 @@ transport failure domain. Product-originated requests use `p:<id>` identifiers
 on their connection. Host-initiated render subscriptions use `h:<id>`
 identifiers allocated by that connection's Rust runtime.
 
-An `h:<id>` is therefore not a connection identifier. It correlates one render
-subscription multiplexed over an already-established connection. For example,
-Rust starts custom rendering by sending a `ProtocolMessage` whose request id is
-`h:<id>`, whose payload discriminant is wire id 52 (`_start`), and whose value
-encodes `messageId`, `messageType`, and `payload`. Renderer updates return on
-wire id 55 with the same request id. Wire ids 53 and 54 stop and interrupt that
-render instance respectively.
+Rust starts custom rendering with request id `h:<id>` and wire id 52 (`_start`),
+encoding `messageId`, `messageType`, and `payload`. Renderer updates use wire id
+55 with the same request id; wire ids 53 and 54 stop and interrupt the render
+subscription.
 
 ## Trusted execution context
 
@@ -172,10 +169,8 @@ pub struct ProductContext {
 
 /// Trusted kind of product executable attached to a TrUAPI connection.
 pub enum ProductExecutionKind {
-    /// Visible application entrypoint such as `app/index.html`.
-    App,
-    /// Host-embedded product widget entrypoint.
-    Widget,
+    /// Visible single-page application entrypoint such as `app/index.html`.
+    Spa,
     /// Headless worker executable that provides the Chat modality.
     Chat,
 }
@@ -193,7 +188,7 @@ pub trait Chat: Send + Sync {
 
 `truapi-server` builds `ExecutionFilter` from the immutable context when it
 creates the connection's `ProductRuntime`. The filter runs before Chat
-handlers, streams, and native entrypoints, so an `App` connection cannot carry
+handlers, streams, and native entrypoints, so a `Spa` connection cannot carry
 Chat traffic.
 
 ## Custom rendering
@@ -230,18 +225,6 @@ product-side registration API and the host-side typed caller instead.
 fn custom_message_render(
     request: ProductChatCustomMessageRenderRequest,
 ) -> Subscription<CustomRendererNode>;
-
-/// Render work sent by the host on the subscription start frame.
-pub struct ProductChatCustomMessageRenderRequest {
-    /// Stable identifier used to correlate triggered actions.
-    pub message_id: String,
-
-    /// Product-defined discriminator used to select a renderer.
-    pub message_type: String,
-
-    /// Stored product-defined message payload.
-    pub payload: Vec<u8>,
-}
 ```
 
 The generated TypeScript API is handler registration. The handler returns an
@@ -306,8 +289,7 @@ Native platform                    Shared Rust HostRuntime                   Pro
 ```
 
 `message_id` correlates a rendered widget with the `ActionTriggered` events
-it emits. Native receives generated Swift or Kotlin renderer types, not SCALE
-hex or a separate decoder.
+it emits. Native receives generated Swift or Kotlin renderer types.
 
 ## Native host contract
 
@@ -381,17 +363,12 @@ const result = await truapi.chat.createRoom({
 });
 ```
 
-That ordinary product-originated call uses a `p:<id>` request identifier. Rust
-checks that the connection is a Chat execution, decodes the versioned request,
-and delegates to `ChatPlatform::create_room`. The platform adapter owns the
-actual database lookup and persistence and returns `New` or `Exists`; Rust owns
-protocol routing, execution policy, and typed error/result conversion.
+Rust validates the Chat execution, decodes the versioned request, and calls
+`ChatPlatform::create_room`. The platform adapter looks up or persists the room
+and returns `New` or `Exists`.
 
-Rust does not manufacture a room merely because a worker connected or native
-asked to open Chat. If the worker never calls `createRoom`, an existing
-persisted room may still arrive through `listSubscribe`, but no new room is
-created. What the native UI does while waiting—continue waiting, time out, show
-an error, or offer a fallback—is host policy outside this protocol.
+The worker creates rooms with `createRoom`; `listSubscribe` may also emit
+persisted rooms. The native UI owns waiting behavior.
 
 ## Failure behavior
 

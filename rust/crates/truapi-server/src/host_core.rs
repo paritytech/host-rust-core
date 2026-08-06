@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn app_connection_rejects_native_chat_actions() {
+    fn spa_connection_rejects_native_chat_actions() {
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
             Arc::new(StubPlatform::default()),
@@ -958,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn app_connection_rejects_native_custom_rendering() {
+    fn spa_connection_rejects_native_custom_rendering() {
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
             Arc::new(StubPlatform::default()),
@@ -977,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_request_on_app_connection() {
+    fn generated_filter_denies_chat_request_on_spa_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -1017,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_subscription_on_app_connection() {
+    fn generated_filter_denies_chat_subscription_on_spa_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(

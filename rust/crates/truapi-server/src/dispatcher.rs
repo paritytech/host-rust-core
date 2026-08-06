@@ -299,12 +299,12 @@ mod tests {
 
     #[test]
     fn execution_filter_is_bound_to_the_connection() {
-        let app =
-            Dispatcher::for_execution(test_spawner(), truapi_platform::ProductExecutionKind::App);
+        let spa =
+            Dispatcher::for_execution(test_spawner(), truapi_platform::ProductExecutionKind::Spa);
         let chat =
             Dispatcher::for_execution(test_spawner(), truapi_platform::ProductExecutionKind::Chat);
 
-        assert!(!app.allows_execution(truapi_platform::ProductExecutionKind::Chat));
+        assert!(!spa.allows_execution(truapi_platform::ProductExecutionKind::Chat));
         assert!(chat.allows_execution(truapi_platform::ProductExecutionKind::Chat));
     }
 }

@@ -11,5 +11,5 @@ export { servicesForExecution };
 
 export const services: ServiceInfo[] = servicesForExecution(
   generatedServices,
-  "App",
+  "Spa",
 );

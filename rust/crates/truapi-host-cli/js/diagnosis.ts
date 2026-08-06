@@ -18,7 +18,7 @@ import type { TrUApiClient } from "../../../../js/packages/truapi/src/index.ts";
 const UNARY_TIMEOUT_MS = 10_000;
 const REMOTE_RESPONSE_TIMEOUT_MS = 190_000;
 const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
-const APP_SERVICES = servicesForExecution(services, "App");
+const SPA_SERVICES = servicesForExecution(services, "Spa");
 const SKIPPED_SERVICES = new Set(["Coin Payment", "Payment"]);
 const SKIPPED_METHODS = new Set(["Account/create_account_proof"]);
 const LONG_TIMEOUT_METHODS = new Set([
@@ -74,7 +74,7 @@ export interface DiagnosisOptions {
 export function createDiagnosisPlan(
   options: Pick<DiagnosisOptions, "runKnownUnsupported"> = {},
 ): DiagnosisCase[] {
-  return APP_SERVICES.flatMap((service) =>
+  return SPA_SERVICES.flatMap((service) =>
     service.methods.map((method) => {
       const id = `${service.name}/${method.name}`;
       return {

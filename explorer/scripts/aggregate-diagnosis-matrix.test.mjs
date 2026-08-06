@@ -7,7 +7,7 @@ import test from "node:test";
 
 const script = new URL("./aggregate-diagnosis-matrix.mjs", import.meta.url);
 
-test("keeps App and Chat diagnosis reports in separate matrices", () => {
+test("keeps SPA and Chat diagnosis reports in separate matrices", () => {
   const directory = mkdtempSync(join(tmpdir(), "truapi-compat-"));
   const output = join(directory, "compatibility.ts");
 
@@ -28,17 +28,17 @@ test("keeps App and Chat diagnosis reports in separate matrices", () => {
   ]);
 
   const generated = readFileSync(output, "utf8");
-  const app = generated.match(
+  const spa = generated.match(
     /export const compatibility: CompatibilityMatrix = ([\s\S]*?);\n\nexport const chatCompatibility/,
   )?.[1];
   const chat = generated.match(
     /export const chatCompatibility: CompatibilityMatrix = ([\s\S]*?);\n/,
   )?.[1];
 
-  assert.ok(app);
+  assert.ok(spa);
   assert.ok(chat);
-  assert.deepEqual(JSON.parse(app).hosts, [{ label: "iOS", mode: "iOS" }]);
-  assert.deepEqual(JSON.parse(app).methods.map(({ id }) => id), [
+  assert.deepEqual(JSON.parse(spa).hosts, [{ label: "iOS", mode: "iOS" }]);
+  assert.deepEqual(JSON.parse(spa).methods.map(({ id }) => id), [
     "Account/get_account",
   ]);
   assert.deepEqual(JSON.parse(chat).hosts, [{ label: "iOS", mode: "iOS" }]);
@@ -70,19 +70,19 @@ test("parent directory selects the matrix regardless of title", () => {
   ]);
 
   const generated = readFileSync(output, "utf8");
-  const app = generated.match(
+  const spa = generated.match(
     /export const compatibility: CompatibilityMatrix = ([\s\S]*?);\n\nexport const chatCompatibility/,
   )?.[1];
   const chat = generated.match(
     /export const chatCompatibility: CompatibilityMatrix = ([\s\S]*?);\n/,
   )?.[1];
 
-  assert.ok(app);
+  assert.ok(spa);
   assert.ok(chat);
-  assert.deepEqual(JSON.parse(app).hosts, [
+  assert.deepEqual(JSON.parse(spa).hosts, [
     { label: "Desktop", mode: "Desktop" },
   ]);
-  assert.deepEqual(JSON.parse(app).methods.map(({ id }) => id), [
+  assert.deepEqual(JSON.parse(spa).methods.map(({ id }) => id), [
     "Account/get_account",
   ]);
   assert.deepEqual(JSON.parse(chat).hosts, [

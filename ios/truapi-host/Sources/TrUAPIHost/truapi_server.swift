@@ -9501,13 +9501,9 @@ extension NativePermissionAuthorizationStatus: Equatable, Hashable {}
 public enum NativeProductExecutionKind {
 
     /**
-     * Visible application entrypoint.
+     * Visible single-page application entrypoint.
      */
-    case app
-    /**
-     * Host-embedded product widget entrypoint.
-     */
-    case widget
+    case spa
     /**
      * Headless Chat worker entrypoint.
      */
@@ -9529,11 +9525,9 @@ public struct FfiConverterTypeNativeProductExecutionKind: FfiConverterRustBuffer
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .app
+        case 1: return .spa
 
-        case 2: return .widget
-
-        case 3: return .chat
+        case 2: return .chat
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -9543,16 +9537,12 @@ public struct FfiConverterTypeNativeProductExecutionKind: FfiConverterRustBuffer
         switch value {
 
 
-        case .app:
+        case .spa:
             writeInt(&buf, Int32(1))
 
 
-        case .widget:
-            writeInt(&buf, Int32(2))
-
-
         case .chat:
-            writeInt(&buf, Int32(3))
+            writeInt(&buf, Int32(2))
 
         }
     }

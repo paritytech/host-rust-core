@@ -17,7 +17,7 @@ export interface MethodInfo {
 }
 
 /** Trusted executable kind required to access a generated service. */
-export type ProductExecutionKind = "App" | "Widget" | "Chat";
+export type ProductExecutionKind = "Spa" | "Chat";
 
 export interface ServiceInfo {
   name: string;

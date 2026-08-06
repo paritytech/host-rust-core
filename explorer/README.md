@@ -4,7 +4,7 @@ Docs-only browser for the TrUAPI service surface. All trait and type data is sou
 
 ## Host compatibility matrix
 
-The **Compatibility** page (`/v/<version>/compatibility`) renders separate App and Chat host × method matrices aggregated from the playground's per-host Diagnosis reports. The committed per-host reports under [`diagnosis-reports/`](diagnosis-reports/) are the source of truth; [`src/data/compatibility.ts`](src/data/compatibility.ts) is a generated artifact (git-ignored) that [`scripts/aggregate-diagnosis-matrix.mjs`](scripts/aggregate-diagnosis-matrix.mjs) rebuilds from those reports at `dev` / `build` / `lint` time (via the `predev` / `prebuild` / `prelint` scripts). It is the **only** runtime-derived data in the explorer; everything else flows from Rust via codegen.
+The **Compatibility** page (`/v/<version>/compatibility`) renders separate SPA and Chat host × method matrices aggregated from the playground's per-host Diagnosis reports. The committed per-host reports under [`diagnosis-reports/`](diagnosis-reports/) are the source of truth; [`src/data/compatibility.ts`](src/data/compatibility.ts) is a generated artifact (git-ignored) that [`scripts/aggregate-diagnosis-matrix.mjs`](scripts/aggregate-diagnosis-matrix.mjs) rebuilds from those reports at `dev` / `build` / `lint` time (via the `predev` / `prebuild` / `prelint` scripts). It is the **only** runtime-derived data in the explorer; everything else flows from Rust via codegen.
 
 ### Updating the matrix
 

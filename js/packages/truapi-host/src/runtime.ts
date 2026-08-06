@@ -59,7 +59,7 @@ export type LogLevel = string;
 export interface ProductRuntimeConfig {
   /** Stable identifier used to scope product accounts, permissions, and storage. */
   productId: string;
-  /** Trusted executable kind selected by the host; defaults to `App`. */
+  /** Trusted executable kind selected by the host; defaults to `Spa`. */
   executionKind?: ProductExecutionKind;
   /** Metadata describing the host application. */
   host: {

@@ -5,12 +5,11 @@ import { services as generatedServices } from "./codegen/services.js";
 const services: ServiceInfo[] = [
     { name: "Storage", methods: [] },
     { name: "Chat", requiredExecution: "Chat", methods: [] },
-    { name: "Widget", requiredExecution: "Widget", methods: [] },
 ];
 
 describe("servicesForExecution", () => {
     test("keeps shared services and services for the selected execution", () => {
-        expect(servicesForExecution(services, "App").map(({ name }) => name)).toEqual(["Storage"]);
+        expect(servicesForExecution(services, "Spa").map(({ name }) => name)).toEqual(["Storage"]);
         expect(servicesForExecution(services, "Chat").map(({ name }) => name)).toEqual([
             "Storage",
             "Chat",

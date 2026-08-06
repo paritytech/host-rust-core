@@ -98,7 +98,7 @@ async function runOne({
     const client = getClientSync();
     if (!client) {
       throw new Error(
-        "App must be opened inside a TrUAPI host (iframe or webview).",
+        "SPA must be opened inside a TrUAPI host (iframe or webview).",
       );
     }
     run = await Promise.race([

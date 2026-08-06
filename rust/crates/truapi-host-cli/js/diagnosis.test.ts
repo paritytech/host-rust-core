@@ -36,7 +36,7 @@ describe("generated-example battery", () => {
   });
 
   test("derives every case from the generated playground manifest", () => {
-    const generatedIds = servicesForExecution(services, "App").flatMap(
+    const generatedIds = servicesForExecution(services, "Spa").flatMap(
       (service) =>
         service.methods.map((method) => `${service.name}/${method.name}`),
     );

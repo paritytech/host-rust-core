@@ -95,11 +95,9 @@ pub struct ProductContext {
 /// Trusted kind of product executable attached to a TrUAPI connection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ProductExecutionKind {
-    /// Visible application entrypoint such as `app/index.html`.
+    /// Visible single-page application entrypoint such as `app/index.html`.
     #[default]
-    App,
-    /// Host-embedded product widget entrypoint.
-    Widget,
+    Spa,
     /// Headless worker executable that provides the Chat modality.
     Chat,
 }
@@ -195,7 +193,7 @@ impl ProductContext {
     /// Build a product context, validating fields whose representation cannot
     /// be made invalid by Rust types alone.
     pub fn new(product_id: String) -> Result<Self, RuntimeConfigValidationError> {
-        Self::new_with_execution(product_id, ProductExecutionKind::App)
+        Self::new_with_execution(product_id, ProductExecutionKind::Spa)
     }
 
     /// Build a product context for a host-selected executable kind.
