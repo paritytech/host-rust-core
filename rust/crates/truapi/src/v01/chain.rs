@@ -361,8 +361,6 @@ pub struct RemoteChainTransactionBroadcastResponse {
 pub struct HostChainDescriptor {
     /// Stable machine key for the chain's role, e.g. "asset-hub".
     pub name: String,
-    /// Ecosystem the chain belongs to, e.g. "polkadot", "kusama", "paseo".
-    pub network: String,
     /// Genesis hash identifying the chain in all chain-scoped calls.
     pub genesis_hash: Vec<u8>,
 }
@@ -370,17 +368,17 @@ pub struct HostChainDescriptor {
 /// Response listing every chain the host serves.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RemoteChainSupportedChainsResponse {
+    /// Ecosystem the host is configured for, e.g. "polkadot", "kusama", "paseo".
+    pub network: String,
     /// Complete set of chains available through this host.
     pub chains: Vec<HostChainDescriptor>,
 }
 
-/// Request to resolve a named chain within a network.
+/// Request to resolve a named chain against the host's configured environment.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RemoteChainResolveChainRequest {
     /// Stable machine key, e.g. "asset-hub".
     pub name: String,
-    /// Ecosystem string, e.g. "polkadot", "paseo".
-    pub network: String,
 }
 
 /// Response carrying the resolved genesis hash.
@@ -393,7 +391,7 @@ pub struct RemoteChainResolveChainResponse {
 /// Error from [`crate::api::Chain::resolve_chain`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum RemoteChainResolveChainError {
-    /// No supported chain matches the requested (name, network) pair.
+    /// No supported chain matches the requested name.
     NotFound,
     /// Catch-all.
     Unknown(GenericError),

@@ -397,6 +397,7 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// const result = await truapi.chain.getSupportedChains();
     /// assert(result.isOk(), "getSupportedChains failed:", result);
+    /// console.log("network:", result.value.network);
     /// console.log("supported chains:", result.value.chains);
     /// ```
     #[wire(request_id = 166)]
@@ -409,12 +410,11 @@ pub trait Chain: Send + Sync {
         Err(CallError::unavailable())
     }
 
-    /// Resolve a (name, network) pair to the chain's genesis hash (RFC 0026).
+    /// Resolve a chain name to its genesis hash (RFC 0026).
     ///
     /// ```ts
     /// const result = await truapi.chain.resolveChain({
     ///   name: "asset-hub",
-    ///   network: "paseo",
     /// });
     /// assert(result.isOk(), "resolveChain failed:", result);
     /// console.log("genesis hash:", result.value.genesisHash);
