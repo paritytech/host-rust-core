@@ -54,8 +54,8 @@
 | `Payment/status_subscribe` | ❌ | topUp failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "Payments are not supported in dot.li" } } } } } |
 | `Permissions/request_device_permission` | ✅ |  |
 | `Permissions/request_remote_permission` | ✅ |  |
-| `Preimage/lookup_subscribe` | ❌ | submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "bulletin allowance is not available" } } } } } |
-| `Preimage/submit` | ❌ | submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "bulletin allowance is not available" } } } } } |
+| `Preimage/lookup_subscribe` | ✅ |  |
+| `Preimage/submit` | ✅ |  |
 | `Resource Allocation/request` | ❌ | statement-store or bulletin allowance was not allocated: { "outcomes": [ "NotAvailable", "NotAvailable", "NotAvailable", "Allocated" ] } |
 | `Signing/create_transaction` | ✅ |  |
 | `Signing/create_transaction_with_legacy_account` | ✅ |  |

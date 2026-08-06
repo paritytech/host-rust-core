@@ -27,13 +27,11 @@ use super::SigningHost;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-use crate::host_logic::product_account::{
-    ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
-    product_public_key_to_address,
-};
 #[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
-    derive_ring_vrf_domain_entropy, derive_sr25519_hard_path,
+    ProductAccountError, derive_identity_keypair, derive_ring_vrf_domain_entropy,
+    derive_root_keypair_from_entropy, product_public_key_to_address,
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{

@@ -33,6 +33,7 @@ pub(crate) struct RuntimeServices {
     /// People-chain statement store RPC client.
     pub(crate) statement_store: StatementStoreRpc,
     /// People-chain genesis hash used for ring locations and statement-store protocols.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) people_chain_genesis_hash: [u8; 32],
     /// In-core Bulletin submission over the configured Bulletin chain.
     pub(crate) bulletin: BulletinRpc,
@@ -68,6 +69,7 @@ impl RuntimeServices {
             platform,
             chain,
             statement_store,
+            #[cfg(not(target_arch = "wasm32"))]
             people_chain_genesis_hash,
             bulletin,
             preimage_cache: Mutex::new(PreimageCache::default()),

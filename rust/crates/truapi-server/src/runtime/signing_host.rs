@@ -48,9 +48,11 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
 use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
 use crate::runtime::auth_state::AuthStateMachine;
+#[cfg(not(target_arch = "wasm32"))]
+use ring_vrf::LITE_PERSON_COLLECTION;
 use ring_vrf::{
-    ChainRingResolver, LITE_PERSON_COLLECTION, MemberCandidate, RingResolver, alias_from_entropy,
-    context_bytes, create_proof, member_from_entropy, sign_from_entropy,
+    ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
+    create_proof, member_from_entropy, sign_from_entropy,
 };
 
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
@@ -358,6 +360,7 @@ impl SigningHost {
             })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn well_known_ring_location(&self, collection: [u8; 32]) -> v01::RingLocation {
         v01::RingLocation {
             chain_id: self.services.people_chain_genesis_hash,
@@ -368,6 +371,7 @@ impl SigningHost {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn selected_lite_person_entropy(
         &self,
         session: &AuthoritySession,
