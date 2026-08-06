@@ -1,19 +1,20 @@
 use crate::v01::transaction::GenesisHash;
 use parity_scale_codec::{Decode, Encode};
 
-/// Account selector within a product subtree: `Either<u32, [u8; 32]>`.
+/// Account selector within a product subtree. Encodes as
+/// `Either<u32, [u8; 32]>` on the wire (`Index` = left, `Raw` = right).
 ///
-/// `Left` is the primary form — plain indices keep a product's accounts
-/// enumerable. `Right` carries a raw 32-byte derivation index for cases where
-/// bytes are genuinely necessary. Hosts expand `Left(n)` to the internal
+/// `Index` is the primary form — plain indices keep a product's accounts
+/// enumerable. `Raw` carries a raw 32-byte derivation index for cases where
+/// bytes are genuinely necessary. Hosts expand `Index(n)` to the internal
 /// 32-byte index (`u32` little-endian plus the index magic).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum DerivationIndex {
     /// Plain account index.
-    Left(u32),
+    Index(u32),
     /// Raw 32-byte derivation index.
-    Right([u8; 32]),
+    Raw([u8; 32]),
 }
 
 /// Identifies a product-specific account by combining a dotNS domain name with a

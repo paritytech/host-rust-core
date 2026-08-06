@@ -2237,11 +2237,12 @@ extension AllocatableResource: Equatable, Hashable {}
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
- * Account selector within a product subtree: `Either<u32, [u8; 32]>`.
+ * Account selector within a product subtree. Encodes as
+ * `Either<u32, [u8; 32]>` on the wire (`Index` = left, `Raw` = right).
  *
- * `Left` is the primary form — plain indices keep a product's accounts
- * enumerable. `Right` carries a raw 32-byte derivation index for cases where
- * bytes are genuinely necessary. Hosts expand `Left(n)` to the internal
+ * `Index` is the primary form — plain indices keep a product's accounts
+ * enumerable. `Raw` carries a raw 32-byte derivation index for cases where
+ * bytes are genuinely necessary. Hosts expand `Index(n)` to the internal
  * 32-byte index (`u32` little-endian plus the index magic).
  */
 
@@ -2250,12 +2251,12 @@ public enum DerivationIndex {
     /**
      * Plain account index.
      */
-    case left(UInt32
+    case index(UInt32
     )
     /**
      * Raw 32-byte derivation index.
      */
-    case right(Bytes32
+    case raw(Bytes32
     )
 }
 
@@ -2274,10 +2275,10 @@ public struct FfiConverterTypeDerivationIndex: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .left(try FfiConverterUInt32.read(from: &buf)
+        case 1: return .index(try FfiConverterUInt32.read(from: &buf)
         )
         
-        case 2: return .right(try FfiConverterTypeBytes32.read(from: &buf)
+        case 2: return .raw(try FfiConverterTypeBytes32.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2288,12 +2289,12 @@ public struct FfiConverterTypeDerivationIndex: FfiConverterRustBuffer {
         switch value {
         
         
-        case let .left(v1):
+        case let .index(v1):
             writeInt(&buf, Int32(1))
             FfiConverterUInt32.write(v1, into: &buf)
             
         
-        case let .right(v1):
+        case let .raw(v1):
             writeInt(&buf, Int32(2))
             FfiConverterTypeBytes32.write(v1, into: &buf)
             

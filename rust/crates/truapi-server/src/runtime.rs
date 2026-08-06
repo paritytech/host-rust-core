@@ -493,7 +493,7 @@ impl ProductRuntimeHost {
             session,
             &v01::ProductAccountId {
                 dot_ns_identifier: self.product_id(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         )
         .await
@@ -1498,7 +1498,7 @@ impl Signing for ProductRuntimeHost {
                 SignPayloadAuthorityRequest::LegacyAccount {
                     product_account: v01::ProductAccountId {
                         dot_ns_identifier: self.product_id(),
-                        derivation_index: v01::DerivationIndex::Left(0),
+                        derivation_index: v01::DerivationIndex::Index(0),
                     },
                     request: inner,
                 },
@@ -1554,7 +1554,7 @@ impl Signing for ProductRuntimeHost {
             LegacySigner::Product => SignRawAuthorityRequest::Product(v01::HostSignRawRequest {
                 account: v01::ProductAccountId {
                     dot_ns_identifier: self.product_id(),
-                    derivation_index: v01::DerivationIndex::Left(0),
+                    derivation_index: v01::DerivationIndex::Index(0),
                 },
                 payload: inner.payload,
             }),
@@ -1625,7 +1625,7 @@ impl Signing for ProductRuntimeHost {
             LegacySigner::Product => CreateTransactionAuthorityRequest::LegacyAccount {
                 product_account: v01::ProductAccountId {
                     dot_ns_identifier: self.product_id(),
-                    derivation_index: v01::DerivationIndex::Left(0),
+                    derivation_index: v01::DerivationIndex::Index(0),
                 },
                 request: inner,
             },
@@ -2534,7 +2534,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let err = futures::executor::block_on(host.get_account(&cx, request)).unwrap_err();
@@ -2579,7 +2579,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "example.com".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let err = futures::executor::block_on(host.get_account(&cx, request)).unwrap_err();
@@ -2604,7 +2604,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "other.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let err = futures::executor::block_on(host.get_account(&cx, request)).unwrap_err();
@@ -2640,7 +2640,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "other.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let err = futures::executor::block_on(host.get_account(&cx, request)).unwrap_err();
@@ -2666,7 +2666,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "other.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let response = futures::executor::block_on(host.get_account(&cx, request)).unwrap();
@@ -2686,7 +2686,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let response = futures::executor::block_on(host.get_account(&cx, request)).unwrap();
@@ -2706,7 +2706,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "MyApp.DOT".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let response = futures::executor::block_on(host.get_account(&cx, request)).unwrap();
@@ -2734,7 +2734,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let response = futures::executor::block_on(host.get_account(&cx, request)).unwrap();
@@ -4104,7 +4104,7 @@ mod tests {
             request.product_account_id,
             v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             }
         );
         assert!(matches!(
@@ -4157,7 +4157,7 @@ mod tests {
             request.product_account_id,
             v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             }
         );
     }
@@ -4340,7 +4340,7 @@ mod tests {
             payload.signer,
             v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             }
         );
     }

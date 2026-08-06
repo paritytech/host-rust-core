@@ -3536,8 +3536,8 @@ private let initializationResult: InitializationResult = {
     }
 
     uniffiCallbackInitHostCallbacks()
-    uniffiEnsureTruapiPlatformInitialized()
     uniffiEnsureTruapiInitialized()
+    uniffiEnsureTruapiPlatformInitialized()
     return InitializationResult.ok
 }()
 
