@@ -36,7 +36,7 @@ mod imp {
 
     /// Paseo relay-chain genesis hash.
     const PASEO_GENESIS_HEX: &str =
-        "77afd6190f1554ad45fd0d31aee62aacc33c6db0ea801129acb813f913e0764f";
+        "374057be67b355151f271ff70c3db98308c62c8adc48dc6724b6a009a1a014fd";
 
     /// Public Paseo WebSocket endpoint used when none is given.
     const DEFAULT_WS_URL: &str = "wss://paseo.rpc.amforc.com";

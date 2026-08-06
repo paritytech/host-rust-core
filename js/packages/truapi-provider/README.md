@@ -9,8 +9,8 @@ crate natively over UniFFI, so network access works the same everywhere.
 You connect to a network by its genesis hash, and everything else is handled for
 you: the bundled catalog provides the spec and relay wiring, so clients never
 ship or refresh specs of their own. One light client is shared across all
-connections, and its synced state is saved between runs, so the next launch
-resumes where it left off instead of syncing from scratch.
+connections. Its synced state can be captured and restored, so a launch resumes
+from finalized state instead of syncing from scratch.
 
 ## Usage
 
@@ -29,13 +29,27 @@ import wasmUrl from "@parity/truapi-provider/truapi_provider_bg.wasm?url";
 
 await init({ module_or_path: wasmUrl });
 
-const provider = new ChainProviderBuilder().build();
-const connection = await provider.connect("0x77af…"); // genesis hash
+const genesis = "0x77af…";
+const builder = new ChainProviderBuilder();
+
+// Resume from the state saved by the previous run, when there is one.
+const saved = localStorage.getItem(`chain-db:${genesis}`);
+if (saved) builder.setDatabase(genesis, saved);
+
+const provider = builder.build();
+const connection = await provider.connect(genesis);
 
 connection.send('{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}');
 const response = await connection.nextResponse(); // undefined once closed
 connection.close();
+
+// Later, once the light client has synced, save state for the next launch.
+localStorage.setItem(`chain-db:${genesis}`, await provider.snapshot(genesis));
 ```
+
+Warm start is yours to drive: call `snapshot()` once the light client has synced,
+persist the string wherever you like, and hand it back through `setDatabase()`
+before `build()` on the next launch.
 
 #### Android (Kotlin)
 

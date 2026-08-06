@@ -4,13 +4,14 @@
 //! at compile time via `TRUAPI_PROVIDER_TEST_WS`):
 //!
 //! ```text
-//! cargo run -p truapi-provider --features smoldot --example gateway -- \
+//! cargo run -p truapi-provider --features networks --example gateway -- \
 //!   rust/crates/truapi-provider/examples/gateway-dotli-paseo-next-v2.json &
 //! TRUAPI_PROVIDER_TEST_WS=ws://127.0.0.1:9944/relay \
 //!   wasm-pack test --headless --chrome rust/crates/truapi-provider --features js
 //! ```
 //!
-//! Without the env var only the offline failure paths run.
+//! Without the env var only the offline failure paths run; the gateway
+//! round-trips log that they were skipped rather than passing silently.
 
 #![cfg(all(target_arch = "wasm32", feature = "ws"))]
 
@@ -23,6 +24,19 @@ wasm_bindgen_test_configure!(run_in_browser);
 
 /// Gateway route to test against, baked in at compile time.
 const TEST_WS: Option<&str> = option_env!("TRUAPI_PROVIDER_TEST_WS");
+
+/// The gateway route, or `None` after logging that `test` is being skipped.
+///
+/// A vacuous pass is indistinguishable from a real one in the test output, so
+/// the skip is announced in the browser console the runner captures.
+fn gateway_url(test: &str) -> Option<&'static str> {
+    if TEST_WS.is_none() {
+        web_sys::console::warn_1(
+            &format!("SKIP {test}: set TRUAPI_PROVIDER_TEST_WS to run it against a gateway").into(),
+        );
+    }
+    TEST_WS
+}
 
 const GENESIS: [u8; 32] = [7; 32];
 
@@ -59,7 +73,7 @@ async fn handshake_failure_is_an_error() {
 
 #[wasm_bindgen_test]
 async fn round_trip_and_close_against_gateway() {
-    let Some(url) = TEST_WS else {
+    let Some(url) = gateway_url("round_trip_and_close_against_gateway") else {
         return; // Offline run: covered by the failure-path tests above.
     };
     let connection = provider(url)
@@ -114,7 +128,7 @@ async fn light_client_chain_name_round_trips_in_browser() {
 async fn js_api_round_trip_against_gateway() {
     use truapi_provider::js::{ChainProviderBuilder, Connection};
 
-    let Some(url) = TEST_WS else {
+    let Some(url) = gateway_url("js_api_round_trip_against_gateway") else {
         return;
     };
     let mut builder = ChainProviderBuilder::new();

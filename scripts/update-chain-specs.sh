@@ -6,6 +6,11 @@
 # chain's genesis after a wipe; a stale genesis stops smoldot from syncing. Relay specs additionally
 # get a fresh lightSyncState checkpoint, which reduces smoldot warp-sync time from ~12s to ~1-3s.
 #
+# The genesis and the checkpoint are what a light client trusts in place of syncing from block 0, so
+# neither is taken on a single endpoint's word. Every reachable endpoint must serve the same genesis
+# state root, and an endpoint other than the one that served the checkpoint must agree on the block
+# it pins. A network with only one endpoint cannot be corroborated and says so.
+#
 # These specs are compiled into the @parity/truapi-provider wasm via include_str!, so a refresh only
 # reaches consumers (e.g. dotli) after a new provider version is published and they bump to it.
 #
@@ -19,6 +24,10 @@ SPECS_DIR="$PROJECT_DIR/rust/crates/truapi-provider/networks"
 
 # Timeout (seconds) for all curl calls.
 TIMEOUT=30
+
+# Set when endpoints disagree about a genesis or a checkpoint. An unreachable endpoint is a routine
+# outage, but a reachable one serving a different chain is not, so it fails the whole run.
+INTEGRITY_FAILURES=0
 
 # Health-check the candidate bootNodes (env var BOOTNODES) and keep only the reachable ones.
 # Set env var SKIP_BOOTNODE_CHECK=true to leave them unchanged.
@@ -100,6 +109,70 @@ function testBootnode(ma, timeoutMs = 5000) {
 })();
 '
 
+# Corroborate a relay's warp-sync checkpoint against endpoints other than the one that served it.
+#
+# The checkpoint is the light client's root of trust, so it is not taken on one endpoint's word.
+# CHECKPOINT_HEADER is the SCALE-encoded finalized block header the checkpoint pins: its first 32
+# bytes are the parent hash and the compact integer after them is the block number. Each peer in
+# PEER_RPCS is asked for the canonical block at that height and its parent hash must match. A peer
+# still behind that height cannot answer and is skipped; finalized blocks do not reorg, so a peer
+# that does answer and disagrees means the two endpoints are serving different chains.
+CHECKPOINT_JS='
+const header = process.env.CHECKPOINT_HEADER.replace(/^0x/, "");
+const peers = JSON.parse(process.env.PEER_RPCS);
+const parentHash = "0x" + header.slice(0, 64);
+
+// SCALE compact integer at byte 32 (the block number).
+function compactAt(hex, offset) {
+  const byte = parseInt(hex.slice(offset * 2, offset * 2 + 2), 16);
+  const mode = byte & 0b11;
+  const width = mode === 0 ? 1 : mode === 1 ? 2 : mode === 2 ? 4 : 0;
+  if (width === 0) throw new Error("big-integer block numbers are not supported");
+  const le = hex.slice(offset * 2, offset * 2 + width * 2);
+  const bytes = le.match(/../g).map((b) => parseInt(b, 16));
+  let value = 0;
+  for (let i = bytes.length - 1; i >= 0; i--) value = value * 256 + bytes[i];
+  return value >>> 2;
+}
+
+async function rpc(url, method, params) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: 1, jsonrpc: "2.0", method, params }),
+    signal: AbortSignal.timeout(Number(process.env.TIMEOUT || 30) * 1000),
+  });
+  return (await response.json()).result;
+}
+
+(async () => {
+  const number = compactAt(header, 32);
+  for (const peer of peers) {
+    let peerParent;
+    try {
+      const hash = await rpc(peer, "chain_getBlockHash", [number]);
+      if (!hash) {
+        console.log("    ? " + peer + " is behind block " + number + ", cannot corroborate");
+        continue;
+      }
+      peerParent = (await rpc(peer, "chain_getHeader", [hash])).parentHash;
+    } catch (error) {
+      console.log("    ? " + peer + " did not answer (" + (error.message || error) + ")");
+      continue;
+    }
+    if (peerParent.toLowerCase() !== parentHash.toLowerCase()) {
+      console.log("    x " + peer + " disagrees at block " + number);
+      console.log("      checkpoint parent " + parentHash);
+      console.log("      peer parent       " + peerParent);
+      process.exit(1);
+    }
+    console.log("    ok corroborated at block " + number + " by " + peer);
+    return;
+  }
+  console.log("  WARNING: no independent endpoint could corroborate the checkpoint.");
+})();
+'
+
 # Fetch the genesis state root.
 fetch_state_root() {
   local rpc="$1"
@@ -134,12 +207,16 @@ refresh_spec() {
 
   echo "Refreshing $spec_file..."
 
-  local fields="" rpc="" state_root=""
+  local fields="" rpc="" state_root="" peers=()
   for candidate in "$@"; do
+    if [ -n "$state_root" ]; then
+      peers+=("$candidate")
+      continue
+    fi
     state_root=$(fetch_state_root "$candidate") || true
     if [ -n "$state_root" ]; then
       rpc="$candidate"
-      break
+      continue
     fi
     echo "  No block 0 from $candidate"
   done
@@ -148,6 +225,19 @@ refresh_spec() {
     return 1
   fi
   fields+="genesis.stateRootHash"
+
+  # Every reachable endpoint must agree on the genesis, so one endpoint alone cannot redirect a
+  # spec at a different chain.
+  for peer in "${peers[@]:-}"; do
+    [ -z "$peer" ] && continue
+    local peer_root
+    peer_root=$(fetch_state_root "$peer") || true
+    if [ -n "$peer_root" ] && [ "$peer_root" != "$state_root" ]; then
+      echo "  ERROR: $peer serves genesis state root $peer_root, $rpc serves $state_root."
+      INTEGRITY_FAILURES=$((INTEGRITY_FAILURES + 1))
+      return 1
+    fi
+  done
 
   # Relays read sync_state_genSyncSpec for their checkpoint; the same response also carries the
   # bootNodes. Pull only those two fields; jq drops the multi-MB genesis the response also returns.
@@ -162,6 +252,21 @@ refresh_spec() {
     # Without lightSyncState, smoldot can't sync a relay from a stateRootHash-only genesis, so fail.
     if [ "$light_sync_state" = "null" ]; then
       echo "  ERROR: Could not fetch lightSyncState from $rpc."
+      return 1
+    fi
+    # The checkpoint is what the light client trusts instead of syncing from genesis, so a second
+    # endpoint has to agree on the block it pins before it is compiled into the wasm.
+    local checkpoint_header
+    checkpoint_header=$(echo "$light_sync_state" | jq -r '.finalizedBlockHeader // .finalized_block_header // empty')
+    if [ -z "$checkpoint_header" ]; then
+      echo "  ERROR: lightSyncState from $rpc carries no finalized block header."
+      return 1
+    fi
+    if ! CHECKPOINT_HEADER="$checkpoint_header" \
+      PEER_RPCS="$(printf '%s\n' "${peers[@]:-}" | jq -R . | jq -sc 'map(select(length > 0))')" \
+      TIMEOUT="$TIMEOUT" node -e "$CHECKPOINT_JS"; then
+      echo "  ERROR: the checkpoint from $rpc could not be corroborated; leaving $spec_file alone."
+      INTEGRITY_FAILURES=$((INTEGRITY_FAILURES + 1))
       return 1
     fi
     fields+=" + lightSyncState"
@@ -209,6 +314,12 @@ refresh_spec "previewnet.json"                true  "https://previewnet.substrat
 refresh_spec "previewnet-asset-hub.json"      false "https://previewnet.substrate.dev/asset-hub" || true
 refresh_spec "previewnet-bulletin.json"       false "https://previewnet.substrate.dev/bulletin" || true
 refresh_spec "previewnet-people.json"         false "https://previewnet.substrate.dev/people" || true
+
+if [ "$INTEGRITY_FAILURES" -gt 0 ]; then
+  echo "FAILED: $INTEGRITY_FAILURES spec(s) had endpoints disagreeing about the chain they serve."
+  echo "Those specs were left unchanged. Investigate before publishing anything from this run."
+  exit 1
+fi
 
 echo "Done. Bundled chain specs updated in rust/crates/truapi-provider/networks/"
 echo "Publish a new @parity/truapi-provider so consumers pick up the refresh."

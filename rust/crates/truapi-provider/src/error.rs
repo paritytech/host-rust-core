@@ -95,20 +95,83 @@ pub(crate) fn synthetic_error_frame(request: &str, message: &str) -> Option<Stri
     )
 }
 
-/// Extract a JSON-RPC `result` string from `frame` when its `id` matches `id`,
-/// or `None` otherwise. Used to pick a specific response out of a raw pipe.
+/// Outcome of matching a JSON-RPC response frame against an awaited request id.
 #[cfg(feature = "smoldot")]
-pub(crate) fn result_string_for_id(frame: &str, id: &str) -> Option<String> {
+pub(crate) enum FrameForId {
+    /// The frame answers `id` with a string `result`.
+    Result(String),
+    /// The frame answers `id` with an `error`, or with a `result` that is not a
+    /// string.
+    Failure(String),
+}
+
+/// Match `frame` against the awaited `id`, returning how it answers.
+///
+/// `None` means the frame belongs to some other request (or is not a response),
+/// so the caller keeps waiting. Both answer cases must terminate the wait: a
+/// node that rejects the method answers with an `error` and keeps the socket
+/// open, so treating an error frame as unmatched would wait forever.
+#[cfg(feature = "smoldot")]
+pub(crate) fn frame_for_id(frame: &str, id: &str) -> Option<FrameForId> {
     let value: Value = serde_json::from_str(frame).ok()?;
     if value.get("id")?.as_str()? != id {
         return None;
     }
-    value.get("result")?.as_str().map(str::to_owned)
+    if let Some(error) = value.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
+        return Some(FrameForId::Failure(message.to_owned()));
+    }
+    match value.get("result").and_then(Value::as_str) {
+        Some(result) => Some(FrameForId::Result(result.to_owned())),
+        None => Some(FrameForId::Failure(
+            "response carried no string result".to_owned(),
+        )),
+    }
 }
 
 #[cfg(all(test, feature = "smoldot"))]
 mod tests {
-    use super::synthetic_error_frame;
+    use super::{FrameForId, frame_for_id, synthetic_error_frame};
+
+    #[test]
+    fn a_matching_result_frame_yields_its_string() {
+        let frame = frame_for_id(r#"{"id":"db","result":"blob"}"#, "db").expect("the id matches");
+        let FrameForId::Result(result) = frame else {
+            panic!("expected a result");
+        };
+        assert_eq!(result, "blob");
+    }
+
+    #[test]
+    fn a_matching_error_frame_fails_instead_of_waiting() {
+        // A node that does not implement the method answers with an error and
+        // keeps the socket open, so this must terminate the caller's wait.
+        let frame = frame_for_id(
+            r#"{"id":"db","error":{"code":-32601,"message":"Method not found"}}"#,
+            "db",
+        )
+        .expect("the id matches");
+        let FrameForId::Failure(reason) = frame else {
+            panic!("expected a failure");
+        };
+        assert_eq!(reason, "Method not found");
+    }
+
+    #[test]
+    fn a_matching_non_string_result_fails() {
+        let frame = frame_for_id(r#"{"id":"db","result":null}"#, "db").expect("the id matches");
+        assert!(matches!(frame, FrameForId::Failure(_)));
+    }
+
+    #[test]
+    fn other_ids_and_notifications_are_not_matched() {
+        assert!(frame_for_id(r#"{"id":"other","result":"blob"}"#, "db").is_none());
+        assert!(frame_for_id(r#"{"method":"chainHead_v1_followEvent"}"#, "db").is_none());
+        assert!(frame_for_id("not json", "db").is_none());
+    }
 
     #[test]
     fn echoes_the_request_id() {

@@ -111,6 +111,10 @@ impl EmbeddedChainProvider {
 
     /// Open a connection for `source`; for a parachain, `relay`/`chains` give
     /// the light backend the relay to sync it through.
+    ///
+    /// The relay's source is resolved and warm-start-seeded here, so a blob
+    /// registered for a relay applies whether it is connected directly or
+    /// brought up implicitly behind one of its parachains.
     #[cfg_attr(not(feature = "smoldot"), allow(unused_variables))]
     async fn connect_source(
         &self,
@@ -122,8 +126,33 @@ impl EmbeddedChainProvider {
             #[cfg(feature = "ws")]
             ChainSource::RpcNode { url } => crate::ws::connect(url.clone()).await,
             #[cfg(feature = "smoldot")]
-            ChainSource::LightClient { .. } => self.light.connect(chains, source, relay).await,
+            ChainSource::LightClient { .. } => {
+                let relay = match relay {
+                    None => None,
+                    Some(relay_genesis) => Some(self.resolve_relay(chains, relay_genesis)?),
+                };
+                self.light.connect(source, relay).await
+            }
         }
+    }
+
+    /// Resolve a parachain's relay to the source the light backend should add
+    /// it under, carrying any warm-start blob registered for the relay.
+    #[cfg(feature = "smoldot")]
+    fn resolve_relay(
+        &self,
+        chains: &HashMap<[u8; 32], ChainSource>,
+        relay_genesis: [u8; 32],
+    ) -> Result<([u8; 32], ChainSource), ProviderError> {
+        let source = chains
+            .get(&relay_genesis)
+            .ok_or(ProviderError::UnknownRelay {
+                relay: relay_genesis,
+            })?;
+        Ok((
+            relay_genesis,
+            self.with_seeded_database(relay_genesis, source.clone()),
+        ))
     }
 
     /// Apply a seeded warm-start database blob to `source` if one exists for
@@ -158,11 +187,15 @@ impl EmbeddedChainProvider {
     ///
     /// Persist the returned string and feed it back on a later run via
     /// [`EmbeddedChainProviderBuilder::database`] so the chain resumes from
-    /// finalized state instead of re-syncing from the checkpoint. Meaningful
-    /// only for light-client chains; a remote-node chain never answers and the
-    /// call resolves once that connection ends.
+    /// finalized state instead of re-syncing from the checkpoint.
+    ///
+    /// Meaningful only for light-client chains. A remote node has no local
+    /// database to snapshot and answers the request with a JSON-RPC error,
+    /// which surfaces here as an error rather than a wait.
     pub async fn snapshot(&self, genesis_hash: [u8; 32]) -> Result<String, GenericError> {
         use futures::stream::StreamExt;
+
+        use crate::error::FrameForId;
 
         let connection = self.connect(genesis_hash).await?;
         let mut responses = connection.responses();
@@ -175,9 +208,19 @@ impl EmbeddedChainProvider {
             id, SNAPSHOT_MAX_BYTES,
         ));
         while let Some(frame) = responses.next().await {
-            if let Some(result) = crate::error::result_string_for_id(&frame, id) {
-                connection.close();
-                return Ok(result);
+            match crate::error::frame_for_id(&frame, id) {
+                Some(FrameForId::Result(result)) => {
+                    connection.close();
+                    return Ok(result);
+                }
+                Some(FrameForId::Failure(reason)) => {
+                    connection.close();
+                    return Err(ProviderError::Transport {
+                        reason: format!("finalized-database snapshot failed: {reason}"),
+                    }
+                    .into());
+                }
+                None => {}
             }
         }
         connection.close();
@@ -246,6 +289,55 @@ mod tests {
             .err()
             .expect("connect must fail for an unregistered genesis");
         assert!(error.reason.contains(&"ab".repeat(32)));
+    }
+
+    /// A blob registered for a relay reaches it even when the relay is never
+    /// connected directly, only brought up behind one of its parachains.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn a_relay_blob_seeds_the_relay_brought_up_behind_a_parachain() {
+        use std::collections::HashMap;
+
+        const RELAY: [u8; 32] = [1; 32];
+        let mut chains = HashMap::new();
+        chains.insert(RELAY, ChainSource::light_client("{}").build());
+        let provider = EmbeddedChainProvider::builder()
+            .database(RELAY, "relay-blob".to_owned())
+            .build();
+
+        let (genesis, source) = provider
+            .resolve_relay(&chains, RELAY)
+            .expect("the relay is registered");
+        assert_eq!(genesis, RELAY);
+        let ChainSource::LightClient {
+            database_content, ..
+        } = source
+        else {
+            panic!("expected a LightClient source");
+        };
+        assert_eq!(database_content.as_deref(), Some("relay-blob"));
+    }
+
+    /// The snapshot round trip resolves against a live light client, and the
+    /// blob it returns is accepted back as a warm-start seed.
+    #[cfg(feature = "smoldot")]
+    #[test]
+    fn snapshot_round_trips_into_a_warm_start_seed() {
+        const GENESIS: [u8; 32] = [1; 32];
+        const SPEC: &str = include_str!("../tests/fixtures/paseo.json");
+        let provider = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client(SPEC).build())
+            .build();
+        let blob = futures::executor::block_on(provider.snapshot(GENESIS))
+            .expect("the light client answers the finalized-database request");
+        assert!(blob.contains("genesisHash"), "unexpected blob: {blob}");
+
+        let seeded = EmbeddedChainProvider::builder()
+            .chain(GENESIS, ChainSource::light_client(SPEC).build())
+            .database(GENESIS, blob)
+            .build();
+        futures::executor::block_on(seeded.connect(GENESIS))
+            .expect("a chain seeded with its own snapshot connects");
     }
 
     #[cfg(feature = "ws")]

@@ -5219,6 +5219,7 @@ dependencies = [
 name = "truapi-provider"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
  "derive_more 2.1.1",
  "futures",
  "futures-timer",

@@ -29,6 +29,7 @@ jobs:
         with:
           toolchain: nightly
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
@@ -43,8 +44,8 @@ jobs:
       - name: cargo check wasm32
         run: cargo check --target wasm32-unknown-unknown -p truapi-server
 
-      - name: cargo check wasm32 (truapi-provider browser backends)
-        run: cargo check -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets
+      - name: cargo +nightly clippy wasm32 (truapi-provider browser backends)
+        run: cargo +nightly clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
 
       - name: cargo +nightly fmt --check
         run: cargo +nightly fmt --check

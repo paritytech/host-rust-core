@@ -8,9 +8,12 @@
 //! [`ChainId`], request queue, and response stream, which yields natural
 //! per-connection isolation.
 //!
-//! Warm-start snapshots: send `chainHead_unstable_finalizedDatabase` over any
-//! live connection, persist the returned string, and feed it back through
-//! [`LightClientBuilder::database`](crate::LightClientBuilder::database).
+//! Warm-start snapshots: take one with
+//! [`EmbeddedChainProvider::snapshot`](crate::EmbeddedChainProvider::snapshot),
+//! persist the returned string, and feed it back on a later run through
+//! [`EmbeddedChainProviderBuilder::database`](crate::EmbeddedChainProviderBuilder::database),
+//! which seeds a chain whether it is connected directly or brought up behind
+//! one of its parachains.
 //!
 //! Observability: on native targets smoldot logs through the `log` crate. A
 //! host that wants those lines in its `tracing` output should install a
@@ -118,12 +121,11 @@ impl LightState {
     }
 
     /// Add `source` to the shared client as a [`JsonRpcConnection`]. For a
-    /// parachain, `relay` names its relay and `chains` supplies the relay's spec.
+    /// parachain, `relay` carries its relay's genesis hash and resolved source.
     pub(crate) async fn connect(
         &self,
-        chains: &HashMap<[u8; 32], ChainSource>,
         source: &ChainSource,
-        relay: Option<[u8; 32]>,
+        relay: Option<([u8; 32], ChainSource)>,
     ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
         // `ChainSource` collapses to a single variant when only the smoldot
         // backend is enabled (e.g. the iOS build), making this match irrefutable.
@@ -142,12 +144,13 @@ impl LightState {
         let inner = Arc::clone(self.inner());
         let mut guard = lock(&inner);
 
-        let relay_id = match relay {
+        let relay_genesis = relay.as_ref().map(|(genesis, _)| *genesis);
+        let relay_id = match &relay {
             None => None,
-            Some(relay_genesis) => Some(add_relay(&mut guard, chains, relay_genesis)?),
+            Some((genesis, relay_source)) => Some(add_relay(&mut guard, *genesis, relay_source)?),
         };
 
-        let success = guard
+        let added = guard
             .client
             .add_chain(AddChainConfig {
                 user_data: (),
@@ -163,7 +166,20 @@ impl LightState {
             })
             .map_err(|err| ProviderError::AddChain {
                 reason: err.to_string(),
-            })?;
+            });
+
+        // No connection is constructed on the error path, so nothing would ever
+        // release the reference taken on the relay above (smoldot rejects the
+        // add when the spec's relay does not match the one supplied).
+        let success = match added {
+            Ok(success) => success,
+            Err(error) => {
+                if let Some(genesis) = relay_genesis {
+                    release_relay(&mut guard, genesis);
+                }
+                return Err(error);
+            }
+        };
 
         let responses = success
             .json_rpc_responses
@@ -177,7 +193,7 @@ impl LightState {
         Ok(Box::new(LightConnection {
             inner,
             chain_id: success.chain_id,
-            relay,
+            relay: relay_genesis,
             errors_tx,
             responses: Mutex::new(Some((responses, errors_rx))),
             closed: AtomicBool::new(false),
@@ -193,20 +209,23 @@ impl LightState {
 /// registry entry.
 fn add_relay(
     guard: &mut LightInner,
-    chains: &HashMap<[u8; 32], ChainSource>,
     relay_genesis: [u8; 32],
+    relay_source: &ChainSource,
 ) -> Result<ChainId, ProviderError> {
     if let Some(existing) = guard.relays.get_mut(&relay_genesis) {
         existing.refcount += 1;
         return Ok(existing.chain_id);
     }
 
-    let Some(ChainSource::LightClient {
+    // `ChainSource` collapses to a single variant when only the smoldot backend
+    // is enabled, making this match irrefutable.
+    #[allow(irrefutable_let_patterns)]
+    let ChainSource::LightClient {
         specification,
         database_content,
         statement_protocol,
         ..
-    }) = chains.get(&relay_genesis)
+    } = relay_source
     else {
         return Err(ProviderError::UnknownRelay {
             relay: relay_genesis,
@@ -235,6 +254,25 @@ fn add_relay(
         },
     );
     Ok(success.chain_id)
+}
+
+/// Drop one reference on the implicit relay `relay_genesis`, removing it from
+/// the client once the last parachain connection using it is gone.
+///
+/// Callers must have already removed (or never added) the parachain chain that
+/// held the reference, so no live chain still depends on the relay.
+fn release_relay(guard: &mut LightInner, relay_genesis: [u8; 32]) {
+    let orphaned = match guard.relays.get_mut(&relay_genesis) {
+        Some(entry) => {
+            entry.refcount -= 1;
+            (entry.refcount == 0).then_some(entry.chain_id)
+        }
+        None => None,
+    };
+    if let Some(relay_id) = orphaned {
+        guard.relays.remove(&relay_genesis);
+        let _: () = guard.client.remove_chain(relay_id);
+    }
 }
 
 fn statement_protocol_config() -> StatementProtocolConfig {
@@ -321,21 +359,10 @@ impl JsonRpcConnection for LightConnection {
         // terminates cleanly.
         let _: () = guard.client.remove_chain(self.chain_id);
 
-        // Release the hold on the implicit relay and remove it once the last
-        // parachain connection using it is gone. This connection's own chain is
-        // already removed above, so no live chain still depends on the relay.
+        // This connection's own chain is already removed above, so no live chain
+        // still depends on the relay it held a reference on.
         if let Some(relay_genesis) = self.relay {
-            let orphaned = match guard.relays.get_mut(&relay_genesis) {
-                Some(entry) => {
-                    entry.refcount -= 1;
-                    (entry.refcount == 0).then_some(entry.chain_id)
-                }
-                None => None,
-            };
-            if let Some(relay_id) = orphaned {
-                guard.relays.remove(&relay_genesis);
-                let _: () = guard.client.remove_chain(relay_id);
-            }
+            release_relay(&mut guard, relay_genesis);
         }
 
         self.errors_tx.close_channel();
@@ -475,6 +502,32 @@ mod tests {
             provider.relay_count(),
             0,
             "the relay is reclaimed after the last parachain connection closes"
+        );
+    }
+
+    #[test]
+    fn a_failed_parachain_add_releases_its_relay() {
+        // The relay entry is a chain whose spec id is not the one the parachain
+        // declares, so smoldot refuses the parachain with NoRelayChainFound
+        // after the relay has already been added and referenced.
+        let provider = EmbeddedChainProvider::builder()
+            .chain(
+                RELAY_GENESIS,
+                ChainSource::light_client(PARACHAIN_SPEC).build(),
+            )
+            .parachain(
+                PARACHAIN_GENESIS,
+                ChainSource::light_client(PARACHAIN_SPEC).build(),
+                RELAY_GENESIS,
+            )
+            .build();
+        block_on(provider.connect(PARACHAIN_GENESIS))
+            .err()
+            .expect("a parachain whose relay does not match must fail to connect");
+        assert_eq!(
+            provider.relay_count(),
+            0,
+            "the relay must not leak when the parachain add fails"
         );
     }
 
