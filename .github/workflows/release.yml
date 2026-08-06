@@ -126,9 +126,9 @@ jobs:
           fi
 
       - if: steps.version.outputs.proceed == 'true'
-        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly-2026-01-10
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
-          toolchain: nightly-2026-01-10
+          toolchain: nightly
           components: rustfmt
 
       - if: steps.version.outputs.proceed == 'true'

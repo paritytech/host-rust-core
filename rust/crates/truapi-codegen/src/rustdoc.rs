@@ -283,13 +283,13 @@ pub fn parse(json: &str) -> Result<Crate> {
     let Some(version) = krate.format_version else {
         bail!(
             "rustdoc JSON is missing `format_version`; regenerate it with \
-             `cargo +nightly-2026-01-10 rustdoc --output-format json`"
+             `cargo +nightly rustdoc --output-format json` (nightly 2026-02-23 or later)"
         );
     };
     if version < MIN_FORMAT_VERSION {
         bail!(
             "rustdoc JSON format_version {version} is older than the tested minimum \
-             {MIN_FORMAT_VERSION}; regenerate with nightly-2026-01-10 or another compatible nightly"
+             {MIN_FORMAT_VERSION}; regenerate with nightly 2026-02-23 or later"
         );
     }
     Ok(krate)

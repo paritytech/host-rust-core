@@ -70,7 +70,7 @@ Failure modes:
 
 ```bash
 cargo build --workspace --all-targets --all-features
-cargo +nightly-2026-01-10 fmt --check
+cargo +nightly fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
@@ -103,8 +103,8 @@ purely TS-side.
 ```
 
 Expected: `Generated client at js/packages/truapi/src/generated/`. The
-script uses `cargo +nightly-2026-01-10 rustdoc --output-format json` so a
-missing pinned nightly toolchain or broken intra-doc links will fail it. Fix doc links
+script uses `cargo +nightly rustdoc --output-format json` so a missing
+nightly toolchain or broken intra-doc links will fail it. Fix doc links
 that the rustdoc step warns about — they break codegen and look worse
 in published docs.
 
@@ -291,7 +291,7 @@ authoritative source is `cargo`, not the editor squiggle.
 
 ### Broken intra-doc links break codegen
 
-Symptom: `cargo +nightly-2026-01-10 rustdoc -p truapi` emits
+Symptom: `cargo +nightly rustdoc -p truapi` emits
 `unresolved link to ...` warnings, then `truapi-codegen` produces
 output but you missed an item in the generated TS.
 
@@ -314,7 +314,7 @@ there is no inner type for codegen to emit.
 A change is end-to-end-verified locally when all of:
 
 - [ ] `cargo build/test/clippy --workspace --all-targets --all-features` clean
-- [ ] `cargo +nightly-2026-01-10 fmt --check` clean
+- [ ] `cargo +nightly fmt --check` clean
 - [ ] `./scripts/codegen.sh` clean (only if Rust surface changed)
 - [ ] `npm run build && npm test` in `js/packages/truapi/` clean
 - [ ] `yarn build && yarn lint` in `playground/` clean (after a fresh

@@ -25,9 +25,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly-2026-01-10
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
-          toolchain: nightly-2026-01-10
+          toolchain: nightly
           components: rustfmt, clippy
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
@@ -43,11 +43,11 @@ jobs:
       - name: cargo check wasm32
         run: cargo check --target wasm32-unknown-unknown -p truapi-server
 
-      - name: cargo +nightly-2026-01-10 fmt --check
-        run: cargo +nightly-2026-01-10 fmt --check
+      - name: cargo +nightly fmt --check
+        run: cargo +nightly fmt --check
 
-      - name: cargo +nightly-2026-01-10 clippy
-        run: cargo +nightly-2026-01-10 clippy --workspace --all-targets --all-features -- -D warnings
+      - name: cargo +nightly clippy
+        run: cargo +nightly clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: cargo test
         run: cargo test --workspace --all-features
@@ -77,9 +77,9 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly-2026-01-10
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
-          toolchain: nightly-2026-01-10
+          toolchain: nightly
           components: rustfmt
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

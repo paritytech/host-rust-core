@@ -6,7 +6,6 @@
 .PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli headless install matrix explorer
 
 CARGO ?= cargo
-NIGHTLY_TOOLCHAIN ?= nightly-2026-01-10
 TRUAPI_PKG := js/packages/truapi
 PLAYGROUND := playground
 JS_PACKAGES := js/packages
@@ -65,7 +64,7 @@ install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `m
 	cargo install --path rust/crates/truapi-host-cli --bin truapi-host --locked --force
 
 codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
-	TRUAPI_NIGHTLY_TOOLCHAIN="$(NIGHTLY_TOOLCHAIN)" ./scripts/codegen.sh
+	./scripts/codegen.sh
 	cd $(PLAYGROUND) && rm -rf node_modules/@parity && yarn install
 
 wasm: ## Rebuild the truapi-server WASM artifacts under js/packages/truapi-host/dist/wasm/.
@@ -218,7 +217,7 @@ test: ## Run Rust + TypeScript client tests.
 check: ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
 	cargo build --workspace
 	cargo check --target wasm32-unknown-unknown -p truapi-server
-	cargo +$(NIGHTLY_TOOLCHAIN) fmt --check
+	cargo +nightly fmt --check
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 	cargo test --workspace --all-features --all-targets
 	cd $(TRUAPI_PKG) && npm run build && npm test
