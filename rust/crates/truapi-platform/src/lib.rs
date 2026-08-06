@@ -411,6 +411,7 @@ pub enum PermissionAuthorizationRequest {
 /// `NotDetermined` means the core has no persisted answer and will prompt the
 /// host the next time the product requests this permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum PermissionAuthorizationStatus {
     /// No persisted authorization exists.
     NotDetermined,

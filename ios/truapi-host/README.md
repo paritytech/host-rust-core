@@ -160,7 +160,7 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
 
     func lookupPreimage(key: Data) async throws -> Data? { nil }
 
-    func currentTheme() throws -> HostTheme { .dark }
+    func currentTheme() throws -> ThemeVariant { .dark }
 
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool { false }
 

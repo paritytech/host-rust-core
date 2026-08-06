@@ -646,7 +646,7 @@ public protocol HostCallbacks: AnyObject, Sendable {
      * Current host theme. The native shim emits this as the current item in
      * its subscription stream.
      */
-    func currentTheme() throws  -> HostTheme
+    func currentTheme() throws  -> ThemeVariant
     
     /**
      * Answer a feature-support query.
@@ -968,8 +968,8 @@ open func lookupPreimage(key: Data)async throws  -> Data?  {
      * Current host theme. The native shim emits this as the current item in
      * its subscription stream.
      */
-open func currentTheme()throws  -> HostTheme  {
-    return try  FfiConverterTypeHostTheme_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func currentTheme()throws  -> ThemeVariant  {
+    return try  FfiConverterTypeThemeVariant_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
     uniffi_truapi_server_fn_method_hostcallbacks_current_theme(self.uniffiClonePointer(),$0
     )
 })
@@ -1531,7 +1531,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> HostTheme in
+                () throws -> ThemeVariant in
                 guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -1540,7 +1540,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             }
 
             
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostTheme_lower($0) }
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeThemeVariant_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -1806,7 +1806,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     /**
      * Push a host theme update to active TrUAPI theme subscriptions.
      */
-    func notifyThemeChanged(theme: HostTheme) 
+    func notifyThemeChanged(theme: ThemeVariant) 
     
     /**
      * Read a stored permission authorization status without prompting.
@@ -1814,7 +1814,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
      */
-    func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest) throws  -> NativePermissionAuthorizationStatus
+    func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
     
     /**
      * Update a stored permission authorization status. Passing
@@ -1824,7 +1824,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Blocks the calling thread on the storage write, so call it off the host's
      * main/UI thread.
      */
-    func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: NativePermissionAuthorizationStatus) throws 
+    func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws 
     
     /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
@@ -2006,9 +2006,9 @@ open func notifySessionStoreChanged()  {try! rustCall() {
     /**
      * Push a host theme update to active TrUAPI theme subscriptions.
      */
-open func notifyThemeChanged(theme: HostTheme)  {try! rustCall() {
+open func notifyThemeChanged(theme: ThemeVariant)  {try! rustCall() {
     uniffi_truapi_server_fn_method_nativetruapicore_notify_theme_changed(self.uniffiClonePointer(),
-        FfiConverterTypeHostTheme_lower(theme),$0
+        FfiConverterTypeThemeVariant_lower(theme),$0
     )
 }
 }
@@ -2019,8 +2019,8 @@ open func notifyThemeChanged(theme: HostTheme)  {try! rustCall() {
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
      */
-open func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest)throws  -> NativePermissionAuthorizationStatus  {
-    return try  FfiConverterTypeNativePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
+    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
     uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(self.uniffiClonePointer(),
         FfiConverterTypeNativePermissionAuthorizationRequest_lower(request),$0
     )
@@ -2035,10 +2035,10 @@ open func permissionAuthorizationStatus(request: NativePermissionAuthorizationRe
      * Blocks the calling thread on the storage write, so call it off the host's
      * main/UI thread.
      */
-open func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: NativePermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: PermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
     uniffi_truapi_server_fn_method_nativetruapicore_set_permission_authorization_status(self.uniffiClonePointer(),
         FfiConverterTypeNativePermissionAuthorizationRequest_lower(request),
-        FfiConverterTypeNativePermissionAuthorizationStatus_lower(status),$0
+        FfiConverterTypePermissionAuthorizationStatus_lower(status),$0
     )
 }
 }
@@ -2939,85 +2939,6 @@ extension HostStorageError: Foundation.LocalizedError {
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
- * Native-friendly theme enum.
- */
-
-public enum HostTheme {
-    
-    /**
-     * Light host theme.
-     */
-    case light
-    /**
-     * Dark host theme.
-     */
-    case dark
-}
-
-
-#if compiler(>=6)
-extension HostTheme: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeHostTheme: FfiConverterRustBuffer {
-    typealias SwiftType = HostTheme
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostTheme {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .light
-        
-        case 2: return .dark
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: HostTheme, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .light:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .dark:
-            writeInt(&buf, Int32(2))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeHostTheme_lift(_ buf: RustBuffer) throws -> HostTheme {
-    return try FfiConverterTypeHostTheme.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeHostTheme_lower(_ value: HostTheme) -> RustBuffer {
-    return FfiConverterTypeHostTheme.lower(value)
-}
-
-
-extension HostTheme: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
  * Native-friendly SSO deeplink scheme.
  */
 
@@ -3200,95 +3121,6 @@ public func FfiConverterTypeNativePermissionAuthorizationRequest_lower(_ value: 
 
 
 extension NativePermissionAuthorizationRequest: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`PermissionAuthorizationStatus`].
- */
-
-public enum NativePermissionAuthorizationStatus {
-    
-    /**
-     * No persisted authorization exists.
-     */
-    case notDetermined
-    /**
-     * Access is denied.
-     */
-    case denied
-    /**
-     * Access is authorized.
-     */
-    case authorized
-}
-
-
-#if compiler(>=6)
-extension NativePermissionAuthorizationStatus: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativePermissionAuthorizationStatus: FfiConverterRustBuffer {
-    typealias SwiftType = NativePermissionAuthorizationStatus
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePermissionAuthorizationStatus {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .notDetermined
-        
-        case 2: return .denied
-        
-        case 3: return .authorized
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativePermissionAuthorizationStatus, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .notDetermined:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .denied:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .authorized:
-            writeInt(&buf, Int32(3))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationStatus_lift(_ buf: RustBuffer) throws -> NativePermissionAuthorizationStatus {
-    return try FfiConverterTypeNativePermissionAuthorizationStatus.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationStatus_lower(_ value: NativePermissionAuthorizationStatus) -> RustBuffer {
-    return FfiConverterTypeNativePermissionAuthorizationStatus.lower(value)
-}
-
-
-extension NativePermissionAuthorizationStatus: Equatable, Hashable {}
 
 
 
@@ -4023,7 +3855,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 20284) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 4919) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 4050) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 10783) {
@@ -4059,13 +3891,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_session_store_changed() != 41975) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 41907) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 47257) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 41676) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 41596) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 19228) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 20488) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 64697) {

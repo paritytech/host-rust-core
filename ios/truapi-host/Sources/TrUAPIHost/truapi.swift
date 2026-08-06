@@ -2775,6 +2775,85 @@ extension RingLocationJunction: Equatable, Hashable {}
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Light or dark variant.
+ */
+
+public enum ThemeVariant {
+    
+    /**
+     * Light appearance.
+     */
+    case light
+    /**
+     * Dark appearance.
+     */
+    case dark
+}
+
+
+#if compiler(>=6)
+extension ThemeVariant: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeThemeVariant: FfiConverterRustBuffer {
+    typealias SwiftType = ThemeVariant
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ThemeVariant {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .light
+        
+        case 2: return .dark
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ThemeVariant, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .light:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .dark:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThemeVariant_lift(_ buf: RustBuffer) throws -> ThemeVariant {
+    return try FfiConverterTypeThemeVariant.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThemeVariant_lower(_ value: ThemeVariant) -> RustBuffer {
+    return FfiConverterTypeThemeVariant.lower(value)
+}
+
+
+extension ThemeVariant: Equatable, Hashable {}
+
+
+
+
+
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif

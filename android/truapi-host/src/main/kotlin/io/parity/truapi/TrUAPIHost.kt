@@ -30,15 +30,15 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
+import uniffi.truapi.ThemeVariant
+import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.AuthState
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
-import uniffi.truapi_server.HostTheme
 import uniffi.truapi_server.NativePermissionAuthorizationRequest
-import uniffi.truapi_server.NativePermissionAuthorizationStatus
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.WsBridgeEndpoint
@@ -276,7 +276,7 @@ interface HostBridge {
 
     /** Return the current host theme. */
     @Throws(HostRejection::class)
-    fun currentTheme(): HostTheme = HostTheme.DARK
+    fun currentTheme(): ThemeVariant = ThemeVariant.DARK
 
     /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
@@ -343,7 +343,7 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         bridge.lookupPreimage(key)
 
-    override fun currentTheme(): HostTheme =
+    override fun currentTheme(): ThemeVariant =
         bridge.currentTheme()
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
@@ -562,7 +562,7 @@ class TrUAPIHostCore private constructor(
     @Throws(HostRejection::class)
     fun permissionAuthorizationStatus(
         request: NativePermissionAuthorizationRequest,
-    ): NativePermissionAuthorizationStatus =
+    ): PermissionAuthorizationStatus =
         inner.permissionAuthorizationStatus(request)
 
     /**
@@ -572,13 +572,13 @@ class TrUAPIHostCore private constructor(
     @Throws(HostRejection::class)
     fun setPermissionAuthorizationStatus(
         request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus,
+        status: PermissionAuthorizationStatus,
     ) {
         inner.setPermissionAuthorizationStatus(request, status)
     }
 
     /** Push a host theme update to active TrUAPI theme subscriptions. */
-    fun notifyThemeChanged(theme: HostTheme) {
+    fun notifyThemeChanged(theme: ThemeVariant) {
         inner.notifyThemeChanged(theme)
     }
 

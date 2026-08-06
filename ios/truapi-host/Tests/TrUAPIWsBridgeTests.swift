@@ -73,7 +73,7 @@ final class StubHostCallbacks: HostCallbacks, @unchecked Sendable {
     func chainClose(connectionId _: UInt32) throws {}
     func confirmUserAction(review _: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key _: Data) async throws -> Data? { nil }
-    func currentTheme() throws -> HostTheme { .dark }
+    func currentTheme() throws -> ThemeVariant { .dark }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
     func localStorageRead(key: String) throws -> Data? { localStore[key] }
     func localStorageWrite(key: String, value: Data) throws { localStore[key] = value }

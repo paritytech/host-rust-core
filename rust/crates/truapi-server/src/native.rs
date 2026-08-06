@@ -99,24 +99,6 @@ pub enum HostNavigateRejection {
     },
 }
 
-/// Native-friendly theme enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum HostTheme {
-    /// Light host theme.
-    Light,
-    /// Dark host theme.
-    Dark,
-}
-
-impl From<HostTheme> for v01::ThemeVariant {
-    fn from(theme: HostTheme) -> Self {
-        match theme {
-            HostTheme::Light => v01::ThemeVariant::Light,
-            HostTheme::Dark => v01::ThemeVariant::Dark,
-        }
-    }
-}
-
 /// Native-friendly mirror of [`truapi_platform::SessionUiInfo`]: decoded
 /// session fields for host account UI, with byte arrays widened to `Vec<u8>`
 /// for the FFI surface.
@@ -189,37 +171,6 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotApp,
     /// Development Polkadot app.
     PolkadotAppDev,
-}
-
-/// Native-friendly mirror of [`PermissionAuthorizationStatus`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativePermissionAuthorizationStatus {
-    /// No persisted authorization exists.
-    NotDetermined,
-    /// Access is denied.
-    Denied,
-    /// Access is authorized.
-    Authorized,
-}
-
-impl From<PermissionAuthorizationStatus> for NativePermissionAuthorizationStatus {
-    fn from(status: PermissionAuthorizationStatus) -> Self {
-        match status {
-            PermissionAuthorizationStatus::NotDetermined => Self::NotDetermined,
-            PermissionAuthorizationStatus::Denied => Self::Denied,
-            PermissionAuthorizationStatus::Authorized => Self::Authorized,
-        }
-    }
-}
-
-impl From<NativePermissionAuthorizationStatus> for PermissionAuthorizationStatus {
-    fn from(status: NativePermissionAuthorizationStatus) -> Self {
-        match status {
-            NativePermissionAuthorizationStatus::NotDetermined => Self::NotDetermined,
-            NativePermissionAuthorizationStatus::Denied => Self::Denied,
-            NativePermissionAuthorizationStatus::Authorized => Self::Authorized,
-        }
-    }
 }
 
 /// Native-friendly mirror of [`PermissionAuthorizationRequest`]. Flattens the
@@ -527,7 +478,7 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Current host theme. The native shim emits this as the current item in
     /// its subscription stream.
-    fn current_theme(&self) -> Result<HostTheme, HostRejection>;
+    fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection>;
 
     /// Answer a feature-support query.
     async fn feature_supported(
@@ -611,11 +562,11 @@ impl NativeTrUApiCore {
     pub fn permission_authorization_status(
         &self,
         request: NativePermissionAuthorizationRequest,
-    ) -> Result<NativePermissionAuthorizationStatus, HostRejection> {
+    ) -> Result<PermissionAuthorizationStatus, HostRejection> {
         let admin = self.runtime.product_admin(self.product.clone());
         let status =
             futures::executor::block_on(admin.permission_authorization_status(request.into()))?;
-        Ok(status.into())
+        Ok(status)
     }
 
     /// Update a stored permission authorization status. Passing
@@ -627,11 +578,11 @@ impl NativeTrUApiCore {
     pub fn set_permission_authorization_status(
         &self,
         request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus,
+        status: PermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
         let admin = self.runtime.product_admin(self.product.clone());
         futures::executor::block_on(
-            admin.set_permission_authorization_status(request.into(), status.into()),
+            admin.set_permission_authorization_status(request.into(), status),
         )?;
         Ok(())
     }
@@ -654,8 +605,8 @@ impl NativeTrUApiCore {
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    pub fn notify_theme_changed(&self, theme: HostTheme) {
-        self.events.notify_theme_changed(theme.into());
+    pub fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+        self.events.notify_theme_changed(theme);
     }
 
     /// Push a preimage lookup update to active subscriptions for `key`.
@@ -1137,7 +1088,6 @@ impl ThemeHost for CallbackPlatform {
         let current = self
             .callbacks
             .current_theme()
-            .map(v01::ThemeVariant::from)
             .map_err(v01::GenericError::from);
         self.events.subscribe_theme(current)
     }
@@ -1172,7 +1122,7 @@ mod tests {
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
     struct EventCallbacks {
-        theme: Mutex<HostTheme>,
+        theme: Mutex<v01::ThemeVariant>,
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
@@ -1184,7 +1134,7 @@ mod tests {
     impl EventCallbacks {
         fn new() -> Self {
             Self {
-                theme: Mutex::new(HostTheme::Light),
+                theme: Mutex::new(v01::ThemeVariant::Light),
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
@@ -1273,7 +1223,7 @@ mod tests {
                 .find(|(stored_key, _)| stored_key == &key)
                 .and_then(|(_, value)| value.clone()))
         }
-        fn current_theme(&self) -> Result<HostTheme, HostRejection> {
+        fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
             Ok(*self.theme.lock().expect("theme mutex poisoned"))
         }
         async fn feature_supported(
@@ -1412,7 +1362,7 @@ mod tests {
         let mut stream = platform.subscribe_theme();
 
         let first = futures::executor::block_on(stream.next()).unwrap();
-        *callbacks.theme.lock().expect("theme mutex poisoned") = HostTheme::Dark;
+        *callbacks.theme.lock().expect("theme mutex poisoned") = v01::ThemeVariant::Dark;
         events.notify_theme_changed(v01::ThemeVariant::Dark);
         let second = futures::executor::block_on(stream.next()).unwrap();
 
@@ -1611,8 +1561,8 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<HostTheme, HostRejection> {
-                Ok(HostTheme::Light)
+            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
+                Ok(v01::ThemeVariant::Light)
             }
             async fn feature_supported(
                 &self,
@@ -1750,8 +1700,8 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<HostTheme, HostRejection> {
-                Ok(HostTheme::Light)
+            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
+                Ok(v01::ThemeVariant::Light)
             }
             async fn feature_supported(
                 &self,
