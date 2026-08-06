@@ -19,8 +19,6 @@ use verifiable::ring::RingDomainSize;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 const MEMBERS_PALLET: &str = "Members";
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) const LITE_PERSON_COLLECTION: [u8; 32] = *b"pop:polkadot.network/people-lite";
 
 type RingMember = <BandersnatchVrfVerifiable as GenerateVerifiable>::Member;
 

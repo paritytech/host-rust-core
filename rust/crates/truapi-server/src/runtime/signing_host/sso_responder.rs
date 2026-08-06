@@ -910,7 +910,7 @@ pub(super) async fn allocate_statement_store_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.selected_lite_person_entropy(&session).await?;
+    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
     let rpc = statement_allowance::rpc::RpcClient::new(
         services
             .statement_store
@@ -1008,7 +1008,7 @@ pub(super) async fn allocate_bulletin_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.selected_lite_person_entropy(&session).await?;
+    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
     let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
     let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
         .await?

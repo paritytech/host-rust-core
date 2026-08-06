@@ -39,6 +39,8 @@ use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::{
     Sr25519Signer, build_signed_extrinsic_v4, build_signed_extrinsic_v4_with_signature,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
@@ -48,8 +50,6 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
 use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
 use crate::runtime::auth_state::AuthStateMachine;
-#[cfg(not(target_arch = "wasm32"))]
-use ring_vrf::LITE_PERSON_COLLECTION;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
     create_proof, member_from_entropy, sign_from_entropy,
@@ -360,39 +360,16 @@ impl SigningHost {
             })
     }
 
+    /// Wallet-internal allowance proofs retain Android's reserved `peopl.dot/1` key.
+    /// Product-facing RFC-0024 operations resolve only explicitly registered handles.
     #[cfg(not(target_arch = "wasm32"))]
-    fn well_known_ring_location(&self, collection: [u8; 32]) -> v01::RingLocation {
-        v01::RingLocation {
-            chain_id: self.services.people_chain_genesis_hash,
-            junctions: vec![
-                v01::RingLocationJunction::PalletInstance(67),
-                v01::RingLocationJunction::CollectionId(collection.to_vec()),
-            ],
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn selected_lite_person_entropy(
+    fn reserved_lite_person_entropy(
         &self,
         session: &AuthoritySession,
     ) -> Result<Zeroizing<[u8; 32]>, AuthorityError> {
         self.require_current_session(session)?;
-        let ring = self.well_known_ring_location(LITE_PERSON_COLLECTION);
-        let handle = self
-            .ring_vrf_registry
-            .selected_provider(session.public_key, &ring)
-            .await
-            .map_err(|error| AuthorityError::Unknown {
-                reason: format!("{error:?}"),
-            })?
-            .ok_or_else(|| AuthorityError::Unavailable {
-                reason: "no ring-VRF provider is registered for People Lite".to_string(),
-            })?;
-        self.resolve_ring_vrf_key_for_ring(session, &handle, &ring)
-            .await
-            .map_err(|error| AuthorityError::Unknown {
-                reason: format!("{error:?}"),
-            })
+        let root = self.root_entropy()?;
+        Ok(Zeroizing::new(derive_lite_person_ring_vrf_entropy(&root)))
     }
 
     async fn registered_ring_vrf_entry(
@@ -1305,67 +1282,19 @@ mod tests {
     }
 
     #[test]
-    fn selected_lite_provider_must_match_the_active_wallet() {
+    fn internal_allowances_use_the_reserved_lite_person_handle() {
         let (_, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
-        let ring = authority.well_known_ring_location(super::LITE_PERSON_COLLECTION);
-        let handle = v01::ProductAccountId {
-            dot_ns_identifier: "provider.dot".to_string(),
-            derivation_index: v01::DerivationIndex::Left(0),
-        };
-        futures::executor::block_on(authority.ring_vrf_registry.register(
-            session.public_key,
-            handle,
-            ring,
-            [0xFF; 32],
-        ))
-        .expect("tampered registry fixture is structurally valid");
+        let actual = authority
+            .reserved_lite_person_entropy(&session)
+            .expect("reserved key derives");
+        let expected =
+            derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Left(1))
+                .expect("reserved RFC-0024 handle derives");
 
-        let error = futures::executor::block_on(authority.selected_lite_person_entropy(&session))
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            AuthorityError::Unknown { reason }
-                if reason.contains("does not match the active wallet")
-        ));
-    }
-
-    #[test]
-    fn internal_provider_selection_requires_the_exact_well_known_ring() {
-        let (_, authority) = signing_runtime();
-        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
-            .expect("activation succeeds");
-        let session = authority.current_session().expect("active session");
-        let exact_ring = authority.well_known_ring_location(super::LITE_PERSON_COLLECTION);
-        let collection_only_ring = v01::RingLocation {
-            chain_id: exact_ring.chain_id,
-            junctions: vec![exact_ring.junctions[1].clone()],
-        };
-        let handle = v01::ProductAccountId {
-            dot_ns_identifier: "provider.dot".to_string(),
-            derivation_index: v01::DerivationIndex::Left(0),
-        };
-        let entropy = authority.ring_vrf_entropy(&session, &handle).unwrap();
-        let public_key = member_from_entropy(&entropy).unwrap();
-        futures::executor::block_on(authority.ring_vrf_registry.register(
-            session.public_key,
-            handle,
-            collection_only_ring,
-            public_key,
-        ))
-        .expect("registration succeeds");
-
-        let error = futures::executor::block_on(authority.selected_lite_person_entropy(&session))
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            AuthorityError::Unavailable { reason }
-                if reason.contains("no ring-VRF provider is registered")
-        ));
+        assert_eq!(*actual, expected);
     }
 
     #[test]

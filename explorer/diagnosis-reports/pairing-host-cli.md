@@ -56,17 +56,17 @@
 | `Permissions/request_remote_permission` | ✅ |  |
 | `Preimage/lookup_subscribe` | ✅ |  |
 | `Preimage/submit` | ✅ |  |
-| `Resource Allocation/request` | ❌ | statement-store or bulletin allowance was not allocated: { "outcomes": [ "NotAvailable", "NotAvailable", "NotAvailable", "Allocated" ] } |
+| `Resource Allocation/request` | ✅ |  |
 | `Signing/create_transaction` | ✅ |  |
 | `Signing/create_transaction_with_legacy_account` | ✅ |  |
 | `Signing/sign_raw_with_legacy_account` | ✅ |  |
 | `Signing/sign_payload_with_legacy_account` | ✅ |  |
 | `Signing/sign_raw` | ✅ |  |
 | `Signing/sign_payload` | ✅ |  |
-| `Statement Store/subscribe` | ❌ | createProofAuthorized failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
+| `Statement Store/subscribe` | ✅ |  |
 | `Statement Store/create_proof` | ✅ |  |
-| `Statement Store/submit` | ❌ | createProofAuthorized failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
-| `Statement Store/create_proof_authorized` | ❌ | createProof failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } } |
+| `Statement Store/submit` | ✅ |  |
+| `Statement Store/create_proof_authorized` | ✅ |  |
 | `System/handshake` | ✅ |  |
 | `System/feature_supported` | ✅ |  |
 | `System/navigate_to` | ✅ |  |

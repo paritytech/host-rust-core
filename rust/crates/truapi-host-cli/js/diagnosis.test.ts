@@ -70,107 +70,22 @@ describe("generated-example battery", () => {
     ).toBe(undefined);
   });
 
-  test("accepts only the exact RFC-0024 provider-absent battery failures", () => {
-    const reason =
-      "RFC-0024 People Lite provider is not installed in the CLI battery";
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow(
-          "Resource Allocation/request",
-          `statement-store or bulletin allowance was not allocated: ${JSON.stringify(
-            {
-              outcomes: [
-                "NotAvailable",
-                "NotAvailable",
-                "NotAvailable",
-                "Allocated",
-              ],
-            },
-            null,
-            2,
-          )}`,
-        ),
-      ),
-    ).toBe(reason);
+  test("does not mask allowance or People Lite provider failures", () => {
     for (const id of [
+      "Resource Allocation/request",
       "Statement Store/subscribe",
       "Statement Store/submit",
       "Statement Store/create_proof_authorized",
+      "Preimage/lookup_subscribe",
+      "Preimage/submit",
+      "Account/register_ring_vrf_key",
     ]) {
       expect(
         expectedCliBatteryFailureReason(
-          failedRow(
-            id,
-            'failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } }',
-          ),
+          failedRow(id, "no ring-VRF provider is registered for People Lite"),
         ),
-      ).toBe(reason);
+      ).toBe(undefined);
     }
-    for (const id of ["Preimage/lookup_subscribe", "Preimage/submit"]) {
-      for (const providerFailure of [
-        "no ring-VRF provider is registered for People Lite",
-        "bulletin allowance is not available",
-      ]) {
-        expect(
-          expectedCliBatteryFailureReason(
-            failedRow(
-              id,
-              `submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "${providerFailure}" } } } } }`,
-            ),
-          ),
-        ).toBe(reason);
-      }
-    }
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow("Resource Allocation/request", "request timed out"),
-      ),
-    ).toBe(undefined);
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow(
-          "Resource Allocation/request",
-          'failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "UnableToSign" } } } }',
-        ),
-      ),
-    ).toBe(undefined);
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow(
-          "Resource Allocation/request",
-          'statement-store or bulletin allowance was not allocated: { "outcomes": [ "Allocated", "NotAvailable", "NotAvailable", "Allocated" ] }',
-        ),
-      ),
-    ).toBe(undefined);
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow("Statement Store/submit", "subscription failed"),
-      ),
-    ).toBe(undefined);
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow(
-          "Statement Store/submit",
-          'statement-store or bulletin allowance was not allocated: { "outcomes": [ "NotAvailable", "NotAvailable", "NotAvailable", "Allocated" ] }',
-        ),
-      ),
-    ).toBe(undefined);
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow(
-          "Preimage/submit",
-          'submit failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "no allowance" } } } } }',
-        ),
-      ),
-    ).toBe(undefined);
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow(
-          "Account/register_ring_vrf_key",
-          'failed: { "error": { "tag": "Domain", "value": { "tag": "V1", "value": { "tag": "Unknown", "value": { "reason": "no ring-VRF provider is registered for People Lite" } } } } }',
-        ),
-      ),
-    ).toBe(undefined);
   });
 
   test("does not ignore account proof failures", () => {
