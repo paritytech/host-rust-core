@@ -21,8 +21,9 @@ changes three things:
 - Chat access becomes a connection policy. The host assigns an immutable
   `ProductExecutionKind`, and an `ExecutionFilter` rejects Chat traffic from
   other executions.
-- Custom rendering replaces `renderMessage` and `chatRenderWidget` with one
-  product-initiated bidirectional TrUAPI channel.
+- Custom rendering replaces `renderMessage` and `chatRenderWidget` with a
+  host-initiated TrUAPI render subscription per message, wire-compatible with
+  the legacy render protocol.
 - Platform-specific `evaluate` and `callNative` code is replaced by
   `ProductRuntimeControl`, `ChatPlatform`, and generated native types.
 
@@ -55,6 +56,9 @@ The architecture has three structural rules:
 - each executable has its own connection and per-connection runtime
 - `app/index.html` connects as `App`, while `worker/index.js` connects as
   `Chat`; both share host services
+- product executions initiate all ordinary calls and subscriptions; the
+  runtime initiates only per-message render subscriptions, into Chat
+  executions
 
 ```text
 +---------------+---------------+           +---------------+---------------+
@@ -64,14 +68,15 @@ The architecture has three structural rules:
 +---------------+---------------+           +---------------+---------------+
                 | connection A                              | connection B
                 +---------------------+---------------------+
-                                      |
+                                      ^
                                       | SCALE / TrUAPI
                                       v
          +---------------------------------------------------------+
          | Shared Rust HostRuntime                                 |
          |                                                         |
          | ProductRuntime(App)       ProductRuntime(Chat)          |
-         | per-connection dispatch and live subscriptions          |
+         | dispatches product calls and live subscriptions         |
+         | opens per-message render subscriptions into Chat        |
          | shared authentication, storage, and chain resources     |
          +----------------------------+----------------------------+
                                       ^
@@ -121,7 +126,7 @@ The required execution kind is declared once on the API trait, and
 ```rust
 #[truapi::service(required_execution = Chat)]
 pub trait Chat: Send + Sync {
-    // requests, subscriptions, and channels
+    // requests, subscriptions, and host-initiated subscriptions
 }
 ```
 
@@ -132,40 +137,40 @@ Chat traffic.
 
 ## Custom rendering
 
-`custom_message_render_channel` is a bidirectional stream initiated by the
-product. Native sends render work; the product responds with a complete
-`CustomRendererNode` (`Update`) or rejects it (`Failed`). Later `Update`s for
-the same `message_id` repaint the widget.
+`custom_message_render` is a host-initiated subscription, opened once per
+rendered message. The host starts a subscription into the product when a
+native cell needs a custom message's UI; the product answers with a stream of
+complete `CustomRendererNode` trees, where each emission repaints the widget;
+the host stops the subscription when the cell goes away. The wire request id
+correlates one render instance end to end.
+
+| Frame       | Direction       | Payload                                             |
+| ----------- | --------------- | --------------------------------------------------- |
+| `start`     | host to product | `{ message_id, message_type, payload }`             |
+| `stop`      | host to product | none; the product disposes that renderer instance   |
+| `interrupt` | product to host | none; the product declines or aborts that instance  |
+| `receive`   | product to host | `CustomRendererNode`, a complete replacement tree   |
+
+These frames are byte-compatible with the legacy triangle
+`product_chat_custom_message_render_subscribe` protocol, so a product's
+renderer path works unchanged against legacy mobile hosts and the shared Rust
+core. Host-minted request ids carry a dedicated prefix so they cannot collide
+with product-minted ids.
+
+The method is declared on the `Chat` trait as IDL, marked host-initiated.
+`truapi-codegen` emits no server dispatch entry for it; it generates the
+product-side registration API and the host-side typed caller instead.
 
 ```rust
-/// Serves custom-message rendering over a product-initiated channel.
-async fn custom_message_render_channel(
-    &self,
-    _cx: &CallContext,
-    requests: Subscription<ProductChatCustomMessageRenderChannelRequest>,
-) -> Subscription<ProductChatCustomMessageRenderChannelItem>;
+/// Streams renderer trees for one stored custom message.
+#[wire(host_initiated, start_id = 52)]
+fn custom_message_render(
+    request: ProductChatCustomMessageRenderRequest,
+) -> Subscription<CustomRendererNode>;
 
-/// Values sent from the product to Rust on the renderer request stream.
-pub enum ProductChatCustomMessageRenderChannelRequest {
-    /// Replaces the native tree for one active render instance.
-    Update {
-        /// Identifier supplied by the host in the corresponding render item.
-        message_id: String,
-
-        /// Complete replacement tree produced by the product renderer.
-        node: CustomRendererNode,
-    },
-
-    /// Reports that the product cannot render one requested message.
-    Failed {
-        /// Identifier supplied by the host in the corresponding render item.
-        message_id: String,
-    },
-}
-
-/// Render item sent from Rust to the product on the renderer response stream.
-pub struct ProductChatCustomMessageRenderChannelItem {
-    /// Stable identifier used to correlate updates and triggered actions.
+/// Render work sent by the host on the subscription start frame.
+pub struct ProductChatCustomMessageRenderRequest {
+    /// Stable identifier used to correlate triggered actions.
     pub message_id: String,
 
     /// Product-defined discriminator used to select a renderer.
@@ -176,31 +181,27 @@ pub struct ProductChatCustomMessageRenderChannelItem {
 }
 ```
 
-The generated TypeScript API takes the request stream as an argument (any
-observable source, such as an RxJS `Subject`) and returns the item stream:
+The generated TypeScript API is handler registration. The handler returns an
+observable of renderer trees: each emission repaints, a throw or stream error
+declines the instance (`interrupt`), and completing the stream keeps the last
+delivered tree on screen. Start frames that arrive before registration are
+held in a bounded product-side buffer; overflow interrupts the oldest
+buffered instance.
 
 ```ts
 export class ChatClient {
-  customMessageRenderChannel(
-    requests: ObservableSource<ProductChatCustomMessageRenderChannelRequest>,
-  ): ObservableLike<ProductChatCustomMessageRenderChannelItem>;
+  onCustomMessageRender(
+    handler: (
+      request: ProductChatCustomMessageRenderRequest,
+    ) => ObservableSource<CustomRendererNode>,
+  ): { unsubscribe(): void };
 }
 ```
 
 ```ts
-import { Subject } from "rxjs";
-
-const requests = new Subject<ProductChatCustomMessageRenderChannelRequest>();
-
-truapi.chat.customMessageRenderChannel(requests).subscribe({
-  next(item) {
-    const node = render(item.messageType, item.payload);
-
-    requests.next({
-      tag: "Update",
-      value: { messageId: item.messageId, node },
-    });
-  },
+truapi.chat.onCustomMessageRender(({ messageType, payload }) => {
+  // Observable<CustomRendererNode>: emits on every renderer state change.
+  return renderTrees(messageType, payload);
 });
 ```
 
@@ -208,37 +209,42 @@ truapi.chat.customMessageRenderChannel(requests).subscribe({
 Native platform                    Shared Rust HostRuntime                   Product worker
 (Chat UI)                             (ProductRuntime)                      (worker/index.js)
        |                                      |                                     |
-       |                                      | open renderer channel                |
-       |                                      |<------------------------------------|
-       |                                      | renderer channel is active           |
-       |                                      |                                     |
+       |                                      |         onCustomMessageRender(...)  |
+       |                                      |    (starts buffered until a handler |
+       |                                      |                       is installed) |
        | native cell encounters stored        |                                     |
        | Custom(message_id, message_type,     |                                     |
-       |   payload) and needs its UI           |                                     |
+       |   payload) and needs its UI          |                                     |
        | render_custom_message(...)           |                                     |
        |------------------------------------->|                                     |
-       |                                      | render item { message_id,           |
+       |                                      | start { message_id,                 |
        |                                      |   message_type, payload }           |
        |                                      |------------------------------------>|
        |                                      |                                     | decode payload
        |                                      |                                     | produce renderer tree
-       |                                      | Update { message_id, node }         |
+       |                                      | receive CustomRendererNode          |
        |                                      |<------------------------------------|
        | typed CustomRendererNode             |                                     |
        |<-------------------------------------|                                     |
        | repaint native widget                |                                     |
        |                                      |                                     |
        |                                      |                                     | renderer state changes
-       |                                      | Update { message_id, new_node }     |
+       |                                      | receive replacement node            |
        |                                      |<------------------------------------|
        | typed replacement node               |                                     |
        |<-------------------------------------|                                     |
        |                                      |                                     |
+       | cell leaves the screen               |                                     |
+       | cancel render subscription           |                                     |
+       |------------------------------------->|                                     |
+       |                                      | stop                                |
+       |                                      |------------------------------------>|
+       |                                      |                                     | dispose renderer state
 ```
 
-`message_id` correlates render work, updates, and widget actions. `Failed`
-ends only that message's native render stream. Native receives generated
-Swift or Kotlin renderer types, not SCALE hex or a separate decoder.
+`message_id` correlates a rendered widget with the `ActionTriggered` events
+it emits. Native receives generated Swift or Kotlin renderer types, not SCALE
+hex or a separate decoder.
 
 ## Native host contract
 
@@ -266,8 +272,10 @@ impl ProductRuntimeControl {
 ```
 
 `publish_chat_action` carries `MessagePosted` and `ActionTriggered`.
-`render_custom_message` sends render work and returns the matching `Update`
-stream. Native owns its observers and rendered views.
+`render_custom_message` opens the host-initiated render subscription and
+returns its tree stream. Cancelling the returned subscription sends `stop`,
+telling the product to dispose that instance's renderer state. Native owns
+its observers and rendered views.
 
 In the opposite direction, product-originated room, message, and room-list
 calls flow through the optional `ChatPlatform` adapter:
@@ -297,18 +305,19 @@ pub trait ChatPlatform: Send + Sync {
 
 Rust enforces connection policy and renderer-stream validation.
 
-| Condition                                         | Result                                               |
-| ------------------------------------------------- | ---------------------------------------------------- |
-| Ordinary Chat call is not from a Chat execution   | `CallError::Denied`                                  |
-| Ordinary Chat call has no `ChatPlatform` adapter  | `CallError::Unsupported`                             |
-| Ordinary Chat call is unauthenticated             | Standard authentication failure                      |
-| Native action targets a closed execution          | `ProductRuntimeError::Closed`                        |
-| Renderer is requested on a non-Chat connection    | `ProductRuntimeError::Denied`                        |
-| Chat execution did not open the renderer channel  | Rendering reports `ProductRuntimeError::Unsupported` |
-| Product sends `Failed` for a message              | Only that message's native render stream ends        |
-| Renderer node is malformed or exceeds host limits | Only that native render stream fails                 |
-| A renderer-channel value cannot be decoded        | The channel and active render instances fail         |
-| Product disconnects during rendering              | Its channel and native render streams terminate      |
+| Condition                                          | Result                                                        |
+| -------------------------------------------------- | ------------------------------------------------------------- |
+| Ordinary Chat call is not from a Chat execution    | `CallError::Denied`                                            |
+| Ordinary Chat call has no `ChatPlatform` adapter   | `CallError::Unsupported`                                       |
+| Ordinary Chat call is unauthenticated              | Standard authentication failure                                |
+| Native action targets a closed execution           | `ProductRuntimeError::Closed`                                  |
+| Renderer is requested on a non-Chat connection     | `ProductRuntimeError::Denied`                                  |
+| Render `start` arrives before handler registration | Buffered product-side; overflow interrupts the oldest instance |
+| Product declines a render (throw or stream error)  | `interrupt`; only that instance's native stream ends           |
+| Host stops displaying a message                    | `stop`; the product disposes that instance's renderer state    |
+| Renderer node is malformed or exceeds host limits  | Only that native render stream fails                           |
+| A `receive` value cannot be decoded                | Only that render instance fails                                |
+| Product disconnects during rendering               | All its render subscriptions terminate                         |
 
 ## References
 
