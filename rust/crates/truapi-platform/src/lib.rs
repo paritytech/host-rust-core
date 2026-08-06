@@ -19,13 +19,8 @@ pub use async_trait::async_trait;
 uniffi::setup_scaffolding!();
 
 #[cfg(feature = "uniffi")]
-uniffi::custom_type!(Bytes32, Vec<u8>, {
-    remote,
-    lower: |bytes| bytes.to_vec(),
-    try_lift: |bytes| Ok(bytes.as_slice().try_into()?),
-});
+uniffi::use_remote_type!(truapi::Bytes32);
 
-#[cfg(feature = "uniffi")]
 use truapi::Bytes32;
 use truapi::latest::{
     AllocatableResource, GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
@@ -869,9 +864,9 @@ pub trait CoreStorage: Send + Sync {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct SessionUiInfo {
     /// 32-byte sr25519 root public key of the active session.
-    pub public_key: [u8; 32],
+    pub public_key: Bytes32,
     /// Wallet identity account id used for People-chain username lookup.
-    pub identity_account_id: Option<[u8; 32]>,
+    pub identity_account_id: Option<Bytes32>,
     /// Short username from the People-chain identity record.
     pub lite_username: Option<String>,
     /// Fully qualified username from the People-chain identity record.

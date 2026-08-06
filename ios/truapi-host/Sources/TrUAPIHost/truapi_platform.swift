@@ -2149,50 +2149,6 @@ fileprivate struct FfiConverterSequenceTypeAllocatableResource: FfiConverterRust
     }
 }
 
-
-/**
- * Typealias from the type name used in the UDL file to the builtin type.  This
- * is needed because the UDL type name is used in function/method signatures.
- */
-public typealias Bytes32 = Data
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeBytes32: FfiConverter {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bytes32 {
-        return try FfiConverterData.read(from: &buf)
-    }
-
-    public static func write(_ value: Bytes32, into buf: inout [UInt8]) {
-        return FfiConverterData.write(value, into: &buf)
-    }
-
-    public static func lift(_ value: RustBuffer) throws -> Bytes32 {
-        return try FfiConverterData.lift(value)
-    }
-
-    public static func lower(_ value: Bytes32) -> RustBuffer {
-        return FfiConverterData.lower(value)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeBytes32_lift(_ value: RustBuffer) throws -> Bytes32 {
-    return try FfiConverterTypeBytes32.lift(value)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeBytes32_lower(_ value: Bytes32) -> RustBuffer {
-    return FfiConverterTypeBytes32.lower(value)
-}
-
-
 private enum InitializationResult {
     case ok
     case contractVersionMismatch
