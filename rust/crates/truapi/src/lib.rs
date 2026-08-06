@@ -63,12 +63,12 @@ pub mod latest {
     pub type HostChatPostMessageResponse = LatestOf<versioned::chat::HostChatPostMessageResponse>;
     /// Native chat message posting failure.
     pub type HostChatPostMessageError = LatestOf<versioned::chat::HostChatPostMessageError>;
-    /// Product-to-host custom renderer update.
-    pub type ProductChatCustomMessageRenderChannelRequest =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderChannelRequest>;
-    /// Host-to-product custom render work item.
-    pub type ProductChatCustomMessageRenderChannelItem =
-        LatestOf<versioned::chat::ProductChatCustomMessageRenderChannelItem>;
+    /// Host-to-product custom render work request.
+    pub type ProductChatCustomMessageRenderRequest =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderRequest>;
+    /// Product-to-host custom renderer tree.
+    pub type ProductChatCustomMessageRenderItem =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderItem>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;

@@ -96,6 +96,67 @@ DotNS records. The
 [Host Playground deployment config](https://github.com/paritytech/host-playground/blob/ab7ddb1476881a1ea3c77a4685f94a5ba60b6c72/bulletin-deploy.config.ts#L20-L42)
 is a concrete example.
 
+## Execution bootstrap and transport ownership
+
+The native host establishes the transport before it evaluates product code.
+Opening an execution and establishing its connection are separate steps:
+
+1. Native opens a product execution on the shared `HostRuntime`, supplying the
+   trusted product id and execution kind. For a Chat worker the kind is `Chat`.
+2. The execution starts a token-authenticated localhost WebSocket bridge and
+   returns its port and per-execution endpoint token.
+3. Native injects a WebSocket-backed `MessagePort` adapter at document start,
+   before loading `worker/index.js`. On iOS the adapter is exposed as
+   `window.__HOST_API_PORT__`.
+4. The worker calls `getClientSync()` from `@parity/truapi/sandbox`. This
+   returns a synchronous client facade, wraps the injected port, and starts the
+   socket. Calls made before `onopen` are queued and flushed when the connection
+   is ready; returning a client does not itself prove that the socket is open.
+5. After the token-authenticated WebSocket upgrade, Rust creates one
+   `ProductRuntime` for that connection, installs its immutable
+   `ProductContext`, and attaches the native `ProductRuntimeControl`.
+6. Constructing the generated `ChatClient` registers its host-initiated routes,
+   including wire id 52 for custom rendering. The worker then installs its
+   handler with `chat.onCustomMessageRender(...)` and starts ordinary calls and
+   subscriptions.
+7. Closing the execution closes its socket, disposes its per-connection
+   runtime, and terminates all ordinary and host-initiated subscriptions owned
+   by that connection. It does not stop the process-wide Rust runtime or other
+   product executions.
+
+```text
+Native host                 Shared Rust runtime                 Product worker
+     |                               |                                |
+     | open Chat execution           |                                |
+     |------------------------------>|                                |
+     | start WebSocket bridge        |                                |
+     |<------------------ port/token |                                |
+     | inject MessagePort bootstrap  |                                |
+     |--------------------------------------------------------------->|
+     |                               |             getClientSync()    |
+     |                               |<-------------------------------|
+     |                               | authenticated WebSocket upgrade|
+     |                               |<-------------------------------|
+     |                               | create ProductRuntime(Chat)    |
+     |                               | attach ProductRuntimeControl   |
+     |                               |                                | register handlers
+```
+
+The visible SPA and its Chat worker repeat this sequence independently. They
+share the host-owned Rust runtime and platform services, but they do **not**
+share a socket, `ProductRuntime`, request-id counter, subscriptions, or
+transport failure domain. Product-originated requests use `p:<id>` identifiers
+on their connection. Host-initiated render subscriptions use `h:<id>`
+identifiers allocated by that connection's Rust runtime.
+
+An `h:<id>` is therefore not a connection identifier. It correlates one render
+subscription multiplexed over an already-established connection. For example,
+Rust starts custom rendering by sending a `ProtocolMessage` whose request id is
+`h:<id>`, whose payload discriminant is wire id 52 (`_start`), and whose value
+encodes `messageId`, `messageType`, and `payload`. Renderer updates return on
+wire id 55 with the same request id. Wire ids 53 and 54 stop and interrupt that
+render instance respectively.
+
 ## Trusted execution context
 
 The host binds the context before product code runs. The product cannot submit
@@ -154,8 +215,10 @@ correlates one render instance end to end.
 These frames are byte-compatible with the legacy triangle
 `product_chat_custom_message_render_subscribe` protocol, so a product's
 renderer path works unchanged against legacy mobile hosts and the shared Rust
-core. Host-minted request ids carry a dedicated prefix so they cannot collide
-with product-minted ids.
+core. The shared Rust host mints request ids with a dedicated `h:` prefix so
+they cannot collide with product-minted ids. Product-side routing keys off the
+globally unique render frame ids rather than requiring that prefix, preserving
+compatibility with legacy hosts whose host-minted ids are opaque.
 
 The method is declared on the `Chat` trait as IDL, marked host-initiated.
 `truapi-codegen` emits no server dispatch entry for it; it generates the
@@ -301,6 +364,35 @@ pub trait ChatPlatform: Send + Sync {
 }
 ```
 
+### Room creation ownership
+
+Opening the native Chat screen is host UI behavior, not a TrUAPI operation, and
+does not implicitly create a product room. A host may enable or launch the Chat
+execution and observe `chat.listSubscribe()` while it waits for a room to
+appear, but the product worker decides which rooms its modality provides.
+
+The worker requests a room through the generated client:
+
+```ts
+const result = await truapi.chat.createRoom({
+  roomId: "support",
+  name: "Support",
+  icon: "",
+});
+```
+
+That ordinary product-originated call uses a `p:<id>` request identifier. Rust
+checks that the connection is a Chat execution, decodes the versioned request,
+and delegates to `ChatPlatform::create_room`. The platform adapter owns the
+actual database lookup and persistence and returns `New` or `Exists`; Rust owns
+protocol routing, execution policy, and typed error/result conversion.
+
+Rust does not manufacture a room merely because a worker connected or native
+asked to open Chat. If the worker never calls `createRoom`, an existing
+persisted room may still arrive through `listSubscribe`, but no new room is
+created. What the native UI does while waiting—continue waiting, time out, show
+an error, or offer a fallback—is host policy outside this protocol.
+
 ## Failure behavior
 
 Rust enforces connection policy and renderer-stream validation.
@@ -310,6 +402,7 @@ Rust enforces connection policy and renderer-stream validation.
 | Ordinary Chat call is not from a Chat execution    | `CallError::Denied`                                            |
 | Ordinary Chat call has no `ChatPlatform` adapter   | `CallError::Unsupported`                                       |
 | Ordinary Chat call is unauthenticated              | Standard authentication failure                                |
+| Worker connects but never calls `createRoom`       | No room is synthesized; room observers remain unchanged        |
 | Native action targets a closed execution           | `ProductRuntimeError::Closed`                                  |
 | Renderer is requested on a non-Chat connection     | `ProductRuntimeError::Denied`                                  |
 | Render `start` arrives before handler registration | Buffered product-side; overflow interrupts the oldest instance |

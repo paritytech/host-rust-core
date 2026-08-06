@@ -117,8 +117,36 @@ const workerDestination = resolve(
   productHost,
   "ChatExtension/index.js",
 );
-mkdirSync(resolve(workerDestination, ".."), { recursive: true });
-cpSync(worker, workerDestination);
+const workerDestinations = [workerDestination];
+const contentHashPreferences = resolve(
+  appData,
+  "Library/Preferences/io.products.dotns.cache.plist",
+);
+if (existsSync(contentHashPreferences)) {
+  try {
+    const contentHash = capture("/usr/libexec/PlistBuddy", [
+      "-c",
+      `Print :${productHost}`,
+      contentHashPreferences,
+    ]).trim();
+    if (/^[0-9a-f]+$/i.test(contentHash)) {
+      workerDestinations.push(
+        resolve(
+          appData,
+          "Library/Application Support/DotNsContent",
+          contentHash,
+          "worker/index.js",
+        ),
+      );
+    }
+  } catch {
+    // This product has no cached DotNs content, so the fallback is authoritative.
+  }
+}
+for (const destination of workerDestinations) {
+  mkdirSync(resolve(destination, ".."), { recursive: true });
+  cpSync(worker, destination);
+}
 
 const userDataDatabase = resolve(
   appData,
@@ -159,6 +187,11 @@ try {
     60_000,
     "Ensure the selected simulator has completed Polkadot onboarding.",
   );
+  let initialRendererMarker;
+  if (expectCustomRenderer) {
+    await waitForFiles([customRendererMarker], 30_000);
+    initialRendererMarker = fileVersion(customRendererMarker);
+  }
   if (expectDiagnosis) {
     const report = await waitForTextPrefix(
       userDataDatabase,
@@ -186,7 +219,11 @@ try {
     );
   }
   if (expectCustomRenderer) {
-    await waitForFiles([customRendererMarker], 30_000);
+    await waitForFileChange(
+      customRendererMarker,
+      initialRendererMarker,
+      30_000,
+    );
   }
   await delay(2_000);
   mkdirSync(dirname(screenshot), { recursive: true });
@@ -211,6 +248,7 @@ console.log(
     verifiedExecutions: ["Chat"],
     worker,
     workerDestination,
+    workerDestinations,
     report: expectDiagnosis ? reportPath : undefined,
     screenshot,
     verified: true,
@@ -297,6 +335,24 @@ async function waitForFiles(files, timeoutMs, hint) {
   throw new Error(
     `Timed out waiting for files: ${files.join(", ")}${hint ? `\n${hint}` : ""}`,
   );
+}
+
+async function waitForFileChange(file, initialVersion, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(file) && fileVersion(file) !== initialVersion) {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error(
+    `Timed out waiting for a replacement renderer update: ${file}`,
+  );
+}
+
+function fileVersion(file) {
+  const stat = statSync(file);
+  return `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}`;
 }
 
 function latestMessageId(database, identifier) {

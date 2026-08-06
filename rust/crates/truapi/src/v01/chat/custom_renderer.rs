@@ -309,27 +309,10 @@ pub enum CustomRendererNode {
     TextField(Component<TextFieldProps>),
 }
 
-/// Values sent by a product on its custom-message renderer request stream.
+/// Render work sent by the host when a native custom-message cell appears.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub enum ProductChatCustomMessageRenderChannelRequest {
-    /// Replace the native tree for an active render instance.
-    Update {
-        /// Identifier supplied by the host in the corresponding render item.
-        message_id: String,
-        /// Complete replacement tree produced by the product renderer.
-        node: CustomRendererNode,
-    },
-    /// Report that the product cannot render one requested message.
-    Failed {
-        /// Identifier supplied by the host in the corresponding render item.
-        message_id: String,
-    },
-}
-
-/// Render item sent from Rust to the product on the renderer response stream.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct ProductChatCustomMessageRenderChannelItem {
-    /// Stable identifier used to correlate updates and triggered actions.
+pub struct ProductChatCustomMessageRenderRequest {
+    /// Stable identifier used to correlate triggered actions.
     pub message_id: String,
     /// Product-defined discriminator used to select a renderer.
     pub message_type: String,

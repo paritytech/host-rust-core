@@ -16,7 +16,7 @@ The playground is an interactive reference for the App-compatible TrUAPI surface
 - **Wiring status**: methods that are not yet bound are flagged "Not supported" so you can see protocol coverage at a glance.
 - **Chat diagnosis**: the same build emits `out/worker/index.js`, a native Chat
   application that tests room creation and idempotency, live room-list updates,
-  text and custom messages, user actions, and custom-renderer channels. It
+  text and custom messages, user actions, and host-initiated custom-render streams. It
   displays live results in Chat and posts a Chat-only Markdown report after
   `!diagnose` completes the action check.
 
@@ -73,6 +73,17 @@ Run the iOS Chat diagnosis from the repository root:
 make ios-chat-run
 ```
 
+Select a prepared simulator by name or UDID when more than one runtime is
+installed. The validated local target is iOS 18.3; iOS 26 can surface an
+unrelated keychain/onboarding reset before Chat starts.
+
+```bash
+make ios-chat-run IOS_SIMULATOR_DEVICE="TrUAPI SSO E2E 18.3"
+```
+
+When no device is specified, the launcher prefers an available simulator whose
+name contains both `TrUAPI` and `E2E`, then falls back to a booted iPhone.
+
 It writes a Chat-only report to
 `playground/test-results/ios-chat/diagnosis-report.md`. The native diagnosis
 widget also provides **Copy report**; save the result as
@@ -102,18 +113,19 @@ The report looks like this:
 ```markdown
 ## Truapi Web Diagnosis
 
-| Method | Status |
-| --- | --- |
-| `Account/get_account` | ✅ |
-| `Account/get_account_alias` | ❌ |
-| `System/handshake` | ✅ |
+| Method                      | Status |
+| --------------------------- | ------ |
+| `Account/get_account`       | ✅     |
+| `Account/get_account_alias` | ❌     |
+| `System/handshake`          | ✅     |
+
 ...
 ```
 
-| Icon | Meaning |
-| --- | --- |
-| ✅ | The method ran and returned a successful result. |
-| ❌ | The method failed — it errored at runtime, the host returned an error, or it has no runnable example yet. |
+| Icon | Meaning                                                                                                   |
+| ---- | --------------------------------------------------------------------------------------------------------- |
+| ✅   | The method ran and returned a successful result.                                                          |
+| ❌   | The method failed — it errored at runtime, the host returned an error, or it has no runnable example yet. |
 
 The host mode in the title (`Web` / `Desktop`) is detected automatically — Electron in the user-agent or the native-webview marker ⇒ Desktop, browser iframe ⇒ Web.
 

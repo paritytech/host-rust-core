@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use convert_case::{Case, Casing};
-use indoc::{formatdoc, indoc, writedoc};
+use indoc::{formatdoc, writedoc};
 
 use crate::rustdoc::*;
 
@@ -696,7 +696,7 @@ fn wire_ids_for_method(trait_def: &TraitDef, method: &MethodDef) -> Result<Expan
                 response_id,
             })
         }
-        MethodKind::Subscription | MethodKind::ResultSubscription | MethodKind::StreamPair => {
+        MethodKind::Subscription | MethodKind::ResultSubscription => {
             if wire.request_id.is_some() || wire.response_id.is_some() {
                 bail!(
                     "method `{}::{}` is a subscription and must not use request wire ids",
@@ -936,7 +936,7 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
         import * as S from '../scale.js';
         import type {{ HexString }} from '../scale.js';
         import {{ SubscriptionError }} from '../transport.js';
-        import type {{ ObservableLike, ObservableSource, Observer, Subscription, SubscriptionFrameIds, TrUApiTransport }} from '../transport.js';
+        import type {{ HostInitiatedSubscriptionRegistration, ObservableLike, ObservableSource, Observer, Subscription, SubscriptionFrameIds, TrUApiTransport }} from '../transport.js';
         import * as T from './types.js';
         import * as W from './wire-table.js';
 
@@ -955,7 +955,6 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
     )
     .unwrap();
     write_observable_helper(&mut out);
-    write_stream_pair_helper(&mut out);
 
     let ctx = codec_context(&[]);
     let wrappers = collect_versioned_wrappers(api);
@@ -970,16 +969,34 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
 
         let public_docs = trait_def.public_docs();
         write_jsdoc(&mut out, "", public_docs.as_deref());
-        writedoc!(
+        writeln!(out, "export class {}Client {{", trait_def.name).unwrap();
+        for method in methods
+            .iter()
+            .copied()
+            .filter(|method| method.wire.host_initiated)
+        {
+            emit_host_initiated_field(&mut out, method, &wrappers, &ctx, target_version)?;
+        }
+        writeln!(
             out,
-            "
-            export class {name}Client {{
-              constructor(private readonly transport: TrUApiTransport) {{}}
-
-            ",
-            name = trait_def.name
+            "  constructor(private readonly transport: TrUApiTransport) {{"
         )
         .unwrap();
+        for method in methods
+            .iter()
+            .copied()
+            .filter(|method| method.wire.host_initiated)
+        {
+            emit_host_initiated_registration(
+                &mut out,
+                trait_def,
+                method,
+                &wrappers,
+                &ctx,
+                target_version,
+            )?;
+        }
+        writeln!(out, "  }}\n").unwrap();
 
         for method in methods {
             emit_method(&mut out, trait_def, method, &wrappers, &ctx, target_version)?;
@@ -1164,59 +1181,6 @@ fn write_observable_helper(out: &mut String) {
         "#
     )
     .unwrap();
-}
-
-fn write_stream_pair_helper(out: &mut String) {
-    out.push_str(indoc! {
-        r#"
-        function createStreamChannel<Request, Item>({
-          transport,
-          ids,
-          payload,
-          requests,
-          encodeRequest,
-          decodeItem,
-        }: {
-          transport: TrUApiTransport;
-          ids: SubscriptionFrameIds;
-          payload: Uint8Array;
-          requests: ObservableSource<Request>;
-          encodeRequest: (request: Request) => Uint8Array;
-          decodeItem: (payload: Uint8Array) => Item;
-        }): ObservableLike<Item> {
-          let used = false;
-          const source = createObservable<Item>({
-            transport,
-            ids,
-            payload,
-            decodeItem,
-            onSubscribe(subscription) {
-              return requests.subscribe({
-                next(request) {
-                  transport.sendSubscriptionItem({
-                    ids,
-                    subscriptionId: subscription.subscriptionId,
-                    payload: encodeRequest(request),
-                  });
-                },
-              });
-            },
-          });
-          const items: ObservableLike<Item> = {
-            subscribe(observer: Partial<Observer<Item>> = {}): Subscription {
-              if (used) throw new Error("channel is single-use: its one subscription is the operation");
-              used = true;
-              return source.subscribe(observer);
-            },
-            [OBSERVABLE_INTEROP as typeof Symbol.observable]() {
-              return items;
-            },
-          };
-          return items;
-        }
-
-        "#
-    });
 }
 
 fn included_methods<'a>(
@@ -1491,13 +1455,12 @@ fn emit_method(
     let ts_method_name = to_camel_case(&strip_prefix(&method.name));
     let wire_const = wire_const_name(&trait_def.name, &method.name);
     let wire_version = method_wire_version(method, wrappers, target_version)?;
-    let payload_params = if matches!(method.kind, MethodKind::StreamPair) {
-        &[][..]
-    } else {
-        method.params.as_slice()
-    };
-    let payload = emit_payload(payload_params, wrappers, ctx, wire_version)?;
+    let payload = emit_payload(&method.params, wrappers, ctx, wire_version)?;
     write_jsdoc(out, "  ", method.docs.as_deref());
+
+    if method.wire.host_initiated {
+        return emit_host_initiated_method(out, method, &payload, wrappers, ctx, wire_version);
+    }
 
     match (&method.kind, &method.return_type) {
         (MethodKind::Request, ReturnType::Result { ok, err }) => {
@@ -1587,29 +1550,6 @@ fn emit_method(
                 wire_version,
             )?;
         }
-        (MethodKind::StreamPair, ReturnType::Subscription(item)) => {
-            let request = method
-                .params
-                .first()
-                .and_then(|param| subscription_item_type(&param.type_ref))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "stream pair `{}` has no Subscription<T> parameter",
-                        method.name
-                    )
-                })?;
-            let request = emit_response(request, wrappers, ctx, wire_version)?;
-            let response = emit_response(item, wrappers, ctx, wire_version)?;
-            emit_stream_pair_method(
-                out,
-                &ts_method_name,
-                &wire_const,
-                &payload,
-                &request,
-                &response,
-                wire_version,
-            )?;
-        }
         (kind, return_type) => {
             bail!(
                 "Generator internal mismatch for method `{}`: kind {:?} does not match return type {:?}",
@@ -1623,60 +1563,107 @@ fn emit_method(
     Ok(())
 }
 
-fn emit_stream_pair_method(
-    out: &mut String,
-    ts_method_name: &str,
-    wire_const: &str,
-    payload: &PayloadEmission,
-    request: &ResponseEmission,
-    response: &ResponseEmission,
-    wire_version: Option<u32>,
-) -> Result<()> {
-    let request_value = wire_version.map_or_else(
-        || "request".to_string(),
-        |version| format!("{{ tag: \"V{version}\", value: request }}"),
-    );
-    let item_value = if let Some(version) = wire_version {
-        versioned_value_expr(
-            &format!("{}.dec(payload)", response.wire_codec_expr),
-            &response.wire_type_ts,
-            &response.inner_type_ts,
-            version,
-        )
-    } else {
-        format!("{}.dec(payload)", response.wire_codec_expr)
+fn host_registration_field(method: &MethodDef) -> String {
+    format!("{}Registration", to_camel_case(&strip_prefix(&method.name)))
+}
+
+fn emit_host_initiated_types(
+    method: &MethodDef,
+    wrappers: &HashMap<String, VersionedWrapper>,
+    ctx: &CodecContext,
+    target_version: u32,
+) -> Result<(PayloadEmission, ResponseEmission, u32)> {
+    let wire_version = method_wire_version(method, wrappers, target_version)?.ok_or_else(|| {
+        anyhow::anyhow!("host-initiated method `{}` is not versioned", method.name)
+    })?;
+    let payload = emit_payload(&method.params, wrappers, ctx, Some(wire_version))?;
+    let ReturnType::Subscription(item) = &method.return_type else {
+        bail!(
+            "host-initiated method `{}` must return Subscription<T>",
+            method.name
+        );
     };
-    writedoc!(
+    let response = emit_response(item, wrappers, ctx, Some(wire_version))?;
+    Ok((payload, response, wire_version))
+}
+
+fn emit_host_initiated_field(
+    out: &mut String,
+    method: &MethodDef,
+    wrappers: &HashMap<String, VersionedWrapper>,
+    ctx: &CodecContext,
+    target_version: u32,
+) -> Result<()> {
+    let (payload, response, _) = emit_host_initiated_types(method, wrappers, ctx, target_version)?;
+    writeln!(
         out,
-        "
-          {ts_method_name}(
-            requests: ObservableSource<{request_type}>,
-          ): ObservableLike<{response_type}> {{
-            return createStreamChannel<{request_type}, {response_type}>({{
-              transport: this.transport,
-              ids: W.{wire_const},
-              requests,
-        ",
-        request_type = request.inner_type_ts,
-        response_type = response.inner_type_ts,
+        "  private readonly {}: HostInitiatedSubscriptionRegistration<{}, {}>;",
+        host_registration_field(method),
+        payload.inner_type_ts,
+        response.inner_type_ts
     )
     .unwrap();
-    write_payload_field(
-        out,
-        "      ",
-        &payload.wire_codec_expr,
-        payload.wire_version,
-        &payload.value_expr,
-    );
+    Ok(())
+}
+
+fn emit_host_initiated_registration(
+    out: &mut String,
+    trait_def: &TraitDef,
+    method: &MethodDef,
+    wrappers: &HashMap<String, VersionedWrapper>,
+    ctx: &CodecContext,
+    target_version: u32,
+) -> Result<()> {
+    let (payload, response, version) =
+        emit_host_initiated_types(method, wrappers, ctx, target_version)?;
+    let wire_const = wire_const_name(&trait_def.name, &method.name);
     writedoc!(
         out,
         "
-              encodeRequest: (request) => {codec}.enc({request_value}),
-              decodeItem: (payload) => {item_value},
+            this.{field} = transport.registerHostInitiatedSubscription({{
+              ids: W.{wire_const},
+              decodeRequest: (payload) => {request_codec}.dec(payload).value,
+              encodeItem: (item) => {item_codec}.enc({{ tag: \"V{version}\", value: item }}),
+              interruptPayload: new Uint8Array([0]),
+              bufferCapacity: 64,
             }});
+        ",
+        field = host_registration_field(method),
+        request_codec = payload.wire_codec_expr,
+        item_codec = response.wire_codec_expr,
+    )
+    .unwrap();
+    Ok(())
+}
+
+fn emit_host_initiated_method(
+    out: &mut String,
+    method: &MethodDef,
+    payload: &PayloadEmission,
+    wrappers: &HashMap<String, VersionedWrapper>,
+    ctx: &CodecContext,
+    wire_version: Option<u32>,
+) -> Result<()> {
+    let ReturnType::Subscription(item) = &method.return_type else {
+        bail!(
+            "host-initiated method `{}` must return Subscription<T>",
+            method.name
+        );
+    };
+    let response = emit_response(item, wrappers, ctx, wire_version)?;
+    let name = format!("on{}", strip_prefix(&method.name).to_case(Case::Pascal));
+    writedoc!(
+        out,
+        "
+          {name}(
+            handler: (request: {request}) => ObservableSource<{item}>,
+          ): {{ unsubscribe(): void }} {{
+            return this.{field}.setHandler(handler);
           }}
         ",
-        codec = request.wire_codec_expr,
+        request = payload.inner_type_ts,
+        item = response.inner_type_ts,
+        field = host_registration_field(method),
     )
     .unwrap();
     Ok(())
@@ -2632,28 +2619,6 @@ mod tests {
         }
     }
 
-    fn stream_pair_method_with_wrappers(
-        name: &str,
-        wire_id: Option<u8>,
-        request: &str,
-        item: &str,
-    ) -> MethodDef {
-        MethodDef {
-            name: name.to_string(),
-            kind: MethodKind::StreamPair,
-            params: vec![ParamDef {
-                name: "requests".to_string(),
-                type_ref: TypeRef::Named {
-                    name: "Subscription".to_string(),
-                    args: vec![named_type(request)],
-                },
-            }],
-            return_type: ReturnType::Subscription(named_type(item)),
-            wire: subscription_wire(wire_id),
-            docs: None,
-        }
-    }
-
     fn versioned_tuple_wrapper_variants(name: &str, variants: &[(u32, &str)]) -> TypeDef {
         TypeDef {
             name: name.to_string(),
@@ -3009,37 +2974,6 @@ mod tests {
         assert!(source.contains("legacyCall("));
         assert!(!source.contains("FutureOnlyClient"));
         assert!(!source.contains("futureCall("));
-    }
-
-    #[test]
-    fn generate_client_emits_channel_for_stream_pair() {
-        let api = ApiDefinition {
-            traits: vec![TraitDef {
-                name: "Chat".to_string(),
-                module_path: Vec::new(),
-                methods: vec![stream_pair_method_with_wrappers(
-                    "custom_message_render_channel",
-                    Some(52),
-                    "RendererRequest",
-                    "RendererItem",
-                )],
-                docs: None,
-            }],
-            public_trait_order: vec!["Chat".to_string()],
-            types: vec![
-                versioned_tuple_wrapper_variants("RendererRequest", &[(1, "RendererRequestV1")]),
-                versioned_tuple_wrapper_variants("RendererItem", &[(1, "RendererItemV1")]),
-            ],
-        };
-
-        let source = generate_client(&api, 1, 1).expect("generate paired-stream client");
-
-        assert!(source.contains("requests: ObservableSource<T.RendererRequestV1>"));
-        assert!(source.contains("): ObservableLike<T.RendererItemV1>"));
-        assert!(
-            source.contains("return createStreamChannel<T.RendererRequestV1, T.RendererItemV1>")
-        );
-        assert!(source.contains("transport.sendSubscriptionItem({"));
     }
 
     #[test]

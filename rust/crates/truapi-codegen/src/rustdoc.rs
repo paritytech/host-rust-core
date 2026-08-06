@@ -107,6 +107,8 @@ pub struct MethodDef {
 /// Raw wire ids extracted from `#[wire(...)]`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WireAttrs {
+    /// This subscription is started by the host and served by the product.
+    pub host_initiated: bool,
     /// Request frame discriminant.
     pub request_id: Option<u8>,
     /// Response frame discriminant.
@@ -130,8 +132,6 @@ pub enum MethodKind {
     Subscription,
     /// One request, a stream of `Result<item, err>` items.
     ResultSubscription,
-    /// A product-to-host request stream paired with a host-to-product item stream.
-    StreamPair,
 }
 
 /// Trait method parameter (name + type).
@@ -665,10 +665,19 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
     let raw_output = sig
         .get("output")
         .with_context(|| format!("Method `{name}` missing rustdoc return type"))?;
-    let output = unwrap_future_output(raw_output)
-        .with_context(|| format!("Method `{name}` has an invalid Future return type"))?;
+    let wire = item
+        .docs
+        .as_deref()
+        .map(extract_wire_attrs)
+        .unwrap_or_default();
+    let output = if wire.host_initiated {
+        raw_output
+    } else {
+        unwrap_future_output(raw_output)
+            .with_context(|| format!("Method `{name}` has an invalid Future return type"))?
+    };
 
-    let (mut kind, return_type) = if is_result_subscription_return(output) {
+    let (kind, return_type) = if is_result_subscription_return(output) {
         (
             MethodKind::ResultSubscription,
             ReturnType::ResultSubscription {
@@ -754,19 +763,9 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
         );
     }
 
-    if matches!(kind, MethodKind::Subscription)
-        && params.len() == 1
-        && subscription_item_type(&params[0].type_ref).is_some()
-    {
-        kind = MethodKind::StreamPair;
+    if wire.host_initiated && !matches!(kind, MethodKind::Subscription) {
+        bail!("Host-initiated method `{name}` must return Subscription<T>");
     }
-    validate_stream_method_name(&name, kind)?;
-
-    let wire = item
-        .docs
-        .as_deref()
-        .map(extract_wire_attrs)
-        .unwrap_or_default();
 
     Ok(Some(MethodDef {
         name,
@@ -776,18 +775,6 @@ fn extract_method(item_id: &str, item: &Item, names: &NameContext) -> Result<Opt
         wire,
         docs: clean_docs(item.docs.as_deref()),
     }))
-}
-
-fn validate_stream_method_name(name: &str, kind: MethodKind) -> Result<()> {
-    if matches!(kind, MethodKind::StreamPair) && name.ends_with("_subscribe") {
-        let stem = name
-            .strip_suffix("_subscribe")
-            .expect("suffix checked above");
-        bail!(
-            "Paired-stream method `{name}` must use the `_channel` suffix; rename it to `{stem}_channel`"
-        );
-    }
-    Ok(())
 }
 
 /// Strips hidden codegen marker lines from a rustdoc comment so it can be
@@ -822,14 +809,6 @@ fn extract_marker_value<'a>(docs: &'a str, marker: &str) -> Option<&'a str> {
     })
 }
 
-/// Return the item type carried by a `Subscription<T>` parameter.
-pub fn subscription_item_type(ty: &TypeRef) -> Option<&TypeRef> {
-    match ty {
-        TypeRef::Named { name, args } if name == "Subscription" && args.len() == 1 => args.first(),
-        _ => None,
-    }
-}
-
 /// Extracts `@wire_<name>_id=N` markers from a doc comment block. Annotated
 /// methods carry these markers via the `#[wire(...)]` proc-macro, which appends
 /// hidden doc strings so they propagate through rustdoc JSON.
@@ -837,6 +816,9 @@ fn extract_wire_attrs(docs: &str) -> WireAttrs {
     let mut attrs = WireAttrs::default();
     for line in docs.lines() {
         let line = line.trim_start();
+        if line.starts_with("@wire_host_initiated") {
+            attrs.host_initiated = true;
+        }
         for (needle, target) in [
             ("@wire_request_id=", &mut attrs.request_id),
             ("@wire_response_id=", &mut attrs.response_id),
@@ -1518,26 +1500,6 @@ mod tests {
 
         assert_eq!(trait_def.required_execution(), Some("Chat"));
         assert_eq!(trait_def.public_docs().as_deref(), Some("Chat operations."));
-    }
-
-    #[test]
-    fn stream_pair_rejects_subscribe_suffix() {
-        let error =
-            validate_stream_method_name("custom_message_render_subscribe", MethodKind::StreamPair)
-                .expect_err("paired streams must not use the subscription suffix");
-
-        assert_eq!(
-            error.to_string(),
-            "Paired-stream method `custom_message_render_subscribe` must use the `_channel` suffix; rename it to `custom_message_render_channel`"
-        );
-    }
-
-    #[test]
-    fn stream_pair_accepts_channel_suffix() {
-        assert!(
-            validate_stream_method_name("custom_message_render_channel", MethodKind::StreamPair)
-                .is_ok()
-        );
     }
 
     #[test]

@@ -28,27 +28,6 @@ function unwrap<T>(result: Result<T, { message: string }>, message: string): T {
     );
 }
 
-/** Minimal replaying request source standing in for an RxJS subject. */
-function requestSource<Item>() {
-    const buffered: Item[] = [];
-    let target: { next?: (value: Item) => void } | undefined;
-    return {
-        next(value: Item): void {
-            if (target) target.next?.(value);
-            else buffered.push(value);
-        },
-        subscribe(observer: { next?: (value: Item) => void }): { unsubscribe: () => void } {
-            target = observer;
-            for (const value of buffered.splice(0)) observer.next?.(value);
-            return {
-                unsubscribe: () => {
-                    target = undefined;
-                },
-            };
-        },
-    };
-}
-
 /** Create an in-memory provider plus helpers for injecting frames and closes. */
 function providerFixture() {
     const sent: Uint8Array[] = [];
@@ -101,6 +80,67 @@ function accountGetResponsePayload(
     return versionedV1(
         ScaleResult(T.HostAccountGetResponse, CallError(T.VersionedHostAccountGetError)),
     ).enc({ tag: "V1", value });
+}
+
+function rendererStart(
+    requestId: string,
+    request: T.ProductChatCustomMessageRenderRequest,
+): Uint8Array {
+    return unwrap(
+        encodeWireMessage({
+            requestId,
+            payload: {
+                id: W.CHAT_CUSTOM_MESSAGE_RENDER.start,
+                value: T.VersionedProductChatCustomMessageRenderRequest.enc({
+                    tag: "V1",
+                    value: request,
+                }),
+            },
+        }),
+        "encode renderer start",
+    );
+}
+
+function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Array {
+    return unwrap(
+        encodeWireMessage({
+            requestId,
+            payload: {
+                id: W.CHAT_CUSTOM_MESSAGE_RENDER.receive,
+                value: T.VersionedProductChatCustomMessageRenderItem.enc({
+                    tag: "V1",
+                    value: node,
+                }),
+            },
+        }),
+        "encode renderer receive",
+    );
+}
+
+function rendererInterrupt(requestId: string): Uint8Array {
+    return unwrap(
+        encodeWireMessage({
+            requestId,
+            payload: {
+                id: W.CHAT_CUSTOM_MESSAGE_RENDER.interrupt,
+                value: new Uint8Array([0]),
+            },
+        }),
+        "encode renderer interrupt",
+    );
+}
+
+function rendererStop(requestId: string): Uint8Array {
+    return unwrap(
+        encodeWireMessage({
+            requestId,
+            payload: {
+                id: W.CHAT_CUSTOM_MESSAGE_RENDER.stop,
+                value: new Uint8Array(),
+            },
+        }),
+        "encode renderer stop",
+    );
 }
 
 describe("generated client transport", () => {
@@ -264,153 +304,163 @@ describe("generated client transport", () => {
         expect(events).toEqual(["Connected"]);
     });
 
-    it("forwards requests replayed by the source when the channel opens", () => {
+    it("buffers a host render start until the product registers its handler", () => {
         const fixture = providerFixture();
-        const requests = requestSource<T.ProductChatCustomMessageRenderChannelRequest>();
-        const responses = createClient(createTransport(fixture.provider)).chat.customMessageRenderChannel(requests);
-        const first: T.ProductChatCustomMessageRenderChannelRequest = {
-            tag: "Failed",
-            value: { messageId: "message-1" },
-        };
-        const second: T.ProductChatCustomMessageRenderChannelRequest = {
-            tag: "Failed",
-            value: { messageId: "message-2" },
-        };
-
-        requests.next(first);
-        requests.next(second);
-        expect(fixture.sent).toHaveLength(0);
-
-        const subscription = responses.subscribe();
-        const start = unwrap(
-            encodeWireMessage({
-                requestId: subscription.subscriptionId,
-                payload: {
-                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.start,
-                    value: indexedTaggedUnion({ V1: [0, _void] }).enc({
-                        tag: "V1",
-                        value: undefined,
-                    }),
-                },
-            }),
-            "encode renderer start",
-        );
-        const requestFrame = (request: T.ProductChatCustomMessageRenderChannelRequest) =>
-            unwrap(
-                encodeWireMessage({
-                    requestId: subscription.subscriptionId,
-                    payload: {
-                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.receive,
-                        value: T.VersionedProductChatCustomMessageRenderChannelRequest.enc({
-                            tag: "V1",
-                            value: request,
-                        }),
-                    },
-                }),
-                "encode buffered renderer request",
-            );
-
-        expect(fixture.sent.map(toHex)).toEqual(
-            [start, requestFrame(first), requestFrame(second)].map(toHex),
-        );
-    });
-
-    it("uses one subscription id for both renderer stream directions", () => {
-        const fixture = providerFixture();
-        const transport = createTransport(fixture.provider);
-        const client = createClient(transport);
-        const renders: T.ProductChatCustomMessageRenderChannelItem[] = [];
-        const requests = requestSource<T.ProductChatCustomMessageRenderChannelRequest>();
-        const responses = client.chat.customMessageRenderChannel(requests);
-
-        const subscription = responses.subscribe({ next: (item) => renders.push(item) });
-        const start = unwrap(
-            encodeWireMessage({
-                requestId: subscription.subscriptionId,
-                payload: {
-                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.start,
-                    value: indexedTaggedUnion({ V1: [0, _void] }).enc({
-                        tag: "V1",
-                        value: undefined,
-                    }),
-                },
-            }),
-            "encode renderer start",
-        );
-        expect(toHex(fixture.sent[0])).toBe(toHex(start));
-
-        const item = {
+        const client = createClient(createTransport(fixture.provider));
+        const request: T.ProductChatCustomMessageRenderRequest = {
             messageId: "message-1",
             messageType: "vote",
             payload: "0x0102",
-        } as const;
-        fixture.receive(
-            unwrap(
-                encodeWireMessage({
-                    requestId: subscription.subscriptionId,
-                    payload: {
-                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.receive,
-                        value: T.VersionedProductChatCustomMessageRenderChannelItem.enc({
-                            tag: "V1",
-                            value: item,
-                        }),
-                    },
-                }),
-                "encode renderer work",
-            ),
-        );
-        expect(renders).toEqual([item]);
+        };
+        // Legacy hosts use opaque ids rather than the Rust host's `h:` prefix.
+        fixture.receive(rendererStart("legacy-render-1", request));
 
-        const update = {
-            tag: "Update",
-            value: {
-                messageId: item.messageId,
-                node: { tag: "String", value: { text: "Votes: 1" } },
-            },
-        } as const;
-        requests.next(update);
-        const request = unwrap(
-            encodeWireMessage({
-                requestId: subscription.subscriptionId,
-                payload: {
-                    id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.receive,
-                    value: T.VersionedProductChatCustomMessageRenderChannelRequest.enc({
-                        tag: "V1",
-                        value: update,
-                    }),
-                },
-            }),
-            "encode renderer update",
-        );
-        expect(toHex(fixture.sent[1])).toBe(toHex(request));
+        const handled: T.ProductChatCustomMessageRenderRequest[] = [];
+        client.chat.onCustomMessageRender((value) => {
+            handled.push(value);
+            return { subscribe: () => ({ unsubscribe() {} }) };
+        });
+
+        expect(handled).toEqual([request]);
+        expect(fixture.sent).toHaveLength(0);
     });
 
-    it("stops forwarding after close and refuses a second subscription", () => {
+    it("streams complete replacement trees on the host-owned request id", () => {
         const fixture = providerFixture();
-        const transport = createTransport(fixture.provider);
-        const requests = requestSource<T.ProductChatCustomMessageRenderChannelRequest>();
-        const responses = createClient(transport).chat.customMessageRenderChannel(requests);
-        const first = responses.subscribe();
+        const client = createClient(createTransport(fixture.provider));
+        let observer: { next?: (node: T.CustomRendererNode) => void } = {};
+        client.chat.onCustomMessageRender(() => ({
+            subscribe(next) {
+                observer = next;
+                return { unsubscribe() {} };
+            },
+        }));
 
         fixture.receive(
-            unwrap(
-                encodeWireMessage({
-                    requestId: first.subscriptionId,
-                    payload: {
-                        id: W.CHAT_CUSTOM_MESSAGE_RENDER_CHANNEL.interrupt,
-                        value: _void.enc(undefined),
-                    },
+            rendererStart("h:7", {
+                messageId: "message-7",
+                messageType: "vote",
+                payload: "0x",
+            }),
+        );
+        const first = { tag: "String", value: { text: "Votes: 1" } } as const;
+        const second = { tag: "String", value: { text: "Votes: 2" } } as const;
+        observer.next?.(first);
+        observer.next?.(second);
+
+        expect(fixture.sent.map(toHex)).toEqual(
+            [rendererReceive("h:7", first), rendererReceive("h:7", second)].map(toHex),
+        );
+    });
+
+    it("declines a render when the handler throws", () => {
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+        client.chat.onCustomMessageRender(() => {
+            throw new Error("unsupported renderer");
+        });
+
+        fixture.receive(
+            rendererStart("h:2", {
+                messageId: "message-2",
+                messageType: "unknown",
+                payload: "0x",
+            }),
+        );
+
+        expect(toHex(fixture.sent[0])).toBe(toHex(rendererInterrupt("h:2")));
+    });
+
+    it("declines a render when its handler stream errors", () => {
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+        client.chat.onCustomMessageRender(() => ({
+            subscribe(observer) {
+                observer.error?.(new Error("renderer failed"));
+                return { unsubscribe() {} };
+            },
+        }));
+
+        fixture.receive(
+            rendererStart("h:3", {
+                messageId: "message-3",
+                messageType: "vote",
+                payload: "0x",
+            }),
+        );
+
+        expect(toHex(fixture.sent[0])).toBe(toHex(rendererInterrupt("h:3")));
+    });
+
+    it("keeps a completed render alive until the host stops it", () => {
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+        let disposed = false;
+        client.chat.onCustomMessageRender(() => ({
+            subscribe(observer) {
+                observer.complete?.();
+                return { unsubscribe: () => (disposed = true) };
+            },
+        }));
+
+        fixture.receive(
+            rendererStart("h:4", {
+                messageId: "message-4",
+                messageType: "vote",
+                payload: "0x",
+            }),
+        );
+        expect(fixture.sent).toHaveLength(0);
+        expect(disposed).toBe(false);
+
+        fixture.receive(rendererStop("h:4"));
+        expect(disposed).toBe(true);
+        expect(fixture.sent).toHaveLength(0);
+    });
+
+    it("interrupts the oldest buffered render when capacity is exceeded", () => {
+        const fixture = providerFixture();
+        createClient(createTransport(fixture.provider));
+        for (let index = 1; index <= 65; index += 1) {
+            fixture.receive(
+                rendererStart(`h:${index}`, {
+                    messageId: `message-${index}`,
+                    messageType: "vote",
+                    payload: "0x",
                 }),
-                "encode renderer completion",
-            ),
-        );
+            );
+        }
 
-        requests.next({ tag: "Failed", value: { messageId: "closed" } });
         expect(fixture.sent).toHaveLength(1);
+        expect(toHex(fixture.sent[0])).toBe(toHex(rendererInterrupt("h:1")));
+    });
 
-        expect(() => responses.subscribe()).toThrow(
-            "channel is single-use: its one subscription is the operation",
+    it("disposes only the stopped render instance", () => {
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+        const disposed: string[] = [];
+        client.chat.onCustomMessageRender((request) => ({
+            subscribe() {
+                return { unsubscribe: () => disposed.push(request.messageId) };
+            },
+        }));
+        fixture.receive(
+            rendererStart("h:1", {
+                messageId: "one",
+                messageType: "vote",
+                payload: "0x",
+            }),
         );
+        fixture.receive(
+            rendererStart("h:2", {
+                messageId: "two",
+                messageType: "vote",
+                payload: "0x",
+            }),
+        );
+
+        fixture.receive(rendererStop("h:1"));
+        expect(disposed).toEqual(["one"]);
     });
 
     it("completes the observable on a payloadless interrupt terminator", () => {

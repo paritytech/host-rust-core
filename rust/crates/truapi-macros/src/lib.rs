@@ -31,6 +31,7 @@ use syn::{
 
 #[derive(Default)]
 struct WireArgs {
+    host_initiated: bool,
     request_id: Option<u8>,
     response_id: Option<u8>,
     start_id: Option<u8>,
@@ -76,6 +77,17 @@ impl Parse for WireArgs {
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
+            if key == "host_initiated" {
+                if args.host_initiated {
+                    return Err(syn::Error::new(key.span(), "duplicate `host_initiated`"));
+                }
+                args.host_initiated = true;
+                if input.is_empty() {
+                    break;
+                }
+                input.parse::<Token![,]>()?;
+                continue;
+            }
             input.parse::<Token![=]>()?;
             let lit: LitInt = input.parse()?;
             let value = lit.base10_parse().map_err(|err| {
@@ -165,7 +177,7 @@ pub fn wire(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn wire_tags(args: &WireArgs) -> Vec<String> {
-    [
+    let mut tags = [
         ("request_id", args.request_id),
         ("response_id", args.response_id),
         ("start_id", args.start_id),
@@ -175,7 +187,11 @@ fn wire_tags(args: &WireArgs) -> Vec<String> {
     ]
     .into_iter()
     .filter_map(|(name, value)| value.map(|id| format!("@wire_{name}={id}")))
-    .collect()
+    .collect::<Vec<_>>();
+    if args.host_initiated {
+        tags.push("@wire_host_initiated".to_string());
+    }
+    tags
 }
 
 /// One sequence of versioned envelope declarations passed to `versioned_type!`.

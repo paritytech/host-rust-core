@@ -24,6 +24,18 @@ describe("ChatDiagnosis", () => {
     expect(diagnosis.rendererNode().tag).toBe("Column");
   });
 
+  test("identifies the custom-rendered panel separately from the text report", () => {
+    const diagnosis = new ChatDiagnosis();
+    const renderer = JSON.stringify(diagnosis.rendererNode());
+
+    expect(renderer).toContain("NATIVE CUSTOM MESSAGE");
+    expect(renderer).toContain("Custom message rendered ✓");
+    expect(renderer).toContain(
+      "This panel is a live native renderer tree from TrUAPI Playground.",
+    );
+    expect(diagnosis.markdown()).not.toContain("Custom message rendered");
+  });
+
   test("renders a copy action and reports clipboard fallback state", () => {
     const diagnosis = new ChatDiagnosis();
     const initial = JSON.stringify(diagnosis.rendererNode());

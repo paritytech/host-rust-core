@@ -109,7 +109,6 @@ use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
     HostChatPostMessageRequest, HostChatPostMessageResponse,
-    ProductChatCustomMessageRenderChannelItem, ProductChatCustomMessageRenderChannelRequest,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -334,7 +333,7 @@ impl ProductRuntimeHost {
         product: ProductContext,
     ) -> Self {
         let core_instance = services.next_core_instance();
-        let chat = Arc::new(ChatConnection::new(services.spawner.clone()));
+        let chat = Arc::new(ChatConnection::new());
         Self {
             services,
             platform,
@@ -432,7 +431,7 @@ impl ProductRuntimeHost {
         );
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let core_instance = services.next_core_instance();
-        let chat = Arc::new(ChatConnection::new(services.spawner.clone()));
+        let chat = Arc::new(ChatConnection::new());
         let host = Self {
             services,
             platform,
@@ -1776,6 +1775,12 @@ impl ProductRuntimeHost {
             .ok_or(crate::host_core::ProductRuntimeError::Unsupported)
     }
 
+    pub(crate) fn ensure_native_chat_available(
+        &self,
+    ) -> Result<(), crate::host_core::ProductRuntimeError> {
+        self.native_chat_platform().map(drop)
+    }
+
     fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
         self.native_chat_platform().map_err(|error| match error {
             crate::host_core::ProductRuntimeError::Denied => CallError::Denied,
@@ -1795,17 +1800,6 @@ impl ProductRuntimeHost {
         self.native_chat_platform()?;
         self.chat
             .publish_action(HostChatActionSubscribeItem::V1(action))
-    }
-
-    pub(crate) fn render_custom_message(
-        &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
-    ) -> Result<Subscription<v01::CustomRendererNode>, crate::host_core::ProductRuntimeError> {
-        self.native_chat_platform()?;
-        self.chat
-            .render_custom_message(message_id, message_type, payload)
     }
 
     pub(crate) fn close_chat(&self) {
@@ -1866,18 +1860,6 @@ impl Chat for ProductRuntimeHost {
             return Subscription::empty();
         }
         self.chat.subscribe_actions()
-    }
-
-    #[instrument(skip_all, fields(runtime.method = "chat.custom_message_render_channel"))]
-    async fn custom_message_render_channel(
-        &self,
-        _cx: &CallContext,
-        requests: Subscription<ProductChatCustomMessageRenderChannelRequest>,
-    ) -> Subscription<ProductChatCustomMessageRenderChannelItem> {
-        if !self.chat_streams_available() {
-            return Subscription::empty();
-        }
-        self.chat.register_renderer(requests)
     }
 }
 #[truapi::async_trait]

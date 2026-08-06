@@ -9,13 +9,17 @@ export const CHAT_DIAGNOSIS_METHODS = [
   "Chat/list_subscribe",
   "Chat/post_message",
   "Chat/action_subscribe",
-  "Chat/custom_message_render_channel",
+  "Chat/custom_message_render",
 ] as const;
 
 export type ChatDiagnosisMethod = (typeof CHAT_DIAGNOSIS_METHODS)[number];
 
 export const CHAT_DIAGNOSIS_REFRESH_ACTION = "truapi-chat-diagnosis-refresh";
 export const CHAT_DIAGNOSIS_COPY_ACTION = "truapi-chat-diagnosis-copy";
+export const CHAT_DIAGNOSIS_RENDERER_KICKER = "NATIVE CUSTOM MESSAGE";
+export const CHAT_DIAGNOSIS_RENDERER_TITLE = "Custom message rendered ✓";
+export const CHAT_DIAGNOSIS_RENDERER_DESCRIPTION =
+  "This panel is a live native renderer tree from TrUAPI Playground.";
 
 type CopyStatus = "idle" | "copied" | "unavailable";
 
@@ -91,8 +95,13 @@ export class ChatDiagnosis {
     const passed = results.filter(({ status }) => status === "pass").length;
     const failed = results.filter(({ status }) => status === "fail").length;
     return column([
-      text("TrUAPI Chat Diagnosis", "HeadlineLarge"),
-      text(`${passed} success · ${failed} failed`, "BodyMediumRegular"),
+      text(CHAT_DIAGNOSIS_RENDERER_KICKER, "BodySmallRegular"),
+      text(CHAT_DIAGNOSIS_RENDERER_TITLE, "HeadlineLarge"),
+      text(CHAT_DIAGNOSIS_RENDERER_DESCRIPTION, "BodySmallRegular"),
+      text(
+        `Chat diagnosis · ${passed} success · ${failed} failed`,
+        "BodyMediumRegular",
+      ),
       ...results.map((result) =>
         text(
           `${STATUS_ICON[result.status]} ${result.id.replace("Chat/", "")}`,

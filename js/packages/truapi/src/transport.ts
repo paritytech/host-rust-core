@@ -209,15 +209,32 @@ export interface SubscribeRawParams {
 }
 
 /**
- * Options accepted when sending a value on an active subscription.
+ * Handler for a subscription initiated by the native host.
  **/
-export interface SendSubscriptionItemParams {
-  /** Wire discriminants for the subscription method. **/
+export type HostInitiatedSubscriptionHandler<Request, Item> = (
+  request: Request,
+) => ObservableSource<Item>;
+
+/** Product-side registration for one host-initiated subscription method. **/
+export interface HostInitiatedSubscriptionRegistration<Request, Item> {
+  /** Install or replace the handler used for future start frames. **/
+  setHandler(
+    handler: HostInitiatedSubscriptionHandler<Request, Item>,
+  ): { unsubscribe(): void };
+}
+
+/** Options used to register a host-initiated subscription method. **/
+export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
+  /** Wire discriminants for the host-initiated subscription. **/
   ids: SubscriptionFrameIds;
-  /** Transport-assigned id returned by `subscribeRaw`. **/
-  subscriptionId: string;
-  /** SCALE-encoded stream item. **/
-  payload: Uint8Array;
+  /** Decode the host's start payload. **/
+  decodeRequest(payload: Uint8Array): Request;
+  /** Encode one product renderer emission. **/
+  encodeItem(item: Item): Uint8Array;
+  /** Exact payload used when the product declines a render instance. **/
+  interruptPayload: Uint8Array;
+  /** Number of starts retained before a handler is installed. **/
+  bufferCapacity: number;
 }
 
 /**
@@ -243,10 +260,10 @@ export interface TrUApiTransport {
    **/
   subscribeRaw(params: SubscribeRawParams): Subscription;
 
-  /**
-   * Send one `_receive` value on an active paired subscription.
-   **/
-  sendSubscriptionItem(params: SendSubscriptionItemParams): void;
+  /** Register product-side handling for a host-initiated subscription. **/
+  registerHostInitiatedSubscription<Request, Item>(
+    params: RegisterHostInitiatedSubscriptionParams<Request, Item>,
+  ): HostInitiatedSubscriptionRegistration<Request, Item>;
 
   /**
    * Tear down the transport and release the listeners it registered on the

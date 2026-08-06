@@ -33,27 +33,43 @@ export function selectSimulator() {
   const simulatorList = JSON.parse(
     capture("xcrun", ["simctl", "list", "devices", "available", "-j"]),
   );
-  const devices = Object.values(simulatorList.devices)
-    .flat()
-    .filter(
-      (candidate) =>
-        candidate.isAvailable && candidate.name.startsWith("iPhone"),
-    );
-  const selected = requested
-    ? devices.find(
-        (candidate) =>
-          candidate.udid === requested || candidate.name === requested,
-      )
-    : (devices.find((candidate) => candidate.state === "Booted") ?? devices[0]);
+  const selected = selectSimulatorFromList(simulatorList, requested);
 
   if (!selected) {
     throw new Error(
       requested
-        ? `Requested iPhone simulator is unavailable: ${requested}`
+        ? `Requested simulator is unavailable: ${requested}`
         : "No available iPhone simulator found",
     );
   }
   return selected;
+}
+
+export function selectSimulatorFromList(simulatorList, requested) {
+  const available = Object.values(simulatorList.devices)
+    .flat()
+    .filter((candidate) => candidate.isAvailable);
+  if (requested) {
+    return available.find(
+      (candidate) =>
+        candidate.udid === requested || candidate.name === requested,
+    );
+  }
+
+  const preparedE2E = available.find(
+    (candidate) =>
+      candidate.name.includes("TrUAPI") && candidate.name.includes("E2E"),
+  );
+  if (preparedE2E) {
+    return preparedE2E;
+  }
+
+  const iPhones = available.filter((candidate) =>
+    candidate.name.startsWith("iPhone"),
+  );
+  return (
+    iPhones.find((candidate) => candidate.state === "Booted") ?? iPhones[0]
+  );
 }
 
 export function bootAndInstallApp(app) {

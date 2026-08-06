@@ -77,9 +77,7 @@ fn generate_playground_services_code(
             let docs = split_playground_docs(method.docs.as_deref())?;
             let method_type = match method.kind {
                 MethodKind::Request => "unary",
-                MethodKind::Subscription
-                | MethodKind::ResultSubscription
-                | MethodKind::StreamPair => "subscription",
+                MethodKind::Subscription | MethodKind::ResultSubscription => "subscription",
             };
             let signature =
                 build_method_signature(method, &payload, &wrappers, &ctx, wire_version)?;

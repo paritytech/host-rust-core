@@ -5,10 +5,11 @@ import type {
   HostChatActionSubscribeItem,
   HostChatListSubscribeItem,
   ObservableLike,
-  ProductChatCustomMessageRenderChannelItem,
-  ProductChatCustomMessageRenderChannelRequest,
+  ObservableSource,
+  Observer,
+  ProductChatCustomMessageRenderRequest,
 } from "@parity/truapi";
-import { filter, firstValueFrom, from, Subject, timeout } from "rxjs";
+import { filter, firstValueFrom, from, timeout } from "rxjs";
 import {
   CHAT_DIAGNOSIS_COPY_ACTION,
   CHAT_DIAGNOSIS_REFRESH_ACTION,
@@ -33,22 +34,26 @@ if (!client) {
 const chat = client.chat;
 let customMessageId: string | undefined;
 let finalReportPosted = false;
-const activeRenderMessageIds = new Set<string>();
-const pendingRenderRequests: ProductChatCustomMessageRenderChannelItem[] = [];
+type RenderInstance = {
+  request: ProductChatCustomMessageRenderRequest;
+  observer: Partial<Observer<CustomRendererNode>>;
+  disposed: boolean;
+};
+const activeRenderInstances = new Set<RenderInstance>();
+const pendingRenderInstances = new Set<RenderInstance>();
 
 const diagnosis = new ChatDiagnosis(() => {
-  renderActiveMessages();
+  if (diagnosis.isComplete()) {
+    // Keep the E2E renderer transition deterministic: native Chat first sees
+    // the in-progress tree, then one complete replacement after every method
+    // has settled. The short delay also lets the harness observe both native
+    // updates independently.
+    setTimeout(renderActiveMessages, 1_000);
+  }
   void publishFinalReportIfComplete();
 });
 
-const renderRequests =
-  new Subject<ProductChatCustomMessageRenderChannelRequest>();
-chat.customMessageRenderChannel(renderRequests).subscribe({
-  next: handleRenderRequest,
-  error(error) {
-    diagnosis.fail("Chat/custom_message_render_channel", error);
-  },
-});
+chat.onCustomMessageRender(handleRenderRequest);
 
 chat.actionSubscribe().subscribe({
   next(action) {
@@ -120,9 +125,7 @@ async function runStartupDiagnosis(): Promise<void> {
       payload: renderPayload,
     },
   });
-  for (const item of pendingRenderRequests.splice(0)) {
-    handleRenderRequest(item);
-  }
+  activatePendingRenderInstances();
   if (!textMessageId || !customMessageId || textMessageId === customMessageId) {
     throw new Error("postMessage did not return distinct message identifiers");
   }
@@ -139,66 +142,74 @@ async function ensureRoom(roomId: string, name: string): Promise<void> {
 }
 
 function handleRenderRequest(
-  item: ProductChatCustomMessageRenderChannelItem,
-): void {
-  if (item.messageType !== RENDER_MESSAGE_TYPE) {
-    rejectRender(item.messageId);
+  request: ProductChatCustomMessageRenderRequest,
+): ObservableSource<CustomRendererNode> {
+  if (request.messageType !== RENDER_MESSAGE_TYPE) {
+    throw new Error(`unsupported custom message type: ${request.messageType}`);
+  }
+  const payload = JSON.parse(
+    new TextDecoder().decode(hexToBytes(request.payload)),
+  ) as {
+    version?: number;
+    runId?: string;
+  };
+
+  // Native Chat can restore custom messages from an earlier worker run before
+  // it asks the current run to render its own message. Decline those instances
+  // without turning the current diagnosis red.
+  if (payload.runId !== runId) {
+    throw new Error("custom message belongs to an earlier worker run");
+  }
+  if (payload.version !== 1) {
+    throw new Error("render request did not preserve the custom payload");
+  }
+
+  return {
+    subscribe(observer) {
+      const instance: RenderInstance = { request, observer, disposed: false };
+      if (customMessageId) activateRenderInstance(instance);
+      else pendingRenderInstances.add(instance);
+      return {
+        unsubscribe() {
+          instance.disposed = true;
+          pendingRenderInstances.delete(instance);
+          activeRenderInstances.delete(instance);
+        },
+      };
+    },
+  };
+}
+
+function activatePendingRenderInstances(): void {
+  for (const instance of pendingRenderInstances) {
+    pendingRenderInstances.delete(instance);
+    activateRenderInstance(instance);
+  }
+}
+
+function activateRenderInstance(instance: RenderInstance): void {
+  if (instance.disposed) return;
+  if (instance.request.messageId !== customMessageId) {
+    instance.observer.error?.(
+      new Error(
+        `render request message ${instance.request.messageId} did not match ${customMessageId}`,
+      ),
+    );
     return;
   }
-  try {
-    const payload = JSON.parse(
-      new TextDecoder().decode(hexToBytes(item.payload)),
-    ) as {
-      version?: number;
-      runId?: string;
-    };
-
-    // Native Chat can restore custom messages from an earlier worker run before
-    // it asks the current run to render its own message. Those requests belong
-    // to renderer state that no longer exists, so reject them without turning
-    // the current diagnosis red.
-    if (payload.runId !== runId) {
-      rejectRender(item.messageId);
-      return;
-    }
-    if (payload.version !== 1) {
-      throw new Error("render request did not preserve the custom payload");
-    }
-    if (!customMessageId) {
-      pendingRenderRequests.push(item);
-      return;
-    }
-    if (item.messageId !== customMessageId) {
-      throw new Error(
-        `render request message ${item.messageId} did not match ${customMessageId}`,
-      );
-    }
-
-    activeRenderMessageIds.add(item.messageId);
-    updateRender(item.messageId, diagnosis.rendererNode());
-    diagnosis.pass(
-      "Chat/custom_message_render_channel",
-      "correlated render work and sent initial and replacement trees",
-    );
-  } catch (error) {
-    diagnosis.fail("Chat/custom_message_render_channel", error);
-    rejectRender(item.messageId);
-  }
+  activeRenderInstances.add(instance);
+  instance.observer.next?.(diagnosis.rendererNode());
+  diagnosis.pass(
+    "Chat/custom_message_render",
+    "served initial and replacement trees on a host-initiated render stream",
+  );
 }
 
 function renderActiveMessages(): void {
   const node = diagnosis.rendererNode();
-  for (const messageId of activeRenderMessageIds) {
-    updateRender(messageId, node);
+  for (const instance of activeRenderInstances) {
+    instance.observer.next?.(node);
   }
-}
-
-function updateRender(messageId: string, node: CustomRendererNode): void {
-  renderRequests.next({ tag: "Update", value: { messageId, node } });
-}
-
-function rejectRender(messageId: string): void {
-  renderRequests.next({ tag: "Failed", value: { messageId } });
 }
 
 async function handleAction(

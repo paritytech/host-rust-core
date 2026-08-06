@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
 use parity_scale_codec::{Decode, Encode};
 use thiserror::Error;
@@ -30,7 +31,7 @@ use crate::runtime::{
     LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
     RuntimeServices, SigningHostRole, respond_to_pairing,
 };
-use crate::subscription::Spawner;
+use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
 
 /// Outgoing frame sink owned by a host adapter.
@@ -565,6 +566,7 @@ pub struct ProductRuntime {
     core: TrUApiCore,
     admin: HostAdmin,
     transport: Arc<SinkTransport>,
+    host_subscriptions: Arc<HostInitiatedSubscriptionManager>,
     disposed: Arc<AtomicBool>,
     in_flight: Mutex<HashMap<u64, AbortHandle>>,
     next_dispatch_id: AtomicU64,
@@ -575,6 +577,8 @@ pub struct ProductRuntime {
 #[derive(Clone)]
 pub struct ProductRuntimeControl {
     runtime: Arc<ProductRuntimeHost>,
+    transport: Arc<SinkTransport>,
+    host_subscriptions: Arc<HostInitiatedSubscriptionManager>,
     disposed: Arc<AtomicBool>,
 }
 
@@ -601,8 +605,24 @@ impl ProductRuntimeControl {
         message_type: String,
         payload: Vec<u8>,
     ) -> Result<truapi::Subscription<v01::CustomRendererNode>, ProductRuntimeError> {
-        self.runtime()?
-            .render_custom_message(message_id, message_type, payload)
+        self.runtime()?.ensure_native_chat_available()?;
+        let request = truapi::versioned::chat::ProductChatCustomMessageRenderRequest::V1(
+            v01::ProductChatCustomMessageRenderRequest {
+                message_id,
+                message_type,
+                payload,
+            },
+        );
+        let transport: Arc<dyn Transport> = self.transport.clone();
+        let stream = crate::generated::dispatcher::chat_custom_message_render(
+            &self.host_subscriptions,
+            transport,
+            request,
+        )
+        .map(|item| match item {
+            truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
+        });
+        Ok(truapi::Subscription::new(Box::pin(stream)))
     }
 }
 
@@ -667,6 +687,7 @@ impl ProductRuntime {
             sink,
             disposed: disposed.clone(),
         });
+        let host_subscriptions = Arc::new(HostInitiatedSubscriptionManager::new());
         Self {
             core: TrUApiCore::from_product_runtime(
                 admin.product_runtime.clone(),
@@ -675,6 +696,7 @@ impl ProductRuntime {
             ),
             admin,
             transport,
+            host_subscriptions,
             disposed,
             in_flight: Mutex::new(HashMap::new()),
             next_dispatch_id: AtomicU64::new(0),
@@ -697,6 +719,9 @@ impl ProductRuntime {
                 reason: err.to_string(),
             }
         })?;
+        if self.host_subscriptions.handle_message(message.clone()) {
+            return Ok(());
+        }
         let dispatch_id = self.next_dispatch_id.fetch_add(1, Ordering::Relaxed);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         self.in_flight
@@ -721,6 +746,8 @@ impl ProductRuntime {
     pub fn control(&self) -> ProductRuntimeControl {
         ProductRuntimeControl {
             runtime: self.admin.product_runtime.clone(),
+            transport: self.transport.clone(),
+            host_subscriptions: self.host_subscriptions.clone(),
             disposed: self.disposed.clone(),
         }
     }
@@ -782,6 +809,7 @@ impl ProductRuntime {
             handle.abort();
         }
         self.admin.product_runtime.close_chat();
+        self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
 }
@@ -960,37 +988,6 @@ mod tests {
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
         assert_eq!(response.request_id, "chat:actions");
-        assert_eq!(response.payload.id, ids.interrupt_id);
-        assert!(response.payload.value.is_empty());
-    }
-
-    #[test]
-    fn generated_filter_denies_renderer_stream_pair_on_app_connection() {
-        let sink = Arc::new(RecordingSink::default());
-        let (host_config, product) = runtime_config("myapp.dot");
-        let runtime = ProductRuntime::from_platform_with_config(
-            Arc::new(StubPlatform::default()),
-            host_config,
-            product,
-            test_spawner(),
-            sink.clone(),
-        );
-        let ids = subscription_ids("chat_custom_message_render_channel")
-            .expect("known renderer stream pair");
-        let frame = ProtocolMessage {
-            request_id: "chat:renderer".into(),
-            payload: Payload {
-                id: ids.start_id,
-                value: Vec::new(),
-            },
-        };
-
-        futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
-
-        let frames = sink.frames.lock().unwrap();
-        assert_eq!(frames.len(), 1);
-        let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
-        assert_eq!(response.request_id, "chat:renderer");
         assert_eq!(response.payload.id, ids.interrupt_id);
         assert!(response.payload.value.is_empty());
     }

@@ -64,6 +64,7 @@ pub fn generate_dispatcher(api: &ApiDefinition) -> Result<String> {
     );
     writeln!(out).unwrap();
     write_top_register(&mut out, &traits);
+    write_host_initiated_callers(&mut out, api, &traits)?;
 
     for module in &modules {
         writeln!(out).unwrap();
@@ -105,7 +106,11 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<ModuleEmiss
     let module = module_for_trait(&trait_def.name);
 
     let mut methods = Vec::with_capacity(trait_def.methods.len());
-    for method in &trait_def.methods {
+    for method in trait_def
+        .methods
+        .iter()
+        .filter(|method| !method.wire.host_initiated)
+    {
         let wire_method = wire_method_name(&trait_def.name, &method.name);
         methods.push(MethodEmission::build(
             api,
@@ -145,6 +150,65 @@ fn build_module(api: &ApiDefinition, trait_def: &TraitDef) -> Result<ModuleEmiss
     })
 }
 
+fn write_host_initiated_callers(
+    out: &mut String,
+    api: &ApiDefinition,
+    traits: &[&TraitDef],
+) -> Result<()> {
+    let wrappers = versioned_wrapper_names(api);
+    for trait_def in traits {
+        let module = module_for_trait(&trait_def.name);
+        for method in trait_def
+            .methods
+            .iter()
+            .filter(|method| method.wire.host_initiated)
+        {
+            let [request] = method.params.as_slice() else {
+                bail!(
+                    "Host-initiated method `{}` must have exactly one request parameter",
+                    method.name
+                );
+            };
+            let request = versioned_wrapper_root(
+                &method.name,
+                "host-initiated request",
+                &request.type_ref,
+                &wrappers,
+            )?;
+            let ReturnType::Subscription(item) = &method.return_type else {
+                bail!(
+                    "Host-initiated method `{}` must return Subscription<T>",
+                    method.name
+                );
+            };
+            let item =
+                versioned_wrapper_root(&method.name, "host-initiated item", item, &wrappers)?;
+            let wire_name = wire_method_name(&trait_def.name, &method.name);
+            let ids = const_name(&wire_name);
+            writedoc!(
+                out,
+                r#"
+
+                /// Start the host-initiated `{wire_name}` subscription.
+                pub(crate) fn {wire_name}(
+                    subscriptions: &HostInitiatedSubscriptionManager,
+                    transport: Arc<dyn Transport>,
+                    request: versioned::{module}::{request},
+                ) -> truapi::Subscription<versioned::{module}::{item}> {{
+                    subscriptions.start(
+                        wire_table::{ids},
+                        parity_scale_codec::Encode::encode(&request),
+                        transport,
+                    )
+                }}
+                "#
+            )
+            .unwrap();
+        }
+    }
+    Ok(())
+}
+
 struct MethodEmission {
     /// Rust method name on the host trait (used for the `host.<name>(...)` call).
     name: String,
@@ -154,7 +218,6 @@ struct MethodEmission {
     module: String,
     kind: MethodKind,
     request_payload: Option<WirePayload>,
-    request_stream_wrapper: Option<String>,
     response_wrapper: Option<String>,
     error_payload: WirePayload,
     item_wrapper: Option<String>,
@@ -176,10 +239,9 @@ impl MethodEmission {
         required_execution: Option<&str>,
     ) -> Result<Self> {
         let versioned_wrappers = versioned_wrapper_names(api);
-        let request_payload = match (method.kind, method.params.as_slice()) {
-            (MethodKind::StreamPair, _) => None,
-            (_, []) => None,
-            (_, [param]) => match &param.type_ref {
+        let request_payload = match method.params.as_slice() {
+            [] => None,
+            [param] => match &param.type_ref {
                 TypeRef::Named { name, args }
                     if args.is_empty() && versioned_wrappers.contains(name) =>
                 {
@@ -187,36 +249,12 @@ impl MethodEmission {
                 }
                 _ => Some(WirePayload::Raw(param.type_ref.clone())),
             },
-            (_, _) => bail!(
+            _ => bail!(
                 "Method `{}`: expected at most one request parameter (got {})",
                 method.name,
                 method.params.len()
             ),
         };
-        let request_stream_wrapper = if matches!(method.kind, MethodKind::StreamPair) {
-            let request = method
-                .params
-                .first()
-                .and_then(|param| subscription_item_type(&param.type_ref))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Method `{}`: stream pair requires a Subscription<T> parameter",
-                        method.name
-                    )
-                })?;
-            Some(
-                versioned_wrapper_root(
-                    &method.name,
-                    "request stream item",
-                    request,
-                    &versioned_wrappers,
-                )?
-                .to_string(),
-            )
-        } else {
-            None
-        };
-
         let error_payload = match &method.return_type {
             ReturnType::Result { err, .. } | ReturnType::ResultSubscription { err, .. } => {
                 wire_payload_for_error(&method.name, err, &versioned_wrappers)?
@@ -270,7 +308,6 @@ impl MethodEmission {
             module: module.to_string(),
             kind: method.kind,
             request_payload,
-            request_stream_wrapper,
             response_wrapper,
             error_payload,
             item_wrapper,
@@ -284,7 +321,6 @@ impl MethodEmission {
             MethodKind::Subscription | MethodKind::ResultSubscription => {
                 self.write_subscription(out, host_expr)
             }
-            MethodKind::StreamPair => self.write_stream_pair(out, host_expr),
         }
     }
 
@@ -611,60 +647,6 @@ impl MethodEmission {
         Ok(())
     }
 
-    fn write_stream_pair(&self, out: &mut String, host_expr: &str) -> Result<()> {
-        let module = &self.module;
-        let method = &self.name;
-        let ids = const_name(&self.wire_name);
-        let request = self.request_stream_wrapper.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("Method `{method}`: stream pair has no request wrapper")
-        })?;
-        let item = self.item_wrapper.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("Method `{method}`: stream pair has no response wrapper")
-        })?;
-        writeln!(out, "    {{").unwrap();
-        self.write_execution_binding(out);
-        write_indented(
-            out,
-            8,
-            &formatdoc! {
-                r#"
-                let host = {host_expr};
-                dispatcher.on_stream_pair(wire_table::{ids}, move |request_id: String, bytes: Vec<u8>, requests| {{
-                    let host = host.clone();
-                    Box::pin(async move {{
-                        let _ = bytes;
-                        let cx = CallContext::with_request_id(request_id.clone());
-                "#
-            },
-        );
-        if self.required_execution.is_some() {
-            writeln!(
-                out,
-                "                if !execution_allowed {{ return Err(Vec::new()); }}"
-            )
-            .unwrap();
-        }
-        writeln!(
-            out,
-            "                let requests = subscription_request_stream::<versioned::{module}::{request}>(requests);"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "                let stream = host.{method}(&cx, requests).await;"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "                Ok(subscription_stream::<versioned::{module}::{item}, _>(stream))"
-        )
-        .unwrap();
-        writeln!(out, "            }})").unwrap();
-        writeln!(out, "        }});").unwrap();
-        writeln!(out, "    }}").unwrap();
-        Ok(())
-    }
-
     fn write_execution_binding(&self, out: &mut String) {
         if let Some(required) = self.required_execution.as_ref() {
             writeln!(
@@ -912,7 +894,8 @@ fn write_imports(
         use crate::frame::encode_versioned_ok_payload;
         use crate::frame::encode_versioned_unit_ok_payload;
         use crate::generated::wire_table;
-        use crate::subscription::{{subscription_request_stream, subscription_stream}};
+        use crate::subscription::{{HostInitiatedSubscriptionManager, subscription_stream}};
+        use crate::transport::Transport;
         "#
     )
     .unwrap();

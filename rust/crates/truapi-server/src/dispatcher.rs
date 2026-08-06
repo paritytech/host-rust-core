@@ -15,9 +15,7 @@ use tracing::instrument;
 use crate::frame::{Payload, ProtocolMessage};
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds};
 use crate::middleware::execution::ExecutionFilter;
-use crate::subscription::{
-    Spawner, SubscriptionManager, SubscriptionRequestStream, SubscriptionStream,
-};
+use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
 use crate::transport::Transport;
 
 /// A handler for a request-response method. TrUAPI service traits require
@@ -38,17 +36,6 @@ pub type SubscriptionHandler = Arc<
         + Sync,
 >;
 
-/// Handler for a paired request and response subscription.
-pub type StreamPairHandler = Arc<
-    dyn Fn(
-            String,
-            Vec<u8>,
-            SubscriptionRequestStream,
-        ) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
-        + Send
-        + Sync,
->;
-
 /// A registered request handler plus the discriminants it replies on.
 pub struct RequestEntry {
     ids: RequestFrameIds,
@@ -58,12 +45,7 @@ pub struct RequestEntry {
 /// A registered subscription handler plus the discriminants its frames carry.
 pub struct SubscriptionEntry {
     ids: SubscriptionFrameIds,
-    handler: SubscriptionHandlerKind,
-}
-
-enum SubscriptionHandlerKind {
-    OneWay(SubscriptionHandler),
-    Paired(StreamPairHandler),
+    handler: SubscriptionHandler,
 }
 
 /// Routes incoming protocol messages to registered handlers, keyed on the
@@ -71,7 +53,6 @@ enum SubscriptionHandlerKind {
 pub struct Dispatcher {
     by_request: HashMap<u8, RequestEntry>,
     by_start: HashMap<u8, SubscriptionEntry>,
-    pair_receive_ids: HashSet<u8>,
     stop_ids: HashSet<u8>,
     subscriptions: SubscriptionManager,
     execution: ExecutionFilter,
@@ -95,7 +76,6 @@ impl Dispatcher {
         Self {
             by_request: HashMap::new(),
             by_start: HashMap::new(),
-            pair_receive_ids: HashSet::new(),
             stop_ids: HashSet::new(),
             subscriptions: SubscriptionManager::new(spawner),
             execution,
@@ -105,33 +85,6 @@ impl Dispatcher {
     /// Return whether this connection may access a service execution kind.
     pub fn allows_execution(&self, required: truapi_platform::ProductExecutionKind) -> bool {
         self.execution.allows(required)
-    }
-
-    /// Register a paired request/response stream handler.
-    pub fn on_stream_pair<F>(
-        &mut self,
-        ids: SubscriptionFrameIds,
-        handler: F,
-    ) -> Option<SubscriptionEntry>
-    where
-        F: Fn(
-                String,
-                Vec<u8>,
-                SubscriptionRequestStream,
-            ) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.stop_ids.insert(ids.stop_id);
-        self.pair_receive_ids.insert(ids.receive_id);
-        self.by_start.insert(
-            ids.start_id,
-            SubscriptionEntry {
-                ids,
-                handler: SubscriptionHandlerKind::Paired(Arc::new(handler)),
-            },
-        )
     }
 
     /// Register a request-response handler, keyed on `ids.request_id`. Returns
@@ -173,7 +126,7 @@ impl Dispatcher {
             ids.start_id,
             SubscriptionEntry {
                 ids,
-                handler: SubscriptionHandlerKind::OneWay(Arc::new(handler)),
+                handler: Arc::new(handler),
             },
         )
     }
@@ -202,21 +155,8 @@ impl Dispatcher {
             // arriving while the handler resolves cancels the pending
             // subscription instead of racing the registration.
             let request_id = message.request_id.clone();
-            let (token, result) = match &entry.handler {
-                SubscriptionHandlerKind::OneWay(handler) => {
-                    let token = self.subscriptions.reserve(request_id.clone());
-                    (token, handler(request_id, message.payload.value).await)
-                }
-                SubscriptionHandlerKind::Paired(handler) => {
-                    let (token, requests) = self
-                        .subscriptions
-                        .reserve_pair(request_id.clone(), entry.ids.receive_id);
-                    (
-                        token,
-                        handler(request_id, message.payload.value, requests).await,
-                    )
-                }
-            };
+            let token = self.subscriptions.reserve(request_id.clone());
+            let result = (entry.handler)(request_id, message.payload.value).await;
             match result {
                 Ok(stream) => {
                     self.subscriptions.activate(
@@ -238,9 +178,6 @@ impl Dispatcher {
                     });
                 }
             }
-        } else if self.pair_receive_ids.contains(&id) {
-            self.subscriptions
-                .handle_request(&message.request_id, id, message.payload.value);
         } else if self.stop_ids.contains(&id) {
             self.subscriptions.handle_stop(&message.request_id);
         }
@@ -257,7 +194,6 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::StreamExt;
     use std::sync::Mutex;
 
     fn test_spawner() -> Spawner {
@@ -359,49 +295,6 @@ mod tests {
             prev.is_some(),
             "second registration must return the previous handler"
         );
-    }
-
-    #[test]
-    fn paired_subscription_routes_product_values_to_its_request_stream() {
-        let mut dispatcher = Dispatcher::new(test_spawner());
-        let ids = SubscriptionFrameIds {
-            start_id: 200,
-            stop_id: 201,
-            interrupt_id: 202,
-            receive_id: 203,
-        };
-        dispatcher.on_stream_pair(ids, |_request_id, _bytes, requests| {
-            Box::pin(async move {
-                Ok(
-                    Box::pin(requests.map(crate::subscription::SubscriptionOutput::Item))
-                        as SubscriptionStream,
-                )
-            })
-        });
-        let transport = Arc::new(RecordingTransport::default());
-
-        futures::executor::block_on(
-            dispatcher.dispatch(make_frame(ids.start_id, Vec::new()), transport.clone()),
-        );
-        futures::executor::block_on(
-            dispatcher.dispatch(make_frame(ids.receive_id, vec![7, 8, 9]), transport.clone()),
-        );
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            let sent = transport.sent();
-            if let Some(frame) = sent.first() {
-                assert_eq!(frame.request_id, "p:1");
-                assert_eq!(frame.payload.id, ids.receive_id);
-                assert_eq!(frame.payload.value, vec![7, 8, 9]);
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "paired request was not delivered"
-            );
-            std::thread::yield_now();
-        }
     }
 
     #[test]

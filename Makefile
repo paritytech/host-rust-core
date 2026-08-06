@@ -110,6 +110,8 @@ IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
 IOS_SIMULATOR_TARGET ?= aarch64-apple-ios-sim
 IOS_CONFIGURATION ?= Debug
 IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
+IOS_SIMULATOR_DEVICE ?=
+IOS_XCODE_DESTINATION ?= generic/platform=iOS Simulator
 IOS_BUNDLE ?= io.pcf.polkadotapp.develop
 IOS_GOOGLE_SERVICE_PLIST ?= $(IOS_HOST)/polkadot-app/GoogleService/GoogleService-Info-Release.plist
 IOS_PRODUCT_HOST ?= truapi-playground.dot
@@ -125,7 +127,11 @@ IOS_HOST_PLAYGROUND_URL ?= http://127.0.0.1:3101
 IOS_APP := $(abspath $(IOS_DERIVED_DATA)/Build/Products/$(IOS_CONFIGURATION)-iphonesimulator/polkadot-app.app)
 
 ios-build: uniffi ## Build matching Rust/Swift bindings and the TestFlight-configured iOS simulator app.
-	git submodule update --init --recursive $(IOS_HOST)
+	@if git diff --quiet -- $(IOS_HOST); then \
+		git submodule update --init --recursive $(IOS_HOST); \
+	else \
+		echo "Using checked-out $(IOS_HOST) revision with local gitlink changes"; \
+	fi
 	rustup target add $(IOS_SIMULATOR_TARGET)
 	$(CARGO) build -p truapi-server --release --features ws-bridge \
 		--target $(IOS_SIMULATOR_TARGET)
@@ -133,16 +139,17 @@ ios-build: uniffi ## Build matching Rust/Swift bindings and the TestFlight-confi
 		-project polkadot-app.xcodeproj \
 		-scheme polkadot-app \
 		-configuration $(IOS_CONFIGURATION) \
-		-destination 'generic/platform=iOS Simulator' \
+		-destination '$(IOS_XCODE_DESTINATION)' \
 		-derivedDataPath $(abspath $(IOS_DERIVED_DATA)) \
 		ARCHS=arm64 \
 		ONLY_ACTIVE_ARCH=YES \
 		TRUAPI_SWIFT_FLAGS='$(IOS_SWIFT_FLAGS)' \
-		build
+		clean build
 	cp "$(IOS_GOOGLE_SERVICE_PLIST)" "$(IOS_APP)/GoogleService-Info.plist"
 	codesign --force --sign - "$(IOS_APP)"
 
 ios-run: ios-build ## Build and launch the local TrUAPI playground in an iPhone simulator.
+	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
 	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
 	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
 	TRUAPI_IOS_E2E_PRODUCT_HOST="$(IOS_PRODUCT_HOST)" \
@@ -150,6 +157,7 @@ ios-run: ios-build ## Build and launch the local TrUAPI playground in an iPhone 
 	node scripts/launch-ios-playground.mjs
 
 ios-chat-run: ios-build ## Run the TrUAPI Playground Chat diagnosis in an iPhone simulator.
+	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
 	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
 	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
 	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(IOS_CHAT_PRODUCT_DIR)" \
@@ -159,6 +167,7 @@ ios-chat-run: ios-build ## Run the TrUAPI Playground Chat diagnosis in an iPhone
 	node scripts/launch-ios-chat-playground.mjs
 
 ios-chat-host-playground-run: ios-build ## Verify Host Playground Chat through the workspace-linked TrUAPI client.
+	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
 	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
 	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
 	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(abspath $(IOS_HOST_PLAYGROUND_DIR))" \

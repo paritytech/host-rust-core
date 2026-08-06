@@ -1215,7 +1215,8 @@ reports:
 
 Deliberately unavailable methods:
 
-- all six generated Chat methods;
+- all five product-initiated Chat methods; the host-initiated custom-render
+  subscription is also unused because the CLI has no native Chat UI;
 - all nine generated Coin Payment methods; and
 - all four generated Payment methods.
 
@@ -1541,7 +1542,8 @@ The implementation is covered by:
 The reports currently have identical method results apart from their title:
 
 - 45 implemented-success methods;
-- 6 unavailable Chat methods;
+- 6 unavailable Chat surface entries (five product-initiated methods plus the
+  host-initiated custom-render subscription);
 - 9 unavailable Coin Payment methods; and
 - 4 unavailable Payment methods.
 

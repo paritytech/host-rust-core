@@ -6,16 +6,20 @@
 //! creates threads or runtimes.
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
-use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::future::{BoxFuture, Either, select};
 use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 use parity_scale_codec::{Decode, Encode};
 
-use crate::frame::{Payload, ProtocolMessage};
+use crate::frame::{IdFactory, Payload, ProtocolMessage};
+use crate::generated::wire_table::SubscriptionFrameIds;
 use crate::transport::Transport;
 
 type StopFn = Box<dyn FnOnce() + Send>;
@@ -50,9 +54,6 @@ pub enum SubscriptionOutput {
 /// Boxed stream of [`SubscriptionOutput`] consumed by the dispatcher.
 pub type SubscriptionStream = BoxStream<'static, SubscriptionOutput>;
 
-/// Raw product-to-host values carried by a paired subscription.
-pub type SubscriptionRequestStream = BoxStream<'static, Vec<u8>>;
-
 /// Wrap a host-side stream of typed items into the SCALE-encoded
 /// [`SubscriptionStream`] that the dispatcher delivers to the transport.
 ///
@@ -68,23 +69,6 @@ where
     Box::pin(stream.map(|item| SubscriptionOutput::Item(item.encode())))
 }
 
-/// Decode raw paired-stream request values into the typed TrUAPI stream.
-/// The first malformed value terminates this stream. The paired response
-/// stream then completes through its handler, without affecting sibling
-/// protocol streams on the same connection.
-pub fn subscription_request_stream<Item>(
-    stream: SubscriptionRequestStream,
-) -> truapi::Subscription<Item>
-where
-    Item: Decode + Send + 'static,
-{
-    let decoded = stream.scan(
-        (),
-        |_, bytes| async move { Item::decode(&mut &bytes[..]).ok() },
-    );
-    truapi::Subscription::new(Box::pin(decoded))
-}
-
 /// Generation-stamped slot tracking the lifecycle of one subscription id.
 /// `request_id` is client-controlled and may be reused or raced against a
 /// `_stop`, so each reservation carries a monotonic generation and only the
@@ -93,22 +77,9 @@ enum Slot {
     /// Reserved by the dispatcher before its `_start` handler resolved.
     /// `cancelled` flips to `true` if a `_stop` arrives in that window so
     /// activation aborts instead of leaking an unstoppable stream.
-    Pending {
-        generation: u64,
-        cancelled: bool,
-        request_sender: Option<RequestSender>,
-    },
+    Pending { generation: u64, cancelled: bool },
     /// A live subscription with its cancellation handle.
-    Live {
-        generation: u64,
-        cancel: StopFn,
-        request_sender: Option<RequestSender>,
-    },
-}
-
-struct RequestSender {
-    receive_id: u8,
-    sender: mpsc::UnboundedSender<Vec<u8>>,
+    Live { generation: u64, cancel: StopFn },
 }
 
 /// Handle returned by [`SubscriptionManager::reserve`] and presented back to
@@ -142,14 +113,6 @@ impl SubscriptionManager {
     /// replaced (re-subscribe semantics). A `_stop` arriving before
     /// [`activate`](Self::activate) flips the reservation to cancelled.
     pub fn reserve(&self, request_id: String) -> ReservationToken {
-        self.reserve_with_request_sender(request_id, None)
-    }
-
-    fn reserve_with_request_sender(
-        &self,
-        request_id: String,
-        request_sender: Option<RequestSender>,
-    ) -> ReservationToken {
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let mut active = self.active.lock().unwrap();
         if let Some(Slot::Live { cancel, .. }) = active.insert(
@@ -157,7 +120,6 @@ impl SubscriptionManager {
             Slot::Pending {
                 generation,
                 cancelled: false,
-                request_sender,
             },
         ) {
             cancel();
@@ -166,18 +128,6 @@ impl SubscriptionManager {
             request_id,
             generation,
         }
-    }
-
-    /// Reserve a paired subscription and return its product-to-host request stream.
-    pub fn reserve_pair(
-        &self,
-        request_id: String,
-        receive_id: u8,
-    ) -> (ReservationToken, SubscriptionRequestStream) {
-        let (sender, receiver) = mpsc::unbounded();
-        let token = self
-            .reserve_with_request_sender(request_id, Some(RequestSender { receive_id, sender }));
-        (token, Box::pin(receiver))
     }
 
     /// Drop a reservation whose `_start` handler failed before producing a
@@ -220,20 +170,18 @@ impl SubscriptionManager {
         // or a newer reservation superseded it while the handler resolved.
         {
             let mut active = self.active.lock().unwrap();
-            let request_sender = match active.get_mut(&request_id) {
+            match active.get_mut(&request_id) {
                 Some(Slot::Pending {
                     generation: g,
                     cancelled,
-                    request_sender,
                 }) if *g == generation => {
                     if *cancelled {
                         active.remove(&request_id);
                         return;
                     }
-                    request_sender.take()
                 }
                 _ => return,
-            };
+            }
             active.insert(
                 request_id.clone(),
                 Slot::Live {
@@ -241,7 +189,6 @@ impl SubscriptionManager {
                     cancel: Box::new(move || {
                         let _ = cancel_tx.send(());
                     }),
-                    request_sender,
                 },
             );
         }
@@ -343,23 +290,6 @@ impl SubscriptionManager {
         }
     }
 
-    /// Deliver one product-to-host value to an active paired subscription.
-    pub fn handle_request(&self, request_id: &str, receive_id: u8, value: Vec<u8>) {
-        let active = self.active.lock().unwrap();
-        let request_sender = match active.get(request_id) {
-            Some(Slot::Pending { request_sender, .. })
-            | Some(Slot::Live { request_sender, .. }) => request_sender.as_ref(),
-            None => None,
-        };
-        let sender = request_sender
-            .filter(|request| request.receive_id == receive_id)
-            .map(|request| request.sender.clone());
-        drop(active);
-        if let Some(sender) = sender {
-            let _ = sender.unbounded_send(value);
-        }
-    }
-
     /// Cancel and forget every pending or live subscription owned by this
     /// manager. Used when the product runtime is disposed, where no further
     /// frames should be emitted and platform resources must be released.
@@ -377,6 +307,192 @@ impl SubscriptionManager {
         for cancel in cancellations {
             cancel();
         }
+    }
+}
+
+struct HostInitiatedSlot {
+    ids: SubscriptionFrameIds,
+    sender: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+struct HostInitiatedState {
+    ids: IdFactory,
+    active: HashMap<String, HostInitiatedSlot>,
+    closed: bool,
+}
+
+/// Manages subscriptions that the native host opens into a product execution.
+///
+/// Host-owned ids use the reserved `h:` prefix. Product `_receive` and
+/// `_interrupt` frames are routed by request id, while dropping the returned
+/// stream sends `_stop` for only that render instance.
+pub struct HostInitiatedSubscriptionManager {
+    state: Arc<Mutex<HostInitiatedState>>,
+}
+
+impl Default for HostInitiatedSubscriptionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostInitiatedSubscriptionManager {
+    /// Create an empty host-initiated subscription manager.
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(HostInitiatedState {
+                ids: IdFactory::new("h:"),
+                active: HashMap::new(),
+                closed: false,
+            })),
+        }
+    }
+
+    /// Start one typed subscription and send its `_start` frame to the product.
+    pub fn start<Item>(
+        &self,
+        ids: SubscriptionFrameIds,
+        payload: Vec<u8>,
+        transport: Arc<dyn Transport>,
+    ) -> truapi::Subscription<Item>
+    where
+        Item: Decode + Send + Unpin + 'static,
+    {
+        let (sender, receiver) = mpsc::unbounded();
+        let request_id = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("host subscription state mutex poisoned");
+            if state.closed {
+                return truapi::Subscription::empty();
+            }
+            let request_id = state.ids.next_id();
+            state
+                .active
+                .insert(request_id.clone(), HostInitiatedSlot { ids, sender });
+            request_id
+        };
+
+        transport.send(ProtocolMessage {
+            request_id: request_id.clone(),
+            payload: Payload {
+                id: ids.start_id,
+                value: payload,
+            },
+        });
+
+        truapi::Subscription::new(Box::pin(HostInitiatedSubscription::<Item> {
+            request_id,
+            ids,
+            receiver,
+            state: self.state.clone(),
+            transport,
+            terminated: false,
+            marker: PhantomData,
+        }))
+    }
+
+    /// Route one product frame. Every `h:` id belongs to this manager and is
+    /// consumed even when its subscription has already ended.
+    pub fn handle_message(&self, message: ProtocolMessage) -> bool {
+        if !message.request_id.starts_with("h:") {
+            return false;
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .expect("host subscription state mutex poisoned");
+        let Some(slot) = state.active.get(&message.request_id) else {
+            return true;
+        };
+        if message.payload.id == slot.ids.receive_id {
+            let sender = slot.sender.clone();
+            drop(state);
+            let _ = sender.unbounded_send(message.payload.value);
+        } else if message.payload.id == slot.ids.interrupt_id {
+            state.active.remove(&message.request_id);
+        }
+        true
+    }
+
+    /// Close every active host-initiated stream without sending new frames.
+    pub fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("host subscription state mutex poisoned");
+        state.closed = true;
+        state.active.clear();
+    }
+}
+
+struct HostInitiatedSubscription<Item> {
+    request_id: String,
+    ids: SubscriptionFrameIds,
+    receiver: mpsc::UnboundedReceiver<Vec<u8>>,
+    state: Arc<Mutex<HostInitiatedState>>,
+    transport: Arc<dyn Transport>,
+    terminated: bool,
+    marker: PhantomData<Item>,
+}
+
+impl<Item> HostInitiatedSubscription<Item> {
+    fn stop(&mut self) {
+        if self.terminated {
+            return;
+        }
+        self.terminated = true;
+        let removed = self
+            .state
+            .lock()
+            .expect("host subscription state mutex poisoned")
+            .active
+            .remove(&self.request_id)
+            .is_some();
+        if removed {
+            self.transport.send(ProtocolMessage {
+                request_id: self.request_id.clone(),
+                payload: Payload {
+                    id: self.ids.stop_id,
+                    value: Vec::new(),
+                },
+            });
+        }
+    }
+}
+
+impl<Item> Stream for HostInitiatedSubscription<Item>
+where
+    Item: Decode + Unpin,
+{
+    type Item = Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.receiver).poll_next(cx) {
+            Poll::Ready(Some(bytes)) => {
+                let mut input = &bytes[..];
+                match Item::decode(&mut input) {
+                    Ok(item) if input.is_empty() => Poll::Ready(Some(item)),
+                    Ok(_) | Err(_) => {
+                        self.stop();
+                        Poll::Ready(None)
+                    }
+                }
+            }
+            Poll::Ready(None) => {
+                self.terminated = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<Item> Drop for HostInitiatedSubscription<Item> {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -443,14 +559,140 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn malformed_paired_request_terminates_only_its_typed_stream() {
-        let raw: SubscriptionRequestStream =
-            Box::pin(stream::iter([7_u32.encode(), vec![0xff], 9_u32.encode()]));
-        let mut typed = subscription_request_stream::<u32>(raw);
+    fn host_ids() -> SubscriptionFrameIds {
+        SubscriptionFrameIds {
+            start_id: 52,
+            stop_id: 53,
+            interrupt_id: 54,
+            receive_id: 55,
+        }
+    }
 
-        assert_eq!(futures::executor::block_on(typed.next()), Some(7));
-        assert_eq!(futures::executor::block_on(typed.next()), None);
+    #[test]
+    fn host_initiated_subscription_routes_items_and_sends_stop_on_drop() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut subscription = manager.start::<u32>(host_ids(), vec![0xaa], transport);
+
+        assert_eq!(transport_typed.sent()[0].request_id, "h:1");
+        assert_eq!(transport_typed.sent()[0].payload.id, 52);
+        assert_eq!(transport_typed.sent()[0].payload.value, vec![0xaa]);
+
+        assert!(manager.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: 55,
+                value: 7_u32.encode(),
+            },
+        }));
+        assert_eq!(futures::executor::block_on(subscription.next()), Some(7));
+
+        drop(subscription);
+        let frames = transport_typed.sent();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[1].request_id, "h:1");
+        assert_eq!(frames[1].payload.id, 53);
+        assert!(frames[1].payload.value.is_empty());
+    }
+
+    #[test]
+    fn malformed_host_item_ends_only_its_render_instance() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut malformed = manager.start::<u32>(host_ids(), vec![], transport.clone());
+        let mut healthy = manager.start::<u32>(host_ids(), vec![], transport);
+
+        manager.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: 55,
+                value: vec![0xff],
+            },
+        });
+        manager.handle_message(ProtocolMessage {
+            request_id: "h:2".into(),
+            payload: Payload {
+                id: 55,
+                value: 9_u32.encode(),
+            },
+        });
+
+        assert_eq!(futures::executor::block_on(malformed.next()), None);
+        assert_eq!(futures::executor::block_on(healthy.next()), Some(9));
+        assert_eq!(transport_typed.sent()[2].request_id, "h:1");
+        assert_eq!(transport_typed.sent()[2].payload.id, 53);
+    }
+
+    #[test]
+    fn product_interrupt_ends_one_host_render_without_echoing_stop() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut declined = manager.start::<u32>(host_ids(), vec![], transport);
+
+        manager.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: 54,
+                value: vec![0],
+            },
+        });
+
+        assert_eq!(futures::executor::block_on(declined.next()), None);
+        assert_eq!(transport_typed.sent().len(), 1);
+    }
+
+    #[test]
+    fn closing_host_subscriptions_ends_streams_without_sending_stop() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut render = manager.start::<u32>(host_ids(), vec![], transport.clone());
+
+        manager.close();
+
+        assert_eq!(futures::executor::block_on(render.next()), None);
+        assert_eq!(transport_typed.sent().len(), 1);
+
+        let mut after_close = manager.start::<u32>(host_ids(), vec![], transport);
+        assert_eq!(futures::executor::block_on(after_close.next()), None);
+        assert_eq!(transport_typed.sent().len(), 1);
+    }
+
+    #[test]
+    fn host_subscription_ids_are_isolated_by_connection_manager() {
+        let first_transport_typed = Arc::new(RecordingTransport::new());
+        let first_transport: Arc<dyn Transport> = first_transport_typed.clone();
+        let first = HostInitiatedSubscriptionManager::new();
+        let mut first_render = first.start::<u32>(host_ids(), vec![], first_transport);
+
+        let second_transport_typed = Arc::new(RecordingTransport::new());
+        let second_transport: Arc<dyn Transport> = second_transport_typed.clone();
+        let second = HostInitiatedSubscriptionManager::new();
+        let mut second_render = second.start::<u32>(host_ids(), vec![], second_transport);
+
+        assert_eq!(first_transport_typed.sent()[0].request_id, "h:1");
+        assert_eq!(second_transport_typed.sent()[0].request_id, "h:1");
+
+        first.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: 55,
+                value: 7_u32.encode(),
+            },
+        });
+        second.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: 55,
+                value: 9_u32.encode(),
+            },
+        });
+
+        assert_eq!(futures::executor::block_on(first_render.next()), Some(7));
+        assert_eq!(futures::executor::block_on(second_render.next()), Some(9));
     }
 
     struct PendingDropStream {
