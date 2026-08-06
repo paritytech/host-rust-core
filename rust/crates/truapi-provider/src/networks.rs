@@ -252,18 +252,20 @@ mod tests {
     #[test]
     fn every_catalog_genesis_hash_matches_its_bundled_spec() {
         for network in CATALOG {
-            for chain in [
-                &network.relay,
-                &network.assethub,
-                &network.bulletin,
-                &network.people,
+            for (service, chain) in [
+                ("relay", &network.relay),
+                ("asset-hub", &network.assethub),
+                ("bulletin", &network.bulletin),
+                ("people", &network.people),
             ] {
                 let derived = genesis_hash_of_spec(chain.spec);
                 assert_eq!(
                     format!("0x{}", hex::encode(derived)),
                     chain.genesis_hex,
-                    "{} spec describes a different chain than its catalog entry claims",
-                    network.name
+                    "the {} {} spec describes a different chain than its catalog entry claims; \
+                     set its genesis_hex to the left-hand hash",
+                    network.name,
+                    service,
                 );
             }
         }

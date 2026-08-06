@@ -7,9 +7,9 @@
 //!
 //! ```js
 //! const builder = new ChainProviderBuilder();
-//! builder.addRpcChain("0x77af…", "wss://node.example");
+//! builder.addRpcChain("0x3740…", "wss://node.example");
 //! const provider = builder.build();
-//! const connection = await provider.connect("0x77af…");
+//! const connection = await provider.connect("0x3740…");
 //! connection.send('{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}');
 //! const response = await connection.nextResponse(); // undefined once closed
 //! connection.close();

@@ -111,28 +111,57 @@ function testBootnode(ma, timeoutMs = 5000) {
 
 # Corroborate a relay's warp-sync checkpoint against endpoints other than the one that served it.
 #
-# The checkpoint is the light client's root of trust, so it is not taken on one endpoint's word.
-# CHECKPOINT_HEADER is the SCALE-encoded finalized block header the checkpoint pins: its first 32
-# bytes are the parent hash and the compact integer after them is the block number. Each peer in
-# PEER_RPCS is asked for the canonical block at that height and its parent hash must match. A peer
-# still behind that height cannot answer and is skipped; finalized blocks do not reorg, so a peer
-# that does answer and disagrees means the two endpoints are serving different chains.
+# The checkpoint is the light client's root of trust, so it is not taken on one endpoint's word. Two
+# things are checked against each peer in PEER_RPCS:
+#
+#   * The block it pins. CHECKPOINT_HEADER is the SCALE-encoded finalized header: its first 32 bytes
+#     are the parent hash and the compact integer after them is the block number. The peer must
+#     report the same parent hash for the canonical block at that height. Finalized blocks do not
+#     reorg, so a peer that answers and disagrees is serving a different chain.
+#   * The GRANDPA authority set, which is what the light client verifies finality against. A header
+#     alone is not enough: a compromised endpoint could pair a genuine header with a forged
+#     authority set. CHECKPOINT_AUTHORITY_SET is compared against the peer's own checkpoint. The
+#     set id is compared first, because a peer that has crossed a set change legitimately reports a
+#     different set; only a matching set id with differing authorities is an alarm.
+#
+# A peer that is behind the pinned height, or that cannot answer, is skipped.
 CHECKPOINT_JS='
 const header = process.env.CHECKPOINT_HEADER.replace(/^0x/, "");
+const authoritySet = (process.env.CHECKPOINT_AUTHORITY_SET || "").replace(/^0x/, "");
 const peers = JSON.parse(process.env.PEER_RPCS);
 const parentHash = "0x" + header.slice(0, 64);
 
-// SCALE compact integer at byte 32 (the block number).
+// SCALE compact integer at a byte offset, with the width it occupies.
 function compactAt(hex, offset) {
   const byte = parseInt(hex.slice(offset * 2, offset * 2 + 2), 16);
   const mode = byte & 0b11;
   const width = mode === 0 ? 1 : mode === 1 ? 2 : mode === 2 ? 4 : 0;
-  if (width === 0) throw new Error("big-integer block numbers are not supported");
+  if (width === 0) throw new Error("big-integer compact values are not supported");
   const le = hex.slice(offset * 2, offset * 2 + width * 2);
   const bytes = le.match(/../g).map((b) => parseInt(b, 16));
   let value = 0;
   for (let i = bytes.length - 1; i >= 0; i--) value = value * 256 + bytes[i];
-  return value >>> 2;
+  return { value: value >>> 2, width };
+}
+
+// A GRANDPA AuthoritySet begins with current_authorities (a vector of 32-byte public key plus
+// 8-byte weight), followed by the u64 set id. Both are needed: the id says whether two snapshots
+// are even comparable, the authorities are what finality is checked against.
+function splitAuthoritySet(hex) {
+  if (hex.length === 0) return null;
+  const count = compactAt(hex, 0);
+  const authoritiesEnd = count.width + count.value * 40;
+  if (hex.length < (authoritiesEnd + 8) * 2) return null;
+  const setId = hex.slice(authoritiesEnd * 2, (authoritiesEnd + 8) * 2);
+  const bytes = setId.match(/../g).map((b) => parseInt(b, 16));
+  let number = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) number = number * 256n + BigInt(bytes[i]);
+  return {
+    count: count.value,
+    authorities: hex.slice(count.width * 2, authoritiesEnd * 2),
+    setId,
+    setNumber: number.toString(),
+  };
 }
 
 async function rpc(url, method, params) {
@@ -145,10 +174,58 @@ async function rpc(url, method, params) {
   return (await response.json()).result;
 }
 
+// Compare the authority set the peer carries in its own checkpoint. Returns an error string when
+// the peer contradicts ours, or null when it agrees or cannot be compared.
+async function authorityMismatch(peer) {
+  const ours = splitAuthoritySet(authoritySet);
+  if (ours === null) {
+    console.log("    ? checkpoint carries no readable authority set, comparing the header only");
+    return null;
+  }
+  const theirSpec = await rpc(peer, "sync_state_genSyncSpec", [true]);
+  const theirs = splitAuthoritySet(
+    ((theirSpec || {}).lightSyncState || {}).grandpaAuthoritySet
+      ? theirSpec.lightSyncState.grandpaAuthoritySet.replace(/^0x/, "")
+      : "",
+  );
+  if (theirs === null) {
+    console.log("    ? " + peer + " served no authority set, comparing the header only");
+    return null;
+  }
+  if (ours.setId !== theirs.setId) {
+    console.log(
+      "    ? " +
+        peer +
+        " is on GRANDPA set " +
+        theirs.setNumber +
+        ", the checkpoint is on " +
+        ours.setNumber +
+        "; cannot compare authorities",
+    );
+    return null;
+  }
+  if (ours.authorities !== theirs.authorities) {
+    return (
+      "authority sets differ within GRANDPA set " +
+      ours.setNumber +
+      " (" +
+      ours.count +
+      " vs " +
+      theirs.count +
+      " authorities)"
+    );
+  }
+  console.log(
+    "    ok " + ours.count + " GRANDPA authorities in set " + ours.setNumber + " agree with " + peer,
+  );
+  return null;
+}
+
 (async () => {
-  const number = compactAt(header, 32);
+  const number = compactAt(header, 32).value;
   for (const peer of peers) {
     let peerParent;
+    let mismatch;
     try {
       const hash = await rpc(peer, "chain_getBlockHash", [number]);
       if (!hash) {
@@ -156,6 +233,7 @@ async function rpc(url, method, params) {
         continue;
       }
       peerParent = (await rpc(peer, "chain_getHeader", [hash])).parentHash;
+      mismatch = await authorityMismatch(peer);
     } catch (error) {
       console.log("    ? " + peer + " did not answer (" + (error.message || error) + ")");
       continue;
@@ -164,6 +242,10 @@ async function rpc(url, method, params) {
       console.log("    x " + peer + " disagrees at block " + number);
       console.log("      checkpoint parent " + parentHash);
       console.log("      peer parent       " + peerParent);
+      process.exit(1);
+    }
+    if (mismatch !== null) {
+      console.log("    x " + peer + " " + mismatch);
       process.exit(1);
     }
     console.log("    ok corroborated at block " + number + " by " + peer);
@@ -262,7 +344,10 @@ refresh_spec() {
       echo "  ERROR: lightSyncState from $rpc carries no finalized block header."
       return 1
     fi
+    local checkpoint_authorities
+    checkpoint_authorities=$(echo "$light_sync_state" | jq -r '.grandpaAuthoritySet // empty')
     if ! CHECKPOINT_HEADER="$checkpoint_header" \
+      CHECKPOINT_AUTHORITY_SET="$checkpoint_authorities" \
       PEER_RPCS="$(printf '%s\n' "${peers[@]:-}" | jq -R . | jq -sc 'map(select(length > 0))')" \
       TIMEOUT="$TIMEOUT" node -e "$CHECKPOINT_JS"; then
       echo "  ERROR: the checkpoint from $rpc could not be corroborated; leaving $spec_file alone."

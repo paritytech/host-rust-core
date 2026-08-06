@@ -55,6 +55,13 @@ jobs:
           body: |
             Automated refresh of the smoldot chain specs bundled in truapi-provider.
 
+            If `every_catalog_genesis_hash_matches_its_bundled_spec` fails, a chain has been
+            re-genesised and its `genesis_hex` in `rust/crates/truapi-provider/src/networks.rs`
+            needs updating too. The refresh only rewrites the specs, never the catalog constants.
+            The failure names the network and service, and prints the hash the refreshed spec
+            derives to on the left and the stale catalog constant on the right. Copy the left one
+            into `networks.rs`, and update any consumer that pins the old hash.
+
             Publish a new `@parity/truapi-provider` for consumers to pick up the refresh.
           branch: auto/chain-spec-update
           commit-message: "chore(truapi-provider): refresh bundled chain specs"

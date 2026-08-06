@@ -29,7 +29,7 @@ import wasmUrl from "@parity/truapi-provider/truapi_provider_bg.wasm?url";
 
 await init({ module_or_path: wasmUrl });
 
-const genesis = "0x77af…";
+const genesis = "0x3740…";
 const builder = new ChainProviderBuilder();
 
 // Resume from the state saved by the previous run, when there is one.
