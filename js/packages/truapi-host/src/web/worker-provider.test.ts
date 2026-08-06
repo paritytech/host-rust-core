@@ -95,6 +95,10 @@ function runtimeConfig(
       genesisHash:
         "0xbbcccc1cbe333151b8ed63b17e9e0dec61ee53b57296f1fbe2d161ae3e6fb4dc",
     },
+    assetHub: {
+      genesisHash:
+        "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    },
     pairing: {
       deeplinkScheme: "polkadotapp",
     },

@@ -428,7 +428,7 @@ async fn ensure_record_ready(
         record.attested = true;
     } else {
         record.lite_username =
-            attestation::registered_lite_username(network.people_ws, &identity.entropy)
+            attestation::registered_lite_username(network.asset_hub_ws, &identity.entropy)
                 .await
                 .with_context(|| format!("resolve Lite username for account {}", record.name))?;
     }
@@ -447,9 +447,10 @@ async fn attest_record(network: NetworkConfig, record: &AccountRecord) -> Result
     let entropy = mnemonic_entropy(&record.mnemonic)?;
     let lite_username = attestation::attest(&attestation::AttestConfig {
         backend_base: network.identity_backend_base.to_string(),
-        people_ws: network.people_ws.to_string(),
+        asset_hub_ws: network.asset_hub_ws.to_string(),
         entropy,
         username_base: record.lite_username.clone(),
+        reserved_username: None,
     })
     .await
     .with_context(|| format!("attest account {}", record.name))?;

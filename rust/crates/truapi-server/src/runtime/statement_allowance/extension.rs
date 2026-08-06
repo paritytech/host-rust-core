@@ -30,6 +30,10 @@ pub const AS_PGAS: &str = "AsPgas";
 /// Signed-extension identifier that carries the `AsResources` authorization.
 pub const AS_RESOURCES: &str = "AsResources";
 
+/// Signed-extension identifier that carries the `AsDotnsGateway`
+/// authorization on Asset Hub.
+pub const AS_DOTNS_GATEWAY: &str = "AsDotnsGateway";
+
 /// Error while decoding runtime metadata or resolving allowance-specific
 /// metadata entries.
 #[derive(Debug, Error)]
@@ -85,6 +89,15 @@ pub enum MetadataError {
         identifier: String,
         /// Variant name.
         variant: String,
+    },
+    /// `AsDotnsGatewayInfo::RegisterFullName` did not have the expected field shape.
+    #[error(
+        "AsDotnsGatewayInfo::RegisterFullName fields are [{actual}], expected \
+         [proof, ring_index, signature]; the runtime shape drifted"
+    )]
+    RegisterFullNameShapeDrift {
+        /// Actual comma-separated field names.
+        actual: String,
     },
     /// Info variant carried no enum field holding the requested variant.
     #[error(
@@ -153,6 +166,11 @@ pub struct ChainState {
     pub genesis_hash: [u8; 32],
     /// Account nonce (CheckNonce extra); ignored by the unsigned path.
     pub nonce: u32,
+    /// `RestrictOrigins` extra value. `false` for statement-store allowance
+    /// calls on People. `true` for restricted-origin dotNS gateway registrations
+    /// on Asset Hub. It is part of both the signed digest and the extrinsic
+    /// body, so it lives here to keep the two in lockstep.
+    pub restrict_origins: bool,
 }
 
 /// A signed extension's identifier plus the type ids of its `extra` and
@@ -545,6 +563,27 @@ impl Metadata {
         Ok(self.extension_info_variant(identifier, variant)?.index)
     }
 
+    /// Resolve `AsDotnsGatewayInfo::RegisterFullName` to its variant index.
+    ///
+    /// Asserts the exact `{proof, ring_index, signature}` field shape. A runtime
+    /// that grows the variant, say with a `revision` field, then fails loudly
+    /// instead of mis-encoding.
+    pub fn dotns_register_full_name_variant(&self) -> Result<u8, StatementAllowanceError> {
+        let variant = self.extension_info_variant(AS_DOTNS_GATEWAY, "RegisterFullName")?;
+        let fields: Vec<&str> = variant
+            .fields
+            .iter()
+            .map(|field| field.name.as_deref().unwrap_or("<unnamed>"))
+            .collect();
+        if fields != ["proof", "ring_index", "signature"] {
+            return Err(MetadataError::RegisterFullNameShapeDrift {
+                actual: fields.join(", "),
+            }
+            .into());
+        }
+        Ok(variant.index)
+    }
+
     /// Resolve one named authorization variant on an extension shaped as
     /// `Wrapper(Option<Info>)`, with or without the struct wrapper.
     fn extension_info_variant(
@@ -662,8 +701,8 @@ impl Metadata {
             "VerifyMultiSignature" => (vec![0x00], Vec::new()),
             // extra = { tip: compact(0), asset_id: None } = 0x00 0x00.
             "ChargeAssetTxPayment" => (vec![0x00, 0x00], Vec::new()),
-            // extra = bool false = 0x00.
-            "RestrictOrigins" => (vec![0x00], Vec::new()),
+            // extra = bool. See `ChainState::restrict_origins`.
+            "RestrictOrigins" => (vec![state.restrict_origins as u8], Vec::new()),
             _ => (
                 self.encode_default(ext.extra_type),
                 self.encode_default(ext.additional_signed_type),
@@ -799,6 +838,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         }
     }
 
@@ -1113,6 +1153,59 @@ mod tests {
                     .is_err(),
             ),
             (true, true, true),
+        );
+    }
+
+    /// Asset Hub fixture metadata captured from paseo-next-v2. That is the
+    /// runtime the dotNS gateway flows were validated against.
+    const AH_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-asset-hub-metadata.scale");
+
+    #[test]
+    fn dotns_gateway_pipeline_matches_the_reference_transaction_layout() {
+        let metadata = Metadata::decode(AH_FIXTURE).unwrap();
+        let state = ChainState {
+            restrict_origins: true,
+            ..fixture_state()
+        };
+
+        // RegisterFullName resolves with the asserted 3-field shape.
+        assert_eq!(metadata.dotns_register_full_name_variant().unwrap(), 0);
+        assert!(
+            metadata
+                .call_indices("DotnsGateway", "register_name")
+                .is_ok()
+        );
+
+        // The extension tail after AsDotnsGateway encodes exactly the bytes the
+        // reference implementation registerTx.ts hand-builds. Extras are
+        // RestrictOrigin(true) ‖ CheckEra(Immortal) ‖ CheckNonce(0) ‖
+        // ChargePGAS(tip 0, asset None) ‖ CheckMetadataHash(Disabled). The
+        // implicit half is specVersion ‖ txVersion ‖ genesis ‖ genesis ‖
+        // metadata-hash None.
+        let all = metadata.encode_signed_extensions(&state);
+        let tail_start = metadata.extension_index(AS_DOTNS_GATEWAY).unwrap() + 1;
+        let tail = &all[tail_start..];
+        let extras: Vec<u8> = tail.iter().flat_map(|e| e.extra.clone()).collect();
+        assert_eq!(
+            hex::encode(extras),
+            "010000000000",
+            "tail extras: RestrictOrigin true, era, nonce, tip, asset, metadata hash"
+        );
+        let implicit: Vec<u8> = tail
+            .iter()
+            .flat_map(|e| e.additional_signed.clone())
+            .collect();
+        assert_eq!(
+            implicit,
+            [
+                state.spec_version.to_le_bytes().to_vec(),
+                state.transaction_version.to_le_bytes().to_vec(),
+                state.genesis_hash.to_vec(),
+                state.genesis_hash.to_vec(),
+                vec![0x00],
+            ]
+            .concat()
         );
     }
 

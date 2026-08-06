@@ -422,8 +422,8 @@ cleans up a unique temporary Unix socket.
 - **Ring-VRF product-account aliases and proofs** are implemented by the
   signing host via the `verifiable` crate (`get_account_alias` and
   `create_account_proof`).
-- **`get_user_id`** resolves the signing account's username from People-chain
-  `Resources.Consumers`. Auto-managed signing accounts register fresh lite
+- **`get_user_id`** resolves the signing account's username from the dotNS
+  contracts on Asset Hub. Auto-managed signing accounts register fresh lite
   usernames via the identity backend (`src/attestation.rs`); first registration
   is backend-async and can take minutes (ring onboarding). `truapi-host
   identity-check --mnemonic <m>` probes which derivation carries a username.

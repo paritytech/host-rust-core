@@ -454,7 +454,7 @@ impl PairingHost {
         let activation_epoch = self.advance_session_lifecycle();
         let resolved = resolve_session_identity_with_chain(
             &self.chain,
-            self.host_config.people_chain_genesis_hash,
+            self.host_config.asset_hub_chain_genesis_hash,
             session,
         )
         .await;
@@ -523,7 +523,7 @@ impl PairingHost {
         };
         let resolved = resolve_session_identity_with_chain(
             &self.chain,
-            self.host_config.people_chain_genesis_hash,
+            self.host_config.asset_hub_chain_genesis_hash,
             session,
         )
         .await;
@@ -1113,13 +1113,13 @@ impl PairingHost {
 
     async fn refresh_current_session_identity(&self) -> Option<AuthoritySession> {
         let current = self.session_state.current()?;
-        if current.has_username() || self.host_config.people_chain_genesis_hash == [0; 32] {
+        if current.has_username() || self.host_config.asset_hub_chain_genesis_hash == [0; 32] {
             return Some(authority_session(&current));
         }
 
         let resolved = resolve_session_identity_with_chain(
             &self.chain,
-            self.host_config.people_chain_genesis_hash,
+            self.host_config.asset_hub_chain_genesis_hash,
             current.clone(),
         )
         .await;

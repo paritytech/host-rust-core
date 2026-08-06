@@ -1,0 +1,189 @@
+//! Full-person username registration through `DotnsGateway.register_name`.
+//!
+//! Builds and submits the v5 general transaction on Asset Hub. The signer's
+//! RFC-0022 `uid.dot` account is the call's `who`. The full-person bandersnatch
+//! key proves People-ring membership bound to the dotNS gateway context. A fresh
+//! sr25519 signature over the inherited-implication digest travels in the
+//! `AsDotnsGateway` extension.
+//!
+//! Requires a recognized full person. The account's full-person key must be
+//! `Included` in a People ring already propagated to Asset Hub.
+
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use tracing::debug;
+use truapi_server::host_logic::dotns_gateway::{
+    DOTNS_GATEWAY_CONTEXT, Link, build_register_proof_message, encode_register_full_name_extra,
+    encode_register_name_call,
+};
+use truapi_server::host_logic::product_account::{
+    SR25519_SIGNING_CONTEXT, derive_full_person_ring_vrf_entropy, derive_identity_keypair,
+};
+use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
+use truapi_server::statement_allowance::{
+    self as alloc, extension, extrinsic, proof, ring, rpc::RpcClient,
+};
+
+use crate::dotns_read::AssetHubReader;
+use crate::network::NetworkConfig;
+
+/// Inputs for one full-person registration run.
+pub struct RegisterNameConfig {
+    /// Network preset providing the People and Asset Hub endpoints.
+    pub network: NetworkConfig,
+    /// BIP-39 entropy of the signing host's root account.
+    pub entropy: Vec<u8>,
+    /// Base label to register (no digits, 6+ characters).
+    pub label: String,
+    /// Dotted lite username to link (`name.NN`). Without this and without
+    /// `chat_key`, the account's own lite username is looked up and linked.
+    pub link_lite: Option<String>,
+    /// 65-byte ECDH chat key for a standalone (unlinked) registration.
+    pub chat_key: Option<[u8; 65]>,
+}
+
+/// Registers (or claims) `label` as a full-person username. Waits until the
+/// gateway records the account's alias on Asset Hub.
+pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
+    let who = derive_identity_keypair(&config.entropy)
+        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let who_public = who.public.to_bytes();
+
+    let mut reader = AssetHubReader::connect(config.network.asset_hub_ws).await?;
+    let link = resolve_link(config, &mut reader, &who_public).await?;
+
+    // Reading the full-person member key's ring and its members from the People
+    // chain, pinned to one finalized block.
+    let people_rpc = RpcClient::connect(config.network.people_ws).await?;
+    let people_metadata = alloc::fetch_metadata(&people_rpc).await?;
+    let at = people_rpc.finalized_head().await?;
+    let full_entropy = derive_full_person_ring_vrf_entropy(&config.entropy);
+    let member = proof::member_key(full_entropy);
+    let ring_index = ring::read_member_ring_index(
+        &people_rpc,
+        &people_metadata,
+        ring::PEOPLE_IDENTIFIER,
+        &member,
+        &at,
+    )
+    .await
+    .context("resolve full-person ring membership (is the account a recognized person?)")?;
+    let members = ring::read_collection_ring_members_at(
+        &people_rpc,
+        ring::PEOPLE_IDENTIFIER,
+        ring_index,
+        &at,
+    )
+    .await?;
+    debug!(
+        ring_index,
+        members = members.len(),
+        "full-person ring resolved"
+    );
+
+    // Reading Asset Hub metadata, which asserts the RegisterFullName shape.
+    // Then the chain state and the exponent the subscriber verifies proofs
+    // against.
+    let ah_rpc = RpcClient::connect(config.network.asset_hub_ws).await?;
+    let ah_metadata = alloc::fetch_metadata(&ah_rpc).await?;
+    let chain_state = extension::ChainState {
+        // A restricted-origin general transaction. RestrictOrigins carries true.
+        restrict_origins: true,
+        ..alloc::fetch_chain_state(&ah_rpc).await?
+    };
+    let info_variant = ah_metadata.dotns_register_full_name_variant()?;
+    let exponent =
+        ring::read_subscriber_ring_exponent(&ah_rpc, &ah_metadata, ring::PEOPLE_IDENTIFIER).await?;
+    let domain = proof::domain_for_ring_exponent(exponent)?;
+
+    let call_indices = ah_metadata.call_indices("DotnsGateway", "register_name")?;
+    let call = encode_register_name_call(call_indices, &who_public, config.label.as_bytes(), &link);
+
+    // Signing the inherited-implication digest with sr25519. The signature is
+    // carried in the AsDotnsGateway extension.
+    let digest = extension::build_proof_message_after_extension(
+        &ah_metadata,
+        &call,
+        &chain_state,
+        AS_DOTNS_GATEWAY,
+    )?;
+    let signature = who
+        .secret
+        .sign_simple(SR25519_SIGNING_CONTEXT, &digest, &who.public)
+        .to_bytes();
+
+    // Building the ring-VRF membership proof. It is bound to the gateway context
+    // and the registration intent.
+    let proof_message = build_register_proof_message(&who_public, config.label.as_bytes(), &link);
+    let ring_proof = proof::ring_vrf_proof(
+        domain,
+        full_entropy,
+        &members,
+        &DOTNS_GATEWAY_CONTEXT,
+        &proof_message,
+    )?;
+
+    let extra = encode_register_full_name_extra(info_variant, &ring_proof, ring_index, &signature);
+    let extrinsic = extrinsic::build_unsigned_extrinsic_with_extra(
+        &ah_metadata,
+        &chain_state,
+        &call,
+        AS_DOTNS_GATEWAY,
+        &extra,
+    )?;
+
+    let block = ah_rpc.submit_and_watch(&extrinsic).await?;
+    println!("REGISTER_SUBMITTED label={} block={block}", config.label);
+
+    wait_for_alias(&reader, &who_public).await?;
+    let identity = reader.dotns_identity(&who_public).await?;
+    println!(
+        "REGISTER_CONFIRMED label={} full_username={}",
+        config.label,
+        identity.full_username.as_deref().unwrap_or("<pending>")
+    );
+    Ok(())
+}
+
+/// Resolves the `Link` argument. An explicit chat key wins, then an explicit
+/// lite label, then the account's own on-chain lite username.
+async fn resolve_link(
+    config: &RegisterNameConfig,
+    reader: &mut AssetHubReader,
+    who: &[u8; 32],
+) -> Result<Link> {
+    if let Some(chat_key) = config.chat_key {
+        return Ok(Link::None(chat_key));
+    }
+    if let Some(lite) = &config.link_lite {
+        return Ok(Link::LiteUsername(lite.as_bytes().to_vec()));
+    }
+    let identity = reader.dotns_identity(who).await?;
+    match identity.lite_username {
+        Some(lite) => {
+            debug!(%lite, "linking the account's own lite username");
+            Ok(Link::LiteUsername(lite.into_bytes()))
+        }
+        None => bail!(
+            "account has no lite username to link; pass --link-lite <name.NN> or \
+             --chat-key <hex 65 bytes> for a standalone registration"
+        ),
+    }
+}
+
+/// Polls `DotnsGateway.AccountAlias[who]` until the registration lands.
+async fn wait_for_alias(reader: &AssetHubReader, who: &[u8; 32]) -> Result<()> {
+    const MAX_ATTEMPTS: usize = 10;
+    for attempt in 1..=MAX_ATTEMPTS {
+        if let Some(alias) = reader.account_alias(who).await? {
+            println!("REGISTER_ALIAS alias=0x{}", hex::encode(alias));
+            return Ok(());
+        }
+        debug!("DotnsGateway.AccountAlias poll {attempt}/{MAX_ATTEMPTS}: empty");
+        if attempt < MAX_ATTEMPTS {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+    }
+    bail!("DotnsGateway.AccountAlias did not appear after registration")
+}

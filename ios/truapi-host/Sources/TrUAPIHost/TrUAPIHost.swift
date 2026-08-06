@@ -44,8 +44,8 @@ public enum PairingDeeplinkScheme: Sendable {
 ///
 /// `hostName`, `hostIcon`, `hostVersion`, `platformType`, and
 /// `platformVersion` describe the host to the wallet during SSO pairing.
-/// `peopleChainGenesisHash` and `bulletinChainGenesisHash` must each be
-/// exactly 32 bytes.
+/// `peopleChainGenesisHash`, `bulletinChainGenesisHash` and
+/// `assetHubChainGenesisHash` must each be exactly 32 bytes.
 public struct RuntimeConfig: Sendable {
     public let productId: String
     public let executionKind: ProductExecutionKind
@@ -56,6 +56,7 @@ public struct RuntimeConfig: Sendable {
     public let platformVersion: String?
     public let peopleChainGenesisHash: Data
     public let bulletinChainGenesisHash: Data
+    public let assetHubChainGenesisHash: Data
     public let localSessionSecret: Data?
     public let localSessionLiteUsername: String?
     public let pairingDeeplinkScheme: PairingDeeplinkScheme
@@ -70,6 +71,7 @@ public struct RuntimeConfig: Sendable {
         platformVersion: String? = nil,
         peopleChainGenesisHash: Data,
         bulletinChainGenesisHash: Data,
+        assetHubChainGenesisHash: Data,
         localSessionSecret: Data? = nil,
         localSessionLiteUsername: String? = nil,
         pairingDeeplinkScheme: PairingDeeplinkScheme = .polkadotApp
@@ -83,6 +85,7 @@ public struct RuntimeConfig: Sendable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.assetHubChainGenesisHash = assetHubChainGenesisHash
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
         self.pairingDeeplinkScheme = pairingDeeplinkScheme
@@ -99,6 +102,7 @@ public struct RuntimeConfig: Sendable {
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,
             bulletinChainGenesisHash: bulletinChainGenesisHash,
+            assetHubChainGenesisHash: assetHubChainGenesisHash,
             localSessionSecret: localSessionSecret,
             localSessionLiteUsername: localSessionLiteUsername,
             pairingDeeplinkScheme: pairingDeeplinkScheme.native
@@ -115,6 +119,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
     public let platformVersion: String?
     public let peopleChainGenesisHash: Data
     public let bulletinChainGenesisHash: Data
+    public let assetHubChainGenesisHash: Data
     public let localSessionSecret: Data?
     public let localSessionLiteUsername: String?
 
@@ -126,6 +131,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         platformVersion: String? = nil,
         peopleChainGenesisHash: Data,
         bulletinChainGenesisHash: Data,
+        assetHubChainGenesisHash: Data,
         localSessionSecret: Data? = nil,
         localSessionLiteUsername: String? = nil
     ) {
@@ -136,6 +142,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.assetHubChainGenesisHash = assetHubChainGenesisHash
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
     }
@@ -149,6 +156,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,
             bulletinChainGenesisHash: bulletinChainGenesisHash,
+            assetHubChainGenesisHash: assetHubChainGenesisHash,
             localSessionSecret: localSessionSecret,
             localSessionLiteUsername: localSessionLiteUsername
         )

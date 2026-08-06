@@ -87,6 +87,11 @@ export interface ProductRuntimeConfig {
     /** Bulletin-chain genesis hash. */
     genesisHash: string | Uint8Array;
   };
+  /** Asset Hub configuration used to resolve session usernames from dotNS. */
+  assetHub: {
+    /** Asset Hub genesis hash. */
+    genesisHash: string | Uint8Array;
+  };
   /** Wallet pairing configuration. */
   pairing: {
     /** URI scheme used for wallet pairing deeplinks. */

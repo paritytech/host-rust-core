@@ -13,55 +13,118 @@ pub enum Network {
     #[value(name = "paseo-next-v2")]
     #[default]
     PaseoNextV2,
+    /// Previewnet, the testnet carrying the newer dotNS gateway. Its reservation
+    /// signature scheme has `MaxValiditySeconds`.
+    #[value(name = "previewnet")]
+    Previewnet,
 }
 
+/// Env var overriding the identity backend base URL for every command. The URL
+/// includes `/api/v1`, for instance a local backend at
+/// `http://localhost:8080/api/v1`. Chain endpoints stay on the preset.
+pub const IDENTITY_BACKEND_BASE_ENV: &str = "HOST_CLI_IDENTITY_BACKEND_BASE";
+
 impl Network {
+    /// Preset resolved with any environment overrides applied.
     pub fn config(self) -> NetworkConfig {
+        apply_backend_override(self.preset(), std::env::var(IDENTITY_BACKEND_BASE_ENV).ok())
+    }
+
+    /// The unmodified preset values.
+    fn preset(self) -> NetworkConfig {
         match self {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
                 identity_backend_base: "https://identity-backend-next.parity-testnet.parity.io/api/v1",
-                people_ws: "wss://paseo-people-next-system-rpc.polkadot.io",
-                bulletin_ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
-                asset_hub_ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-                people_genesis: hex_literal_genesis(
-                    "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
-                ),
-                bulletin_genesis: hex_literal_genesis(
-                    "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
-                ),
-                asset_hub_genesis: hex_literal_genesis(
-                    "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
-                ),
+                people_ws: PASEO_PEOPLE.ws,
+                bulletin_ws: PASEO_BULLETIN.ws,
+                asset_hub_ws: PASEO_ASSET_HUB.ws,
+                people_genesis: PASEO_PEOPLE.genesis,
+                bulletin_genesis: PASEO_BULLETIN.genesis,
+                asset_hub_genesis: PASEO_ASSET_HUB.genesis,
                 live_chain_endpoints: PASEO_NEXT_V2_CHAIN_ENDPOINTS,
+            },
+            Self::Previewnet => NetworkConfig {
+                id: "previewnet",
+                identity_backend_base: "https://polkadot-app-stg.parity.io/api/v1",
+                people_ws: PREVIEWNET_PEOPLE.ws,
+                // Previewnet has no bulletin chain. Preimage submission keeps
+                // using the paseo testnet bulletin.
+                bulletin_ws: PASEO_BULLETIN.ws,
+                asset_hub_ws: PREVIEWNET_ASSET_HUB.ws,
+                people_genesis: PREVIEWNET_PEOPLE.genesis,
+                bulletin_genesis: PASEO_BULLETIN.genesis,
+                asset_hub_genesis: PREVIEWNET_ASSET_HUB.genesis,
+                live_chain_endpoints: PREVIEWNET_CHAIN_ENDPOINTS,
             },
         }
     }
 }
 
-const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
-    ChainEndpoint {
-        genesis: hex_literal_genesis(
-            "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
-        ),
-        ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-        required_for_host: true,
-    },
-    ChainEndpoint {
-        genesis: hex_literal_genesis(
-            "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
-        ),
-        ws: "wss://paseo-people-next-system-rpc.polkadot.io",
-        required_for_host: true,
-    },
-    ChainEndpoint {
-        genesis: hex_literal_genesis(
-            "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
-        ),
-        ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
-        required_for_host: true,
-    },
-];
+/// Replaces the preset's identity backend base with `base` when it carries a
+/// non-empty URL. Trailing slashes are stripped so path joins stay clean. The
+/// override is leaked once per process, which is fine for a CLI.
+fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> NetworkConfig {
+    if let Some(base) = base {
+        let trimmed = base.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            config.identity_backend_base = Box::leak(trimmed.to_string().into_boxed_str());
+        }
+    }
+    config
+}
+
+// Each chain is declared once and reused by both the preset fields and the
+// endpoint table. A genesis hash can therefore never drift from the URL it
+// routes to. Every route below is host-required: session identity (dotNS
+// usernames) resolves through Asset Hub, SSO through People, preimages through
+// Bulletin.
+
+const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
+    ),
+    ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
+    required_for_host: true,
+};
+
+const PASEO_PEOPLE: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
+    ),
+    ws: "wss://paseo-people-next-system-rpc.polkadot.io",
+    required_for_host: true,
+};
+
+const PASEO_BULLETIN: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
+    ),
+    ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
+    required_for_host: true,
+};
+
+const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210",
+    ),
+    ws: "wss://previewnet.substrate.dev/asset-hub",
+    required_for_host: true,
+};
+
+const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "3138c6d4ce58c760047a413c2a930e919b4673a841ab4890de59aac3bd037f3d",
+    ),
+    ws: "wss://previewnet.substrate.dev/people",
+    required_for_host: true,
+};
+
+const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] =
+    &[PASEO_ASSET_HUB, PASEO_PEOPLE, PASEO_BULLETIN];
+
+const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] =
+    &[PREVIEWNET_ASSET_HUB, PREVIEWNET_PEOPLE, PASEO_BULLETIN];
 
 /// Resolved RPC/backend/genesis values for one network preset.
 #[derive(Debug, Clone, Copy)]
@@ -314,17 +377,21 @@ mod tests {
     #[test]
     fn every_preset_is_a_test_network() {
         for network in Network::value_variants() {
-            let config = network.config();
+            // Reading the raw preset. An exported backend override cannot leak in.
+            let config = network.preset();
             let mut routes = vec![
                 config.identity_backend_base,
                 config.people_ws,
                 config.bulletin_ws,
+                config.asset_hub_ws,
             ];
             routes.extend(config.live_chain_endpoints.iter().map(|chain| chain.ws));
 
             for route in routes {
                 assert!(
-                    route.contains("paseo") || route.contains("testnet"),
+                    ["paseo", "testnet", "previewnet", "-stg."]
+                        .iter()
+                        .any(|marker| route.contains(marker)),
                     "preset `{}` routes to a host that is not a recognised test \
                      network: {route}",
                     config.id,
@@ -468,6 +535,24 @@ mod tests {
             checked, expected_checks,
             "every served role must be probed; anything else means the loop \
              skipped one and this test stopped covering it"
+        );
+    }
+
+    #[test]
+    fn backend_override_replaces_only_the_backend_base() {
+        let preset = Network::PaseoNextV2.preset();
+        let overridden =
+            apply_backend_override(preset, Some("http://localhost:8080/api/v1/".to_string()));
+
+        assert_eq!(
+            overridden.identity_backend_base, "http://localhost:8080/api/v1",
+            "trailing slash is stripped"
+        );
+        assert_eq!(overridden.asset_hub_ws, preset.asset_hub_ws);
+        assert_eq!(
+            apply_backend_override(preset, Some("  ".to_string())).identity_backend_base,
+            preset.identity_backend_base,
+            "a blank override keeps the preset"
         );
     }
 }

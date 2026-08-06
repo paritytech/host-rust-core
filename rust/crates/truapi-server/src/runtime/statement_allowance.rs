@@ -209,6 +209,7 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
         transaction_version,
         genesis_hash,
         nonce: 0,
+        restrict_origins: false,
     })
 }
 
@@ -313,6 +314,7 @@ impl ChainContextCache {
                 transaction_version,
                 genesis_hash,
                 nonce: 0,
+                restrict_origins: false,
             },
         };
         self.entries
@@ -447,7 +449,13 @@ pub async fn find_including_ring(
     let current = ring::read_current_ring_index_at(rpc, &at).await?;
     let oldest = current.saturating_sub(lookback);
     for ring_index in (oldest..=current).rev() {
-        let members = ring::read_ring_members_at(rpc, ring_index, &at).await?;
+        let members = ring::read_collection_ring_members_at(
+            rpc,
+            ring::LITE_PEOPLE_IDENTIFIER,
+            ring_index,
+            &at,
+        )
+        .await?;
         if members.contains(&member) {
             return Ok(Some(RingParams {
                 members,
@@ -1211,6 +1219,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -1264,6 +1273,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -1321,6 +1331,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -1376,6 +1387,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -1424,6 +1436,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {

@@ -3707,6 +3707,10 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
      */
     public var bulletinChainGenesisHash: Data
     /**
+     * Asset Hub genesis hash. Must be exactly 32 bytes.
+     */
+    public var assetHubChainGenesisHash: Data
+    /**
      * Optional local signing-host secret material (raw BIP-39 entropy).
      */
     public var localSessionSecret: Data?
@@ -3740,6 +3744,9 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
          * Bulletin-chain genesis hash. Must be exactly 32 bytes.
          */bulletinChainGenesisHash: Data,
         /**
+         * Asset Hub genesis hash. Must be exactly 32 bytes.
+         */assetHubChainGenesisHash: Data,
+        /**
          * Optional local signing-host secret material (raw BIP-39 entropy).
          */localSessionSecret: Data?,
         /**
@@ -3752,6 +3759,7 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.assetHubChainGenesisHash = assetHubChainGenesisHash
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
     }
@@ -3779,6 +3787,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
                 bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
+                assetHubChainGenesisHash: FfiConverterData.read(from: &buf),
                 localSessionSecret: FfiConverterOptionData.read(from: &buf),
                 localSessionLiteUsername: FfiConverterOptionString.read(from: &buf)
         )
@@ -3792,6 +3801,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
         FfiConverterData.write(value.bulletinChainGenesisHash, into: &buf)
+        FfiConverterData.write(value.assetHubChainGenesisHash, into: &buf)
         FfiConverterOptionData.write(value.localSessionSecret, into: &buf)
         FfiConverterOptionString.write(value.localSessionLiteUsername, into: &buf)
     }
@@ -3923,6 +3933,10 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
      */
     public var bulletinChainGenesisHash: Data
     /**
+     * Asset Hub genesis hash. Must be exactly 32 bytes.
+     */
+    public var assetHubChainGenesisHash: Data
+    /**
      * Optional local signing-host secret material (raw BIP-39 entropy).
      */
     public var localSessionSecret: Data?
@@ -3966,6 +3980,9 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          * Bulletin-chain genesis hash. Must be exactly 32 bytes.
          */bulletinChainGenesisHash: Data,
         /**
+         * Asset Hub genesis hash. Must be exactly 32 bytes.
+         */assetHubChainGenesisHash: Data,
+        /**
          * Optional local signing-host secret material (raw BIP-39 entropy).
          */localSessionSecret: Data?,
         /**
@@ -3983,6 +4000,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.assetHubChainGenesisHash = assetHubChainGenesisHash
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
         self.pairingDeeplinkScheme = pairingDeeplinkScheme
@@ -4013,6 +4031,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
                 bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
+                assetHubChainGenesisHash: FfiConverterData.read(from: &buf),
                 localSessionSecret: FfiConverterOptionData.read(from: &buf),
                 localSessionLiteUsername: FfiConverterOptionString.read(from: &buf),
                 pairingDeeplinkScheme: FfiConverterTypeNativePairingDeeplinkScheme.read(from: &buf)
@@ -4029,6 +4048,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
         FfiConverterData.write(value.bulletinChainGenesisHash, into: &buf)
+        FfiConverterData.write(value.assetHubChainGenesisHash, into: &buf)
         FfiConverterOptionData.write(value.localSessionSecret, into: &buf)
         FfiConverterOptionString.write(value.localSessionLiteUsername, into: &buf)
         FfiConverterTypeNativePairingDeeplinkScheme.write(value.pairingDeeplinkScheme, into: &buf)
@@ -4767,6 +4787,14 @@ enum NativeRuntimeConfigError: Swift.Error, Equatable, Hashable, Foundation.Loca
          */actual: UInt64
     )
     /**
+     * Asset Hub genesis hash was not exactly 32 bytes.
+     */
+    case InvalidAssetHubChainGenesisHash(
+        /**
+         * Supplied byte length.
+         */actual: UInt64
+    )
+    /**
      * Host icon URL could not be parsed.
      */
     case InvalidHostIcon(
@@ -4844,19 +4872,22 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
         case 3: return .InvalidBulletinChainGenesisHash(
             actual: try FfiConverterUInt64.read(from: &buf)
             )
-        case 4: return .InvalidHostIcon(
+        case 4: return .InvalidAssetHubChainGenesisHash(
+            actual: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 5: return .InvalidHostIcon(
             reason: try FfiConverterString.read(from: &buf)
             )
-        case 5: return .InsecureHostIcon(
+        case 6: return .InsecureHostIcon(
             scheme: try FfiConverterString.read(from: &buf)
             )
-        case 6: return .InvalidDeeplinkScheme(
+        case 7: return .InvalidDeeplinkScheme(
             scheme: try FfiConverterString.read(from: &buf)
             )
-        case 7: return .InvalidProductId(
+        case 8: return .InvalidProductId(
             productId: try FfiConverterString.read(from: &buf)
             )
-        case 8: return .LocalSessionActivation(
+        case 9: return .LocalSessionActivation(
             reason: try FfiConverterString.read(from: &buf)
             )
 
@@ -4886,28 +4917,33 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
             FfiConverterUInt64.write(actual, into: &buf)
 
 
-        case let .InvalidHostIcon(reason):
+        case let .InvalidAssetHubChainGenesisHash(actual):
             writeInt(&buf, Int32(4))
+            FfiConverterUInt64.write(actual, into: &buf)
+
+
+        case let .InvalidHostIcon(reason):
+            writeInt(&buf, Int32(5))
             FfiConverterString.write(reason, into: &buf)
 
 
         case let .InsecureHostIcon(scheme):
-            writeInt(&buf, Int32(5))
-            FfiConverterString.write(scheme, into: &buf)
-
-
-        case let .InvalidDeeplinkScheme(scheme):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(scheme, into: &buf)
 
 
-        case let .InvalidProductId(productId):
+        case let .InvalidDeeplinkScheme(scheme):
             writeInt(&buf, Int32(7))
+            FfiConverterString.write(scheme, into: &buf)
+
+
+        case let .InvalidProductId(productId):
+            writeInt(&buf, Int32(8))
             FfiConverterString.write(productId, into: &buf)
 
 
         case let .LocalSessionActivation(reason):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(9))
             FfiConverterString.write(reason, into: &buf)
 
         }

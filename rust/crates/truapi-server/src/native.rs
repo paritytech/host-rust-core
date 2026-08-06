@@ -139,6 +139,8 @@ pub struct NativeRuntimeConfig {
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
+    /// Asset Hub genesis hash. Must be exactly 32 bytes.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
     /// Optional local signing-host secret material (raw BIP-39 entropy).
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
@@ -164,6 +166,8 @@ pub struct NativeHostRuntimeConfig {
     pub people_chain_genesis_hash: Vec<u8>,
     /// Bulletin-chain genesis hash. Must be exactly 32 bytes.
     pub bulletin_chain_genesis_hash: Vec<u8>,
+    /// Asset Hub genesis hash. Must be exactly 32 bytes.
+    pub asset_hub_chain_genesis_hash: Vec<u8>,
     /// Optional local signing-host secret material (raw BIP-39 entropy).
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
@@ -213,6 +217,12 @@ pub enum NativeRuntimeConfigError {
         /// Supplied byte length.
         actual: u64,
     },
+    /// Asset Hub genesis hash was not exactly 32 bytes.
+    #[error("asset_hub_chain_genesis_hash must be exactly 32 bytes, got {actual}")]
+    InvalidAssetHubChainGenesisHash {
+        /// Supplied byte length.
+        actual: u64,
+    },
     /// Host icon URL could not be parsed.
     #[error("host_icon must be an absolute HTTPS URL: {reason}")]
     InvalidHostIcon {
@@ -259,6 +269,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
             platform_version,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             local_session_secret,
             local_session_lite_username,
             pairing_deeplink_scheme: _,
@@ -271,6 +282,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
             platform_version,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             local_session_secret,
             local_session_lite_username,
         }
@@ -300,6 +312,12 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                     actual: config.bulletin_chain_genesis_hash.len() as u64,
                 }
             })?;
+        let asset_hub_chain_genesis_hash =
+            <[u8; 32]>::try_from(config.asset_hub_chain_genesis_hash.as_slice()).map_err(|_| {
+                NativeRuntimeConfigError::InvalidAssetHubChainGenesisHash {
+                    actual: config.asset_hub_chain_genesis_hash.len() as u64,
+                }
+            })?;
         let signing = SigningHostConfig::new(
             HostInfo {
                 name: config.host_name,
@@ -312,6 +330,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             },
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
         )?;
         Ok(Self {
             signing,
@@ -2104,6 +2123,7 @@ mod tests {
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
+            asset_hub_chain_genesis_hash: vec![0xcc; 32],
             local_session_secret: None,
             local_session_lite_username: None,
             pairing_deeplink_scheme: NativePairingDeeplinkScheme::PolkadotApp,
@@ -2119,6 +2139,7 @@ mod tests {
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
+            asset_hub_chain_genesis_hash: vec![0xcc; 32],
             local_session_secret: Some(vec![7; 32]),
             local_session_lite_username: Some("alice".to_string()),
         }
