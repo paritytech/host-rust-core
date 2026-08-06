@@ -32,6 +32,7 @@ pub mod reviews;
 pub use reviews::NativeUserConfirmationReview;
 
 use crate::SigningHostRuntime;
+use crate::host_logic::dotns;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
@@ -578,6 +579,82 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
             }
         }
     }
+}
+
+/// Native-friendly mirror of [`dotns::NavigateDecision`], so WebView hosts
+/// classify navigations with the core's dotns logic instead of reimplementing
+/// it. The open variants carry the ready-to-load canonical URL; `identifier`
+/// stays lower-cased/NFC-normalized so hosts can compare it against the
+/// current page's identifier for same-domain checks.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum NavigateDecision {
+    /// A `.dot` identifier plus path/query/hash suffix (no leading `/`).
+    DotName {
+        /// Lower-cased `.dot` host (e.g. `mytestapp.dot`).
+        identifier: String,
+        /// Path/query/hash suffix without a leading `/`.
+        path: String,
+        /// Loadable `https://` URL for this decision.
+        canonical_url: String,
+    },
+    /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
+    Localhost {
+        /// `localhost` with optional `:port` suffix.
+        host: String,
+        /// Path/query/hash suffix without a leading `/`.
+        path: String,
+        /// Loadable `http://` URL for this decision.
+        canonical_url: String,
+    },
+    /// An absolute external URL with an `http(s):` scheme prepended if missing.
+    External {
+        /// Canonical URL string.
+        url: String,
+    },
+    /// Input that fails every branch; must not be loaded.
+    Reject {
+        /// Human-readable reason for the rejection.
+        reason: String,
+    },
+}
+
+impl From<dotns::NavigateDecision> for NavigateDecision {
+    /// Total mapping: an open decision that yields no canonical URL becomes
+    /// `Reject` rather than panicking, so no unwrap can cross the FFI
+    /// boundary and crash the host app.
+    fn from(decision: dotns::NavigateDecision) -> Self {
+        let canonical_url = decision.canonical_url();
+        match (decision, canonical_url) {
+            (dotns::NavigateDecision::DotName { identifier, path }, Some(canonical_url)) => {
+                Self::DotName {
+                    identifier,
+                    path,
+                    canonical_url,
+                }
+            }
+            (dotns::NavigateDecision::Localhost { host, path }, Some(canonical_url)) => {
+                Self::Localhost {
+                    host,
+                    path,
+                    canonical_url,
+                }
+            }
+            (dotns::NavigateDecision::External { url }, _) => Self::External { url },
+            (dotns::NavigateDecision::Reject { reason }, _) => Self::Reject { reason },
+            (open, None) => Self::Reject {
+                reason: format!("{open:?} produced no canonical URL"),
+            },
+        }
+    }
+}
+
+/// Classify a navigation input exactly like the core's internal navigate host
+/// call: `.dot` first, then `localhost`, then normalized external, with
+/// everything else rejected. Pure and stateless; hosts call it on every
+/// webview-internal navigation.
+#[uniffi::export]
+pub fn parse_navigate(input: String) -> NavigateDecision {
+    dotns::parse_navigate(&input).into()
 }
 
 /// Callback surface that iOS and Android implement.
@@ -2034,5 +2111,70 @@ mod tests {
         assert_eq!(permission_response.payload.value, vec![0x00, 0x00, 0x01]);
 
         core.stop_ws_bridge();
+    }
+
+    #[test]
+    fn exported_parse_navigate_maps_every_variant() {
+        assert_eq!(
+            parse_navigate("mytestapp.dot/some/path?q=1".to_string()),
+            NavigateDecision::DotName {
+                identifier: "mytestapp.dot".to_string(),
+                path: "some/path?q=1".to_string(),
+                canonical_url: "https://mytestapp.dot/some/path?q=1".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_navigate("Example.DOT".to_string()),
+            NavigateDecision::DotName {
+                identifier: "example.dot".to_string(),
+                path: String::new(),
+                canonical_url: "https://example.dot".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_navigate("localhost:3000/path#h".to_string()),
+            NavigateDecision::Localhost {
+                host: "localhost:3000".to_string(),
+                path: "path#h".to_string(),
+                canonical_url: "http://localhost:3000/path#h".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_navigate("google.com".to_string()),
+            NavigateDecision::External {
+                url: "https://google.com/".to_string(),
+            }
+        );
+        assert!(matches!(
+            parse_navigate("javascript:alert(1)".to_string()),
+            NavigateDecision::Reject { .. }
+        ));
+    }
+
+    /// The FFI mirror's canonical URL must stay byte-identical to what the
+    /// runtime's internal navigate path computes from the same input.
+    #[test]
+    fn exported_canonical_url_matches_host_logic() {
+        let inputs = [
+            "mytestapp.dot",
+            "mytestapp.dot/some/path?q=1#frag",
+            "localhost",
+            "localhost:3000/path",
+            "https://example.com/page",
+        ];
+        for input in inputs {
+            let expected = crate::host_logic::dotns::parse_navigate(input)
+                .canonical_url()
+                .expect("open decision has a canonical URL");
+            let actual = match parse_navigate(input.to_string()) {
+                NavigateDecision::DotName { canonical_url, .. }
+                | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
+                NavigateDecision::External { url } => url,
+                NavigateDecision::Reject { reason } => {
+                    panic!("{input}: unexpected rejection: {reason}")
+                }
+            };
+            assert_eq!(actual, expected, "{input}");
+        }
     }
 }
