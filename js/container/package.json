@@ -1,0 +1,13 @@
+{
+  "name": "truapi-container",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --outfile=../../ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js --format=iife --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.2",
+    "typescript": "^5.3.0"
+  }
+}
