@@ -47,56 +47,20 @@ describe("generated-example battery", () => {
     );
   });
 
-  test("classifies only the committed unsupported CLI battery failures as expected", () => {
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow("Chat/create_room", "unavailable"),
-      ),
-    ).toBe("Chat service not yet wired up by hosts");
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow("Coin Payment/create_purse", "unavailable"),
-      ),
-    ).toBe("Coin Payment service not yet wired up by hosts");
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow("Payment/top_up", "unavailable"),
-      ),
-    ).toBe("Payment service not yet wired up by hosts");
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow("Signing/sign_raw", "Rejected"),
-      ),
-    ).toBe(undefined);
-  });
+  test("classifies only the committed unsupported CLI services as expected", () => {
+    const unsupported = new Set(["Chat", "Coin Payment", "Payment"]);
 
-  test("does not mask allowance or People Lite provider failures", () => {
-    for (const id of [
-      "Resource Allocation/request",
-      "Statement Store/subscribe",
-      "Statement Store/submit",
-      "Statement Store/create_proof_authorized",
-      "Preimage/lookup_subscribe",
-      "Preimage/submit",
-      "Account/register_ring_vrf_key",
-    ]) {
+    for (const service of services) {
+      const expected = unsupported.has(service.name)
+        ? `${service.name} service not yet wired up by hosts`
+        : undefined;
       expect(
-        expectedCliBatteryFailureReason(
-          failedRow(id, "no ring-VRF provider is registered for People Lite"),
-        ),
-      ).toBe(undefined);
+        knownUnsupportedReason(service.name, `${service.name}/example`),
+      ).toBe(expected);
+      expect(
+        expectedCliBatteryFailureReason({ serviceName: service.name }),
+      ).toBe(expected);
     }
-  });
-
-  test("does not ignore account proof failures", () => {
-    expect(
-      knownUnsupportedReason("Account", "Account/create_account_proof"),
-    ).toBe(undefined);
-    expect(
-      expectedCliBatteryFailureReason(
-        failedRow("Account/create_account_proof", "NotMember"),
-      ),
-    ).toBe(undefined);
   });
 
   test("prints failures as concise test-reporter rows", () => {
@@ -219,16 +183,5 @@ function row(
     status,
     output,
     durationMs,
-  };
-}
-
-function failedRow(
-  id: string,
-  output: string,
-): Pick<DiagnosisRow, "id" | "serviceName" | "output"> {
-  return {
-    id,
-    serviceName: id.slice(0, id.indexOf("/")),
-    output,
   };
 }
