@@ -417,6 +417,6 @@ Rust enforces connection policy and renderer-stream validation.
 - [TrUAPI Protocol Design](./truapi-protocol.md)
 - [`Chat` Rust trait](../../rust/crates/truapi/src/api/chat.rs)
 - [`CustomRendererNode` types](../../rust/crates/truapi/src/v01/chat/custom_renderer.rs)
-- [iOS worker executor](../../hosts/ios/Packages/Products/Sources/Products/Services/ProductsScriptExecutor.swift)
-- [iOS TrUAPI host bridge](../../hosts/ios/Packages/Products/Sources/Products/Services/ProductTrUAPIHostBridge.swift)
+- [iOS worker executor](https://github.com/paritytech/polkadot-app-ios-v2/blob/truhost-integration/Packages/Products/Sources/Products/Services/ProductsScriptExecutor.swift)
+- [iOS TrUAPI host bridge](https://github.com/paritytech/polkadot-app-ios-v2/blob/truhost-integration/Packages/Products/Sources/Products/Services/ProductTrUAPIHostBridge.swift)
 - [Android host adapter](../../android/truapi-host)

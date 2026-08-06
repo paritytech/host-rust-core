@@ -671,9 +671,21 @@ The top-level `--script` option does not update remembered `/script` state.
 `TRUAPI_BATTERY_REPORT_PATH` overrides the destination. `scripts/battery.sh` in
 the repository root produces both reports in one invocation: it runs the direct
 signing-host phase, then starts a pairing host and answers its emitted link
-with a second signing host so the paired phase can complete. Its custom reporter
-uses terminal color when stdout is a TTY or `FORCE_COLOR` is nonzero, unless
-`NO_COLOR` exists.
+with a second signing host using the same product id and forwarded host flags
+so the paired phase can complete. Known unsupported service families remain
+reported as failures but do not fail the process; any other generated-example
+failure is a nonzero exit. Its custom reporter uses terminal color when stdout
+is a TTY or `FORCE_COLOR` is nonzero, unless `NO_COLOR` exists.
+
+Beyond the generated examples, `battery.ts` runs one hand-written
+`Resource Allocation/auto_signing_e2e` case: it allocates `AutoSigning`, then
+requires two `sign_vrf` calls for the granting product to succeed without any
+confirmation being consulted. When `TRUAPI_APPROVALS_LOG` names a file, every
+host process appends one `<approved|denied> <action>` line per decided
+confirmation there before the confirmation resolves; the case reads the file
+to prove the prompt-free window (and is reported as skipped when the variable
+is unset). `scripts/battery.sh` exports the variable for each phase, sharing
+one file across both paired-phase host processes.
 
 ## 11. Pairing lifecycle
 
@@ -710,10 +722,11 @@ Before a signing host answers a link, it:
 
 1. ensures a signer;
 2. decodes the V2 handshake;
-3. derives its `//wallet//sso` account;
+3. derives its RFC-0022 `uid.dot` identity account;
 4. reads the pairing device Statement Store account from the proposal;
-5. finds the signer's LitePeople ring, scanning back from the current ring;
-6. grants or reuses Statement Store allowance for `wallet-sso`;
+5. finds the signer's LitePeople ring through the `peopl.dot` index-1 key,
+   scanning back from the current ring;
+6. grants or reuses Statement Store allowance for the identity account;
 7. grants or reuses allowance for the pairing device; and
 8. starts the real SSO responder.
 
@@ -792,7 +805,7 @@ A new auto account:
 
 1. acquires `accounts.json.lock`;
 2. generates a 12-word mnemonic;
-3. derives the `//wallet//sso` sr25519 account;
+3. derives the RFC-0022 `uid.dot` index-0 sr25519 identity account;
 4. chooses `auto-<n>` as its local name;
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
@@ -1048,7 +1061,7 @@ state, and other role-owned runtime data.
 - network id;
 - plaintext BIP-39 mnemonic;
 - final Lite username;
-- `//wallet//sso` public key and address;
+- RFC-0022 `uid.dot` index-0 public key and address;
 - creation timestamp;
 - attested state; and
 - exhausted Statement Store periods.
@@ -1411,11 +1424,10 @@ truapi-host identity-check \
   [--network paseo-next-v2]
 ```
 
-The command derives and queries three accounts:
+The command derives and queries two accounts:
 
-- root;
-- `//wallet`; and
-- `//wallet//sso`.
+- root; and
+- RFC-0022 `//product//uid.dot/index_bytes(0)`.
 
 For each it prints one of:
 
@@ -1502,6 +1514,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `COLORTERM` | Select true-color TUI rendering. |
 | `FORCE_COLOR` | Force battery reporter color in non-TTY output. |
 | `TRUAPI_BATTERY_REPORT_PATH` | Override battery report destination. |
+| `TRUAPI_APPROVALS_LOG` | Append one line per decided confirmation to this file. |
 
 ## 22. Current v0.1 operational constraints
 

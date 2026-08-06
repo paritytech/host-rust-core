@@ -104,6 +104,9 @@ pub struct CliPlatform {
     scheduled_notifications:
         Arc<Mutex<HashMap<api::NotificationId, api::HostPushNotificationRequest>>>,
     approval: ApprovalPolicy,
+    /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
+    /// `<approved|denied> <action>` line per decided confirmation.
+    approvals_log: Option<PathBuf>,
     ui: Option<UiHandle>,
     /// Serializes interactive CLI prompts so concurrent confirmations don't
     /// interleave on stdin.
@@ -159,6 +162,7 @@ impl CliPlatform {
             next_notification_id: AtomicU32::new(1),
             scheduled_notifications: Arc::new(Mutex::new(HashMap::new())),
             approval,
+            approvals_log: std::env::var_os("TRUAPI_APPROVALS_LOG").map(PathBuf::from),
             ui,
             prompt_lock: AsyncMutex::new(()),
         })
@@ -311,7 +315,7 @@ impl CliPlatform {
 
     /// Resolve a confirmation: auto-accept, or prompt y/n on the CLI.
     async fn decide(&self, action: &str, detail: String) -> bool {
-        match self.approval {
+        let approved = match self.approval {
             ApprovalPolicy::AutoAccept => {
                 if let Some(ui) = &self.ui {
                     ui.success(format!("Approved {action} automatically"), Some(detail));
@@ -331,7 +335,28 @@ impl CliPlatform {
                     prompt_yes_no(action, &detail).await
                 }
             }
+        };
+        if let Some(path) = &self.approvals_log {
+            record_approval(path, approved, action);
         }
+        approved
+    }
+}
+
+/// Append one `<approved|denied> <action>` line to the approvals transcript.
+///
+/// The line is written before the confirmation result is returned to the
+/// runtime, so by the time a product call resolves, every prompt it consulted
+/// is already on disk.
+fn record_approval(path: &Path, approved: bool, action: &str) {
+    let decision = if approved { "approved" } else { "denied" };
+    let result = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| writeln!(file, "{decision} {action}"));
+    if let Err(err) = result {
+        tracing::warn!(path = %path.display(), %err, "could not record approval");
     }
 }
 
@@ -675,6 +700,15 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
         UserConfirmationReview::SignRaw(_) => (
             "sign raw data",
             "A product requested a raw-data signature. The payload is hidden here.".to_string(),
+        ),
+        UserConfirmationReview::SignVrf(review) => (
+            "sign VRF transcript",
+            format!(
+                "Product {} requested a VRF signature for the {} account over {} transcript items.",
+                review.calling_product_id,
+                review.request.account.dot_ns_identifier,
+                review.request.items.len()
+            ),
         ),
         UserConfirmationReview::StatementStoreProductSign(review) => (
             "sign statement proof",
@@ -1132,6 +1166,19 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[test]
+    fn record_approval_appends_one_line_per_decision() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("approvals.log");
+        record_approval(&path, true, "allocate resources");
+        record_approval(&path, false, "sign VRF transcript");
+        record_approval(&path, true, "sign VRF transcript");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("approvals transcript"),
+            "approved allocate resources\ndenied sign VRF transcript\napproved sign VRF transcript\n",
+        );
+    }
+
     /// A user id `validate_name` rejects must not leave the previous identity's
     /// storage mounted. `storage_user_id` falls back to `full_username`, a
     /// free-form People-chain display name, and `validate_name` rejects uppercase,
@@ -1505,6 +1552,33 @@ mod tests {
         assert_eq!(
             detail,
             "Product myapp.dot requested a Statement Store proof signature over a 128-byte payload."
+        );
+        assert!(!detail.contains("[66"));
+    }
+
+    #[test]
+    fn vrf_approval_names_both_products_without_dumping_transcript_values() {
+        let review = UserConfirmationReview::SignVrf(truapi_platform::SignVrfReview {
+            calling_product_id: "caller.dot".to_string(),
+            request: truapi::v01::HostAccountSignVrfRequest {
+                account: truapi::v01::ProductAccountId {
+                    dot_ns_identifier: "target.dot".to_string(),
+                    derivation_index: truapi::v01::DerivationIndex::Right([7; 32]),
+                },
+                transcript_label: b"lottery".to_vec(),
+                items: vec![truapi::v01::VrfTranscriptItem {
+                    label: b"round".to_vec(),
+                    value: vec![0x42; 128],
+                }],
+            },
+        });
+
+        let (action, detail) = approval_summary(&review);
+
+        assert_eq!(action, "sign VRF transcript");
+        assert_eq!(
+            detail,
+            "Product caller.dot requested a VRF signature for the target.dot account over 1 transcript items."
         );
         assert!(!detail.contains("[66"));
     }

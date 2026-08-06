@@ -26,6 +26,10 @@ cd "$ROOT"
 
 NIGHTLY_TOOLCHAIN="${TRUAPI_NIGHTLY_TOOLCHAIN:-nightly}"
 
+# Homebrew LLVM on DYLD_LIBRARY_PATH makes rustc and rustdoc load a mismatched
+# libLLVM, which dies with SIGSEGV in initialize_available_targets.
+unset DYLD_LIBRARY_PATH
+
 cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi -- -Z unstable-options --output-format json
 cargo +"$NIGHTLY_TOOLCHAIN" rustdoc -p truapi-platform -- -Z unstable-options --output-format json
 cargo run -p truapi-codegen -- \

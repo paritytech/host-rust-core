@@ -32,7 +32,7 @@ const app =
   process.env.TRUAPI_IOS_E2E_APP ??
   resolve(
     repoRoot,
-    "hosts/ios/build/DerivedData/Build/Products/Debug-iphonesimulator/polkadot-app.app",
+    "../polkadot-app-ios-v2/build/DerivedData/Build/Products/Debug-iphonesimulator/polkadot-app.app",
   );
 const productRoot = resolve(
   repoRoot,

@@ -84,17 +84,28 @@ export function createDiagnosisPlan(
         exampleSource: method.exampleSource,
         skipReason: options.runKnownUnsupported
           ? undefined
-          : knownSkipReason(service.name, id),
+          : knownUnsupportedReason(service.name, id),
       };
     }),
   );
 }
 
-function knownSkipReason(serviceName: string, id: string): string | undefined {
+export function knownUnsupportedReason(
+  serviceName: string,
+  _id: string,
+): string | undefined {
   if (SKIPPED_SERVICES.has(serviceName)) {
     return `${serviceName} service not yet wired up by hosts`;
   }
-  if (SKIPPED_METHODS.has(id)) return "host surface intentionally deferred";
+  return undefined;
+}
+
+export function expectedCliBatteryFailureReason(
+  serviceName: string,
+): string | undefined {
+  if (SKIPPED_SERVICES.has(serviceName)) {
+    return `${serviceName} service not yet wired up by hosts`;
+  }
   return undefined;
 }
 

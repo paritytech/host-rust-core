@@ -21,7 +21,7 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
-| `identity-check` | Probe which derivation of a mnemonic carries a registered username. |
+| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. |
 
 The repository's `make e2e-dotli` target builds this binary and runs the
@@ -250,19 +250,29 @@ Five scripts ship under `js/scripts/`:
   direct signing-host run writes `signing-host-cli.md`. Override the artifact
   path with `TRUAPI_BATTERY_REPORT_PATH`.
 
+  On top of the generated examples it runs one hand-written
+  `Resource Allocation/auto_signing_e2e` case: allocate `AutoSigning`, then
+  prove through the hosts' consulted-approval transcript
+  (`TRUAPI_APPROVALS_LOG`, exported per phase by `scripts/battery.sh`) that
+  follow-up `sign_vrf` calls for the granting product run without a
+  confirmation prompt.
+
   `scripts/battery.sh` at the repo root is the supported entry point. It
   prepares the codegen output and playground dependencies the battery imports,
   builds the host from source, and produces both reports in one invocation: the
   direct signing-host phase, then the paired phase, where it starts a pairing
   host, reads the `polkadotapp://pair?...` link out of its transcript, and
-  answers it with a second signing host so the battery can complete:
+  answers it with a second signing host using the same product id and forwarded
+  host flags so the battery can complete:
 
   ```bash
   scripts/battery.sh                    # both phases
   scripts/battery.sh --signing-host     # direct phase only
   scripts/battery.sh --pairing-host     # paired phase only
+  make e2e-signing-cli                  # direct phase only
+  make e2e-pairing-cli                  # paired phase only
   scripts/battery.sh --release          # release binary
-  scripts/battery.sh -- --network foo   # arguments after `--` go to both hosts
+  scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
   ```
 
   `BATTERY_PHASE_TIMEOUT` (default 900s) bounds each phase and
@@ -354,8 +364,8 @@ The real statement store enforces per-account allowance. Before pairing, the
 signing host grants it on-chain exactly as a real client does: it proves its
 LitePeople ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
-that submits statements — its own `//wallet//sso` account and the pairing host's
-per-pairing device key. The shared native implementation lives in
+that submits statements — its RFC-0022 `uid.dot` identity account and the
+pairing host's per-pairing device key. The shared native implementation lives in
 `truapi-server/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
 assembly, submit). The signing account must be an attested LitePeople member,

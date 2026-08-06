@@ -12,6 +12,11 @@ node_modules
 target
 /artifacts/
 
+# SwiftPM (root Package.swift for ios/truapi-host)
+/.build/
+/.swiftpm/
+/Package.resolved
+
 # Gradle (Android workspace at repo root)
 /.gradle/
 /build/
@@ -54,8 +59,6 @@ playground/test/generated/
 # Auto-generated FFI / WASM binding outputs
 android/truapi-host/src/main/kotlin/generated/
 android/truapi-host/src/main/jniLibs/
-ios/truapi-host/Sources/TrUAPIHost/truapi_server.swift
-ios/truapi-host/Sources/truapi_serverFFI/
 rust/crates/truapi-server/pkg/
 js/packages/truapi/src/generated/
 js/packages/truapi/dist/generated/

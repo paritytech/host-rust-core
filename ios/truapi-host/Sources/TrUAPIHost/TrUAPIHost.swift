@@ -6,12 +6,9 @@
 //
 // This file exposes:
 //
-//   * `HostBridge` - a Swift-friendly callback bundle the embedding app
-//     implements. It splits device and remote permissions, mirroring the
-//     `Permissions` platform trait in the Rust core.
 //   * `TrUAPIHostCore` - owning wrapper around the UniFFI-generated
-//     `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the
-//     core and exposes session + WS-bridge controls.
+//     `NativeTrUApiCore`. Takes `HostCallbacks` directly and exposes
+//     session + WS-bridge controls.
 //   * `LocalhostBridgeBootstrap` - small JS snippet that publishes the WS
 //     bridge endpoint to the product page so it can dial back in.
 //
@@ -299,13 +296,26 @@ public enum LocalhostBridgeBootstrap {
     }
 }
 
-/// Storage backend the host provides to the Rust core. Throwing closures
-/// can surface quota or unknown failures by raising `HostStorageError`
-/// (defined in the generated bindings).
-public protocol HostStorageBackend: AnyObject, Sendable {
-    func read(key: String) throws -> Data?
-    func write(key: String, value: Data) throws
-    func clear(key: String) throws
+/// Session + WS-bridge controls of the Rust core, abstracted so hosts and
+/// runtimes can depend on the interface (and tests can mock it) without
+/// booting the Rust cdylib.
+public protocol TrUAPIHostCoreProtocol: AnyObject {
+    func startWsBridge(bindPort: UInt16) throws -> WsBridgeEndpoint
+    func stopWsBridge()
+    func disconnect()
+    func cancelLogin()
+    func activateLocalSession(secret: Data, liteUsername: String?) throws
+    func permissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest
+    ) throws -> NativePermissionAuthorizationStatus
+    func setPermissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest,
+        status: NativePermissionAuthorizationStatus
+    ) throws
+    func notifyThemeChanged(theme: HostTheme)
+    func notifyPreimageChanged(key: Data, value: Data?)
+    func notifyChainResponse(connectionId: UInt32, json: String)
+    func notifyChainClosed(connectionId: UInt32)
 }
 
 /// Core-owned host-private storage backend. Keys are SCALE-encoded
@@ -794,33 +804,28 @@ public final class TrUAPIProductExecution: @unchecked Sendable {
     }
 }
 
-/// Owning wrapper around the Rust-backed `NativeTrUApiCore`. Holds the bridge
-/// adapter alive for the lifetime of the core and exposes session +
+/// Owning wrapper around the Rust-backed `NativeTrUApiCore`. Holds the callback
+/// bridge alive for the lifetime of the core and exposes session +
 /// WS-bridge controls.
 ///
 /// Hosts integrating with a `WKWebView`-based product call `startWsBridge`
 /// and pass the resulting `ws://127.0.0.1:<port>/?t=<token>` URL to the
 /// product via `LocalhostBridgeBootstrap.script(...)`. The product wires
 /// that URL into `@parity/truapi`'s `createWebSocketProvider`.
-public final class TrUAPIHostCore {
-    private let inner: NativeTrUApiCore
-    // Co-owns the adapter alongside the generated FfiConverter handle map,
-    // which is what actually keeps the callback object alive for the core.
+public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
+    let inner: NativeTrUApiCore
+
+    // Rust holds the callback handle; this retainer pins the Swift side for
+    // the core's lifetime.
     private let callbackRetainer: HostCallbacks
 
-    public init(bridge: HostBridge, runtimeConfig: RuntimeConfig) throws {
-        let adapter = HostCallbackAdapter(bridge: bridge)
-        self.callbackRetainer = adapter
-        self.inner = try NativeTrUApiCore.withRuntimeConfig(
-            callbacks: adapter,
+    /// Boot the Rust core against the host callbacks.
+    public init(callbacks: HostCallbacks, runtimeConfig: RuntimeConfig) throws {
+        callbackRetainer = callbacks
+        inner = try NativeTrUApiCore.withRuntimeConfig(
+            callbacks: callbacks,
             runtimeConfig: runtimeConfig.native
         )
-        LiveSessionStoreForwarder.register(self)
-        notifySessionStoreChanged()
-    }
-
-    deinit {
-        LiveSessionStoreForwarder.unregister(self)
     }
 
     /// Start the localhost WebSocket bridge. Requires the `ws-bridge`
@@ -859,21 +864,16 @@ public final class TrUAPIHostCore {
 
     /// Core-owned logout/disconnect path. Best-effort notifies the SSO peer,
     /// clears in-memory session state, clears the persisted session via
-    /// ``HostBridge/coreStorage``, and broadcasts `Disconnected` to active
+    /// core storage, and broadcasts `Disconnected` to active
     /// account-status subscribers.
     public func disconnect() {
         inner.disconnect()
     }
 
-    /// Notify the core that host-global session storage changed externally.
-    public func notifySessionStoreChanged() {
-        inner.notifySessionStoreChanged()
-    }
-
-    /// Cancel any in-flight login pairing (e.g. the user dismissed the
-    /// pairing UI). The bridge receives a `.disconnected` auth state
-    /// immediately and the pending login resolves as rejected. A no-op when
-    /// no login is in progress.
+    /// Cancel an in-flight pairing login.
+    ///
+    /// Inert on a native host: the core is a signing host with no pairing flow
+    /// to cancel, so calling this emits no auth state and changes nothing.
     public func cancelLogin() {
         inner.cancelLogin()
     }
@@ -885,18 +885,19 @@ public final class TrUAPIHostCore {
     }
 
     /// Read a stored permission authorization status without prompting.
-    /// `request` is a SCALE-encoded `PermissionAuthorizationRequest`.
-    public func permissionAuthorizationStatus(request: Data) throws -> NativePermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(payload: request)
+    public func permissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest
+    ) throws -> NativePermissionAuthorizationStatus {
+        try inner.permissionAuthorizationStatus(request: request)
     }
 
     /// Update a stored permission authorization status. `.notDetermined`
     /// clears the stored value so the next product request prompts again.
     public func setPermissionAuthorizationStatus(
-        request: Data,
+        request: NativePermissionAuthorizationRequest,
         status: NativePermissionAuthorizationStatus
     ) throws {
-        try inner.setPermissionAuthorizationStatus(payload: request, status: status)
+        try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
@@ -925,7 +926,6 @@ public final class TrUAPIHostCore {
         inner.notifyChatRoomsChanged(rooms: rooms)
     }
 }
-
 private func customRendererStream(
     _ subscribe: (CustomRendererStreamObserver) throws -> NativeCustomRendererSubscription
 ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {

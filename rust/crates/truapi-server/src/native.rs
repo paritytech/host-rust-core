@@ -19,7 +19,7 @@ use futures::executor::ThreadPool;
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::Encode;
 use truapi::v01;
 use truapi_platform::{
     AuthPresenter, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
@@ -29,7 +29,12 @@ use truapi_platform::{
     ThemeHost, UserConfirmation, UserConfirmationReview, async_trait,
 };
 
+pub mod reviews;
+
+pub use reviews::NativeUserConfirmationReview;
+
 use crate::SigningHostRuntime;
+use crate::host_logic::dotns;
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererSubscription};
@@ -416,6 +421,199 @@ impl From<NativePermissionAuthorizationStatus> for PermissionAuthorizationStatus
     }
 }
 
+/// Native-friendly mirror of [`v01::HostDevicePermissionRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeDevicePermission {
+    /// Showing system notifications.
+    Notifications,
+    /// Camera capture access.
+    Camera,
+    /// Microphone capture access.
+    Microphone,
+    /// Bluetooth device access.
+    Bluetooth,
+    /// NFC reader access.
+    Nfc,
+    /// Geolocation access.
+    Location,
+    /// Clipboard access.
+    Clipboard,
+    /// Opening URLs outside the host.
+    OpenUrl,
+    /// Biometric authentication.
+    Biometrics,
+}
+
+impl From<v01::HostDevicePermissionRequest> for NativeDevicePermission {
+    fn from(request: v01::HostDevicePermissionRequest) -> Self {
+        match request {
+            v01::HostDevicePermissionRequest::Notifications => Self::Notifications,
+            v01::HostDevicePermissionRequest::Camera => Self::Camera,
+            v01::HostDevicePermissionRequest::Microphone => Self::Microphone,
+            v01::HostDevicePermissionRequest::Bluetooth => Self::Bluetooth,
+            v01::HostDevicePermissionRequest::NFC => Self::Nfc,
+            v01::HostDevicePermissionRequest::Location => Self::Location,
+            v01::HostDevicePermissionRequest::Clipboard => Self::Clipboard,
+            v01::HostDevicePermissionRequest::OpenUrl => Self::OpenUrl,
+            v01::HostDevicePermissionRequest::Biometrics => Self::Biometrics,
+        }
+    }
+}
+
+impl From<NativeDevicePermission> for v01::HostDevicePermissionRequest {
+    fn from(request: NativeDevicePermission) -> Self {
+        match request {
+            NativeDevicePermission::Notifications => Self::Notifications,
+            NativeDevicePermission::Camera => Self::Camera,
+            NativeDevicePermission::Microphone => Self::Microphone,
+            NativeDevicePermission::Bluetooth => Self::Bluetooth,
+            NativeDevicePermission::Nfc => Self::NFC,
+            NativeDevicePermission::Location => Self::Location,
+            NativeDevicePermission::Clipboard => Self::Clipboard,
+            NativeDevicePermission::OpenUrl => Self::OpenUrl,
+            NativeDevicePermission::Biometrics => Self::Biometrics,
+        }
+    }
+}
+
+/// Native-friendly mirror of [`v01::RemotePermission`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeRemotePermission {
+    /// Outbound HTTP/WebSocket access to a set of domains.
+    Remote {
+        /// Domain patterns requested by the product.
+        domains: Vec<String>,
+    },
+    /// WebRTC media access.
+    WebRtc,
+    /// Submitting chain transactions on behalf of the user.
+    ChainSubmit,
+    /// Submitting preimages on behalf of the user.
+    PreimageSubmit,
+    /// Submitting statements on behalf of the user.
+    StatementSubmit,
+}
+
+impl From<v01::RemotePermission> for NativeRemotePermission {
+    fn from(permission: v01::RemotePermission) -> Self {
+        match permission {
+            v01::RemotePermission::Remote { domains } => Self::Remote { domains },
+            v01::RemotePermission::WebRtc => Self::WebRtc,
+            v01::RemotePermission::ChainSubmit => Self::ChainSubmit,
+            v01::RemotePermission::PreimageSubmit => Self::PreimageSubmit,
+            v01::RemotePermission::StatementSubmit => Self::StatementSubmit,
+        }
+    }
+}
+
+impl From<NativeRemotePermission> for v01::RemotePermission {
+    fn from(permission: NativeRemotePermission) -> Self {
+        match permission {
+            NativeRemotePermission::Remote { domains } => Self::Remote { domains },
+            NativeRemotePermission::WebRtc => Self::WebRtc,
+            NativeRemotePermission::ChainSubmit => Self::ChainSubmit,
+            NativeRemotePermission::PreimageSubmit => Self::PreimageSubmit,
+            NativeRemotePermission::StatementSubmit => Self::StatementSubmit,
+        }
+    }
+}
+
+/// Native-friendly mirror of [`PermissionAuthorizationRequest`]. Flattens the
+/// one-field `RemotePermissionRequest` wrapper into the `Remote` payload.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum NativePermissionAuthorizationRequest {
+    /// Device-level permission such as camera, microphone, or location.
+    Device(NativeDevicePermission),
+    /// Remote/product-scoped permission such as chain submit or HTTP access.
+    Remote(NativeRemotePermission),
+    /// Product-scoped permission to disclose the user's primary identity.
+    IdentityDisclosure,
+    /// Product-scoped permission to access another product's account context.
+    AccountAccess {
+        /// Product whose account context may be accessed.
+        target_product_id: String,
+    },
+}
+
+impl From<PermissionAuthorizationRequest> for NativePermissionAuthorizationRequest {
+    fn from(request: PermissionAuthorizationRequest) -> Self {
+        match request {
+            PermissionAuthorizationRequest::Device(device) => Self::Device(device.into()),
+            PermissionAuthorizationRequest::Remote(remote) => {
+                Self::Remote(remote.permission.into())
+            }
+            PermissionAuthorizationRequest::IdentityDisclosure => Self::IdentityDisclosure,
+            PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
+                Self::AccountAccess { target_product_id }
+            }
+        }
+    }
+}
+
+impl From<NativePermissionAuthorizationRequest> for PermissionAuthorizationRequest {
+    fn from(request: NativePermissionAuthorizationRequest) -> Self {
+        match request {
+            NativePermissionAuthorizationRequest::Device(device) => Self::Device(device.into()),
+            NativePermissionAuthorizationRequest::Remote(permission) => {
+                Self::Remote(v01::RemotePermissionRequest {
+                    permission: permission.into(),
+                })
+            }
+            NativePermissionAuthorizationRequest::IdentityDisclosure => Self::IdentityDisclosure,
+            NativePermissionAuthorizationRequest::AccountAccess { target_product_id } => {
+                Self::AccountAccess { target_product_id }
+            }
+        }
+    }
+}
+
+/// Native-friendly mirror of [`v01::HostPushNotificationRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PushNotificationRequest {
+    /// Notification text.
+    pub text: String,
+    /// Optional URL to open on tap.
+    pub deeplink: Option<String>,
+    /// Optional Unix timestamp in milliseconds (UTC) at which the
+    /// notification should fire. `None` fires immediately.
+    pub scheduled_at: Option<u64>,
+}
+
+impl From<v01::HostPushNotificationRequest> for PushNotificationRequest {
+    fn from(request: v01::HostPushNotificationRequest) -> Self {
+        let v01::HostPushNotificationRequest {
+            text,
+            deeplink,
+            scheduled_at,
+        } = request;
+        Self {
+            text,
+            deeplink,
+            scheduled_at,
+        }
+    }
+}
+
+/// Native-friendly mirror of [`v01::HostFeatureSupportedRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FeatureSupportedRequest {
+    /// Ask whether the host can interact with the chain identified by genesis hash.
+    Chain {
+        /// Chain genesis hash.
+        genesis_hash: Vec<u8>,
+    },
+}
+
+impl From<v01::HostFeatureSupportedRequest> for FeatureSupportedRequest {
+    fn from(request: v01::HostFeatureSupportedRequest) -> Self {
+        match request {
+            v01::HostFeatureSupportedRequest::Chain { genesis_hash } => {
+                Self::Chain { genesis_hash }
+            }
+        }
+    }
+}
+
 /// Native runtime configuration supplied before product calls are handled.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NativeRuntimeConfig {
@@ -663,45 +861,128 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
     }
 }
 
+/// Native-friendly mirror of [`dotns::NavigateDecision`], so WebView hosts
+/// classify navigations with the core's dotns logic instead of reimplementing
+/// it. The open variants carry the ready-to-load canonical URL; `identifier`
+/// stays lower-cased/NFC-normalized so hosts can compare it against the
+/// current page's identifier for same-domain checks.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum NavigateDecision {
+    /// A `.dot` identifier plus path/query/hash suffix (no leading `/`).
+    DotName {
+        /// Lower-cased `.dot` host (e.g. `mytestapp.dot`).
+        identifier: String,
+        /// Path/query/hash suffix without a leading `/`.
+        path: String,
+        /// Loadable `https://` URL for this decision.
+        canonical_url: String,
+    },
+    /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
+    Localhost {
+        /// `localhost` with optional `:port` suffix.
+        host: String,
+        /// Path/query/hash suffix without a leading `/`.
+        path: String,
+        /// Loadable `http://` URL for this decision.
+        canonical_url: String,
+    },
+    /// An absolute external URL with an `http(s):` scheme prepended if missing.
+    External {
+        /// Canonical URL string.
+        url: String,
+    },
+    /// Input that fails every branch; must not be loaded.
+    Reject {
+        /// Human-readable reason for the rejection.
+        reason: String,
+    },
+}
+
+impl From<dotns::NavigateDecision> for NavigateDecision {
+    /// Total mapping: an open decision that yields no canonical URL becomes
+    /// `Reject` rather than panicking, so no unwrap can cross the FFI
+    /// boundary and crash the host app.
+    fn from(decision: dotns::NavigateDecision) -> Self {
+        let canonical_url = decision.canonical_url();
+        match (decision, canonical_url) {
+            (dotns::NavigateDecision::DotName { identifier, path }, Some(canonical_url)) => {
+                Self::DotName {
+                    identifier,
+                    path,
+                    canonical_url,
+                }
+            }
+            (dotns::NavigateDecision::Localhost { host, path }, Some(canonical_url)) => {
+                Self::Localhost {
+                    host,
+                    path,
+                    canonical_url,
+                }
+            }
+            (dotns::NavigateDecision::External { url }, _) => Self::External { url },
+            (dotns::NavigateDecision::Reject { reason }, _) => Self::Reject { reason },
+            (open, None) => Self::Reject {
+                reason: format!("{open:?} produced no canonical URL"),
+            },
+        }
+    }
+}
+
+/// Classify a navigation input exactly like the core's internal navigate host
+/// call: `.dot` first, then `localhost`, then normalized external, with
+/// everything else rejected. Pure and stateless; hosts call it on every
+/// webview-internal navigation.
+#[uniffi::export]
+pub fn parse_navigate(input: String) -> NavigateDecision {
+    dotns::parse_navigate(&input).into()
+}
+
 /// Callback surface that iOS and Android implement.
 ///
-/// Threading contract: every callback is invoked on a background thread
-/// owned by the Rust core, never the host's main/UI thread.
-///
-/// These six run on the tokio blocking pool, so an implementation may block
-/// its calling thread until the user decides without stalling concurrent
-/// dispatches: `navigate_to`, `push_notification`, `device_permission`,
-/// `remote_permission`, `feature_supported`, and `confirm_user_action`.
-///
-/// Every other callback runs inline on the dispatcher thread and must return
-/// promptly — including `cancel_notification`, which is the one
-/// notification-side callback that is *not* on the blocking pool. In
-/// particular `auth_state_changed` should only hand the state to the host UI
-/// thread, never wait for the user.
-#[uniffi::export(callback_interface)]
+/// Threading contract: every callback executes on the shared bridge
+/// executor's worker threads, and blocking one of those threads can stall
+/// the entire bridge — not just the request being served. Async callbacks
+/// (`navigate_to`, `push_notification`, `device_permission`,
+/// `remote_permission`, `feature_supported`, `confirm_user_action`,
+/// `lookup_preimage`) are awaited by the core — implementations hop to the
+/// main thread for any UI and may keep the future pending arbitrarily long,
+/// but must suspend rather than block the polling thread (foreign
+/// implementations bridged through UniFFI suspend naturally; the rule
+/// chiefly binds Rust implementations). Dropping the returned future
+/// cancels the foreign task. The remaining sync callbacks run inline on the
+/// dispatcher thread and must return promptly without blocking; in
+/// particular `auth_state_changed` should only hand the state to the host
+/// UI thread, never wait for the user.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
 pub trait HostCallbacks: Send + Sync {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.
     fn on_core_log(&self, marker: String, detail: String);
 
     /// Open a URL in the system browser.
-    fn navigate_to(&self, url: String) -> Result<(), HostNavigateRejection>;
+    async fn navigate_to(&self, url: String) -> Result<(), HostNavigateRejection>;
 
-    /// Deliver a push notification. The payload is the SCALE-encoded
-    /// [`v01::HostPushNotificationRequest`].
-    fn push_notification(&self, payload: Vec<u8>) -> Result<u32, HostRejection>;
+    /// Deliver a push notification.
+    async fn push_notification(
+        &self,
+        request: PushNotificationRequest,
+    ) -> Result<u32, HostRejection>;
 
     /// Cancel a notification by id.
     fn cancel_notification(&self, id: u32) -> Result<(), HostRejection>;
 
-    /// Prompt the user for a device-level permission (camera, mic, ...).
-    /// `request` is the SCALE-encoded
-    /// [`v01::HostDevicePermissionRequest`]; the host returns whether the
-    /// permission was granted.
-    fn device_permission(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
+    /// Prompt the user for a device-level permission (camera, mic, ...);
+    /// the host returns whether the permission was granted.
+    async fn device_permission(
+        &self,
+        request: NativeDevicePermission,
+    ) -> Result<bool, HostRejection>;
 
-    /// Prompt the user for a remote (product-scoped) permission bundle.
-    /// `request` is the SCALE-encoded [`v01::RemotePermissionRequest`].
-    fn remote_permission(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
+    /// Prompt the user for a remote (product-scoped) permission.
+    async fn remote_permission(
+        &self,
+        request: NativeRemotePermission,
+    ) -> Result<bool, HostRejection>;
 
     /// Observe an auth state change. Emitted only when the state actually
     /// changes, in transition order: render `Pairing` as the pairing QR UI,
@@ -732,21 +1013,25 @@ pub trait HostCallbacks: Send + Sync {
     /// Close a previously opened chain connection.
     fn chain_close(&self, connection_id: u32) -> Result<(), HostRejection>;
 
-    /// Confirm one user-reviewed core action. `review` is a SCALE-encoded
-    /// [`UserConfirmationReview`].
-    fn confirm_user_action(&self, review: Vec<u8>) -> Result<bool, HostRejection>;
+    /// Confirm one user-reviewed core action.
+    async fn confirm_user_action(
+        &self,
+        review: NativeUserConfirmationReview,
+    ) -> Result<bool, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
     /// current item in its subscription stream.
-    fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
+    async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
 
     /// Current host theme. The native shim emits this as the current item in
     /// its subscription stream.
     fn current_theme(&self) -> Result<HostTheme, HostRejection>;
 
-    /// Answer a feature-support query. `request` is the SCALE-encoded
-    /// `HostFeatureSupportedRequest`.
-    fn feature_supported(&self, request: Vec<u8>) -> Result<bool, HostRejection>;
+    /// Answer a feature-support query.
+    async fn feature_supported(
+        &self,
+        request: FeatureSupportedRequest,
+    ) -> Result<bool, HostRejection>;
 
     /// Read a value from the host's scoped key-value store.
     fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
@@ -904,11 +1189,10 @@ impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
     #[uniffi::constructor]
     pub fn with_runtime_config(
-        callbacks: Box<dyn HostCallbacks>,
+        callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeHostRuntimeConfig,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         let runtime_config: NativeResolvedHostRuntimeConfig = runtime_config.try_into()?;
-        let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
         Self::from_resolved(
             callbacks,
             runtime_config,
@@ -920,11 +1204,10 @@ impl NativeTrUApiHostRuntime {
     /// Open a connection-scoped execution with immutable trusted context.
     pub fn open_product_execution(
         &self,
-        callbacks: Box<dyn HostCallbacks>,
+        callbacks: Arc<dyn HostCallbacks>,
         execution_config: NativeProductExecutionConfig,
     ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
         let product: ProductContext = execution_config.try_into()?;
-        let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
         Ok(self.open_product_execution_with_callbacks(callbacks, product))
     }
 
@@ -1028,24 +1311,23 @@ impl NativeProductExecution {
     /// Read a product-scoped permission authorization without prompting.
     pub fn permission_authorization_status(
         &self,
-        payload: Vec<u8>,
+        request: NativePermissionAuthorizationRequest,
     ) -> Result<NativePermissionAuthorizationStatus, HostRejection> {
-        let request = decode_permission_authorization_request(&payload)?;
-        let status =
-            futures::executor::block_on(self.admin().permission_authorization_status(request))?;
+        let status = futures::executor::block_on(
+            self.admin().permission_authorization_status(request.into()),
+        )?;
         Ok(status.into())
     }
 
     /// Update a product-scoped permission authorization.
     pub fn set_permission_authorization_status(
         &self,
-        payload: Vec<u8>,
+        request: NativePermissionAuthorizationRequest,
         status: NativePermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
-        let request = decode_permission_authorization_request(&payload)?;
         futures::executor::block_on(
             self.admin()
-                .set_permission_authorization_status(request, status.into()),
+                .set_permission_authorization_status(request.into(), status.into()),
         )?;
         Ok(())
     }
@@ -1203,7 +1485,7 @@ impl NativeTrUApiCore {
     /// constructing off the host's main/UI thread.
     #[uniffi::constructor]
     pub fn with_runtime_config(
-        callbacks: Box<dyn HostCallbacks>,
+        callbacks: Arc<dyn HostCallbacks>,
         runtime_config: NativeRuntimeConfig,
     ) -> Result<Arc<Self>, NativeRuntimeConfigError> {
         native_core_from_platform_config(callbacks, runtime_config.try_into()?)
@@ -1241,15 +1523,14 @@ impl NativeTrUApiCore {
     }
 
     /// Read a stored permission authorization status without prompting.
-    /// `payload` is a SCALE-encoded `PermissionAuthorizationRequest`.
     ///
     /// Blocks the calling thread on the storage read, so call it off the host's
     /// main/UI thread.
     pub fn permission_authorization_status(
         &self,
-        payload: Vec<u8>,
+        request: NativePermissionAuthorizationRequest,
     ) -> Result<NativePermissionAuthorizationStatus, HostRejection> {
-        self.execution.permission_authorization_status(payload)
+        self.execution.permission_authorization_status(request)
     }
 
     /// Update a stored permission authorization status. Passing
@@ -1260,11 +1541,11 @@ impl NativeTrUApiCore {
     /// main/UI thread.
     pub fn set_permission_authorization_status(
         &self,
-        payload: Vec<u8>,
+        request: NativePermissionAuthorizationRequest,
         status: NativePermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
         self.execution
-            .set_permission_authorization_status(payload, status)
+            .set_permission_authorization_status(request, status)
     }
 
     /// Activate or replace the local signing-host session from host-held
@@ -1335,19 +1616,10 @@ pub fn set_log_level(level: String) {
     crate::logging::set_level_from_str(&level);
 }
 
-fn decode_permission_authorization_request(
-    payload: &[u8],
-) -> Result<PermissionAuthorizationRequest, HostRejection> {
-    PermissionAuthorizationRequest::decode(&mut &*payload).map_err(|err| HostRejection::Rejected {
-        reason: format!("permission authorization request did not decode: {err}"),
-    })
-}
-
 fn native_core_from_platform_config(
-    callbacks: Box<dyn HostCallbacks>,
+    callbacks: Arc<dyn HostCallbacks>,
     runtime_config: NativeResolvedRuntimeConfig,
 ) -> Result<Arc<NativeTrUApiCore>, NativeRuntimeConfigError> {
-    let callbacks: Arc<dyn HostCallbacks> = callbacks.into();
     let host = NativeTrUApiHostRuntime::from_resolved(
         callbacks.clone(),
         runtime_config.host,
@@ -1405,29 +1677,6 @@ struct CallbackPlatform {
     events: Arc<NativeEventBus>,
 }
 
-/// Run a host callback that may block awaiting a user decision.
-///
-/// UI-decision callbacks are allowed to block their calling thread until the
-/// user decides. Running them inline would occupy a WS-bridge async worker and
-/// concurrent decisions could exhaust the dispatch pool (or deadlock if the
-/// decision UI itself issues a TrUAPI call), so inside a tokio runtime the
-/// callback is moved to the blocking pool. Outside a tokio context the
-/// callback runs inline.
-async fn run_blocking_callback<T, F>(callback: F) -> T
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    #[cfg(feature = "ws-bridge")]
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        return handle
-            .spawn_blocking(callback)
-            .await
-            .expect("blocking host callback panicked");
-    }
-    callback()
-}
-
 #[derive(Default)]
 struct NativeEventBus {
     theme_changes: Mutex<Vec<mpsc::UnboundedSender<Result<v01::ThemeVariant, v01::GenericError>>>>,
@@ -1461,17 +1710,16 @@ impl NativeEventBus {
             .retain(|tx| tx.unbounded_send(Ok(theme)).is_ok());
     }
 
-    fn subscribe_preimage(
+    fn subscribe_preimage_changes(
         &self,
         key: Vec<u8>,
-        current: Result<Option<Vec<u8>>, v01::GenericError>,
-    ) -> BoxStream<'static, Result<Option<Vec<u8>>, v01::GenericError>> {
+    ) -> mpsc::UnboundedReceiver<Result<Option<Vec<u8>>, v01::GenericError>> {
         let (tx, rx) = mpsc::unbounded();
         self.preimage_changes
             .lock()
             .expect("native preimage subscribers mutex poisoned")
             .push(PreimageSubscription { key, tx });
-        stream::once(async move { current }).chain(rx).boxed()
+        rx
     }
 
     fn notify_preimage_changed(&self, key: &[u8], value: Option<Vec<u8>>) {
@@ -1543,10 +1791,7 @@ impl Navigation for CallbackPlatform {
             "truapi.native.callback.navigate_to".to_string(),
             url.clone(),
         );
-        let callbacks = self.callbacks.clone();
-        run_blocking_callback(move || callbacks.navigate_to(url))
-            .await
-            .map_err(Into::into)
+        self.callbacks.navigate_to(url).await.map_err(Into::into)
     }
 }
 
@@ -1561,9 +1806,9 @@ impl Notifications for CallbackPlatform {
             notification.text.clone(),
         );
 
-        let callbacks = self.callbacks.clone();
-        let payload = notification.encode();
-        let id = run_blocking_callback(move || callbacks.push_notification(payload))
+        let id = self
+            .callbacks
+            .push_notification(notification.into())
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostPushNotificationResponse { id })
@@ -1591,9 +1836,9 @@ impl Permissions for CallbackPlatform {
             format!("{request}"),
         );
 
-        let callbacks = self.callbacks.clone();
-        let payload = request.encode();
-        let granted = run_blocking_callback(move || callbacks.device_permission(payload))
+        let granted = self
+            .callbacks
+            .device_permission(request.into())
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostDevicePermissionResponse { granted })
@@ -1608,9 +1853,9 @@ impl Permissions for CallbackPlatform {
             format!("{request}"),
         );
 
-        let callbacks = self.callbacks.clone();
-        let payload = request.encode();
-        let granted = run_blocking_callback(move || callbacks.remote_permission(payload))
+        let granted = self
+            .callbacks
+            .remote_permission(request.permission.into())
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::RemotePermissionResponse { granted })
@@ -1628,9 +1873,9 @@ impl Features for CallbackPlatform {
             format!("{request:?}"),
         );
 
-        let callbacks = self.callbacks.clone();
-        let payload = request.encode();
-        let supported = run_blocking_callback(move || callbacks.feature_supported(payload))
+        let supported = self
+            .callbacks
+            .feature_supported(request.into())
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostFeatureSupportedResponse { supported })
@@ -1787,9 +2032,8 @@ impl UserConfirmation for CallbackPlatform {
             "truapi.native.callback.confirm_user_action".to_string(),
             String::new(),
         );
-        let callbacks = self.callbacks.clone();
-        let payload = review.encode();
-        run_blocking_callback(move || callbacks.confirm_user_action(payload))
+        self.callbacks
+            .confirm_user_action(review.into())
             .await
             .map_err(v01::GenericError::from)
     }
@@ -1811,11 +2055,17 @@ impl PreimageHost for CallbackPlatform {
         &self,
         key: Vec<u8>,
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, v01::GenericError>> {
-        let current = self
-            .callbacks
-            .lookup_preimage(key.clone())
-            .map_err(v01::GenericError::from);
-        self.events.subscribe_preimage(key, current)
+        // Register the change receiver first so no event between the lookup
+        // and the subscription is lost, then await the current value lazily.
+        let rx = self.events.subscribe_preimage_changes(key.clone());
+        let callbacks = self.callbacks.clone();
+        let current = async move {
+            callbacks
+                .lookup_preimage(key)
+                .await
+                .map_err(v01::GenericError::from)
+        };
+        stream::once(current).chain(rx).boxed()
     }
 }
 
@@ -1943,21 +2193,31 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl HostCallbacks for EventCallbacks {
         fn on_core_log(&self, _marker: String, _detail: String) {}
-        fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+        async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
             Ok(())
         }
-        fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
+        async fn push_notification(
+            &self,
+            _request: PushNotificationRequest,
+        ) -> Result<u32, HostRejection> {
             Ok(0)
         }
         fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
             Ok(())
         }
-        fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn device_permission(
+            &self,
+            _request: NativeDevicePermission,
+        ) -> Result<bool, HostRejection> {
             Ok(false)
         }
-        fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn remote_permission(
+            &self,
+            _request: NativeRemotePermission,
+        ) -> Result<bool, HostRejection> {
             Ok(false)
         }
         fn auth_state_changed(&self, state: AuthState) {
@@ -1996,10 +2256,13 @@ mod tests {
                 .push(connection_id);
             Ok(())
         }
-        fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn confirm_user_action(
+            &self,
+            _review: NativeUserConfirmationReview,
+        ) -> Result<bool, HostRejection> {
             Ok(false)
         }
-        fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+        async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
             Ok(self
                 .preimages
                 .lock()
@@ -2011,7 +2274,10 @@ mod tests {
         fn current_theme(&self) -> Result<HostTheme, HostRejection> {
             Ok(*self.theme.lock().expect("theme mutex poisoned"))
         }
-        fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+        async fn feature_supported(
+            &self,
+            _request: FeatureSupportedRequest,
+        ) -> Result<bool, HostRejection> {
             Ok(false)
         }
         fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, HostStorageError> {
@@ -2132,19 +2398,19 @@ mod tests {
     #[test]
     fn process_runtime_shares_authority_and_replaces_one_chat_execution_per_product() {
         let host = NativeTrUApiHostRuntime::with_runtime_config(
-            Box::new(EventCallbacks::new()),
+            Arc::new(EventCallbacks::new()),
             native_host_runtime_config(),
         )
         .expect("host runtime config should be valid");
         let app = host
             .open_product_execution(
-                Box::new(EventCallbacks::new()),
+                Arc::new(EventCallbacks::new()),
                 native_execution_config("shared.dot", NativeProductExecutionKind::App),
             )
             .expect("App execution should open");
         let chat = host
             .open_product_execution(
-                Box::new(EventCallbacks::with_chat()),
+                Arc::new(EventCallbacks::with_chat()),
                 native_execution_config("shared.dot", NativeProductExecutionKind::Chat),
             )
             .expect("Chat execution should open");
@@ -2168,7 +2434,7 @@ mod tests {
 
         let replacement = host
             .open_product_execution(
-                Box::new(EventCallbacks::with_chat()),
+                Arc::new(EventCallbacks::with_chat()),
                 native_execution_config("shared.dot", NativeProductExecutionKind::Chat),
             )
             .expect("replacement Chat execution should open");
@@ -2196,7 +2462,7 @@ mod tests {
         let mut config = native_runtime_config("chat-product.dot");
         config.execution_kind = NativeProductExecutionKind::Chat;
         config.local_session_secret = Some(vec![7; 32]);
-        let core = NativeTrUApiCore::with_runtime_config(Box::new(EventCallbacks::new()), config)
+        let core = NativeTrUApiCore::with_runtime_config(Arc::new(EventCallbacks::new()), config)
             .expect("runtime config should be valid");
 
         let result = core.publish_chat_action(NativeChatAction::MessagePostedText {
@@ -2206,6 +2472,49 @@ mod tests {
         });
 
         assert!(matches!(result, Err(NativeChatError::Unsupported)));
+    }
+
+    #[test]
+    fn permission_authorization_request_mirror_round_trips() {
+        let device_cases = [
+            v01::HostDevicePermissionRequest::Notifications,
+            v01::HostDevicePermissionRequest::Camera,
+            v01::HostDevicePermissionRequest::Microphone,
+            v01::HostDevicePermissionRequest::Bluetooth,
+            v01::HostDevicePermissionRequest::NFC,
+            v01::HostDevicePermissionRequest::Location,
+            v01::HostDevicePermissionRequest::Clipboard,
+            v01::HostDevicePermissionRequest::OpenUrl,
+            v01::HostDevicePermissionRequest::Biometrics,
+        ];
+        let remote_cases = [
+            v01::RemotePermission::Remote {
+                domains: vec!["a.dot".to_string(), "b.dot".to_string()],
+            },
+            v01::RemotePermission::WebRtc,
+            v01::RemotePermission::ChainSubmit,
+            v01::RemotePermission::PreimageSubmit,
+            v01::RemotePermission::StatementSubmit,
+        ];
+
+        let mut cases: Vec<PermissionAuthorizationRequest> = Vec::new();
+        cases.extend(
+            device_cases
+                .into_iter()
+                .map(PermissionAuthorizationRequest::Device),
+        );
+        cases.extend(remote_cases.into_iter().map(|permission| {
+            PermissionAuthorizationRequest::Remote(v01::RemotePermissionRequest { permission })
+        }));
+        cases.push(PermissionAuthorizationRequest::IdentityDisclosure);
+        cases.push(PermissionAuthorizationRequest::AccountAccess {
+            target_product_id: "other.dot".to_string(),
+        });
+
+        for case in cases {
+            let native = NativePermissionAuthorizationRequest::from(case.clone());
+            assert_eq!(PermissionAuthorizationRequest::from(native), case);
+        }
     }
 
     #[test]
@@ -2508,21 +2817,31 @@ mod tests {
     #[test]
     fn start_ws_bridge_twice_returns_already_running() {
         struct Noop;
+        #[async_trait::async_trait]
         impl HostCallbacks for Noop {
             fn on_core_log(&self, _marker: String, _detail: String) {}
-            fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+            async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
-            fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
+            async fn push_notification(
+                &self,
+                _request: PushNotificationRequest,
+            ) -> Result<u32, HostRejection> {
                 Ok(0)
             }
             fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn device_permission(
+                &self,
+                _request: NativeDevicePermission,
+            ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn remote_permission(
+                &self,
+                _request: NativeRemotePermission,
+            ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
@@ -2552,16 +2871,25 @@ mod tests {
             fn chain_close(&self, _connection_id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn confirm_user_action(
+                &self,
+                _review: NativeUserConfirmationReview,
+            ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            fn lookup_preimage(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            async fn lookup_preimage(
+                &self,
+                _key: Vec<u8>,
+            ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
             fn current_theme(&self) -> Result<HostTheme, HostRejection> {
                 Ok(HostTheme::Light)
             }
-            fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn feature_supported(
+                &self,
+                _request: FeatureSupportedRequest,
+            ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
             fn local_storage_read(
@@ -2583,7 +2911,7 @@ mod tests {
         }
 
         let core = NativeTrUApiCore::with_runtime_config(
-            Box::new(Noop),
+            Arc::new(Noop),
             NativeRuntimeConfig {
                 host_icon: Some("https://dot.li/dotli.png".to_string()),
                 ..native_runtime_config("dotli.dot")
@@ -2598,12 +2926,12 @@ mod tests {
         core.stop_ws_bridge();
     }
 
-    /// A permission callback that blocks awaiting the user's decision runs on
-    /// the blocking pool, so an unrelated request on the same connection
-    /// still round-trips while the callback is blocked.
+    /// A permission callback suspends while awaiting the user's decision and
+    /// holds no executor worker, so an unrelated request on the same
+    /// connection still round-trips while the decision is pending.
     #[cfg(feature = "ws-bridge")]
     #[test]
-    fn blocked_permission_callback_does_not_stall_bridge() {
+    fn pending_permission_decision_does_not_stall_bridge() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         use futures::SinkExt;
@@ -2614,34 +2942,45 @@ mod tests {
 
         use crate::frame::{Payload, ProtocolMessage, request_ids};
 
-        /// `device_permission` blocks until the test sends on `release`;
-        /// every other callback is a trivial success.
+        /// `device_permission` stays pending until the test sends on
+        /// `release`; every other callback is a trivial success.
         struct GatedPermissionCallbacks {
             permission_entered: Arc<AtomicBool>,
-            release: Mutex<std::sync::mpsc::Receiver<()>>,
+            release: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<()>>,
         }
 
+        #[async_trait::async_trait]
         impl HostCallbacks for GatedPermissionCallbacks {
             fn on_core_log(&self, _marker: String, _detail: String) {}
-            fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
+            async fn navigate_to(&self, _url: String) -> Result<(), HostNavigateRejection> {
                 Ok(())
             }
-            fn push_notification(&self, _payload: Vec<u8>) -> Result<u32, HostRejection> {
+            async fn push_notification(
+                &self,
+                _request: PushNotificationRequest,
+            ) -> Result<u32, HostRejection> {
                 Ok(0)
             }
             fn cancel_notification(&self, _id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn device_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn device_permission(
+                &self,
+                _request: NativeDevicePermission,
+            ) -> Result<bool, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
                     .lock()
-                    .expect("release receiver mutex poisoned")
+                    .await
                     .recv()
+                    .await
                     .expect("release signal");
                 Ok(true)
             }
-            fn remote_permission(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn remote_permission(
+                &self,
+                _request: NativeRemotePermission,
+            ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
             fn auth_state_changed(&self, _state: AuthState) {}
@@ -2671,16 +3010,25 @@ mod tests {
             fn chain_close(&self, _connection_id: u32) -> Result<(), HostRejection> {
                 Ok(())
             }
-            fn confirm_user_action(&self, _review: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn confirm_user_action(
+                &self,
+                _review: NativeUserConfirmationReview,
+            ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            fn lookup_preimage(&self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection> {
+            async fn lookup_preimage(
+                &self,
+                _key: Vec<u8>,
+            ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
             fn current_theme(&self) -> Result<HostTheme, HostRejection> {
                 Ok(HostTheme::Light)
             }
-            fn feature_supported(&self, _request: Vec<u8>) -> Result<bool, HostRejection> {
+            async fn feature_supported(
+                &self,
+                _request: FeatureSupportedRequest,
+            ) -> Result<bool, HostRejection> {
                 Ok(true)
             }
             fn local_storage_read(
@@ -2701,12 +3049,12 @@ mod tests {
             }
         }
 
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::mpsc::channel::<()>(1);
         let permission_entered = Arc::new(AtomicBool::new(false));
         let core = NativeTrUApiCore::with_runtime_config(
-            Box::new(GatedPermissionCallbacks {
+            Arc::new(GatedPermissionCallbacks {
                 permission_entered: permission_entered.clone(),
-                release: Mutex::new(release_rx),
+                release: tokio::sync::Mutex::new(release_rx),
             }),
             NativeRuntimeConfig {
                 host_icon: Some("https://dot.li/dotli.png".to_string()),
@@ -2785,9 +3133,12 @@ mod tests {
                     }
                 })
                 .await
-                .expect("feature_supported must answer while the permission is blocked");
+                .expect("feature_supported must answer while the permission decision is pending");
 
-            release_tx.send(()).expect("release permission callback");
+            release_tx
+                .send(())
+                .await
+                .expect("release permission callback");
             let permission_response =
                 tokio::time::timeout(std::time::Duration::from_secs(10), async {
                     loop {
@@ -2817,5 +3168,70 @@ mod tests {
         assert_eq!(permission_response.payload.value, vec![0x00, 0x00, 0x01]);
 
         core.stop_ws_bridge();
+    }
+
+    #[test]
+    fn exported_parse_navigate_maps_every_variant() {
+        assert_eq!(
+            parse_navigate("mytestapp.dot/some/path?q=1".to_string()),
+            NavigateDecision::DotName {
+                identifier: "mytestapp.dot".to_string(),
+                path: "some/path?q=1".to_string(),
+                canonical_url: "https://mytestapp.dot/some/path?q=1".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_navigate("Example.DOT".to_string()),
+            NavigateDecision::DotName {
+                identifier: "example.dot".to_string(),
+                path: String::new(),
+                canonical_url: "https://example.dot".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_navigate("localhost:3000/path#h".to_string()),
+            NavigateDecision::Localhost {
+                host: "localhost:3000".to_string(),
+                path: "path#h".to_string(),
+                canonical_url: "http://localhost:3000/path#h".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_navigate("google.com".to_string()),
+            NavigateDecision::External {
+                url: "https://google.com/".to_string(),
+            }
+        );
+        assert!(matches!(
+            parse_navigate("javascript:alert(1)".to_string()),
+            NavigateDecision::Reject { .. }
+        ));
+    }
+
+    /// The FFI mirror's canonical URL must stay byte-identical to what the
+    /// runtime's internal navigate path computes from the same input.
+    #[test]
+    fn exported_canonical_url_matches_host_logic() {
+        let inputs = [
+            "mytestapp.dot",
+            "mytestapp.dot/some/path?q=1#frag",
+            "localhost",
+            "localhost:3000/path",
+            "https://example.com/page",
+        ];
+        for input in inputs {
+            let expected = crate::host_logic::dotns::parse_navigate(input)
+                .canonical_url()
+                .expect("open decision has a canonical URL");
+            let actual = match parse_navigate(input.to_string()) {
+                NavigateDecision::DotName { canonical_url, .. }
+                | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
+                NavigateDecision::External { url } => url,
+                NavigateDecision::Reject { reason } => {
+                    panic!("{input}: unexpected rejection: {reason}")
+                }
+            };
+            assert_eq!(actual, expected, "{input}");
+        }
     }
 }
