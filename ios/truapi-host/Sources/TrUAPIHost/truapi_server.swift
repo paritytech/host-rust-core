@@ -2382,6 +2382,16 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func close()
 
     /**
+     * Notify this execution's chain adapter that a connection closed.
+     */
+    func notifyChainClosed(connectionId: UInt32)
+
+    /**
+     * Notify this execution's chain adapter of one JSON-RPC response.
+     */
+    func notifyChainResponse(connectionId: UInt32, json: String)
+
+    /**
      * Push a complete native Chat room-list replacement to this execution.
      */
     func notifyChatRoomsChanged(rooms: [NativeChatRoom])
@@ -2487,6 +2497,27 @@ open class NativeProductExecution: NativeProductExecutionProtocol, @unchecked Se
      */
 open func close()  {try! rustCall() {
     uniffi_truapi_server_fn_method_nativeproductexecution_close(self.uniffiClonePointer(),$0
+    )
+}
+}
+
+    /**
+     * Notify this execution's chain adapter that a connection closed.
+     */
+open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_chain_closed(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(connectionId),$0
+    )
+}
+}
+
+    /**
+     * Notify this execution's chain adapter of one JSON-RPC response.
+     */
+open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCall() {
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_chain_response(self.uniffiClonePointer(),
+        FfiConverterUInt32.lower(connectionId),
+        FfiConverterString.lower(json),$0
     )
 }
 }
@@ -11763,6 +11794,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_close() != 27515) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 23253) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_response() != 24074) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chat_rooms_changed() != 13027) {

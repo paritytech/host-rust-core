@@ -747,8 +747,33 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     }
 }
 
+/// Testable surface for one connection-scoped product execution.
+public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
+    func startWsBridge(bindPort: UInt16) throws -> WsBridgeEndpoint
+    func stopWsBridge()
+    func close()
+    func publishChatAction(_ action: NativeChatAction) throws
+    func renderCustomMessage(
+        messageId: String,
+        messageType: String,
+        payload: Data
+    ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error>
+    func permissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest
+    ) throws -> NativePermissionAuthorizationStatus
+    func setPermissionAuthorizationStatus(
+        request: NativePermissionAuthorizationRequest,
+        status: NativePermissionAuthorizationStatus
+    ) throws
+    func notifyThemeChanged(theme: HostTheme)
+    func notifyPreimageChanged(key: Data, value: Data?)
+    func notifyChainResponse(connectionId: UInt32, json: String)
+    func notifyChainClosed(connectionId: UInt32)
+    func notifyChatRoomsChanged(rooms: [NativeChatRoom])
+}
+
 /// One App, Widget, or Chat executable connected to a shared host runtime.
-public final class TrUAPIProductExecution: @unchecked Sendable {
+public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sendable {
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks
 
