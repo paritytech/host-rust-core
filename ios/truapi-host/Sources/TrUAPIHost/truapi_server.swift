@@ -2420,23 +2420,18 @@ public func FfiConverterTypeWsBridgeEndpoint_lower(_ value: WsBridgeEndpoint) ->
 
 
 /**
- * Native-friendly navigation error.
+ * Host-thrown navigation failure wrapping the canonical error payload; the
+ * wrapper is namespace-local for the same uniffi Kotlin constraint as
+ * [`HostStorageError`].
  */
 public enum HostNavigateRejection: Swift.Error {
 
     
     
     /**
-     * User declined the navigation.
+     * Canonical navigation failure payload.
      */
-    case PermissionDenied
-    /**
-     * Catch-all.
-     */
-    case Unknown(
-        /**
-         * Human-readable reason.
-         */reason: String
+    case Navigate(HostNavigateToError
     )
 }
 
@@ -2454,9 +2449,8 @@ public struct FfiConverterTypeHostNavigateRejection: FfiConverterRustBuffer {
         
 
         
-        case 1: return .PermissionDenied
-        case 2: return .Unknown(
-            reason: try FfiConverterString.read(from: &buf)
+        case 1: return .Navigate(
+            try FfiConverterTypeHostNavigateToError.read(from: &buf)
             )
 
          default: throw UniffiInternalError.unexpectedEnumCase
@@ -2470,13 +2464,9 @@ public struct FfiConverterTypeHostNavigateRejection: FfiConverterRustBuffer {
 
         
         
-        case .PermissionDenied:
+        case let .Navigate(v1):
             writeInt(&buf, Int32(1))
-        
-        
-        case let .Unknown(reason):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(reason, into: &buf)
+            FfiConverterTypeHostNavigateToError.write(v1, into: &buf)
             
         }
     }
@@ -2600,24 +2590,19 @@ extension HostRejection: Foundation.LocalizedError {
 
 
 /**
- * Native-friendly storage error. Mirrors the v0.1 wire shape so the
- * callback surface stays SCALE-free.
+ * Host-thrown storage failure wrapping the canonical error payload, so the
+ * payload variants are defined once in `truapi`. The wrapper enum itself
+ * must live in this crate: uniffi's Kotlin backend requires callback error
+ * types to be namespace-local.
  */
 public enum HostStorageError: Swift.Error {
 
     
     
     /**
-     * Quota exhausted.
+     * Canonical storage failure payload.
      */
-    case Full
-    /**
-     * Catch-all.
-     */
-    case Unknown(
-        /**
-         * Human-readable failure reason.
-         */reason: String
+    case Storage(HostLocalStorageReadError
     )
 }
 
@@ -2635,9 +2620,8 @@ public struct FfiConverterTypeHostStorageError: FfiConverterRustBuffer {
         
 
         
-        case 1: return .Full
-        case 2: return .Unknown(
-            reason: try FfiConverterString.read(from: &buf)
+        case 1: return .Storage(
+            try FfiConverterTypeHostLocalStorageReadError.read(from: &buf)
             )
 
          default: throw UniffiInternalError.unexpectedEnumCase
@@ -2651,13 +2635,9 @@ public struct FfiConverterTypeHostStorageError: FfiConverterRustBuffer {
 
         
         
-        case .Full:
+        case let .Storage(v1):
             writeInt(&buf, Int32(1))
-        
-        
-        case let .Unknown(reason):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(reason, into: &buf)
+            FfiConverterTypeHostLocalStorageReadError.write(v1, into: &buf)
             
         }
     }
@@ -3556,8 +3536,8 @@ private let initializationResult: InitializationResult = {
     }
 
     uniffiCallbackInitHostCallbacks()
-    uniffiEnsureTruapiInitialized()
     uniffiEnsureTruapiPlatformInitialized()
+    uniffiEnsureTruapiInitialized()
     return InitializationResult.ok
 }()
 

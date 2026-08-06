@@ -2555,6 +2555,176 @@ extension HostFeatureSupportedRequest: Equatable, Hashable {}
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
+ * Local storage operation error.
+ */
+
+public enum HostLocalStorageReadError {
+    
+    /**
+     * Storage quota exceeded.
+     */
+    case full
+    /**
+     * Catch-all.
+     */
+    case unknown(
+        /**
+         * Human-readable failure reason.
+         */reason: String
+    )
+}
+
+
+#if compiler(>=6)
+extension HostLocalStorageReadError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostLocalStorageReadError: FfiConverterRustBuffer {
+    typealias SwiftType = HostLocalStorageReadError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostLocalStorageReadError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .full
+        
+        case 2: return .unknown(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: HostLocalStorageReadError, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .full:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .unknown(reason):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostLocalStorageReadError_lift(_ buf: RustBuffer) throws -> HostLocalStorageReadError {
+    return try FfiConverterTypeHostLocalStorageReadError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostLocalStorageReadError_lower(_ value: HostLocalStorageReadError) -> RustBuffer {
+    return FfiConverterTypeHostLocalStorageReadError.lower(value)
+}
+
+
+extension HostLocalStorageReadError: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * Error from [`crate::api::System::navigate_to`].
+ */
+
+public enum HostNavigateToError {
+    
+    /**
+     * User denied the navigation prompt.
+     */
+    case permissionDenied
+    /**
+     * Catch-all.
+     */
+    case unknown(
+        /**
+         * Human-readable failure reason.
+         */reason: String
+    )
+}
+
+
+#if compiler(>=6)
+extension HostNavigateToError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostNavigateToError: FfiConverterRustBuffer {
+    typealias SwiftType = HostNavigateToError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostNavigateToError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .permissionDenied
+        
+        case 2: return .unknown(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: HostNavigateToError, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .permissionDenied:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .unknown(reason):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostNavigateToError_lift(_ buf: RustBuffer) throws -> HostNavigateToError {
+    return try FfiConverterTypeHostNavigateToError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostNavigateToError_lower(_ value: HostNavigateToError) -> RustBuffer {
+    return FfiConverterTypeHostNavigateToError.lower(value)
+}
+
+
+extension HostNavigateToError: Equatable, Hashable {}
+
+
+
+
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
  * Raw data to sign -- either binary bytes or a string message.
  */
 

@@ -1,3 +1,4 @@
+use derive_more::Display;
 use parity_scale_codec::{Decode, Encode};
 
 use super::common::GenericError;
@@ -14,11 +15,14 @@ pub enum HostFeatureSupportedRequest {
 }
 
 /// Error from [`crate::api::System::navigate_to`].
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostNavigateToError {
     /// User denied the navigation prompt.
+    #[display("navigation denied by user")]
     PermissionDenied,
     /// Catch-all.
+    #[display("{reason}")]
     Unknown {
         /// Human-readable failure reason.
         reason: String,

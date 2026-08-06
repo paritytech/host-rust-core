@@ -34,29 +34,21 @@ use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
 
-/// Native-friendly storage error. Mirrors the v0.1 wire shape so the
-/// callback surface stays SCALE-free.
+/// Host-thrown storage failure wrapping the canonical error payload, so the
+/// payload variants are defined once in `truapi`. The wrapper enum itself
+/// must live in this crate: uniffi's Kotlin backend requires callback error
+/// types to be namespace-local.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostStorageError {
-    /// Quota exhausted.
-    #[error("storage quota exhausted")]
-    Full,
-    /// Catch-all.
-    #[error("{reason}")]
-    Unknown {
-        /// Human-readable failure reason.
-        reason: String,
-    },
+    /// Canonical storage failure payload.
+    #[error("{0}")]
+    Storage(v01::HostLocalStorageReadError),
 }
 
 impl From<HostStorageError> for v01::HostLocalStorageReadError {
     fn from(err: HostStorageError) -> Self {
-        match err {
-            HostStorageError::Full => v01::HostLocalStorageReadError::Full,
-            HostStorageError::Unknown { reason } => {
-                v01::HostLocalStorageReadError::Unknown { reason }
-            }
-        }
+        let HostStorageError::Storage(err) = err;
+        err
     }
 }
 
@@ -85,18 +77,14 @@ impl From<v01::GenericError> for HostRejection {
     }
 }
 
-/// Native-friendly navigation error.
+/// Host-thrown navigation failure wrapping the canonical error payload; the
+/// wrapper is namespace-local for the same uniffi Kotlin constraint as
+/// [`HostStorageError`].
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostNavigateRejection {
-    /// User declined the navigation.
-    #[error("navigation denied by user")]
-    PermissionDenied,
-    /// Catch-all.
-    #[error("{reason}")]
-    Unknown {
-        /// Human-readable reason.
-        reason: String,
-    },
+    /// Canonical navigation failure payload.
+    #[error("{0}")]
+    Navigate(v01::HostNavigateToError),
 }
 
 /// Native-friendly SSO deeplink scheme.
@@ -262,12 +250,8 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
 
 impl From<HostNavigateRejection> for v01::HostNavigateToError {
     fn from(err: HostNavigateRejection) -> Self {
-        match err {
-            HostNavigateRejection::PermissionDenied => v01::HostNavigateToError::PermissionDenied,
-            HostNavigateRejection::Unknown { reason } => {
-                v01::HostNavigateToError::Unknown { reason }
-            }
-        }
+        let HostNavigateRejection::Navigate(err) = err;
+        err
     }
 }
 
