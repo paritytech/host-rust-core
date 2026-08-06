@@ -102,10 +102,17 @@ fn rustfmt_generated(files: &[PathBuf]) {
         return;
     }
 
+    // Keep this hermetic: rustfmt otherwise walks up from the generated file
+    // in the system temp directory and may inherit another checkout's config.
+    let config_dir = tempfile::tempdir().expect("rustfmt config tempdir");
+    let config_path = config_dir.path().join("rustfmt.toml");
+    fs::write(&config_path, "edition = \"2024\"\n").expect("write rustfmt config");
+
     let mut command = Command::new("rustfmt");
     command
         .arg(format!("+{}", nightly_toolchain()))
-        .args(["--edition", "2024"]);
+        .args(["--edition", "2024", "--config-path"])
+        .arg(config_path);
     for file in files {
         command.arg(file);
     }
