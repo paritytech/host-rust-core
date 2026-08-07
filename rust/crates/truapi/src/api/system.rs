@@ -38,12 +38,14 @@ pub trait System: Send + Sync {
     /// Query whether the host supports a specific feature.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await truapi.system.featureSupported({
     ///   tag: "Chain",
     ///   value: {
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///   },
     /// });
     /// assert(result.isOk(), "featureSupported failed:", result);

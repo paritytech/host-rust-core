@@ -746,59 +746,31 @@ where
         });
     }
     {
-        let host = host.clone();
-        dispatcher.on_request(wire_table::CHAIN_GET_SUPPORTED_CHAINS, move |request_id: String, bytes: Vec<u8>| {
-            let host = host.clone();
-            Box::pin(async move {
-                let request: versioned::chain::RemoteChainSupportedChainsRequest = match Decode::decode(&mut &bytes[..]) {
-                    Ok(request) => request,
-                    Err(err) => {
-                        let error: truapi::CallError<versioned::chain::RemoteChainSupportedChainsError> =
-                            truapi::CallError::MalformedFrame { reason: err.to_string() };
-                        return Ok(encode_versioned_err_payload(
-                            error,
-                            <versioned::chain::RemoteChainSupportedChainsError as Versioned>::LATEST,
-                        ));
-                    }
-                };
-                let target_version = request.version();
-                let cx = CallContext::with_request_id(request_id.clone());
-                let response: versioned::chain::RemoteChainSupportedChainsResponse = match host.get_supported_chains(&cx, request).await {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return Ok(encode_versioned_err_payload(err, target_version));
-                    }
-                };
-                Ok(encode_versioned_ok_payload(response))
-            })
-        });
-    }
-    {
         let host = host;
         dispatcher.on_request(
-            wire_table::CHAIN_RESOLVE_CHAIN,
+            wire_table::CHAIN_GET_CHAIN_INFO,
             move |request_id: String, bytes: Vec<u8>| {
                 let host = host.clone();
                 Box::pin(async move {
-                    let request: versioned::chain::RemoteChainResolveChainRequest =
+                    let request: versioned::chain::RemoteChainInfoRequest =
                         match Decode::decode(&mut &bytes[..]) {
                             Ok(request) => request,
                             Err(err) => {
                                 let error: truapi::CallError<
-                                    versioned::chain::RemoteChainResolveChainError,
+                                    versioned::chain::RemoteChainInfoError,
                                 > = truapi::CallError::MalformedFrame {
                                     reason: err.to_string(),
                                 };
                                 return Ok(encode_versioned_err_payload(
-                            error,
-                            <versioned::chain::RemoteChainResolveChainError as Versioned>::LATEST,
-                        ));
+                                    error,
+                                    <versioned::chain::RemoteChainInfoError as Versioned>::LATEST,
+                                ));
                             }
                         };
                     let target_version = request.version();
                     let cx = CallContext::with_request_id(request_id.clone());
-                    let response: versioned::chain::RemoteChainResolveChainResponse =
-                        match host.resolve_chain(&cx, request).await {
+                    let response: versioned::chain::RemoteChainInfoResponse =
+                        match host.get_chain_info(&cx, request).await {
                             Ok(value) => value,
                             Err(err) => {
                                 return Ok(encode_versioned_err_payload(err, target_version));

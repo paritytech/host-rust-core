@@ -356,43 +356,52 @@ pub struct RemoteChainTransactionBroadcastResponse {
     pub operation_id: Option<String>,
 }
 
-/// One chain a host serves.
+/// Role of a chain within the host's configured environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum ChainIdentifier {
+    /// The relay chain.
+    Relay,
+    /// The asset hub system chain.
+    AssetHub,
+    /// The people chain.
+    People,
+    /// The bulletin chain.
+    Bulletin,
+}
+
+/// Resolved chain data for one requested [`ChainIdentifier`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct HostChainDescriptor {
-    /// Stable machine key for the chain's role, e.g. "asset-hub".
+pub struct ChainInfo {
+    /// Host-assigned chain name, e.g. "asset-hub".
     pub name: String,
     /// Genesis hash identifying the chain in all chain-scoped calls.
-    pub genesis_hash: Vec<u8>,
+    pub genesis_hash: [u8; 32],
 }
 
-/// Response listing every chain the host serves.
+/// Request to resolve chain identifiers against the host's environment.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct RemoteChainSupportedChainsResponse {
+pub struct RemoteChainInfoRequest {
+    /// Chains to resolve.
+    pub chains: Vec<ChainIdentifier>,
+}
+
+/// Response carrying one [`ChainInfo`] per requested identifier, in request order.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RemoteChainInfoResponse {
     /// Ecosystem the host is configured for, e.g. "polkadot", "kusama", "paseo".
     pub network: String,
-    /// Complete set of chains available through this host.
-    pub chains: Vec<HostChainDescriptor>,
+    /// Resolved chains, aligned with the request's `chains`.
+    pub chains: Vec<ChainInfo>,
 }
 
-/// Request to resolve a named chain against the host's configured environment.
+/// Error from [`crate::api::Chain::get_chain_info`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct RemoteChainResolveChainRequest {
-    /// Stable machine key, e.g. "asset-hub".
-    pub name: String,
-}
-
-/// Response carrying the resolved genesis hash.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct RemoteChainResolveChainResponse {
-    /// Genesis hash of the resolved chain.
-    pub genesis_hash: Vec<u8>,
-}
-
-/// Error from [`crate::api::Chain::resolve_chain`].
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub enum RemoteChainResolveChainError {
-    /// No supported chain matches the requested name.
-    NotFound,
+pub enum RemoteChainInfoError {
+    /// The host does not serve one of the requested chains.
+    NotSupported {
+        /// First requested identifier the host does not serve.
+        chain: ChainIdentifier,
+    },
     /// Catch-all.
     Unknown(GenericError),
 }

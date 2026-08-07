@@ -9,16 +9,15 @@ use crate::versioned::chain::{
     RemoteChainHeadStopOperationRequest, RemoteChainHeadStopOperationResponse,
     RemoteChainHeadStorageError, RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse,
     RemoteChainHeadUnpinError, RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse,
-    RemoteChainResolveChainError, RemoteChainResolveChainRequest, RemoteChainResolveChainResponse,
+    RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
     RemoteChainSpecChainNameError, RemoteChainSpecChainNameRequest,
     RemoteChainSpecChainNameResponse, RemoteChainSpecGenesisHashError,
     RemoteChainSpecGenesisHashRequest, RemoteChainSpecGenesisHashResponse,
     RemoteChainSpecPropertiesError, RemoteChainSpecPropertiesRequest,
-    RemoteChainSpecPropertiesResponse, RemoteChainSupportedChainsError,
-    RemoteChainSupportedChainsRequest, RemoteChainSupportedChainsResponse,
-    RemoteChainTransactionBroadcastError, RemoteChainTransactionBroadcastRequest,
-    RemoteChainTransactionBroadcastResponse, RemoteChainTransactionStopError,
-    RemoteChainTransactionStopRequest, RemoteChainTransactionStopResponse,
+    RemoteChainSpecPropertiesResponse, RemoteChainTransactionBroadcastError,
+    RemoteChainTransactionBroadcastRequest, RemoteChainTransactionBroadcastResponse,
+    RemoteChainTransactionStopError, RemoteChainTransactionStopRequest,
+    RemoteChainTransactionStopResponse,
 };
 use crate::wire;
 use crate::{CallContext, CallError, Subscription};
@@ -29,15 +28,17 @@ pub trait Chain: Send + Sync {
     /// Follow the chain head and receive block events.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, from } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const item = await firstValueFrom(
     ///   from(
     ///     truapi.chain.followHeadSubscribe({
     ///       request: {
-    ///         genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///         genesisHash: assetHub.genesisHash,
     ///         withRuntime: false,
     ///       },
     ///     }),
@@ -57,13 +58,15 @@ pub trait Chain: Send + Sync {
     /// Fetch a block header.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, mergeMap } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.getHeadHeader({ genesisHash, followSubscriptionId, hash }),
@@ -85,13 +88,15 @@ pub trait Chain: Send + Sync {
     /// Fetch a block body.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, mergeMap } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.getHeadBody({ genesisHash, followSubscriptionId, hash }),
@@ -113,13 +118,15 @@ pub trait Chain: Send + Sync {
     /// Query runtime storage at a specific block.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, mergeMap } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.getHeadStorage({
@@ -146,13 +153,15 @@ pub trait Chain: Send + Sync {
     /// Invoke a runtime call at a specific block.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, mergeMap } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///     withRuntime: true,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
@@ -181,13 +190,15 @@ pub trait Chain: Send + Sync {
     /// Release pinned blocks.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, mergeMap } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.unpinHead({
@@ -213,13 +224,15 @@ pub trait Chain: Send + Sync {
     /// Continue a paused chain-head operation.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, mergeMap } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId }) =>
     ///       truapi.chain.continueHead({
@@ -245,13 +258,15 @@ pub trait Chain: Send + Sync {
     /// Stop a chain-head operation.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
-    ///
     /// import { firstValueFrom, mergeMap } from "rxjs";
+    ///
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId }) =>
     ///       truapi.chain.stopHeadOperation({
@@ -278,10 +293,12 @@ pub trait Chain: Send + Sync {
     /// Fetch the canonical genesis hash for a chain.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await truapi.chain.getSpecGenesisHash({
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   genesisHash: assetHub.genesisHash,
     /// });
     /// assert(result.isOk(), "getSpecGenesisHash failed:", result);
     /// console.log("genesis hash:", result.value);
@@ -299,10 +316,12 @@ pub trait Chain: Send + Sync {
     /// Fetch the display name of a chain.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await truapi.chain.getSpecChainName({
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   genesisHash: assetHub.genesisHash,
     /// });
     /// assert(result.isOk(), "getSpecChainName failed:", result);
     /// console.log("chain name:", result.value);
@@ -319,10 +338,12 @@ pub trait Chain: Send + Sync {
     /// Fetch the JSON-encoded properties of a chain.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await truapi.chain.getSpecProperties({
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   genesisHash: assetHub.genesisHash,
     /// });
     /// assert(result.isOk(), "getSpecProperties failed:", result);
     /// console.log("chain properties:", result.value);
@@ -339,10 +360,12 @@ pub trait Chain: Send + Sync {
     /// Broadcast a signed transaction.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const result = await truapi.chain.broadcastTransaction({
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   genesisHash: assetHub.genesisHash,
     ///   transaction: "0x",
     /// });
     /// assert(result.isOk(), "broadcastTransaction failed:", result);
@@ -363,10 +386,12 @@ pub trait Chain: Send + Sync {
     /// Stop a transaction broadcast.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
+    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
+    /// const [assetHub] = chainInfo.value.chains;
     ///
     /// const broadcast = await truapi.chain.broadcastTransaction({
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   genesisHash: assetHub.genesisHash,
     ///   transaction: "0x",
     /// });
     /// assert(broadcast.isOk(), "broadcastTransaction failed:", broadcast);
@@ -376,7 +401,7 @@ pub trait Chain: Send + Sync {
     /// );
     ///
     /// const result = await truapi.chain.stopTransaction({
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///   genesisHash: assetHub.genesisHash,
     ///   operationId: broadcast.value.operationId,
     /// });
     /// assert(result.isOk(), "stopTransaction failed:", result);
@@ -392,39 +417,23 @@ pub trait Chain: Send + Sync {
         Err(CallError::unavailable())
     }
 
-    /// Enumerate the chains this host serves (RFC 0026).
+    /// Resolve chain identifiers to genesis hashes against the host's
+    /// configured environment (RFC 0026).
     ///
     /// ```ts
-    /// const result = await truapi.chain.getSupportedChains();
-    /// assert(result.isOk(), "getSupportedChains failed:", result);
+    /// const result = await truapi.chain.getChainInfo({
+    ///   chains: ["AssetHub"],
+    /// });
+    /// assert(result.isOk(), "getChainInfo failed:", result);
     /// console.log("network:", result.value.network);
-    /// console.log("supported chains:", result.value.chains);
+    /// console.log("asset hub genesis:", result.value.chains[0].genesisHash);
     /// ```
     #[wire(request_id = 166)]
-    async fn get_supported_chains(
+    async fn get_chain_info(
         &self,
         _cx: &CallContext,
-        _request: RemoteChainSupportedChainsRequest,
-    ) -> Result<RemoteChainSupportedChainsResponse, CallError<RemoteChainSupportedChainsError>>
-    {
-        Err(CallError::unavailable())
-    }
-
-    /// Resolve a chain name to its genesis hash (RFC 0026).
-    ///
-    /// ```ts
-    /// const result = await truapi.chain.resolveChain({
-    ///   name: "asset-hub",
-    /// });
-    /// assert(result.isOk(), "resolveChain failed:", result);
-    /// console.log("genesis hash:", result.value.genesisHash);
-    /// ```
-    #[wire(request_id = 168)]
-    async fn resolve_chain(
-        &self,
-        _cx: &CallContext,
-        _request: RemoteChainResolveChainRequest,
-    ) -> Result<RemoteChainResolveChainResponse, CallError<RemoteChainResolveChainError>> {
+        _request: RemoteChainInfoRequest,
+    ) -> Result<RemoteChainInfoResponse, CallError<RemoteChainInfoError>> {
         Err(CallError::unavailable())
     }
 }
