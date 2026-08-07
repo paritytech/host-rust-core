@@ -232,26 +232,6 @@ where
         Ok(())
     }
 
-    fn encode_extension_value_for_signer_payload_to(
-        &self,
-        name: &str,
-        type_id: R::TypeId,
-        type_resolver: &R,
-        out: &mut Vec<u8>,
-    ) -> Result<(), TransactionExtensionsError> {
-        if name == "VerifyMultiSignature" {
-            return self
-                .verify_signature
-                .encode_value_for_signer_payload_to(type_id, type_resolver, out)
-                .map_err(|error| TransactionExtensionsError::Other {
-                    extension_name: name.to_string(),
-                    error,
-                });
-        }
-        out.extend_from_slice(&self.supplied(name)?.extra);
-        Ok(())
-    }
-
     fn encode_extension_implicit_to(
         &self,
         name: &str,

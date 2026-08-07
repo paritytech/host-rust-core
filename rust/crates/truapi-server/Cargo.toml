@@ -73,16 +73,16 @@ rand = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util"], optional = true }
 tokio-tungstenite = { version = "0.21", default-features = false, features = ["handshake"], optional = true }
 uniffi.workspace = true
-subxt = { git = "https://github.com/paritytech/subxt", rev = "a5460610b7a5566db90b04aef85c58035f78879f", default-features = false, features = ["native"] }
-subxt-rpcs = { git = "https://github.com/paritytech/subxt", rev = "a5460610b7a5566db90b04aef85c58035f78879f", default-features = false, features = ["jsonrpsee", "native"] }
+subxt = { version = "0.50.3", default-features = false, features = ["native"] }
+subxt-rpcs = { version = "0.50.3", default-features = false, features = ["jsonrpsee", "native"] }
 frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
 scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
 js-sys = "0.3"
-subxt = { git = "https://github.com/paritytech/subxt", rev = "a5460610b7a5566db90b04aef85c58035f78879f", default-features = false, features = ["web"] }
-subxt-rpcs = { git = "https://github.com/paritytech/subxt", rev = "a5460610b7a5566db90b04aef85c58035f78879f", default-features = false, features = ["web"] }
+subxt = { version = "0.50.3", default-features = false, features = ["web"] }
+subxt-rpcs = { version = "0.50.3", default-features = false, features = ["web"] }
 wasm-bindgen = "0.2.118"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"

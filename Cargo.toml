@@ -13,9 +13,6 @@ uniffi = "0.32.0"
 missing_docs = "warn"
 unsafe_code = "deny"
 
-[patch.crates-io]
-frame-decode = { git = "https://github.com/paritytech/frame-decode", rev = "22003f9d9dc25a5aaa3f21a182334436d634de00" }
-
 [profile.release]
 opt-level = "z"
 lto = "fat"
