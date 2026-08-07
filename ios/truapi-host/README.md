@@ -25,7 +25,7 @@ The generated bindings and the container bundle are committed build outputs; the
                                 # (URL + checksum)
 ```
 
-Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. When the binary should reach consumers, run `publish.sh` and commit the manifest bump **after** the upload succeeds (a manifest pushed before its asset is live breaks resolution).
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, and makes the `Package.swift` follow-up commit only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
 For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
 
