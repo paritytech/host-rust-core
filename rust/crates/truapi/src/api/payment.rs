@@ -7,10 +7,11 @@ use crate::versioned::payment::{
     HostPaymentStatusSubscribeRequest, HostPaymentTopUpError, HostPaymentTopUpRequest,
     HostPaymentTopUpResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Payment request and balance/status subscription methods.
+#[wire_trait(id = 8)]
 #[crate::async_trait]
 pub trait Payment: Send + Sync {
     /// Subscribe to payment balance updates.
@@ -23,7 +24,7 @@ pub trait Payment: Send + Sync {
     /// );
     /// console.log("balance received:", balance);
     /// ```
-    #[wire(start_id = 118)]
+    #[wire(start_id = 0)]
     async fn balance_subscribe(
         &self,
         _cx: &CallContext,
@@ -53,7 +54,7 @@ pub trait Payment: Send + Sync {
     /// assert(result.isOk(), "request failed:", result);
     /// console.log("payment requested:", result.value);
     /// ```
-    #[wire(request_id = 124)]
+    #[wire(request_id = 6)]
     async fn request(
         &self,
         _cx: &CallContext,
@@ -90,7 +91,7 @@ pub trait Payment: Send + Sync {
     /// );
     /// console.log("payment status received:", status);
     /// ```
-    #[wire(start_id = 126)]
+    #[wire(start_id = 8)]
     async fn status_subscribe(
         &self,
         _cx: &CallContext,
@@ -112,7 +113,7 @@ pub trait Payment: Send + Sync {
     /// assert(result.isOk(), "topUp failed:", result);
     /// console.log("balance topped up");
     /// ```
-    #[wire(request_id = 122)]
+    #[wire(request_id = 4)]
     async fn top_up(
         &self,
         _cx: &CallContext,

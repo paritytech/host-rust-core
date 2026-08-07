@@ -18,12 +18,13 @@ function toHex(u: Uint8Array): string {
         .join("");
 }
 
-function expectedWire(tagId: number, valueBytes: Uint8Array): Uint8Array {
+function expectedWire(traitId: number, methodId: number, valueBytes: Uint8Array): Uint8Array {
     const reqId = str.enc("p:1");
-    const out = new Uint8Array(reqId.length + 1 + valueBytes.length);
+    const out = new Uint8Array(reqId.length + 2 + valueBytes.length);
     out.set(reqId, 0);
-    out[reqId.length] = tagId;
-    out.set(valueBytes, reqId.length + 1);
+    out[reqId.length] = traitId;
+    out[reqId.length + 1] = methodId;
+    out.set(valueBytes, reqId.length + 2);
     return out;
 }
 
@@ -38,19 +39,36 @@ function unwrap<T>(result: Result<T, { message: string }>, message: string): T {
 }
 
 describe("encodeWireMessage / decodeWireMessage wire equality", () => {
-    it("encodes handshake_request (discriminant 0) to match the Rust reference", () => {
-        const inner = new Uint8Array([0x00, 0x01]); // V1 variant + codec_version=1
+    it("pins the handshake frame end-to-end: requestId + 0x00 0x00 + payload", () => {
+        // Trait 0 = system, method 0 = handshake request. This locks the
+        // system trait to discriminant zero: the handshake is the first frame
+        // either side sends, so its envelope must never drift.
+        expect(W.SYSTEM_HANDSHAKE.trait).toBe(0);
+        expect(W.SYSTEM_HANDSHAKE.request).toBe(0);
+
+        const inner = new Uint8Array([0x00, 0x02]); // V1 variant + codec_version=2
         const encoded = unwrap(
             encodeWireMessage({
                 requestId: "p:1",
-                payload: { id: W.SYSTEM_HANDSHAKE.request, value: inner },
+                payload: {
+                    traitId: W.SYSTEM_HANDSHAKE.trait,
+                    methodId: W.SYSTEM_HANDSHAKE.request,
+                    value: inner,
+                },
             }),
             "encode handshake_request",
         );
-        expect(toHex(encoded)).toBe(toHex(expectedWire(0, inner)));
+        // [0c 70 3a 31] "p:1" + [00] system trait + [00] handshake request + payload.
+        expect(toHex(encoded)).toBe("0c703a3100000002");
+        expect(toHex(encoded)).toBe(toHex(expectedWire(0, 0, inner)));
+
+        const decoded = unwrap(decodeWireMessage(encoded), "decode handshake_request");
+        expect(decoded.payload.traitId).toBe(0);
+        expect(decoded.payload.methodId).toBe(0);
+        expect(toHex(decoded.payload.value)).toBe(toHex(inner));
     });
 
-    it("encodes account_get_request (discriminant 22) to match the golden fixture", () => {
+    it("encodes account_get_request (pair (1, 4)) to match the golden fixture", () => {
         // payload = V1(("foo", 0u32)); same vector as the Rust golden fixture.
         const inner = new Uint8Array([
             0x00, // V1 variant
@@ -63,12 +81,16 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         const encoded = unwrap(
             encodeWireMessage({
                 requestId: "p:1",
-                payload: { id: W.ACCOUNT_GET_ACCOUNT.request, value: inner },
+                payload: {
+                    traitId: W.ACCOUNT_GET_ACCOUNT.trait,
+                    methodId: W.ACCOUNT_GET_ACCOUNT.request,
+                    value: inner,
+                },
             }),
             "encode account_get_request",
         );
-        expect(toHex(encoded)).toBe(toHex(expectedWire(22, inner)));
-        expect(toHex(encoded)).toBe("0c703a3116000c666f6f00000000");
+        expect(toHex(encoded)).toBe(toHex(expectedWire(1, 4, inner)));
+        expect(toHex(encoded)).toBe("0c703a310104000c666f6f00000000");
     });
 
     it("round-trips a local_storage_read frame through encode + decode", () => {
@@ -76,30 +98,54 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         const encoded = unwrap(
             encodeWireMessage({
                 requestId: "p:1",
-                payload: { id: W.LOCAL_STORAGE_READ.request, value: inner },
+                payload: {
+                    traitId: W.LOCAL_STORAGE_READ.trait,
+                    methodId: W.LOCAL_STORAGE_READ.request,
+                    value: inner,
+                },
             }),
             "encode local_storage_read_request",
         );
         const decoded = unwrap(decodeWireMessage(encoded), "decode local_storage_read_request");
         expect(decoded.requestId).toBe("p:1");
-        expect(decoded.payload.id).toBe(W.LOCAL_STORAGE_READ.request);
+        expect(decoded.payload.traitId).toBe(W.LOCAL_STORAGE_READ.trait);
+        expect(decoded.payload.methodId).toBe(W.LOCAL_STORAGE_READ.request);
         expect(toHex(decoded.payload.value)).toBe(toHex(inner));
     });
 
-    it("rejects an invalid outbound discriminant", () => {
+    it("rejects an invalid outbound trait discriminant", () => {
         const result = encodeWireMessage({
             requestId: "p:1",
-            payload: { id: 256, value: new Uint8Array() },
+            payload: { traitId: 256, methodId: 0, value: new Uint8Array() },
         });
         expect(result.isErr()).toBe(true);
-        expect(result._unsafeUnwrapErr().message).toMatch(/Invalid wire discriminant/);
+        expect(result._unsafeUnwrapErr().message).toMatch(/Invalid wire trait discriminant/);
     });
 
-    it("rejects a truncated frame with no discriminant byte", () => {
+    it("rejects an invalid outbound method discriminant", () => {
+        const result = encodeWireMessage({
+            requestId: "p:1",
+            payload: { traitId: 0, methodId: 256, value: new Uint8Array() },
+        });
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toMatch(/Invalid wire method discriminant/);
+    });
+
+    it("rejects a truncated frame with no trait byte", () => {
         const truncated = str.enc("p:1"); // just the requestId, nothing after.
         const result = decodeWireMessage(truncated);
         expect(result.isErr()).toBe(true);
-        expect(result._unsafeUnwrapErr().message).toMatch(/missing discriminant byte/);
+        expect(result._unsafeUnwrapErr().message).toMatch(/missing trait discriminant byte/);
+    });
+
+    it("rejects a truncated frame with a trait byte but no method byte", () => {
+        const reqId = str.enc("p:1");
+        const truncated = new Uint8Array(reqId.length + 1);
+        truncated.set(reqId, 0);
+        truncated[reqId.length] = 0x00;
+        const result = decodeWireMessage(truncated);
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toMatch(/missing method discriminant byte/);
     });
 
     it("round-trips a 32 KiB requestId via the mode-2 compact-len prefix", () => {
@@ -110,7 +156,11 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         const encoded = unwrap(
             encodeWireMessage({
                 requestId: longId,
-                payload: { id: W.ACCOUNT_GET_ACCOUNT.request, value: inner },
+                payload: {
+                    traitId: W.ACCOUNT_GET_ACCOUNT.trait,
+                    methodId: W.ACCOUNT_GET_ACCOUNT.request,
+                    value: inner,
+                },
             }),
             "encode long-id account_get_request",
         );
@@ -119,7 +169,8 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
         expect(encoded[0] & 0b11).toBe(0b10);
         const decoded = unwrap(decodeWireMessage(encoded), "decode long-id account_get_request");
         expect(decoded.requestId).toBe(longId);
-        expect(decoded.payload.id).toBe(W.ACCOUNT_GET_ACCOUNT.request);
+        expect(decoded.payload.traitId).toBe(W.ACCOUNT_GET_ACCOUNT.trait);
+        expect(decoded.payload.methodId).toBe(W.ACCOUNT_GET_ACCOUNT.request);
         expect(toHex(decoded.payload.value)).toBe(toHex(inner));
     });
 });

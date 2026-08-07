@@ -4,10 +4,11 @@ use crate::versioned::permissions::{
     HostDevicePermissionError, HostDevicePermissionRequest, HostDevicePermissionResponse,
     RemotePermissionError, RemotePermissionRequest, RemotePermissionResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Permission request methods.
+#[wire_trait(id = 9)]
 #[crate::async_trait]
 pub trait Permissions: Send + Sync {
     /// Request a device-capability permission from the user.
@@ -17,7 +18,7 @@ pub trait Permissions: Send + Sync {
     /// assert(result.isOk(), "requestDevicePermission failed:", result);
     /// console.log("device permission result:", result.value);
     /// ```
-    #[wire(request_id = 8)]
+    #[wire(request_id = 0)]
     async fn request_device_permission(
         &self,
         cx: &CallContext,
@@ -33,7 +34,7 @@ pub trait Permissions: Send + Sync {
     /// assert(result.isOk(), "requestRemotePermission failed:", result);
     /// console.log("remote permission result:", result.value);
     /// ```
-    #[wire(request_id = 10)]
+    #[wire(request_id = 2)]
     async fn request_remote_permission(
         &self,
         cx: &CallContext,

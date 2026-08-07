@@ -583,25 +583,42 @@ fn method_wire_sort_id(method: &MethodDef) -> u8 {
 
 fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<String> {
     let wrappers = collect_versioned_wrappers(api);
-    let mut seen: BTreeMap<u8, String> = BTreeMap::new();
-    let mut constants: Vec<(String, ExpandedWireIds)> = Vec::new();
+    let mut seen: BTreeMap<(u8, u8), String> = BTreeMap::new();
+    let mut seen_traits: BTreeMap<u8, String> = BTreeMap::new();
+    let mut constants: Vec<(String, u8, ExpandedWireIds)> = Vec::new();
 
     for trait_def in &api.traits {
+        // Method-less traits (e.g. the `TrUApi` umbrella trait) own no wire
+        // frames and need no trait discriminant.
+        if trait_def.methods.is_empty() {
+            continue;
+        }
+        let trait_id = trait_wire_id(trait_def)?;
+        if let Some(existing) = seen_traits.insert(trait_id, trait_def.name.clone()) {
+            bail!(
+                "wire trait id {trait_id} reused: `{existing}` and `{}` collide",
+                trait_def.name
+            );
+        }
         for method in &trait_def.methods {
             if !method_is_included(trait_def, method, &wrappers, target_version)? {
                 continue;
             }
             let wire_ids = wire_ids_for_method(trait_def, method)?;
             for (id, tag) in wire_ids.entries(&method.name) {
-                if let Some(existing) = seen.insert(id, tag.clone()) {
-                    bail!("wire id {id} reused: `{existing}` and `{tag}` collide");
+                if let Some(existing) = seen.insert((trait_id, id), tag.clone()) {
+                    bail!("wire id ({trait_id}, {id}) reused: `{existing}` and `{tag}` collide");
                 }
             }
-            constants.push((wire_const_name(&trait_def.name, &method.name), wire_ids));
+            constants.push((
+                wire_const_name(&trait_def.name, &method.name),
+                trait_id,
+                wire_ids,
+            ));
         }
     }
 
-    constants.sort_by_key(|(_, ids)| ids.sort_id());
+    constants.sort_by_key(|(_, trait_id, ids)| (*trait_id, ids.sort_id()));
 
     let mut out = String::new();
     writedoc!(
@@ -611,12 +628,13 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
 
         import type {{ RequestFrameIds, SubscriptionFrameIds }} from '../transport.js';
 
-        // Wire-protocol discriminants. Method ordering is part of the
-        // protocol; only ever append or explicitly reserve gaps.
+        // Wire-protocol (trait, method) discriminant pairs. Trait and method
+        // ordering are part of the protocol; only ever append within a trait
+        // or explicitly reserve gaps.
         "#
     )
     .unwrap();
-    for (name, ids) in constants {
+    for (name, trait_id, ids) in constants {
         match ids {
             ExpandedWireIds::Request {
                 request_id,
@@ -625,6 +643,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
                 out.push('\n');
                 out.push_str(&formatdoc! {"
                     export const {name} = {{
+                      trait: {trait_id},
                       request: {request_id},
                       response: {response_id},
                     }} as const satisfies RequestFrameIds;
@@ -639,6 +658,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
                 out.push('\n');
                 out.push_str(&formatdoc! {"
                     export const {name} = {{
+                      trait: {trait_id},
                       start: {start_id},
                       stop: {stop_id},
                       interrupt: {interrupt_id},
@@ -650,6 +670,17 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
     }
 
     Ok(out)
+}
+
+/// The trait's wire discriminant. Every API trait must carry a
+/// `#[wire_trait(id = N)]` annotation.
+fn trait_wire_id(trait_def: &TraitDef) -> Result<u8> {
+    trait_def.wire_trait_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "trait `{}` is missing #[wire_trait(id = N)] annotation",
+            trait_def.name
+        )
+    })
 }
 
 fn method_is_included(
@@ -2375,12 +2406,14 @@ mod tests {
         let json_rpc = TraitDef {
             name: "JsonRpc".to_string(),
             module_path: Vec::new(),
+            wire_trait_id: Some(6),
             methods: Vec::new(),
             docs: None,
         };
         let system = TraitDef {
             name: "System".to_string(),
             module_path: Vec::new(),
+            wire_trait_id: Some(7),
             methods: Vec::new(),
             docs: None,
         };
@@ -2419,6 +2452,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods,
                 docs: None,
             }],
@@ -2647,6 +2681,7 @@ mod tests {
         .expect("generate wire table");
 
         assert!(source.contains("export const EXAMPLE_STREAM = {"));
+        assert!(source.contains("  trait: 8,"));
         assert!(source.contains("  start: 2,"));
         assert!(source.contains("  receive: 5,"));
         assert!(source.contains("export const EXAMPLE_LATER = {"));
@@ -2672,7 +2707,7 @@ mod tests {
         )
         .expect_err("duplicate ids must error");
 
-        assert!(err.to_string().contains("wire id 3 reused"));
+        assert!(err.to_string().contains("wire id (8, 3) reused"));
     }
 
     #[test]
@@ -2730,12 +2765,92 @@ mod tests {
         assert!(err.to_string().contains("wire id overflow"));
     }
 
+    /// Method ids are scoped per trait: two traits may both use method id 0.
+    #[test]
+    fn generate_wire_table_allows_same_method_id_in_different_traits() {
+        let api = ApiDefinition {
+            traits: vec![
+                TraitDef {
+                    name: "Alpha".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(0),
+                    methods: vec![request_method("first", Some(0))],
+                    docs: None,
+                },
+                TraitDef {
+                    name: "Beta".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(1),
+                    methods: vec![request_method("second", Some(0))],
+                    docs: None,
+                },
+            ],
+            public_trait_order: Vec::new(),
+            types: Vec::new(),
+        };
+
+        let source = generate_wire_table(&api, 2).expect("generate wire table");
+
+        assert!(source.contains("export const ALPHA_FIRST = {"));
+        assert!(source.contains("export const BETA_SECOND = {"));
+        assert!(source.contains("  trait: 0,"));
+        assert!(source.contains("  trait: 1,"));
+    }
+
+    /// Two traits must not share a wire trait id.
+    #[test]
+    fn generate_wire_table_rejects_duplicate_trait_ids() {
+        let api = ApiDefinition {
+            traits: vec![
+                TraitDef {
+                    name: "Alpha".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(3),
+                    methods: vec![request_method("first", Some(0))],
+                    docs: None,
+                },
+                TraitDef {
+                    name: "Beta".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(3),
+                    methods: vec![request_method("second", Some(0))],
+                    docs: None,
+                },
+            ],
+            public_trait_order: Vec::new(),
+            types: Vec::new(),
+        };
+
+        let err = generate_wire_table(&api, 2).expect_err("duplicate trait ids must error");
+        assert!(err.to_string().contains("wire trait id 3 reused"));
+    }
+
+    /// A trait without `#[wire_trait(id = N)]` must fail emission.
+    #[test]
+    fn generate_wire_table_rejects_missing_trait_id() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Alpha".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: None,
+                methods: vec![request_method("first", Some(0))],
+                docs: None,
+            }],
+            public_trait_order: Vec::new(),
+            types: Vec::new(),
+        };
+
+        let err = generate_wire_table(&api, 2).expect_err("missing trait id must error");
+        assert!(err.to_string().contains("missing #[wire_trait(id = N)]"));
+    }
+
     #[test]
     fn generate_wire_table_filters_methods_by_target_version() {
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![
                     request_method_with_wrappers(
                         "legacy",
@@ -2782,6 +2897,7 @@ mod tests {
                 TraitDef {
                     name: "Legacy".to_string(),
                     module_path: Vec::new(),
+                    wire_trait_id: Some(9),
                     methods: vec![request_method_with_wrappers(
                         "legacy_call",
                         Some(2),
@@ -2794,6 +2910,7 @@ mod tests {
                 TraitDef {
                     name: "FutureOnly".to_string(),
                     module_path: Vec::new(),
+                    wire_trait_id: Some(10),
                     methods: vec![request_method_with_wrappers(
                         "future_call",
                         Some(4),
@@ -2831,6 +2948,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![MethodDef {
                     name: "example_call".to_string(),
                     kind: MethodKind::Request,
@@ -2880,6 +2998,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![
                     MethodDef {
                         name: "legacy_call".to_string(),
@@ -2947,6 +3066,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![MethodDef {
                     name: "example_call".to_string(),
                     kind: MethodKind::Request,
@@ -2993,6 +3113,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![MethodDef {
                     name: "example_call".to_string(),
                     kind: MethodKind::Request,

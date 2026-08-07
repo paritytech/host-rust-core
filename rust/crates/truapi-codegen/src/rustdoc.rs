@@ -68,6 +68,9 @@ pub struct TraitDef {
     /// Module path leading to the trait, excluding the trait name itself
     /// (e.g. `["truapi", "api", "account"]`).
     pub module_path: Vec<String>,
+    /// Wire-protocol trait discriminant from the `#[wire_trait(id = N)]`
+    /// attribute: the first byte of the `(trait, method)` pair on the wire.
+    pub wire_trait_id: Option<u8>,
     /// Methods declared on the trait, in declaration order.
     pub methods: Vec<MethodDef>,
     /// Rustdoc comment on the trait, with hidden codegen markers stripped.
@@ -629,6 +632,7 @@ fn extract_trait(
     Ok(TraitDef {
         name,
         module_path,
+        wire_trait_id: item.docs.as_deref().and_then(extract_wire_trait_id),
         methods,
         docs: clean_docs(item.docs.as_deref()),
     })
@@ -776,6 +780,26 @@ pub fn clean_docs(docs: Option<&str>) -> Option<String> {
 fn is_codegen_doc_marker(line: &str) -> bool {
     let line = line.trim_start();
     line.starts_with("@wire_")
+}
+
+/// Extracts the `@wire_trait_id=N` marker from a trait's doc comment block.
+/// Annotated traits carry the marker via the `#[wire_trait(id = N)]`
+/// proc-macro, which appends a hidden doc string so it propagates through
+/// rustdoc JSON.
+fn extract_wire_trait_id(docs: &str) -> Option<u8> {
+    for line in docs.lines() {
+        let line = line.trim_start();
+        let Some(value) = line.strip_prefix("@wire_trait_id=") else {
+            continue;
+        };
+        let end = value
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(value.len());
+        if let Ok(id) = value[..end].parse::<u8>() {
+            return Some(id);
+        }
+    }
+    None
 }
 
 /// Extracts `@wire_<name>_id=N` markers from a doc comment block. Annotated
@@ -1450,9 +1474,20 @@ mod tests {
 
     #[test]
     fn clean_docs_strips_wire_markers() {
-        let docs = "Trait summary.\n\n@wire_request_id=7\n";
+        let docs = "Trait summary.\n\n@wire_request_id=7\n@wire_trait_id=3\n";
 
         assert_eq!(clean_docs(Some(docs)).as_deref(), Some("Trait summary."));
+    }
+
+    #[test]
+    fn extract_wire_trait_id_reads_marker() {
+        assert_eq!(
+            extract_wire_trait_id("Trait summary.\n\n@wire_trait_id=14\n"),
+            Some(14)
+        );
+        assert_eq!(extract_wire_trait_id("Trait summary."), None);
+        // Out-of-range values are ignored rather than truncated.
+        assert_eq!(extract_wire_trait_id("@wire_trait_id=300"), None);
     }
 
     #[test]

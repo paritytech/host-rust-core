@@ -4,22 +4,23 @@
 //! and a `payload`. On the wire the envelope is:
 //!
 //! ```text
-//!   [requestId: SCALE str][discriminant: u8][payload bytes...]
+//!   [requestId: SCALE str][trait: u8][method: u8][payload bytes...]
 //! ```
 //!
-//! The discriminant maps to a method/kind slot via the auto-generated
-//! [`crate::generated::wire_table::WIRE_TABLE`]. Method ordering is part of
-//! the wire protocol; only ever append to the table. The payload bytes are
-//! the SCALE-encoded inner value, inlined without a length prefix.
+//! The `(trait, method)` discriminant pair maps to a method/kind slot via the
+//! auto-generated [`crate::generated::wire_table::WIRE_TABLE`]. Trait ids and
+//! per-trait method ordering are part of the wire protocol; only ever append
+//! within a trait. The payload bytes are the SCALE-encoded inner value,
+//! inlined without a length prefix.
 //!
-//! In-memory we keep the numeric id directly so dispatch does not need to
+//! In-memory we keep the numeric pair directly so dispatch does not need to
 //! reconstruct string action tags on every frame.
 
 use parity_scale_codec::{Decode, Encode, Error as CodecError, Input, Output};
 
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds, WIRE_TABLE, WireKind};
 
-/// Top-level wire message. Encoded as `[requestId][discriminant][bytes]`.
+/// Top-level wire message. Encoded as `[requestId][trait][method][bytes]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolMessage {
     /// Per-message identifier carried by both halves of a request/response.
@@ -74,7 +75,8 @@ pub fn encode_versioned_interrupt_payload<T: Encode>(value: T, version: u8) -> V
 impl Encode for ProtocolMessage {
     fn encode_to<T: Output + ?Sized>(&self, dest: &mut T) {
         self.request_id.encode_to(dest);
-        self.payload.id.encode_to(dest);
+        self.payload.trait_id.encode_to(dest);
+        self.payload.method_id.encode_to(dest);
         // Payload bytes are inlined; the receiver reads "until end of frame"
         // because each transport frame is one ProtocolMessage. This matches
         // the public versioned enum transport shape (variant payload encoded
@@ -89,9 +91,12 @@ impl Encode for ProtocolMessage {
 impl Decode for ProtocolMessage {
     fn decode<I: Input>(input: &mut I) -> Result<Self, CodecError> {
         let request_id = String::decode(input)?;
-        let id = u8::decode(input)?;
-        // Unknown ids are accepted here; routing is deferred to dispatch,
-        // which drops frames with no registered handler.
+        let trait_id = u8::decode(input)
+            .map_err(|_| CodecError::from("frame is missing the trait discriminant byte"))?;
+        let method_id = u8::decode(input)
+            .map_err(|_| CodecError::from("frame is missing the method discriminant byte"))?;
+        // Unknown (trait, method) pairs are accepted here; routing is deferred
+        // to dispatch, which reports frames with no registered handler.
         let remaining = input
             .remaining_len()?
             .ok_or_else(|| CodecError::from("frame input must report remaining length"))?;
@@ -99,23 +104,29 @@ impl Decode for ProtocolMessage {
         input.read(&mut value)?;
         Ok(ProtocolMessage {
             request_id,
-            payload: Payload { id, value },
+            payload: Payload {
+                trait_id,
+                method_id,
+                value,
+            },
         })
     }
 }
 
-/// Tagged payload. The `id` is the wire discriminant from
-/// [`crate::generated::wire_table::WIRE_TABLE`], identifying the frame's method
-/// and kind (request/response/start/stop/interrupt/receive).
+/// Tagged payload. The `(trait_id, method_id)` pair is the wire discriminant
+/// from [`crate::generated::wire_table::WIRE_TABLE`], identifying the frame's
+/// trait, method, and kind (request/response/start/stop/interrupt/receive).
 ///
 /// Note: `Payload` does not derive `Encode`/`Decode` directly; the wire
 /// representation lives on [`ProtocolMessage`]. `Payload` is kept as a plain
-/// data type for in-memory dispatch (key on `id`, value bytes already
+/// data type for in-memory dispatch (key on the pair, value bytes already
 /// SCALE-encoded by the call site).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Payload {
-    /// Wire discriminant identifying the frame's method and kind.
-    pub id: u8,
+    /// Trait discriminant: first byte of the wire pair.
+    pub trait_id: u8,
+    /// Method discriminant within the trait: second byte of the wire pair.
+    pub method_id: u8,
     /// SCALE-encoded inner value bytes.
     pub value: Vec<u8>,
 }
@@ -190,56 +201,64 @@ mod tests {
         V1(T),
     }
 
-    fn build(id: u8, value: Vec<u8>) -> ProtocolMessage {
+    fn build(trait_id: u8, method_id: u8, value: Vec<u8>) -> ProtocolMessage {
         ProtocolMessage {
             request_id: "p:1".to_string(),
-            payload: Payload { id, value },
+            payload: Payload {
+                trait_id,
+                method_id,
+                value,
+            },
         }
     }
 
-    fn expected_wire(id: u8, value: &[u8]) -> Vec<u8> {
+    fn expected_wire(trait_id: u8, method_id: u8, value: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         "p:1".to_string().encode_to(&mut out);
-        out.push(id);
+        out.push(trait_id);
+        out.push(method_id);
         out.extend_from_slice(value);
         out
     }
 
     #[test]
-    fn handshake_request_encodes_with_discriminant_zero() {
-        // SCALE-encoded HostHandshakeRequest::V1(1u8) = [0u8 variant][1u8 codec_version]
-        let inner: Vec<u8> = vec![0x00, 0x01];
-        let msg = build(0, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(0, &inner));
+    fn handshake_request_encodes_with_discriminant_pair_zero_zero() {
+        // SCALE-encoded HostHandshakeRequest::V1(2u8) = [0u8 variant][2u8 codec_version]
+        let inner: Vec<u8> = vec![0x00, 0x02];
+        let msg = build(0, 0, inner.clone());
+        assert_eq!(msg.encode(), expected_wire(0, 0, &inner));
     }
 
     #[test]
-    fn get_account_request_encodes_with_discriminant_22() {
+    fn get_account_request_encodes_with_discriminant_pair() {
         let mut inner = vec![0x00]; // V1 variant
         "foo".to_string().encode_to(&mut inner);
         0u32.encode_to(&mut inner);
-        let msg = build(22, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(22, &inner));
+        // account trait = 1, get_account request = 4.
+        let msg = build(1, 4, inner.clone());
+        assert_eq!(msg.encode(), expected_wire(1, 4, &inner));
     }
 
     #[test]
-    fn round_trip_preserves_id_and_value() {
+    fn round_trip_preserves_ids_and_value() {
         let inner: Vec<u8> = vec![0x00, 0x42, 0xab, 0xcd];
-        let msg = build(12, inner.clone());
+        let msg = build(6, 0, inner.clone());
         let decoded = ProtocolMessage::decode(&mut &msg.encode()[..]).expect("decode");
         assert_eq!(decoded, msg);
     }
 
-    /// An unknown discriminant is no longer rejected at decode; routing is
-    /// deferred to dispatch (which drops frames with no registered handler).
+    /// An unknown discriminant pair is not rejected at decode; routing is
+    /// deferred to dispatch (which reports frames with no registered handler).
     #[test]
-    fn unknown_discriminant_decodes_ok() {
+    fn unknown_discriminant_pair_decodes_ok() {
         let mut bytes = Vec::new();
         "p:1".to_string().encode_to(&mut bytes);
-        bytes.push(250); // far outside the populated range
+        bytes.push(250); // far outside the populated trait range
+        bytes.push(123);
         bytes.extend_from_slice(&[0xaa, 0xbb]);
-        let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("unknown id must decode");
-        assert_eq!(decoded.payload.id, 250);
+        let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("unknown pair must decode");
+        assert_eq!(decoded.payload.trait_id, 250);
+        assert_eq!(decoded.payload.method_id, 123);
         assert_eq!(decoded.payload.value, vec![0xaa, 0xbb]);
     }
 
@@ -247,25 +266,28 @@ mod tests {
     /// regression where `Decode` mishandles a frame whose payload is empty for
     /// `_stop` / `_interrupt` (no inner data) but non-empty for `_start` /
     /// `_receive`. The ids are the `account_connection_status_subscribe`
-    /// quartet (18..=21).
+    /// quartet (trait 1, methods 0..=3).
     #[test]
     fn subscription_phases_round_trip_through_codec() {
         let cases: &[(u8, Vec<u8>)] = &[
-            (18, vec![0x00, 0xaa]),             // start
-            (19, Vec::new()),                   // stop
-            (20, Vec::new()),                   // interrupt
-            (21, vec![0x01, 0x02, 0x03, 0x04]), // receive
+            (0, vec![0x00, 0xaa]),             // start
+            (1, Vec::new()),                   // stop
+            (2, Vec::new()),                   // interrupt
+            (3, vec![0x01, 0x02, 0x03, 0x04]), // receive
         ];
-        for (id, value) in cases {
-            let msg = build(*id, value.clone());
+        for (method_id, value) in cases {
+            let msg = build(1, *method_id, value.clone());
             let bytes = msg.encode();
             assert_eq!(
                 bytes,
-                expected_wire(*id, value),
-                "encode mismatch for id {id}"
+                expected_wire(1, *method_id, value),
+                "encode mismatch for method id {method_id}"
             );
             let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
-            assert_eq!(decoded, msg, "round-trip mismatch for id {id}");
+            assert_eq!(
+                decoded, msg,
+                "round-trip mismatch for method id {method_id}"
+            );
         }
     }
 
@@ -274,18 +296,21 @@ mod tests {
     #[test]
     fn id_helpers_resolve_known_methods() {
         let handshake = request_ids("system_handshake").expect("known request method");
+        assert_eq!(handshake.trait_id, 0);
         assert_eq!(handshake.request_id, 0);
         assert_eq!(handshake.response_id, 1);
 
         let get_account = request_ids("account_get_account").expect("known request method");
-        assert_eq!(get_account.request_id, 22);
+        assert_eq!(get_account.trait_id, 1);
+        assert_eq!(get_account.request_id, 4);
 
         let sub =
             subscription_ids("account_connection_status_subscribe").expect("known subscription");
-        assert_eq!(sub.start_id, 18);
-        assert_eq!(sub.stop_id, 19);
-        assert_eq!(sub.interrupt_id, 20);
-        assert_eq!(sub.receive_id, 21);
+        assert_eq!(sub.trait_id, 1);
+        assert_eq!(sub.start_id, 0);
+        assert_eq!(sub.stop_id, 1);
+        assert_eq!(sub.interrupt_id, 2);
+        assert_eq!(sub.receive_id, 3);
 
         // A request method is not a subscription and vice versa.
         assert!(subscription_ids("system_handshake").is_none());
@@ -297,11 +322,11 @@ mod tests {
     /// handle `remaining_len == 0` without erroring or reading past EOF.
     #[test]
     fn empty_payload_round_trips() {
-        // local_storage_clear_response = 17.
-        let msg = build(17, Vec::new());
+        // local_storage_clear_response = (6, 5).
+        let msg = build(6, 5, Vec::new());
         let bytes = msg.encode();
-        // [SCALE compact-len 0x0c][p][:][1][u8 17] = 4 + 1 = 5 bytes total
-        assert_eq!(bytes.len(), 5);
+        // [SCALE compact-len 0x0c][p][:][1][u8 6][u8 5] = 4 + 2 = 6 bytes total
+        assert_eq!(bytes.len(), 6);
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
         assert_eq!(decoded, msg);
     }
@@ -314,7 +339,8 @@ mod tests {
         let msg = ProtocolMessage {
             request_id: long_id,
             payload: Payload {
-                id: 22,
+                trait_id: 1,
+                method_id: 4,
                 value: vec![0x00, 0xab, 0xcd],
             },
         };
@@ -322,15 +348,30 @@ mod tests {
         assert_eq!(decoded, msg);
     }
 
-    /// Truncated frames must surface a `CodecError`, not panic.
+    /// Truncated frames must surface a `CodecError`, not panic, and the
+    /// trait-byte and method-byte truncations report distinct errors.
     #[test]
     fn truncated_frames_error_cleanly() {
         // Empty buffer.
         assert!(ProtocolMessage::decode(&mut &[][..]).is_err());
-        // Just the requestId, no discriminant byte.
+        // Just the requestId, no trait byte.
         let mut only_request_id = Vec::new();
         "p:1".to_string().encode_to(&mut only_request_id);
-        assert!(ProtocolMessage::decode(&mut &only_request_id[..]).is_err());
+        let err = ProtocolMessage::decode(&mut &only_request_id[..])
+            .expect_err("missing trait byte must error");
+        assert!(
+            format!("{err}").contains("trait discriminant"),
+            "unexpected error: {err}"
+        );
+        // RequestId plus the trait byte, no method byte.
+        let mut missing_method = only_request_id.clone();
+        missing_method.push(0);
+        let err = ProtocolMessage::decode(&mut &missing_method[..])
+            .expect_err("missing method byte must error");
+        assert!(
+            format!("{err}").contains("method discriminant"),
+            "unexpected error: {err}"
+        );
         // RequestId header claims length=200 but the buffer is far shorter.
         let truncated_str_header = [200u8 << 2, 0x61, 0x62, 0x63];
         assert!(ProtocolMessage::decode(&mut &truncated_str_header[..]).is_err());
@@ -344,12 +385,13 @@ mod tests {
         let msg = ProtocolMessage {
             request_id: String::new(),
             payload: Payload {
-                id: 22,
+                trait_id: 1,
+                method_id: 4,
                 value: vec![0x00, 0x01, 0x02],
             },
         };
         let bytes = msg.encode();
-        // [SCALE compact-len 0 = 0x00][discriminant][payload]
+        // [SCALE compact-len 0 = 0x00][trait][method][payload]
         assert_eq!(bytes[0], 0x00);
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
         assert_eq!(decoded, msg);
@@ -361,7 +403,8 @@ mod tests {
         let msg = ProtocolMessage {
             request_id: "héllo-世界-🦀".to_string(),
             payload: Payload {
-                id: 22,
+                trait_id: 1,
+                method_id: 4,
                 value: vec![0x00, 0x01],
             },
         };
@@ -374,7 +417,7 @@ mod tests {
     #[test]
     fn large_payload_round_trips() {
         let big = vec![0xa5u8; 100 * 1024];
-        let msg = build(22, big);
+        let msg = build(1, 4, big);
         let decoded = ProtocolMessage::decode(&mut &msg.encode()[..]).expect("decode");
         assert_eq!(decoded, msg);
     }

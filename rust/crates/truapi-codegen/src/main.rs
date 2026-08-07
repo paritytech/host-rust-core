@@ -39,7 +39,7 @@ struct Cli {
     client_version: Option<ProtocolVersionArg>,
 
     /// Wire codec version for generated handshake calls.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 2)]
     codec_version: u8,
 
     /// Output directory for generated playground metadata (optional).

@@ -4,10 +4,12 @@
 //! envelopes: the `Vn` enums (with SCALE codec indices) plus their
 //! `Versioned`/`IntoLatest`/`FromLatest` impls from `truapi::versioned`.
 //!
-//! The `wire` attribute marks a trait method with
-//! its wire-protocol discriminant ids. The ids appear on the wire as the u8 discriminant in the
-//! `Struct { request_id: str, payload: Enum(<methods>) }` envelope; method
-//! ordering becomes part of the wire protocol.
+//! The `wire` attribute marks a trait method with its wire-protocol
+//! discriminant ids, and the `wire_trait` attribute marks an API trait with
+//! its trait discriminant. Together they form the two-byte
+//! `(trait, method)` discriminant pair in the
+//! `Struct { request_id: str, payload: (trait, method, bytes) }` envelope;
+//! trait and method ordering become part of the wire protocol.
 //!
 //! At compile time the macro validates that every id literal is a `u8`. It emits
 //! a hidden doc line so the value survives into rustdoc JSON, where
@@ -25,7 +27,7 @@ use proc_macro2::Literal;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    Attribute, Ident, ItemFn, LitInt, Token, TraitItemFn, Type, Visibility, braced,
+    Attribute, Ident, ItemFn, ItemTrait, LitInt, Token, TraitItemFn, Type, Visibility, braced,
     parse_macro_input,
 };
 
@@ -131,6 +133,59 @@ pub fn wire(args: TokenStream, item: TokenStream) -> TokenStream {
     )
     .to_compile_error()
     .into()
+}
+
+/// Arguments to `#[wire_trait(id = N)]`.
+struct WireTraitArgs {
+    id: u8,
+}
+
+impl Parse for WireTraitArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let key: Ident = input.parse()?;
+        if key != "id" {
+            return Err(syn::Error::new(key.span(), "expected `id = N`"));
+        }
+        input.parse::<Token![=]>()?;
+        let lit: LitInt = input.parse()?;
+        let id = lit.base10_parse().map_err(|err| {
+            syn::Error::new(lit.span(), format!("wire trait id must fit in a u8: {err}"))
+        })?;
+        if !input.is_empty() {
+            return Err(input.error("expected a single `id = N` argument"));
+        }
+        Ok(Self { id })
+    }
+}
+
+/// Mark a TrUAPI service trait with its wire-protocol trait discriminant.
+///
+/// ```ignore
+/// #[wire_trait(id = 0)]
+/// pub trait System: Send + Sync { ... }
+/// ```
+///
+/// The trait id is the first byte of the `(trait, method)` discriminant pair
+/// every frame of the trait's methods carries on the wire. Expands to the
+/// original trait plus a hidden `@wire_trait_id=N` doc tag that
+/// `truapi-codegen` extracts from rustdoc JSON.
+#[proc_macro_attribute]
+pub fn wire_trait(args: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args as WireTraitArgs);
+    let tag = format!("@wire_trait_id={}", args.id);
+
+    match syn::parse::<ItemTrait>(item) {
+        Ok(mut item_trait) => {
+            item_trait.attrs.push(syn::parse_quote!(#[doc = #tag]));
+            quote!(#item_trait).into()
+        }
+        Err(_) => syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[wire_trait] can only be applied to traits",
+        )
+        .to_compile_error()
+        .into(),
+    }
 }
 
 fn wire_tags(args: &WireArgs) -> Vec<String> {

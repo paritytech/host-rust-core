@@ -7,10 +7,11 @@ use crate::versioned::chat::{
     HostChatRegisterBotRequest, HostChatRegisterBotResponse,
     ProductChatCustomMessageRenderSubscribeItem, ProductChatCustomMessageRenderSubscribeRequest,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Chat room, bot, and message APIs.
+#[wire_trait(id = 3)]
 #[crate::async_trait]
 pub trait Chat: Send + Sync {
     /// Create a chat room.
@@ -24,7 +25,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "createRoom failed:", result);
     /// console.log("room created:", result.value);
     /// ```
-    #[wire(request_id = 38)]
+    #[wire(request_id = 0)]
     async fn create_room(
         &self,
         _cx: &CallContext,
@@ -44,7 +45,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "registerBot failed:", result);
     /// console.log("bot registered:", result.value);
     /// ```
-    #[wire(request_id = 40)]
+    #[wire(request_id = 2)]
     async fn register_bot(
         &self,
         _cx: &CallContext,
@@ -63,7 +64,7 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("room list received:", item);
     /// ```
-    #[wire(start_id = 42)]
+    #[wire(start_id = 4)]
     async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
         Subscription::empty()
     }
@@ -78,7 +79,7 @@ pub trait Chat: Send + Sync {
     /// assert(result.isOk(), "postMessage failed:", result);
     /// console.log("message posted:", result.value);
     /// ```
-    #[wire(request_id = 46)]
+    #[wire(request_id = 8)]
     async fn post_message(
         &self,
         _cx: &CallContext,
@@ -97,7 +98,7 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("action received:", item);
     /// ```
-    #[wire(start_id = 48)]
+    #[wire(start_id = 10)]
     async fn action_subscribe(
         &self,
         _cx: &CallContext,
@@ -125,7 +126,7 @@ pub trait Chat: Send + Sync {
     /// );
     /// console.log("render request received:", item);
     /// ```
-    #[wire(start_id = 52)]
+    #[wire(start_id = 14)]
     async fn custom_message_render_subscribe(
         &self,
         _cx: &CallContext,

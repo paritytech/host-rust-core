@@ -1,6 +1,6 @@
 //! Cross-language parity check: the Rust `WIRE_TABLE` and the TS
-//! `wire-table.ts` must list the exact same `(method, request_id, response_id)`
-//! tuples in the same order. A drift here means a product built against one
+//! `wire-table.ts` must list the exact same
+//! `(method, trait_id, request_id, response_id)` tuples in the same order. A drift here means a product built against one
 //! side will fail to decode frames produced by the other.
 //!
 //! Both files are auto-generated text artifacts of `truapi-codegen`; the
@@ -20,6 +20,7 @@ const RUST_TABLE: &str = include_str!("../src/generated/wire_table.rs");
 #[derive(Debug, PartialEq, Eq)]
 struct Row {
     method: String,
+    trait_id: u8,
     request_or_start: u8,
     response_or_receive: u8,
     /// Subscription `_stop` / `_interrupt` ids; `None` for request methods.
@@ -59,6 +60,7 @@ fn parse_rust(src: &str) -> Vec<Row> {
             continue;
         }
         let method = rest[..colon].trim().to_ascii_lowercase();
+        let mut trait_id = None;
         let mut request_or_start = None;
         let mut response_or_receive = None;
         let mut stop = None;
@@ -67,6 +69,9 @@ fn parse_rust(src: &str) -> Vec<Row> {
             let t = inner.trim();
             if t.starts_with("};") {
                 break;
+            }
+            if let Some(rest) = t.strip_prefix("trait_id: ") {
+                trait_id = Some(parse_id(rest, &method));
             }
             if let Some(rest) = t
                 .strip_prefix("request_id: ")
@@ -89,7 +94,9 @@ fn parse_rust(src: &str) -> Vec<Row> {
         }
         if let (Some(rs), Some(rr)) = (request_or_start, response_or_receive) {
             out.push(Row {
-                method,
+                method: method.clone(),
+                trait_id: trait_id
+                    .unwrap_or_else(|| panic!("missing trait_id for `{method}` in Rust table")),
                 request_or_start: rs,
                 response_or_receive: rr,
                 stop,
@@ -116,6 +123,7 @@ fn parse_ts(src: &str) -> Vec<Row> {
             continue;
         };
         let method = rest[..name_end].to_ascii_lowercase();
+        let mut trait_id = None;
         let mut request_or_start = None;
         let mut response_or_receive = None;
         let mut stop = None;
@@ -125,6 +133,9 @@ fn parse_ts(src: &str) -> Vec<Row> {
             let t = inner.trim();
             if t.starts_with("start:") || t.contains("SubscriptionFrameIds") {
                 is_subscription = true;
+            }
+            if let Some(rest) = t.strip_prefix("trait: ") {
+                trait_id = Some(parse_id(rest, &method));
             }
             if let Some(rest) = t
                 .strip_prefix("request: ")
@@ -147,6 +158,9 @@ fn parse_ts(src: &str) -> Vec<Row> {
             if t.starts_with("} as const") || t == "}" {
                 if let (Some(rs), Some(rr)) = (request_or_start, response_or_receive) {
                     out.push(Row {
+                        trait_id: trait_id.unwrap_or_else(|| {
+                            panic!("missing trait id for `{method}` in TS table")
+                        }),
                         method,
                         request_or_start: rs,
                         response_or_receive: rr,

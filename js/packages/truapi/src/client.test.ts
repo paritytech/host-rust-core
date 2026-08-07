@@ -101,10 +101,11 @@ describe("generated client transport", () => {
         void client.account.getAccount(request);
 
         const expectedPayload = T.VersionedHostAccountGetRequest.enc({ tag: "V1", value: request });
-        const expectedFrame = new Uint8Array(str.enc("p:1").length + 1 + expectedPayload.length);
+        const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 22;
-        expectedFrame.set(expectedPayload, str.enc("p:1").length + 1);
+        expectedFrame[str.enc("p:1").length] = 1; // account trait
+        expectedFrame[str.enc("p:1").length + 1] = 4; // get_account request
+        expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
         expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
     });
@@ -118,12 +119,13 @@ describe("generated client transport", () => {
 
         const expectedPayload = T.VersionedHostHandshakeRequest.enc({
             tag: "V1",
-            value: { codecVersion: 1 },
+            value: { codecVersion: 2 },
         });
-        const expectedFrame = new Uint8Array(str.enc("p:1").length + 1 + expectedPayload.length);
+        const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 0;
-        expectedFrame.set(expectedPayload, str.enc("p:1").length + 1);
+        expectedFrame[str.enc("p:1").length] = 0; // system trait
+        expectedFrame[str.enc("p:1").length + 1] = 0; // handshake request
+        expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
         expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
     });
@@ -138,7 +140,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: "p:1",
                 payload: {
-                    id: W.SYSTEM_HANDSHAKE.response,
+                    traitId: W.SYSTEM_HANDSHAKE.trait,
+
+                    methodId: W.SYSTEM_HANDSHAKE.response,
                     value: handshakeResponsePayload({ success: true, value: undefined }),
                 },
             }),
@@ -163,7 +167,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: "p:1",
                 payload: {
-                    id: W.ACCOUNT_GET_ACCOUNT.response,
+                    traitId: W.ACCOUNT_GET_ACCOUNT.trait,
+
+                    methodId: W.ACCOUNT_GET_ACCOUNT.response,
                     value: accountGetResponsePayload({
                         success: false,
                         value: { tag: "Domain", value: reason },
@@ -185,12 +191,12 @@ describe("generated client transport", () => {
 
         const requestPayload = T.VersionedHostHandshakeRequest.enc({
             tag: "V1",
-            value: { codecVersion: 1 },
+            value: { codecVersion: 2 },
         });
         const requestFrame = unwrap(
             encodeWireMessage({
                 requestId: "h:1",
-                payload: { id: W.SYSTEM_HANDSHAKE.request, value: requestPayload },
+                payload: { traitId: W.SYSTEM_HANDSHAKE.trait, methodId: W.SYSTEM_HANDSHAKE.request, value: requestPayload },
             }),
             "encode inbound handshake_request",
         );
@@ -200,7 +206,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: "h:1",
                 payload: {
-                    id: W.SYSTEM_HANDSHAKE.response,
+                    traitId: W.SYSTEM_HANDSHAKE.trait,
+
+                    methodId: W.SYSTEM_HANDSHAKE.response,
                     value: handshakeResponsePayload({ success: true, value: undefined }),
                 },
             }),
@@ -223,7 +231,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
+                    traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
                     value: T.VersionedHostAccountConnectionStatusSubscribeItem.enc({
                         tag: "V1",
                         value: "Connected",
@@ -251,7 +261,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt,
+                    traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt,
                     value: _void.enc(undefined),
                 },
             }),
@@ -283,7 +295,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.PAYMENT_BALANCE_SUBSCRIBE.interrupt,
+                    traitId: W.PAYMENT_BALANCE_SUBSCRIBE.trait,
+
+                    methodId: W.PAYMENT_BALANCE_SUBSCRIBE.interrupt,
                     value: versionedV1(CallError(T.VersionedHostPaymentBalanceSubscribeError)).enc({
                         tag: "V1",
                         value: callError,
@@ -320,7 +334,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.COIN_PAYMENT_REBALANCE_PURSE.interrupt,
+                    traitId: W.COIN_PAYMENT_REBALANCE_PURSE.trait,
+
+                    methodId: W.COIN_PAYMENT_REBALANCE_PURSE.interrupt,
                     value: versionedV1(
                         CallError(T.VersionedHostCoinPaymentRebalancePurseError),
                     ).enc({ tag: "V1", value: callError }),
@@ -353,7 +369,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
+                    traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
                     value: _void.enc(undefined),
                 },
             }),
@@ -371,7 +389,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.stop,
+                    traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.stop,
                     value: _void.enc(undefined),
                 },
             }),
@@ -383,7 +403,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
+                    traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
                     value: T.VersionedHostAccountConnectionStatusSubscribeItem.enc({
                         tag: "V1",
                         value: "Connected",
@@ -414,7 +436,9 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: sub.subscriptionId,
                 payload: {
-                    id: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.stop,
+                    traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+
+                    methodId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.stop,
                     value: _void.enc(undefined),
                 },
             }),

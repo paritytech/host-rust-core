@@ -12,10 +12,11 @@ use crate::versioned::signing::{
     HostSignRawResponse, HostSignRawWithLegacyAccountError, HostSignRawWithLegacyAccountRequest,
     HostSignRawWithLegacyAccountResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Signing operations.
+#[wire_trait(id = 12)]
 #[crate::async_trait]
 pub trait Signing: Send + Sync {
     /// Construct a signed transaction for a product account.
@@ -37,7 +38,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "createTransaction failed:", result);
     /// console.log("transaction created:", result.value);
     /// ```
-    #[wire(request_id = 30)]
+    #[wire(request_id = 0)]
     async fn create_transaction(
         &self,
         _cx: &CallContext,
@@ -76,7 +77,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
     /// console.log("transaction created:", result.value);
     /// ```
-    #[wire(request_id = 32)]
+    #[wire(request_id = 2)]
     async fn create_transaction_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -104,7 +105,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRawWithLegacyAccount failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 34)]
+    #[wire(request_id = 4)]
     async fn sign_raw_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -146,7 +147,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayloadWithLegacyAccount failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 36)]
+    #[wire(request_id = 6)]
     async fn sign_payload_with_legacy_account(
         &self,
         _cx: &CallContext,
@@ -173,7 +174,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signRaw failed:", result);
     /// console.log("raw bytes signed:", result.value);
     /// ```
-    #[wire(request_id = 114)]
+    #[wire(request_id = 8)]
     async fn sign_raw(
         &self,
         _cx: &CallContext,
@@ -206,7 +207,7 @@ pub trait Signing: Send + Sync {
     /// assert(result.isOk(), "signPayload failed:", result);
     /// console.log("payload signed:", result.value);
     /// ```
-    #[wire(request_id = 116)]
+    #[wire(request_id = 10)]
     async fn sign_payload(
         &self,
         _cx: &CallContext,

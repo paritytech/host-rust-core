@@ -9,9 +9,10 @@
 //!   payload   = account_get_account_request,
 //!               inner = HostAccountGetRequest::V1(("foo", 0u32))
 //!
-//! On the wire (14 bytes):
+//! On the wire (15 bytes):
 //!   [0c 70 3a 31]                      requestId = compact-len(3) + "p:1"
-//!   [16]                               discriminant 22 = account_get_account_request
+//!   [01]                               trait discriminant 1 = account
+//!   [04]                               method discriminant 4 = get_account request
 //!   [00]                               versioned wrapper variant V1
 //!   [0c 66 6f 6f]                      "foo"
 //!   [00 00 00 00]                      u32 = 0
@@ -38,7 +39,8 @@ fn golden_account_get_frame_decodes_to_expected_message() {
     let expected = ProtocolMessage {
         request_id: "p:1".to_string(),
         payload: Payload {
-            id: wire_table::ACCOUNT_GET_ACCOUNT.request_id,
+            trait_id: wire_table::ACCOUNT_GET_ACCOUNT.trait_id,
+            method_id: wire_table::ACCOUNT_GET_ACCOUNT.request_id,
             value: expected_inner,
         },
     };

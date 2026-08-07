@@ -5,11 +5,12 @@ use crate::versioned::system::{
     HostHandshakeError, HostHandshakeRequest, HostHandshakeResponse, HostNavigateToError,
     HostNavigateToRequest, HostNavigateToResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
 /// and navigation.
+#[wire_trait(id = 0)]
 #[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.
@@ -26,7 +27,7 @@ pub trait System: Send + Sync {
         request: HostHandshakeRequest,
     ) -> Result<HostHandshakeResponse, CallError<HostHandshakeError>> {
         let HostHandshakeRequest::V1(version) = request;
-        if version.codec_version == 1 {
+        if version.codec_version == 2 {
             Ok(HostHandshakeResponse::V1)
         } else {
             Err(CallError::Domain(HostHandshakeError::V1(
@@ -65,7 +66,7 @@ pub trait System: Send + Sync {
     /// assert(result.isOk(), "navigateTo failed:", result);
     /// console.log("navigation succeeded");
     /// ```
-    #[wire(request_id = 6)]
+    #[wire(request_id = 4)]
     async fn navigate_to(
         &self,
         cx: &CallContext,
