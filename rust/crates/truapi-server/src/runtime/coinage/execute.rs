@@ -45,16 +45,19 @@ use crate::host_logic::coinage::types::{
     BlockHash, CoinAccountId, CoinSecret, DenominationExponent, ExtrinsicHash, OperationHandle,
     PurseId, RingLocation, Timestamp,
 };
-use crate::host_logic::coinage::unload_token::{FeeMode, TokenGrant, choose_fee_mode, resolve};
+use crate::host_logic::coinage::unload_token::{
+    FeeMode, PaidRingState, TokenGrant, choose_fee_mode, resolve,
+};
 use crate::runtime::coinage::bootstrap::CoinageLayer;
 use crate::runtime::coinage::call::{
-    CoinOutput, LoadRecyclerWithCoinArgs, RawEncoded, SplitArgs, TransferArgs,
-    UnloadRecyclerIntoCoinsArgs,
+    CoinOutput, LoadRecyclerWithCoinArgs, PayForUnloadFeeTokenArgs, RawEncoded, SplitArgs,
+    TransferArgs, UnloadRecyclerIntoCoinsArgs,
 };
 use crate::runtime::coinage::extension::{AsCoinageInfo, FreeTokenRing};
 use crate::runtime::coinage::extrinsic::{
-    CoinageCall, FundingOrigin, build_call, build_coin_origin_extrinsic,
-    build_external_asset_load_extrinsic, build_unsigned_extrinsic, inherited_implication,
+    CoinageCall, FundingOrigin, build_account_signed_extrinsic, build_call,
+    build_coin_origin_extrinsic, build_external_asset_load_extrinsic, build_unsigned_extrinsic,
+    inherited_implication,
 };
 use crate::runtime::coinage::plan::{
     Destination, PlannedOutput, PlannedTransaction, RescueGroup, SweepWork, TargetDestinations,
@@ -1200,6 +1203,18 @@ impl CoinageLayer {
     }
 }
 
+/// What one [`CoinageLayer::tick`] did, and when it wants waking again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TickOutcome {
+    /// Whether a maintenance sweep ran. False means nothing was due — which is
+    /// **not** evidence that nothing is at risk; see
+    /// [`CoinageLayer::begin_maintenance_sweep`].
+    pub swept: bool,
+    /// How long the host may wait before calling again without letting a deadline
+    /// pass. Advice about sufficient frequency, not a minimum gap.
+    pub next_tick_after: Duration,
+}
+
 /// Autonomous lifecycle maintenance (§6.4, §8.7).
 ///
 /// Two sweeps that together form a closed loop: coin to entry as coins age, entry
@@ -1207,10 +1222,65 @@ impl CoinageLayer {
 /// indefinitely and keeps its value, so long as both run.
 ///
 /// The layer has no clock outside a live session, so neither sweep fires by itself.
-/// A host that embeds this layer has to tick it (truapi#308); a foreground-only
-/// trigger narrows the loss window without closing it, because the failure mode is
-/// precisely "the user did not open the app".
+/// A host that embeds this layer has to tick it through [`CoinageLayer::tick`]; the
+/// mechanism that does the ticking is truapi#356. A foreground-only trigger narrows
+/// the loss window without closing it, because the failure mode is precisely "the
+/// user did not open the app".
 impl CoinageLayer {
+    /// Do whatever is due at `now`, and say when the layer next wants waking.
+    ///
+    /// The core-side half of the invocation-lifecycle contract (truapi#356): the
+    /// core owns *what* runs and *how*, the host owns only *when*. A host that calls
+    /// this on a timer gets the whole of §6.4's autonomous behaviour; a host that
+    /// never calls it gets a wallet that silently loses value once a recycler ring
+    /// expires, which is the failure this exists to prevent.
+    ///
+    /// Two things happen, in this order:
+    ///
+    /// 1. **Balance streams are reprojected.** A jitter delay elapsing or a chain
+    ///    lock expiring moves a purse's spendable balance with no record changing,
+    ///    so nothing but the clock can surface it. Cheap and unconditional.
+    /// 2. **Both sweeps run if anything is due**, as one operation which this drives
+    ///    to completion before returning.
+    ///
+    /// # Scheduling needs no persisted state
+    ///
+    /// The sweeps decide what to do from the records themselves — a coin's age, an
+    /// entry's ring deadline — not from how long it has been since the last run. So
+    /// this is safe to call at any frequency: too often costs one pass over local
+    /// records and returns nothing, and a restart loses no scheduling state because
+    /// there is none to lose. The returned interval is advice about *sufficient*
+    /// frequency, not a minimum gap the host must respect.
+    ///
+    /// # What it cannot do
+    ///
+    /// It cannot wait. There is no sleep or timer inside the core, which is why
+    /// anything needing a second look — a paid unload token bought but not yet
+    /// onboarded — is reported rather than waited on, and picked up by the next tick.
+    pub async fn tick<S: CoreStorage + ?Sized>(
+        &mut self,
+        storage: &S,
+        chain: &ChainContext<'_>,
+        now: Timestamp,
+    ) -> Result<TickOutcome, CoinageError> {
+        self.refresh_subscriptions(now);
+
+        let started = self.begin_maintenance_sweep(None, now)?;
+        let swept = match started {
+            None => false,
+            Some(start) => {
+                self.drive_operation(storage, chain, start.handle, now)
+                    .await?;
+                true
+            }
+        };
+
+        Ok(TickOutcome {
+            swept,
+            next_tick_after: self.params().sweep_tick_interval(),
+        })
+    }
+
     /// Run both sweeps once across `purses`, or across every purse (§8.7).
     ///
     /// Returns `None` when there is nothing to do, so a scheduled tick that finds a
@@ -1941,13 +2011,6 @@ impl CoinageLayer {
             &at,
         )
         .await?;
-        // `can_fund_join` is false because this engine cannot yet *submit* a join:
-        // buying a token is a separate signed extrinsic that has to reach definite
-        // success before the token it buys can be proved, which makes it a
-        // transaction in the operation's program rather than something resolution
-        // can do inline. Until that lands, resolution is told not to plan joins, so
-        // it uses the slots the wallet already holds and otherwise reports
-        // `NoUnloadToken` — never a grant it cannot present.
         let paid = tokens::read_paid_ring_state(
             chain.rpc,
             chain.metadata,
@@ -1958,13 +2021,148 @@ impl CoinageLayer {
             &at,
         )
         .await?;
+        // Whether a join is affordable is not readable: the pallet prices it from a
+        // weight. A dry run is the only exact answer, and it costs one round trip
+        // that is only spent when the free allowance is already exhausted.
+        let paid = if paid.slots.iter().any(|slot| slot.is_joinable()) {
+            let fundable = self.paid_join_is_fundable(chain, &paid).await?;
+            paid.with_fundable_joins(fundable)
+        } else {
+            paid
+        };
 
         let plan = resolve(needed, &free, &paid, self.params(), self.constants())?;
-        debug_assert!(
-            plan.joins.is_empty(),
-            "resolution must not plan a join while joins cannot be submitted"
-        );
+
+        // Every join must have *definitely* succeeded before the token it buys can
+        // be presented, so they are submitted here, ahead of the operation's own
+        // transactions, and awaited one at a time.
+        for slot in &plan.joins {
+            self.buy_paid_token(chain, paid.period, *slot).await?;
+        }
+
         Ok(plan.grants)
+    }
+
+    /// Whether the fee account can pay to join the paid ring, as a dry run says.
+    ///
+    /// Dry-running the real extrinsic rather than comparing balances to a guess:
+    /// the pallet computes the fee as `WeightToFee(coin_lifecycle_weight())`, which
+    /// is neither a published constant nor a runtime API, so there is no number to
+    /// compare against. A rejection is taken as "cannot fund" rather than raised,
+    /// because the caller's alternative — reporting `NoUnloadToken` — is the same
+    /// answer either way, and an unfunded fee account is an ordinary state.
+    async fn paid_join_is_fundable(
+        &self,
+        chain: &ChainContext<'_>,
+        paid: &PaidRingState,
+    ) -> Result<bool, CoinageError> {
+        let Some(slot) = paid.slots.iter().find(|slot| slot.is_joinable()) else {
+            return Ok(false);
+        };
+
+        let extrinsic = self
+            .assemble_paid_join(chain, paid.period, slot.slot)
+            .await?;
+        Ok(submit::dry_run(chain.rpc, &extrinsic).await.is_ok())
+    }
+
+    /// Build the extrinsic that registers one paid-token slot's key.
+    async fn assemble_paid_join(
+        &self,
+        chain: &ChainContext<'_>,
+        period: u32,
+        slot: u32,
+    ) -> Result<Vec<u8>, CoinageError> {
+        let (state, _anchor) = submit::fetch_mortal_chain_state(chain.rpc)
+            .await
+            .map_err(|error| CoinageError::SubscriptionError(error.to_string()))?;
+        let keypair = derivation::fee_account_keypair(self.entropy())?;
+        let nonce = read_account_nonce(chain.rpc, self.fee_account()).await?;
+
+        let member_key = derivation::paid_token_member_key(self.entropy(), period, slot)?;
+        // The proof binds the key to whoever is joining, which is the fee account:
+        // the pallet checks this signature in the call itself, against the origin.
+        let ownership =
+            proof::paid_token_ownership_proof(self.entropy(), period, slot, self.fee_account())?;
+        let args = PayForUnloadFeeTokenArgs::new(member_key, ownership);
+        let call = build_call(
+            chain.metadata,
+            CoinageCall::PayForRecyclerUnloadFeeTokenWithNative,
+            &args,
+        )?;
+
+        build_account_signed_extrinsic(chain.metadata, &state, &call, &keypair, nonce)
+    }
+
+    /// Buy one paid unload token, and refuse to proceed until it is provable.
+    ///
+    /// # Why this is not a transaction in the operation's program
+    ///
+    /// Every other submission this layer makes gets a write-ahead log entry,
+    /// because it moves records whose local state has to be reconciled if the
+    /// process dies mid-flight. A join moves no records: it publishes a key derived
+    /// deterministically from the wallet's entropy, and the chain's own
+    /// `PaidUnloadTokenMembers` is the durable record of it. After a crash,
+    /// `read_paid_ring_state` observes exactly what happened with no local
+    /// bookkeeping, so a log entry would describe state the log does not own.
+    ///
+    /// # Why a bought token may still not be usable
+    ///
+    /// Registration and onboarding are separate steps: the pallet records the
+    /// member at once, and the members pallet places it in a provable ring
+    /// afterwards. A ring-VRF proof needs the ring, so a slot in between is paid for
+    /// and unusable. The layer cannot wait — it has no clock and no sleep of its own
+    /// (truapi#356) — so it reports the state honestly and the caller retries. The
+    /// fee is spent either way, and retrying costs nothing further: the slot is
+    /// already registered, so resolution will find it rather than buy a second one.
+    async fn buy_paid_token(
+        &self,
+        chain: &ChainContext<'_>,
+        period: u32,
+        slot: u32,
+    ) -> Result<(), CoinageError> {
+        let extrinsic = self.assemble_paid_join(chain, period, slot).await?;
+        // Definite success only. An optimistic inclusion is not enough: a reorg
+        // that removed the join would leave the layer proving membership of a ring
+        // its key is not in, which reads as an invalid proof with nothing to say
+        // why.
+        match submit::submit(chain.rpc, chain.metadata, &extrinsic).await {
+            submit::TrackerOutcome::Included(submit::SubmissionVerdict::Succeeded {
+                finalized: true,
+                ..
+            }) => {}
+            submit::TrackerOutcome::Included(submit::SubmissionVerdict::DispatchFailed {
+                reason,
+                ..
+            }) => {
+                return Err(CoinageError::Internal(format!(
+                    "buying a paid unload token for period {period} slot {slot} was refused: \
+                     {reason}"
+                )));
+            }
+            // Included but not yet final, or unknown, or provably not included.
+            // None of these is a token the layer may present, and the fee account's
+            // own state is what a retry will read, so nothing is recorded here.
+            _ => return Err(CoinageError::NoUnloadToken),
+        }
+
+        // Re-read rather than assume: the pallet chose the period from its own
+        // clock at dispatch, and the members pallet chose the ring.
+        let at = chain
+            .rpc
+            .finalized_head()
+            .await
+            .map_err(|error| CoinageError::SubscriptionError(error.to_string()))?;
+        let collection = storage::paid_token_collection_id(period);
+        let member_key = derivation::paid_token_member_key(self.entropy(), period, slot)?;
+        if ring::find_ring_including(chain.rpc, chain.metadata, &collection, &member_key, &at)
+            .await?
+            .is_none()
+        {
+            return Err(CoinageError::NoUnloadToken);
+        }
+
+        Ok(())
     }
 
     /// Assemble the extrinsic for one planned transaction.
@@ -3845,6 +4043,82 @@ mod tests {
             age: age.0,
         }
         .encode()
+    }
+
+    // -- the tick entry point ------------------------------------------------
+
+    #[test]
+    fn a_tick_recycles_an_aging_coin_without_the_caller_naming_a_sweep() {
+        // The whole point of the entry point: a host that knows nothing about
+        // sweeps, ages or rings gets the layer's autonomous behaviour by calling one
+        // method on a timer.
+        let storage = MemStorage::default();
+        let mut layer = layer(&storage);
+        let old = fund_aged(&mut layer, PurseId::MAIN, 4, CoinAge(14));
+        let chain = FakeChain::default();
+        let rpc = chain.rpc();
+        let metadata = metadata();
+
+        let outcome = block_on(layer.tick(&storage, &context(&rpc, &metadata), NOW))
+            .expect("the tick succeeds");
+
+        assert!(outcome.swept, "an aging coin was due");
+        assert_eq!(chain.submission_count(), 1);
+        assert_eq!(
+            layer
+                .store()
+                .coin(PurseId::MAIN, old)
+                .expect("record kept")
+                .state,
+            CoinState::Spent
+        );
+    }
+
+    #[test]
+    fn a_tick_on_a_tidy_wallet_submits_nothing_and_still_advises_an_interval() {
+        // A quiet tick must be cheap, because the host is expected to call it
+        // regularly and most calls will find nothing to do.
+        let storage = MemStorage::default();
+        let mut layer = layer(&storage);
+        let chain = FakeChain::default();
+        let rpc = chain.rpc();
+        let metadata = metadata();
+
+        let outcome = block_on(layer.tick(&storage, &context(&rpc, &metadata), NOW))
+            .expect("the tick succeeds");
+
+        assert!(!outcome.swept, "nothing was due");
+        assert_eq!(chain.submission_count(), 0, "and nothing was submitted");
+        assert_eq!(
+            outcome.next_tick_after,
+            CoinageParameters::default().sweep_tick_interval(),
+            "a host still learns when to come back"
+        );
+    }
+
+    #[test]
+    fn ticking_repeatedly_is_harmless_because_scheduling_holds_no_state() {
+        // Called far more often than the advised interval, the second tick must find
+        // the work already done rather than redo it — which is what makes it safe
+        // for a host to tick on any schedule, and safe across a restart.
+        let storage = MemStorage::default();
+        let mut layer = layer(&storage);
+        fund_aged(&mut layer, PurseId::MAIN, 4, CoinAge(14));
+        let chain = FakeChain::default();
+        let rpc = chain.rpc();
+        let metadata = metadata();
+        let context = context(&rpc, &metadata);
+
+        let first = block_on(layer.tick(&storage, &context, NOW)).expect("ticks");
+        let second = block_on(layer.tick(&storage, &context, NOW)).expect("ticks again");
+
+        assert!(first.swept);
+        assert!(!second.swept, "the coin is already an entry");
+        assert_eq!(
+            chain.submission_count(),
+            1,
+            "the second tick spends no unload token and no fee"
+        );
     }
 
     // -- D4: the two sweeps --------------------------------------------------

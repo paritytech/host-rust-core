@@ -215,9 +215,13 @@ the empty impl, and it is no longer blocked — D3 built the seam it composes on
   driver does, a purse whose only pending change is a jitter delay elapsing will
   not report becoming spendable until the next mutation. Same root cause as the
   scheduling gap below.
-- **Scheduling.** The core has no clock outside a live session, so both sweeps
-  need the host to drive them. This is the general gap tracked as truapi#308,
-  and it is load-bearing for correctness here, not a nice-to-have.
+- **Nothing invokes the core cyclically.** Both sweeps and `refresh_subscriptions`
+  need to be called on a clock, and no platform surface provides one — there is no
+  timer, scheduler or tick trait in `truapi-platform`. The layer owns the
+  core-side half and the mechanism is tracked as truapi#356; statement-allowance
+  renewal (truapi#308) needs the same mechanism, for unrelated reasons, which is
+  what makes it platform work rather than this layer's. Load-bearing for
+  correctness here, not a nice-to-have.
 - **Store persistence is one blob** through `CoreStorageKey::CoinageState`. Fine
   for a testnet; will need revisiting when a purse holds thousands of records,
   since every mutation re-encodes everything.
@@ -386,9 +390,19 @@ not a golden mismatch.
 
 ## 7. What remains, and why it was not done
 
-Layer 1's *specified API* is complete. Layer 1 as a **running subsystem** is not:
-it has no observer, no scheduler, no caller, and no live validation. Four separate
-pieces, with four different reasons for being open.
+Layer 1's specified API is complete, and so is its autonomous behaviour on the core
+side: `CoinageLayer::tick` runs what is due and reports when it wants waking again.
+What is left is **one dependency and one gap**, plus validation:
+
+| Open | Kind |
+|---|---|
+| Something to call `tick` on a clock | Platform dependency — truapi#356, not this layer's to build |
+| Reactive observation (§6.1) | Genuine gap, sharing #356's ownership decision |
+| A caller for `CoinageLayer::initialize` | Not a gap — that is layer 2's boundary by definition |
+| Live validation of five `AsCoinage` variants | Verification, not implementation |
+
+The paid unload-token ring is complete: a wallet buys, proves and spends a paid
+token end to end.
 
 ### 7.1 Reactive observation (§6.1) — a gap in the plan, not in the spec
 
@@ -416,11 +430,32 @@ Two things have to be decided before it can be built, and neither is obvious:
 Until this lands, a host can drive the layer by calling `refresh_subscriptions` and
 `refresh_purse` on a timer — a pull-poll the spec does not want, but honest.
 
-### 7.2 Nothing constructs the layer — deliberate
+### 7.1a The tick has no caller — a platform dependency, not a gap here
 
-`CoinageLayer::initialize` has no caller outside the coinage module. That is the
-integration point, and it belongs with layer 2 / host wiring, which this plan
-defers. Building a caller now would be product surface nobody asked for.
+`CoinageLayer::tick(storage, chain, now)` is the core-side half of the
+invocation-lifecycle contract: it reprojects the balance streams, runs both sweeps if
+anything is due, drives that operation to completion, and returns how long the host
+may wait before calling again. Following truapi#308's rule — *core owns what and how,
+host owns only when*.
+
+Nothing calls it, because **no platform surface provides a timer**: `truapi-platform`
+has traits for storage, navigation, notifications, permissions, chain providers,
+confirmation and more, and none of them is about *when*. That mechanism is
+truapi#356, and statement-allowance renewal needs the identical thing, which is what
+makes it platform work rather than this layer's.
+
+Scheduling deliberately holds **no persisted state**. The sweeps decide what to do
+from the records themselves — a coin's age, an entry's ring deadline — not from how
+long it has been since the last run, so `tick` is safe at any frequency and a restart
+loses nothing. The returned interval is advice about sufficient frequency, not a
+minimum gap.
+
+### 7.2 Nothing constructs the layer — not a gap
+
+`CoinageLayer::initialize` has no caller outside the coinage module, and should not:
+it *is* the boundary between layer 1 and layer 2, so calling it is layer 2's job by
+definition. Listed here only because earlier revisions of this document wrongly
+counted it as missing work.
 
 ### 7.3 Paid unload tokens (§6.5) — unblocked; readable and provable, not yet buyable
 
@@ -455,24 +490,29 @@ proof against whichever ring the chain actually placed the key in, and encodes
 `AsUnloadTokenPaid`. A wallet whose slots are already in the ring can now spend a
 paid token end to end — which the previous state could not do at all.
 
-**What is not.** The layer cannot yet *buy* a token. `PayForUnloadFeeTokenArgs` and
-the `pay_for_recycler_unload_fee_token_with_native` call name exist, but nothing
-submits them, so `can_fund_join` is passed as false and resolution never plans a
-join. Three pieces remain, and they are one coherent increment:
+**Buying is built too.** `CoinageLayer::buy_paid_token` submits
+`pay_for_recycler_unload_fee_token_with_native` through
+`build_account_signed_extrinsic` — a third extrinsic shape, signed V4 with
+`AsCoinage(None)`, because the join takes `ensure_signed` and has no coinage origin
+to transmute. The fee account signs and pays. `can_fund_join` is answered by
+dry-running that exact extrinsic, since the pallet prices the join from a weight and
+publishes no constant to compare against.
 
-1. **A signed V4 builder for a plain `Signed` origin.** The join is not a coinage
-   origin at all — it carries `AsCoinage(None)` — so it needs neither
-   `build_coin_origin_extrinsic` nor the `InfallibleUnpaidSigned` path, but a third
-   shape close to `build_external_asset_load_extrinsic`.
-2. **Dry-run pricing, to answer `can_fund_join` exactly.** The pallet computes the
-   fee as `WeightToFee(coin_lifecycle_weight())`, which is neither a published
-   constant nor a runtime API, so a dry run is the only exact answer available.
-3. **A `TransactionKind::JoinPaidTokenRing` in the program.** This is the real work:
-   a join has to reach *definite* success before the token it buys can be presented,
-   which makes it a dependency-ordered transaction in the WAL — and that means
-   token resolution has to move from inside the submission loop (`resolve_tokens`)
-   to plan time, where dependencies are expressed. B2's ordering machinery already
-   does what is needed; the restructuring is what has not been done.
+Two design points worth keeping:
+
+- **A join gets no write-ahead log entry**, unlike every other submission. The WAL
+  exists to reconcile local records after a crash, and a join moves none: it
+  publishes a key derived deterministically from entropy, and the chain's
+  `PaidUnloadTokenMembers` is the durable record. After a restart
+  `read_paid_ring_state` observes exactly what happened, so a log entry would
+  describe state the log does not own.
+- **A bought token may not be immediately usable**, because registration and
+  onboarding are separate steps and a proof needs the ring. The layer cannot wait —
+  it has no sleep of its own (truapi#356) — so it reports that state and the caller
+  retries. Retrying costs nothing extra: the slot is already registered, so
+  resolution finds it rather than buying a second one. Only definite (finalized)
+  success counts, because a reorg that removed the join would leave the layer proving
+  membership of a ring its key is not in.
 
 ### 7.4 Live validation — environmental
 
@@ -484,13 +524,20 @@ wallet on top of that.
 
 ### Suggested order
 
-1. ~~§7.3~~ — done as far as reading and proving go; buying a token is the
-   remaining increment and is scoped in §7.3.
-2. §7.4 — read-only, needs only a testnet endpoint. Now also the cheapest way to
-   check the paid-token collection identifier against a live chain, which is one
-   `state_getStorage` against `PaidTokenCollectionsCreated`.
-3. §7.3's join increment — the V4 builder, dry-run pricing, and moving token
-   resolution to plan time so a join can be a dependency-ordered transaction.
-4. §7.1 — decide the ownership model first, then build it.
-5. §7.2 — with layer 2.
+1. ~~§7.3~~ — **done**, buying included.
+2. ~~§7.2~~ — **not a gap**; struck.
+3. **§7.4** — the endpoint is reachable and `coinage_chain_agreement` now runs
+   against it, confirming 25 facts including the paid-token collection identifier
+   resolving to a real `pallet-members` collection. What remains is
+   `coinage_live_validation`, which dry-runs all six `AsCoinage` origins and settles
+   the five no runtime has accepted. Cheapest remaining item, largest risk retired.
+4. **§7.1 and §7.1a together** — both hang off one ownership decision (actor loop
+   owning the layer versus `Arc<Mutex<…>>`), which is truapi#356's question 8. Deciding
+   it once unblocks the observer and the thing that calls `tick`.
+
+A note on process, since an earlier revision of this document got it wrong: §7.4 was
+recorded as blocked on "no chain access", which was never tested and turned out to be
+false. Before calling anything blocked, read `../individuality`'s pallet source and
+try the endpoint — the paid unload-token ring sat blocked for the whole project on a
+constant that was in a local file the entire time.
 

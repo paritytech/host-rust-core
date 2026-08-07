@@ -31,10 +31,14 @@ use std::time::Duration;
 
 use parity_scale_codec::Decode;
 
-use truapi_server::coinage::storage::{ChainCoin, coins_by_owner_key};
+use truapi_server::coinage::storage::{
+    ChainCoin, coins_by_owner_key, collections_key, paid_token_collection_id,
+    paid_token_collections_created_key,
+};
+use truapi_server::coinage::tokens::paid_period;
 use truapi_server::host_logic::coinage::chain_constants::next_people_paseo;
 use truapi_server::host_logic::coinage::derivation;
-use truapi_server::host_logic::coinage::types::{CoinAge, CoinIndex, PurseId};
+use truapi_server::host_logic::coinage::types::{CoinAge, CoinIndex, PurseId, Timestamp};
 use truapi_server::statement_allowance::extension::Metadata;
 use truapi_server::statement_allowance::fetch_metadata;
 use truapi_server::statement_allowance::rpc::RpcClient;
@@ -138,6 +142,29 @@ fn arg(name: &str) -> Option<String> {
     None
 }
 
+/// The chain's own clock, in milliseconds since the epoch.
+///
+/// Read from `Timestamp::Now` rather than taken from the local clock, because the
+/// period a paid token belongs to is decided by the runtime's notion of now. Local
+/// time would agree in practice and would be wrong in principle — and this check
+/// exists precisely to catch being wrong about the period.
+async fn chain_now(rpc: &RpcClient) -> Result<Timestamp, String> {
+    let key = [
+        sp_crypto_hashing::twox_128(b"Timestamp").as_slice(),
+        sp_crypto_hashing::twox_128(b"Now").as_slice(),
+    ]
+    .concat();
+    let raw = rpc
+        .get_storage(&key)
+        .await
+        .map_err(|error| format!("reading Timestamp::Now: {error}"))?
+        .ok_or_else(|| "Timestamp::Now is absent".to_string())?;
+    let millis =
+        u64::decode(&mut &raw[..]).map_err(|error| format!("decoding Timestamp::Now: {error}"))?;
+
+    Ok(Timestamp(millis))
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = arg("--url").unwrap_or_else(|| DEFAULT_URL.to_string());
@@ -213,6 +240,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reference.coin_failure_lock_period,
         constant::<u64>(&metadata, "CoinFailureLockPeriod").map(Duration::from_secs),
     );
+    report.check_constant(
+        "PaidUnloadTokenTimePeriod",
+        reference.paid_unload_token_period,
+        constant::<u32>(&metadata, "PaidUnloadTokenTimePeriod")
+            .map(|secs| Duration::from_secs(u64::from(secs))),
+    );
+    report.check_constant(
+        "PaidUnloadTokenRingExpirationTime",
+        reference.paid_unload_token_ring_expiration,
+        constant::<u32>(&metadata, "PaidUnloadTokenRingExpirationTime")
+            .map(|secs| Duration::from_secs(u64::from(secs))),
+    );
 
     match reference.validate() {
         Ok(()) => report.note(
@@ -249,7 +288,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // -- 4. derivation -----------------------------------------------------
+    // -- 4. the paid unload-token collection identifier --------------------
+    //
+    // The one fact in this layer that came out of pallet source rather than out
+    // of metadata, and the only way to confirm it is to derive the identifier and
+    // see whether the members pallet actually has a collection under it. A wrong
+    // prefix, a dropped `!` or the wrong endianness all produce the same silent
+    // symptom — an absent key, read as "not a member" — so this check is the
+    // difference between believing the fallback works and knowing it does.
+    println!("\npaid unload-token ring (identifier derived from pallet source)");
+    match chain_now(&rpc).await {
+        Err(error) => report.fail("paid-token period", error),
+        Ok(now) => match paid_period(now, &reference) {
+            Err(error) => report.fail("paid-token period", error),
+            Ok(period) => {
+                report.note("paid-token period", format!("period {period} at {now:?}"));
+
+                let created = rpc
+                    .get_storage(&paid_token_collections_created_key(period))
+                    .await?;
+                match created {
+                    Some(_) => report.note(
+                        "PaidTokenCollectionsCreated",
+                        format!("period {period} is created (big-endian key agrees)"),
+                    ),
+                    None => report.skip(
+                        "PaidTokenCollectionsCreated",
+                        "absent — either the pallet has not created this period yet, or the \
+                         big-endian period key is wrong",
+                    ),
+                }
+
+                // The decisive one: pallet-members stores a collection under
+                // exactly this 32-byte identifier, so a hit proves the whole
+                // derivation, not just its prefix.
+                let collection = paid_token_collection_id(period);
+                match rpc.get_storage(&collections_key(&collection)).await? {
+                    Some(_) => report.note(
+                        "Members.Collections[paid]",
+                        format!("0x{} resolves to a collection", hex::encode(collection)),
+                    ),
+                    None => report.fail(
+                        "Members.Collections[paid]",
+                        format!(
+                            "no collection at 0x{} — the identifier this layer derives is not \
+                             the one the pallet uses",
+                            hex::encode(collection)
+                        ),
+                    ),
+                }
+            }
+        },
+    }
+
+    // -- 5. derivation -----------------------------------------------------
     println!("\nderivation (//coinage//coin//<purse>//<page>//<index>)");
     match std::env::var("COINAGE_ENTROPY") {
         Err(_) => report.skip(

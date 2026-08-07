@@ -41,7 +41,7 @@
 use parity_scale_codec::Encode;
 use schnorrkel::Keypair;
 
-use super::extension::{AS_COINAGE, AsCoinageInfo};
+use super::extension::{AS_COINAGE, AsCoinageInfo, encode_absent_extra};
 use crate::host_logic::coinage::error::CoinageError;
 use crate::host_logic::coinage::types::CoinAccountId;
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
@@ -419,6 +419,61 @@ pub fn build_external_asset_load_extrinsic(
     Ok(body.encode())
 }
 
+/// Assemble a signed V4 extrinsic whose origin is an ordinary account.
+///
+/// The third extrinsic shape this layer builds, and the only one that declares no
+/// coinage origin at all: `pay_for_recycler_unload_fee_token_with_native` takes
+/// `ensure_signed`, so `AsCoinage` carries `None` and there is nothing for the
+/// extension to transmute. V4 rather than General v5 for the same reason the
+/// external-asset load is V4 — a conventional signed origin.
+///
+/// Signs with `keypair` directly, so the account the signature names is the one
+/// that pays. The layer uses its fee account here: the join's fee is a layer cost
+/// like any unload fee, and putting it on a coin would spend coinage value to buy
+/// the right to move coinage value.
+pub fn build_account_signed_extrinsic(
+    metadata: &Metadata,
+    state: &ChainState,
+    call_data: &[u8],
+    keypair: &Keypair,
+    nonce: u32,
+) -> Result<Vec<u8>, CoinageError> {
+    let mut state = *state;
+    state.nonce = nonce;
+
+    let overrides = vec![(slot_of(metadata, AS_COINAGE)?, encode_absent_extra())];
+    let extras = extras_with(metadata, &state, &overrides);
+    let implicits = metadata.encode_signed_extensions(&state);
+
+    // V4's signer payload is call, then every extra, then every implicit — a
+    // different order from the body, and hashed once it grows past 256 bytes.
+    let mut signer_payload = call_data.to_vec();
+    for extra in &extras {
+        signer_payload.extend_from_slice(extra);
+    }
+    for extension in &implicits {
+        signer_payload.extend_from_slice(&extension.additional_signed);
+    }
+    if signer_payload.len() > 256 {
+        signer_payload = blake2b256(&signer_payload).to_vec();
+    }
+
+    let signature = keypair
+        .sign_simple(SR25519_SIGNING_CONTEXT, &signer_payload)
+        .to_bytes();
+
+    let mut body = vec![V4_SIGNED, MULTI_ADDRESS_ID];
+    body.extend_from_slice(&keypair.public.to_bytes());
+    body.push(MULTI_SIGNATURE_SR25519);
+    body.extend_from_slice(&signature);
+    for extra in &extras {
+        body.extend_from_slice(extra);
+    }
+    body.extend_from_slice(call_data);
+
+    Ok(body.encode())
+}
+
 #[cfg(test)]
 mod tests {
     use parity_scale_codec::CompactLen;
@@ -776,6 +831,93 @@ mod tests {
         let (_, one) = embedded_signature(&metadata, &state(), &first, &coinage_extra);
         let (_, two) = embedded_signature(&metadata, &state(), &second, &coinage_extra);
         assert_ne!(one, two, "each coin signs as itself");
+    }
+
+    #[test]
+    fn an_account_signed_extrinsic_declares_no_coinage_origin_and_verifies() {
+        // The paid-token join is the one call this layer makes with a conventional
+        // signed origin, so `AsCoinage` must carry `None`. Encoding `Some(AsCoin)`
+        // here would have the extension try to transmute the fee account into a
+        // coin origin and reject the extrinsic with nothing useful to say.
+        use parity_scale_codec::{Compact, Decode};
+
+        let metadata = metadata();
+        let keypair = coin_keypair(0);
+        let call = build_call(
+            &metadata,
+            CoinageCall::PayForRecyclerUnloadFeeTokenWithNative,
+            &crate::runtime::coinage::call::PayForUnloadFeeTokenArgs::new(
+                [7u8; 32],
+                crate::runtime::coinage::call::RawEncoded(vec![3u8; 64]),
+            ),
+        )
+        .expect("resolves");
+
+        let extrinsic = build_account_signed_extrinsic(&metadata, &state(), &call, &keypair, 5)
+            .expect("assembles");
+
+        // Strip the outer length prefix `encode()` added.
+        let mut cursor = &extrinsic[..];
+        let Compact(len) = Compact::<u32>::decode(&mut cursor).expect("length prefix");
+        assert_eq!(len as usize, cursor.len());
+
+        assert_eq!(cursor[0], 0x84, "signed extrinsic V4");
+        assert_eq!(cursor[1], 0x00, "MultiAddress::Id");
+        assert_eq!(
+            &cursor[2..34],
+            &keypair.public.to_bytes(),
+            "the fee account"
+        );
+        assert_eq!(cursor[34], MULTI_SIGNATURE_SR25519);
+
+        let signature: [u8; 64] = cursor[35..99].try_into().expect("64-byte signature");
+        let extras_and_call = &cursor[99..];
+        assert!(
+            extras_and_call.ends_with(&call),
+            "the call is last in a V4 body"
+        );
+
+        // The absent coinage extra is one zero byte, and it must be present among
+        // the extras rather than omitted.
+        let extras = extras_with(
+            &metadata,
+            &ChainState {
+                nonce: 5,
+                ..state()
+            },
+            &[(
+                slot_of(&metadata, AS_COINAGE).expect("slot"),
+                encode_absent_extra(),
+            )],
+        );
+        let encoded_extras: Vec<u8> = extras.concat();
+        assert_eq!(
+            &extras_and_call[..encoded_extras.len()],
+            &encoded_extras[..]
+        );
+
+        // And the signature verifies over V4's own payload ordering.
+        let mut payload = call.clone();
+        payload.extend_from_slice(&encoded_extras);
+        for extension in metadata.encode_signed_extensions(&ChainState {
+            nonce: 5,
+            ..state()
+        }) {
+            payload.extend_from_slice(&extension.additional_signed);
+        }
+        let signed = if payload.len() > 256 {
+            blake2b256(&payload).to_vec()
+        } else {
+            payload
+        };
+        let public = schnorrkel::PublicKey::from_bytes(&keypair.public.to_bytes()).expect("key");
+        let parsed = schnorrkel::Signature::from_bytes(&signature).expect("signature");
+        assert!(
+            public
+                .verify_simple(SR25519_SIGNING_CONTEXT, &signed, &parsed)
+                .is_ok(),
+            "the runtime will check exactly this"
+        );
     }
 
     #[test]

@@ -87,6 +87,16 @@ impl CoinageParameters {
     pub fn clears_anonymity_floor(&self, ring_member_count: u32) -> bool {
         ring_member_count >= self.minimum_anonymous_ring_size
     }
+
+    /// How often the layer wants ticking to keep both sweeps timely.
+    ///
+    /// The stricter of the two sweep intervals, because one tick runs both and the
+    /// tighter deadline is the one that governs. Reported to the host rather than
+    /// enforced: the core has no clock of its own (truapi#356).
+    pub fn sweep_tick_interval(&self) -> Duration {
+        self.recycling_sweep_interval
+            .min(self.ring_expiration_sweep_interval)
+    }
 }
 
 impl Default for CoinageParameters {
