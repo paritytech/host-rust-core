@@ -105,8 +105,7 @@ type FollowSetup = Shared<BoxFuture<'static, Result<String, RuntimeFailure>>>;
 /// Shared start task published synchronously when a local follow stream is
 /// created. Follow-bound operations await it so they cannot overtake setup.
 type LocalFollowStart = Shared<BoxFuture<'static, Result<(), RuntimeFailure>>>;
-type FollowStartRegistry =
-    Arc<ParkingMutex<HashMap<(Vec<u8>, String), LocalFollowStart>>>;
+type FollowStartRegistry = Arc<ParkingMutex<HashMap<(Vec<u8>, String), LocalFollowStart>>>;
 
 /// Shared, single-flight provider connect keyed by genesis hash. Concurrent
 /// first connections for the same chain await one in-flight `connect` rather
