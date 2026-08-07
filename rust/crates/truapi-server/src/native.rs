@@ -1173,7 +1173,7 @@ impl NativeTrUApiHostRuntime {
                 .insert(product.product_id, Arc::downgrade(&execution))
                 .and_then(|previous| previous.upgrade());
             if let Some(previous) = previous {
-                previous.close();
+                previous.shutdown();
             }
         }
 
@@ -1404,8 +1404,12 @@ impl NativeProductExecution {
         }
     }
 
-    /// Permanently close this executable and all of its connection state.
-    pub fn close(&self) {
+    /// Permanently shut down this executable and all of its connection state.
+    ///
+    /// This is named `shutdown` rather than `close` because UniFFI Kotlin
+    /// objects already implement `AutoCloseable.close()` for releasing the
+    /// foreign object handle.
+    pub fn shutdown(&self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -1469,7 +1473,7 @@ impl NativeProductExecution {
 
 impl Drop for NativeProductExecution {
     fn drop(&mut self) {
-        self.close();
+        self.shutdown();
     }
 }
 

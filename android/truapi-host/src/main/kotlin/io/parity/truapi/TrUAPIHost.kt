@@ -68,14 +68,12 @@ enum class PairingDeeplinkScheme {
 
 /** Trusted kind of executable attached to a product connection. */
 enum class ProductExecutionKind {
-    APP,
-    WIDGET,
+    SPA,
     CHAT;
 
     internal fun toNative(): NativeProductExecutionKind =
         when (this) {
-            APP -> NativeProductExecutionKind.APP
-            WIDGET -> NativeProductExecutionKind.WIDGET
+            SPA -> NativeProductExecutionKind.SPA
             CHAT -> NativeProductExecutionKind.CHAT
         }
 }
@@ -92,7 +90,7 @@ enum class ProductExecutionKind {
  */
 data class RuntimeConfig(
     val productId: String,
-    val executionKind: ProductExecutionKind = ProductExecutionKind.APP,
+    val executionKind: ProductExecutionKind = ProductExecutionKind.SPA,
     val hostName: String,
     val hostIcon: String? = null,
     val hostVersion: String? = null,

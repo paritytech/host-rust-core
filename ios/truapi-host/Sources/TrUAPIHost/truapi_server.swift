@@ -2377,11 +2377,6 @@ public func FfiConverterTypeNativeCustomRendererSubscription_lower(_ value: Nati
 public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
 
     /**
-     * Permanently close this executable and all of its connection state.
-     */
-    func close()
-
-    /**
      * Notify this execution's chain adapter that a connection closed.
      */
     func notifyChainClosed(connectionId: UInt32)
@@ -2425,6 +2420,15 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
      * Update a product-scoped permission authorization.
      */
     func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: NativePermissionAuthorizationStatus) throws
+
+    /**
+     * Permanently shut down this executable and all of its connection state.
+     *
+     * This is named `shutdown` rather than `close` because UniFFI Kotlin
+     * objects already implement `AutoCloseable.close()` for releasing the
+     * foreign object handle.
+     */
+    func shutdown()
 
     /**
      * Start this execution's independently authenticated localhost bridge.
@@ -2491,15 +2495,6 @@ open class NativeProductExecution: NativeProductExecutionProtocol, @unchecked Se
 
 
 
-
-    /**
-     * Permanently close this executable and all of its connection state.
-     */
-open func close()  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativeproductexecution_close(self.uniffiClonePointer(),$0
-    )
-}
-}
 
     /**
      * Notify this execution's chain adapter that a connection closed.
@@ -2595,6 +2590,19 @@ open func setPermissionAuthorizationStatus(request: NativePermissionAuthorizatio
     uniffi_truapi_server_fn_method_nativeproductexecution_set_permission_authorization_status(self.uniffiClonePointer(),
         FfiConverterTypeNativePermissionAuthorizationRequest_lower(request),
         FfiConverterTypeNativePermissionAuthorizationStatus_lower(status),$0
+    )
+}
+}
+
+    /**
+     * Permanently shut down this executable and all of its connection state.
+     *
+     * This is named `shutdown` rather than `close` because UniFFI Kotlin
+     * objects already implement `AutoCloseable.close()` for releasing the
+     * foreign object handle.
+     */
+open func shutdown()  {try! rustCall() {
+    uniffi_truapi_server_fn_method_nativeproductexecution_shutdown(self.uniffiClonePointer(),$0
     )
 }
 }
@@ -11783,9 +11791,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativecustomrenderersubscription_cancel() != 51336) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_close() != 27515) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 23253) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -11811,6 +11816,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_set_permission_authorization_status() != 30085) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_shutdown() != 16650) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_start_ws_bridge() != 40752) {

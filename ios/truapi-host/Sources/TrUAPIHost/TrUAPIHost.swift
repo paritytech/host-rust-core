@@ -788,7 +788,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     }
 
     deinit {
-        inner.close()
+        inner.shutdown()
     }
 
     public func startWsBridge(bindPort: UInt16 = 0) throws -> WsBridgeEndpoint {
@@ -800,7 +800,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     }
 
     public func close() {
-        inner.close()
+        inner.shutdown()
     }
 
     public func publishChatAction(_ action: NativeChatAction) throws {
