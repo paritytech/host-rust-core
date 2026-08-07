@@ -192,7 +192,10 @@ impl PreencodedExtensions<'_> {
         self.supplied
             .iter()
             .find(|extension| extension.id == name)
-            .ok_or_else(|| TransactionExtensionsError::NotFound(name.to_string()))
+            .ok_or_else(|| TransactionExtensionsError::Other {
+                extension_name: name.to_string(),
+                error: "the caller supplied no bytes for this transaction extension".into(),
+            })
     }
 }
 
@@ -202,7 +205,8 @@ where
     VerifySignature<SubstrateConfig>: FrameTransactionExtension<R>,
 {
     fn contains_extension(&self, name: &str) -> bool {
-        name == "VerifyMultiSignature" || self.supplied.iter().any(|extension| extension.id == name)
+        name == <VerifySignature<SubstrateConfig> as FrameTransactionExtension<R>>::NAME
+            || self.supplied.iter().any(|extension| extension.id == name)
     }
 
     fn is_authorization_extension(&self, name: &str) -> bool {
@@ -219,7 +223,7 @@ where
         type_resolver: &R,
         out: &mut Vec<u8>,
     ) -> Result<(), TransactionExtensionsError> {
-        if name == "VerifyMultiSignature" {
+        if name == <VerifySignature<SubstrateConfig> as FrameTransactionExtension<R>>::NAME {
             return self
                 .verify_signature
                 .encode_value_to(type_id, type_resolver, out)
@@ -239,7 +243,7 @@ where
         type_resolver: &R,
         out: &mut Vec<u8>,
     ) -> Result<(), TransactionExtensionsError> {
-        if name == "VerifyMultiSignature" {
+        if name == <VerifySignature<SubstrateConfig> as FrameTransactionExtension<R>>::NAME {
             return self
                 .verify_signature
                 .encode_implicit_to(type_id, type_resolver, out)
