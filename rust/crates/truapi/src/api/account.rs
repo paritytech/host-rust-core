@@ -67,9 +67,8 @@ pub trait Account: Send + Sync {
     /// Retrieve the contextual alias for a context and ring.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["People"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [people] = chainInfo.value.chains;
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const PEOPLE_COLLECTION_ID =
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
@@ -77,7 +76,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.getAccountAlias({
     ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Left", value: 0 } },
     ///   ringLocation: {
-    ///     chainId: people.genesisHash,
+    ///     chainId: people.value.genesisHash,
     ///     junctions: [
     ///       { tag: "PalletInstance", value: 67 },
     ///       { tag: "CollectionId", value: PEOPLE_COLLECTION_ID },
@@ -99,9 +98,8 @@ pub trait Account: Send + Sync {
     /// Generate a ring VRF proof; the host selects the member key for the ring.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["People"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [people] = chainInfo.value.chains;
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const PEOPLE_COLLECTION_ID =
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
@@ -109,7 +107,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.createAccountProof({
     ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Left", value: 0 } },
     ///   ringLocation: {
-    ///     chainId: people.genesisHash,
+    ///     chainId: people.value.genesisHash,
     ///     junctions: [
     ///       { tag: "PalletInstance", value: 67 },
     ///       { tag: "CollectionId", value: PEOPLE_COLLECTION_ID },

@@ -38,14 +38,13 @@ pub trait System: Send + Sync {
     /// Query whether the host supports a specific feature.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.system.featureSupported({
     ///   tag: "Chain",
     ///   value: {
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   },
     /// });
     /// assert(result.isOk(), "featureSupported failed:", result);

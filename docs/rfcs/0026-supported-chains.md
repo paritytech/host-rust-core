@@ -14,7 +14,7 @@ owner: "@valentinfernandez1"
 
 ## Summary
 
-Add one method to the `Chain` trait. `get_chain_info` takes the chain identifiers a product wants to use, drawn from a closed role enum (`Relay`, `AssetHub`, `People`, `Bulletin`), and returns the ecosystem the host is configured for (for example `"paseo"`) plus one `ChainInfo` (the echoed identifier and the genesis hash) per requested identifier, resolved against that environment. It is answered in-core from a single new platform syscall, so each host implements exactly one callback over configuration it already has.
+Add one method to the `Chain` trait. `get_chain_info` takes one chain identifier, drawn from a closed role enum (`Relay`, `AssetHub`, `People`, `Bulletin`), and returns the ecosystem the host is configured for (for example `"paseo"`) plus the chain's genesis hash, resolved against that environment. It is answered in-core from a single new platform syscall, so each host implements exactly one callback over configuration it already has. Products needing several chains issue concurrent calls; the transport multiplexes them over one round trip.
 
 ## Motivation
 
@@ -33,16 +33,16 @@ The fix is to make the host's chain set discoverable over the wire. Hosts alread
 ### `chain.getChainInfo`
 
 ```rust
-/// Resolve chain identifiers to genesis hashes against the host's
+/// Resolve a chain identifier to its genesis hash against the host's
 /// configured environment.
 ///
 /// ```ts
 /// const result = await truapi.chain.getChainInfo({
-///   chains: ["AssetHub"],
+///   chain: "AssetHub",
 /// });
 /// assert(result.isOk(), "getChainInfo failed:", result);
 /// console.log("network:", result.value.network);
-/// console.log("asset hub genesis:", result.value.chains[0].genesisHash);
+/// console.log("asset hub genesis:", result.value.genesisHash);
 /// ```
 #[wire(request_id = 166)]
 async fn get_chain_info(
@@ -67,63 +67,56 @@ enum ChainIdentifier {
     Bulletin,
 }
 
-/// Resolved chain data for one requested ChainIdentifier.
-struct ChainInfo {
-    /// Identifier this entry resolves, echoed from the request.
-    identifier: ChainIdentifier,
+/// Request to resolve one chain identifier against the host's environment.
+struct RemoteChainInfoRequest {
+    /// Chain to resolve.
+    chain: ChainIdentifier,
+}
+
+/// Response carrying the resolved chain data.
+struct RemoteChainInfoResponse {
+    /// Ecosystem the host is configured for, e.g. "polkadot", "kusama", "paseo".
+    network: String,
+    /// Chain this response resolves, echoed from the request.
+    chain: ChainIdentifier,
     /// Genesis hash identifying the chain in all chain-scoped calls.
     genesis_hash: [u8; 32],
 }
 
-/// Request to resolve chain identifiers against the host's environment.
-struct RemoteChainInfoRequest {
-    /// Chains to resolve.
-    chains: Vec<ChainIdentifier>,
-}
-
-/// Response carrying one ChainInfo per requested identifier, in request order.
-struct RemoteChainInfoResponse {
-    /// Ecosystem the host is configured for, e.g. "polkadot", "kusama", "paseo".
-    network: String,
-    /// Resolved chains, aligned with the request's `chains`.
-    chains: Vec<ChainInfo>,
-}
-
 /// Error from get_chain_info.
 enum RemoteChainInfoError {
-    /// The host does not serve the first named of the requested chains.
-    NotSupported(ChainIdentifier),
+    /// The host does not serve the requested chain.
+    NotSupported,
     /// Catch-all.
     Unknown(GenericError),
 }
 ```
 
-The request is a batch: a product names every chain it needs in one call and gets them all back in one round trip. `ChainIdentifier` is a closed protocol enum of chain roles, not chain instances; the host maps each role to the concrete chain of its configured environment. Adding a new role is an additive enum variant.
+`ChainIdentifier` is a closed protocol enum of chain roles, not chain instances; the host maps each role to the concrete chain of its configured environment. Adding a new role is an additive enum variant. The method resolves one identifier per call; the transport multiplexes concurrent requests, so a product needing several chains resolves them in parallel with no extra round trips and no batching semantics in the protocol.
 
-The request deliberately carries no network selector. A product does not get to choose which network it operates on; the host is configured for exactly one environment (polkadot in production), and every identifier resolves against that. Asking the product to name the environment would reintroduce the guessing this RFC removes.
+The request deliberately carries no network selector. A product does not get to choose which network it operates on; the host is configured for exactly one environment (polkadot in production), and the identifier resolves against that. Asking the product to name the environment would reintroduce the guessing this RFC removes.
 
 ### Semantics and invariants
 
-- **Serviceability.** Every genesis hash returned by `get_chain_info` is a chain the host will serve `chain.*` and `signing.*` calls for. A `NotSupported` identifier will not be served.
-- **Alignment.** The response's `chains` has exactly one entry per requested identifier, in request order. Each entry also echoes its identifier, so products can destructure positionally or match by identifier; neither requires trusting the other.
-- **All or nothing.** If any requested identifier is not served, the whole call fails with `NotSupported` naming the first such identifier; there are no partial responses.
+- **Serviceability.** A genesis hash returned by `get_chain_info` is a chain the host will serve `chain.*` and `signing.*` calls for. A `NotSupported` identifier will not be served.
 - **Stability.** An identifier resolves to the same chain for the lifetime of a connection. There is no subscription; a product observes host-side changes (such as a testnet wipe) by reconnecting.
 
 `network` is informational, not a selector: it tells a product or SDK which environment the host is running, so tooling can derive the environment from the host instead of asking the developer to configure it. It is an open ecosystem string ("polkadot", "kusama", "paseo", "devnet"), not a `Mainnet`/`Testnet` enum, because a binary flag cannot distinguish two testnets.
 
-`ChainInfo` deliberately excludes host-assigned name strings, display names, and token properties. The echoed identifier already keys the entry unambiguously, and once a product holds the genesis hash the display metadata is reachable through `getSpecChainName` and `getSpecProperties`.
+The response echoes the requested identifier so a response is self-describing in logs and debugging tools rather than only meaningful next to the request that produced it. It deliberately excludes host-assigned name strings, display names, and token properties: the identifier already keys the chain unambiguously, and once a product holds the genesis hash the display metadata is reachable through `getSpecChainName` and `getSpecProperties`.
 
 ### Typical product flow
 
 ```ts
-const info = await truapi.chain.getChainInfo({ chains: ["AssetHub", "People"] });
-assert(info.isOk(), "getChainInfo failed:", info);
+const [assetHub, people] = await Promise.all([
+  truapi.chain.getChainInfo({ chain: "AssetHub" }),
+  truapi.chain.getChainInfo({ chain: "People" }),
+]);
+assert(assetHub.isOk() && people.isOk(), "getChainInfo failed");
 
-const [assetHub, people] = info.value.chains;
-
-const name = await truapi.chain.getSpecChainName({ genesisHash: assetHub.genesisHash });
+const name = await truapi.chain.getSpecChainName({ genesisHash: assetHub.value.genesisHash });
 assert(name.isOk(), "getSpecChainName failed:", name);
-console.log(`connected to ${name.value.chainName} on ${info.value.network}`);
+console.log(`connected to ${name.value.chainName} on ${assetHub.value.network}`);
 ```
 
 The product never embeds a hash. After a testnet wipe the host updates its config, the product reconnects, and the same code path picks up the new hash.
@@ -133,7 +126,7 @@ The product never embeds a hash. After a testnet wipe the host updates its confi
 The core does not own the chain set. `system.featureSupported(Chain { genesis_hash })` is already a thin shim in `rust/crates/truapi-server/src/host_logic/features.rs` delegating to `truapi_platform::Features`, and `ChainProvider::connect(genesis_hash)` opens JSON-RPC pipes on demand. This RFC follows the same delegation pattern:
 
 - `truapi-platform` gains one syscall on `Features` returning the host's network string and its full identifier-to-chain mapping.
-- `truapi-server` answers `get_chain_info` in-core from that syscall, resolving each requested identifier and mapping the first miss to `NotSupported`.
+- `truapi-server` answers `get_chain_info` in-core from that syscall, resolving the requested identifier and mapping a miss to `NotSupported`.
 
 Hosts therefore implement exactly one callback, backed by configuration they already maintain. dotli's per-environment named slots (`relay`, `assethub`, `bulletin`, `people`, each with a genesis hash) map one-to-one onto `ChainIdentifier` variants; the iOS `TrUAPIHost` and the host CLI expose their equivalent config the same way.
 
@@ -152,6 +145,7 @@ The change is purely additive: one new method with a fresh wire id, no changes t
 ## Alternatives
 
 - **Take chain names instead of `genesisHash` in every chain-scoped call.** This was discarded as it is a breaking change across the Rust trait, codegen, the TS client, dotli, the iOS host, and the product SDK. The genesis hash also remains necessary internally, since connections are keyed by it and signed payloads embed it via `CheckGenesis`.
-- **Separate discovery and lookup methods (`getSupportedChains` + `resolveChain`).** This was discarded during review: a product that needs one chain should not fetch and filter the host's full mapping, and the batch request already covers the multi-chain case in one round trip.
+- **Separate discovery and lookup methods (`getSupportedChains` + `resolveChain`).** This was discarded during review: a product that needs one chain should not fetch and filter the host's full mapping.
+- **A batch request (`chains: Vec<ChainIdentifier>`).** This was discarded during review: the transport multiplexes concurrent requests, so batching adds ordering and partial-failure semantics without saving a round trip. A generalized batching layer, if ever needed, belongs to the transport and would cover every method.
 - **Free-form string identifiers.** This was discarded because names minted by host configuration form a de facto registry with no governance: two hosts could name the same chain differently, and typos fail only at runtime. The closed role enum is typo-proof, identical across hosts, and versioned with the protocol.
 - **A `network` selector on the request.** This was discarded because the product does not choose its network, the host's configuration does. Asking the product to name the environment would make it encode the environment again, which is the hard-coding this RFC removes.

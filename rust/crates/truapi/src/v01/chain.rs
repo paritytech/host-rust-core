@@ -369,36 +369,29 @@ pub enum ChainIdentifier {
     Bulletin,
 }
 
-/// Resolved chain data for one requested [`ChainIdentifier`].
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct ChainInfo {
-    /// Identifier this entry resolves, echoed from the request.
-    pub identifier: ChainIdentifier,
-    /// Genesis hash identifying the chain in all chain-scoped calls.
-    pub genesis_hash: [u8; 32],
-}
-
-/// Request to resolve chain identifiers against the host's environment.
+/// Request to resolve one chain identifier against the host's environment.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RemoteChainInfoRequest {
-    /// Chains to resolve.
-    pub chains: Vec<ChainIdentifier>,
+    /// Chain to resolve.
+    pub chain: ChainIdentifier,
 }
 
-/// Response carrying one [`ChainInfo`] per requested identifier, in request order.
+/// Response carrying the resolved chain data.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RemoteChainInfoResponse {
     /// Ecosystem the host is configured for, e.g. "polkadot", "kusama", "paseo".
     pub network: String,
-    /// Resolved chains, aligned with the request's `chains`.
-    pub chains: Vec<ChainInfo>,
+    /// Chain this response resolves, echoed from the request.
+    pub chain: ChainIdentifier,
+    /// Genesis hash identifying the chain in all chain-scoped calls.
+    pub genesis_hash: [u8; 32],
 }
 
 /// Error from [`crate::api::Chain::get_chain_info`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum RemoteChainInfoError {
-    /// The host does not serve the first named of the requested chains.
-    NotSupported(ChainIdentifier),
+    /// The host does not serve the requested chain.
+    NotSupported,
     /// Catch-all.
     Unknown(GenericError),
 }

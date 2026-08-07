@@ -30,15 +30,14 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, from } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const item = await firstValueFrom(
     ///   from(
     ///     truapi.chain.followHeadSubscribe({
     ///       request: {
-    ///         genesisHash: assetHub.genesisHash,
+    ///         genesisHash: assetHub.value.genesisHash,
     ///         withRuntime: false,
     ///       },
     ///     }),
@@ -60,13 +59,12 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, mergeMap } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.getHeadHeader({ genesisHash, followSubscriptionId, hash }),
@@ -90,13 +88,12 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, mergeMap } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.getHeadBody({ genesisHash, followSubscriptionId, hash }),
@@ -120,13 +117,12 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, mergeMap } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.getHeadStorage({
@@ -155,13 +151,12 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, mergeMap } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///     withRuntime: true,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
@@ -192,13 +187,12 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, mergeMap } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId, hash }) =>
     ///       truapi.chain.unpinHead({
@@ -226,13 +220,12 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, mergeMap } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId }) =>
     ///       truapi.chain.continueHead({
@@ -260,13 +253,12 @@ pub trait Chain: Send + Sync {
     /// ```ts
     /// import { firstValueFrom, mergeMap } from "rxjs";
     ///
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await firstValueFrom(
     ///   withChainHeadFollow({
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   }).pipe(
     ///     mergeMap(({ genesisHash, followSubscriptionId }) =>
     ///       truapi.chain.stopHeadOperation({
@@ -293,12 +285,11 @@ pub trait Chain: Send + Sync {
     /// Fetch the canonical genesis hash for a chain.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.chain.getSpecGenesisHash({
-    ///   genesisHash: assetHub.genesisHash,
+    ///   genesisHash: assetHub.value.genesisHash,
     /// });
     /// assert(result.isOk(), "getSpecGenesisHash failed:", result);
     /// console.log("genesis hash:", result.value);
@@ -316,12 +307,11 @@ pub trait Chain: Send + Sync {
     /// Fetch the display name of a chain.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.chain.getSpecChainName({
-    ///   genesisHash: assetHub.genesisHash,
+    ///   genesisHash: assetHub.value.genesisHash,
     /// });
     /// assert(result.isOk(), "getSpecChainName failed:", result);
     /// console.log("chain name:", result.value);
@@ -338,12 +328,11 @@ pub trait Chain: Send + Sync {
     /// Fetch the JSON-encoded properties of a chain.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.chain.getSpecProperties({
-    ///   genesisHash: assetHub.genesisHash,
+    ///   genesisHash: assetHub.value.genesisHash,
     /// });
     /// assert(result.isOk(), "getSpecProperties failed:", result);
     /// console.log("chain properties:", result.value);
@@ -360,12 +349,11 @@ pub trait Chain: Send + Sync {
     /// Broadcast a signed transaction.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.chain.broadcastTransaction({
-    ///   genesisHash: assetHub.genesisHash,
+    ///   genesisHash: assetHub.value.genesisHash,
     ///   transaction: "0x",
     /// });
     /// assert(result.isOk(), "broadcastTransaction failed:", result);
@@ -386,12 +374,11 @@ pub trait Chain: Send + Sync {
     /// Stop a transaction broadcast.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const broadcast = await truapi.chain.broadcastTransaction({
-    ///   genesisHash: assetHub.genesisHash,
+    ///   genesisHash: assetHub.value.genesisHash,
     ///   transaction: "0x",
     /// });
     /// assert(broadcast.isOk(), "broadcastTransaction failed:", broadcast);
@@ -401,7 +388,7 @@ pub trait Chain: Send + Sync {
     /// );
     ///
     /// const result = await truapi.chain.stopTransaction({
-    ///   genesisHash: assetHub.genesisHash,
+    ///   genesisHash: assetHub.value.genesisHash,
     ///   operationId: broadcast.value.operationId,
     /// });
     /// assert(result.isOk(), "stopTransaction failed:", result);
@@ -417,16 +404,16 @@ pub trait Chain: Send + Sync {
         Err(CallError::unavailable())
     }
 
-    /// Resolve chain identifiers to genesis hashes against the host's
+    /// Resolve a chain identifier to its genesis hash against the host's
     /// configured environment (RFC 0026).
     ///
     /// ```ts
     /// const result = await truapi.chain.getChainInfo({
-    ///   chains: ["AssetHub"],
+    ///   chain: "AssetHub",
     /// });
     /// assert(result.isOk(), "getChainInfo failed:", result);
     /// console.log("network:", result.value.network);
-    /// console.log("asset hub genesis:", result.value.chains[0].genesisHash);
+    /// console.log("asset hub genesis:", result.value.genesisHash);
     /// ```
     #[wire(request_id = 166)]
     async fn get_chain_info(

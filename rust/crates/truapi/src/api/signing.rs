@@ -21,16 +21,15 @@ pub trait Signing: Send + Sync {
     /// Construct a signed transaction for a product account.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["People"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [people] = chainInfo.value.chains;
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
     ///     dotNsIdentifier: "truapi-playground.dot",
     ///     derivationIndex: { tag: "Left", value: 0 },
     ///   },
-    ///   genesisHash: people.genesisHash,
+    ///   genesisHash: people.value.genesisHash,
     ///   callData: "0x000000",
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
@@ -51,9 +50,8 @@ pub trait Signing: Send + Sync {
     /// Construct a signed transaction for a non-product (legacy) account.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["People"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [people] = chainInfo.value.chains;
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
@@ -68,7 +66,7 @@ pub trait Signing: Send + Sync {
     ///     dotNsIdentifier: "truapi-playground.dot",
     ///     derivationIndex: { tag: "Left", value: 0 },
     ///   },
-    ///   genesisHash: people.genesisHash,
+    ///   genesisHash: people.value.genesisHash,
     ///   callData: "0x000000",
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
@@ -121,9 +119,8 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload with a non-product account.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
@@ -139,7 +136,7 @@ pub trait Signing: Send + Sync {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
     ///     era: "0x00",
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///     method: "0x00003448656c6c6f2c20776f726c6421",
     ///     nonce: "0x00000000",
     ///     signedExtensions: [],
@@ -191,9 +188,8 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload.
     ///
     /// ```ts
-    /// const chainInfo = await truapi.chain.getChainInfo({ chains: ["AssetHub"] });
-    /// assert(chainInfo.isOk(), "getChainInfo failed:", chainInfo);
-    /// const [assetHub] = chainInfo.value.chains;
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.signing.signPayload({
     ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Left", value: 0 } },
@@ -201,7 +197,7 @@ pub trait Signing: Send + Sync {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
     ///     era: "0x00",
-    ///     genesisHash: assetHub.genesisHash,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///     method: "0x00003448656c6c6f2c20776f726c6421",
     ///     nonce: "0x00000000",
     ///     signedExtensions: [],
