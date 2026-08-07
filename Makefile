@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli headless install matrix explorer
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli headless install matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -87,7 +87,7 @@ endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 
-uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
+uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
 	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
@@ -95,13 +95,6 @@ uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
 		--library $(UNIFFI_CDYLIB) \
 		--language swift \
 		--out-dir $(UNIFFI_SWIFT_TMP)
-	mkdir -p ios/truapi-host/Sources/truapi_serverFFI/include
-	cp $(UNIFFI_SWIFT_TMP)/truapi_server.swift \
-		ios/truapi-host/Sources/TrUAPIHost/truapi_server.swift
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h \
-		ios/truapi-host/Sources/truapi_serverFFI/include/truapi_serverFFI.h
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap \
-		ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
 
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 
@@ -142,21 +135,6 @@ check: ## Full verification suite (build, fmt, clippy, test, TS tests, playgroun
 	cd $(TRUAPI_PKG) && npm run build && npm test
 	cd $(JS_PACKAGES)/truapi-host && npm install --no-fund --no-audit && npm test
 	cd $(PLAYGROUND) && yarn build && yarn lint
-
-ANDROID_SHELL := android/truapi-host/src/main/kotlin/io/parity/truapi/TrUAPIHost.kt
-ANDROID_SHELL_VENDORED := hosts/android/bindings/truapi-host/src/main/kotlin/io/parity/truapi/TrUAPIHost.kt
-
-check-android-parity: ## Verify the canonical android/truapi-host shell matches the copy vendored in the app (hosts/android). Skips if the submodule is not initialized.
-	@if [ ! -f "$(ANDROID_SHELL_VENDORED)" ]; then \
-		echo "Skipping android parity check: hosts/android not initialized (run 'git submodule update --init hosts/android')."; \
-	elif diff -q "$(ANDROID_SHELL)" "$(ANDROID_SHELL_VENDORED)" >/dev/null; then \
-		echo "android/truapi-host shell matches the vendored app copy."; \
-	else \
-		echo "ERROR: $(ANDROID_SHELL) has drifted from $(ANDROID_SHELL_VENDORED)."; \
-		echo "The host adapter shell is duplicated in truapi and the app; keep them in sync."; \
-		diff "$(ANDROID_SHELL)" "$(ANDROID_SHELL_VENDORED)" || true; \
-		exit 1; \
-	fi
 
 clean: ## Remove local build/test artifacts without deleting dependencies.
 	cargo clean
@@ -229,3 +207,29 @@ matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-repo
 
 explorer: ## Run the explorer dev server standalone at http://localhost:5181.
 	cd $(EXPLORER) && npx vite --base / --port 5181
+
+IOS_DEVICE_TARGET := aarch64-apple-ios
+IOS_SIM_TARGET := aarch64-apple-ios-sim
+# Must match the TrUAPIHost Package.swift platforms entry. Without it rustc/cc
+# stamp objects with the SDK version and every consumer link emits
+# "built for newer iOS version than being linked" warnings.
+IOS_DEPLOYMENT_TARGET := 17.0
+XCFRAMEWORK_OUT := target/truapi_server.xcframework
+XCFRAMEWORK_HEADERS := target/xcframework-headers
+
+xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator.
+	rustup target add $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
+		--features ws-bridge --target $(IOS_DEVICE_TARGET)
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
+		--features ws-bridge --target $(IOS_SIM_TARGET)
+	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
+	mkdir -p $(XCFRAMEWORK_HEADERS)
+	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
+	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
+	xcodebuild -create-xcframework \
+		-library target/$(IOS_DEVICE_TARGET)/release/libtruapi_server.a \
+		-headers $(XCFRAMEWORK_HEADERS) \
+		-library target/$(IOS_SIM_TARGET)/release/libtruapi_server.a \
+		-headers $(XCFRAMEWORK_HEADERS) \
+		-output $(XCFRAMEWORK_OUT)

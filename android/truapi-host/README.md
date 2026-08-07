@@ -69,10 +69,10 @@ The product running in the `WebView` opens a `WebSocket` to the localhost port +
 
 The core's `Permissions` platform trait has two methods, and so does the bridge:
 
-- `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a SCALE-encoded `v01::HostDevicePermissionRequest`.
-- `remotePermission(request)` - per-product capability bundles. `request` is a SCALE-encoded `v01::RemotePermissionRequest`.
+- `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
+- `remotePermission(request)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
 
-Both return a `Boolean` granted flag. SCALE decoding for the UI prompt is done by the `@parity/truapi` JS client (or any consumer that links the protocol crate's types directly).
+Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## Example
 
@@ -80,14 +80,14 @@ Both return a `Boolean` granted flag. SCALE decoding for the UI prompt is done b
 > background thread it owns, never the UI thread. Marshal any UI work
 > (navigation, prompts, notifications, touching the `WebView`) onto the main
 > thread with `Handler(Looper.getMainLooper())` or a `Dispatchers.Main`
-> `CoroutineScope`. Six callbacks each run on their own blocking-pool thread, so
-> it is safe to block the calling thread (e.g. with a `CountDownLatch`) until the
-> main-thread prompt resolves; other TrUAPI traffic keeps flowing while you wait:
-> `navigateTo`, `pushNotification`, `devicePermission`, `remotePermission`,
-> `featureSupported`, and `confirmUserAction`. The remaining callbacks (auth
-> state, storage, core storage, chain, theme, preimage lookups, and
-> `cancelNotification`) run inline on the dispatcher thread and must return
-> promptly without blocking.
+> `CoroutineScope`. The `suspend` callbacks (`navigateTo`, `pushNotification`,
+> `devicePermission`, `remotePermission`, `featureSupported`,
+> `confirmUserAction`, `lookupPreimage`) are awaited by the core, so an
+> implementation may suspend for as long as the user takes to decide (e.g.
+> `withContext(Dispatchers.Main)` around a prompt); other TrUAPI traffic keeps
+> flowing while you wait. The remaining callbacks (auth state, storage, core
+> storage, chain, theme, and `cancelNotification`) run inline on the dispatcher
+> thread and must return promptly without blocking.
 
 ```kt
 import android.os.Handler
@@ -102,9 +102,15 @@ import io.parity.truapi.LocalhostBridgeBootstrap
 import io.parity.truapi.PairingDeeplinkScheme
 import io.parity.truapi.RuntimeConfig
 import io.parity.truapi.TrUAPIHostCore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import uniffi.truapi_server.AuthState
+import uniffi.truapi_server.FeatureSupportedRequest
 import uniffi.truapi_server.HostTheme
-import java.util.concurrent.CountDownLatch
+import uniffi.truapi_server.NativeDevicePermission
+import uniffi.truapi_server.NativeRemotePermission
+import uniffi.truapi_server.NativeUserConfirmationReview
+import uniffi.truapi_server.PushNotificationRequest
 
 class MyStorage : HostStorage {
     private val map = mutableMapOf<String, ByteArray>()
@@ -130,13 +136,13 @@ class MyBridge(private val webView: WebView) : HostBridge {
     override val storage = MyStorage()
     override val coreStorage = MyCoreStorage()
 
-    override fun navigateTo(url: String) {
-        main.post { /* startActivity(Intent(ACTION_VIEW, Uri.parse(url))) */ }
+    override suspend fun navigateTo(url: String) {
+        withContext(Dispatchers.Main) { /* startActivity(Intent(ACTION_VIEW, Uri.parse(url))) */ }
     }
 
-    override fun pushNotification(payload: ByteArray): UInt {
+    override suspend fun pushNotification(request: PushNotificationRequest): UInt {
         val id = 1u
-        main.post { /* show notification */ }
+        withContext(Dispatchers.Main) { /* show request.text / request.deeplink */ }
         return id
     }
 
@@ -144,18 +150,15 @@ class MyBridge(private val webView: WebView) : HostBridge {
         main.post { /* cancel notification */ }
     }
 
-    override fun devicePermission(request: ByteArray): Boolean {
-        // Called on a blocking-pool thread; prompt on the main thread and
-        // wait. Blocking here does not stall other TrUAPI traffic.
-        val latch = CountDownLatch(1)
-        var granted = false
-        main.post { /* show prompt, set granted, then */ latch.countDown() }
-        latch.await()
-        return granted
+    override suspend fun devicePermission(request: NativeDevicePermission): Boolean {
+        // Awaited by the core: present the prompt for the requested capability
+        // (CAMERA, MICROPHONE, ...) and suspend until the user decides. Other
+        // TrUAPI traffic keeps flowing while suspended.
+        return withContext(Dispatchers.Main) { /* show prompt; */ false }
     }
 
-    override fun remotePermission(request: ByteArray): Boolean = false
-    override fun featureSupported(request: ByteArray): Boolean = false
+    override suspend fun remotePermission(request: NativeRemotePermission): Boolean = false
+    override suspend fun featureSupported(request: FeatureSupportedRequest): Boolean = false
 
     // Core-owned auth state stream: render AuthState.Pairing as the pairing
     // QR sheet, connected/disconnected as the account badge, and login-failed
@@ -179,16 +182,12 @@ class MyBridge(private val webView: WebView) : HostBridge {
         /* close host connection */
     }
 
-    // One confirmation callback for every reviewed core action. Decode
-    // `review` (SCALE `UserConfirmationReview`) with the @parity/truapi JS
-    // client to pick the prompt (sign payload / raw / create tx / alias /
-    // resource allocation / preimage submit).
-    override fun confirmUserAction(review: ByteArray): Boolean {
-        val latch = CountDownLatch(1)
-        var approved = false
-        main.post { /* show prompt, set approved, then */ latch.countDown() }
-        latch.await()
-        return approved
+    // One confirmation callback for every reviewed core action. Switch on the
+    // review variant (SignPayload / SignRaw / CreateTransaction / AccountAlias /
+    // ResourceAllocation / PreimageSubmit / ...) to render the prompt with its
+    // typed fields.
+    override suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean {
+        return withContext(Dispatchers.Main) { /* show prompt; */ false }
     }
 }
 
