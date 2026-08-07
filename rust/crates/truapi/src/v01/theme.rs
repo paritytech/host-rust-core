@@ -11,6 +11,7 @@ pub enum ThemeName {
 
 /// Light or dark variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ThemeVariant {
     /// Light appearance.
     Light,

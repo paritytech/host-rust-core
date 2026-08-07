@@ -159,7 +159,7 @@ describe("generated client transport", () => {
         const request = {
             productAccountId: {
                 dotNsIdentifier: "foo",
-                derivationIndex: { tag: "Left", value: 0 },
+                derivationIndex: { tag: "Index", value: 0 },
             },
         };
         void client.account.getAccount(request);
@@ -222,7 +222,7 @@ describe("generated client transport", () => {
         const response = client.account.getAccount({
             productAccountId: {
                 dotNsIdentifier: "foo",
-                derivationIndex: { tag: "Left", value: 0 },
+                derivationIndex: { tag: "Index", value: 0 },
             },
         });
         const reason = { tag: "V1", value: { tag: "NotConnected", value: undefined } } as const;

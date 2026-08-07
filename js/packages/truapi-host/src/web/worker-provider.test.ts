@@ -5,6 +5,7 @@ import {
   HostPushNotificationRequest,
   HostPushNotificationResponse,
 } from "@parity/truapi";
+import { bytesToHex } from "@parity/truapi/scale";
 import type { GenericError, Result, ThemeVariant } from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -518,8 +519,9 @@ describe("createWebWorkerPairingHostRuntime", () => {
     worker.emit({ kind: "loaded" });
     worker.emit({ kind: "ready" });
     const provider = await finishProviderReady(worker, providerPromise);
-    const publicKey = new Uint8Array(32);
-    publicKey.set([1, 2]);
+    const publicKeyBytes = new Uint8Array(32);
+    publicKeyBytes.set([1, 2]);
+    const publicKey = bytesToHex(publicKeyBytes);
 
     worker.emit({
       kind: "callbackRequest",

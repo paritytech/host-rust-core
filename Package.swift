@@ -15,8 +15,8 @@ import PackageDescription
 // The published release asset remains the default for remote consumers.
 let useLocalBinary = ProcessInfo.processInfo.environment["TRUAPI_USE_LOCAL_BINARY"] == "1"
 
-let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.3.0/truapi_server.xcframework.zip"
-let publishedBinaryChecksum = "c2eeb3d79d3186f4b85de43a18fd7df127a2f3ffe814def9b7dd4e1b897934e0"
+let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.4.0/truapi_server.xcframework.zip"
+let publishedBinaryChecksum = "a3029c071ef37e876ae51e45c177eab09cb976f9dbd729b93a2191d6ca8331be"
 
 let binaryTarget: Target = useLocalBinary
     ? .binaryTarget(
@@ -37,6 +37,18 @@ let package = Package(
     ],
     targets: [
         .systemLibrary(
+            name: "truapiFFI",
+            path: "ios/truapi-host/Sources/truapiFFI/include",
+            pkgConfig: nil,
+            providers: []
+        ),
+        .systemLibrary(
+            name: "truapi_platformFFI",
+            path: "ios/truapi-host/Sources/truapi_platformFFI/include",
+            pkgConfig: nil,
+            providers: []
+        ),
+        .systemLibrary(
             name: "truapi_serverFFI",
             path: "ios/truapi-host/Sources/truapi_serverFFI/include",
             pkgConfig: nil,
@@ -45,7 +57,9 @@ let package = Package(
         binaryTarget,
         .target(
             name: "TrUAPIHost",
-            dependencies: ["truapi_serverFFI", "truapi_serverFFI_binary"],
+            dependencies: [
+                "truapiFFI", "truapi_platformFFI", "truapi_serverFFI", "truapi_serverFFI_binary",
+            ],
             path: "ios/truapi-host/Sources/TrUAPIHost",
             resources: [.copy("Resources/truapi-container.js")]
         ),

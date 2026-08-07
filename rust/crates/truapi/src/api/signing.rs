@@ -26,7 +26,7 @@ pub trait Signing: Send + Sync {
     /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
     ///   callData: "0x000000",
@@ -54,7 +54,7 @@ pub trait Signing: Send + Sync {
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     /// });
     /// assert(accountResult.isOk(), "getAccount failed:", accountResult);
@@ -62,7 +62,7 @@ pub trait Signing: Send + Sync {
     /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
     ///   callData: "0x000000",
@@ -122,7 +122,7 @@ pub trait Signing: Send + Sync {
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     /// });
     /// assert(accountResult.isOk(), "getAccount failed:", accountResult);
@@ -162,7 +162,7 @@ pub trait Signing: Send + Sync {
     ///
     /// ```ts
     /// const result = await truapi.signing.signRaw({
-    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Left", value: 0 } },
+    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Index", value: 0 } },
     ///   payload: {
     ///     tag: "Bytes",
     ///     value: {
@@ -188,7 +188,7 @@ pub trait Signing: Send + Sync {
     /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
     ///
     /// const result = await truapi.signing.signPayload({
-    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Left", value: 0 } },
+    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Index", value: 0 } },
     ///   payload: {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",

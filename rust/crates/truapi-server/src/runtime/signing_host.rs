@@ -1032,7 +1032,7 @@ mod tests {
         v01::HostAccountSignVrfRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: product_id.to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             transcript_label: b"pop:autosigning".to_vec(),
             items: vec![v01::VrfTranscriptItem {
@@ -1071,7 +1071,7 @@ mod tests {
         let cx = CallContext::default();
         let context = v01::ProductProofContext {
             product_id: "myapp.dot".to_string(),
-            suffix: v01::DerivationIndex::Left(0),
+            suffix: v01::DerivationIndex::Index(0),
         };
         let ring_location = v01::RingLocation {
             chain_id: [0x22; 32],
@@ -1122,7 +1122,7 @@ mod tests {
         let cx = CallContext::default();
         let context = v01::ProductProofContext {
             product_id: "other.dot".to_string(),
-            suffix: v01::DerivationIndex::Left(0),
+            suffix: v01::DerivationIndex::Index(0),
         };
         let ring_location = v01::RingLocation {
             chain_id: [0x22; 32],
@@ -1177,7 +1177,7 @@ mod tests {
             calling_product_id: "myapp.dot".to_string(),
             context: v01::ProductProofContext {
                 product_id: "other.dot".to_string(),
-                suffix: v01::DerivationIndex::Left(0),
+                suffix: v01::DerivationIndex::Index(0),
             },
             ring_location: v01::RingLocation {
                 chain_id: [0x22; 32],
@@ -1227,7 +1227,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: b"hello world".to_vec(),
@@ -1693,7 +1693,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: vec![1, 2, 3],
@@ -1707,7 +1707,7 @@ mod tests {
     fn product_account(index: u32) -> v01::ProductAccountId {
         v01::ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
-            derivation_index: v01::DerivationIndex::Left(index),
+            derivation_index: v01::DerivationIndex::Index(index),
         }
     }
 
@@ -1892,7 +1892,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let err = futures::executor::block_on(runtime.get_account(&cx, request))
@@ -1968,7 +1968,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: b"<Bytes>hi</Bytes>".to_vec(),
@@ -2020,7 +2020,7 @@ mod tests {
         let request = v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: vec![1, 2, 3],
@@ -2049,7 +2049,7 @@ mod tests {
         let request = v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes { bytes: vec![1] },
         };
@@ -2085,7 +2085,9 @@ mod tests {
             "myapp.dot".to_string(),
             v01::HostRequestResourceAllocationRequest {
                 resources: vec![
-                    v01::AllocatableResource::SmartContractAllowance(v01::DerivationIndex::Left(0)),
+                    v01::AllocatableResource::SmartContractAllowance(v01::DerivationIndex::Index(
+                        0,
+                    )),
                     v01::AllocatableResource::AutoSigning,
                 ],
             },

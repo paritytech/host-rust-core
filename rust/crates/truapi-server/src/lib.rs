@@ -72,3 +72,9 @@ pub use wasm::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 uniffi::setup_scaffolding!();
+
+#[cfg(not(target_arch = "wasm32"))]
+truapi::uniffi_reexport_scaffolding!();
+
+#[cfg(not(target_arch = "wasm32"))]
+truapi_platform::uniffi_reexport_scaffolding!();

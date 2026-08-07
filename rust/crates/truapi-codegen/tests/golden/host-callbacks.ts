@@ -8,6 +8,7 @@ import * as S from "@parity/truapi/scale";
 
 import {
   AllocatableResource,
+  Bytes32,
   HostAccountSignVrfRequest,
   HostDevicePermissionRequest,
   HostSignPayloadRequest,
@@ -290,12 +291,12 @@ export interface SessionUiInfo {
   /**
    * 32-byte sr25519 root public key of the active session.
    */
-  publicKey: Uint8Array;
+  publicKey: Bytes32;
 
   /**
    * Wallet identity account id used for People-chain username lookup.
    */
-  identityAccountId?: Uint8Array;
+  identityAccountId?: Bytes32;
 
   /**
    * Short username from the People-chain identity record.
@@ -597,8 +598,8 @@ export const ResourceAllocationReview: S.Codec<ResourceAllocationReview> =
 export const SessionUiInfo: S.Codec<SessionUiInfo> = S.lazy(
   (): S.Codec<SessionUiInfo> =>
     S.Struct({
-      publicKey: S.Bytes(32),
-      identityAccountId: S.Option(S.Bytes(32)),
+      publicKey: Bytes32,
+      identityAccountId: S.Option(Bytes32),
       liteUsername: S.Option(S.str),
       fullUsername: S.Option(S.str),
     }) as S.Codec<SessionUiInfo>,

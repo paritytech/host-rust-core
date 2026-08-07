@@ -52,6 +52,14 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   `wasm32-unknown-unknown` to guard the wasm bridge and its offline subxt
   surface, but does not build or publish the packaged bundle; run `make wasm`
   locally before relying on the browser host.
+- After changing UniFFI-exposed types or native bindings, run
+  `./ios/truapi-host/scripts/rebuild.sh` and commit the generated bindings and
+  container output. To publish the binary, include `@parity/ios-host <version>`
+  in the `release:` PR title. The release workflow rebuilds and simulator-tests
+  the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
+  only after the asset is live. `publish.sh <version>` is the manual fallback.
+  Keep `useLocalBinary = false` in committed manifests; `true` is for local
+  testing against the rebuilt XCFramework only.
 
 ## Code style
 

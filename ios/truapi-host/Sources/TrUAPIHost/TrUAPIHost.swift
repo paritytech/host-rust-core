@@ -304,13 +304,13 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func cancelLogin()
     func activateLocalSession(secret: Data, liteUsername: String?) throws
     func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
-    ) throws -> NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest
+    ) throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus
     ) throws
-    func notifyThemeChanged(theme: HostTheme)
+    func notifyThemeChanged(theme: ThemeVariant)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -364,10 +364,10 @@ public protocol HostBridge: AnyObject, Sendable {
     /// the user has to approve the navigation.
     func navigateTo(url: String) async throws
 
-    /// Deliver a push notification (SCALE-encoded `HostPushNotificationRequest`)
+    /// Deliver a push notification (`HostPushNotificationRequest`)
     /// and return the host-assigned notification id. Invoked on the dispatcher
     /// thread; hop to the main thread for any UI work and return promptly.
-    func pushNotification(request: PushNotificationRequest) async throws -> UInt32
+    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32
 
     /// Cancel a previously scheduled notification id.
     func cancelNotification(id: UInt32) throws
@@ -376,13 +376,13 @@ public protocol HostBridge: AnyObject, Sendable {
     /// on a blocking-pool thread; present the prompt on the main thread and
     /// block the calling thread until the user decides. Blocking here does
     /// not stall other TrUAPI traffic.
-    func devicePermission(request: NativeDevicePermission) async throws -> Bool
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool
 
     /// Prompt for a remote (product-scoped) permission bundle. Invoked on a
     /// blocking-pool thread; present the prompt on the main thread and block
     /// the calling thread until the user decides. Blocking here does not
     /// stall other TrUAPI traffic.
-    func remotePermission(request: NativeRemotePermission) async throws -> Bool
+    func remotePermission(request: RemotePermission) async throws -> Bool
 
     /// Observe an auth state change. The core emits states only when they
     /// actually change, in transition order: render `.pairing` as the pairing
@@ -403,17 +403,17 @@ public protocol HostBridge: AnyObject, Sendable {
     func chainClose(connectionId: UInt32) throws
 
     /// Confirm one user-reviewed core action before it continues.
-    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool
+    func confirmUserAction(review: UserConfirmationReview) async throws -> Bool
 
     /// Return the current preimage value for `key`, or nil for a miss.
     func lookupPreimage(key: Data) async throws -> Data?
 
     /// Return the current host theme.
-    func currentTheme() throws -> HostTheme
+    func currentTheme() throws -> ThemeVariant
 
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
-    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool
+    func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool
 
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
@@ -446,15 +446,15 @@ public protocol HostBridge: AnyObject, Sendable {
 public extension HostBridge {
     /// Default no-op logger. Override to plumb into your logging framework.
     func onCoreLog(marker: String, detail: String) {}
-    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 { 0 }
+    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32 { 0 }
     func cancelNotification(id: UInt32) throws {}
     func authStateChanged(state: AuthState) {}
     func chainConnect(genesisHash: Data) throws -> UInt32? { nil }
     func chainSend(connectionId: UInt32, request: String) throws {}
     func chainClose(connectionId: UInt32) throws {}
-    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool { false }
+    func confirmUserAction(review: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key: Data) async throws -> Data? { nil }
-    func currentTheme() throws -> HostTheme { .dark }
+    func currentTheme() throws -> ThemeVariant { .dark }
     var supportsChat: Bool { false }
     func chatCreateRoom(
         roomId: String,
@@ -496,7 +496,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 {
+    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32 {
         try await withHostRejection {
             try await bridge.pushNotification(request: request)
         }
@@ -508,13 +508,13 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func devicePermission(request: NativeDevicePermission) async throws -> Bool {
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool {
         try await withHostRejection {
             try await bridge.devicePermission(request: request)
         }
     }
 
-    func remotePermission(request: NativeRemotePermission) async throws -> Bool {
+    func remotePermission(request: RemotePermission) async throws -> Bool {
         try await withHostRejection {
             try await bridge.remotePermission(request: request)
         }
@@ -562,7 +562,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool {
+    func confirmUserAction(review: UserConfirmationReview) async throws -> Bool {
         try await withHostRejection {
             try await bridge.confirmUserAction(review: review)
         }
@@ -574,13 +574,13 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func currentTheme() throws -> HostTheme {
+    func currentTheme() throws -> ThemeVariant {
         try withHostRejection {
             try bridge.currentTheme()
         }
     }
 
-    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool {
+    func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool {
         try await withHostRejection {
             try await bridge.featureSupported(request: request)
         }
@@ -668,7 +668,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostNavigateRejection {
             throw error
         } catch {
-            throw HostNavigateRejection.Unknown(reason: error.localizedDescription)
+            throw HostNavigateRejection.Navigate(.unknown(reason: error.localizedDescription))
         }
     }
 
@@ -678,7 +678,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostNavigateRejection {
             throw error
         } catch {
-            throw HostNavigateRejection.Unknown(reason: error.localizedDescription)
+            throw HostNavigateRejection.Navigate(.unknown(reason: error.localizedDescription))
         }
     }
 
@@ -688,7 +688,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostStorageError {
             throw error
         } catch {
-            throw HostStorageError.Unknown(reason: error.localizedDescription)
+            throw HostStorageError.Storage(.unknown(reason: error.localizedDescription))
         }
     }
 }
@@ -764,13 +764,13 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
         payload: Data
     ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error>
     func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
-    ) throws -> NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest
+    ) throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus
     ) throws
-    func notifyThemeChanged(theme: HostTheme)
+    func notifyThemeChanged(theme: ThemeVariant)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -823,19 +823,19 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
     }
 
     public func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
-    ) throws -> NativePermissionAuthorizationStatus {
+        request: PermissionAuthorizationRequest
+    ) throws -> PermissionAuthorizationStatus {
         try inner.permissionAuthorizationStatus(request: request)
     }
 
     public func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus
     ) throws {
         try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
-    public func notifyThemeChanged(theme: HostTheme) {
+    public func notifyThemeChanged(theme: ThemeVariant) {
         inner.notifyThemeChanged(theme: theme)
     }
 
@@ -949,22 +949,22 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
 
     /// Read a stored permission authorization status without prompting.
     public func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
-    ) throws -> NativePermissionAuthorizationStatus {
+        request: PermissionAuthorizationRequest
+    ) throws -> PermissionAuthorizationStatus {
         try inner.permissionAuthorizationStatus(request: request)
     }
 
     /// Update a stored permission authorization status. `.notDetermined`
     /// clears the stored value so the next product request prompts again.
     public func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus
     ) throws {
         try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    public func notifyThemeChanged(theme: HostTheme) {
+    public func notifyThemeChanged(theme: ThemeVariant) {
         inner.notifyThemeChanged(theme: theme)
     }
 

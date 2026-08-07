@@ -25,7 +25,7 @@ The generated bindings and the container bundle are committed build outputs; the
                                 # (URL + checksum)
 ```
 
-Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. When the binary should reach consumers, run `publish.sh` and commit the manifest bump **after** the upload succeeds (a manifest pushed before its asset is live breaks resolution).
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, and makes the `Package.swift` follow-up commit only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
 For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
 
@@ -70,8 +70,8 @@ The product running in the `WKWebView` opens a `WebSocket` to the localhost port
 
 The core's `Permissions` platform trait has two methods, and so does `HostCallbacks`:
 
-- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
-- `remotePermission(request:)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
+- `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
+- `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
@@ -105,7 +105,7 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         await MainActor.run { /* UIApplication.shared.open(...) */ }
     }
 
-    func pushNotification(request: PushNotificationRequest) async throws -> UInt32 {
+    func pushNotification(request: HostPushNotificationRequest) async throws -> UInt32 {
         let id: UInt32 = 1
         await MainActor.run { /* schedule request.text / request.deeplink / request.scheduledAt */ }
         return id
@@ -115,13 +115,13 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         DispatchQueue.main.async { /* cancel notification */ }
     }
 
-    func devicePermission(request: NativeDevicePermission) async throws -> Bool {
+    func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool {
         // Awaited by the core: present the prompt and suspend until the user
         // decides. Other TrUAPI traffic keeps flowing while suspended.
         await MainActor.run { /* show prompt for request (.camera, .microphone, ...); */ false }
     }
 
-    func remotePermission(request: NativeRemotePermission) async throws -> Bool {
+    func remotePermission(request: RemotePermission) async throws -> Bool {
         await MainActor.run { /* show prompt for request (.chainSubmit, .remote(domains:), ...); */ false }
     }
 
@@ -152,7 +152,7 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
         /* close host connection */
     }
 
-    func confirmUserAction(review: NativeUserConfirmationReview) async throws -> Bool {
+    func confirmUserAction(review: UserConfirmationReview) async throws -> Bool {
         // Switch on the review variant (.signPayload, .createTransaction, ...)
         // to render the confirmation prompt with its typed fields.
         await MainActor.run { /* render review; */ false }
@@ -160,9 +160,9 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
 
     func lookupPreimage(key: Data) async throws -> Data? { nil }
 
-    func currentTheme() throws -> HostTheme { .dark }
+    func currentTheme() throws -> ThemeVariant { .dark }
 
-    func featureSupported(request: FeatureSupportedRequest) async throws -> Bool { false }
+    func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool { false }
 
     func localStorageRead(key: String) throws -> Data? { storage[key] }
     func localStorageWrite(key: String, value: Data) throws { storage[key] = value }
