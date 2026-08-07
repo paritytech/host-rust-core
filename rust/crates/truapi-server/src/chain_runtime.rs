@@ -36,6 +36,7 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, pin_mut};
 use futures::{Stream, StreamExt};
 use parity_scale_codec::{Decode, Error as ScaleError, Input};
+use parking_lot::Mutex as ParkingMutex;
 use serde::de::{Deserializer, Error as DeError};
 use serde_json::Value;
 use subxt::OnlineClient;
@@ -100,6 +101,10 @@ impl<'de> serde::Deserialize<'de> for RawHeader {
 /// Concurrent callers for the same id await one in-flight request rather than
 /// each opening (and leaking) a separate remote subscription.
 type FollowSetup = Shared<BoxFuture<'static, Result<String, RuntimeFailure>>>;
+
+/// Shared start task published synchronously when a local follow stream is
+/// created. Follow-bound operations await it so they cannot overtake setup.
+type LocalFollowStart = Shared<BoxFuture<'static, Result<(), RuntimeFailure>>>;
 
 /// Shared, single-flight provider connect keyed by genesis hash. Concurrent
 /// first connections for the same chain await one in-flight `connect` rather
@@ -229,6 +234,7 @@ pub struct ChainRuntime {
     spawner: Spawner,
     connections: Arc<Mutex<HashMap<String, Arc<ChainConnection>>>>,
     connection_setups: Arc<Mutex<HashMap<String, ConnectionSetup>>>,
+    follow_starts: Arc<ParkingMutex<HashMap<(Vec<u8>, String), LocalFollowStart>>>,
     transaction_operations: Arc<Mutex<BTreeMap<u64, TransactionOperation>>>,
     next_transaction_operation_id: Arc<AtomicU64>,
 }
@@ -262,6 +268,7 @@ impl ChainRuntime {
             spawner,
             connections: Arc::new(Mutex::new(HashMap::new())),
             connection_setups: Arc::new(Mutex::new(HashMap::new())),
+            follow_starts: Arc::new(ParkingMutex::new(HashMap::new())),
             transaction_operations: Arc::new(Mutex::new(BTreeMap::new())),
             next_transaction_operation_id: Arc::new(AtomicU64::new(1)),
         }
@@ -281,19 +288,31 @@ impl ChainRuntime {
         let cleanup_runtime = self.clone();
         let cleanup_genesis_hash = request.genesis_hash.clone();
         let cleanup_follow_id = follow_subscription_id.clone();
+        let follow_start_key = (request.genesis_hash.clone(), follow_subscription_id.clone());
         let cancelled = Arc::new(AtomicBool::new(false));
         let setup_cancelled = cancelled.clone();
         let cleanup_cancelled = cancelled.clone();
 
-        // Every `start_follow` failure path tears the follow state down,
-        // dropping the stored sender; with this task's clone gone too, the
-        // local stream ends. Sender drop is the single termination mechanism.
-        let fut = async move {
-            let _ = runtime
+        // Publish the shared start before spawning it. A follow-bound request
+        // may arrive in the next product frame before the executor first polls
+        // this task; it must await this exact setup rather than reject the
+        // provider-synthetic local follow id as unknown.
+        let start: LocalFollowStart = async move {
+            runtime
                 .start_follow(follow_subscription_id, request, tx, setup_cancelled)
-                .await;
-        };
-        (self.spawner)(fut.boxed());
+                .await
+        }
+        .boxed()
+        .shared();
+        self.follow_starts
+            .lock()
+            .insert(follow_start_key, start.clone());
+        (self.spawner)(
+            async move {
+                let _ = start.await;
+            }
+            .boxed(),
+        );
 
         ManagedSubscription::new(
             rx.boxed(),
@@ -741,6 +760,14 @@ impl ChainRuntime {
         local_follow_id: String,
         with_runtime: bool,
     ) -> Result<String, RuntimeFailure> {
+        let follow_start = self
+            .follow_starts
+            .lock()
+            .get(&(connection.genesis_hash.clone(), local_follow_id.clone()))
+            .cloned();
+        if let Some(start) = follow_start {
+            start.await.map_err(|failure| failure.reclassify(method))?;
+        }
         let remote_follow_id = connection
             .require_remote_follow(method, local_follow_id.clone())
             .await?;
@@ -755,6 +782,9 @@ impl ChainRuntime {
 
     #[instrument(skip_all, fields(runtime.method = "chain_runtime.cleanup_follow"))]
     fn cleanup_follow(&self, genesis_hash: &[u8], local_follow_id: &str) {
+        self.follow_starts
+            .lock()
+            .remove(&(genesis_hash.to_vec(), local_follow_id.to_string()));
         let key = encode_hex(genesis_hash);
         let Some(connection) = self.connections.lock().unwrap().get(&key).cloned() else {
             return;
@@ -1546,6 +1576,7 @@ mod tests {
     use async_trait::async_trait;
     use futures::channel::mpsc as fut_mpsc;
     use futures::stream::{self, BoxStream};
+    use parking_lot::{Condvar, Mutex as ParkingMutex};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn spawner_for_tests() -> Spawner {
@@ -1819,6 +1850,89 @@ mod tests {
         .expect("ok response");
         assert_eq!(response.header, Some(vec![0xde, 0xad, 0xbe, 0xef]));
         assert_eq!(provider.connect_calls.load(Ordering::SeqCst), 1);
+        let sent = provider.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].contains("chainHead_v1_follow"));
+        assert!(sent[1].contains("chainHead_v1_header"));
+    }
+
+    #[test]
+    fn header_waits_for_a_just_created_follow() {
+        let provider = Arc::new(ScriptedProvider::new(|request| {
+            let id = extract_id(request).unwrap();
+            if request.contains("chainHead_v1_follow") {
+                Some(format!(
+                    r#"{{"jsonrpc":"2.0","id":"{id}","result":"REMOTE-FOLLOW"}}"#
+                ))
+            } else if request.contains("chainHead_v1_header") {
+                Some(format!(
+                    r#"{{"jsonrpc":"2.0","id":"{id}","result":"0xdeadbeef"}}"#
+                ))
+            } else {
+                None
+            }
+        }));
+        let gate = Arc::new((ParkingMutex::new(false), Condvar::new()));
+        let spawner_gate = gate.clone();
+        let spawner: Spawner = Arc::new(move |future| {
+            let task_gate = spawner_gate.clone();
+            std::thread::spawn(move || {
+                let (released, ready) = &*task_gate;
+                let mut released = released.lock();
+                ready.wait_while(&mut released, |released| !*released);
+                drop(released);
+                futures::executor::block_on(future);
+            });
+        });
+        let runtime = ChainRuntime::new(provider.clone(), spawner);
+        let _follow_stream = runtime.remote_chain_head_follow(
+            "local-follow".to_string(),
+            RemoteChainHeadFollowRequest {
+                genesis_hash: vec![0u8; 32],
+                with_runtime: false,
+            },
+        );
+
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let header_runtime = runtime.clone();
+        std::thread::spawn(move || {
+            let result = futures::executor::block_on(header_runtime.remote_chain_head_header(
+                RemoteChainHeadHeaderRequest {
+                    genesis_hash: vec![0u8; 32],
+                    follow_subscription_id: "local-follow".to_string(),
+                    hash: vec![1u8; 32],
+                },
+            ));
+            result_sender.send(result).unwrap();
+        });
+        for _ in 0..100 {
+            if provider.connect_calls.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            provider.connect_calls.load(Ordering::SeqCst),
+            1,
+            "the follow-bound request opened the shared connection",
+        );
+
+        let early = result_receiver.recv_timeout(std::time::Duration::from_millis(50));
+        {
+            let (released, ready) = &*gate;
+            *released.lock() = true;
+            ready.notify_all();
+        }
+        assert!(
+            matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+            "the follow-bound request overtook setup: {early:?}",
+        );
+
+        let response = result_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("header request completes after follow setup")
+            .expect("header response succeeds");
+        assert_eq!(response.header, Some(vec![0xde, 0xad, 0xbe, 0xef]));
         let sent = provider.sent.lock().unwrap().clone();
         assert_eq!(sent.len(), 2);
         assert!(sent[0].contains("chainHead_v1_follow"));
