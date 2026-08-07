@@ -230,7 +230,11 @@ function renderDecodeBlock(
 export function renderFrameValueDetail(detail: FrameValueDetail): string {
   switch (detail.kind) {
     case "bytes":
-      return `<div class="td-bytes-only">${String(detail.byteLength)}B · payload not shown</div>`;
+      // Show the raw hex when we have it (dev-only: nothing is hidden); only a
+      // frame with no retained bytes reads "payload not shown".
+      return detail.hex !== undefined
+        ? `<pre class="td-detail-pre">${String(detail.byteLength)}B · ${esc(detail.hex)}</pre>`
+        : `<div class="td-bytes-only">${String(detail.byteLength)}B · payload not shown</div>`;
     case "decoded":
       return `<pre class="td-detail-pre">${esc(stringifyValue(detail.value))}</pre>`;
   }

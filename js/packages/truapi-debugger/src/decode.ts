@@ -31,11 +31,14 @@ import type { ObservedFrame } from "./observed-frame.js";
  * `"decoded"` carries the plain JS value, returned whenever the decoder is on
  * and the frame's id has a codec that decodes its retained bytes. `"bytes"` is
  * the fallback: the decoder is off, the frame carries no retained bytes, its id
- * has no codec, or decoding threw.
+ * has no codec, or decoding threw. When the decoder is on and the bytes are
+ * retained, that fallback still carries the raw `hex` so a dev-only tool always
+ * shows *something* for a payload it could not type; `hex` is absent only in
+ * payload-blind mode (decoder off) or when no bytes were retained.
  */
 export type FrameValueDetail =
   | { kind: "decoded"; value: unknown }
-  | { kind: "bytes"; byteLength: number };
+  | { kind: "bytes"; byteLength: number; hex?: string };
 
 /** Options for {@link createFrameDecoder}. */
 export interface FrameDecoderOptions {
@@ -69,18 +72,28 @@ export function createFrameDecoder(
   const enabled = options.enabled ?? false;
   const decodeTable = options.decodeTable ?? WIRE_DECODE_TABLE;
 
+  // Raw bytes as `0x…` hex so a payload the decoder can't type is still visible
+  // in the drill-down (a dev-only tool hides nothing it has the bytes for).
+  const toHex = (bytes: Uint8Array): string =>
+    "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+
   const detail = (frame: ObservedFrame): FrameValueDetail => {
     if (!enabled) return { kind: "bytes", byteLength: frame.byteLength };
+    // Decoder on: keep the raw hex on the bytes fallback so nothing reads
+    // "payload not shown" when the bytes are right there.
+    const bytesFallback = (): FrameValueDetail => ({
+      kind: "bytes",
+      byteLength: frame.byteLength,
+      ...(frame.bytes ? { hex: toHex(frame.bytes) } : {}),
+    });
     const decode = decodeTable[frame.frameId];
-    if (!decode || !frame.bytes) {
-      return { kind: "bytes", byteLength: frame.byteLength };
-    }
+    if (!decode || !frame.bytes) return bytesFallback();
     try {
       return { kind: "decoded", value: decode(frame.bytes) };
     } catch {
       // A malformed or version-skewed payload must not break the drill-down;
-      // fall back to the byte-length view.
-      return { kind: "bytes", byteLength: frame.byteLength };
+      // fall back to the raw hex.
+      return bytesFallback();
     }
   };
 

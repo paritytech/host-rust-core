@@ -100,9 +100,19 @@ describe("renderTraceDetail", () => {
 });
 
 describe("renderFrameValueDetail", () => {
-  test("bytes-only never shows a payload", () => {
+  test("bytes-only with no retained hex shows byte length only", () => {
     const html = renderFrameValueDetail({ kind: "bytes", byteLength: 12 });
     expect(html).toContain("12B");
     expect(html).toContain("payload not shown");
+  });
+
+  test("bytes with retained hex shows the raw hex, never 'payload not shown'", () => {
+    const html = renderFrameValueDetail({
+      kind: "bytes",
+      byteLength: 3,
+      hex: "0x010203",
+    });
+    expect(html).toContain("0x010203");
+    expect(html).not.toContain("payload not shown");
   });
 });
