@@ -14,8 +14,8 @@ import PackageDescription
 // false consumes the published release asset below (updated by publish.sh).
 let useLocalBinary = false
 
-let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.3.0/truapi_server.xcframework.zip"
-let publishedBinaryChecksum = "c2eeb3d79d3186f4b85de43a18fd7df127a2f3ffe814def9b7dd4e1b897934e0"
+let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.4.0/truapi_server.xcframework.zip"
+let publishedBinaryChecksum = "a3029c071ef37e876ae51e45c177eab09cb976f9dbd729b93a2191d6ca8331be"
 
 let binaryTarget: Target = useLocalBinary
     ? .binaryTarget(
