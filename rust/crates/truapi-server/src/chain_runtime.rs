@@ -105,6 +105,8 @@ type FollowSetup = Shared<BoxFuture<'static, Result<String, RuntimeFailure>>>;
 /// Shared start task published synchronously when a local follow stream is
 /// created. Follow-bound operations await it so they cannot overtake setup.
 type LocalFollowStart = Shared<BoxFuture<'static, Result<(), RuntimeFailure>>>;
+type FollowStartRegistry =
+    Arc<ParkingMutex<HashMap<(Vec<u8>, String), LocalFollowStart>>>;
 
 /// Shared, single-flight provider connect keyed by genesis hash. Concurrent
 /// first connections for the same chain await one in-flight `connect` rather
@@ -234,7 +236,7 @@ pub struct ChainRuntime {
     spawner: Spawner,
     connections: Arc<Mutex<HashMap<String, Arc<ChainConnection>>>>,
     connection_setups: Arc<Mutex<HashMap<String, ConnectionSetup>>>,
-    follow_starts: Arc<ParkingMutex<HashMap<(Vec<u8>, String), LocalFollowStart>>>,
+    follow_starts: FollowStartRegistry,
     /// Synchronously registered follow intents, keyed by genesis hash. Alias
     /// cardinality includes setup tasks that have not yet been polled.
     follow_intents: Arc<Mutex<HashMap<String, HashSet<String>>>>,
