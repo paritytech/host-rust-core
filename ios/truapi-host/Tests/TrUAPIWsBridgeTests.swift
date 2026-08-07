@@ -83,12 +83,12 @@ final class StubHostCallbacks: HostCallbacks, @unchecked Sendable {
         roomId _: String,
         name _: String,
         icon _: String
-    ) throws -> NativeChatRoomRegistrationStatus { .new }
+    ) throws -> ChatRoomRegistrationStatus { .new }
     func chatPostTextMessage(roomId _: String, text _: String) throws -> String { "message-id" }
     func chatPostCustomMessage(
         roomId _: String,
         messageType _: String,
         payload _: Data
     ) throws -> String { "message-id" }
-    func chatListRooms() throws -> [NativeChatRoom] { [] }
+    func chatListRooms() throws -> [ChatRoom] { [] }
 }

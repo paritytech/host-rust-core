@@ -10,6 +10,20 @@ use truapi::versioned::chat::HostChatActionSubscribeItem;
 use crate::host_core::ProductRuntimeError;
 const ACTION_BUFFER_CAPACITY: usize = 64;
 
+/// Chat access policy shared by the wire runtime and the native entrypoints:
+/// only a Chat-kind execution with an active session may use Chat, and the
+/// host must have installed a native adapter.
+pub(crate) fn chat_platform_for(
+    execution_kind: truapi_platform::ProductExecutionKind,
+    has_session: bool,
+    chat: Option<&Arc<dyn truapi_platform::ChatPlatform>>,
+) -> Result<Arc<dyn truapi_platform::ChatPlatform>, ProductRuntimeError> {
+    if execution_kind != truapi_platform::ProductExecutionKind::Chat || !has_session {
+        return Err(ProductRuntimeError::Denied);
+    }
+    chat.cloned().ok_or(ProductRuntimeError::Unsupported)
+}
+
 #[derive(Default)]
 struct State {
     actions: Option<mpsc::UnboundedSender<HostChatActionSubscribeItem>>,
@@ -45,13 +59,14 @@ impl ChatConnection {
     }
 
     /// Publish one native action, buffering it until the product subscribes.
+    /// On failure the undelivered action is returned alongside the error.
     pub(crate) fn publish_action(
         &self,
         mut action: HostChatActionSubscribeItem,
-    ) -> Result<(), ProductRuntimeError> {
+    ) -> Result<(), (ProductRuntimeError, Box<HostChatActionSubscribeItem>)> {
         let mut state = self.state.lock().expect("chat state mutex poisoned");
         if state.closed {
-            return Err(ProductRuntimeError::Closed);
+            return Err((ProductRuntimeError::Closed, Box::new(action)));
         }
         if let Some(sender) = state.actions.as_ref() {
             match sender.unbounded_send(action) {
@@ -61,7 +76,7 @@ impl ChatConnection {
             state.actions = None;
         }
         if state.action_buffer.len() == ACTION_BUFFER_CAPACITY {
-            return Err(ProductRuntimeError::BufferFull);
+            return Err((ProductRuntimeError::BufferFull, Box::new(action)));
         }
         state.action_buffer.push_back(action);
         Ok(())
@@ -120,7 +135,7 @@ mod tests {
 
         assert!(matches!(
             connection.publish_action(action("overflow")),
-            Err(ProductRuntimeError::BufferFull)
+            Err((ProductRuntimeError::BufferFull, _))
         ));
     }
 
@@ -134,7 +149,7 @@ mod tests {
         assert_eq!(block_on(actions.next()), None);
         assert!(matches!(
             connection.publish_action(action("too late")),
-            Err(ProductRuntimeError::Closed)
+            Err((ProductRuntimeError::Closed, _))
         ));
     }
 
@@ -153,7 +168,7 @@ mod tests {
         second.close();
         assert!(matches!(
             second.publish_action(action("closed")),
-            Err(ProductRuntimeError::Closed)
+            Err((ProductRuntimeError::Closed, _))
         ));
     }
 }

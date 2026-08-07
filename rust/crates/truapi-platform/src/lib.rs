@@ -101,6 +101,7 @@ pub struct ProductContext {
 
 /// Trusted kind of product executable attached to a TrUAPI connection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ProductExecutionKind {
     /// Visible single-page application entrypoint such as `app/index.html`.
     #[default]

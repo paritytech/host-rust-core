@@ -6,22 +6,20 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  DEFAULT_BUNDLE,
+  appGroupId,
   bootAndInstallApp,
   captureOptional,
-  delay,
+  defaultAppPath,
   isLoopback,
+  readPlistValue,
   run,
+  waitFor,
 } from "./lib/ios-simulator.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const bundle =
-  process.env.TRUAPI_IOS_E2E_BUNDLE ?? "io.pcf.polkadotapp.develop";
-const app =
-  process.env.TRUAPI_IOS_E2E_APP ??
-  resolve(
-    repoRoot,
-    "../polkadot-app-ios-v2/build/DerivedData/Build/Products/Debug-iphonesimulator/polkadot-app.app",
-  );
+const bundle = process.env.TRUAPI_IOS_E2E_BUNDLE ?? DEFAULT_BUNDLE;
+const app = process.env.TRUAPI_IOS_E2E_APP ?? defaultAppPath(repoRoot);
 const productHost =
   process.env.TRUAPI_IOS_E2E_PRODUCT_HOST ?? "truapi-playground.dot";
 const productUrl =
@@ -115,18 +113,20 @@ async function probePlayground() {
   }
 }
 
-async function waitForPlayground(child) {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`TrUAPI playground exited with ${child.exitCode}`);
-    }
-    if ((await probePlayground()) === "ready") {
-      return;
-    }
-    await delay(500);
-  }
-  throw new Error(`Timed out waiting for TrUAPI playground at ${productUrl}`);
+function waitForPlayground(child) {
+  return waitFor(
+    async () => {
+      if (child.exitCode !== null) {
+        throw new Error(`TrUAPI playground exited with ${child.exitCode}`);
+      }
+      return (await probePlayground()) === "ready";
+    },
+    {
+      timeoutMs: 60_000,
+      intervalMs: 500,
+      message: `Timed out waiting for TrUAPI playground at ${productUrl}`,
+    },
+  );
 }
 
 function readSigningHostSession(deviceId) {
@@ -135,12 +135,8 @@ function readSigningHostSession(deviceId) {
     return installedSession;
   }
 
-  const developmentBundle = "io.pcf.polkadotapp.develop";
-  if (bundle !== developmentBundle) {
-    const developmentSession = readSessionForBundle(
-      deviceId,
-      developmentBundle,
-    );
+  if (bundle !== DEFAULT_BUNDLE) {
+    const developmentSession = readSessionForBundle(deviceId, DEFAULT_BUNDLE);
     if (developmentSession.username && developmentSession.entropyId) {
       console.log(
         `Reusing the registered ${developmentSession.username} simulator session with the TestFlight configuration.`,
@@ -174,10 +170,7 @@ function readSessionForBundle(deviceId, appBundle) {
       )
     : undefined;
 
-  const isDevelopment = appBundle.endsWith(".develop");
-  const groupId = isDevelopment
-    ? "group.pcf.polkadotapp.develop"
-    : "group.pcf.polkadotapp";
+  const groupId = appGroupId(appBundle);
   const appGroup = captureOptional("xcrun", [
     "simctl",
     "get_app_container",
@@ -196,14 +189,6 @@ function readSessionForBundle(deviceId, appBundle) {
     username: username || null,
     entropyId: entropyId || null,
   };
-}
-
-function readPlistValue(plist, key) {
-  return captureOptional("/usr/libexec/PlistBuddy", [
-    "-c",
-    `Print :${key}`,
-    plist,
-  ]);
 }
 
 async function keepPlaygroundAlive(child) {

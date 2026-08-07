@@ -108,34 +108,11 @@ export class ChatDiagnosis {
           "BodySmallRegular",
         ),
       ),
-      {
-        tag: "Button",
-        value: {
-          modifiers: [],
-          props: {
-            text: "Refresh results",
-            variant: "Secondary",
-            enabled: true,
-            loading: false,
-            clickAction: CHAT_DIAGNOSIS_REFRESH_ACTION,
-          },
-          children: [],
-        },
-      },
-      {
-        tag: "Button",
-        value: {
-          modifiers: [],
-          props: {
-            text: this.#copyStatus === "copied" ? "Copied ✓" : "Copy report",
-            variant: "Secondary",
-            enabled: true,
-            loading: false,
-            clickAction: CHAT_DIAGNOSIS_COPY_ACTION,
-          },
-          children: [],
-        },
-      },
+      button("Refresh results", CHAT_DIAGNOSIS_REFRESH_ACTION),
+      button(
+        this.#copyStatus === "copied" ? "Copied ✓" : "Copy report",
+        CHAT_DIAGNOSIS_COPY_ACTION,
+      ),
       ...(this.#copyStatus === "unavailable"
         ? [
             text(
@@ -173,6 +150,23 @@ function text(
       modifiers: [],
       props: { style },
       children: [{ tag: "String", value: { text: value } }],
+    },
+  };
+}
+
+function button(text: string, clickAction: string): CustomRendererNode {
+  return {
+    tag: "Button",
+    value: {
+      modifiers: [],
+      props: {
+        text,
+        variant: "Secondary",
+        enabled: true,
+        loading: false,
+        clickAction,
+      },
+      children: [],
     },
   };
 }

@@ -7,33 +7,32 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, extname, resolve, sep } from "node:path";
 import {
+  CHAT_DIAGNOSIS_HEADING,
   decodeTextMessage,
   labelChatDiagnosisReport,
 } from "./lib/chat-diagnosis-report.mjs";
 import {
+  DEFAULT_BUNDLE,
+  appGroupId,
   bootAndInstallApp,
   capture,
+  defaultAppPath,
   delay,
   isLoopback,
+  readPlistValue,
   run,
+  waitFor,
 } from "./lib/ios-simulator.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const bundle =
-  process.env.TRUAPI_IOS_E2E_BUNDLE ?? "io.pcf.polkadotapp.develop";
-const app =
-  process.env.TRUAPI_IOS_E2E_APP ??
-  resolve(
-    repoRoot,
-    "../polkadot-app-ios-v2/build/DerivedData/Build/Products/Debug-iphonesimulator/polkadot-app.app",
-  );
+const bundle = process.env.TRUAPI_IOS_E2E_BUNDLE ?? DEFAULT_BUNDLE;
+const app = process.env.TRUAPI_IOS_E2E_APP ?? defaultAppPath(repoRoot);
 const productRoot = resolve(
   repoRoot,
   process.env.TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR ?? "playground",
@@ -51,7 +50,6 @@ const expectedReply =
   process.env.TRUAPI_IOS_E2E_CHAT_EXPECTED_REPLY ?? "Echo: hello";
 const expectedStartupMessage =
   process.env.TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE ?? "";
-const reportHeading = "## Truapi Chat Diagnosis";
 const expectCustomRenderer =
   process.env.TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER !== "0";
 const worker = resolve(productRoot, "out/worker/index.js");
@@ -111,9 +109,6 @@ for (const marker of [...connectionMarkers, customRendererMarker]) {
     unlinkSync(marker);
   }
 }
-const initialRendererMarker = existsSync(customRendererMarker)
-  ? fileVersion(customRendererMarker)
-  : undefined;
 const workerDestination = resolve(
   appData,
   "Library/Application Support/Products",
@@ -126,23 +121,16 @@ const contentHashPreferences = resolve(
   "Library/Preferences/io.products.dotns.cache.plist",
 );
 const currentCachedWorkerDestination = () => {
-  if (!existsSync(contentHashPreferences)) return undefined;
-  try {
-    const contentHash = capture("/usr/libexec/PlistBuddy", [
-      "-c",
-      `Print :${productHost}`,
-      contentHashPreferences,
-    ]).trim();
-    if (/^[0-9a-f]+$/i.test(contentHash)) {
-      return resolve(
-        appData,
-        "Library/Application Support/DotNsContent",
-        contentHash,
-        "worker/index.js",
-      );
-    }
-  } catch {
-    // This product has no cached DotNs content, so the fallback is authoritative.
+  // A missing key means this product has no cached DotNs content, so the
+  // fallback destination is authoritative.
+  const contentHash = readPlistValue(contentHashPreferences, productHost);
+  if (contentHash && /^[0-9a-f]+$/i.test(contentHash)) {
+    return resolve(
+      appData,
+      "Library/Application Support/DotNsContent",
+      contentHash,
+      "worker/index.js",
+    );
   }
   return undefined;
 };
@@ -155,15 +143,12 @@ for (const destination of workerDestinations) {
   cpSync(worker, destination);
 }
 
-const appGroupId = bundle.endsWith(".develop")
-  ? "group.pcf.polkadotapp.develop"
-  : "group.pcf.polkadotapp";
 const appGroup = capture("xcrun", [
   "simctl",
   "get_app_container",
   device.udid,
   bundle,
-  appGroupId,
+  appGroupId(bundle),
 ]).trim();
 const userDataDatabase = resolve(appGroup, "CoreData/UserDataModel.sqlite");
 const chatIdentifier = `1:${productHost}:${roomId}`;
@@ -231,9 +216,9 @@ try {
       userDataDatabase,
       chatIdentifier,
       messageWatermark,
-      reportHeading,
+      CHAT_DIAGNOSIS_HEADING,
     );
-    const hostReport = labelChatDiagnosisReport(report, "iOS", 5);
+    const hostReport = labelChatDiagnosisReport(report, "iOS");
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, `${hostReport}\n`);
   } else {
@@ -253,11 +238,7 @@ try {
     );
   }
   if (expectCustomRenderer) {
-    await waitForFileChange(
-      customRendererMarker,
-      initialRendererMarker,
-      30_000,
-    );
+    await waitForFiles([customRendererMarker], 30_000);
   }
   await delay(2_000);
   mkdirSync(dirname(screenshot), { recursive: true });
@@ -358,35 +339,12 @@ function contentType(file) {
   }
 }
 
-async function waitForFiles(files, timeoutMs, hint) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (files.every(existsSync)) {
-      return;
-    }
-    await delay(250);
-  }
-  throw new Error(
-    `Timed out waiting for files: ${files.join(", ")}${hint ? `\n${hint}` : ""}`,
-  );
-}
-
-async function waitForFileChange(file, initialVersion, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(file) && fileVersion(file) !== initialVersion) {
-      return;
-    }
-    await delay(25);
-  }
-  throw new Error(
-    `Timed out waiting for a replacement renderer update: ${file}`,
-  );
-}
-
-function fileVersion(file) {
-  const stat = statSync(file);
-  return `${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}`;
+function waitForFiles(files, timeoutMs, hint) {
+  return waitFor(() => files.every(existsSync), {
+    timeoutMs,
+    message: () =>
+      `Timed out waiting for files: ${files.join(", ")}${hint ? `\n${hint}` : ""}`,
+  });
 }
 
 function filesHaveEqualContents(first, second) {
@@ -408,11 +366,12 @@ function latestMessageId(database, identifier) {
   return Number.parseInt(value, 10) || 0;
 }
 
-async function waitForTextPrefix(database, identifier, afterMessageId, prefix) {
-  const deadline = Date.now() + 30_000;
-
-  while (Date.now() < deadline) {
-    if (existsSync(database)) {
+function waitForTextPrefix(database, identifier, afterMessageId, prefix) {
+  return waitFor(
+    () => {
+      if (!existsSync(database)) {
+        return undefined;
+      }
       const query = `
         SELECT hex(content.ZDATA)
         FROM ZCDCHATMESSAGE AS message
@@ -432,12 +391,13 @@ async function waitForTextPrefix(database, identifier, afterMessageId, prefix) {
           return text;
         }
       }
-    }
-    await delay(250);
-  }
-
-  throw new Error(
-    `Timed out waiting for a message starting with ${JSON.stringify(prefix)} in ${identifier}`,
+      return undefined;
+    },
+    {
+      timeoutMs: 30_000,
+      message: () =>
+        `Timed out waiting for a message starting with ${JSON.stringify(prefix)} in ${identifier}`,
+    },
   );
 }
 

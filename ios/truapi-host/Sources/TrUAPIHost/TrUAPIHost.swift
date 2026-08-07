@@ -39,19 +39,6 @@ public enum PairingDeeplinkScheme: Sendable {
     }
 }
 
-/// Trusted kind of executable attached to a product connection.
-public enum ProductExecutionKind: Sendable, Equatable {
-    case spa
-    case chat
-
-    fileprivate var native: NativeProductExecutionKind {
-        switch self {
-        case .spa: .spa
-        case .chat: .chat
-        }
-    }
-}
-
 /// Static product and pairing config supplied before the Rust core handles
 /// product calls. One core instance represents one product identity.
 ///
@@ -104,7 +91,7 @@ public struct RuntimeConfig: Sendable {
     fileprivate var native: NativeRuntimeConfig {
         NativeRuntimeConfig(
             productId: productId,
-            executionKind: executionKind.native,
+            executionKind: executionKind,
             hostName: hostName,
             hostIcon: hostIcon,
             hostVersion: hostVersion,
@@ -181,7 +168,7 @@ public struct ProductExecutionConfig: Sendable, Equatable {
     fileprivate var native: NativeProductExecutionConfig {
         NativeProductExecutionConfig(
             productId: productId,
-            executionKind: executionKind.native
+            executionKind: executionKind
         )
     }
 }
@@ -427,7 +414,7 @@ public protocol HostBridge: AnyObject, Sendable {
 
     /// Create or resolve a native product Chat room.
     func chatCreateRoom(roomId: String, name: String, icon: String) throws
-        -> NativeChatRoomRegistrationStatus
+        -> ChatRoomRegistrationStatus
 
     /// Persist a text message in native Chat storage.
     func chatPostTextMessage(roomId: String, text: String) throws -> String
@@ -440,7 +427,7 @@ public protocol HostBridge: AnyObject, Sendable {
     ) throws -> String
 
     /// Return the current product-scoped native Chat rooms.
-    func chatListRooms() throws -> [NativeChatRoom]
+    func chatListRooms() throws -> [ChatRoom]
 }
 
 public extension HostBridge {
@@ -460,7 +447,7 @@ public extension HostBridge {
         roomId: String,
         name: String,
         icon: String
-    ) throws -> NativeChatRoomRegistrationStatus {
+    ) throws -> ChatRoomRegistrationStatus {
         throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
     }
     func chatPostTextMessage(roomId: String, text: String) throws -> String {
@@ -473,7 +460,7 @@ public extension HostBridge {
     ) throws -> String {
         throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
     }
-    func chatListRooms() throws -> [NativeChatRoom] { [] }
+    func chatListRooms() throws -> [ChatRoom] { [] }
 }
 
 /// Adapter that bridges the public `HostBridge` to the generated UniFFI
@@ -612,7 +599,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         roomId: String,
         name: String,
         icon: String
-    ) throws -> NativeChatRoomRegistrationStatus {
+    ) throws -> ChatRoomRegistrationStatus {
         try withHostRejection {
             try bridge.chatCreateRoom(roomId: roomId, name: name, icon: icon)
         }
@@ -638,7 +625,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func chatListRooms() throws -> [NativeChatRoom] {
+    func chatListRooms() throws -> [ChatRoom] {
         try withHostRejection { try bridge.chatListRooms() }
     }
 
@@ -757,7 +744,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func startWsBridge(bindPort: UInt16) throws -> WsBridgeEndpoint
     func stopWsBridge()
     func close()
-    func publishChatAction(_ action: NativeChatAction) throws
+    func publishChatAction(_ action: HostChatActionSubscribeItem) throws
     func renderCustomMessage(
         messageId: String,
         messageType: String,
@@ -774,7 +761,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
-    func notifyChatRoomsChanged(rooms: [NativeChatRoom])
+    func notifyChatRoomsChanged(rooms: [ChatRoom])
 }
 
 /// One SPA or Chat executable connected to a shared host runtime.
@@ -803,7 +790,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         inner.shutdown()
     }
 
-    public func publishChatAction(_ action: NativeChatAction) throws {
+    public func publishChatAction(_ action: HostChatActionSubscribeItem) throws {
         try inner.publishChatAction(action: action)
     }
 
@@ -851,7 +838,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         inner.notifyChainClosed(connectionId: connectionId)
     }
 
-    public func notifyChatRoomsChanged(rooms: [NativeChatRoom]) {
+    public func notifyChatRoomsChanged(rooms: [ChatRoom]) {
         inner.notifyChatRoomsChanged(rooms: rooms)
     }
 }
@@ -900,7 +887,7 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     }
 
     /// Publish a native Chat action to this core's connected Chat worker.
-    public func publishChatAction(_ action: NativeChatAction) throws {
+    public func publishChatAction(_ action: HostChatActionSubscribeItem) throws {
         try inner.publishChatAction(action: action)
     }
 
@@ -985,7 +972,7 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
 
     /// Push a complete replacement of the native Chat room list to active
     /// product subscriptions.
-    public func notifyChatRoomsChanged(rooms: [NativeChatRoom]) {
+    public func notifyChatRoomsChanged(rooms: [ChatRoom]) {
         inner.notifyChatRoomsChanged(rooms: rooms)
     }
 }

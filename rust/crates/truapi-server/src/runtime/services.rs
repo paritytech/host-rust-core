@@ -14,7 +14,7 @@ use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
-use truapi_platform::{ChatPlatform, JsonRpcConnection, Platform};
+use truapi_platform::{JsonRpcConnection, Platform};
 
 /// Upper bound on the in-core preimage cache. The cache is a bridge until
 /// content propagates to the lookup backend, not a store, so it stays small.
@@ -28,8 +28,6 @@ const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
 pub(crate) struct RuntimeServices {
     /// Host platform backing all syscalls.
     pub(crate) platform: Arc<dyn Platform>,
-    /// Optional native Chat adapter shared by Chat product connections.
-    pub(crate) chat: Option<Arc<dyn ChatPlatform>>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -57,39 +55,6 @@ impl RuntimeServices {
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
     ) -> Arc<Self> {
-        Self::build(
-            platform,
-            None,
-            people_chain_genesis_hash,
-            bulletin_chain_genesis_hash,
-            spawner,
-        )
-    }
-
-    /// Build role-neutral runtime services with a native Chat adapter.
-    pub(crate) fn new_with_chat(
-        platform: Arc<dyn Platform>,
-        chat: Arc<dyn ChatPlatform>,
-        people_chain_genesis_hash: [u8; 32],
-        bulletin_chain_genesis_hash: [u8; 32],
-        spawner: Spawner,
-    ) -> Arc<Self> {
-        Self::build(
-            platform,
-            Some(chat),
-            people_chain_genesis_hash,
-            bulletin_chain_genesis_hash,
-            spawner,
-        )
-    }
-
-    fn build(
-        platform: Arc<dyn Platform>,
-        chat: Option<Arc<dyn ChatPlatform>>,
-        people_chain_genesis_hash: [u8; 32],
-        bulletin_chain_genesis_hash: [u8; 32],
-        spawner: Spawner,
-    ) -> Arc<Self> {
         let chain_provider = Arc::new(HostChainProvider {
             platform: platform.clone(),
         });
@@ -99,7 +64,6 @@ impl RuntimeServices {
         let bulletin = BulletinRpc::new(chain.clone(), bulletin_chain_genesis_hash);
         Arc::new(Self {
             platform,
-            chat,
             chain,
             statement_store,
             bulletin,

@@ -55,13 +55,17 @@ impl NativeProductControlState {
         &mut self,
         action: v01::HostChatActionSubscribeItem,
     ) -> Result<(), NativeChatError> {
-        if let Some(control) = self.control.as_ref() {
-            match control.publish_chat_action(action.clone()) {
+        let action = match self.control.as_ref() {
+            Some(control) => match control.publish_chat_action(action) {
                 Ok(()) => return Ok(()),
-                Err(crate::ProductRuntimeError::Closed) => self.control = None,
-                Err(error) => return Err(error.into()),
-            }
-        }
+                Err((crate::ProductRuntimeError::Closed, action)) => {
+                    self.control = None;
+                    *action
+                }
+                Err((error, _)) => return Err(error.into()),
+            },
+            None => action,
+        };
         if self.pending_chat_actions.len() == NATIVE_CHAT_ACTION_BUFFER_CAPACITY {
             return Err(NativeChatError::BufferFull);
         }
@@ -158,124 +162,6 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotAppDev,
 }
 
-/// Trusted executable kind selected by the native host.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeProductExecutionKind {
-    /// Visible single-page application entrypoint.
-    #[default]
-    Spa,
-    /// Headless Chat worker entrypoint.
-    Chat,
-}
-
-impl From<NativeProductExecutionKind> for ProductExecutionKind {
-    fn from(kind: NativeProductExecutionKind) -> Self {
-        match kind {
-            NativeProductExecutionKind::Spa => Self::Spa,
-            NativeProductExecutionKind::Chat => Self::Chat,
-        }
-    }
-}
-
-/// Native mirror of the room registration outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeChatRoomRegistrationStatus {
-    /// The native host created the room.
-    New,
-    /// The native host already had the room.
-    Exists,
-}
-
-/// One product-scoped native Chat room.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct NativeChatRoom {
-    /// Product-local room identifier.
-    pub room_id: String,
-    /// Whether the product owns the room or participates as a bot.
-    pub is_host: bool,
-}
-
-/// Native Chat action published to a product worker.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeChatAction {
-    /// A user posted a text message.
-    MessagePostedText {
-        /// Product-local room identifier.
-        room_id: String,
-        /// Host-derived peer identifier.
-        peer: String,
-        /// User-entered text.
-        text: String,
-    },
-    /// A user triggered an opaque action emitted by a message or widget.
-    ActionTriggered {
-        /// Product-local room identifier.
-        room_id: String,
-        /// Host-derived peer identifier.
-        peer: String,
-        /// Message containing the action.
-        message_id: String,
-        /// Product-defined action identifier.
-        action_id: String,
-        /// Optional product-defined action payload.
-        payload: Option<Vec<u8>>,
-    },
-    /// A user submitted a command.
-    Command {
-        /// Product-local room identifier.
-        room_id: String,
-        /// Host-derived peer identifier.
-        peer: String,
-        /// Command name.
-        command: String,
-        /// Command arguments.
-        payload: String,
-    },
-}
-
-impl From<NativeChatAction> for v01::HostChatActionSubscribeItem {
-    fn from(action: NativeChatAction) -> Self {
-        match action {
-            NativeChatAction::MessagePostedText {
-                room_id,
-                peer,
-                text,
-            } => Self {
-                room_id,
-                peer,
-                payload: v01::ChatActionPayload::MessagePosted(v01::ChatMessageContent::Text {
-                    text,
-                }),
-            },
-            NativeChatAction::ActionTriggered {
-                room_id,
-                peer,
-                message_id,
-                action_id,
-                payload,
-            } => Self {
-                room_id,
-                peer,
-                payload: v01::ChatActionPayload::ActionTriggered(v01::ActionTrigger {
-                    message_id,
-                    action_id,
-                    payload,
-                }),
-            },
-            NativeChatAction::Command {
-                room_id,
-                peer,
-                command,
-                payload,
-            } => Self {
-                room_id,
-                peer,
-                payload: v01::ChatActionPayload::Command(v01::ChatCommand { command, payload }),
-            },
-        }
-    }
-}
-
 /// Native failure while routing Chat work to a product connection.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum NativeChatError {
@@ -314,7 +200,7 @@ pub struct NativeRuntimeConfig {
     /// Canonical product identifier used for account derivation.
     pub product_id: String,
     /// Trusted executable kind derived by the native host before loading it.
-    pub execution_kind: NativeProductExecutionKind,
+    pub execution_kind: ProductExecutionKind,
     /// Host name shown by the wallet during SSO pairing.
     pub host_name: String,
     /// Optional host icon URL shown by the wallet during SSO pairing.
@@ -366,7 +252,7 @@ pub struct NativeProductExecutionConfig {
     /// Canonical product identifier used for policy, storage, and derivation.
     pub product_id: String,
     /// Trusted executable kind selected before product code starts.
-    pub execution_kind: NativeProductExecutionKind,
+    pub execution_kind: ProductExecutionKind,
 }
 
 #[derive(Debug)]
@@ -515,7 +401,7 @@ impl TryFrom<NativeProductExecutionConfig> for ProductContext {
     type Error = NativeRuntimeConfigError;
 
     fn try_from(config: NativeProductExecutionConfig) -> Result<Self, Self::Error> {
-        ProductContext::new_with_execution(config.product_id, config.execution_kind.into())
+        ProductContext::new_with_execution(config.product_id, config.execution_kind)
             .map_err(NativeRuntimeConfigError::from)
     }
 }
@@ -672,7 +558,7 @@ pub trait HostCallbacks: Send + Sync {
         room_id: String,
         name: String,
         icon: String,
-    ) -> Result<NativeChatRoomRegistrationStatus, HostRejection>;
+    ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection>;
 
     /// Persist a text message in native Chat storage.
     fn chat_post_text_message(
@@ -690,7 +576,7 @@ pub trait HostCallbacks: Send + Sync {
     ) -> Result<String, HostRejection>;
 
     /// Return the current product-scoped native Chat room list.
-    fn chat_list_rooms(&self) -> Result<Vec<NativeChatRoom>, HostRejection>;
+    fn chat_list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
 }
 
 /// Process-owned native TrUAPI runtime shared by all executable connections.
@@ -882,15 +768,13 @@ impl NativeProductExecution {
         if self.closed.load(Ordering::Acquire) {
             return Err(NativeChatError::Closed);
         }
-        if self.product.execution_kind != ProductExecutionKind::Chat
-            || !self.runtime.has_active_session()
-        {
-            return Err(NativeChatError::Denied);
-        }
-        if self.chat.is_none() {
-            return Err(NativeChatError::Unsupported);
-        }
-        Ok(())
+        crate::runtime::chat_platform_for(
+            self.product.execution_kind,
+            self.runtime.has_active_session(),
+            self.chat.as_ref(),
+        )
+        .map(drop)
+        .map_err(NativeChatError::from)
     }
 
     #[cfg(feature = "ws-bridge")]
@@ -956,17 +840,19 @@ impl NativeProductExecution {
     }
 
     /// Push a complete native Chat room-list replacement to this execution.
-    pub fn notify_chat_rooms_changed(&self, rooms: Vec<NativeChatRoom>) {
+    pub fn notify_chat_rooms_changed(&self, rooms: Vec<v01::ChatRoom>) {
         self.events.notify_chat_rooms_changed(rooms);
     }
 
     /// Publish one native Chat action, buffering it until the connection opens.
-    pub fn publish_chat_action(&self, action: NativeChatAction) -> Result<(), NativeChatError> {
+    pub fn publish_chat_action(
+        &self,
+        action: v01::HostChatActionSubscribeItem,
+    ) -> Result<(), NativeChatError> {
         self.require_chat()?;
 
         #[cfg(feature = "ws-bridge")]
         {
-            let action: v01::HostChatActionSubscribeItem = action.into();
             self.product_control
                 .lock()
                 .expect("native product control mutex poisoned")
@@ -1202,12 +1088,15 @@ impl NativeTrUApiCore {
     }
 
     /// Push a complete replacement of the current native Chat room list.
-    pub fn notify_chat_rooms_changed(&self, rooms: Vec<NativeChatRoom>) {
+    pub fn notify_chat_rooms_changed(&self, rooms: Vec<v01::ChatRoom>) {
         self.execution.notify_chat_rooms_changed(rooms);
     }
 
     /// Publish one native Chat action to the connected product worker.
-    pub fn publish_chat_action(&self, action: NativeChatAction) -> Result<(), NativeChatError> {
+    pub fn publish_chat_action(
+        &self,
+        action: v01::HostChatActionSubscribeItem,
+    ) -> Result<(), NativeChatError> {
         self.execution.publish_chat_action(action)
     }
 
@@ -1392,8 +1281,8 @@ impl NativeEventBus {
         stream::once(async move { current }).chain(rx).boxed()
     }
 
-    fn notify_chat_rooms_changed(&self, rooms: Vec<NativeChatRoom>) {
-        let item = native_chat_room_list(rooms);
+    fn notify_chat_rooms_changed(&self, rooms: Vec<v01::ChatRoom>) {
+        let item = v01::HostChatListSubscribeItem { rooms };
         self.chat_room_changes
             .lock()
             .expect("native Chat room subscribers mutex poisoned")
@@ -1699,18 +1588,13 @@ impl truapi_platform::ChatPlatform for CallbackPlatform {
                 reason: error.to_string(),
             })?;
 
-        if status == NativeChatRoomRegistrationStatus::New
+        if status == v01::ChatRoomRegistrationStatus::New
             && let Ok(rooms) = self.callbacks.chat_list_rooms()
         {
             self.events.notify_chat_rooms_changed(rooms);
         }
 
-        Ok(v01::HostChatCreateRoomResponse {
-            status: match status {
-                NativeChatRoomRegistrationStatus::New => v01::ChatRoomRegistrationStatus::New,
-                NativeChatRoomRegistrationStatus::Exists => v01::ChatRoomRegistrationStatus::Exists,
-            },
-        })
+        Ok(v01::HostChatCreateRoomResponse { status })
     }
 
     async fn post_message(
@@ -1743,24 +1627,10 @@ impl truapi_platform::ChatPlatform for CallbackPlatform {
         &self,
         _product: &ProductContext,
     ) -> BoxStream<'static, v01::HostChatListSubscribeItem> {
-        let current = native_chat_room_list(self.callbacks.chat_list_rooms().unwrap_or_default());
+        let current = v01::HostChatListSubscribeItem {
+            rooms: self.callbacks.chat_list_rooms().unwrap_or_default(),
+        };
         self.events.subscribe_chat_rooms(current)
-    }
-}
-
-fn native_chat_room_list(rooms: Vec<NativeChatRoom>) -> v01::HostChatListSubscribeItem {
-    v01::HostChatListSubscribeItem {
-        rooms: rooms
-            .into_iter()
-            .map(|room| v01::ChatRoom {
-                room_id: room.room_id,
-                participating_as: if room.is_host {
-                    v01::ChatRoomParticipation::RoomHost
-                } else {
-                    v01::ChatRoomParticipation::Bot
-                },
-            })
-            .collect(),
     }
 }
 
@@ -1773,6 +1643,17 @@ mod tests {
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
+    fn text_chat_action(text: &str) -> v01::HostChatActionSubscribeItem {
+        v01::HostChatActionSubscribeItem {
+            room_id: "room".to_string(),
+            peer: "native".to_string(),
+            payload: v01::ChatActionPayload::MessagePosted(v01::ChatMessageContent::Text {
+                text: text.to_string(),
+            }),
+        }
+    }
+
+    #[cfg(feature = "ws-bridge")]
     macro_rules! impl_no_chat_callbacks {
         () => {
             fn chat_supported(&self) -> bool {
@@ -1784,7 +1665,7 @@ mod tests {
                 _room_id: String,
                 _name: String,
                 _icon: String,
-            ) -> Result<NativeChatRoomRegistrationStatus, HostRejection> {
+            ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
                 Err(HostRejection::Rejected {
                     reason: "native Chat adapter unavailable".to_string(),
                 })
@@ -1811,7 +1692,7 @@ mod tests {
                 })
             }
 
-            fn chat_list_rooms(&self) -> Result<Vec<NativeChatRoom>, HostRejection> {
+            fn chat_list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
                 Ok(Vec::new())
             }
         };
@@ -1819,7 +1700,7 @@ mod tests {
 
     struct EventCallbacks {
         chat_supported: bool,
-        chat_room_status: Mutex<NativeChatRoomRegistrationStatus>,
+        chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<String>>,
         chat_posted_text: Mutex<Vec<(String, String)>>,
         theme: Mutex<v01::ThemeVariant>,
@@ -1835,7 +1716,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 chat_supported: false,
-                chat_room_status: Mutex::new(NativeChatRoomRegistrationStatus::New),
+                chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
                 chat_posted_text: Mutex::new(Vec::new()),
                 theme: Mutex::new(v01::ThemeVariant::Light),
@@ -1966,7 +1847,7 @@ mod tests {
             room_id: String,
             _name: String,
             _icon: String,
-        ) -> Result<NativeChatRoomRegistrationStatus, HostRejection> {
+        ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
             self.chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
@@ -1998,7 +1879,7 @@ mod tests {
             Ok("message-id".to_string())
         }
 
-        fn chat_list_rooms(&self) -> Result<Vec<NativeChatRoom>, HostRejection> {
+        fn chat_list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
             let mut room_ids = self
                 .chat_created_rooms
                 .lock()
@@ -2008,9 +1889,9 @@ mod tests {
             room_ids.dedup();
             Ok(room_ids
                 .into_iter()
-                .map(|room_id| NativeChatRoom {
+                .map(|room_id| v01::ChatRoom {
                     room_id,
-                    is_host: true,
+                    participating_as: v01::ChatRoomParticipation::RoomHost,
                 })
                 .collect())
         }
@@ -2029,7 +1910,7 @@ mod tests {
     fn native_runtime_config(product_id: &str) -> NativeRuntimeConfig {
         NativeRuntimeConfig {
             product_id: product_id.to_string(),
-            execution_kind: NativeProductExecutionKind::Spa,
+            execution_kind: ProductExecutionKind::Spa,
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
@@ -2059,7 +1940,7 @@ mod tests {
 
     fn native_execution_config(
         product_id: &str,
-        execution_kind: NativeProductExecutionKind,
+        execution_kind: ProductExecutionKind,
     ) -> NativeProductExecutionConfig {
         NativeProductExecutionConfig {
             product_id: product_id.to_string(),
@@ -2077,71 +1958,51 @@ mod tests {
         let spa = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
-                native_execution_config("shared.dot", NativeProductExecutionKind::Spa),
+                native_execution_config("shared.dot", ProductExecutionKind::Spa),
             )
             .expect("SPA execution should open");
         let chat = host
             .open_product_execution(
                 Arc::new(EventCallbacks::with_chat()),
-                native_execution_config("shared.dot", NativeProductExecutionKind::Chat),
+                native_execution_config("shared.dot", ProductExecutionKind::Chat),
             )
             .expect("Chat execution should open");
 
         assert!(Arc::ptr_eq(&spa.runtime, &chat.runtime));
         assert!(matches!(
-            spa.publish_chat_action(NativeChatAction::MessagePostedText {
-                room_id: "room".to_string(),
-                peer: "native".to_string(),
-                text: "denied".to_string(),
-            }),
+            spa.publish_chat_action(text_chat_action("denied")),
             Err(NativeChatError::Denied)
         ));
         #[cfg(feature = "ws-bridge")]
-        chat.publish_chat_action(NativeChatAction::MessagePostedText {
-            room_id: "room".to_string(),
-            peer: "native".to_string(),
-            text: "buffered".to_string(),
-        })
+        chat.publish_chat_action(text_chat_action("buffered"))
         .expect("Chat action should buffer before connection");
 
         let replacement = host
             .open_product_execution(
                 Arc::new(EventCallbacks::with_chat()),
-                native_execution_config("shared.dot", NativeProductExecutionKind::Chat),
+                native_execution_config("shared.dot", ProductExecutionKind::Chat),
             )
             .expect("replacement Chat execution should open");
         assert!(matches!(
-            chat.publish_chat_action(NativeChatAction::MessagePostedText {
-                room_id: "room".to_string(),
-                peer: "native".to_string(),
-                text: "closed".to_string(),
-            }),
+            chat.publish_chat_action(text_chat_action("closed")),
             Err(NativeChatError::Closed)
         ));
         assert!(!replacement.closed.load(Ordering::Acquire));
         #[cfg(feature = "ws-bridge")]
         replacement
-            .publish_chat_action(NativeChatAction::MessagePostedText {
-                room_id: "room".to_string(),
-                peer: "native".to_string(),
-                text: "fresh".to_string(),
-            })
+            .publish_chat_action(text_chat_action("fresh"))
             .expect("replacement execution has a fresh buffer");
     }
 
     #[test]
     fn native_chat_entrypoint_is_unsupported_without_an_adapter() {
         let mut config = native_runtime_config("chat-product.dot");
-        config.execution_kind = NativeProductExecutionKind::Chat;
+        config.execution_kind = ProductExecutionKind::Chat;
         config.local_session_secret = Some(vec![7; 32]);
         let core = NativeTrUApiCore::with_runtime_config(Arc::new(EventCallbacks::new()), config)
             .expect("runtime config should be valid");
 
-        let result = core.publish_chat_action(NativeChatAction::MessagePostedText {
-            room_id: "room".to_string(),
-            peer: "native".to_string(),
-            text: "hello".to_string(),
-        });
+        let result = core.publish_chat_action(text_chat_action("hello"));
 
         assert!(matches!(result, Err(NativeChatError::Unsupported)));
     }
@@ -2269,9 +2130,9 @@ mod tests {
         let mut stream = truapi_platform::ChatPlatform::subscribe_rooms(&platform, &product);
 
         let first = futures::executor::block_on(stream.next()).unwrap();
-        events.notify_chat_rooms_changed(vec![NativeChatRoom {
+        events.notify_chat_rooms_changed(vec![v01::ChatRoom {
             room_id: "support".to_string(),
-            is_host: false,
+            participating_as: v01::ChatRoomParticipation::Bot,
         }]);
         let second = futures::executor::block_on(stream.next()).unwrap();
 
@@ -2318,7 +2179,7 @@ mod tests {
         *callbacks
             .chat_room_status
             .lock()
-            .expect("room status mutex poisoned") = NativeChatRoomRegistrationStatus::Exists;
+            .expect("room status mutex poisoned") = v01::ChatRoomRegistrationStatus::Exists;
         let existing = futures::executor::block_on(truapi_platform::ChatPlatform::create_room(
             &platform, &product, request,
         ))
@@ -2358,28 +2219,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_widget_action_preserves_message_and_action_identifiers() {
-        let action: v01::HostChatActionSubscribeItem = NativeChatAction::ActionTriggered {
-            room_id: "room".to_string(),
-            peer: "native".to_string(),
-            message_id: "message-42".to_string(),
-            action_id: "custom_renderer_action_:r3:".to_string(),
-            payload: Some(vec![1, 2, 3]),
-        }
-        .into();
-
-        assert_eq!(action.room_id, "room");
-        assert_eq!(action.peer, "native");
-        assert_eq!(
-            action.payload,
-            v01::ChatActionPayload::ActionTriggered(v01::ActionTrigger {
-                message_id: "message-42".to_string(),
-                action_id: "custom_renderer_action_:r3:".to_string(),
-                payload: Some(vec![1, 2, 3]),
-            })
-        );
-    }
 
     #[test]
     fn native_chain_provider_forwards_send_response_and_close() {

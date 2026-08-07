@@ -746,7 +746,7 @@ public protocol HostCallbacks: AnyObject, Sendable {
     /**
      * Create or resolve a native product Chat room.
      */
-    func chatCreateRoom(roomId: String, name: String, icon: String) throws  -> NativeChatRoomRegistrationStatus
+    func chatCreateRoom(roomId: String, name: String, icon: String) throws  -> ChatRoomRegistrationStatus
 
     /**
      * Persist a text message in native Chat storage.
@@ -761,7 +761,7 @@ public protocol HostCallbacks: AnyObject, Sendable {
     /**
      * Return the current product-scoped native Chat room list.
      */
-    func chatListRooms() throws  -> [NativeChatRoom]
+    func chatListRooms() throws  -> [ChatRoom]
 
 }
 /**
@@ -1157,8 +1157,8 @@ open func chatSupported() -> Bool  {
     /**
      * Create or resolve a native product Chat room.
      */
-open func chatCreateRoom(roomId: String, name: String, icon: String)throws  -> NativeChatRoomRegistrationStatus  {
-    return try  FfiConverterTypeNativeChatRoomRegistrationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func chatCreateRoom(roomId: String, name: String, icon: String)throws  -> ChatRoomRegistrationStatus  {
+    return try  FfiConverterTypeChatRoomRegistrationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_hostcallbacks_chat_create_room(
             self.uniffiCloneHandle(),
@@ -1201,8 +1201,8 @@ open func chatPostCustomMessage(roomId: String, messageType: String, payload: Da
     /**
      * Return the current product-scoped native Chat room list.
      */
-open func chatListRooms()throws  -> [NativeChatRoom]  {
-    return try  FfiConverterSequenceTypeNativeChatRoom.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func chatListRooms()throws  -> [ChatRoom]  {
+    return try  FfiConverterSequenceTypeChatRoom.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_hostcallbacks_chat_list_rooms(
             self.uniffiCloneHandle(),uniffiCallStatus
@@ -1897,7 +1897,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> NativeChatRoomRegistrationStatus in
+                () throws -> ChatRoomRegistrationStatus in
                 guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -1909,7 +1909,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             }
 
 
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeNativeChatRoomRegistrationStatus_lower($0) }
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeChatRoomRegistrationStatus_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -1979,7 +1979,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> [NativeChatRoom] in
+                () throws -> [ChatRoom] in
                 guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -1988,7 +1988,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             }
 
 
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterSequenceTypeNativeChatRoom.lower($0) }
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterSequenceTypeChatRoom.lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -2503,7 +2503,7 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     /**
      * Push a complete native Chat room-list replacement to this execution.
      */
-    func notifyChatRoomsChanged(rooms: [NativeChatRoom])
+    func notifyChatRoomsChanged(rooms: [ChatRoom])
 
     /**
      * Push a preimage lookup replacement to this execution's subscriptions.
@@ -2523,7 +2523,7 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     /**
      * Publish one native Chat action, buffering it until the connection opens.
      */
-    func publishChatAction(action: NativeChatAction) throws
+    func publishChatAction(action: HostChatActionSubscribeItem) throws
 
     /**
      * Request typed native UI for one stored custom Chat message.
@@ -2639,11 +2639,11 @@ open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCal
     /**
      * Push a complete native Chat room-list replacement to this execution.
      */
-open func notifyChatRoomsChanged(rooms: [NativeChatRoom])  {try! rustCall() {
+open func notifyChatRoomsChanged(rooms: [ChatRoom])  {try! rustCall() {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativeproductexecution_notify_chat_rooms_changed(
             self.uniffiCloneHandle(),
-        FfiConverterSequenceTypeNativeChatRoom.lower(rooms),uniffiCallStatus
+        FfiConverterSequenceTypeChatRoom.lower(rooms),uniffiCallStatus
     )
 }
 }
@@ -2689,11 +2689,11 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
     /**
      * Publish one native Chat action, buffering it until the connection opens.
      */
-open func publishChatAction(action: NativeChatAction)throws   {try rustCallWithError(FfiConverterTypeNativeChatError_lift) {
+open func publishChatAction(action: HostChatActionSubscribeItem)throws   {try rustCallWithError(FfiConverterTypeNativeChatError_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativeproductexecution_publish_chat_action(
             self.uniffiCloneHandle(),
-        FfiConverterTypeNativeChatAction_lower(action),uniffiCallStatus
+        FfiConverterTypeHostChatActionSubscribeItem_lower(action),uniffiCallStatus
     )
 }
 }
@@ -2866,7 +2866,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     /**
      * Push a complete replacement of the current native Chat room list.
      */
-    func notifyChatRoomsChanged(rooms: [NativeChatRoom])
+    func notifyChatRoomsChanged(rooms: [ChatRoom])
 
     /**
      * Push a preimage lookup update to active subscriptions for `key`.
@@ -2902,7 +2902,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     /**
      * Publish one native Chat action to the connected product worker.
      */
-    func publishChatAction(action: NativeChatAction) throws
+    func publishChatAction(action: HostChatActionSubscribeItem) throws
 
     /**
      * Request typed native UI for one stored custom Chat message.
@@ -3085,11 +3085,11 @@ open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCal
     /**
      * Push a complete replacement of the current native Chat room list.
      */
-open func notifyChatRoomsChanged(rooms: [NativeChatRoom])  {try! rustCall() {
+open func notifyChatRoomsChanged(rooms: [ChatRoom])  {try! rustCall() {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativetruapicore_notify_chat_rooms_changed(
             self.uniffiCloneHandle(),
-        FfiConverterSequenceTypeNativeChatRoom.lower(rooms),uniffiCallStatus
+        FfiConverterSequenceTypeChatRoom.lower(rooms),uniffiCallStatus
     )
 }
 }
@@ -3157,11 +3157,11 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
     /**
      * Publish one native Chat action to the connected product worker.
      */
-open func publishChatAction(action: NativeChatAction)throws   {try rustCallWithError(FfiConverterTypeNativeChatError_lift) {
+open func publishChatAction(action: HostChatActionSubscribeItem)throws   {try rustCallWithError(FfiConverterTypeNativeChatError_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativetruapicore_publish_chat_action(
             self.uniffiCloneHandle(),
-        FfiConverterTypeNativeChatAction_lower(action),uniffiCallStatus
+        FfiConverterTypeHostChatActionSubscribeItem_lower(action),uniffiCallStatus
     )
 }
 }
@@ -3519,82 +3519,13 @@ public func FfiConverterTypeNativeTrUApiHostRuntime_lower(_ value: NativeTrUApiH
 
 
 /**
- * One product-scoped native Chat room.
- */
-public struct NativeChatRoom: Equatable, Hashable {
-    /**
-     * Product-local room identifier.
-     */
-    public var roomId: String
-    /**
-     * Whether the product owns the room or participates as a bot.
-     */
-    public var isHost: Bool
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product-local room identifier.
-         */roomId: String,
-        /**
-         * Whether the product owns the room or participates as a bot.
-         */isHost: Bool) {
-        self.roomId = roomId
-        self.isHost = isHost
-    }
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeChatRoom: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeChatRoom: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeChatRoom {
-        return
-            try NativeChatRoom(
-                roomId: FfiConverterString.read(from: &buf),
-                isHost: FfiConverterBool.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: NativeChatRoom, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.roomId, into: &buf)
-        FfiConverterBool.write(value.isHost, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeChatRoom_lift(_ buf: RustBuffer) throws -> NativeChatRoom {
-    return try FfiConverterTypeNativeChatRoom.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeChatRoom_lower(_ value: NativeChatRoom) -> RustBuffer {
-    return FfiConverterTypeNativeChatRoom.lower(value)
-}
-
-
-/**
  * Native renderer background.
  */
 public struct NativeCustomRendererBackground: Equatable, Hashable {
     /**
      * Background color.
      */
-    public var color: NativeCustomRendererColorToken
+    public var color: ColorToken
     /**
      * Optional background shape.
      */
@@ -3605,7 +3536,7 @@ public struct NativeCustomRendererBackground: Equatable, Hashable {
     public init(
         /**
          * Background color.
-         */color: NativeCustomRendererColorToken,
+         */color: ColorToken,
         /**
          * Optional background shape.
          */shape: NativeCustomRendererShape?) {
@@ -3629,13 +3560,13 @@ public struct FfiConverterTypeNativeCustomRendererBackground: FfiConverterRustBu
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererBackground {
         return
             try NativeCustomRendererBackground(
-                color: FfiConverterTypeNativeCustomRendererColorToken.read(from: &buf),
+                color: FfiConverterTypeColorToken.read(from: &buf),
                 shape: FfiConverterOptionTypeNativeCustomRendererShape.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeCustomRendererBackground, into buf: inout [UInt8]) {
-        FfiConverterTypeNativeCustomRendererColorToken.write(value.color, into: &buf)
+        FfiConverterTypeColorToken.write(value.color, into: &buf)
         FfiConverterOptionTypeNativeCustomRendererShape.write(value.shape, into: &buf)
     }
 }
@@ -3667,7 +3598,7 @@ public struct NativeCustomRendererBorderStyle: Equatable, Hashable {
     /**
      * Border color.
      */
-    public var color: NativeCustomRendererColorToken
+    public var color: ColorToken
     /**
      * Optional border shape.
      */
@@ -3681,7 +3612,7 @@ public struct NativeCustomRendererBorderStyle: Equatable, Hashable {
          */width: UInt64,
         /**
          * Border color.
-         */color: NativeCustomRendererColorToken,
+         */color: ColorToken,
         /**
          * Optional border shape.
          */shape: NativeCustomRendererShape?) {
@@ -3707,14 +3638,14 @@ public struct FfiConverterTypeNativeCustomRendererBorderStyle: FfiConverterRustB
         return
             try NativeCustomRendererBorderStyle(
                 width: FfiConverterUInt64.read(from: &buf),
-                color: FfiConverterTypeNativeCustomRendererColorToken.read(from: &buf),
+                color: FfiConverterTypeColorToken.read(from: &buf),
                 shape: FfiConverterOptionTypeNativeCustomRendererShape.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeCustomRendererBorderStyle, into buf: inout [UInt8]) {
         FfiConverterUInt64.write(value.width, into: &buf)
-        FfiConverterTypeNativeCustomRendererColorToken.write(value.color, into: &buf)
+        FfiConverterTypeColorToken.write(value.color, into: &buf)
         FfiConverterOptionTypeNativeCustomRendererShape.write(value.shape, into: &buf)
     }
 }
@@ -3742,14 +3673,14 @@ public struct NativeCustomRendererBoxProps: Equatable, Hashable {
     /**
      * Optional content alignment.
      */
-    public var contentAlignment: NativeCustomRendererContentAlignment?
+    public var contentAlignment: ContentAlignment?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
          * Optional content alignment.
-         */contentAlignment: NativeCustomRendererContentAlignment?) {
+         */contentAlignment: ContentAlignment?) {
         self.contentAlignment = contentAlignment
     }
 
@@ -3769,12 +3700,12 @@ public struct FfiConverterTypeNativeCustomRendererBoxProps: FfiConverterRustBuff
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererBoxProps {
         return
             try NativeCustomRendererBoxProps(
-                contentAlignment: FfiConverterOptionTypeNativeCustomRendererContentAlignment.read(from: &buf)
+                contentAlignment: FfiConverterOptionTypeContentAlignment.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeCustomRendererBoxProps, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeNativeCustomRendererContentAlignment.write(value.contentAlignment, into: &buf)
+        FfiConverterOptionTypeContentAlignment.write(value.contentAlignment, into: &buf)
     }
 }
 
@@ -3805,7 +3736,7 @@ public struct NativeCustomRendererButtonProps: Equatable, Hashable {
     /**
      * Optional button style.
      */
-    public var variant: NativeCustomRendererButtonVariant?
+    public var variant: ButtonVariant?
     /**
      * Optional enabled override.
      */
@@ -3827,7 +3758,7 @@ public struct NativeCustomRendererButtonProps: Equatable, Hashable {
          */text: String,
         /**
          * Optional button style.
-         */variant: NativeCustomRendererButtonVariant?,
+         */variant: ButtonVariant?,
         /**
          * Optional enabled override.
          */enabled: Bool?,
@@ -3861,7 +3792,7 @@ public struct FfiConverterTypeNativeCustomRendererButtonProps: FfiConverterRustB
         return
             try NativeCustomRendererButtonProps(
                 text: FfiConverterString.read(from: &buf),
-                variant: FfiConverterOptionTypeNativeCustomRendererButtonVariant.read(from: &buf),
+                variant: FfiConverterOptionTypeButtonVariant.read(from: &buf),
                 enabled: FfiConverterOptionBool.read(from: &buf),
                 loading: FfiConverterOptionBool.read(from: &buf),
                 clickAction: FfiConverterOptionString.read(from: &buf)
@@ -3870,7 +3801,7 @@ public struct FfiConverterTypeNativeCustomRendererButtonProps: FfiConverterRustB
 
     public static func write(_ value: NativeCustomRendererButtonProps, into buf: inout [UInt8]) {
         FfiConverterString.write(value.text, into: &buf)
-        FfiConverterOptionTypeNativeCustomRendererButtonVariant.write(value.variant, into: &buf)
+        FfiConverterOptionTypeButtonVariant.write(value.variant, into: &buf)
         FfiConverterOptionBool.write(value.enabled, into: &buf)
         FfiConverterOptionBool.write(value.loading, into: &buf)
         FfiConverterOptionString.write(value.clickAction, into: &buf)
@@ -3900,21 +3831,21 @@ public struct NativeCustomRendererColumnProps: Equatable, Hashable {
     /**
      * Optional horizontal alignment.
      */
-    public var horizontalAlignment: NativeCustomRendererHorizontalAlignment?
+    public var horizontalAlignment: HorizontalAlignment?
     /**
      * Optional vertical arrangement.
      */
-    public var verticalArrangement: NativeCustomRendererArrangement?
+    public var verticalArrangement: Arrangement?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
          * Optional horizontal alignment.
-         */horizontalAlignment: NativeCustomRendererHorizontalAlignment?,
+         */horizontalAlignment: HorizontalAlignment?,
         /**
          * Optional vertical arrangement.
-         */verticalArrangement: NativeCustomRendererArrangement?) {
+         */verticalArrangement: Arrangement?) {
         self.horizontalAlignment = horizontalAlignment
         self.verticalArrangement = verticalArrangement
     }
@@ -3935,14 +3866,14 @@ public struct FfiConverterTypeNativeCustomRendererColumnProps: FfiConverterRustB
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererColumnProps {
         return
             try NativeCustomRendererColumnProps(
-                horizontalAlignment: FfiConverterOptionTypeNativeCustomRendererHorizontalAlignment.read(from: &buf),
-                verticalArrangement: FfiConverterOptionTypeNativeCustomRendererArrangement.read(from: &buf)
+                horizontalAlignment: FfiConverterOptionTypeHorizontalAlignment.read(from: &buf),
+                verticalArrangement: FfiConverterOptionTypeArrangement.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeCustomRendererColumnProps, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeNativeCustomRendererHorizontalAlignment.write(value.horizontalAlignment, into: &buf)
-        FfiConverterOptionTypeNativeCustomRendererArrangement.write(value.verticalArrangement, into: &buf)
+        FfiConverterOptionTypeHorizontalAlignment.write(value.horizontalAlignment, into: &buf)
+        FfiConverterOptionTypeArrangement.write(value.verticalArrangement, into: &buf)
     }
 }
 
@@ -4058,21 +3989,21 @@ public struct NativeCustomRendererRowProps: Equatable, Hashable {
     /**
      * Optional vertical alignment.
      */
-    public var verticalAlignment: NativeCustomRendererVerticalAlignment?
+    public var verticalAlignment: VerticalAlignment?
     /**
      * Optional horizontal arrangement.
      */
-    public var horizontalArrangement: NativeCustomRendererArrangement?
+    public var horizontalArrangement: Arrangement?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
          * Optional vertical alignment.
-         */verticalAlignment: NativeCustomRendererVerticalAlignment?,
+         */verticalAlignment: VerticalAlignment?,
         /**
          * Optional horizontal arrangement.
-         */horizontalArrangement: NativeCustomRendererArrangement?) {
+         */horizontalArrangement: Arrangement?) {
         self.verticalAlignment = verticalAlignment
         self.horizontalArrangement = horizontalArrangement
     }
@@ -4093,14 +4024,14 @@ public struct FfiConverterTypeNativeCustomRendererRowProps: FfiConverterRustBuff
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererRowProps {
         return
             try NativeCustomRendererRowProps(
-                verticalAlignment: FfiConverterOptionTypeNativeCustomRendererVerticalAlignment.read(from: &buf),
-                horizontalArrangement: FfiConverterOptionTypeNativeCustomRendererArrangement.read(from: &buf)
+                verticalAlignment: FfiConverterOptionTypeVerticalAlignment.read(from: &buf),
+                horizontalArrangement: FfiConverterOptionTypeArrangement.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeCustomRendererRowProps, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeNativeCustomRendererVerticalAlignment.write(value.verticalAlignment, into: &buf)
-        FfiConverterOptionTypeNativeCustomRendererArrangement.write(value.horizontalArrangement, into: &buf)
+        FfiConverterOptionTypeVerticalAlignment.write(value.verticalAlignment, into: &buf)
+        FfiConverterOptionTypeArrangement.write(value.horizontalArrangement, into: &buf)
     }
 }
 
@@ -4226,21 +4157,21 @@ public struct NativeCustomRendererTextProps: Equatable, Hashable {
     /**
      * Optional typography token.
      */
-    public var style: NativeCustomRendererTypographyStyle?
+    public var style: TypographyStyle?
     /**
      * Optional color token.
      */
-    public var color: NativeCustomRendererColorToken?
+    public var color: ColorToken?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
          * Optional typography token.
-         */style: NativeCustomRendererTypographyStyle?,
+         */style: TypographyStyle?,
         /**
          * Optional color token.
-         */color: NativeCustomRendererColorToken?) {
+         */color: ColorToken?) {
         self.style = style
         self.color = color
     }
@@ -4261,14 +4192,14 @@ public struct FfiConverterTypeNativeCustomRendererTextProps: FfiConverterRustBuf
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererTextProps {
         return
             try NativeCustomRendererTextProps(
-                style: FfiConverterOptionTypeNativeCustomRendererTypographyStyle.read(from: &buf),
-                color: FfiConverterOptionTypeNativeCustomRendererColorToken.read(from: &buf)
+                style: FfiConverterOptionTypeTypographyStyle.read(from: &buf),
+                color: FfiConverterOptionTypeColorToken.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeCustomRendererTextProps, into buf: inout [UInt8]) {
-        FfiConverterOptionTypeNativeCustomRendererTypographyStyle.write(value.style, into: &buf)
-        FfiConverterOptionTypeNativeCustomRendererColorToken.write(value.color, into: &buf)
+        FfiConverterOptionTypeTypographyStyle.write(value.style, into: &buf)
+        FfiConverterOptionTypeColorToken.write(value.color, into: &buf)
     }
 }
 
@@ -4438,7 +4369,7 @@ public struct NativeProductExecutionConfig: Equatable, Hashable {
     /**
      * Trusted executable kind selected before product code starts.
      */
-    public var executionKind: NativeProductExecutionKind
+    public var executionKind: ProductExecutionKind
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4448,7 +4379,7 @@ public struct NativeProductExecutionConfig: Equatable, Hashable {
          */productId: String,
         /**
          * Trusted executable kind selected before product code starts.
-         */executionKind: NativeProductExecutionKind) {
+         */executionKind: ProductExecutionKind) {
         self.productId = productId
         self.executionKind = executionKind
     }
@@ -4470,13 +4401,13 @@ public struct FfiConverterTypeNativeProductExecutionConfig: FfiConverterRustBuff
         return
             try NativeProductExecutionConfig(
                 productId: FfiConverterString.read(from: &buf),
-                executionKind: FfiConverterTypeNativeProductExecutionKind.read(from: &buf)
+                executionKind: FfiConverterTypeProductExecutionKind.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeProductExecutionConfig, into buf: inout [UInt8]) {
         FfiConverterString.write(value.productId, into: &buf)
-        FfiConverterTypeNativeProductExecutionKind.write(value.executionKind, into: &buf)
+        FfiConverterTypeProductExecutionKind.write(value.executionKind, into: &buf)
     }
 }
 
@@ -4507,7 +4438,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
     /**
      * Trusted executable kind derived by the native host before loading it.
      */
-    public var executionKind: NativeProductExecutionKind
+    public var executionKind: ProductExecutionKind
     /**
      * Host name shown by the wallet during SSO pairing.
      */
@@ -4557,7 +4488,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          */productId: String,
         /**
          * Trusted executable kind derived by the native host before loading it.
-         */executionKind: NativeProductExecutionKind,
+         */executionKind: ProductExecutionKind,
         /**
          * Host name shown by the wallet during SSO pairing.
          */hostName: String,
@@ -4619,7 +4550,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
         return
             try NativeRuntimeConfig(
                 productId: FfiConverterString.read(from: &buf),
-                executionKind: FfiConverterTypeNativeProductExecutionKind.read(from: &buf),
+                executionKind: FfiConverterTypeProductExecutionKind.read(from: &buf),
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
                 hostVersion: FfiConverterOptionString.read(from: &buf),
@@ -4635,7 +4566,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
 
     public static func write(_ value: NativeRuntimeConfig, into buf: inout [UInt8]) {
         FfiConverterString.write(value.productId, into: &buf)
-        FfiConverterTypeNativeProductExecutionKind.write(value.executionKind, into: &buf)
+        FfiConverterTypeProductExecutionKind.write(value.executionKind, into: &buf)
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
         FfiConverterOptionString.write(value.hostVersion, into: &buf)
@@ -5009,145 +4940,6 @@ public func FfiConverterTypeHostStorageError_lower(_ value: HostStorageError) ->
 
 
 /**
- * Native Chat action published to a product worker.
- */
-
-public enum NativeChatAction: Equatable, Hashable {
-
-    /**
-     * A user posted a text message.
-     */
-    case messagePostedText(
-        /**
-         * Product-local room identifier.
-         */roomId: String,
-        /**
-         * Host-derived peer identifier.
-         */peer: String,
-        /**
-         * User-entered text.
-         */text: String
-    )
-    /**
-     * A user triggered an opaque action emitted by a message or widget.
-     */
-    case actionTriggered(
-        /**
-         * Product-local room identifier.
-         */roomId: String,
-        /**
-         * Host-derived peer identifier.
-         */peer: String,
-        /**
-         * Message containing the action.
-         */messageId: String,
-        /**
-         * Product-defined action identifier.
-         */actionId: String,
-        /**
-         * Optional product-defined action payload.
-         */payload: Data?
-    )
-    /**
-     * A user submitted a command.
-     */
-    case command(
-        /**
-         * Product-local room identifier.
-         */roomId: String,
-        /**
-         * Host-derived peer identifier.
-         */peer: String,
-        /**
-         * Command name.
-         */command: String,
-        /**
-         * Command arguments.
-         */payload: String
-    )
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeChatAction: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeChatAction: FfiConverterRustBuffer {
-    typealias SwiftType = NativeChatAction
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeChatAction {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .messagePostedText(roomId: try FfiConverterString.read(from: &buf), peer: try FfiConverterString.read(from: &buf), text: try FfiConverterString.read(from: &buf)
-        )
-
-        case 2: return .actionTriggered(roomId: try FfiConverterString.read(from: &buf), peer: try FfiConverterString.read(from: &buf), messageId: try FfiConverterString.read(from: &buf), actionId: try FfiConverterString.read(from: &buf), payload: try FfiConverterOptionData.read(from: &buf)
-        )
-
-        case 3: return .command(roomId: try FfiConverterString.read(from: &buf), peer: try FfiConverterString.read(from: &buf), command: try FfiConverterString.read(from: &buf), payload: try FfiConverterString.read(from: &buf)
-        )
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeChatAction, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case let .messagePostedText(roomId,peer,text):
-            writeInt(&buf, Int32(1))
-            FfiConverterString.write(roomId, into: &buf)
-            FfiConverterString.write(peer, into: &buf)
-            FfiConverterString.write(text, into: &buf)
-
-
-        case let .actionTriggered(roomId,peer,messageId,actionId,payload):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(roomId, into: &buf)
-            FfiConverterString.write(peer, into: &buf)
-            FfiConverterString.write(messageId, into: &buf)
-            FfiConverterString.write(actionId, into: &buf)
-            FfiConverterOptionData.write(payload, into: &buf)
-
-
-        case let .command(roomId,peer,command,payload):
-            writeInt(&buf, Int32(3))
-            FfiConverterString.write(roomId, into: &buf)
-            FfiConverterString.write(peer, into: &buf)
-            FfiConverterString.write(command, into: &buf)
-            FfiConverterString.write(payload, into: &buf)
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeChatAction_lift(_ buf: RustBuffer) throws -> NativeChatAction {
-    return try FfiConverterTypeNativeChatAction.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeChatAction_lower(_ value: NativeChatAction) -> RustBuffer {
-    return FfiConverterTypeNativeChatAction.lower(value)
-}
-
-
-
-/**
  * Native failure while routing Chat work to a product connection.
  */
 public
@@ -5258,656 +5050,6 @@ public func FfiConverterTypeNativeChatError_lift(_ buf: RustBuffer) throws -> Na
 public func FfiConverterTypeNativeChatError_lower(_ value: NativeChatError) -> RustBuffer {
     return FfiConverterTypeNativeChatError.lower(value)
 }
-
-
-/**
- * Native mirror of the room registration outcome.
- */
-
-public enum NativeChatRoomRegistrationStatus: Equatable, Hashable {
-
-    /**
-     * The native host created the room.
-     */
-    case new
-    /**
-     * The native host already had the room.
-     */
-    case exists
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeChatRoomRegistrationStatus: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeChatRoomRegistrationStatus: FfiConverterRustBuffer {
-    typealias SwiftType = NativeChatRoomRegistrationStatus
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeChatRoomRegistrationStatus {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .new
-
-        case 2: return .exists
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeChatRoomRegistrationStatus, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .new:
-            writeInt(&buf, Int32(1))
-
-
-        case .exists:
-            writeInt(&buf, Int32(2))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeChatRoomRegistrationStatus_lift(_ buf: RustBuffer) throws -> NativeChatRoomRegistrationStatus {
-    return try FfiConverterTypeNativeChatRoomRegistrationStatus.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeChatRoomRegistrationStatus_lower(_ value: NativeChatRoomRegistrationStatus) -> RustBuffer {
-    return FfiConverterTypeNativeChatRoomRegistrationStatus.lower(value)
-}
-
-
-
-/**
- * Native layout arrangement.
- */
-
-public enum NativeCustomRendererArrangement: Equatable, Hashable {
-
-    /**
-     * Pack at the start.
-     */
-    case start
-    /**
-     * Pack at the end.
-     */
-    case end
-    /**
-     * Pack at the center.
-     */
-    case center
-    /**
-     * Space between children.
-     */
-    case spaceBetween
-    /**
-     * Space around children.
-     */
-    case spaceAround
-    /**
-     * Equal space between and around children.
-     */
-    case spaceEvenly
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeCustomRendererArrangement: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeCustomRendererArrangement: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererArrangement
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererArrangement {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .start
-
-        case 2: return .end
-
-        case 3: return .center
-
-        case 4: return .spaceBetween
-
-        case 5: return .spaceAround
-
-        case 6: return .spaceEvenly
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeCustomRendererArrangement, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .start:
-            writeInt(&buf, Int32(1))
-
-
-        case .end:
-            writeInt(&buf, Int32(2))
-
-
-        case .center:
-            writeInt(&buf, Int32(3))
-
-
-        case .spaceBetween:
-            writeInt(&buf, Int32(4))
-
-
-        case .spaceAround:
-            writeInt(&buf, Int32(5))
-
-
-        case .spaceEvenly:
-            writeInt(&buf, Int32(6))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererArrangement_lift(_ buf: RustBuffer) throws -> NativeCustomRendererArrangement {
-    return try FfiConverterTypeNativeCustomRendererArrangement.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererArrangement_lower(_ value: NativeCustomRendererArrangement) -> RustBuffer {
-    return FfiConverterTypeNativeCustomRendererArrangement.lower(value)
-}
-
-
-
-/**
- * Native button style.
- */
-
-public enum NativeCustomRendererButtonVariant: Equatable, Hashable {
-
-    /**
-     * Primary button.
-     */
-    case primary
-    /**
-     * Secondary button.
-     */
-    case secondary
-    /**
-     * Text-only button.
-     */
-    case text
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeCustomRendererButtonVariant: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeCustomRendererButtonVariant: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererButtonVariant
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererButtonVariant {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .primary
-
-        case 2: return .secondary
-
-        case 3: return .text
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeCustomRendererButtonVariant, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .primary:
-            writeInt(&buf, Int32(1))
-
-
-        case .secondary:
-            writeInt(&buf, Int32(2))
-
-
-        case .text:
-            writeInt(&buf, Int32(3))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererButtonVariant_lift(_ buf: RustBuffer) throws -> NativeCustomRendererButtonVariant {
-    return try FfiConverterTypeNativeCustomRendererButtonVariant.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererButtonVariant_lower(_ value: NativeCustomRendererButtonVariant) -> RustBuffer {
-    return FfiConverterTypeNativeCustomRendererButtonVariant.lower(value)
-}
-
-
-
-/**
- * Native semantic color token.
- */
-
-public enum NativeCustomRendererColorToken: Equatable, Hashable {
-
-    /**
-     * Primary foreground.
-     */
-    case fgPrimary
-    /**
-     * Secondary foreground.
-     */
-    case fgSecondary
-    /**
-     * Tertiary foreground.
-     */
-    case fgTertiary
-    /**
-     * Main surface background.
-     */
-    case bgSurfaceMain
-    /**
-     * Container surface background.
-     */
-    case bgSurfaceContainer
-    /**
-     * Nested surface background.
-     */
-    case bgSurfaceNested
-    /**
-     * Success foreground.
-     */
-    case fgSuccess
-    /**
-     * Error foreground.
-     */
-    case fgError
-    /**
-     * Warning foreground.
-     */
-    case fgWarning
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeCustomRendererColorToken: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeCustomRendererColorToken: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererColorToken
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererColorToken {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .fgPrimary
-
-        case 2: return .fgSecondary
-
-        case 3: return .fgTertiary
-
-        case 4: return .bgSurfaceMain
-
-        case 5: return .bgSurfaceContainer
-
-        case 6: return .bgSurfaceNested
-
-        case 7: return .fgSuccess
-
-        case 8: return .fgError
-
-        case 9: return .fgWarning
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeCustomRendererColorToken, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .fgPrimary:
-            writeInt(&buf, Int32(1))
-
-
-        case .fgSecondary:
-            writeInt(&buf, Int32(2))
-
-
-        case .fgTertiary:
-            writeInt(&buf, Int32(3))
-
-
-        case .bgSurfaceMain:
-            writeInt(&buf, Int32(4))
-
-
-        case .bgSurfaceContainer:
-            writeInt(&buf, Int32(5))
-
-
-        case .bgSurfaceNested:
-            writeInt(&buf, Int32(6))
-
-
-        case .fgSuccess:
-            writeInt(&buf, Int32(7))
-
-
-        case .fgError:
-            writeInt(&buf, Int32(8))
-
-
-        case .fgWarning:
-            writeInt(&buf, Int32(9))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererColorToken_lift(_ buf: RustBuffer) throws -> NativeCustomRendererColorToken {
-    return try FfiConverterTypeNativeCustomRendererColorToken.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererColorToken_lower(_ value: NativeCustomRendererColorToken) -> RustBuffer {
-    return FfiConverterTypeNativeCustomRendererColorToken.lower(value)
-}
-
-
-
-/**
- * Native two-dimensional alignment.
- */
-
-public enum NativeCustomRendererContentAlignment: Equatable, Hashable {
-
-    /**
-     * Top-start.
-     */
-    case topStart
-    /**
-     * Top-center.
-     */
-    case topCenter
-    /**
-     * Top-end.
-     */
-    case topEnd
-    /**
-     * Center-start.
-     */
-    case centerStart
-    /**
-     * Centered.
-     */
-    case center
-    /**
-     * Center-end.
-     */
-    case centerEnd
-    /**
-     * Bottom-start.
-     */
-    case bottomStart
-    /**
-     * Bottom-center.
-     */
-    case bottomCenter
-    /**
-     * Bottom-end.
-     */
-    case bottomEnd
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeCustomRendererContentAlignment: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeCustomRendererContentAlignment: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererContentAlignment
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererContentAlignment {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .topStart
-
-        case 2: return .topCenter
-
-        case 3: return .topEnd
-
-        case 4: return .centerStart
-
-        case 5: return .center
-
-        case 6: return .centerEnd
-
-        case 7: return .bottomStart
-
-        case 8: return .bottomCenter
-
-        case 9: return .bottomEnd
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeCustomRendererContentAlignment, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .topStart:
-            writeInt(&buf, Int32(1))
-
-
-        case .topCenter:
-            writeInt(&buf, Int32(2))
-
-
-        case .topEnd:
-            writeInt(&buf, Int32(3))
-
-
-        case .centerStart:
-            writeInt(&buf, Int32(4))
-
-
-        case .center:
-            writeInt(&buf, Int32(5))
-
-
-        case .centerEnd:
-            writeInt(&buf, Int32(6))
-
-
-        case .bottomStart:
-            writeInt(&buf, Int32(7))
-
-
-        case .bottomCenter:
-            writeInt(&buf, Int32(8))
-
-
-        case .bottomEnd:
-            writeInt(&buf, Int32(9))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererContentAlignment_lift(_ buf: RustBuffer) throws -> NativeCustomRendererContentAlignment {
-    return try FfiConverterTypeNativeCustomRendererContentAlignment.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererContentAlignment_lower(_ value: NativeCustomRendererContentAlignment) -> RustBuffer {
-    return FfiConverterTypeNativeCustomRendererContentAlignment.lower(value)
-}
-
-
-
-/**
- * Native horizontal alignment.
- */
-
-public enum NativeCustomRendererHorizontalAlignment: Equatable, Hashable {
-
-    /**
-     * Start edge.
-     */
-    case start
-    /**
-     * Center.
-     */
-    case center
-    /**
-     * End edge.
-     */
-    case end
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeCustomRendererHorizontalAlignment: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeCustomRendererHorizontalAlignment: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererHorizontalAlignment
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererHorizontalAlignment {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .start
-
-        case 2: return .center
-
-        case 3: return .end
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeCustomRendererHorizontalAlignment, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .start:
-            writeInt(&buf, Int32(1))
-
-
-        case .center:
-            writeInt(&buf, Int32(2))
-
-
-        case .end:
-            writeInt(&buf, Int32(3))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererHorizontalAlignment_lift(_ buf: RustBuffer) throws -> NativeCustomRendererHorizontalAlignment {
-    return try FfiConverterTypeNativeCustomRendererHorizontalAlignment.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererHorizontalAlignment_lower(_ value: NativeCustomRendererHorizontalAlignment) -> RustBuffer {
-    return FfiConverterTypeNativeCustomRendererHorizontalAlignment.lower(value)
-}
-
 
 
 /**
@@ -6352,196 +5494,6 @@ public func FfiConverterTypeNativeCustomRendererShape_lower(_ value: NativeCusto
 
 
 /**
- * Native typography token.
- */
-
-public enum NativeCustomRendererTypographyStyle: Equatable, Hashable {
-
-    /**
-     * Large headline.
-     */
-    case headlineLarge
-    /**
-     * Medium regular title.
-     */
-    case titleMediumRegular
-    /**
-     * Large regular body.
-     */
-    case bodyLargeRegular
-    /**
-     * Medium regular body.
-     */
-    case bodyMediumRegular
-    /**
-     * Small regular body.
-     */
-    case bodySmallRegular
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeCustomRendererTypographyStyle: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeCustomRendererTypographyStyle: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererTypographyStyle
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererTypographyStyle {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .headlineLarge
-
-        case 2: return .titleMediumRegular
-
-        case 3: return .bodyLargeRegular
-
-        case 4: return .bodyMediumRegular
-
-        case 5: return .bodySmallRegular
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeCustomRendererTypographyStyle, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .headlineLarge:
-            writeInt(&buf, Int32(1))
-
-
-        case .titleMediumRegular:
-            writeInt(&buf, Int32(2))
-
-
-        case .bodyLargeRegular:
-            writeInt(&buf, Int32(3))
-
-
-        case .bodyMediumRegular:
-            writeInt(&buf, Int32(4))
-
-
-        case .bodySmallRegular:
-            writeInt(&buf, Int32(5))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererTypographyStyle_lift(_ buf: RustBuffer) throws -> NativeCustomRendererTypographyStyle {
-    return try FfiConverterTypeNativeCustomRendererTypographyStyle.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererTypographyStyle_lower(_ value: NativeCustomRendererTypographyStyle) -> RustBuffer {
-    return FfiConverterTypeNativeCustomRendererTypographyStyle.lower(value)
-}
-
-
-
-/**
- * Native vertical alignment.
- */
-
-public enum NativeCustomRendererVerticalAlignment: Equatable, Hashable {
-
-    /**
-     * Top edge.
-     */
-    case top
-    /**
-     * Center.
-     */
-    case center
-    /**
-     * Bottom edge.
-     */
-    case bottom
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeCustomRendererVerticalAlignment: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeCustomRendererVerticalAlignment: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererVerticalAlignment
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererVerticalAlignment {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .top
-
-        case 2: return .center
-
-        case 3: return .bottom
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeCustomRendererVerticalAlignment, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .top:
-            writeInt(&buf, Int32(1))
-
-
-        case .center:
-            writeInt(&buf, Int32(2))
-
-
-        case .bottom:
-            writeInt(&buf, Int32(3))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererVerticalAlignment_lift(_ buf: RustBuffer) throws -> NativeCustomRendererVerticalAlignment {
-    return try FfiConverterTypeNativeCustomRendererVerticalAlignment.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeCustomRendererVerticalAlignment_lower(_ value: NativeCustomRendererVerticalAlignment) -> RustBuffer {
-    return FfiConverterTypeNativeCustomRendererVerticalAlignment.lower(value)
-}
-
-
-
-/**
  * Native-friendly SSO deeplink scheme.
  */
 
@@ -6612,81 +5564,6 @@ public func FfiConverterTypeNativePairingDeeplinkScheme_lift(_ buf: RustBuffer) 
 #endif
 public func FfiConverterTypeNativePairingDeeplinkScheme_lower(_ value: NativePairingDeeplinkScheme) -> RustBuffer {
     return FfiConverterTypeNativePairingDeeplinkScheme.lower(value)
-}
-
-
-
-/**
- * Trusted executable kind selected by the native host.
- */
-
-public enum NativeProductExecutionKind: Equatable, Hashable {
-
-    /**
-     * Visible single-page application entrypoint.
-     */
-    case spa
-    /**
-     * Headless Chat worker entrypoint.
-     */
-    case chat
-
-
-
-
-
-}
-
-#if compiler(>=6)
-extension NativeProductExecutionKind: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeProductExecutionKind: FfiConverterRustBuffer {
-    typealias SwiftType = NativeProductExecutionKind
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeProductExecutionKind {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-
-        case 1: return .spa
-
-        case 2: return .chat
-
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeProductExecutionKind, into buf: inout [UInt8]) {
-        switch value {
-
-
-        case .spa:
-            writeInt(&buf, Int32(1))
-
-
-        case .chat:
-            writeInt(&buf, Int32(2))
-
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeProductExecutionKind_lift(_ buf: RustBuffer) throws -> NativeProductExecutionKind {
-    return try FfiConverterTypeNativeProductExecutionKind.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeProductExecutionKind_lower(_ value: NativeProductExecutionKind) -> RustBuffer {
-    return FfiConverterTypeNativeProductExecutionKind.lower(value)
 }
 
 
@@ -7555,8 +6432,8 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererTextProps: FfiConve
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeNativeCustomRendererArrangement: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererArrangement?
+fileprivate struct FfiConverterOptionTypeArrangement: FfiConverterRustBuffer {
+    typealias SwiftType = Arrangement?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7564,13 +6441,13 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererArrangement: FfiCon
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeNativeCustomRendererArrangement.write(value, into: &buf)
+        FfiConverterTypeArrangement.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeNativeCustomRendererArrangement.read(from: &buf)
+        case 1: return try FfiConverterTypeArrangement.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7579,8 +6456,8 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererArrangement: FfiCon
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeNativeCustomRendererButtonVariant: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererButtonVariant?
+fileprivate struct FfiConverterOptionTypeButtonVariant: FfiConverterRustBuffer {
+    typealias SwiftType = ButtonVariant?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7588,13 +6465,13 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererButtonVariant: FfiC
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeNativeCustomRendererButtonVariant.write(value, into: &buf)
+        FfiConverterTypeButtonVariant.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeNativeCustomRendererButtonVariant.read(from: &buf)
+        case 1: return try FfiConverterTypeButtonVariant.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7603,8 +6480,8 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererButtonVariant: FfiC
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeNativeCustomRendererColorToken: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererColorToken?
+fileprivate struct FfiConverterOptionTypeColorToken: FfiConverterRustBuffer {
+    typealias SwiftType = ColorToken?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7612,13 +6489,13 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererColorToken: FfiConv
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeNativeCustomRendererColorToken.write(value, into: &buf)
+        FfiConverterTypeColorToken.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeNativeCustomRendererColorToken.read(from: &buf)
+        case 1: return try FfiConverterTypeColorToken.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7627,8 +6504,8 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererColorToken: FfiConv
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeNativeCustomRendererContentAlignment: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererContentAlignment?
+fileprivate struct FfiConverterOptionTypeContentAlignment: FfiConverterRustBuffer {
+    typealias SwiftType = ContentAlignment?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7636,13 +6513,13 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererContentAlignment: F
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeNativeCustomRendererContentAlignment.write(value, into: &buf)
+        FfiConverterTypeContentAlignment.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeNativeCustomRendererContentAlignment.read(from: &buf)
+        case 1: return try FfiConverterTypeContentAlignment.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7651,8 +6528,8 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererContentAlignment: F
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeNativeCustomRendererHorizontalAlignment: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererHorizontalAlignment?
+fileprivate struct FfiConverterOptionTypeHorizontalAlignment: FfiConverterRustBuffer {
+    typealias SwiftType = HorizontalAlignment?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -7660,13 +6537,61 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererHorizontalAlignment
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeNativeCustomRendererHorizontalAlignment.write(value, into: &buf)
+        FfiConverterTypeHorizontalAlignment.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeNativeCustomRendererHorizontalAlignment.read(from: &buf)
+        case 1: return try FfiConverterTypeHorizontalAlignment.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeTypographyStyle: FfiConverterRustBuffer {
+    typealias SwiftType = TypographyStyle?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTypographyStyle.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTypographyStyle.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeVerticalAlignment: FfiConverterRustBuffer {
+    typealias SwiftType = VerticalAlignment?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeVerticalAlignment.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeVerticalAlignment.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7691,54 +6616,6 @@ fileprivate struct FfiConverterOptionTypeNativeCustomRendererShape: FfiConverter
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeNativeCustomRendererShape.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionTypeNativeCustomRendererTypographyStyle: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererTypographyStyle?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeNativeCustomRendererTypographyStyle.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeNativeCustomRendererTypographyStyle.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionTypeNativeCustomRendererVerticalAlignment: FfiConverterRustBuffer {
-    typealias SwiftType = NativeCustomRendererVerticalAlignment?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeNativeCustomRendererVerticalAlignment.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeNativeCustomRendererVerticalAlignment.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -7772,23 +6649,23 @@ fileprivate struct FfiConverterSequenceTypeNativeCustomRendererNode: FfiConverte
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterSequenceTypeNativeChatRoom: FfiConverterRustBuffer {
-    typealias SwiftType = [NativeChatRoom]
+fileprivate struct FfiConverterSequenceTypeChatRoom: FfiConverterRustBuffer {
+    typealias SwiftType = [ChatRoom]
 
-    public static func write(_ value: [NativeChatRoom], into buf: inout [UInt8]) {
+    public static func write(_ value: [ChatRoom], into buf: inout [UInt8]) {
         let len = Int32(value.count)
         writeInt(&buf, len)
         for item in value {
-            FfiConverterTypeNativeChatRoom.write(item, into: &buf)
+            FfiConverterTypeChatRoom.write(item, into: &buf)
         }
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NativeChatRoom] {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ChatRoom] {
         let len: Int32 = try readInt(&buf)
-        var seq = [NativeChatRoom]()
+        var seq = [ChatRoom]()
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeNativeChatRoom.read(from: &buf))
+            seq.append(try FfiConverterTypeChatRoom.read(from: &buf))
         }
         return seq
     }
@@ -8068,7 +6945,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_supported() != 33741) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_create_room() != 35716) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_create_room() != 27595) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_post_text_message() != 32241) {
@@ -8077,7 +6954,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_post_custom_message() != 50327) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_list_rooms() != 1315) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_list_rooms() != 56334) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 59343) {
@@ -8086,7 +6963,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_response() != 39688) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chat_rooms_changed() != 27722) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chat_rooms_changed() != 13112) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_preimage_changed() != 21769) {
@@ -8098,7 +6975,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 40119) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 40210) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_render_custom_message() != 8883) {
@@ -8131,7 +7008,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_response() != 43518) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chat_rooms_changed() != 24211) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chat_rooms_changed() != 2525) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_preimage_changed() != 45611) {
@@ -8146,7 +7023,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_publish_chat_action() != 43619) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_publish_chat_action() != 31578) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_render_custom_message() != 22561) {

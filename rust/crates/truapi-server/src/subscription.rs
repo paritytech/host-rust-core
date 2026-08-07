@@ -394,19 +394,18 @@ impl HostInitiatedSubscriptionManager {
     }
 
     /// Route one product frame. Every `h:` id belongs to this manager and is
-    /// consumed even when its subscription has already ended.
-    pub fn handle_message(&self, message: ProtocolMessage) -> bool {
+    /// consumed even when its subscription has already ended; any other frame
+    /// is returned to the caller untouched.
+    pub fn handle_message(&self, message: ProtocolMessage) -> Option<ProtocolMessage> {
         if !message.request_id.starts_with("h:") {
-            return false;
+            return Some(message);
         }
 
         let mut state = self
             .state
             .lock()
             .expect("host subscription state mutex poisoned");
-        let Some(slot) = state.active.get(&message.request_id) else {
-            return true;
-        };
+        let slot = state.active.get(&message.request_id)?;
         if message.payload.id == slot.ids.receive_id {
             let sender = slot.sender.clone();
             drop(state);
@@ -414,7 +413,7 @@ impl HostInitiatedSubscriptionManager {
         } else if message.payload.id == slot.ids.interrupt_id {
             state.active.remove(&message.request_id);
         }
-        true
+        None
     }
 
     /// Close every active host-initiated stream without sending new frames.
@@ -579,13 +578,17 @@ mod tests {
         assert_eq!(transport_typed.sent()[0].payload.id, 52);
         assert_eq!(transport_typed.sent()[0].payload.value, vec![0xaa]);
 
-        assert!(manager.handle_message(ProtocolMessage {
-            request_id: "h:1".into(),
-            payload: Payload {
-                id: 55,
-                value: 7_u32.encode(),
-            },
-        }));
+        assert!(
+            manager
+                .handle_message(ProtocolMessage {
+                    request_id: "h:1".into(),
+                    payload: Payload {
+                        id: 55,
+                        value: 7_u32.encode(),
+                    },
+                })
+                .is_none()
+        );
         assert_eq!(futures::executor::block_on(subscription.next()), Some(7));
 
         drop(subscription);

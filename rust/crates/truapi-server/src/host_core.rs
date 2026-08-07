@@ -53,17 +53,17 @@ pub enum ProductRuntimeError {
         /// Decode failure reason.
         reason: String,
     },
-    /// The connection execution kind does not allow Chat operations.
-    #[error("chat operation denied for this execution")]
+    /// The connection execution kind does not allow the operation.
+    #[error("operation denied for this execution")]
     Denied,
     /// The product connection has already closed.
     #[error("product connection is closed")]
     Closed,
-    /// The product or native host did not install the requested Chat surface.
-    #[error("chat operation is unsupported")]
+    /// The product or native host did not install the requested surface.
+    #[error("operation is unsupported")]
     Unsupported,
     /// The bounded pre-subscription action queue is full.
-    #[error("chat action buffer is full")]
+    #[error("connection action buffer is full")]
     BufferFull,
 }
 
@@ -97,35 +97,6 @@ impl PairingHostRuntime {
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
         );
-        Self::from_services(services, config, spawner)
-    }
-
-    /// Build a long-lived pairing host with a native Chat adapter.
-    pub fn new_with_chat<P>(
-        platform: Arc<P>,
-        chat: Arc<dyn ChatPlatform>,
-        config: PairingHostConfig,
-        spawner: Spawner,
-    ) -> Self
-    where
-        P: Platform + 'static,
-    {
-        let platform: Arc<dyn Platform> = platform;
-        let services = RuntimeServices::new_with_chat(
-            platform,
-            chat,
-            config.people_chain_genesis_hash,
-            config.bulletin_chain_genesis_hash,
-            spawner.clone(),
-        );
-        Self::from_services(services, config, spawner)
-    }
-
-    fn from_services(
-        services: Arc<RuntimeServices>,
-        config: PairingHostConfig,
-        spawner: Spawner,
-    ) -> Self {
         let pairing_host = PairingHostRole::new(services.clone(), config);
         pairing_host.clone().start_session_store_sync(spawner);
         Self {
@@ -334,31 +305,6 @@ impl SigningHostRuntime {
             config.bulletin_chain_genesis_hash,
             spawner,
         );
-        Self::from_services(services)
-    }
-
-    /// Build a long-lived signing host with a native Chat adapter.
-    pub fn new_with_chat<P>(
-        platform: Arc<P>,
-        chat: Arc<dyn ChatPlatform>,
-        config: SigningHostConfig,
-        spawner: Spawner,
-    ) -> Self
-    where
-        P: Platform + 'static,
-    {
-        let platform: Arc<dyn Platform> = platform;
-        let services = RuntimeServices::new_with_chat(
-            platform,
-            chat,
-            config.people_chain_genesis_hash,
-            config.bulletin_chain_genesis_hash,
-            spawner,
-        );
-        Self::from_services(services)
-    }
-
-    fn from_services(services: Arc<RuntimeServices>) -> Self {
         let signing_host = SigningHostRole::new(services.clone());
         Self {
             services,
@@ -644,12 +590,16 @@ impl ProductRuntimeControl {
         Ok(&self.runtime)
     }
 
-    /// Publish a native Chat action to this connection.
+    /// Publish a native Chat action to this connection. On failure the
+    /// undelivered action is returned alongside the error.
     pub fn publish_chat_action(
         &self,
         action: v01::HostChatActionSubscribeItem,
-    ) -> Result<(), ProductRuntimeError> {
-        self.runtime()?.publish_chat_action(action)
+    ) -> Result<(), (ProductRuntimeError, Box<v01::HostChatActionSubscribeItem>)> {
+        match self.runtime() {
+            Ok(runtime) => runtime.publish_chat_action(action),
+            Err(error) => Err((error, Box::new(action))),
+        }
     }
 
     /// Request custom-message UI from this connection's product renderer.
@@ -659,7 +609,7 @@ impl ProductRuntimeControl {
         message_type: String,
         payload: Vec<u8>,
     ) -> Result<truapi::Subscription<v01::CustomRendererNode>, ProductRuntimeError> {
-        self.runtime()?.ensure_native_chat_available()?;
+        self.runtime()?.native_chat_platform()?;
         let request = truapi::versioned::chat::ProductChatCustomMessageRenderRequest::V1(
             v01::ProductChatCustomMessageRenderRequest {
                 message_id,
@@ -773,9 +723,9 @@ impl ProductRuntime {
                 reason: err.to_string(),
             }
         })?;
-        if self.host_subscriptions.handle_message(message.clone()) {
+        let Some(message) = self.host_subscriptions.handle_message(message) else {
             return Ok(());
-        }
+        };
         let dispatch_id = self.next_dispatch_id.fetch_add(1, Ordering::Relaxed);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         self.in_flight
@@ -953,7 +903,7 @@ mod tests {
 
         assert!(matches!(
             runtime.control().publish_chat_action(text_action("hello")),
-            Err(ProductRuntimeError::Denied)
+            Err((ProductRuntimeError::Denied, _))
         ));
     }
 

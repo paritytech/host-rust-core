@@ -28,10 +28,17 @@ test("labels only a successful Chat-only report", () => {
   ].join("\n");
 
   assert.match(
-    labelChatDiagnosisReport(report, "iOS", 5),
+    labelChatDiagnosisReport(report, "iOS"),
+    /^## Truapi iOS Chat Diagnosis/,
+  );
+  assert.match(
+    labelChatDiagnosisReport(report.replace("5 success", "6 success"), "iOS"),
     /^## Truapi iOS Chat Diagnosis/,
   );
   assert.throws(() =>
-    labelChatDiagnosisReport(report.replace("0 failed", "1 failed"), "iOS", 5),
+    labelChatDiagnosisReport(report.replace("0 failed", "1 failed"), "iOS"),
+  );
+  assert.throws(() =>
+    labelChatDiagnosisReport(report.replace("5 success", "0 success"), "iOS"),
   );
 });

@@ -39,9 +39,9 @@ import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
-import uniffi.truapi_server.NativeChatRoom
-import uniffi.truapi_server.NativeChatRoomRegistrationStatus
-import uniffi.truapi_server.NativeProductExecutionKind
+import uniffi.truapi.ChatRoom
+import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.WsBridgeEndpoint
@@ -71,10 +71,10 @@ enum class ProductExecutionKind {
     SPA,
     CHAT;
 
-    internal fun toNative(): NativeProductExecutionKind =
+    internal fun toNative(): UniFfiProductExecutionKind =
         when (this) {
-            SPA -> NativeProductExecutionKind.SPA
-            CHAT -> NativeProductExecutionKind.CHAT
+            SPA -> UniFfiProductExecutionKind.SPA
+            CHAT -> UniFfiProductExecutionKind.CHAT
         }
 }
 
@@ -383,7 +383,7 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
         roomId: String,
         name: String,
         icon: String,
-    ): NativeChatRoomRegistrationStatus = throw chatUnavailable()
+    ): ChatRoomRegistrationStatus = throw chatUnavailable()
 
     override fun chatPostTextMessage(roomId: String, text: String): String =
         throw chatUnavailable()
@@ -394,7 +394,7 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
         payload: ByteArray,
     ): String = throw chatUnavailable()
 
-    override fun chatListRooms(): List<NativeChatRoom> = emptyList()
+    override fun chatListRooms(): List<ChatRoom> = emptyList()
 
     private fun chatUnavailable(): HostRejection =
         HostRejection.Rejected("native Chat adapter unavailable")

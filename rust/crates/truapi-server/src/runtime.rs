@@ -56,7 +56,7 @@ use crate::runtime::bulletin_rpc::BulletinSubmitError;
 #[cfg(test)]
 use crate::subscription::Spawner;
 pub(crate) use authority::{BulletinAllowanceKey, ProductAuthority};
-pub(crate) use chat::ChatConnection;
+pub(crate) use chat::{ChatConnection, chat_platform_for};
 #[cfg(test)]
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
@@ -165,9 +165,8 @@ use truapi_platform::Platform;
 use truapi_platform::{
     AccountAccessReview, CreateTransactionReview, IdentityDisclosureReview,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
-    ProductContext, ProductExecutionKind, ProductStorageKey, ResourceAllocationReview,
-    SessionUiInfo, SignPayloadReview, SignRawReview, UserConfirmationReview,
-    normalize_product_identifier,
+    ProductContext, ProductStorageKey, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
+    SignRawReview, UserConfirmationReview, normalize_product_identifier,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -320,7 +319,7 @@ impl ProductRuntimeHost {
         Self::from_services_with_platform(
             services.clone(),
             services.platform.clone(),
-            services.chat.clone(),
+            None,
             authority,
             product,
         )
@@ -1898,24 +1897,15 @@ impl Chain for ProductRuntimeHost {
 const PAYMENTS_NOT_IMPLEMENTED: &str = "Payments are not supported in dot.li";
 
 impl ProductRuntimeHost {
-    fn native_chat_platform(
+    /// Chat access policy for this connection; see [`chat_platform_for`].
+    pub(crate) fn native_chat_platform(
         &self,
     ) -> Result<Arc<dyn truapi_platform::ChatPlatform>, crate::host_core::ProductRuntimeError> {
-        if self.product.execution_kind != ProductExecutionKind::Chat {
-            return Err(crate::host_core::ProductRuntimeError::Denied);
-        }
-        if self.authority.session_state().current().is_none() {
-            return Err(crate::host_core::ProductRuntimeError::Denied);
-        }
-        self.chat_platform
-            .clone()
-            .ok_or(crate::host_core::ProductRuntimeError::Unsupported)
-    }
-
-    pub(crate) fn ensure_native_chat_available(
-        &self,
-    ) -> Result<(), crate::host_core::ProductRuntimeError> {
-        self.native_chat_platform().map(drop)
+        chat_platform_for(
+            self.product.execution_kind,
+            self.authority.session_state().current().is_some(),
+            self.chat_platform.as_ref(),
+        )
     }
 
     fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
@@ -1926,17 +1916,25 @@ impl ProductRuntimeHost {
         })
     }
 
-    fn chat_streams_available(&self) -> bool {
-        self.chat_platform::<()>().is_ok()
-    }
-
     pub(crate) fn publish_chat_action(
         &self,
         action: v01::HostChatActionSubscribeItem,
-    ) -> Result<(), crate::host_core::ProductRuntimeError> {
-        self.native_chat_platform()?;
+    ) -> Result<
+        (),
+        (
+            crate::host_core::ProductRuntimeError,
+            Box<v01::HostChatActionSubscribeItem>,
+        ),
+    > {
+        if let Err(error) = self.native_chat_platform() {
+            return Err((error, Box::new(action)));
+        }
         self.chat
             .publish_action(HostChatActionSubscribeItem::V1(action))
+            .map_err(|(error, action)| {
+                let HostChatActionSubscribeItem::V1(action) = *action;
+                (error, Box::new(action))
+            })
     }
 
     pub(crate) fn close_chat(&self) {
@@ -1993,7 +1991,7 @@ impl Chat for ProductRuntimeHost {
         &self,
         _cx: &CallContext,
     ) -> Subscription<HostChatActionSubscribeItem> {
-        if !self.chat_streams_available() {
+        if self.chat_platform::<()>().is_err() {
             return Subscription::empty();
         }
         self.chat.subscribe_actions()

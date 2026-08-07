@@ -14,7 +14,6 @@ use tracing::instrument;
 
 use crate::frame::{Payload, ProtocolMessage};
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds};
-use crate::middleware::execution::ExecutionFilter;
 use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
 use crate::transport::Transport;
 
@@ -55,13 +54,21 @@ pub struct Dispatcher {
     by_start: HashMap<u8, SubscriptionEntry>,
     stop_ids: HashSet<u8>,
     subscriptions: SubscriptionManager,
-    execution: ExecutionFilter,
+    /// Trusted executable kind bound to this connection; `None` leaves the
+    /// surface unrestricted for direct dispatcher embeddings.
+    execution: Option<truapi_platform::ProductExecutionKind>,
 }
 
 impl Dispatcher {
     /// Construct a dispatcher whose subscriptions are driven on `spawner`.
     pub fn new(spawner: Spawner) -> Self {
-        Self::with_execution_filter(spawner, ExecutionFilter::unrestricted())
+        Self {
+            by_request: HashMap::new(),
+            by_start: HashMap::new(),
+            stop_ids: HashSet::new(),
+            subscriptions: SubscriptionManager::new(spawner),
+            execution: None,
+        }
     }
 
     /// Construct a dispatcher bound to a trusted executable kind.
@@ -69,22 +76,15 @@ impl Dispatcher {
         spawner: Spawner,
         execution: truapi_platform::ProductExecutionKind,
     ) -> Self {
-        Self::with_execution_filter(spawner, ExecutionFilter::for_execution(execution))
-    }
-
-    fn with_execution_filter(spawner: Spawner, execution: ExecutionFilter) -> Self {
         Self {
-            by_request: HashMap::new(),
-            by_start: HashMap::new(),
-            stop_ids: HashSet::new(),
-            subscriptions: SubscriptionManager::new(spawner),
-            execution,
+            execution: Some(execution),
+            ..Self::new(spawner)
         }
     }
 
     /// Return whether this connection may access a service execution kind.
     pub fn allows_execution(&self, required: truapi_platform::ProductExecutionKind) -> bool {
-        self.execution.allows(required)
+        self.execution.is_none_or(|actual| actual == required)
     }
 
     /// Register a request-response handler, keyed on `ids.request_id`. Returns

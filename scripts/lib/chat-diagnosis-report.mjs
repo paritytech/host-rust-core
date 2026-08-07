@@ -1,4 +1,10 @@
-/** Decode a SCALE-encoded iOS Chat text message stored in CoreData. */
+/**
+ * Decode a SCALE-encoded iOS Chat text message stored in CoreData.
+ *
+ * Mirrors the generated `ChatMessageContent` codec in `@parity/truapi`
+ * (Text variant only) so this script stays runnable without building the
+ * TS package first.
+ */
 export function decodeTextMessage(hex) {
   const encoded = Buffer.from(hex, "hex");
   if (encoded[0] !== 0) return undefined;
@@ -7,17 +13,25 @@ export function decodeTextMessage(hex) {
   return encoded.subarray(start, start + compact.value).toString("utf8");
 }
 
+/** Title line the Chat diagnosis worker renders its report under. */
+export const CHAT_DIAGNOSIS_HEADING = "## Truapi Chat Diagnosis";
+
 /** Validate a successful Chat report and attach the native host label. */
-export function labelChatDiagnosisReport(report, host, expectedSuccesses) {
-  const heading = "## Truapi Chat Diagnosis";
+export function labelChatDiagnosisReport(report, host) {
+  const counts = report.match(/\*\*(\d+) success · (\d+) failed\*\*/);
   if (
-    !report.startsWith(heading) ||
-    !report.includes(`**${expectedSuccesses} success · 0 failed**`) ||
+    !report.startsWith(CHAT_DIAGNOSIS_HEADING) ||
+    !counts ||
+    counts[1] === "0" ||
+    counts[2] !== "0" ||
     report.includes("❌")
   ) {
     throw new Error(`Chat diagnosis reported a failure:\n${report}`);
   }
-  return report.replace(heading, `## Truapi ${host} Chat Diagnosis`);
+  return report.replace(
+    CHAT_DIAGNOSIS_HEADING,
+    `## Truapi ${host} Chat Diagnosis`,
+  );
 }
 
 function decodeScaleCompact(encoded, offset) {

@@ -741,6 +741,15 @@ impl ChainRuntime {
         local_follow_id: String,
         with_runtime: bool,
     ) -> Result<String, RuntimeFailure> {
+        let requested_id = local_follow_id;
+        let local_follow_id = connection
+            .resolve_local_follow_id(&requested_id)
+            .ok_or_else(|| {
+                RuntimeFailure::host_failure(
+                    method,
+                    format!("unknown follow subscription id {requested_id:?}"),
+                )
+            })?;
         let remote_follow_id = connection
             .require_remote_follow(method, local_follow_id.clone())
             .await?;
@@ -891,15 +900,12 @@ impl ChainConnection {
         Ok(SubxtConnection { client })
     }
 
+    /// Whether the already-resolved follow was registered with runtime metadata.
     fn follow_with_runtime(&self, local_follow_id: &str) -> bool {
-        let Some(local_follow_id) = self.resolve_local_follow_id(local_follow_id) else {
-            return false;
-        };
-
         self.follows
             .lock()
             .unwrap()
-            .get(&local_follow_id)
+            .get(local_follow_id)
             .is_some_and(|follow| follow.with_runtime)
     }
 
@@ -1043,14 +1049,6 @@ impl ChainConnection {
         method: &'static str,
         local_follow_id: String,
     ) -> Result<String, RuntimeFailure> {
-        let requested_id = local_follow_id;
-        let local_follow_id = self.resolve_local_follow_id(&requested_id).ok_or_else(|| {
-            RuntimeFailure::host_failure(
-                method,
-                format!("unknown follow subscription id {requested_id:?}"),
-            )
-        })?;
-
         if let Some(remote_follow_id) = self.remote_follow_id(&local_follow_id) {
             return Ok(remote_follow_id);
         }
