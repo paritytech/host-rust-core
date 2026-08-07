@@ -213,7 +213,7 @@ describe("sandbox iframe MessagePort handshake", () => {
 
         const probe = encodeWireMessage({
             requestId: "legacy-probe",
-            payload: { id: 255, value: new Uint8Array() },
+            payload: { traitId: 255, methodId: 255, value: new Uint8Array() },
         });
         expect(probe.isOk()).toBe(true);
         if (probe.isErr()) throw probe.error;
@@ -247,7 +247,7 @@ describe("sandbox iframe MessagePort handshake", () => {
 
         const probe = encodeWireMessage({
             requestId: "legacy-probe",
-            payload: { id: 255, value: new Uint8Array() },
+            payload: { traitId: 255, methodId: 255, value: new Uint8Array() },
         });
         expect(probe.isOk()).toBe(true);
         if (probe.isErr()) throw probe.error;

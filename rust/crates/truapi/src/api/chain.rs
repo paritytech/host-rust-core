@@ -18,10 +18,11 @@ use crate::versioned::chain::{
     RemoteChainTransactionStopError, RemoteChainTransactionStopRequest,
     RemoteChainTransactionStopResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Chain interaction methods.
+#[wire_trait(id = 2)]
 #[crate::async_trait]
 pub trait Chain: Send + Sync {
     /// Follow the chain head and receive block events.
@@ -43,7 +44,7 @@ pub trait Chain: Send + Sync {
     /// );
     /// console.log("head follow event:", item);
     /// ```
-    #[wire(start_id = 76)]
+    #[wire(start_id = 0)]
     async fn follow_head_subscribe(
         &self,
         _cx: &CallContext,
@@ -71,7 +72,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "getHeadHeader failed:", result);
     /// console.log("block header:", result.value);
     /// ```
-    #[wire(request_id = 80)]
+    #[wire(request_id = 4)]
     async fn get_head_header(
         &self,
         _cx: &CallContext,
@@ -99,7 +100,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "getHeadBody failed:", result);
     /// console.log("block body:", result.value);
     /// ```
-    #[wire(request_id = 82)]
+    #[wire(request_id = 6)]
     async fn get_head_body(
         &self,
         _cx: &CallContext,
@@ -132,7 +133,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "getHeadStorage failed:", result);
     /// console.log("storage value:", result.value);
     /// ```
-    #[wire(request_id = 84)]
+    #[wire(request_id = 8)]
     async fn get_head_storage(
         &self,
         _cx: &CallContext,
@@ -167,7 +168,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "callHead failed:", result);
     /// console.log("runtime call result:", result.value);
     /// ```
-    #[wire(request_id = 86)]
+    #[wire(request_id = 10)]
     async fn call_head(
         &self,
         _cx: &CallContext,
@@ -199,7 +200,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "unpinHead failed:", result);
     /// console.log("blocks unpinned");
     /// ```
-    #[wire(request_id = 88)]
+    #[wire(request_id = 12)]
     async fn unpin_head(
         &self,
         _cx: &CallContext,
@@ -231,7 +232,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "continueHead failed:", result);
     /// console.log("operation continued");
     /// ```
-    #[wire(request_id = 90)]
+    #[wire(request_id = 14)]
     async fn continue_head(
         &self,
         _cx: &CallContext,
@@ -263,7 +264,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "stopHeadOperation failed:", result);
     /// console.log("operation stopped");
     /// ```
-    #[wire(request_id = 92)]
+    #[wire(request_id = 16)]
     async fn stop_head_operation(
         &self,
         _cx: &CallContext,
@@ -284,7 +285,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "getSpecGenesisHash failed:", result);
     /// console.log("genesis hash:", result.value);
     /// ```
-    #[wire(request_id = 94)]
+    #[wire(request_id = 18)]
     async fn get_spec_genesis_hash(
         &self,
         _cx: &CallContext,
@@ -305,7 +306,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "getSpecChainName failed:", result);
     /// console.log("chain name:", result.value);
     /// ```
-    #[wire(request_id = 96)]
+    #[wire(request_id = 20)]
     async fn get_spec_chain_name(
         &self,
         _cx: &CallContext,
@@ -325,7 +326,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "getSpecProperties failed:", result);
     /// console.log("chain properties:", result.value);
     /// ```
-    #[wire(request_id = 98)]
+    #[wire(request_id = 22)]
     async fn get_spec_properties(
         &self,
         _cx: &CallContext,
@@ -346,7 +347,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "broadcastTransaction failed:", result);
     /// console.log("transaction broadcast:", result.value);
     /// ```
-    #[wire(request_id = 100)]
+    #[wire(request_id = 24)]
     async fn broadcast_transaction(
         &self,
         _cx: &CallContext,
@@ -380,7 +381,7 @@ pub trait Chain: Send + Sync {
     /// assert(result.isOk(), "stopTransaction failed:", result);
     /// console.log("transaction broadcast stopped");
     /// ```
-    #[wire(request_id = 102)]
+    #[wire(request_id = 26)]
     async fn stop_transaction(
         &self,
         _cx: &CallContext,

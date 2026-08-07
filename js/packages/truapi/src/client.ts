@@ -217,7 +217,10 @@ export function createTransport(
     }
     const { requestId, payload } = decoded.value;
 
-    if (payload.id === W.SYSTEM_HANDSHAKE.request) {
+    if (
+      payload.traitId === W.SYSTEM_HANDSHAKE.trait &&
+      payload.methodId === W.SYSTEM_HANDSHAKE.request
+    ) {
       // Auto-respond to inbound `host_handshake_request` frames.
       //
       // Legacy hosts shipping `@novasamatech/host-api@0.6.x` (e.g. dotli)
@@ -247,7 +250,8 @@ export function createTransport(
         send({
           requestId,
           payload: {
-            id: W.SYSTEM_HANDSHAKE.response,
+            traitId: W.SYSTEM_HANDSHAKE.trait,
+            methodId: W.SYSTEM_HANDSHAKE.response,
             value: response,
           },
         });
@@ -259,7 +263,10 @@ export function createTransport(
 
     const p = pending.get(requestId);
     if (p) {
-      if (payload.id !== p.ids.response) {
+      if (
+        payload.traitId !== p.ids.trait ||
+        payload.methodId !== p.ids.response
+      ) {
         return;
       }
       pending.delete(requestId);
@@ -273,7 +280,10 @@ export function createTransport(
 
     const subscription = subscriptions.get(requestId);
     if (subscription) {
-      if (payload.id === subscription.ids.receive) {
+      if (
+        payload.traitId === subscription.ids.trait &&
+        payload.methodId === subscription.ids.receive
+      ) {
         try {
           subscription.onReceive(payload.value);
         } catch (error) {
@@ -284,7 +294,10 @@ export function createTransport(
           subscriptions.delete(requestId);
           subscription.onClose?.(toError(error));
         }
-      } else if (payload.id === subscription.ids.interrupt) {
+      } else if (
+        payload.traitId === subscription.ids.trait &&
+        payload.methodId === subscription.ids.interrupt
+      ) {
         subscriptions.delete(requestId);
         subscription.onInterrupt?.(payload.value);
       }
@@ -340,7 +353,8 @@ export function createTransport(
           send({
             requestId,
             payload: {
-              id: ids.request,
+              traitId: ids.trait,
+              methodId: ids.request,
               value: payload,
             },
           });
@@ -381,7 +395,8 @@ export function createTransport(
         send({
           requestId,
           payload: {
-            id: ids.start,
+            traitId: ids.trait,
+            methodId: ids.start,
             value: payload,
           },
         });
@@ -401,7 +416,8 @@ export function createTransport(
             send({
               requestId,
               payload: {
-                id: ids.stop,
+                traitId: ids.trait,
+                methodId: ids.stop,
                 value: _void.enc(undefined),
               },
             });

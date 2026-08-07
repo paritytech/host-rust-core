@@ -50,13 +50,15 @@ fn feature_supported_ok_response_uses_ok_discriminant() {
     let frame = ProtocolMessage {
         request_id: "p:1".into(),
         payload: Payload {
-            id: ids.request_id,
+            trait_id: ids.trait_id,
+            method_id: ids.request_id,
             value: request.encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.request_id, "p:1");
-    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(response.payload.trait_id, ids.trait_id);
+    assert_eq!(response.payload.method_id, ids.response_id);
 
     // Wire payload: [V1 disc=0x00][Ok disc=0x00][encoded response body].
     let mut expected = vec![0x00u8, 0x00u8];
@@ -78,13 +80,15 @@ fn local_storage_read_err_response_uses_err_discriminant() {
     let frame = ProtocolMessage {
         request_id: "p:2".into(),
         payload: Payload {
-            id: ids.request_id,
+            trait_id: ids.trait_id,
+            method_id: ids.request_id,
             value: request.encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.request_id, "p:2");
-    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(response.payload.trait_id, ids.trait_id);
+    assert_eq!(response.payload.method_id, ids.response_id);
 
     // Wire payload:
     // [V1 disc=0x00][Err disc=0x01][CallError::Domain][V1 error][encoded error body].
@@ -133,13 +137,15 @@ fn assert_request_returns_domain_error<E>(
         ProtocolMessage {
             request_id: request_id.into(),
             payload: Payload {
-                id: ids.request_id,
+                trait_id: ids.trait_id,
+                method_id: ids.request_id,
                 value,
             },
         },
     );
     assert_eq!(response.request_id, request_id);
-    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(response.payload.trait_id, ids.trait_id);
+    assert_eq!(response.payload.method_id, ids.response_id);
     assert_eq!(response.payload.value, versioned_result_err_payload(error));
 }
 
@@ -158,7 +164,8 @@ fn assert_subscription_start_interrupts_error<E>(
         ProtocolMessage {
             request_id: request_id.into(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.start_id,
                 value,
             },
         },
@@ -168,7 +175,8 @@ fn assert_subscription_start_interrupts_error<E>(
     let sent = transport.sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].request_id, request_id);
-    assert_eq!(sent[0].payload.id, ids.interrupt_id);
+    assert_eq!(sent[0].payload.trait_id, ids.trait_id);
+    assert_eq!(sent[0].payload.method_id, ids.interrupt_id);
     assert_eq!(
         sent[0].payload.value,
         versioned_interrupt_err_payload(error)
@@ -200,13 +208,15 @@ fn account_proof_declined_confirmation_returns_rejected() {
         ProtocolMessage {
             request_id: "p:account-proof".into(),
             payload: Payload {
-                id: ids.request_id,
+                trait_id: ids.trait_id,
+                method_id: ids.request_id,
                 value: request.encode(),
             },
         },
     );
     assert_eq!(response.request_id, "p:account-proof");
-    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(response.payload.trait_id, ids.trait_id);
+    assert_eq!(response.payload.method_id, ids.response_id);
     // The wire-shape platform declines the confirmation prompt, so the proof
     // request maps to a `Rejected` domain error in the standard Result-Err envelope.
     let expected = versioned_result_err_payload(account::HostAccountCreateProofError::V1(
@@ -315,7 +325,8 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
         ProtocolMessage {
             request_id: "p:malformed-sub".into(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.start_id,
                 value: vec![0xff],
             },
         },
@@ -325,7 +336,8 @@ fn malformed_result_subscription_start_interrupts_with_malformed_frame() {
     let sent = transport.sent.lock().unwrap();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].request_id, "p:malformed-sub");
-    assert_eq!(sent[0].payload.id, ids.interrupt_id);
+    assert_eq!(sent[0].payload.trait_id, ids.trait_id);
+    assert_eq!(sent[0].payload.method_id, ids.interrupt_id);
     assert_eq!(sent[0].payload.value.first(), Some(&0x00));
 
     let mut payload = &sent[0].payload.value[1..];
@@ -392,7 +404,8 @@ fn subscription_start_receive_stop_through_wire_boundary() {
     let start = ProtocolMessage {
         request_id: "p:1".into(),
         payload: Payload {
-            id: ids.start_id,
+            trait_id: ids.trait_id,
+            method_id: ids.start_id,
             value: Vec::new(),
         },
     };
@@ -404,14 +417,22 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         assert!(Instant::now() < deadline, "no initial _receive frame");
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(transport.sent.lock().unwrap()[0].payload.id, ids.receive_id);
+    assert_eq!(
+        transport.sent.lock().unwrap()[0].payload.trait_id,
+        ids.trait_id
+    );
+    assert_eq!(
+        transport.sent.lock().unwrap()[0].payload.method_id,
+        ids.receive_id
+    );
 
     // Stop the subscription, then push a session change. A live subscription
     // would emit a Connected `_receive`; a stopped one must stay silent.
     let stop = ProtocolMessage {
         request_id: "p:1".into(),
         payload: Payload {
-            id: ids.stop_id,
+            trait_id: ids.trait_id,
+            method_id: ids.stop_id,
             value: Vec::new(),
         },
     };
