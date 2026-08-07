@@ -3,7 +3,8 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
-  PROTOCOL_ERROR_ID,
+  PROTOCOL_ERROR_METHOD_ID,
+  PROTOCOL_ERROR_TRAIT_ID,
   type HostInitiatedSubscriptionHandler,
   type ObservableSource,
   type ProtocolMessage,
@@ -33,9 +34,15 @@ import * as W from "./generated/wire-table.js";
 
 export type { Subscription, TrUApiTransport };
 
-const UNANSWERED_WIRE_IDS = new Set<number>(
+const UNANSWERED_WIRE_IDS = new Set<string>(
   Object.values(W).flatMap((ids) =>
-    "response" in ids ? [ids.response] : [ids.stop, ids.interrupt, ids.receive],
+    "response" in ids
+      ? [`${ids.trait}:${ids.response}`]
+      : [
+          `${ids.trait}:${ids.stop}`,
+          `${ids.trait}:${ids.interrupt}`,
+          `${ids.trait}:${ids.receive}`,
+        ],
   ),
 );
 
@@ -154,10 +161,18 @@ function unwrapVersionedWireValue(value: unknown): unknown {
   return isVersionedWireValue(value) ? value.value : value;
 }
 
-function decodeUnsupportedMessage(payload: Uint8Array): number {
-  if (payload.length !== 3) {
+/**
+ * Decode `V1(UnsupportedMessage { trait_id, method_id })`. Codec 2 addresses a
+ * frame by a pair, so the payload is four bytes: version index, error variant
+ * index, then the trait and method of the frame the peer could not handle.
+ */
+function decodeUnsupportedMessage(payload: Uint8Array): {
+  traitId: number;
+  methodId: number;
+} {
+  if (payload.length !== 4) {
     throw new Error(
-      `Malformed protocol error payload: expected 3 bytes, received ${payload.length}`,
+      `Malformed protocol error payload: expected 4 bytes, received ${payload.length}`,
     );
   }
   if (payload[0] !== 0) {
@@ -170,7 +185,7 @@ function decodeUnsupportedMessage(payload: Uint8Array): number {
       `Malformed protocol error payload: unknown error discriminant ${payload[1]}`,
     );
   }
-  return payload[2];
+  return { traitId: payload[2], methodId: payload[3] };
 }
 
 /**
@@ -213,7 +228,9 @@ export function createTransport(
     handler?: (request: unknown) => ObservableSource<unknown>;
     instances: Map<string, { unsubscribe(): void }>;
   };
-  const hostRoutes = new Map<number, HostRoute>();
+  // Keyed by the full (trait, method) start pair: a bare start id would
+  // collide the moment two traits both number a subscription the same.
+  const hostRoutes = new Map<string, HostRoute>();
 
   /**
    * Normalize arbitrary thrown values into `Error` instances.
@@ -267,31 +284,47 @@ export function createTransport(
     }
     const { requestId, payload } = decoded.value;
 
-    if (payload.id === PROTOCOL_ERROR_ID) {
-      let discriminant: number;
+    if (
+      payload.traitId === PROTOCOL_ERROR_TRAIT_ID &&
+      payload.methodId === PROTOCOL_ERROR_METHOD_ID
+    ) {
+      let unsupported: { traitId: number; methodId: number };
       try {
-        discriminant = decodeUnsupportedMessage(payload.value);
+        unsupported = decodeUnsupportedMessage(payload.value);
       } catch (error) {
         closeWithError(error);
         return;
       }
 
+      // Match on the whole pair: a bare method id would alias across traits and
+      // could resolve the wrong pending call.
       const request = pending.get(requestId);
-      if (request?.ids.request === discriminant) {
+      if (
+        request?.ids.trait === unsupported.traitId &&
+        request?.ids.request === unsupported.methodId
+      ) {
         pending.delete(requestId);
         request.resolveUnsupported();
         return;
       }
 
       const subscription = subscriptions.get(requestId);
-      if (subscription?.ids.start === discriminant) {
+      if (
+        subscription?.ids.trait === unsupported.traitId &&
+        subscription?.ids.start === unsupported.methodId
+      ) {
         subscriptions.delete(requestId);
-        subscription.onClose?.(new UnsupportedMessageError(discriminant));
+        subscription.onClose?.(
+          new UnsupportedMessageError(unsupported.traitId, unsupported.methodId),
+        );
       }
       return;
     }
 
-    if (payload.id === W.SYSTEM_HANDSHAKE.request) {
+    if (
+      payload.traitId === W.SYSTEM_HANDSHAKE.trait &&
+      payload.methodId === W.SYSTEM_HANDSHAKE.request
+    ) {
       // Auto-respond to inbound `host_handshake_request` frames.
       //
       // Legacy hosts shipping `@novasamatech/host-api@0.6.x` (e.g. dotli)
@@ -321,7 +354,8 @@ export function createTransport(
         send({
           requestId,
           payload: {
-            id: W.SYSTEM_HANDSHAKE.response,
+            traitId: W.SYSTEM_HANDSHAKE.trait,
+            methodId: W.SYSTEM_HANDSHAKE.response,
             value: response,
           },
         });
@@ -331,13 +365,17 @@ export function createTransport(
       return;
     }
 
-    const hostRoute = hostRoutes.get(payload.id);
+    const hostRoute = hostRoutes.get(`${payload.traitId}:${payload.methodId}`);
     if (hostRoute) {
       startHostSubscription(hostRoute, requestId, payload.value);
       return;
     }
     for (const candidate of hostRoutes.values()) {
-      if (payload.id !== candidate.ids.stop) continue;
+      if (
+        payload.traitId !== candidate.ids.trait ||
+        payload.methodId !== candidate.ids.stop
+      )
+        continue;
       const bufferedIndex = candidate.buffered.findIndex(
         (start) => start.requestId === requestId,
       );
@@ -351,7 +389,13 @@ export function createTransport(
     }
 
     const p = pending.get(requestId);
-    if (p && payload.id === p.ids.response) {
+    if (p) {
+      if (
+        payload.traitId !== p.ids.trait ||
+        payload.methodId !== p.ids.response
+      ) {
+        return;
+      }
       pending.delete(requestId);
       try {
         p.resolve(payload.value);
@@ -363,7 +407,10 @@ export function createTransport(
 
     const subscription = subscriptions.get(requestId);
     if (subscription) {
-      if (payload.id === subscription.ids.receive) {
+      if (
+        payload.traitId === subscription.ids.trait &&
+        payload.methodId === subscription.ids.receive
+      ) {
         try {
           subscription.onReceive(payload.value);
         } catch (error) {
@@ -374,15 +421,17 @@ export function createTransport(
           subscriptions.delete(requestId);
           subscription.onClose?.(toError(error));
         }
-        return;
-      } else if (payload.id === subscription.ids.interrupt) {
+      } else if (
+        payload.traitId === subscription.ids.trait &&
+        payload.methodId === subscription.ids.interrupt
+      ) {
         subscriptions.delete(requestId);
         subscription.onInterrupt?.(payload.value);
         return;
       }
     }
 
-    if (UNANSWERED_WIRE_IDS.has(payload.id)) {
+    if (UNANSWERED_WIRE_IDS.has(`${payload.traitId}:${payload.methodId}`)) {
       return;
     }
 
@@ -390,8 +439,14 @@ export function createTransport(
       send({
         requestId,
         payload: {
-          id: PROTOCOL_ERROR_ID,
-          value: new Uint8Array([0, 0, payload.id]),
+          traitId: PROTOCOL_ERROR_TRAIT_ID,
+          methodId: PROTOCOL_ERROR_METHOD_ID,
+          value: new Uint8Array([
+            0,
+            0,
+            payload.traitId,
+            payload.methodId,
+          ]),
         },
       });
     } catch {
@@ -539,7 +594,8 @@ export function createTransport(
           send({
             requestId,
             payload: {
-              id: ids.request,
+              traitId: ids.trait,
+              methodId: ids.request,
               value: payload,
             },
           });
@@ -580,7 +636,8 @@ export function createTransport(
         send({
           requestId,
           payload: {
-            id: ids.start,
+            traitId: ids.trait,
+            methodId: ids.start,
             value: payload,
           },
         });
@@ -600,7 +657,8 @@ export function createTransport(
             send({
               requestId,
               payload: {
-                id: ids.stop,
+                traitId: ids.trait,
+                methodId: ids.stop,
                 value: _void.enc(undefined),
               },
             });
@@ -617,8 +675,11 @@ export function createTransport(
       interruptPayload,
       bufferCapacity,
     }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
-      if (hostRoutes.has(ids.start)) {
-        throw new Error(`host-initiated subscription ${ids.start} is already registered`);
+      const routeKey = `${ids.trait}:${ids.start}`;
+      if (hostRoutes.has(routeKey)) {
+        throw new Error(
+          `host-initiated subscription (${ids.trait}, ${ids.start}) is already registered`,
+        );
       }
       const route: HostRoute = {
         ids,
@@ -629,7 +690,7 @@ export function createTransport(
         buffered: [],
         instances: new Map(),
       };
-      hostRoutes.set(ids.start, route);
+      hostRoutes.set(routeKey, route);
       return {
         setHandler(handler: HostInitiatedSubscriptionHandler<Request, Item>) {
           const installed = handler as (

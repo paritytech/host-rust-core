@@ -5,10 +5,11 @@ use crate::versioned::notifications::{
     HostPushNotificationCancelResponse, HostPushNotificationError, HostPushNotificationRequest,
     HostPushNotificationResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Notification methods for locally-rendered push notifications.
+#[wire_trait(id = 7)]
 #[crate::async_trait]
 pub trait Notifications: Send + Sync {
     /// Send a push notification to the user.
@@ -28,7 +29,7 @@ pub trait Notifications: Send + Sync {
     /// assert(result.isOk(), "sendPushNotification failed:", result);
     /// console.log("notification sent:", result.value);
     /// ```
-    #[wire(request_id = 4)]
+    #[wire(request_id = 0)]
     async fn send_push_notification(
         &self,
         cx: &CallContext,
@@ -49,7 +50,7 @@ pub trait Notifications: Send + Sync {
     /// assert(result.isOk(), "cancelPushNotification failed:", result);
     /// console.log("notification cancelled");
     /// ```
-    #[wire(request_id = 134)]
+    #[wire(request_id = 2)]
     async fn cancel_push_notification(
         &self,
         cx: &CallContext,

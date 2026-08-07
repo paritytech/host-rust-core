@@ -14,10 +14,11 @@ use crate::versioned::account::{
     HostGetUserIdRequest, HostGetUserIdResponse, HostRequestLoginError, HostRequestLoginRequest,
     HostRequestLoginResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError, Subscription};
+use crate::{wire, wire_trait};
 
 /// Account lookup, aliasing, and proof generation.
+#[wire_trait(id = 1)]
 #[crate::async_trait]
 pub trait Account: Send + Sync {
     /// Subscribe to account connection status changes.
@@ -30,7 +31,7 @@ pub trait Account: Send + Sync {
     /// );
     /// console.log("connection status:", status);
     /// ```
-    #[wire(start_id = 18)]
+    #[wire(start_id = 0)]
     async fn connection_status_subscribe(
         &self,
         _cx: &CallContext,
@@ -62,7 +63,7 @@ pub trait Account: Send + Sync {
     /// assert(otherProduct.isOk(), "cross-product getAccount was denied or failed:", otherProduct);
     /// console.log("other product account retrieved after approval:", otherProduct.value);
     /// ```
-    #[wire(request_id = 22)]
+    #[wire(request_id = 4)]
     async fn get_account(
         &self,
         _cx: &CallContext,
@@ -106,7 +107,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "getAccountAlias failed:", result);
     /// console.log("account alias:", result.value);
     /// ```
-    #[wire(request_id = 24)]
+    #[wire(request_id = 6)]
     async fn get_account_alias(
         &self,
         _cx: &CallContext,
@@ -151,7 +152,7 @@ pub trait Account: Send + Sync {
     /// );
     /// console.log("foreign account proof refused without prompting");
     /// ```
-    #[wire(request_id = 26)]
+    #[wire(request_id = 8)]
     async fn create_account_proof(
         &self,
         _cx: &CallContext,
@@ -185,7 +186,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "signVrf failed:", result);
     /// console.log("vrf signature:", result.value);
     /// ```
-    #[wire(request_id = 164)]
+    #[wire(request_id = 16)]
     async fn sign_vrf(
         &self,
         _cx: &CallContext,
@@ -282,7 +283,7 @@ pub trait Account: Send + Sync {
     /// assert(result.value.accounts.length === 0, "unexpected legacy accounts:", result.value);
     /// console.log("legacy accounts:", result.value.accounts);
     /// ```
-    #[wire(request_id = 28)]
+    #[wire(request_id = 10)]
     async fn get_legacy_accounts(
         &self,
         _cx: &CallContext,
@@ -298,7 +299,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "getUserId failed:", result);
     /// console.log("user id:", result.value);
     /// ```
-    #[wire(request_id = 110)]
+    #[wire(request_id = 12)]
     async fn get_user_id(
         &self,
         _cx: &CallContext,
@@ -319,7 +320,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "requestLogin failed:", result);
     /// console.log("login completed:", result.value);
     /// ```
-    #[wire(request_id = 112)]
+    #[wire(request_id = 14)]
     async fn request_login(
         &self,
         _cx: &CallContext,

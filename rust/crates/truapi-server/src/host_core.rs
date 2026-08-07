@@ -1520,7 +1520,8 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "theme:1".to_string(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.start_id,
                 value: Vec::new(),
             },
         };

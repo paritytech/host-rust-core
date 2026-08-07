@@ -1,12 +1,14 @@
-//! Emits `wire_table.rs`: the (id, tag) lookup table the server uses to
-//! pair incoming wire frames with their request, response, or
+//! Emits `wire_table.rs`: the (trait, method) discriminant lookup table the
+//! server uses to pair incoming wire frames with their request, response, or
 //! subscription role.
 //!
-//! Per-method `#[wire(...)]` annotations decide id assignment:
+//! A trait-level `#[wire_trait(id = N)]` annotation assigns the trait
+//! discriminant; per-method `#[wire(...)]` annotations decide method-id
+//! assignment within the trait:
 //! - request methods reserve `(request_id, response_id)`.
 //! - subscription methods reserve `(start_id, stop_id, interrupt_id, receive_id)`.
 //!
-//! Missing annotations and collisions both hard-fail codegen.
+//! Missing annotations and collisions (per trait) both hard-fail codegen.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -17,16 +19,18 @@ use indoc::{formatdoc, writedoc};
 use crate::rustdoc::*;
 
 use super::{const_name, wire_method_name};
-use crate::RESERVED_PROTOCOL_ERROR_ID;
+use crate::RESERVED_PROTOCOL_ERROR_TRAIT_ID;
 
 #[derive(Debug, Clone, Copy)]
 struct WireEntry {
+    trait_id: u8,
     request_id: u8,
     response_id: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct SubEntry {
+    trait_id: u8,
     start_id: u8,
     stop_id: u8,
     interrupt_id: u8,
@@ -42,15 +46,33 @@ enum MethodEntry {
 /// Emit the contents of `wire_table.rs`.
 pub fn generate_wire_table(api: &ApiDefinition) -> Result<String> {
     let mut method_entries: Vec<(String, MethodEntry)> = Vec::new();
-    let mut seen = BTreeMap::from([(
-        RESERVED_PROTOCOL_ERROR_ID,
+    let mut seen: BTreeMap<(u8, u8), String> = BTreeMap::new();
+    // Seed the reserved trait as already taken, so a trait declaring 255
+    // collides here instead of silently claiming the address protocol errors
+    // travel on. Reserving the trait rather than the single pair (255, 255) is
+    // what makes this reachable: a method can only land on that pair through a
+    // trait that owns 255, and nothing else constrains a declared trait id.
+    let mut seen_traits: BTreeMap<u8, String> = BTreeMap::from([(
+        RESERVED_PROTOCOL_ERROR_TRAIT_ID,
         "reserved for protocol errors".to_string(),
     )]);
     let mut seen_methods: BTreeMap<String, String> = BTreeMap::new();
 
     for trait_def in &api.traits {
+        // Method-less traits (e.g. the `TrUApi` umbrella trait) own no wire
+        // frames and need no trait discriminant.
+        if trait_def.methods.is_empty() {
+            continue;
+        }
+        let trait_id = trait_wire_id(trait_def)?;
+        if let Some(existing) = seen_traits.insert(trait_id, trait_def.name.clone()) {
+            bail!(
+                "wire trait id {trait_id} reused: `{existing}` and `{}` collide",
+                trait_def.name
+            );
+        }
         for method in &trait_def.methods {
-            let entry = method_entry(trait_def, method)?;
+            let entry = method_entry(trait_def, trait_id, method)?;
             let wire_method = wire_method_name(&trait_def.name, &method.name);
             if let Some(existing) = seen_methods.insert(
                 wire_method.clone(),
@@ -68,14 +90,31 @@ pub fn generate_wire_table(api: &ApiDefinition) -> Result<String> {
     }
 
     method_entries.sort_by_key(|(_, entry)| match entry {
-        MethodEntry::Request(WireEntry { request_id, .. }) => *request_id,
-        MethodEntry::Subscription(SubEntry { start_id, .. }) => *start_id,
+        MethodEntry::Request(WireEntry {
+            trait_id,
+            request_id,
+            ..
+        }) => (*trait_id, *request_id),
+        MethodEntry::Subscription(SubEntry {
+            trait_id, start_id, ..
+        }) => (*trait_id, *start_id),
     });
 
     render(&method_entries)
 }
 
-fn method_entry(trait_def: &TraitDef, method: &MethodDef) -> Result<MethodEntry> {
+/// The trait's wire discriminant. Every API trait must carry a
+/// `#[wire_trait(id = N)]` annotation.
+fn trait_wire_id(trait_def: &TraitDef) -> Result<u8> {
+    trait_def.wire_trait_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "trait `{}` is missing #[wire_trait(id = N)] annotation",
+            trait_def.name
+        )
+    })
+}
+
+fn method_entry(trait_def: &TraitDef, trait_id: u8, method: &MethodDef) -> Result<MethodEntry> {
     let wire = &method.wire;
     match method.kind {
         MethodKind::Request => {
@@ -99,6 +138,7 @@ fn method_entry(trait_def: &TraitDef, method: &MethodDef) -> Result<MethodEntry>
             })?;
             let response_id = infer_id(wire.response_id, request_id, 1, &method.name)?;
             Ok(MethodEntry::Request(WireEntry {
+                trait_id,
                 request_id,
                 response_id,
             }))
@@ -122,6 +162,7 @@ fn method_entry(trait_def: &TraitDef, method: &MethodDef) -> Result<MethodEntry>
             let interrupt_id = infer_id(wire.interrupt_id, start_id, 2, &method.name)?;
             let receive_id = infer_id(wire.receive_id, start_id, 3, &method.name)?;
             Ok(MethodEntry::Subscription(SubEntry {
+                trait_id,
                 start_id,
                 stop_id,
                 interrupt_id,
@@ -141,33 +182,35 @@ fn infer_id(explicit: Option<u8>, anchor: u8, offset: u8, method_name: &str) -> 
 }
 
 fn insert_entry(
-    seen: &mut BTreeMap<u8, String>,
+    seen: &mut BTreeMap<(u8, u8), String>,
     method_name: &str,
     entry: MethodEntry,
 ) -> Result<()> {
-    let pairs: Vec<(u8, String)> = match entry {
+    let pairs: Vec<(u8, u8, String)> = match entry {
         MethodEntry::Request(WireEntry {
+            trait_id,
             request_id,
             response_id,
         }) => vec![
-            (request_id, format!("{method_name}_request")),
-            (response_id, format!("{method_name}_response")),
+            (trait_id, request_id, format!("{method_name}_request")),
+            (trait_id, response_id, format!("{method_name}_response")),
         ],
         MethodEntry::Subscription(SubEntry {
+            trait_id,
             start_id,
             stop_id,
             interrupt_id,
             receive_id,
         }) => vec![
-            (start_id, format!("{method_name}_start")),
-            (stop_id, format!("{method_name}_stop")),
-            (interrupt_id, format!("{method_name}_interrupt")),
-            (receive_id, format!("{method_name}_receive")),
+            (trait_id, start_id, format!("{method_name}_start")),
+            (trait_id, stop_id, format!("{method_name}_stop")),
+            (trait_id, interrupt_id, format!("{method_name}_interrupt")),
+            (trait_id, receive_id, format!("{method_name}_receive")),
         ],
     };
-    for (id, tag) in pairs {
-        if let Some(existing) = seen.insert(id, tag.clone()) {
-            bail!("wire id {id} reused: `{existing}` and `{tag}` collide");
+    for (trait_id, id, tag) in pairs {
+        if let Some(existing) = seen.insert((trait_id, id), tag.clone()) {
+            bail!("wire id ({trait_id}, {id}) reused: `{existing}` and `{tag}` collide");
         }
     }
     Ok(())
@@ -182,31 +225,37 @@ fn render(methods: &[(String, MethodEntry)]) -> Result<String> {
         //!
         //! Auto-generated by truapi-codegen. Do not edit.
         //!
-        //! Each method reserves either two ids (request/response) or four
-        //! (start/stop/interrupt/receive). The ids for each method are exposed
-        //! as a named const (`PREIMAGE_SUBMIT`, ...); [`WIRE_TABLE`] and the
-        //! generated dispatcher both reference those consts so the numbers live
-        //! in exactly one place. The table is sorted by request/start id.
+        //! Every frame carries a `(trait, method)` discriminant pair. Each
+        //! method reserves either two method ids (request/response) or four
+        //! (start/stop/interrupt/receive) within its trait. The ids for each
+        //! method are exposed as a named const (`PREIMAGE_SUBMIT`, ...);
+        //! [`WIRE_TABLE`] and the generated dispatcher both reference those
+        //! consts so the numbers live in exactly one place. The table is
+        //! sorted by (trait id, request/start id).
 
         /// Request method wire discriminants.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct RequestFrameIds {{
-            /// Discriminant for the request frame.
+            /// Trait discriminant carried by both frames.
+            pub trait_id: u8,
+            /// Method discriminant for the request frame.
             pub request_id: u8,
-            /// Discriminant for the response frame.
+            /// Method discriminant for the response frame.
             pub response_id: u8,
         }}
 
         /// Subscription method wire discriminants.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct SubscriptionFrameIds {{
-            /// Discriminant for the start frame.
+            /// Trait discriminant carried by all four frames.
+            pub trait_id: u8,
+            /// Method discriminant for the start frame.
             pub start_id: u8,
-            /// Discriminant for the stop frame.
+            /// Method discriminant for the stop frame.
             pub stop_id: u8,
-            /// Discriminant for the interrupt frame (server-initiated termination).
+            /// Method discriminant for the interrupt frame (server-initiated termination).
             pub interrupt_id: u8,
-            /// Discriminant for each receive frame (a streamed item).
+            /// Method discriminant for each receive frame (a streamed item).
             pub receive_id: u8,
         }}
 
@@ -234,18 +283,21 @@ fn render(methods: &[(String, MethodEntry)]) -> Result<String> {
         let konst = const_name(name);
         let block = match entry {
             MethodEntry::Request(WireEntry {
+                trait_id,
                 request_id,
                 response_id,
             }) => formatdoc! {
                 r#"
                 /// Wire discriminants for `{name}`.
                 pub const {konst}: RequestFrameIds = RequestFrameIds {{
+                    trait_id: {trait_id},
                     request_id: {request_id},
                     response_id: {response_id},
                 }};
                 "#
             },
             MethodEntry::Subscription(SubEntry {
+                trait_id,
                 start_id,
                 stop_id,
                 interrupt_id,
@@ -254,6 +306,7 @@ fn render(methods: &[(String, MethodEntry)]) -> Result<String> {
                 r#"
                 /// Wire discriminants for `{name}`.
                 pub const {konst}: SubscriptionFrameIds = SubscriptionFrameIds {{
+                    trait_id: {trait_id},
                     start_id: {start_id},
                     stop_id: {stop_id},
                     interrupt_id: {interrupt_id},
@@ -270,8 +323,9 @@ fn render(methods: &[(String, MethodEntry)]) -> Result<String> {
     writedoc!(
         out,
         r#"
-        /// The full wire table. Ordering is part of the wire protocol;
-        /// only ever append. Removed methods leave their slot empty.
+        /// The full wire table. Trait ids and per-trait method ordering are
+        /// part of the wire protocol; only ever append within a trait.
+        /// Removed methods leave their slot empty.
         pub const WIRE_TABLE: &[WireEntry] = &[
         "#
     )

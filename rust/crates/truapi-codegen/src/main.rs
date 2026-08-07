@@ -12,7 +12,11 @@ mod rust;
 mod rustdoc;
 mod ts;
 
-const RESERVED_PROTOCOL_ERROR_ID: u8 = u8::MAX;
+/// Trait discriminant reserved for method-independent protocol errors. Codec 2
+/// addresses frames by `(trait, method)`, so the reservation moved from a single
+/// id to a whole trait: that is the only level at which it can be enforced,
+/// since a method reaches the protocol-error address only through its trait.
+const RESERVED_PROTOCOL_ERROR_TRAIT_ID: u8 = u8::MAX;
 
 #[derive(Parser)]
 #[command(
@@ -41,7 +45,7 @@ struct Cli {
     client_version: Option<ProtocolVersionArg>,
 
     /// Wire codec version for generated handshake calls.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 2)]
     codec_version: u8,
 
     /// Output directory for generated playground metadata (optional).

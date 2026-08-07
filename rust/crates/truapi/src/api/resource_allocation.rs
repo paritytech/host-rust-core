@@ -4,10 +4,11 @@ use crate::versioned::resource_allocation::{
     HostRequestResourceAllocationError, HostRequestResourceAllocationRequest,
     HostRequestResourceAllocationResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Resource pre-allocation (allowance management).
+#[wire_trait(id = 11)]
 #[crate::async_trait]
 pub trait ResourceAllocation: Send + Sync {
     /// Request the host to pre-allocate one or more resources.
@@ -38,7 +39,7 @@ pub trait ResourceAllocation: Send + Sync {
     /// );
     /// console.log("resource allocation outcomes:", result.value.outcomes);
     /// ```
-    #[wire(request_id = 130)]
+    #[wire(request_id = 0)]
     async fn request(
         &self,
         _cx: &CallContext,

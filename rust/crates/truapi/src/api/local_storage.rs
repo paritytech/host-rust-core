@@ -5,10 +5,11 @@ use crate::versioned::local_storage::{
     HostLocalStorageReadError, HostLocalStorageReadRequest, HostLocalStorageReadResponse,
     HostLocalStorageWriteError, HostLocalStorageWriteRequest, HostLocalStorageWriteResponse,
 };
-use crate::wire;
 use crate::{CallContext, CallError};
+use crate::{wire, wire_trait};
 
 /// Local key/value storage scoped to the calling product.
+#[wire_trait(id = 6)]
 #[crate::async_trait]
 pub trait LocalStorage: Send + Sync {
     /// Read a value by key.
@@ -18,7 +19,7 @@ pub trait LocalStorage: Send + Sync {
     /// assert(result.isOk(), "read failed:", result);
     /// console.log("storage value read:", result.value.value);
     /// ```
-    #[wire(request_id = 12)]
+    #[wire(request_id = 0)]
     async fn read(
         &self,
         cx: &CallContext,
@@ -35,7 +36,7 @@ pub trait LocalStorage: Send + Sync {
     /// assert(result.isOk(), "write failed:", result);
     /// console.log("storage write succeeded");
     /// ```
-    #[wire(request_id = 14)]
+    #[wire(request_id = 2)]
     async fn write(
         &self,
         cx: &CallContext,
@@ -49,7 +50,7 @@ pub trait LocalStorage: Send + Sync {
     /// assert(result.isOk(), "clear failed:", result);
     /// console.log("storage clear succeeded");
     /// ```
-    #[wire(request_id = 16)]
+    #[wire(request_id = 4)]
     async fn clear(
         &self,
         cx: &CallContext,

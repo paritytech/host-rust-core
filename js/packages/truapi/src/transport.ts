@@ -3,18 +3,28 @@ import { err, ok, type Result, type ResultAsync } from "neverthrow";
 
 import { str, u8, type CallErrorValue, type ResultPayload } from "./scale.js";
 
-/** Wire discriminant reserved for method-independent protocol errors. **/
-export const PROTOCOL_ERROR_ID = 255 as const;
+/**
+ * Wire trait discriminant reserved for method-independent protocol errors. No
+ * API trait may declare it, so no method is ever addressed here.
+ **/
+export const PROTOCOL_ERROR_TRAIT_ID = 255 as const;
+
+/** Wire method discriminant reserved for method-independent protocol errors. **/
+export const PROTOCOL_ERROR_METHOD_ID = 255 as const;
 
 /** The peer rejected an outbound frame because it does not support its API. **/
 export class UnsupportedMessageError extends Error {
-  /** Wire discriminant of the unsupported outbound frame. **/
-  readonly discriminant: number;
+  /** Trait discriminant of the unsupported outbound frame. **/
+  readonly traitId: number;
 
-  constructor(discriminant: number) {
-    super(`Peer does not support wire message ${discriminant}`);
+  /** Method discriminant of the unsupported outbound frame. **/
+  readonly methodId: number;
+
+  constructor(traitId: number, methodId: number) {
+    super(`Peer does not support wire message (${traitId}, ${methodId})`);
     this.name = "UnsupportedMessageError";
-    this.discriminant = discriminant;
+    this.traitId = traitId;
+    this.methodId = methodId;
   }
 }
 
@@ -143,12 +153,17 @@ export interface ObservableSource<Item> {
  **/
 export interface RequestFrameIds {
   /**
-   * Wire discriminant for the outbound request frame.
+   * Wire trait discriminant carried by both frames.
+   **/
+  trait: number;
+
+  /**
+   * Wire method discriminant for the outbound request frame.
    **/
   request: number;
 
   /**
-   * Wire discriminant for the inbound response frame.
+   * Wire method discriminant for the inbound response frame.
    **/
   response: number;
 }
@@ -158,22 +173,27 @@ export interface RequestFrameIds {
  **/
 export interface SubscriptionFrameIds {
   /**
-   * Wire discriminant for the outbound start frame.
+   * Wire trait discriminant carried by all four frames.
+   **/
+  trait: number;
+
+  /**
+   * Wire method discriminant for the outbound start frame.
    **/
   start: number;
 
   /**
-   * Wire discriminant for the outbound stop frame.
+   * Wire method discriminant for the outbound stop frame.
    **/
   stop: number;
 
   /**
-   * Wire discriminant for the inbound interrupt frame.
+   * Wire method discriminant for the inbound interrupt frame.
    **/
   interrupt: number;
 
   /**
-   * Wire discriminant for the inbound receive frame.
+   * Wire method discriminant for the inbound receive frame.
    **/
   receive: number;
 }
@@ -307,9 +327,14 @@ export interface TrUApiTransport {
  **/
 export interface Payload {
   /**
-   * Wire-table numeric discriminant.
+   * Wire-table trait discriminant: first byte of the `(trait, method)` pair.
    **/
-  id: number;
+  traitId: number;
+
+  /**
+   * Wire-table method discriminant within the trait: second byte of the pair.
+   **/
+  methodId: number;
 
   /**
    * SCALE-encoded payload body.
@@ -379,12 +404,20 @@ export interface WebSocketWireProvider extends WireProvider {
 export function encodeWireMessage(
   message: ProtocolMessage,
 ): Result<Uint8Array, Error> {
-  const id = message.payload.id;
-  if (!Number.isInteger(id) || id < 0 || id > 255) {
-    return err(new Error(`Invalid wire discriminant: ${id}`));
+  const { traitId, methodId } = message.payload;
+  if (!Number.isInteger(traitId) || traitId < 0 || traitId > 255) {
+    return err(new Error(`Invalid wire trait discriminant: ${traitId}`));
+  }
+  if (!Number.isInteger(methodId) || methodId < 0 || methodId > 255) {
+    return err(new Error(`Invalid wire method discriminant: ${methodId}`));
   }
   return ok(
-    concatBytes(str.enc(message.requestId), u8.enc(id), message.payload.value),
+    concatBytes(
+      str.enc(message.requestId),
+      u8.enc(traitId),
+      u8.enc(methodId),
+      message.payload.value,
+    ),
   );
 }
 
@@ -406,15 +439,23 @@ export function decodeWireMessage(
   const requestId = str.dec(cursor.subarray(0, requestIdEnd));
   cursor = cursor.subarray(requestIdEnd);
   if (cursor.length < 1) {
-    return err(new Error("Wire frame too short: missing discriminant byte"));
+    return err(
+      new Error("Wire frame too short: missing trait discriminant byte"),
+    );
   }
-  const id = cursor[0];
-  const value = cursor.subarray(1);
+  if (cursor.length < 2) {
+    return err(
+      new Error("Wire frame too short: missing method discriminant byte"),
+    );
+  }
+  const traitId = cursor[0];
+  const methodId = cursor[1];
+  const value = cursor.subarray(2);
   // Hand the value bytes back as a fresh slice so callers may safely retain
   // it even if the source buffer is reused by the transport.
   const valueCopy = new Uint8Array(value.length);
   valueCopy.set(value);
-  return ok({ requestId, payload: { id, value: valueCopy } });
+  return ok({ requestId, payload: { traitId, methodId, value: valueCopy } });
 }
 
 /**

@@ -3329,7 +3329,8 @@ mod tests {
             let permission_frame = ProtocolMessage {
                 request_id: "p:permission".into(),
                 payload: Payload {
-                    id: permission_ids.request_id,
+                    trait_id: permission_ids.trait_id,
+                    method_id: permission_ids.request_id,
                     value: HostDevicePermissionRequest::V1(
                         v01::HostDevicePermissionRequest::Camera,
                     )
@@ -3355,7 +3356,8 @@ mod tests {
             let feature_frame = ProtocolMessage {
                 request_id: "p:feature".into(),
                 payload: Payload {
-                    id: feature_ids.request_id,
+                    trait_id: feature_ids.trait_id,
+                    method_id: feature_ids.request_id,
                     value: HostFeatureSupportedRequest::V1(
                         v01::HostFeatureSupportedRequest::Chain {
                             genesis_hash: vec![0u8; 32],
@@ -3410,10 +3412,18 @@ mod tests {
         });
 
         assert_eq!(feature_response.request_id, "p:feature");
-        assert_eq!(feature_response.payload.id, feature_ids.response_id);
+        assert_eq!(feature_response.payload.trait_id, feature_ids.trait_id);
+        assert_eq!(feature_response.payload.method_id, feature_ids.response_id);
 
         assert_eq!(permission_response.request_id, "p:permission");
-        assert_eq!(permission_response.payload.id, permission_ids.response_id);
+        assert_eq!(
+            permission_response.payload.trait_id,
+            permission_ids.trait_id
+        );
+        assert_eq!(
+            permission_response.payload.method_id,
+            permission_ids.response_id
+        );
         // [Ok 0x00][V1 0x00][granted=1]
         assert_eq!(permission_response.payload.value, vec![0x00, 0x00, 0x01]);
 

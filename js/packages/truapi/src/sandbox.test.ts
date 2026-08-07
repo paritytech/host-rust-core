@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
-import { encodeWireMessage, PROTOCOL_ERROR_ID } from "./transport.js";
+import {
+  encodeWireMessage,
+  PROTOCOL_ERROR_METHOD_ID,
+  PROTOCOL_ERROR_TRAIT_ID,
+} from "./transport.js";
 
 let importCounter = 0;
 
@@ -221,7 +225,7 @@ describe("sandbox iframe MessagePort handshake", () => {
 
         const probe = encodeWireMessage({
             requestId: "legacy-probe",
-            payload: { id: 254, value: new Uint8Array() },
+            payload: { traitId: 254, methodId: 253, value: new Uint8Array() },
         });
         expect(probe.isOk()).toBe(true);
         if (probe.isErr()) throw probe.error;
@@ -255,7 +259,7 @@ describe("sandbox iframe MessagePort handshake", () => {
 
         const probe = encodeWireMessage({
             requestId: "legacy-probe",
-            payload: { id: 254, value: new Uint8Array() },
+            payload: { traitId: 254, methodId: 253, value: new Uint8Array() },
         });
         expect(probe.isOk()).toBe(true);
         if (probe.isErr()) throw probe.error;
@@ -269,8 +273,11 @@ describe("sandbox iframe MessagePort handshake", () => {
         const unsupported = encodeWireMessage({
             requestId: "legacy-probe",
             payload: {
-                id: PROTOCOL_ERROR_ID,
-                value: new Uint8Array([0, 0, 254]),
+                traitId: PROTOCOL_ERROR_TRAIT_ID,
+                methodId: PROTOCOL_ERROR_METHOD_ID,
+                // [0] version index, [0] variant index, then the pair that was
+                // not understood, echoed in arrival order.
+                value: new Uint8Array([0, 0, 254, 253]),
             },
         });
         expect(unsupported.isOk()).toBe(true);

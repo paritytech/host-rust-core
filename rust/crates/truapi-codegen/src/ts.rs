@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use convert_case::{Case, Casing};
 use indoc::{formatdoc, writedoc};
 
-use crate::RESERVED_PROTOCOL_ERROR_ID;
+use crate::RESERVED_PROTOCOL_ERROR_TRAIT_ID;
 use crate::rustdoc::*;
 
 mod examples;
@@ -584,28 +584,48 @@ fn method_wire_sort_id(method: &MethodDef) -> u8 {
 
 fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<String> {
     let wrappers = collect_versioned_wrappers(api);
-    let mut seen = BTreeMap::from([(
-        RESERVED_PROTOCOL_ERROR_ID,
+    let mut seen: BTreeMap<(u8, u8), String> = BTreeMap::new();
+    // Mirrors the Rust emitter's seeding in `rust/wire_table.rs`: trait 255 is
+    // reserved for protocol errors and must be refused identically by both, or
+    // the two languages would disagree about which addresses are legal.
+    let mut seen_traits: BTreeMap<u8, String> = BTreeMap::from([(
+        RESERVED_PROTOCOL_ERROR_TRAIT_ID,
         "reserved for protocol errors".to_string(),
     )]);
-    let mut constants: Vec<(String, ExpandedWireIds)> = Vec::new();
+    let mut constants: Vec<(String, u8, ExpandedWireIds)> = Vec::new();
 
     for trait_def in &api.traits {
+        // Method-less traits (e.g. the `TrUApi` umbrella trait) own no wire
+        // frames and need no trait discriminant.
+        if trait_def.methods.is_empty() {
+            continue;
+        }
+        let trait_id = trait_wire_id(trait_def)?;
+        if let Some(existing) = seen_traits.insert(trait_id, trait_def.name.clone()) {
+            bail!(
+                "wire trait id {trait_id} reused: `{existing}` and `{}` collide",
+                trait_def.name
+            );
+        }
         for method in &trait_def.methods {
             let wire_ids = wire_ids_for_method(trait_def, method)?;
             for (id, tag) in wire_ids.entries(&method.name) {
-                if let Some(existing) = seen.insert(id, tag.clone()) {
-                    bail!("wire id {id} reused: `{existing}` and `{tag}` collide");
+                if let Some(existing) = seen.insert((trait_id, id), tag.clone()) {
+                    bail!("wire id ({trait_id}, {id}) reused: `{existing}` and `{tag}` collide");
                 }
             }
             if !method_is_included(trait_def, method, &wrappers, target_version)? {
                 continue;
             }
-            constants.push((wire_const_name(&trait_def.name, &method.name), wire_ids));
+            constants.push((
+                wire_const_name(&trait_def.name, &method.name),
+                trait_id,
+                wire_ids,
+            ));
         }
     }
 
-    constants.sort_by_key(|(_, ids)| ids.sort_id());
+    constants.sort_by_key(|(_, trait_id, ids)| (*trait_id, ids.sort_id()));
 
     let mut out = String::new();
     writedoc!(
@@ -615,12 +635,13 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
 
         import type {{ RequestFrameIds, SubscriptionFrameIds }} from '../transport.js';
 
-        // Wire-protocol discriminants. Method ordering is part of the
-        // protocol; only ever append or explicitly reserve gaps.
+        // Wire-protocol (trait, method) discriminant pairs. Trait and method
+        // ordering are part of the protocol; only ever append within a trait
+        // or explicitly reserve gaps.
         "#
     )
     .unwrap();
-    for (name, ids) in constants {
+    for (name, trait_id, ids) in constants {
         match ids {
             ExpandedWireIds::Request {
                 request_id,
@@ -629,6 +650,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
                 out.push('\n');
                 out.push_str(&formatdoc! {"
                     export const {name} = {{
+                      trait: {trait_id},
                       request: {request_id},
                       response: {response_id},
                     }} as const satisfies RequestFrameIds;
@@ -643,6 +665,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
                 out.push('\n');
                 out.push_str(&formatdoc! {"
                     export const {name} = {{
+                      trait: {trait_id},
                       start: {start_id},
                       stop: {stop_id},
                       interrupt: {interrupt_id},
@@ -654,6 +677,17 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
     }
 
     Ok(out)
+}
+
+/// The trait's wire discriminant. Every API trait must carry a
+/// `#[wire_trait(id = N)]` annotation.
+fn trait_wire_id(trait_def: &TraitDef) -> Result<u8> {
+    trait_def.wire_trait_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "trait `{}` is missing #[wire_trait(id = N)] annotation",
+            trait_def.name
+        )
+    })
 }
 
 fn method_is_included(
@@ -2537,12 +2571,14 @@ mod tests {
         let json_rpc = TraitDef {
             name: "JsonRpc".to_string(),
             module_path: Vec::new(),
+            wire_trait_id: Some(6),
             methods: Vec::new(),
             docs: None,
         };
         let system = TraitDef {
             name: "System".to_string(),
             module_path: Vec::new(),
+            wire_trait_id: Some(7),
             methods: Vec::new(),
             docs: None,
         };
@@ -2581,6 +2617,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods,
                 docs: None,
             }],
@@ -2809,6 +2846,7 @@ mod tests {
         .expect("generate wire table");
 
         assert!(source.contains("export const EXAMPLE_STREAM = {"));
+        assert!(source.contains("  trait: 8,"));
         assert!(source.contains("  start: 2,"));
         assert!(source.contains("  receive: 5,"));
         assert!(source.contains("export const EXAMPLE_LATER = {"));
@@ -2834,70 +2872,49 @@ mod tests {
         )
         .expect_err("duplicate ids must error");
 
-        assert!(err.to_string().contains("wire id 3 reused"));
+        assert!(err.to_string().contains("wire id (8, 3) reused"));
     }
 
-    /// Discriminant 255 is reserved for protocol-level errors, so no API
-    /// method may claim it for any request, response, or subscription frame.
+    /// Trait 255 is reserved for protocol errors, so no API trait may declare
+    /// it. Kept byte-for-byte in step with the Rust emitter's
+    /// `wire_table_rejects_the_reserved_protocol_error_trait_id`: if the two
+    /// languages disagreed about which addresses are legal, one of them would
+    /// emit a table the other rejects.
     #[test]
-    fn generate_wire_table_reserves_protocol_error_id() {
-        let mut explicit_request = request_method("explicit_request", Some(255));
-        explicit_request.wire.response_id = Some(1);
+    fn generate_wire_table_rejects_the_reserved_protocol_error_trait_id() {
+        let mut api = api(vec![request_method("submit", Some(0))]);
+        api.traits[0].wire_trait_id = Some(RESERVED_PROTOCOL_ERROR_TRAIT_ID);
 
-        let inferred_response = request_method("inferred_response", Some(254));
-
-        let mut explicit_response = request_method("explicit_response", Some(1));
-        explicit_response.wire.response_id = Some(255);
-
-        let mut explicit_start = subscription_method("explicit_start", Some(255));
-        explicit_start.wire.stop_id = Some(1);
-        explicit_start.wire.interrupt_id = Some(2);
-        explicit_start.wire.receive_id = Some(3);
-
-        let mut explicit_stop = subscription_method("explicit_stop", Some(1));
-        explicit_stop.wire.stop_id = Some(255);
-        explicit_stop.wire.interrupt_id = Some(2);
-        explicit_stop.wire.receive_id = Some(3);
-
-        let mut explicit_interrupt = subscription_method("explicit_interrupt", Some(1));
-        explicit_interrupt.wire.stop_id = Some(2);
-        explicit_interrupt.wire.interrupt_id = Some(255);
-        explicit_interrupt.wire.receive_id = Some(3);
-
-        let mut explicit_receive = subscription_method("explicit_receive", Some(1));
-        explicit_receive.wire.stop_id = Some(2);
-        explicit_receive.wire.interrupt_id = Some(3);
-        explicit_receive.wire.receive_id = Some(255);
-
-        let inferred_receive = subscription_method("inferred_receive", Some(252));
-
-        for method in [
-            explicit_request,
-            inferred_response,
-            explicit_response,
-            explicit_start,
-            explicit_stop,
-            explicit_interrupt,
-            explicit_receive,
-            inferred_receive,
-        ] {
-            let method_name = method.name.clone();
-            let error = generate_wire_table(&api(vec![method]), 2)
-                .expect_err(&format!("{method_name} must not allocate wire id 255"));
-            let message = error.to_string();
-            assert!(
-                message.contains("wire id 255 reused")
-                    && message.contains("reserved for protocol errors"),
-                "unexpected error for {method_name}: {message}",
-            );
-        }
+        let error =
+            generate_wire_table(&api, 2).expect_err("trait id 255 must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("wire trait id 255 reused")
+                && message.contains("reserved for protocol errors"),
+            "unexpected error: {message}",
+        );
     }
 
+    /// The reservation must not have grown while moving up a level: under a
+    /// two-byte envelope `(8, 255)` is an ordinary address, and refusing it
+    /// would quietly cost every trait its last method slot.
     #[test]
-    fn generate_wire_table_reserves_protocol_error_id_for_filtered_method() {
+    fn generate_wire_table_allows_method_id_255_outside_the_reserved_trait() {
+        let mut method = request_method("explicit_request", Some(255));
+        method.wire.response_id = Some(1);
+
+        generate_wire_table(&api(vec![method]), 2).expect("(8, 255) is an ordinary address");
+    }
+
+    /// Version filtering must not become an escape hatch: a trait that declares
+    /// the reserved id is refused even when every one of its methods is excluded
+    /// from the target version. The trait id is validated before any method is
+    /// considered, which is what makes that hold.
+    #[test]
+    fn generate_wire_table_rejects_the_reserved_trait_id_for_filtered_methods() {
         let mut future = request_method_with_wrappers(
             "future",
-            Some(RESERVED_PROTOCOL_ERROR_ID),
+            Some(0),
             "FutureRequest",
             "FutureResponse",
             "FutureError",
@@ -2907,6 +2924,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(RESERVED_PROTOCOL_ERROR_TRAIT_ID),
                 methods: vec![future],
                 docs: None,
             }],
@@ -2919,10 +2937,11 @@ mod tests {
         };
 
         let error = generate_wire_table(&api, 1)
-            .expect_err("filtered methods must not allocate wire id 255");
+            .expect_err("a filtered-out method must not unlock the reserved trait id");
         assert!(
-            error.to_string().contains("wire id 255 reused")
-                && error.to_string().contains("reserved for protocol errors")
+            error.to_string().contains("wire trait id 255 reused")
+                && error.to_string().contains("reserved for protocol errors"),
+            "unexpected error: {error}",
         );
     }
 
@@ -2981,12 +3000,92 @@ mod tests {
         assert!(err.to_string().contains("wire id overflow"));
     }
 
+    /// Method ids are scoped per trait: two traits may both use method id 0.
+    #[test]
+    fn generate_wire_table_allows_same_method_id_in_different_traits() {
+        let api = ApiDefinition {
+            traits: vec![
+                TraitDef {
+                    name: "Alpha".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(0),
+                    methods: vec![request_method("first", Some(0))],
+                    docs: None,
+                },
+                TraitDef {
+                    name: "Beta".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(1),
+                    methods: vec![request_method("second", Some(0))],
+                    docs: None,
+                },
+            ],
+            public_trait_order: Vec::new(),
+            types: Vec::new(),
+        };
+
+        let source = generate_wire_table(&api, 2).expect("generate wire table");
+
+        assert!(source.contains("export const ALPHA_FIRST = {"));
+        assert!(source.contains("export const BETA_SECOND = {"));
+        assert!(source.contains("  trait: 0,"));
+        assert!(source.contains("  trait: 1,"));
+    }
+
+    /// Two traits must not share a wire trait id.
+    #[test]
+    fn generate_wire_table_rejects_duplicate_trait_ids() {
+        let api = ApiDefinition {
+            traits: vec![
+                TraitDef {
+                    name: "Alpha".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(3),
+                    methods: vec![request_method("first", Some(0))],
+                    docs: None,
+                },
+                TraitDef {
+                    name: "Beta".to_string(),
+                    module_path: Vec::new(),
+                    wire_trait_id: Some(3),
+                    methods: vec![request_method("second", Some(0))],
+                    docs: None,
+                },
+            ],
+            public_trait_order: Vec::new(),
+            types: Vec::new(),
+        };
+
+        let err = generate_wire_table(&api, 2).expect_err("duplicate trait ids must error");
+        assert!(err.to_string().contains("wire trait id 3 reused"));
+    }
+
+    /// A trait without `#[wire_trait(id = N)]` must fail emission.
+    #[test]
+    fn generate_wire_table_rejects_missing_trait_id() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Alpha".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: None,
+                methods: vec![request_method("first", Some(0))],
+                docs: None,
+            }],
+            public_trait_order: Vec::new(),
+            types: Vec::new(),
+        };
+
+        let err = generate_wire_table(&api, 2).expect_err("missing trait id must error");
+        assert!(err.to_string().contains("missing #[wire_trait(id = N)]"));
+    }
+
     #[test]
     fn generate_wire_table_filters_methods_by_target_version() {
         let api = ApiDefinition {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![
                     request_method_with_wrappers(
                         "legacy",
@@ -3033,6 +3132,7 @@ mod tests {
                 TraitDef {
                     name: "Legacy".to_string(),
                     module_path: Vec::new(),
+                    wire_trait_id: Some(9),
                     methods: vec![request_method_with_wrappers(
                         "legacy_call",
                         Some(2),
@@ -3045,6 +3145,7 @@ mod tests {
                 TraitDef {
                     name: "FutureOnly".to_string(),
                     module_path: Vec::new(),
+                    wire_trait_id: Some(10),
                     methods: vec![request_method_with_wrappers(
                         "future_call",
                         Some(4),
@@ -3082,6 +3183,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![MethodDef {
                     name: "example_call".to_string(),
                     kind: MethodKind::Request,
@@ -3131,6 +3233,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![
                     MethodDef {
                         name: "legacy_call".to_string(),
@@ -3198,6 +3301,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![MethodDef {
                     name: "example_call".to_string(),
                     kind: MethodKind::Request,
@@ -3244,6 +3348,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
+                wire_trait_id: Some(8),
                 methods: vec![MethodDef {
                     name: "example_call".to_string(),
                     kind: MethodKind::Request,

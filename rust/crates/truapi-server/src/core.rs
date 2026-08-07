@@ -195,7 +195,8 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
-                id: ids.request_id,
+                trait_id: ids.trait_id,
+                method_id: ids.request_id,
                 value: request.encode(),
             },
         };
@@ -204,7 +205,8 @@ mod tests {
             .expect("dispatcher should emit a response");
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
-        assert_eq!(response.payload.id, ids.response_id);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.response_id);
         // Wire payload is `Result<Ok, Err>`-shaped:
         // [Ok disc=0x00][V1 variant 0x00][supported=1]
         assert_eq!(response.payload.value, vec![0x00, 0x00, 0x01]);
@@ -219,7 +221,8 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
-                id: ids.request_id,
+                trait_id: ids.trait_id,
+                method_id: ids.request_id,
                 value: request_bytes,
             },
         };
@@ -228,7 +231,8 @@ mod tests {
                 .expect("dispatcher should emit a response");
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
-        assert_eq!(response.payload.id, ids.response_id);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.response_id);
         response.payload.value
     }
 
@@ -345,7 +349,8 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "p:1".into(),
             payload: Payload {
-                id: sub_ids.start_id,
+                trait_id: sub_ids.trait_id,
+                method_id: sub_ids.start_id,
                 value: Vec::new(),
             },
         };
@@ -366,7 +371,8 @@ mod tests {
         let sent = transport.sent.lock().unwrap().clone();
         assert!(!sent.is_empty(), "expected at least one _receive frame");
         let first = &sent[0];
-        assert_eq!(first.payload.id, sub_ids.receive_id);
+        assert_eq!(first.payload.trait_id, sub_ids.trait_id);
+        assert_eq!(first.payload.method_id, sub_ids.receive_id);
         // V1(Disconnected): V1 variant 0x00, Disconnected discriminant 0x00.
         assert_eq!(first.payload.value, vec![0x00, 0x00]);
     }

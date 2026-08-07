@@ -199,7 +199,7 @@ pub mod latest {
     pub type RemotePermissionResponse = LatestOf<versioned::permissions::RemotePermissionResponse>;
 }
 
-pub use truapi_macros::{service, wire};
+pub use truapi_macros::{service, wire, wire_trait};
 
 /// Per-message id carried from the transport frame.
 pub type RequestId = String;

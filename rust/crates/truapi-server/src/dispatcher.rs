@@ -1,10 +1,10 @@
 //! Request dispatcher.
 //!
 //! Routes incoming frames to the appropriate trait method based on the
-//! numeric wire discriminant. The handler set is registered by the
-//! auto-generated [`crate::generated::dispatcher::register`] function; this
-//! module provides the framework that owns the registration tables and the
-//! routing logic.
+//! numeric `(trait, method)` wire discriminant pair. The handler set is
+//! registered by the auto-generated
+//! [`crate::generated::dispatcher::register`] function; this module provides
+//! the framework that owns the registration tables and the routing logic.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -14,7 +14,8 @@ use parity_scale_codec::Encode;
 use tracing::instrument;
 
 use crate::frame::{
-    PROTOCOL_ERROR_ID, Payload, ProtocolErrorV1, ProtocolMessage, VersionedProtocolError,
+    PROTOCOL_ERROR_KEY, PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1,
+    ProtocolMessage, VersionedProtocolError,
 };
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds};
 use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
@@ -51,11 +52,11 @@ pub struct SubscriptionEntry {
 }
 
 /// Routes incoming protocol messages to registered handlers, keyed on the
-/// numeric wire discriminant.
+/// numeric `(trait, method)` wire discriminant pair.
 pub struct Dispatcher {
-    by_request: HashMap<u8, RequestEntry>,
-    by_start: HashMap<u8, SubscriptionEntry>,
-    stop_ids: HashSet<u8>,
+    by_request: HashMap<(u8, u8), RequestEntry>,
+    by_start: HashMap<(u8, u8), SubscriptionEntry>,
+    stop_ids: HashSet<(u8, u8)>,
     subscriptions: SubscriptionManager,
     /// Trusted executable kind bound to this connection; `None` leaves the
     /// surface unrestricted for direct dispatcher embeddings.
@@ -90,10 +91,11 @@ impl Dispatcher {
         self.execution.is_none_or(|actual| actual == required)
     }
 
-    /// Register a request-response handler, keyed on `ids.request_id`. Returns
-    /// the previously registered entry if any; callers (the generated
-    /// `dispatcher::register`) should treat `Some` as a programming error
-    /// since each request id must own exactly one handler.
+    /// Register a request-response handler, keyed on
+    /// `(ids.trait_id, ids.request_id)`. Returns the previously registered
+    /// entry if any; callers (the generated `dispatcher::register`) should
+    /// treat `Some` as a programming error since each discriminant pair must
+    /// own exactly one handler.
     pub fn on_request<F>(&mut self, ids: RequestFrameIds, handler: F) -> Option<RequestEntry>
     where
         F: Fn(String, Vec<u8>) -> BoxFuture<'static, Result<Vec<u8>, Vec<u8>>>
@@ -102,7 +104,7 @@ impl Dispatcher {
             + 'static,
     {
         self.by_request.insert(
-            ids.request_id,
+            (ids.trait_id, ids.request_id),
             RequestEntry {
                 ids,
                 handler: Arc::new(handler),
@@ -110,9 +112,10 @@ impl Dispatcher {
         )
     }
 
-    /// Register a subscription handler, keyed on `ids.start_id`, and record
-    /// `ids.stop_id` so a matching `_stop` frame tears the subscription down.
-    /// Returns the previously registered entry if any.
+    /// Register a subscription handler, keyed on
+    /// `(ids.trait_id, ids.start_id)`, and record the stop pair so a matching
+    /// `_stop` frame tears the subscription down. Returns the previously
+    /// registered entry if any.
     pub fn on_subscription<F>(
         &mut self,
         ids: SubscriptionFrameIds,
@@ -124,9 +127,9 @@ impl Dispatcher {
             + Sync
             + 'static,
     {
-        self.stop_ids.insert(ids.stop_id);
+        self.stop_ids.insert((ids.trait_id, ids.stop_id));
         self.by_start.insert(
-            ids.start_id,
+            (ids.trait_id, ids.start_id),
             SubscriptionEntry {
                 ids,
                 handler: Arc::new(handler),
@@ -135,16 +138,21 @@ impl Dispatcher {
     }
 
     /// Process an incoming protocol message, sending any responses or
-    /// subscription frames through `transport`.
+    /// subscription frames through `transport`. A `(trait, method)` pair with
+    /// no registered handler is answered with a correlated protocol error
+    /// rather than dropped, so a peer learns its frame went unhandled instead
+    /// of waiting on a reply that never comes.
     #[instrument(skip_all, fields(runtime.method = "dispatcher.dispatch"))]
     pub async fn dispatch(&self, message: ProtocolMessage, transport: Arc<dyn Transport>) {
-        let id = message.payload.id;
+        let key = (message.payload.trait_id, message.payload.method_id);
 
-        if id == PROTOCOL_ERROR_ID {
+        // Never answer a protocol error with a protocol error: two peers that
+        // disagree would otherwise trade frames forever.
+        if key == PROTOCOL_ERROR_KEY {
             return;
         }
 
-        if let Some(entry) = self.by_request.get(&id) {
+        if let Some(entry) = self.by_request.get(&key) {
             let request_id = message.request_id.clone();
             let value = (entry.handler)(request_id, message.payload.value)
                 .await
@@ -152,11 +160,12 @@ impl Dispatcher {
             transport.send(ProtocolMessage {
                 request_id: message.request_id,
                 payload: Payload {
-                    id: entry.ids.response_id,
+                    trait_id: entry.ids.trait_id,
+                    method_id: entry.ids.response_id,
                     value,
                 },
             });
-        } else if let Some(entry) = self.by_start.get(&id) {
+        } else if let Some(entry) = self.by_start.get(&key) {
             // Reserve the slot before awaiting the handler so a `_stop`
             // arriving while the handler resolves cancels the pending
             // subscription instead of racing the registration.
@@ -167,6 +176,7 @@ impl Dispatcher {
                 Ok(stream) => {
                     self.subscriptions.activate(
                         token,
+                        entry.ids.trait_id,
                         entry.ids.receive_id,
                         entry.ids.interrupt_id,
                         stream,
@@ -178,21 +188,30 @@ impl Dispatcher {
                     transport.send(ProtocolMessage {
                         request_id: message.request_id,
                         payload: Payload {
-                            id: entry.ids.interrupt_id,
+                            trait_id: entry.ids.trait_id,
+                            method_id: entry.ids.interrupt_id,
                             value: err_bytes,
                         },
                     });
                 }
             }
-        } else if self.stop_ids.contains(&id) {
+        } else if self.stop_ids.contains(&key) {
             self.subscriptions.handle_stop(&message.request_id);
         } else {
+            // Response / receive / interrupt frames are handled by the client
+            // side and are never registered here, so they land in this arm too:
+            // answering them is what tells a mismatched peer its frame was not
+            // understood. No log - a peer speaking a wire we do not know could
+            // otherwise flood the host's logs one frame at a time.
+            let (trait_id, method_id) = key;
             transport.send(ProtocolMessage {
                 request_id: message.request_id,
                 payload: Payload {
-                    id: PROTOCOL_ERROR_ID,
+                    trait_id: PROTOCOL_ERROR_TRAIT_ID,
+                    method_id: PROTOCOL_ERROR_METHOD_ID,
                     value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
-                        discriminant: id,
+                        trait_id,
+                        method_id,
                     })
                     .encode(),
                 },
@@ -245,10 +264,14 @@ mod tests {
         }
     }
 
-    fn make_frame(id: u8, value: Vec<u8>) -> ProtocolMessage {
+    fn make_frame(trait_id: u8, method_id: u8, value: Vec<u8>) -> ProtocolMessage {
         ProtocolMessage {
             request_id: "p:1".into(),
-            payload: Payload { id, value },
+            payload: Payload {
+                trait_id,
+                method_id,
+                value,
+            },
         }
     }
 
@@ -257,17 +280,21 @@ mod tests {
         let dispatcher = Dispatcher::new(test_spawner());
         let transport = Arc::new(RecordingTransport::default());
         let transport_dyn: Arc<dyn Transport> = transport.clone();
-        let frame = make_frame(250, Vec::new());
+        let frame = make_frame(250, 251, Vec::new());
         futures::executor::block_on(dispatcher.dispatch(frame, transport_dyn));
+        // 250 != 251 on purpose: the reply must echo the pair in the order it
+        // arrived, and equal values would let a transposition pass.
         assert_eq!(
             transport.sent(),
             vec![ProtocolMessage {
                 request_id: "p:1".into(),
                 payload: Payload {
-                    id: PROTOCOL_ERROR_ID,
+                    trait_id: PROTOCOL_ERROR_TRAIT_ID,
+                    method_id: PROTOCOL_ERROR_METHOD_ID,
                     value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
-                        discriminant: 250
-                    },)
+                        trait_id: 250,
+                        method_id: 251,
+                    })
                     .encode(),
                 },
             }]
@@ -279,9 +306,13 @@ mod tests {
         let dispatcher = Dispatcher::new(test_spawner());
         let transport = Arc::new(RecordingTransport::default());
         let frame = make_frame(
-            PROTOCOL_ERROR_ID,
-            VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage { discriminant: 250 })
-                .encode(),
+            PROTOCOL_ERROR_TRAIT_ID,
+            PROTOCOL_ERROR_METHOD_ID,
+            VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                trait_id: 250,
+                method_id: 251,
+            })
+            .encode(),
         );
         futures::executor::block_on(dispatcher.dispatch(frame, transport.clone()));
         assert_eq!(transport.sent(), Vec::<ProtocolMessage>::new());
@@ -293,6 +324,7 @@ mod tests {
     fn dispatch_request_handler_error_emits_response_payload() {
         let mut dispatcher = Dispatcher::new(test_spawner());
         let ids = RequestFrameIds {
+            trait_id: 7,
             request_id: 200,
             response_id: 201,
         };
@@ -300,11 +332,12 @@ mod tests {
             Box::pin(async move { Err(vec![9, 8, 7]) })
         });
         let transport = Arc::new(RecordingTransport::default());
-        let frame = make_frame(200, Vec::new());
+        let frame = make_frame(7, 200, Vec::new());
         futures::executor::block_on(dispatcher.dispatch(frame, transport.clone()));
         let sent = transport.sent();
         assert_eq!(sent.len(), 1, "exactly one response expected");
-        assert_eq!(sent[0].payload.id, 201);
+        assert_eq!(sent[0].payload.trait_id, 7);
+        assert_eq!(sent[0].payload.method_id, 201);
         assert_eq!(sent[0].payload.value, vec![9, 8, 7]);
     }
 
@@ -315,6 +348,7 @@ mod tests {
     fn register_request_twice_returns_previous_handler() {
         let mut dispatcher = Dispatcher::new(test_spawner());
         let ids = RequestFrameIds {
+            trait_id: 7,
             request_id: 200,
             response_id: 201,
         };

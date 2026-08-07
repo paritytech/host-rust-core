@@ -632,7 +632,8 @@ mod tests {
             let request_frame = ProtocolMessage {
                 request_id: "p:1".into(),
                 payload: Payload {
-                    id: ids.request_id,
+                    trait_id: ids.trait_id,
+                    method_id: ids.request_id,
                     value: HostFeatureSupportedRequest::V1(
                         v01::HostFeatureSupportedRequest::Chain {
                             genesis_hash: vec![0u8; 32],
@@ -658,7 +659,8 @@ mod tests {
 
         let response = ProtocolMessage::decode(&mut &response_bytes[..]).expect("decode response");
         assert_eq!(response.request_id, "p:1");
-        assert_eq!(response.payload.id, ids.response_id);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.response_id);
         // Wire payload is `Result<Ok, Err>`-shaped:
         // [Ok disc=0x00][V1 variant 0x00][supported=1]
         assert_eq!(response.payload.value, vec![0x00, 0x00, 0x01]);
