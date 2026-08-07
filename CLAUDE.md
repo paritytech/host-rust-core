@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-This repo is the single source of truth for the TrUAPI protocol. It vendors `dotli` as a git submodule at `hosts/dotli/` and the Android host app at `hosts/android/`.
+This repo is the single source of truth for the TrUAPI protocol. It vendors `dotli` as a git submodule at `hosts/dotli/`.
 
 ## Layout
 
@@ -26,7 +26,6 @@ ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFF
                            ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to truapi-playground.dot
 hosts/dotli/               dotli submodule
-hosts/android/             Android host app (polkadot-app-android-v2) submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
 scripts/battery.sh         run the generated battery against both headless CLI host roles
