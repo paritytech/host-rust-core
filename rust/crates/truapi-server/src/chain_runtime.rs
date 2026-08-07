@@ -19,7 +19,7 @@
 
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -235,6 +235,9 @@ pub struct ChainRuntime {
     connections: Arc<Mutex<HashMap<String, Arc<ChainConnection>>>>,
     connection_setups: Arc<Mutex<HashMap<String, ConnectionSetup>>>,
     follow_starts: Arc<ParkingMutex<HashMap<(Vec<u8>, String), LocalFollowStart>>>,
+    /// Synchronously registered follow intents, keyed by genesis hash. Alias
+    /// cardinality includes setup tasks that have not yet been polled.
+    follow_intents: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     transaction_operations: Arc<Mutex<BTreeMap<u64, TransactionOperation>>>,
     next_transaction_operation_id: Arc<AtomicU64>,
 }
@@ -259,6 +262,13 @@ fn transaction_operation_sequence(operation_id: &str) -> Option<u64> {
         .ok()
 }
 
+fn follow_product_namespace(follow_id: &str) -> Option<&str> {
+    let (namespace, _) = follow_id.split_once(':')?;
+    let instance = namespace.strip_prefix('c')?;
+    (!instance.is_empty() && instance.bytes().all(|byte| byte.is_ascii_digit()))
+        .then_some(namespace)
+}
+
 impl ChainRuntime {
     /// Build a `ChainRuntime` driven by `provider`. Background tasks (response
     /// pumps, follow setup) are spawned on `spawner`.
@@ -269,6 +279,7 @@ impl ChainRuntime {
             connections: Arc::new(Mutex::new(HashMap::new())),
             connection_setups: Arc::new(Mutex::new(HashMap::new())),
             follow_starts: Arc::new(ParkingMutex::new(HashMap::new())),
+            follow_intents: Arc::new(Mutex::new(HashMap::new())),
             transaction_operations: Arc::new(Mutex::new(BTreeMap::new())),
             next_transaction_operation_id: Arc::new(AtomicU64::new(1)),
         }
@@ -283,11 +294,17 @@ impl ChainRuntime {
         follow_subscription_id: String,
         request: RemoteChainHeadFollowRequest,
     ) -> BoxStream<'static, RemoteChainHeadFollowItem> {
+        // Product SDKs assign operation aliases independently of the outer
+        // subscription frame id. Publish the intent synchronously so the next
+        // product frame can resolve its alias before async setup is polled.
+        self.register_follow_intent(&request.genesis_hash, &follow_subscription_id);
         let (tx, rx) = mpsc::unbounded();
         let runtime = self.clone();
         let cleanup_runtime = self.clone();
         let cleanup_genesis_hash = request.genesis_hash.clone();
         let cleanup_follow_id = follow_subscription_id.clone();
+        let setup_genesis_hash = cleanup_genesis_hash.clone();
+        let setup_follow_id = cleanup_follow_id.clone();
         let follow_start_key = (request.genesis_hash.clone(), follow_subscription_id.clone());
         let cancelled = Arc::new(AtomicBool::new(false));
         let setup_cancelled = cancelled.clone();
@@ -298,9 +315,13 @@ impl ChainRuntime {
         // this task; it must await this exact setup rather than reject the
         // provider-synthetic local follow id as unknown.
         let start: LocalFollowStart = async move {
-            runtime
+            let result = runtime
                 .start_follow(follow_subscription_id, request, tx, setup_cancelled)
-                .await
+                .await;
+            if result.is_err() {
+                runtime.cleanup_follow(&setup_genesis_hash, &setup_follow_id);
+            }
+            result
         }
         .boxed()
         .shared();
@@ -760,6 +781,8 @@ impl ChainRuntime {
         local_follow_id: String,
         with_runtime: bool,
     ) -> Result<String, RuntimeFailure> {
+        let local_follow_id =
+            self.resolve_local_follow_id(method, &connection.genesis_hash, &local_follow_id)?;
         let follow_start = self
             .follow_starts
             .lock()
@@ -780,8 +803,67 @@ impl ChainRuntime {
         Ok(remote_follow_id)
     }
 
+    /// Resolve an exact follow id or the Product SDK's provider-local alias.
+    ///
+    /// Alias candidates stay inside the requesting `cN:` product namespace.
+    /// A unique pending intent is eligible; multiple candidates fail closed.
+    fn resolve_local_follow_id(
+        &self,
+        method: &'static str,
+        genesis_hash: &[u8],
+        requested_follow_id: &str,
+    ) -> Result<String, RuntimeFailure> {
+        let key = encode_hex(genesis_hash);
+        let intents = self.follow_intents.lock().unwrap();
+        let intents = intents.get(&key);
+        if intents.is_some_and(|intents| intents.contains(requested_follow_id)) {
+            return Ok(requested_follow_id.to_string());
+        }
+
+        let requested_namespace = follow_product_namespace(requested_follow_id);
+        if let Some(intents) = intents
+            && (requested_namespace.is_some() || !requested_follow_id.contains(':'))
+        {
+            let mut candidates = intents.iter().filter(|intent| {
+                requested_namespace
+                    .is_none_or(|namespace| follow_product_namespace(intent) == Some(namespace))
+            });
+            if let Some(candidate) = candidates.next()
+                && candidates.next().is_none()
+            {
+                return Ok(candidate.clone());
+            }
+        }
+        Err(RuntimeFailure::host_failure(
+            method,
+            format!("unknown follow subscription id {requested_follow_id:?}"),
+        ))
+    }
+
+    fn register_follow_intent(&self, genesis_hash: &[u8], local_follow_id: &str) {
+        self.follow_intents
+            .lock()
+            .unwrap()
+            .entry(encode_hex(genesis_hash))
+            .or_default()
+            .insert(local_follow_id.to_string());
+    }
+
+    fn remove_follow_intent(&self, genesis_hash: &[u8], local_follow_id: &str) {
+        let key = encode_hex(genesis_hash);
+        let mut intents = self.follow_intents.lock().unwrap();
+        let remove_key = intents.get_mut(&key).is_some_and(|chain_intents| {
+            chain_intents.remove(local_follow_id);
+            chain_intents.is_empty()
+        });
+        if remove_key {
+            intents.remove(&key);
+        }
+    }
+
     #[instrument(skip_all, fields(runtime.method = "chain_runtime.cleanup_follow"))]
     fn cleanup_follow(&self, genesis_hash: &[u8], local_follow_id: &str) {
+        self.remove_follow_intent(genesis_hash, local_follow_id);
         self.follow_starts
             .lock()
             .remove(&(genesis_hash.to_vec(), local_follow_id.to_string()));
@@ -1865,6 +1947,8 @@ mod tests {
                     r#"{{"jsonrpc":"2.0","id":"{id}","result":"REMOTE-FOLLOW"}}"#
                 ))
             } else if request.contains("chainHead_v1_header") {
+                let request: Value = serde_json::from_str(request).unwrap();
+                assert_eq!(request["params"][0], "REMOTE-FOLLOW");
                 Some(format!(
                     r#"{{"jsonrpc":"2.0","id":"{id}","result":"0xdeadbeef"}}"#
                 ))
@@ -1886,7 +1970,7 @@ mod tests {
         });
         let runtime = ChainRuntime::new(provider.clone(), spawner);
         let _follow_stream = runtime.remote_chain_head_follow(
-            "local-follow".to_string(),
+            "c1:follow-ab".to_string(),
             RemoteChainHeadFollowRequest {
                 genesis_hash: vec![0u8; 32],
                 with_runtime: false,
@@ -1899,7 +1983,7 @@ mod tests {
             let result = futures::executor::block_on(header_runtime.remote_chain_head_header(
                 RemoteChainHeadHeaderRequest {
                     genesis_hash: vec![0u8; 32],
-                    follow_subscription_id: "local-follow".to_string(),
+                    follow_subscription_id: "c1:follow_0".to_string(),
                     hash: vec![1u8; 32],
                 },
             ));
@@ -1937,6 +2021,35 @@ mod tests {
         assert_eq!(sent.len(), 2);
         assert!(sent[0].contains("chainHead_v1_follow"));
         assert!(sent[1].contains("chainHead_v1_header"));
+    }
+
+    #[test]
+    fn pending_follow_aliases_are_product_scoped_and_ambiguous_aliases_fail_closed() {
+        let provider = Arc::new(ScriptedProvider::new(|_| None));
+        let runtime = ChainRuntime::new(provider, spawner_for_tests());
+        let genesis_hash = vec![0u8; 32];
+
+        runtime.register_follow_intent(&genesis_hash, "c1:request-first");
+        runtime.register_follow_intent(&genesis_hash, "c2:request-first");
+        assert_eq!(
+            runtime
+                .resolve_local_follow_id("test", &genesis_hash, "c1:follow_0",)
+                .expect("c1 alias resolves within c1"),
+            "c1:request-first",
+        );
+        assert_eq!(
+            runtime
+                .resolve_local_follow_id("test", &genesis_hash, "c2:follow_0",)
+                .expect("c2 alias resolves within c2"),
+            "c2:request-first",
+        );
+
+        runtime.register_follow_intent(&genesis_hash, "c1:request-second");
+        let error = runtime
+            .resolve_local_follow_id("test", &genesis_hash, "c1:follow_1")
+            .expect_err("two c1 intents make an unknown alias ambiguous");
+        assert_eq!(error.kind(), RuntimeFailureKind::HostFailure);
+        assert!(error.reason().contains("unknown follow subscription id"));
     }
 
     #[test]
