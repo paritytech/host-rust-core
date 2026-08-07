@@ -39,6 +39,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -352,19 +398,29 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
+// Initial value and increment amount for handles.
+// These ensure that SWIFT handles always have the lowest bit set
+fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
+fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
+
 fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
     // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
     private var map: [UInt64: T] = [:]
-    private var currentHandle: UInt64 = 1
+    private var currentHandle: UInt64 = UNIFFI_HANDLEMAP_INITIAL
 
     func insert(obj: T) -> UInt64 {
         lock.withLock {
-            let handle = currentHandle
-            currentHandle += 1
-            map[handle] = obj
-            return handle
+            return doInsert(obj)
         }
+    }
+
+    // Low-level insert function, this assumes `lock` is held.
+    private func doInsert(_ obj: T) -> UInt64 {
+        let handle = currentHandle
+        currentHandle += UNIFFI_HANDLEMAP_DELTA
+        map[handle] = obj
+        return handle
     }
 
      func get(handle: UInt64) throws -> T {
@@ -373,6 +429,15 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
                 throw UniffiInternalError.unexpectedStaleHandle
             }
             return obj
+        }
+    }
+
+     func clone(handle: UInt64) throws -> UInt64 {
+        try lock.withLock {
+            guard let obj = map[handle] else {
+                throw UniffiInternalError.unexpectedStaleHandle
+            }
+            return doInsert(obj)
         }
     }
 
@@ -402,22 +467,6 @@ private let IDX_CALLBACK_FREE: Int32 = 0
 private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
 private let UNIFFI_CALLBACK_ERROR: Int32 = 1
 private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
-    typealias FfiType = UInt8
-    typealias SwiftType = UInt8
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt8 {
-        return try lift(readInt(&buf))
-    }
-
-    public static func write(_ value: UInt8, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -506,7 +555,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -522,7 +575,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -572,38 +626,38 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
  * UI thread, never wait for the user.
  */
 public protocol HostCallbacks: AnyObject, Sendable {
-    
+
     /**
      * Lifecycle logger. Marker is a stable slug, detail is free-form.
      */
-    func onCoreLog(marker: String, detail: String) 
-    
+    func onCoreLog(marker: String, detail: String)
+
     /**
      * Open a URL in the system browser.
      */
-    func navigateTo(url: String) async throws 
-    
+    func navigateTo(url: String) async throws
+
     /**
      * Deliver a push notification.
      */
-    func pushNotification(request: PushNotificationRequest) async throws  -> UInt32
-    
+    func pushNotification(request: HostPushNotificationRequest) async throws  -> UInt32
+
     /**
      * Cancel a notification by id.
      */
-    func cancelNotification(id: UInt32) throws 
-    
+    func cancelNotification(id: UInt32) throws
+
     /**
      * Prompt the user for a device-level permission (camera, mic, ...);
      * the host returns whether the permission was granted.
      */
-    func devicePermission(request: NativeDevicePermission) async throws  -> Bool
-    
+    func devicePermission(request: HostDevicePermissionRequest) async throws  -> Bool
+
     /**
      * Prompt the user for a remote (product-scoped) permission.
      */
-    func remotePermission(request: NativeRemotePermission) async throws  -> Bool
-    
+    func remotePermission(request: RemotePermission) async throws  -> Bool
+
     /**
      * Observe an auth state change. Emitted only when the state actually
      * changes, in transition order: render `Pairing` as the pairing QR UI,
@@ -611,79 +665,79 @@ public protocol HostCallbacks: AnyObject, Sendable {
      * retryable error. User cancellation is reported through
      * `NativeTrUApiCore.cancel_login()`.
      */
-    func authStateChanged(state: AuthState) 
-    
+    func authStateChanged(state: AuthState)
+
     /**
      * Read a core-owned host-private storage slot. `key` is a SCALE-encoded
      * [`CoreStorageKey`].
      */
     func coreStorageRead(key: Data) throws  -> Data?
-    
+
     /**
      * Persist a core-owned host-private storage slot. `key` is a
      * SCALE-encoded [`CoreStorageKey`].
      */
-    func coreStorageWrite(key: Data, value: Data) throws 
-    
+    func coreStorageWrite(key: Data, value: Data) throws
+
     /**
      * Clear a core-owned host-private storage slot. `key` is a SCALE-encoded
      * [`CoreStorageKey`].
      */
-    func coreStorageClear(key: Data) throws 
-    
+    func coreStorageClear(key: Data) throws
+
     /**
      * Open a JSON-RPC connection for a chain. Return a host-assigned
      * connection id, or `None` when unsupported.
      */
     func chainConnect(genesisHash: Data) throws  -> UInt32?
-    
+
     /**
      * Send one JSON-RPC request over a previously opened chain connection.
      */
-    func chainSend(connectionId: UInt32, request: String) throws 
-    
+    func chainSend(connectionId: UInt32, request: String) throws
+
     /**
      * Close a previously opened chain connection.
      */
-    func chainClose(connectionId: UInt32) throws 
-    
+    func chainClose(connectionId: UInt32) throws
+
     /**
      * Confirm one user-reviewed core action.
      */
-    func confirmUserAction(review: NativeUserConfirmationReview) async throws  -> Bool
-    
+    func confirmUserAction(review: UserConfirmationReview) async throws  -> Bool
+
     /**
      * Look up one preimage value by key. The native shim emits this as the
      * current item in its subscription stream.
      */
     func lookupPreimage(key: Data) async throws  -> Data?
-    
+
     /**
      * Current host theme. The native shim emits this as the current item in
      * its subscription stream.
      */
-    func currentTheme() throws  -> HostTheme
-    
+    func currentTheme() throws  -> ThemeVariant
+
     /**
      * Answer a feature-support query.
      */
-    func featureSupported(request: FeatureSupportedRequest) async throws  -> Bool
-    
+    func featureSupported(request: HostFeatureSupportedRequest) async throws  -> Bool
+
     /**
      * Read a value from the host's scoped key-value store.
      */
     func localStorageRead(key: String) throws  -> Data?
-    
+
     /**
      * Write a value to the host's scoped key-value store.
      */
-    func localStorageWrite(key: String, value: Data) throws 
-    
+    func localStorageWrite(key: String, value: Data) throws
+
     /**
      * Clear a value from the host's scoped key-value store.
      */
-    func localStorageClear(key: String) throws 
-    
+    func localStorageClear(key: String) throws
+
 }
 /**
  * Callback surface that iOS and Android implement.
@@ -704,13 +758,13 @@ public protocol HostCallbacks: AnyObject, Sendable {
  * UI thread, never wait for the user.
  */
 open class HostCallbacksImpl: HostCallbacks, @unchecked Sendable {
-    fileprivate let pointer: UnsafeMutableRawPointer!
+    fileprivate let handle: UInt64
 
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
@@ -720,52 +774,55 @@ open class HostCallbacksImpl: HostCallbacks, @unchecked Sendable {
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_truapi_server_fn_clone_hostcallbacks(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_truapi_server_fn_clone_hostcallbacks(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_truapi_server_fn_free_hostcallbacks(pointer, $0) }
+        try! rustCall { uniffi_truapi_server_fn_free_hostcallbacks(handle, $0) }
     }
 
-    
 
-    
+
+
     /**
      * Lifecycle logger. Marker is a stable slug, detail is free-form.
      */
 open func onCoreLog(marker: String, detail: String)  {try! rustCall() {
-    uniffi_truapi_server_fn_method_hostcallbacks_on_core_log(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_on_core_log(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(marker),
-        FfiConverterString.lower(detail),$0
+        FfiConverterString.lower(detail),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Open a URL in the system browser.
      */
@@ -774,8 +831,7 @@ open func navigateTo(url: String)async throws   {
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_navigate_to(
-                    self.uniffiClonePointer(),
-                    FfiConverterString.lower(url)
+                        self.uniffiCloneHandle(),FfiConverterString.lower(url)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_void,
@@ -785,17 +841,16 @@ open func navigateTo(url: String)async throws   {
             errorHandler: FfiConverterTypeHostNavigateRejection_lift
         )
 }
-    
+
     /**
      * Deliver a push notification.
      */
-open func pushNotification(request: PushNotificationRequest)async throws  -> UInt32  {
+open func pushNotification(request: HostPushNotificationRequest)async throws  -> UInt32  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_push_notification(
-                    self.uniffiClonePointer(),
-                    FfiConverterTypePushNotificationRequest_lower(request)
+                        self.uniffiCloneHandle(),FfiConverterTypeHostPushNotificationRequest_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_u32,
@@ -805,28 +860,29 @@ open func pushNotification(request: PushNotificationRequest)async throws  -> UIn
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
-    
+
     /**
      * Cancel a notification by id.
      */
 open func cancelNotification(id: UInt32)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_cancel_notification(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(id),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_cancel_notification(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(id),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Prompt the user for a device-level permission (camera, mic, ...);
      * the host returns whether the permission was granted.
      */
-open func devicePermission(request: NativeDevicePermission)async throws  -> Bool  {
+open func devicePermission(request: HostDevicePermissionRequest)async throws  -> Bool  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_device_permission(
-                    self.uniffiClonePointer(),
-                    FfiConverterTypeNativeDevicePermission_lower(request)
+                        self.uniffiCloneHandle(),FfiConverterTypeHostDevicePermissionRequest_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_i8,
@@ -836,17 +892,16 @@ open func devicePermission(request: NativeDevicePermission)async throws  -> Bool
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
-    
+
     /**
      * Prompt the user for a remote (product-scoped) permission.
      */
-open func remotePermission(request: NativeRemotePermission)async throws  -> Bool  {
+open func remotePermission(request: RemotePermission)async throws  -> Bool  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_remote_permission(
-                    self.uniffiClonePointer(),
-                    FfiConverterTypeNativeRemotePermission_lower(request)
+                        self.uniffiCloneHandle(),FfiConverterTypeRemotePermission_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_i8,
@@ -856,7 +911,7 @@ open func remotePermission(request: NativeRemotePermission)async throws  -> Bool
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
-    
+
     /**
      * Observe an auth state change. Emitted only when the state actually
      * changes, in transition order: render `Pairing` as the pairing QR UI,
@@ -865,90 +920,103 @@ open func remotePermission(request: NativeRemotePermission)async throws  -> Bool
      * `NativeTrUApiCore.cancel_login()`.
      */
 open func authStateChanged(state: AuthState)  {try! rustCall() {
-    uniffi_truapi_server_fn_method_hostcallbacks_auth_state_changed(self.uniffiClonePointer(),
-        FfiConverterTypeAuthState_lower(state),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_auth_state_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeAuthState_lower(state),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Read a core-owned host-private storage slot. `key` is a SCALE-encoded
      * [`CoreStorageKey`].
      */
 open func coreStorageRead(key: Data)throws  -> Data?  {
     return try  FfiConverterOptionData.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_core_storage_read(self.uniffiClonePointer(),
-        FfiConverterData.lower(key),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_core_storage_read(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(key),uniffiCallStatus
     )
 })
 }
-    
+
     /**
      * Persist a core-owned host-private storage slot. `key` is a
      * SCALE-encoded [`CoreStorageKey`].
      */
 open func coreStorageWrite(key: Data, value: Data)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_core_storage_write(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_core_storage_write(
+            self.uniffiCloneHandle(),
         FfiConverterData.lower(key),
-        FfiConverterData.lower(value),$0
+        FfiConverterData.lower(value),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Clear a core-owned host-private storage slot. `key` is a SCALE-encoded
      * [`CoreStorageKey`].
      */
 open func coreStorageClear(key: Data)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_core_storage_clear(self.uniffiClonePointer(),
-        FfiConverterData.lower(key),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_core_storage_clear(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(key),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Open a JSON-RPC connection for a chain. Return a host-assigned
      * connection id, or `None` when unsupported.
      */
 open func chainConnect(genesisHash: Data)throws  -> UInt32?  {
     return try  FfiConverterOptionUInt32.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_chain_connect(self.uniffiClonePointer(),
-        FfiConverterData.lower(genesisHash),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_chain_connect(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(genesisHash),uniffiCallStatus
     )
 })
 }
-    
+
     /**
      * Send one JSON-RPC request over a previously opened chain connection.
      */
 open func chainSend(connectionId: UInt32, request: String)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_chain_send(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_chain_send(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(connectionId),
-        FfiConverterString.lower(request),$0
+        FfiConverterString.lower(request),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Close a previously opened chain connection.
      */
 open func chainClose(connectionId: UInt32)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_chain_close(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(connectionId),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_chain_close(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(connectionId),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Confirm one user-reviewed core action.
      */
-open func confirmUserAction(review: NativeUserConfirmationReview)async throws  -> Bool  {
+open func confirmUserAction(review: UserConfirmationReview)async throws  -> Bool  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_confirm_user_action(
-                    self.uniffiClonePointer(),
-                    FfiConverterTypeNativeUserConfirmationReview_lower(review)
+                        self.uniffiCloneHandle(),FfiConverterTypeUserConfirmationReview_lower(review)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_i8,
@@ -958,7 +1026,7 @@ open func confirmUserAction(review: NativeUserConfirmationReview)async throws  -
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
-    
+
     /**
      * Look up one preimage value by key. The native shim emits this as the
      * current item in its subscription stream.
@@ -968,8 +1036,7 @@ open func lookupPreimage(key: Data)async throws  -> Data?  {
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_lookup_preimage(
-                    self.uniffiClonePointer(),
-                    FfiConverterData.lower(key)
+                        self.uniffiCloneHandle(),FfiConverterData.lower(key)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
@@ -979,28 +1046,29 @@ open func lookupPreimage(key: Data)async throws  -> Data?  {
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
-    
+
     /**
      * Current host theme. The native shim emits this as the current item in
      * its subscription stream.
      */
-open func currentTheme()throws  -> HostTheme  {
-    return try  FfiConverterTypeHostTheme_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_current_theme(self.uniffiClonePointer(),$0
+open func currentTheme()throws  -> ThemeVariant  {
+    return try  FfiConverterTypeThemeVariant_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_current_theme(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
-    
+
     /**
      * Answer a feature-support query.
      */
-open func featureSupported(request: FeatureSupportedRequest)async throws  -> Bool  {
+open func featureSupported(request: HostFeatureSupportedRequest)async throws  -> Bool  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_truapi_server_fn_method_hostcallbacks_feature_supported(
-                    self.uniffiClonePointer(),
-                    FfiConverterTypeFeatureSupportedRequest_lower(request)
+                        self.uniffiCloneHandle(),FfiConverterTypeHostFeatureSupportedRequest_lower(request)
                 )
             },
             pollFunc: ffi_truapi_server_rust_future_poll_i8,
@@ -1010,41 +1078,49 @@ open func featureSupported(request: FeatureSupportedRequest)async throws  -> Boo
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
-    
+
     /**
      * Read a value from the host's scoped key-value store.
      */
 open func localStorageRead(key: String)throws  -> Data?  {
     return try  FfiConverterOptionData.lift(try rustCallWithError(FfiConverterTypeHostStorageError_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_local_storage_read(self.uniffiClonePointer(),
-        FfiConverterString.lower(key),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_local_storage_read(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),uniffiCallStatus
     )
 })
 }
-    
+
     /**
      * Write a value to the host's scoped key-value store.
      */
 open func localStorageWrite(key: String, value: Data)throws   {try rustCallWithError(FfiConverterTypeHostStorageError_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_local_storage_write(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_local_storage_write(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(key),
-        FfiConverterData.lower(value),$0
+        FfiConverterData.lower(value),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Clear a value from the host's scoped key-value store.
      */
 open func localStorageClear(key: String)throws   {try rustCallWithError(FfiConverterTypeHostStorageError_lift) {
-    uniffi_truapi_server_fn_method_hostcallbacks_local_storage_clear(self.uniffiClonePointer(),
-        FfiConverterString.lower(key),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_local_storage_clear(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(key),uniffiCallStatus
     )
 }
 }
-    
+
+
 
 }
+
 
 
 // Put the implementation in a struct so we don't pollute the top-level namespace
@@ -1053,9 +1129,22 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceHostCallbacks] = [UniffiVTableCallbackInterfaceHostCallbacks(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceHostCallbacks = UniffiVTableCallbackInterfaceHostCallbacks(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeHostCallbacks.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface HostCallbacks: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeHostCallbacks.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface HostCallbacks: handle missing in uniffiClone")
+            }
+        },
         onCoreLog: { (
             uniffiHandle: UInt64,
             marker: RustBuffer,
@@ -1074,7 +1163,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -1087,7 +1176,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             url: RustBuffer,
             uniffiFutureCallback: @escaping UniffiForeignFutureCompleteVoid,
             uniffiCallbackData: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<UniffiForeignFuture>
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
                 () async throws -> () in
@@ -1102,7 +1191,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleSuccess = { (returnValue: ()) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructVoid(
+                    UniffiForeignFutureResultVoid(
                         callStatus: RustCallStatus()
                     )
                 )
@@ -1110,25 +1199,25 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleError = { (statusCode, errorBuf) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructVoid(
+                    UniffiForeignFutureResultVoid(
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
             }
-            let uniffiForeignFuture = uniffiTraitInterfaceCallAsyncWithError(
+            uniffiTraitInterfaceCallAsyncWithError(
                 makeCall: makeCall,
                 handleSuccess: uniffiHandleSuccess,
                 handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostNavigateRejection_lower
+                lowerError: FfiConverterTypeHostNavigateRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
             )
-            uniffiOutReturn.pointee = uniffiForeignFuture
         },
         pushNotification: { (
             uniffiHandle: UInt64,
             request: RustBuffer,
             uniffiFutureCallback: @escaping UniffiForeignFutureCompleteU32,
             uniffiCallbackData: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<UniffiForeignFuture>
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
                 () async throws -> UInt32 in
@@ -1136,14 +1225,14 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.pushNotification(
-                     request: try FfiConverterTypePushNotificationRequest_lift(request)
+                     request: try FfiConverterTypeHostPushNotificationRequest_lift(request)
                 )
             }
 
             let uniffiHandleSuccess = { (returnValue: UInt32) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructU32(
+                    UniffiForeignFutureResultU32(
                         returnValue: FfiConverterUInt32.lower(returnValue),
                         callStatus: RustCallStatus()
                     )
@@ -1152,19 +1241,19 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleError = { (statusCode, errorBuf) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructU32(
+                    UniffiForeignFutureResultU32(
                         returnValue: 0,
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
             }
-            let uniffiForeignFuture = uniffiTraitInterfaceCallAsyncWithError(
+            uniffiTraitInterfaceCallAsyncWithError(
                 makeCall: makeCall,
                 handleSuccess: uniffiHandleSuccess,
                 handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostRejection_lower
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
             )
-            uniffiOutReturn.pointee = uniffiForeignFuture
         },
         cancelNotification: { (
             uniffiHandle: UInt64,
@@ -1182,7 +1271,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1196,7 +1285,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             request: RustBuffer,
             uniffiFutureCallback: @escaping UniffiForeignFutureCompleteI8,
             uniffiCallbackData: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<UniffiForeignFuture>
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
                 () async throws -> Bool in
@@ -1204,14 +1293,14 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.devicePermission(
-                     request: try FfiConverterTypeNativeDevicePermission_lift(request)
+                     request: try FfiConverterTypeHostDevicePermissionRequest_lift(request)
                 )
             }
 
             let uniffiHandleSuccess = { (returnValue: Bool) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: FfiConverterBool.lower(returnValue),
                         callStatus: RustCallStatus()
                     )
@@ -1220,26 +1309,26 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleError = { (statusCode, errorBuf) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: 0,
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
             }
-            let uniffiForeignFuture = uniffiTraitInterfaceCallAsyncWithError(
+            uniffiTraitInterfaceCallAsyncWithError(
                 makeCall: makeCall,
                 handleSuccess: uniffiHandleSuccess,
                 handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostRejection_lower
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
             )
-            uniffiOutReturn.pointee = uniffiForeignFuture
         },
         remotePermission: { (
             uniffiHandle: UInt64,
             request: RustBuffer,
             uniffiFutureCallback: @escaping UniffiForeignFutureCompleteI8,
             uniffiCallbackData: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<UniffiForeignFuture>
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
                 () async throws -> Bool in
@@ -1247,14 +1336,14 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.remotePermission(
-                     request: try FfiConverterTypeNativeRemotePermission_lift(request)
+                     request: try FfiConverterTypeRemotePermission_lift(request)
                 )
             }
 
             let uniffiHandleSuccess = { (returnValue: Bool) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: FfiConverterBool.lower(returnValue),
                         callStatus: RustCallStatus()
                     )
@@ -1263,19 +1352,19 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleError = { (statusCode, errorBuf) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: 0,
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
             }
-            let uniffiForeignFuture = uniffiTraitInterfaceCallAsyncWithError(
+            uniffiTraitInterfaceCallAsyncWithError(
                 makeCall: makeCall,
                 handleSuccess: uniffiHandleSuccess,
                 handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostRejection_lower
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
             )
-            uniffiOutReturn.pointee = uniffiForeignFuture
         },
         authStateChanged: { (
             uniffiHandle: UInt64,
@@ -1293,7 +1382,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCall(
                 callStatus: uniffiCallStatus,
@@ -1317,7 +1406,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterOptionData.lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1344,7 +1433,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1369,7 +1458,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1394,7 +1483,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterOptionUInt32.lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1421,7 +1510,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1446,7 +1535,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1460,7 +1549,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             review: RustBuffer,
             uniffiFutureCallback: @escaping UniffiForeignFutureCompleteI8,
             uniffiCallbackData: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<UniffiForeignFuture>
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
                 () async throws -> Bool in
@@ -1468,14 +1557,14 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.confirmUserAction(
-                     review: try FfiConverterTypeNativeUserConfirmationReview_lift(review)
+                     review: try FfiConverterTypeUserConfirmationReview_lift(review)
                 )
             }
 
             let uniffiHandleSuccess = { (returnValue: Bool) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: FfiConverterBool.lower(returnValue),
                         callStatus: RustCallStatus()
                     )
@@ -1484,26 +1573,26 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleError = { (statusCode, errorBuf) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: 0,
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
             }
-            let uniffiForeignFuture = uniffiTraitInterfaceCallAsyncWithError(
+            uniffiTraitInterfaceCallAsyncWithError(
                 makeCall: makeCall,
                 handleSuccess: uniffiHandleSuccess,
                 handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostRejection_lower
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
             )
-            uniffiOutReturn.pointee = uniffiForeignFuture
         },
         lookupPreimage: { (
             uniffiHandle: UInt64,
             key: RustBuffer,
             uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
             uniffiCallbackData: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<UniffiForeignFuture>
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
                 () async throws -> Data? in
@@ -1518,7 +1607,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleSuccess = { (returnValue: Data?) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructRustBuffer(
+                    UniffiForeignFutureResultRustBuffer(
                         returnValue: FfiConverterOptionData.lower(returnValue),
                         callStatus: RustCallStatus()
                     )
@@ -1527,19 +1616,19 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleError = { (statusCode, errorBuf) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructRustBuffer(
+                    UniffiForeignFutureResultRustBuffer(
                         returnValue: RustBuffer.empty(),
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
             }
-            let uniffiForeignFuture = uniffiTraitInterfaceCallAsyncWithError(
+            uniffiTraitInterfaceCallAsyncWithError(
                 makeCall: makeCall,
                 handleSuccess: uniffiHandleSuccess,
                 handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostRejection_lower
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
             )
-            uniffiOutReturn.pointee = uniffiForeignFuture
         },
         currentTheme: { (
             uniffiHandle: UInt64,
@@ -1547,7 +1636,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> HostTheme in
+                () throws -> ThemeVariant in
                 guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -1555,8 +1644,8 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostTheme_lower($0) }
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeThemeVariant_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -1569,7 +1658,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             request: RustBuffer,
             uniffiFutureCallback: @escaping UniffiForeignFutureCompleteI8,
             uniffiCallbackData: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<UniffiForeignFuture>
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
                 () async throws -> Bool in
@@ -1577,14 +1666,14 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return try await uniffiObj.featureSupported(
-                     request: try FfiConverterTypeFeatureSupportedRequest_lift(request)
+                     request: try FfiConverterTypeHostFeatureSupportedRequest_lift(request)
                 )
             }
 
             let uniffiHandleSuccess = { (returnValue: Bool) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: FfiConverterBool.lower(returnValue),
                         callStatus: RustCallStatus()
                     )
@@ -1593,19 +1682,19 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             let uniffiHandleError = { (statusCode, errorBuf) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
-                    UniffiForeignFutureStructI8(
+                    UniffiForeignFutureResultI8(
                         returnValue: 0,
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
             }
-            let uniffiForeignFuture = uniffiTraitInterfaceCallAsyncWithError(
+            uniffiTraitInterfaceCallAsyncWithError(
                 makeCall: makeCall,
                 handleSuccess: uniffiHandleSuccess,
                 handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostRejection_lower
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
             )
-            uniffiOutReturn.pointee = uniffiForeignFuture
         },
         localStorageRead: { (
             uniffiHandle: UInt64,
@@ -1623,7 +1712,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterOptionData.lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1650,7 +1739,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1675,7 +1764,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            
+
             let writeReturn = { () }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
@@ -1683,20 +1772,25 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 writeReturn: writeReturn,
                 lowerError: FfiConverterTypeHostStorageError_lower
             )
-        },
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            let result = try? FfiConverterTypeHostCallbacks.handleMap.remove(handle: uniffiHandle)
-            if result == nil {
-                print("Uniffi callback interface HostCallbacks: handle missing in uniffiFree")
-            }
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceHostCallbacks> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceHostCallbacks>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitHostCallbacks() {
-    uniffi_truapi_server_fn_init_callback_vtable_hostcallbacks(UniffiCallbackInterfaceHostCallbacks.vtable)
+    uniffi_truapi_server_fn_init_callback_vtable_hostcallbacks(UniffiCallbackInterfaceHostCallbacks.vtablePtr)
 }
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1704,35 +1798,37 @@ private func uniffiCallbackInitHostCallbacks() {
 public struct FfiConverterTypeHostCallbacks: FfiConverter {
     fileprivate static let handleMap = UniffiHandleMap<HostCallbacks>()
 
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = HostCallbacks
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> HostCallbacks {
-        return HostCallbacksImpl(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> HostCallbacks {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return HostCallbacksImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
     }
 
-    public static func lower(_ value: HostCallbacks) -> UnsafeMutableRawPointer {
-        guard let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: handleMap.insert(obj: value))) else {
-            fatalError("Cast to UnsafeMutableRawPointer failed")
-        }
-        return ptr
+    public static func lower(_ value: HostCallbacks) -> UInt64 {
+         if let rustImpl = value as? HostCallbacksImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostCallbacks {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: HostCallbacks, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
@@ -1740,14 +1836,14 @@ public struct FfiConverterTypeHostCallbacks: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeHostCallbacks_lift(_ pointer: UnsafeMutableRawPointer) throws -> HostCallbacks {
-    return try FfiConverterTypeHostCallbacks.lift(pointer)
+public func FfiConverterTypeHostCallbacks_lift(_ handle: UInt64) throws -> HostCallbacks {
+    return try FfiConverterTypeHostCallbacks.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeHostCallbacks_lower(_ value: HostCallbacks) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeHostCallbacks_lower(_ value: HostCallbacks) -> UInt64 {
     return FfiConverterTypeHostCallbacks.lower(value)
 }
 
@@ -1760,7 +1856,7 @@ public func FfiConverterTypeHostCallbacks_lower(_ value: HostCallbacks) -> Unsaf
  * UniFFI object exposing the TrUAPI core to native hosts.
  */
 public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
-    
+
     /**
      * Activate or replace the local signing-host session from host-held
      * secret material (raw BIP-39 entropy).
@@ -1768,8 +1864,8 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Blocks the calling thread while the session is derived (PBKDF2, 2048
      * rounds), so call it off the host's main/UI thread.
      */
-    func activateLocalSession(secret: Data, liteUsername: String?) throws 
-    
+    func activateLocalSession(secret: Data, liteUsername: String?) throws
+
     /**
      * Cancel an in-flight pairing login.
      *
@@ -1779,8 +1875,8 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * changes nothing. Retained so hosts written against the pairing-host
      * surface still link.
      */
-    func cancelLogin() 
-    
+    func cancelLogin()
+
     /**
      * Core-owned logout/disconnect. Best-effort notifies the SSO peer when
      * the session has channel material, then clears in-memory and persisted
@@ -1789,26 +1885,26 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Blocks the calling thread until the disconnect completes, so call it off
      * the host's main/UI thread.
      */
-    func disconnect() 
-    
+    func disconnect()
+
     /**
      * Notify the core that a native chain connection closed externally.
      */
-    func notifyChainClosed(connectionId: UInt32) 
-    
+    func notifyChainClosed(connectionId: UInt32)
+
     /**
      * Push a JSON-RPC response from a native chain connection into the core.
      */
-    func notifyChainResponse(connectionId: UInt32, json: String) 
-    
+    func notifyChainResponse(connectionId: UInt32, json: String)
+
     /**
      * Push a preimage lookup update to active subscriptions for `key`.
      *
      * `value == None` represents a known miss; `Some(bytes)` represents the
      * current preimage value.
      */
-    func notifyPreimageChanged(key: Data, value: Data?) 
-    
+    func notifyPreimageChanged(key: Data, value: Data?)
+
     /**
      * Notify this core that host-global session storage changed outside a
      * direct core write/clear.
@@ -1817,21 +1913,21 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * memory, so there is no session-store sync loop to wake. Retained so
      * hosts written against the pairing-host surface still link.
      */
-    func notifySessionStoreChanged() 
-    
+    func notifySessionStoreChanged()
+
     /**
      * Push a host theme update to active TrUAPI theme subscriptions.
      */
-    func notifyThemeChanged(theme: HostTheme) 
-    
+    func notifyThemeChanged(theme: ThemeVariant)
+
     /**
      * Read a stored permission authorization status without prompting.
      *
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
      */
-    func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest) throws  -> NativePermissionAuthorizationStatus
-    
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+
     /**
      * Update a stored permission authorization status. Passing
      * `.notDetermined` clears the stored value so the next product request
@@ -1840,31 +1936,31 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Blocks the calling thread on the storage write, so call it off the host's
      * main/UI thread.
      */
-    func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: NativePermissionAuthorizationStatus) throws 
-    
+    func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws
+
     /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
      * host hands to the product so it can dial back in.
      */
     func startWsBridge(bindPort: UInt16) throws  -> WsBridgeEndpoint
-    
+
     /**
      * Stop the localhost WebSocket bridge (if running).
      */
-    func stopWsBridge() 
-    
+    func stopWsBridge()
+
 }
 /**
  * UniFFI object exposing the TrUAPI core to native hosts.
  */
 open class NativeTrUApiCore: NativeTrUApiCoreProtocol, @unchecked Sendable {
-    fileprivate let pointer: UnsafeMutableRawPointer!
+    fileprivate let handle: UInt64
 
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
@@ -1874,39 +1970,40 @@ open class NativeTrUApiCore: NativeTrUApiCoreProtocol, @unchecked Sendable {
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_truapi_server_fn_clone_nativetruapicore(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_truapi_server_fn_clone_nativetruapicore(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_truapi_server_fn_free_nativetruapicore(pointer, $0) }
+        try! rustCall { uniffi_truapi_server_fn_free_nativetruapicore(handle, $0) }
     }
 
-    
+
     /**
      * Construct the core with explicit product and pairing runtime config.
      *
@@ -1917,15 +2014,16 @@ open class NativeTrUApiCore: NativeTrUApiCoreProtocol, @unchecked Sendable {
      */
 public static func withRuntimeConfig(callbacks: HostCallbacks, runtimeConfig: NativeRuntimeConfig)throws  -> NativeTrUApiCore  {
     return try  FfiConverterTypeNativeTrUApiCore_lift(try rustCallWithError(FfiConverterTypeNativeRuntimeConfigError_lift) {
+        uniffiCallStatus in
     uniffi_truapi_server_fn_constructor_nativetruapicore_with_runtime_config(
         FfiConverterTypeHostCallbacks_lower(callbacks),
-        FfiConverterTypeNativeRuntimeConfig_lower(runtimeConfig),$0
+        FfiConverterTypeNativeRuntimeConfig_lower(runtimeConfig),uniffiCallStatus
     )
 })
 }
-    
 
-    
+
+
     /**
      * Activate or replace the local signing-host session from host-held
      * secret material (raw BIP-39 entropy).
@@ -1934,13 +2032,15 @@ public static func withRuntimeConfig(callbacks: HostCallbacks, runtimeConfig: Na
      * rounds), so call it off the host's main/UI thread.
      */
 open func activateLocalSession(secret: Data, liteUsername: String?)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_nativetruapicore_activate_local_session(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_activate_local_session(
+            self.uniffiCloneHandle(),
         FfiConverterData.lower(secret),
-        FfiConverterOptionString.lower(liteUsername),$0
+        FfiConverterOptionString.lower(liteUsername),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Cancel an in-flight pairing login.
      *
@@ -1951,11 +2051,13 @@ open func activateLocalSession(secret: Data, liteUsername: String?)throws   {try
      * surface still link.
      */
 open func cancelLogin()  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_cancel_login(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_cancel_login(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Core-owned logout/disconnect. Best-effort notifies the SSO peer when
      * the session has channel material, then clears in-memory and persisted
@@ -1965,32 +2067,38 @@ open func cancelLogin()  {try! rustCall() {
      * the host's main/UI thread.
      */
 open func disconnect()  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_disconnect(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_disconnect(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Notify the core that a native chain connection closed externally.
      */
 open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_closed(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(connectionId),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_closed(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(connectionId),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Push a JSON-RPC response from a native chain connection into the core.
      */
 open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_response(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_response(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(connectionId),
-        FfiConverterString.lower(json),$0
+        FfiConverterString.lower(json),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Push a preimage lookup update to active subscriptions for `key`.
      *
@@ -1998,13 +2106,15 @@ open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCal
      * current preimage value.
      */
 open func notifyPreimageChanged(key: Data, value: Data?)  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_preimage_changed(self.uniffiClonePointer(),
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_notify_preimage_changed(
+            self.uniffiCloneHandle(),
         FfiConverterData.lower(key),
-        FfiConverterOptionData.lower(value),$0
+        FfiConverterOptionData.lower(value),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Notify this core that host-global session storage changed outside a
      * direct core write/clear.
@@ -2014,35 +2124,41 @@ open func notifyPreimageChanged(key: Data, value: Data?)  {try! rustCall() {
      * hosts written against the pairing-host surface still link.
      */
 open func notifySessionStoreChanged()  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_session_store_changed(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_notify_session_store_changed(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Push a host theme update to active TrUAPI theme subscriptions.
      */
-open func notifyThemeChanged(theme: HostTheme)  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_theme_changed(self.uniffiClonePointer(),
-        FfiConverterTypeHostTheme_lower(theme),$0
+open func notifyThemeChanged(theme: ThemeVariant)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_notify_theme_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeThemeVariant_lower(theme),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Read a stored permission authorization status without prompting.
      *
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
      */
-open func permissionAuthorizationStatus(request: NativePermissionAuthorizationRequest)throws  -> NativePermissionAuthorizationStatus  {
-    return try  FfiConverterTypeNativePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(self.uniffiClonePointer(),
-        FfiConverterTypeNativePermissionAuthorizationRequest_lower(request),$0
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
+    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
     )
 })
 }
-    
+
     /**
      * Update a stored permission authorization status. Passing
      * `.notDetermined` clears the stored value so the next product request
@@ -2051,35 +2167,42 @@ open func permissionAuthorizationStatus(request: NativePermissionAuthorizationRe
      * Blocks the calling thread on the storage write, so call it off the host's
      * main/UI thread.
      */
-open func setPermissionAuthorizationStatus(request: NativePermissionAuthorizationRequest, status: NativePermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-    uniffi_truapi_server_fn_method_nativetruapicore_set_permission_authorization_status(self.uniffiClonePointer(),
-        FfiConverterTypeNativePermissionAuthorizationRequest_lower(request),
-        FfiConverterTypeNativePermissionAuthorizationStatus_lower(status),$0
+open func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_set_permission_authorization_status(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePermissionAuthorizationRequest_lower(request),
+        FfiConverterTypePermissionAuthorizationStatus_lower(status),uniffiCallStatus
     )
 }
 }
-    
+
     /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
      * host hands to the product so it can dial back in.
      */
 open func startWsBridge(bindPort: UInt16)throws  -> WsBridgeEndpoint  {
     return try  FfiConverterTypeWsBridgeEndpoint_lift(try rustCallWithError(FfiConverterTypeWsBridgeStartError_lift) {
-    uniffi_truapi_server_fn_method_nativetruapicore_start_ws_bridge(self.uniffiClonePointer(),
-        FfiConverterUInt16.lower(bindPort),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_start_ws_bridge(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt16.lower(bindPort),uniffiCallStatus
     )
 })
 }
-    
+
     /**
      * Stop the localhost WebSocket bridge (if running).
      */
 open func stopWsBridge()  {try! rustCall() {
-    uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
 }
-    
+
+
 
 }
 
@@ -2088,33 +2211,24 @@ open func stopWsBridge()  {try! rustCall() {
 @_documentation(visibility: private)
 #endif
 public struct FfiConverterTypeNativeTrUApiCore: FfiConverter {
-
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = NativeTrUApiCore
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> NativeTrUApiCore {
-        return NativeTrUApiCore(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> NativeTrUApiCore {
+        return NativeTrUApiCore(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: NativeTrUApiCore) -> UnsafeMutableRawPointer {
-        return value.uniffiClonePointer()
+    public static func lower(_ value: NativeTrUApiCore) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeTrUApiCore {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: NativeTrUApiCore, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
@@ -2122,14 +2236,14 @@ public struct FfiConverterTypeNativeTrUApiCore: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeNativeTrUApiCore_lift(_ pointer: UnsafeMutableRawPointer) throws -> NativeTrUApiCore {
-    return try FfiConverterTypeNativeTrUApiCore.lift(pointer)
+public func FfiConverterTypeNativeTrUApiCore_lift(_ handle: UInt64) throws -> NativeTrUApiCore {
+    return try FfiConverterTypeNativeTrUApiCore.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeNativeTrUApiCore_lower(_ value: NativeTrUApiCore) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeNativeTrUApiCore_lower(_ value: NativeTrUApiCore) -> UInt64 {
     return FfiConverterTypeNativeTrUApiCore.lower(value)
 }
 
@@ -2137,377 +2251,9 @@ public func FfiConverterTypeNativeTrUApiCore_lower(_ value: NativeTrUApiCore) ->
 
 
 /**
- * Review for cross-product account access.
- */
-public struct AccountAccessReview {
-    /**
-     * Product currently handling the request.
-     */
-    public var requestingProductId: String
-    /**
-     * Product whose account is being requested.
-     */
-    public var targetProductId: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product currently handling the request.
-         */requestingProductId: String, 
-        /**
-         * Product whose account is being requested.
-         */targetProductId: String) {
-        self.requestingProductId = requestingProductId
-        self.targetProductId = targetProductId
-    }
-}
-
-#if compiler(>=6)
-extension AccountAccessReview: Sendable {}
-#endif
-
-
-extension AccountAccessReview: Equatable, Hashable {
-    public static func ==(lhs: AccountAccessReview, rhs: AccountAccessReview) -> Bool {
-        if lhs.requestingProductId != rhs.requestingProductId {
-            return false
-        }
-        if lhs.targetProductId != rhs.targetProductId {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(requestingProductId)
-        hasher.combine(targetProductId)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeAccountAccessReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccountAccessReview {
-        return
-            try AccountAccessReview(
-                requestingProductId: FfiConverterString.read(from: &buf), 
-                targetProductId: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: AccountAccessReview, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.requestingProductId, into: &buf)
-        FfiConverterString.write(value.targetProductId, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAccountAccessReview_lift(_ buf: RustBuffer) throws -> AccountAccessReview {
-    return try FfiConverterTypeAccountAccessReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAccountAccessReview_lower(_ value: AccountAccessReview) -> RustBuffer {
-    return FfiConverterTypeAccountAccessReview.lower(value)
-}
-
-
-/**
- * Review for contextual-alias derivation (RFC 0004).
- */
-public struct AccountAliasReview {
-    /**
-     * Product requesting the alias.
-     */
-    public var callingProductId: String
-    /**
-     * Product-scoped context the alias is bound to.
-     */
-    public var context: ProductProofContext
-    /**
-     * Ring the alias is derived against.
-     */
-    public var ringLocation: RingLocation
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product requesting the alias.
-         */callingProductId: String, 
-        /**
-         * Product-scoped context the alias is bound to.
-         */context: ProductProofContext, 
-        /**
-         * Ring the alias is derived against.
-         */ringLocation: RingLocation) {
-        self.callingProductId = callingProductId
-        self.context = context
-        self.ringLocation = ringLocation
-    }
-}
-
-#if compiler(>=6)
-extension AccountAliasReview: Sendable {}
-#endif
-
-
-extension AccountAliasReview: Equatable, Hashable {
-    public static func ==(lhs: AccountAliasReview, rhs: AccountAliasReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.context != rhs.context {
-            return false
-        }
-        if lhs.ringLocation != rhs.ringLocation {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(context)
-        hasher.combine(ringLocation)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeAccountAliasReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccountAliasReview {
-        return
-            try AccountAliasReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
-                context: FfiConverterTypeProductProofContext.read(from: &buf), 
-                ringLocation: FfiConverterTypeRingLocation.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: AccountAliasReview, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.callingProductId, into: &buf)
-        FfiConverterTypeProductProofContext.write(value.context, into: &buf)
-        FfiConverterTypeRingLocation.write(value.ringLocation, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAccountAliasReview_lift(_ buf: RustBuffer) throws -> AccountAliasReview {
-    return try FfiConverterTypeAccountAliasReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAccountAliasReview_lower(_ value: AccountAliasReview) -> RustBuffer {
-    return FfiConverterTypeAccountAliasReview.lower(value)
-}
-
-
-/**
- * Review for ring-VRF proof creation (RFC 0004).
- */
-public struct CreateProofReview {
-    /**
-     * Product requesting the proof.
-     */
-    public var callingProductId: String
-    /**
-     * Product-scoped context the proof's alias is bound to.
-     */
-    public var context: ProductProofContext
-    /**
-     * Ring the proof is generated against.
-     */
-    public var ringLocation: RingLocation
-    /**
-     * Opaque message bound into the proof.
-     */
-    public var message: Data
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product requesting the proof.
-         */callingProductId: String, 
-        /**
-         * Product-scoped context the proof's alias is bound to.
-         */context: ProductProofContext, 
-        /**
-         * Ring the proof is generated against.
-         */ringLocation: RingLocation, 
-        /**
-         * Opaque message bound into the proof.
-         */message: Data) {
-        self.callingProductId = callingProductId
-        self.context = context
-        self.ringLocation = ringLocation
-        self.message = message
-    }
-}
-
-#if compiler(>=6)
-extension CreateProofReview: Sendable {}
-#endif
-
-
-extension CreateProofReview: Equatable, Hashable {
-    public static func ==(lhs: CreateProofReview, rhs: CreateProofReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.context != rhs.context {
-            return false
-        }
-        if lhs.ringLocation != rhs.ringLocation {
-            return false
-        }
-        if lhs.message != rhs.message {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(context)
-        hasher.combine(ringLocation)
-        hasher.combine(message)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCreateProofReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CreateProofReview {
-        return
-            try CreateProofReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
-                context: FfiConverterTypeProductProofContext.read(from: &buf), 
-                ringLocation: FfiConverterTypeRingLocation.read(from: &buf), 
-                message: FfiConverterData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CreateProofReview, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.callingProductId, into: &buf)
-        FfiConverterTypeProductProofContext.write(value.context, into: &buf)
-        FfiConverterTypeRingLocation.write(value.ringLocation, into: &buf)
-        FfiConverterData.write(value.message, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCreateProofReview_lift(_ buf: RustBuffer) throws -> CreateProofReview {
-    return try FfiConverterTypeCreateProofReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCreateProofReview_lower(_ value: CreateProofReview) -> RustBuffer {
-    return FfiConverterTypeCreateProofReview.lower(value)
-}
-
-
-/**
- * Review for identity disclosure.
- */
-public struct IdentityDisclosureReview {
-    /**
-     * Product currently handling the request.
-     */
-    public var productId: String
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product currently handling the request.
-         */productId: String) {
-        self.productId = productId
-    }
-}
-
-#if compiler(>=6)
-extension IdentityDisclosureReview: Sendable {}
-#endif
-
-
-extension IdentityDisclosureReview: Equatable, Hashable {
-    public static func ==(lhs: IdentityDisclosureReview, rhs: IdentityDisclosureReview) -> Bool {
-        if lhs.productId != rhs.productId {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(productId)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeIdentityDisclosureReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> IdentityDisclosureReview {
-        return
-            try IdentityDisclosureReview(
-                productId: FfiConverterString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: IdentityDisclosureReview, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.productId, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeIdentityDisclosureReview_lift(_ buf: RustBuffer) throws -> IdentityDisclosureReview {
-    return try FfiConverterTypeIdentityDisclosureReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeIdentityDisclosureReview_lower(_ value: IdentityDisclosureReview) -> RustBuffer {
-    return FfiConverterTypeIdentityDisclosureReview.lower(value)
-}
-
-
-/**
  * Native runtime configuration supplied before product calls are handled.
  */
-public struct NativeRuntimeConfig {
+public struct NativeRuntimeConfig: Equatable, Hashable {
     /**
      * Canonical product identifier used for account derivation.
      */
@@ -2558,34 +2304,34 @@ public struct NativeRuntimeConfig {
     public init(
         /**
          * Canonical product identifier used for account derivation.
-         */productId: String, 
+         */productId: String,
         /**
          * Host name shown by the wallet during SSO pairing.
-         */hostName: String, 
+         */hostName: String,
         /**
          * Optional host icon URL shown by the wallet during SSO pairing.
-         */hostIcon: String?, 
+         */hostIcon: String?,
         /**
          * Optional host version shown by the wallet during SSO pairing.
-         */hostVersion: String?, 
+         */hostVersion: String?,
         /**
          * Optional platform/browser name shown by the wallet during SSO pairing.
-         */platformType: String?, 
+         */platformType: String?,
         /**
          * Optional platform/browser version shown by the wallet during SSO pairing.
-         */platformVersion: String?, 
+         */platformVersion: String?,
         /**
          * People-chain genesis hash. Must be exactly 32 bytes.
-         */peopleChainGenesisHash: Data, 
+         */peopleChainGenesisHash: Data,
         /**
          * Bulletin-chain genesis hash. Must be exactly 32 bytes.
-         */bulletinChainGenesisHash: Data, 
+         */bulletinChainGenesisHash: Data,
         /**
          * Optional local signing-host secret material (raw BIP-39 entropy).
-         */localSessionSecret: Data?, 
+         */localSessionSecret: Data?,
         /**
          * Optional lite username attached to the local signing-host session.
-         */localSessionLiteUsername: String?, 
+         */localSessionLiteUsername: String?,
         /**
          * Deeplink scheme used in pairing QR payloads.
          */pairingDeeplinkScheme: NativePairingDeeplinkScheme) {
@@ -2601,67 +2347,15 @@ public struct NativeRuntimeConfig {
         self.localSessionLiteUsername = localSessionLiteUsername
         self.pairingDeeplinkScheme = pairingDeeplinkScheme
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension NativeRuntimeConfig: Sendable {}
 #endif
-
-
-extension NativeRuntimeConfig: Equatable, Hashable {
-    public static func ==(lhs: NativeRuntimeConfig, rhs: NativeRuntimeConfig) -> Bool {
-        if lhs.productId != rhs.productId {
-            return false
-        }
-        if lhs.hostName != rhs.hostName {
-            return false
-        }
-        if lhs.hostIcon != rhs.hostIcon {
-            return false
-        }
-        if lhs.hostVersion != rhs.hostVersion {
-            return false
-        }
-        if lhs.platformType != rhs.platformType {
-            return false
-        }
-        if lhs.platformVersion != rhs.platformVersion {
-            return false
-        }
-        if lhs.peopleChainGenesisHash != rhs.peopleChainGenesisHash {
-            return false
-        }
-        if lhs.bulletinChainGenesisHash != rhs.bulletinChainGenesisHash {
-            return false
-        }
-        if lhs.localSessionSecret != rhs.localSessionSecret {
-            return false
-        }
-        if lhs.localSessionLiteUsername != rhs.localSessionLiteUsername {
-            return false
-        }
-        if lhs.pairingDeeplinkScheme != rhs.pairingDeeplinkScheme {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(productId)
-        hasher.combine(hostName)
-        hasher.combine(hostIcon)
-        hasher.combine(hostVersion)
-        hasher.combine(platformType)
-        hasher.combine(platformVersion)
-        hasher.combine(peopleChainGenesisHash)
-        hasher.combine(bulletinChainGenesisHash)
-        hasher.combine(localSessionSecret)
-        hasher.combine(localSessionLiteUsername)
-        hasher.combine(pairingDeeplinkScheme)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2670,16 +2364,16 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeRuntimeConfig {
         return
             try NativeRuntimeConfig(
-                productId: FfiConverterString.read(from: &buf), 
-                hostName: FfiConverterString.read(from: &buf), 
-                hostIcon: FfiConverterOptionString.read(from: &buf), 
-                hostVersion: FfiConverterOptionString.read(from: &buf), 
-                platformType: FfiConverterOptionString.read(from: &buf), 
-                platformVersion: FfiConverterOptionString.read(from: &buf), 
-                peopleChainGenesisHash: FfiConverterData.read(from: &buf), 
-                bulletinChainGenesisHash: FfiConverterData.read(from: &buf), 
-                localSessionSecret: FfiConverterOptionData.read(from: &buf), 
-                localSessionLiteUsername: FfiConverterOptionString.read(from: &buf), 
+                productId: FfiConverterString.read(from: &buf),
+                hostName: FfiConverterString.read(from: &buf),
+                hostIcon: FfiConverterOptionString.read(from: &buf),
+                hostVersion: FfiConverterOptionString.read(from: &buf),
+                platformType: FfiConverterOptionString.read(from: &buf),
+                platformVersion: FfiConverterOptionString.read(from: &buf),
+                peopleChainGenesisHash: FfiConverterData.read(from: &buf),
+                bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
+                localSessionSecret: FfiConverterOptionData.read(from: &buf),
+                localSessionLiteUsername: FfiConverterOptionString.read(from: &buf),
                 pairingDeeplinkScheme: FfiConverterTypeNativePairingDeeplinkScheme.read(from: &buf)
         )
     }
@@ -2716,1365 +2410,10 @@ public func FfiConverterTypeNativeRuntimeConfig_lower(_ value: NativeRuntimeConf
 
 
 /**
- * Review for preimage submission.
- */
-public struct PreimageSubmitReview {
-    /**
-     * Size of the preimage in bytes.
-     */
-    public var size: UInt64
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Size of the preimage in bytes.
-         */size: UInt64) {
-        self.size = size
-    }
-}
-
-#if compiler(>=6)
-extension PreimageSubmitReview: Sendable {}
-#endif
-
-
-extension PreimageSubmitReview: Equatable, Hashable {
-    public static func ==(lhs: PreimageSubmitReview, rhs: PreimageSubmitReview) -> Bool {
-        if lhs.size != rhs.size {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(size)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypePreimageSubmitReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PreimageSubmitReview {
-        return
-            try PreimageSubmitReview(
-                size: FfiConverterUInt64.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: PreimageSubmitReview, into buf: inout [UInt8]) {
-        FfiConverterUInt64.write(value.size, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePreimageSubmitReview_lift(_ buf: RustBuffer) throws -> PreimageSubmitReview {
-    return try FfiConverterTypePreimageSubmitReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePreimageSubmitReview_lower(_ value: PreimageSubmitReview) -> RustBuffer {
-    return FfiConverterTypePreimageSubmitReview.lower(value)
-}
-
-
-/**
- * Product account identifier: dotNS domain plus derivation index.
- */
-public struct ProductAccountId {
-    /**
-     * A dotNS domain name identifier (e.g. `"my-product.dot"`).
-     */
-    public var dotNsIdentifier: String
-    /**
-     * Account selector within the product subtree.
-     */
-    public var derivationIndex: DerivationIndex
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * A dotNS domain name identifier (e.g. `"my-product.dot"`).
-         */dotNsIdentifier: String, 
-        /**
-         * Account selector within the product subtree.
-         */derivationIndex: DerivationIndex) {
-        self.dotNsIdentifier = dotNsIdentifier
-        self.derivationIndex = derivationIndex
-    }
-}
-
-#if compiler(>=6)
-extension ProductAccountId: Sendable {}
-#endif
-
-
-extension ProductAccountId: Equatable, Hashable {
-    public static func ==(lhs: ProductAccountId, rhs: ProductAccountId) -> Bool {
-        if lhs.dotNsIdentifier != rhs.dotNsIdentifier {
-            return false
-        }
-        if lhs.derivationIndex != rhs.derivationIndex {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(dotNsIdentifier)
-        hasher.combine(derivationIndex)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeProductAccountId: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductAccountId {
-        return
-            try ProductAccountId(
-                dotNsIdentifier: FfiConverterString.read(from: &buf), 
-                derivationIndex: FfiConverterTypeDerivationIndex.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: ProductAccountId, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.dotNsIdentifier, into: &buf)
-        FfiConverterTypeDerivationIndex.write(value.derivationIndex, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeProductAccountId_lift(_ buf: RustBuffer) throws -> ProductAccountId {
-    return try FfiConverterTypeProductAccountId.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeProductAccountId_lower(_ value: ProductAccountId) -> RustBuffer {
-    return FfiConverterTypeProductAccountId.lower(value)
-}
-
-
-/**
- * A product-scoped proof context: a product and a context within it.
- */
-public struct ProductProofContext {
-    /**
-     * dotNS product identifier (e.g. `"my-product.dot"`) scoping the context.
-     */
-    public var productId: String
-    /**
-     * Selector distinguishing contexts within the product; expands to the
-     * same 32-byte derivation index as [`ProductAccountId::derivation_index`].
-     */
-    public var suffix: DerivationIndex
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * dotNS product identifier (e.g. `"my-product.dot"`) scoping the context.
-         */productId: String, 
-        /**
-         * Selector distinguishing contexts within the product; expands to the
-         * same 32-byte derivation index as [`ProductAccountId::derivation_index`].
-         */suffix: DerivationIndex) {
-        self.productId = productId
-        self.suffix = suffix
-    }
-}
-
-#if compiler(>=6)
-extension ProductProofContext: Sendable {}
-#endif
-
-
-extension ProductProofContext: Equatable, Hashable {
-    public static func ==(lhs: ProductProofContext, rhs: ProductProofContext) -> Bool {
-        if lhs.productId != rhs.productId {
-            return false
-        }
-        if lhs.suffix != rhs.suffix {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(productId)
-        hasher.combine(suffix)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeProductProofContext: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductProofContext {
-        return
-            try ProductProofContext(
-                productId: FfiConverterString.read(from: &buf), 
-                suffix: FfiConverterTypeDerivationIndex.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: ProductProofContext, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.productId, into: &buf)
-        FfiConverterTypeDerivationIndex.write(value.suffix, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeProductProofContext_lift(_ buf: RustBuffer) throws -> ProductProofContext {
-    return try FfiConverterTypeProductProofContext.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeProductProofContext_lower(_ value: ProductProofContext) -> RustBuffer {
-    return FfiConverterTypeProductProofContext.lower(value)
-}
-
-
-/**
- * Native-friendly mirror of [`v01::HostPushNotificationRequest`].
- */
-public struct PushNotificationRequest {
-    /**
-     * Notification text.
-     */
-    public var text: String
-    /**
-     * Optional URL to open on tap.
-     */
-    public var deeplink: String?
-    /**
-     * Optional Unix timestamp in milliseconds (UTC) at which the
-     * notification should fire. `None` fires immediately.
-     */
-    public var scheduledAt: UInt64?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Notification text.
-         */text: String, 
-        /**
-         * Optional URL to open on tap.
-         */deeplink: String?, 
-        /**
-         * Optional Unix timestamp in milliseconds (UTC) at which the
-         * notification should fire. `None` fires immediately.
-         */scheduledAt: UInt64?) {
-        self.text = text
-        self.deeplink = deeplink
-        self.scheduledAt = scheduledAt
-    }
-}
-
-#if compiler(>=6)
-extension PushNotificationRequest: Sendable {}
-#endif
-
-
-extension PushNotificationRequest: Equatable, Hashable {
-    public static func ==(lhs: PushNotificationRequest, rhs: PushNotificationRequest) -> Bool {
-        if lhs.text != rhs.text {
-            return false
-        }
-        if lhs.deeplink != rhs.deeplink {
-            return false
-        }
-        if lhs.scheduledAt != rhs.scheduledAt {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(text)
-        hasher.combine(deeplink)
-        hasher.combine(scheduledAt)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypePushNotificationRequest: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PushNotificationRequest {
-        return
-            try PushNotificationRequest(
-                text: FfiConverterString.read(from: &buf), 
-                deeplink: FfiConverterOptionString.read(from: &buf), 
-                scheduledAt: FfiConverterOptionUInt64.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: PushNotificationRequest, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.text, into: &buf)
-        FfiConverterOptionString.write(value.deeplink, into: &buf)
-        FfiConverterOptionUInt64.write(value.scheduledAt, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePushNotificationRequest_lift(_ buf: RustBuffer) throws -> PushNotificationRequest {
-    return try FfiConverterTypePushNotificationRequest.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypePushNotificationRequest_lower(_ value: PushNotificationRequest) -> RustBuffer {
-    return FfiConverterTypePushNotificationRequest.lower(value)
-}
-
-
-/**
- * Review for resource allocation. Names the beneficiary product so the user
- * knows which product receives the (signing-capable) allowance key they are
- * approving.
- */
-public struct ResourceAllocationReview {
-    /**
-     * Product the allocation is requested for.
-     */
-    public var callingProductId: String
-    /**
-     * Resources to allocate.
-     */
-    public var resources: [AllocatableResource]
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product the allocation is requested for.
-         */callingProductId: String, 
-        /**
-         * Resources to allocate.
-         */resources: [AllocatableResource]) {
-        self.callingProductId = callingProductId
-        self.resources = resources
-    }
-}
-
-#if compiler(>=6)
-extension ResourceAllocationReview: Sendable {}
-#endif
-
-
-extension ResourceAllocationReview: Equatable, Hashable {
-    public static func ==(lhs: ResourceAllocationReview, rhs: ResourceAllocationReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.resources != rhs.resources {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(resources)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeResourceAllocationReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ResourceAllocationReview {
-        return
-            try ResourceAllocationReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
-                resources: FfiConverterSequenceTypeAllocatableResource.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: ResourceAllocationReview, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.callingProductId, into: &buf)
-        FfiConverterSequenceTypeAllocatableResource.write(value.resources, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeResourceAllocationReview_lift(_ buf: RustBuffer) throws -> ResourceAllocationReview {
-    return try FfiConverterTypeResourceAllocationReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeResourceAllocationReview_lower(_ value: ResourceAllocationReview) -> RustBuffer {
-    return FfiConverterTypeResourceAllocationReview.lower(value)
-}
-
-
-/**
- * Locates a ring for ring VRF operations.
- */
-public struct RingLocation {
-    /**
-     * Genesis hash of the chain hosting the ring.
-     */
-    public var chainId: Data
-    /**
-     * Path addressing the ring within the chain.
-     */
-    public var junctions: [RingLocationJunction]
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Genesis hash of the chain hosting the ring.
-         */chainId: Data, 
-        /**
-         * Path addressing the ring within the chain.
-         */junctions: [RingLocationJunction]) {
-        self.chainId = chainId
-        self.junctions = junctions
-    }
-}
-
-#if compiler(>=6)
-extension RingLocation: Sendable {}
-#endif
-
-
-extension RingLocation: Equatable, Hashable {
-    public static func ==(lhs: RingLocation, rhs: RingLocation) -> Bool {
-        if lhs.chainId != rhs.chainId {
-            return false
-        }
-        if lhs.junctions != rhs.junctions {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(chainId)
-        hasher.combine(junctions)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeRingLocation: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RingLocation {
-        return
-            try RingLocation(
-                chainId: FfiConverterData.read(from: &buf), 
-                junctions: FfiConverterSequenceTypeRingLocationJunction.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: RingLocation, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.chainId, into: &buf)
-        FfiConverterSequenceTypeRingLocationJunction.write(value.junctions, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeRingLocation_lift(_ buf: RustBuffer) throws -> RingLocation {
-    return try FfiConverterTypeRingLocation.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeRingLocation_lower(_ value: RingLocation) -> RustBuffer {
-    return FfiConverterTypeRingLocation.lower(value)
-}
-
-
-/**
- * Native-friendly mirror of [`truapi_platform::SessionUiInfo`]: decoded
- * session fields for host account UI, with byte arrays widened to `Vec<u8>`
- * for the FFI surface.
- */
-public struct SessionUiInfo {
-    /**
-     * 32-byte sr25519 root public key of the active session.
-     */
-    public var publicKey: Data
-    /**
-     * Wallet identity account id used for People-chain username lookup.
-     */
-    public var identityAccountId: Data?
-    /**
-     * Short username from the People-chain identity record.
-     */
-    public var liteUsername: String?
-    /**
-     * Fully qualified username from the People-chain identity record.
-     */
-    public var fullUsername: String?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * 32-byte sr25519 root public key of the active session.
-         */publicKey: Data, 
-        /**
-         * Wallet identity account id used for People-chain username lookup.
-         */identityAccountId: Data?, 
-        /**
-         * Short username from the People-chain identity record.
-         */liteUsername: String?, 
-        /**
-         * Fully qualified username from the People-chain identity record.
-         */fullUsername: String?) {
-        self.publicKey = publicKey
-        self.identityAccountId = identityAccountId
-        self.liteUsername = liteUsername
-        self.fullUsername = fullUsername
-    }
-}
-
-#if compiler(>=6)
-extension SessionUiInfo: Sendable {}
-#endif
-
-
-extension SessionUiInfo: Equatable, Hashable {
-    public static func ==(lhs: SessionUiInfo, rhs: SessionUiInfo) -> Bool {
-        if lhs.publicKey != rhs.publicKey {
-            return false
-        }
-        if lhs.identityAccountId != rhs.identityAccountId {
-            return false
-        }
-        if lhs.liteUsername != rhs.liteUsername {
-            return false
-        }
-        if lhs.fullUsername != rhs.fullUsername {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(publicKey)
-        hasher.combine(identityAccountId)
-        hasher.combine(liteUsername)
-        hasher.combine(fullUsername)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SessionUiInfo {
-        return
-            try SessionUiInfo(
-                publicKey: FfiConverterData.read(from: &buf), 
-                identityAccountId: FfiConverterOptionData.read(from: &buf), 
-                liteUsername: FfiConverterOptionString.read(from: &buf), 
-                fullUsername: FfiConverterOptionString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: SessionUiInfo, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.publicKey, into: &buf)
-        FfiConverterOptionData.write(value.identityAccountId, into: &buf)
-        FfiConverterOptionString.write(value.liteUsername, into: &buf)
-        FfiConverterOptionString.write(value.fullUsername, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSessionUiInfo_lift(_ buf: RustBuffer) throws -> SessionUiInfo {
-    return try FfiConverterTypeSessionUiInfo.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSessionUiInfo_lower(_ value: SessionUiInfo) -> RustBuffer {
-    return FfiConverterTypeSessionUiInfo.lower(value)
-}
-
-
-/**
- * Full Substrate extrinsic signing payload with all fields needed for
- * signature generation.
- */
-public struct SignPayloadData {
-    /**
-     * Reference block hash.
-     */
-    public var blockHash: Data
-    /**
-     * Reference block number.
-     */
-    public var blockNumber: Data
-    /**
-     * Mortality era encoding.
-     */
-    public var era: Data
-    /**
-     * Chain genesis hash.
-     */
-    public var genesisHash: Data
-    /**
-     * SCALE-encoded call data.
-     */
-    public var method: Data
-    /**
-     * Account nonce.
-     */
-    public var nonce: Data
-    /**
-     * Runtime spec version.
-     */
-    public var specVersion: Data
-    /**
-     * Transaction tip.
-     */
-    public var tip: Data
-    /**
-     * Transaction format version.
-     */
-    public var transactionVersion: Data
-    /**
-     * Extension identifiers.
-     */
-    public var signedExtensions: [String]
-    /**
-     * Extrinsic version.
-     */
-    public var version: UInt32
-    /**
-     * For multi-asset tips.
-     */
-    public var assetId: Data?
-    /**
-     * CheckMetadataHash extension.
-     */
-    public var metadataHash: Data?
-    /**
-     * Metadata mode.
-     */
-    public var mode: UInt32?
-    /**
-     * Request signed transaction back.
-     */
-    public var withSignedTransaction: Bool?
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Reference block hash.
-         */blockHash: Data, 
-        /**
-         * Reference block number.
-         */blockNumber: Data, 
-        /**
-         * Mortality era encoding.
-         */era: Data, 
-        /**
-         * Chain genesis hash.
-         */genesisHash: Data, 
-        /**
-         * SCALE-encoded call data.
-         */method: Data, 
-        /**
-         * Account nonce.
-         */nonce: Data, 
-        /**
-         * Runtime spec version.
-         */specVersion: Data, 
-        /**
-         * Transaction tip.
-         */tip: Data, 
-        /**
-         * Transaction format version.
-         */transactionVersion: Data, 
-        /**
-         * Extension identifiers.
-         */signedExtensions: [String], 
-        /**
-         * Extrinsic version.
-         */version: UInt32, 
-        /**
-         * For multi-asset tips.
-         */assetId: Data?, 
-        /**
-         * CheckMetadataHash extension.
-         */metadataHash: Data?, 
-        /**
-         * Metadata mode.
-         */mode: UInt32?, 
-        /**
-         * Request signed transaction back.
-         */withSignedTransaction: Bool?) {
-        self.blockHash = blockHash
-        self.blockNumber = blockNumber
-        self.era = era
-        self.genesisHash = genesisHash
-        self.method = method
-        self.nonce = nonce
-        self.specVersion = specVersion
-        self.tip = tip
-        self.transactionVersion = transactionVersion
-        self.signedExtensions = signedExtensions
-        self.version = version
-        self.assetId = assetId
-        self.metadataHash = metadataHash
-        self.mode = mode
-        self.withSignedTransaction = withSignedTransaction
-    }
-}
-
-#if compiler(>=6)
-extension SignPayloadData: Sendable {}
-#endif
-
-
-extension SignPayloadData: Equatable, Hashable {
-    public static func ==(lhs: SignPayloadData, rhs: SignPayloadData) -> Bool {
-        if lhs.blockHash != rhs.blockHash {
-            return false
-        }
-        if lhs.blockNumber != rhs.blockNumber {
-            return false
-        }
-        if lhs.era != rhs.era {
-            return false
-        }
-        if lhs.genesisHash != rhs.genesisHash {
-            return false
-        }
-        if lhs.method != rhs.method {
-            return false
-        }
-        if lhs.nonce != rhs.nonce {
-            return false
-        }
-        if lhs.specVersion != rhs.specVersion {
-            return false
-        }
-        if lhs.tip != rhs.tip {
-            return false
-        }
-        if lhs.transactionVersion != rhs.transactionVersion {
-            return false
-        }
-        if lhs.signedExtensions != rhs.signedExtensions {
-            return false
-        }
-        if lhs.version != rhs.version {
-            return false
-        }
-        if lhs.assetId != rhs.assetId {
-            return false
-        }
-        if lhs.metadataHash != rhs.metadataHash {
-            return false
-        }
-        if lhs.mode != rhs.mode {
-            return false
-        }
-        if lhs.withSignedTransaction != rhs.withSignedTransaction {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(blockHash)
-        hasher.combine(blockNumber)
-        hasher.combine(era)
-        hasher.combine(genesisHash)
-        hasher.combine(method)
-        hasher.combine(nonce)
-        hasher.combine(specVersion)
-        hasher.combine(tip)
-        hasher.combine(transactionVersion)
-        hasher.combine(signedExtensions)
-        hasher.combine(version)
-        hasher.combine(assetId)
-        hasher.combine(metadataHash)
-        hasher.combine(mode)
-        hasher.combine(withSignedTransaction)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeSignPayloadData: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignPayloadData {
-        return
-            try SignPayloadData(
-                blockHash: FfiConverterData.read(from: &buf), 
-                blockNumber: FfiConverterData.read(from: &buf), 
-                era: FfiConverterData.read(from: &buf), 
-                genesisHash: FfiConverterData.read(from: &buf), 
-                method: FfiConverterData.read(from: &buf), 
-                nonce: FfiConverterData.read(from: &buf), 
-                specVersion: FfiConverterData.read(from: &buf), 
-                tip: FfiConverterData.read(from: &buf), 
-                transactionVersion: FfiConverterData.read(from: &buf), 
-                signedExtensions: FfiConverterSequenceString.read(from: &buf), 
-                version: FfiConverterUInt32.read(from: &buf), 
-                assetId: FfiConverterOptionData.read(from: &buf), 
-                metadataHash: FfiConverterOptionData.read(from: &buf), 
-                mode: FfiConverterOptionUInt32.read(from: &buf), 
-                withSignedTransaction: FfiConverterOptionBool.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: SignPayloadData, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.blockHash, into: &buf)
-        FfiConverterData.write(value.blockNumber, into: &buf)
-        FfiConverterData.write(value.era, into: &buf)
-        FfiConverterData.write(value.genesisHash, into: &buf)
-        FfiConverterData.write(value.method, into: &buf)
-        FfiConverterData.write(value.nonce, into: &buf)
-        FfiConverterData.write(value.specVersion, into: &buf)
-        FfiConverterData.write(value.tip, into: &buf)
-        FfiConverterData.write(value.transactionVersion, into: &buf)
-        FfiConverterSequenceString.write(value.signedExtensions, into: &buf)
-        FfiConverterUInt32.write(value.version, into: &buf)
-        FfiConverterOptionData.write(value.assetId, into: &buf)
-        FfiConverterOptionData.write(value.metadataHash, into: &buf)
-        FfiConverterOptionUInt32.write(value.mode, into: &buf)
-        FfiConverterOptionBool.write(value.withSignedTransaction, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignPayloadData_lift(_ buf: RustBuffer) throws -> SignPayloadData {
-    return try FfiConverterTypeSignPayloadData.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignPayloadData_lower(_ value: SignPayloadData) -> RustBuffer {
-    return FfiConverterTypeSignPayloadData.lower(value)
-}
-
-
-/**
- * Request to produce an sr25519 VRF signature from a product account over a
- * caller-supplied Merlin transcript.
- */
-public struct SignVrfRequest {
-    /**
-     * Account whose key signs the VRF.
-     */
-    public var account: ProductAccountId
-    /**
-     * Root domain-separation label: `Transcript::new(transcript_label)`.
-     */
-    public var transcriptLabel: Data
-    /**
-     * Transcript items replayed in order as `append_message(label, value)`.
-     */
-    public var items: [VrfTranscriptItem]
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Account whose key signs the VRF.
-         */account: ProductAccountId, 
-        /**
-         * Root domain-separation label: `Transcript::new(transcript_label)`.
-         */transcriptLabel: Data, 
-        /**
-         * Transcript items replayed in order as `append_message(label, value)`.
-         */items: [VrfTranscriptItem]) {
-        self.account = account
-        self.transcriptLabel = transcriptLabel
-        self.items = items
-    }
-}
-
-#if compiler(>=6)
-extension SignVrfRequest: Sendable {}
-#endif
-
-
-extension SignVrfRequest: Equatable, Hashable {
-    public static func ==(lhs: SignVrfRequest, rhs: SignVrfRequest) -> Bool {
-        if lhs.account != rhs.account {
-            return false
-        }
-        if lhs.transcriptLabel != rhs.transcriptLabel {
-            return false
-        }
-        if lhs.items != rhs.items {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account)
-        hasher.combine(transcriptLabel)
-        hasher.combine(items)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeSignVrfRequest: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignVrfRequest {
-        return
-            try SignVrfRequest(
-                account: FfiConverterTypeProductAccountId.read(from: &buf), 
-                transcriptLabel: FfiConverterData.read(from: &buf), 
-                items: FfiConverterSequenceTypeVrfTranscriptItem.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: SignVrfRequest, into buf: inout [UInt8]) {
-        FfiConverterTypeProductAccountId.write(value.account, into: &buf)
-        FfiConverterData.write(value.transcriptLabel, into: &buf)
-        FfiConverterSequenceTypeVrfTranscriptItem.write(value.items, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignVrfRequest_lift(_ buf: RustBuffer) throws -> SignVrfRequest {
-    return try FfiConverterTypeSignVrfRequest.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignVrfRequest_lower(_ value: SignVrfRequest) -> RustBuffer {
-    return FfiConverterTypeSignVrfRequest.lower(value)
-}
-
-
-/**
- * Review for RFC-0023 VRF transcript signing.
- */
-public struct SignVrfReview {
-    /**
-     * Product making the request.
-     */
-    public var callingProductId: String
-    /**
-     * Product account and exact ordered transcript.
-     */
-    public var request: SignVrfRequest
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product making the request.
-         */callingProductId: String, 
-        /**
-         * Product account and exact ordered transcript.
-         */request: SignVrfRequest) {
-        self.callingProductId = callingProductId
-        self.request = request
-    }
-}
-
-#if compiler(>=6)
-extension SignVrfReview: Sendable {}
-#endif
-
-
-extension SignVrfReview: Equatable, Hashable {
-    public static func ==(lhs: SignVrfReview, rhs: SignVrfReview) -> Bool {
-        if lhs.callingProductId != rhs.callingProductId {
-            return false
-        }
-        if lhs.request != rhs.request {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(callingProductId)
-        hasher.combine(request)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeSignVrfReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignVrfReview {
-        return
-            try SignVrfReview(
-                callingProductId: FfiConverterString.read(from: &buf), 
-                request: FfiConverterTypeSignVrfRequest.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: SignVrfReview, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.callingProductId, into: &buf)
-        FfiConverterTypeSignVrfRequest.write(value.request, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignVrfReview_lift(_ buf: RustBuffer) throws -> SignVrfReview {
-    return try FfiConverterTypeSignVrfReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignVrfReview_lower(_ value: SignVrfReview) -> RustBuffer {
-    return FfiConverterTypeSignVrfReview.lower(value)
-}
-
-
-/**
- * Review for a Statement Store proof signature. The payload is the exact
- * unsigned statement, signed as-is (no `<Bytes>` envelope), so hosts must not
- * present it with the raw-signing convention.
- */
-public struct StatementStoreProductSignReview {
-    /**
-     * Product account that will sign the statement payload.
-     */
-    public var account: ProductAccountId
-    /**
-     * Exact unsigned statement payload to be signed.
-     */
-    public var payload: Data
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Product account that will sign the statement payload.
-         */account: ProductAccountId, 
-        /**
-         * Exact unsigned statement payload to be signed.
-         */payload: Data) {
-        self.account = account
-        self.payload = payload
-    }
-}
-
-#if compiler(>=6)
-extension StatementStoreProductSignReview: Sendable {}
-#endif
-
-
-extension StatementStoreProductSignReview: Equatable, Hashable {
-    public static func ==(lhs: StatementStoreProductSignReview, rhs: StatementStoreProductSignReview) -> Bool {
-        if lhs.account != rhs.account {
-            return false
-        }
-        if lhs.payload != rhs.payload {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(account)
-        hasher.combine(payload)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeStatementStoreProductSignReview: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StatementStoreProductSignReview {
-        return
-            try StatementStoreProductSignReview(
-                account: FfiConverterTypeProductAccountId.read(from: &buf), 
-                payload: FfiConverterData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: StatementStoreProductSignReview, into buf: inout [UInt8]) {
-        FfiConverterTypeProductAccountId.write(value.account, into: &buf)
-        FfiConverterData.write(value.payload, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeStatementStoreProductSignReview_lift(_ buf: RustBuffer) throws -> StatementStoreProductSignReview {
-    return try FfiConverterTypeStatementStoreProductSignReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeStatementStoreProductSignReview_lower(_ value: StatementStoreProductSignReview) -> RustBuffer {
-    return FfiConverterTypeStatementStoreProductSignReview.lower(value)
-}
-
-
-/**
- * One transaction extension supplied by the caller.
- */
-public struct TxPayloadExtension {
-    /**
-     * Extension name (e.g. `"CheckSpecVersion"`).
-     */
-    public var id: String
-    /**
-     * SCALE-encoded extra data (in extrinsic body).
-     */
-    public var extra: Data
-    /**
-     * SCALE-encoded implicit data (signed, not in body).
-     */
-    public var additionalSigned: Data
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Extension name (e.g. `"CheckSpecVersion"`).
-         */id: String, 
-        /**
-         * SCALE-encoded extra data (in extrinsic body).
-         */extra: Data, 
-        /**
-         * SCALE-encoded implicit data (signed, not in body).
-         */additionalSigned: Data) {
-        self.id = id
-        self.extra = extra
-        self.additionalSigned = additionalSigned
-    }
-}
-
-#if compiler(>=6)
-extension TxPayloadExtension: Sendable {}
-#endif
-
-
-extension TxPayloadExtension: Equatable, Hashable {
-    public static func ==(lhs: TxPayloadExtension, rhs: TxPayloadExtension) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.extra != rhs.extra {
-            return false
-        }
-        if lhs.additionalSigned != rhs.additionalSigned {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(extra)
-        hasher.combine(additionalSigned)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeTxPayloadExtension: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TxPayloadExtension {
-        return
-            try TxPayloadExtension(
-                id: FfiConverterString.read(from: &buf), 
-                extra: FfiConverterData.read(from: &buf), 
-                additionalSigned: FfiConverterData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: TxPayloadExtension, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.id, into: &buf)
-        FfiConverterData.write(value.extra, into: &buf)
-        FfiConverterData.write(value.additionalSigned, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeTxPayloadExtension_lift(_ buf: RustBuffer) throws -> TxPayloadExtension {
-    return try FfiConverterTypeTxPayloadExtension.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeTxPayloadExtension_lower(_ value: TxPayloadExtension) -> RustBuffer {
-    return FfiConverterTypeTxPayloadExtension.lower(value)
-}
-
-
-/**
- * One `append_message` call replayed against the signing transcript.
- */
-public struct VrfTranscriptItem {
-    /**
-     * Merlin `append_message` label.
-     */
-    public var label: Data
-    /**
-     * Merlin `append_message` value.
-     */
-    public var value: Data
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * Merlin `append_message` label.
-         */label: Data, 
-        /**
-         * Merlin `append_message` value.
-         */value: Data) {
-        self.label = label
-        self.value = value
-    }
-}
-
-#if compiler(>=6)
-extension VrfTranscriptItem: Sendable {}
-#endif
-
-
-extension VrfTranscriptItem: Equatable, Hashable {
-    public static func ==(lhs: VrfTranscriptItem, rhs: VrfTranscriptItem) -> Bool {
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.value != rhs.value {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(label)
-        hasher.combine(value)
-    }
-}
-
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeVrfTranscriptItem: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VrfTranscriptItem {
-        return
-            try VrfTranscriptItem(
-                label: FfiConverterData.read(from: &buf), 
-                value: FfiConverterData.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: VrfTranscriptItem, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.label, into: &buf)
-        FfiConverterData.write(value.value, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeVrfTranscriptItem_lift(_ buf: RustBuffer) throws -> VrfTranscriptItem {
-    return try FfiConverterTypeVrfTranscriptItem.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeVrfTranscriptItem_lower(_ value: VrfTranscriptItem) -> RustBuffer {
-    return FfiConverterTypeVrfTranscriptItem.lower(value)
-}
-
-
-/**
  * Per-session descriptor returned to the host: product uses `port + token`
  * to build its WebSocket URL (e.g. `ws://127.0.0.1:<port>/?t=<token>`).
  */
-public struct WsBridgeEndpoint {
+public struct WsBridgeEndpoint: Equatable, Hashable {
     /**
      * Localhost port the bridge is listening on.
      */
@@ -4090,7 +2429,7 @@ public struct WsBridgeEndpoint {
     public init(
         /**
          * Localhost port the bridge is listening on.
-         */port: UInt16, 
+         */port: UInt16,
         /**
          * Session token; the connecting client must supply this as the
          * `?t=<token>` query parameter to be accepted.
@@ -4098,31 +2437,15 @@ public struct WsBridgeEndpoint {
         self.port = port
         self.token = token
     }
+
+
+
+
 }
 
 #if compiler(>=6)
 extension WsBridgeEndpoint: Sendable {}
 #endif
-
-
-extension WsBridgeEndpoint: Equatable, Hashable {
-    public static func ==(lhs: WsBridgeEndpoint, rhs: WsBridgeEndpoint) -> Bool {
-        if lhs.port != rhs.port {
-            return false
-        }
-        if lhs.token != rhs.token {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(port)
-        hasher.combine(token)
-    }
-}
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4131,7 +2454,7 @@ public struct FfiConverterTypeWsBridgeEndpoint: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> WsBridgeEndpoint {
         return
             try WsBridgeEndpoint(
-                port: FfiConverterUInt16.read(from: &buf), 
+                port: FfiConverterUInt16.read(from: &buf),
                 token: FfiConverterString.read(from: &buf)
         )
     }
@@ -4157,543 +2480,42 @@ public func FfiConverterTypeWsBridgeEndpoint_lower(_ value: WsBridgeEndpoint) ->
     return FfiConverterTypeWsBridgeEndpoint.lower(value)
 }
 
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 /**
- * A resource the host can pre-allocate on behalf of the product (RFC 0010).
+ * Host-thrown navigation failure wrapping the canonical error payload.
+ *
+ * As described for [`HostStorageError`], [UniFFI's supported error
+ * representations](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html)
+ * do not provide a derive-based way to bridge namespace-specific Kotlin
+ * `RustBuffer` types when an external error is thrown by a foreign-trait
+ * callback. The one-variant wrapper avoids mirroring the canonical navigation
+ * error enum locally.
  */
+public
+enum HostNavigateRejection: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-public enum AllocatableResource {
-    
+
+
     /**
-     * Statement Store slot allowance for the product's own allowance account.
+     * Canonical navigation failure payload.
      */
-    case statementStoreAllowance
-    /**
-     * Bulletin chain slot allowance for the product's own allowance account.
-     */
-    case bulletinAllowance
-    /**
-     * Pre-warmed PGAS balance for the smart-contract account at the given
-     * derivation index.
-     */
-    case smartContractAllowance(DerivationIndex
+    case Navigate(HostNavigateToError
     )
-    /**
-     * Permission to sign on the product's behalf without per-call prompts.
-     */
-    case autoSigning
-}
 
+
+
+
+
+
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+
+}
 
 #if compiler(>=6)
-extension AllocatableResource: Sendable {}
+extension HostNavigateRejection: Sendable {}
 #endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeAllocatableResource: FfiConverterRustBuffer {
-    typealias SwiftType = AllocatableResource
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AllocatableResource {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .statementStoreAllowance
-        
-        case 2: return .bulletinAllowance
-        
-        case 3: return .smartContractAllowance(try FfiConverterTypeDerivationIndex.read(from: &buf)
-        )
-        
-        case 4: return .autoSigning
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: AllocatableResource, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .statementStoreAllowance:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .bulletinAllowance:
-            writeInt(&buf, Int32(2))
-        
-        
-        case let .smartContractAllowance(v1):
-            writeInt(&buf, Int32(3))
-            FfiConverterTypeDerivationIndex.write(v1, into: &buf)
-            
-        
-        case .autoSigning:
-            writeInt(&buf, Int32(4))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAllocatableResource_lift(_ buf: RustBuffer) throws -> AllocatableResource {
-    return try FfiConverterTypeAllocatableResource.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAllocatableResource_lower(_ value: AllocatableResource) -> RustBuffer {
-    return FfiConverterTypeAllocatableResource.lower(value)
-}
-
-
-extension AllocatableResource: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`truapi_platform::AuthState`]. The core emits
- * these in transition order through `HostCallbacks::auth_state_changed`.
- */
-
-public enum AuthState {
-    
-    /**
-     * No active session and no login in progress.
-     */
-    case disconnected
-    /**
-     * A login is in progress: present the pairing deeplink/QR.
-     */
-    case pairing(
-        /**
-         * Wallet pairing deeplink to render as a QR code or open directly.
-         */deeplink: String
-    )
-    /**
-     * A session is active.
-     */
-    case connected(
-        /**
-         * Decoded session fields for host account UI.
-         */info: SessionUiInfo
-    )
-    /**
-     * The last login attempt failed; show the reason and offer a retry.
-     */
-    case loginFailed(
-        /**
-         * Human-readable failure reason.
-         */reason: String
-    )
-    /**
-     * The wallet accepted pairing and the core is resolving the session.
-     */
-    case authenticating
-}
-
-
-#if compiler(>=6)
-extension AuthState: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
-    typealias SwiftType = AuthState
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AuthState {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .disconnected
-        
-        case 2: return .pairing(deeplink: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 3: return .connected(info: try FfiConverterTypeSessionUiInfo.read(from: &buf)
-        )
-        
-        case 4: return .loginFailed(reason: try FfiConverterString.read(from: &buf)
-        )
-        
-        case 5: return .authenticating
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: AuthState, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .disconnected:
-            writeInt(&buf, Int32(1))
-        
-        
-        case let .pairing(deeplink):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(deeplink, into: &buf)
-            
-        
-        case let .connected(info):
-            writeInt(&buf, Int32(3))
-            FfiConverterTypeSessionUiInfo.write(info, into: &buf)
-            
-        
-        case let .loginFailed(reason):
-            writeInt(&buf, Int32(4))
-            FfiConverterString.write(reason, into: &buf)
-            
-        
-        case .authenticating:
-            writeInt(&buf, Int32(5))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAuthState_lift(_ buf: RustBuffer) throws -> AuthState {
-    return try FfiConverterTypeAuthState.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAuthState_lower(_ value: AuthState) -> RustBuffer {
-    return FfiConverterTypeAuthState.lower(value)
-}
-
-
-extension AuthState: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Review for transaction creation.
- */
-
-public enum CreateTransactionReview {
-    
-    /**
-     * Product-account transaction request.
-     */
-    case product(
-        /**
-         * Product account that will sign the transaction.
-         */signer: ProductAccountId, 
-        /**
-         * Genesis hash of the chain where the transaction will execute.
-         */genesisHash: Data, 
-        /**
-         * SCALE-encoded Call data.
-         */callData: Data, 
-        /**
-         * Transaction extensions supplied by the caller.
-         */extensions: [TxPayloadExtension], 
-        /**
-         * 0 for Extrinsic V4, runtime-supported value for V5.
-         */txExtVersion: UInt8
-    )
-    /**
-     * Legacy-account transaction request.
-     */
-    case legacyAccount(
-        /**
-         * Raw 32-byte public key of the legacy account.
-         */signer: Data, 
-        /**
-         * Genesis hash of the chain where the transaction will execute.
-         */genesisHash: Data, 
-        /**
-         * SCALE-encoded Call data.
-         */callData: Data, 
-        /**
-         * Transaction extensions supplied by the caller.
-         */extensions: [TxPayloadExtension], 
-        /**
-         * 0 for Extrinsic V4, runtime-supported value for V5.
-         */txExtVersion: UInt8
-    )
-}
-
-
-#if compiler(>=6)
-extension CreateTransactionReview: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCreateTransactionReview: FfiConverterRustBuffer {
-    typealias SwiftType = CreateTransactionReview
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CreateTransactionReview {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .product(signer: try FfiConverterTypeProductAccountId.read(from: &buf), genesisHash: try FfiConverterData.read(from: &buf), callData: try FfiConverterData.read(from: &buf), extensions: try FfiConverterSequenceTypeTxPayloadExtension.read(from: &buf), txExtVersion: try FfiConverterUInt8.read(from: &buf)
-        )
-        
-        case 2: return .legacyAccount(signer: try FfiConverterData.read(from: &buf), genesisHash: try FfiConverterData.read(from: &buf), callData: try FfiConverterData.read(from: &buf), extensions: try FfiConverterSequenceTypeTxPayloadExtension.read(from: &buf), txExtVersion: try FfiConverterUInt8.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: CreateTransactionReview, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .product(signer,genesisHash,callData,extensions,txExtVersion):
-            writeInt(&buf, Int32(1))
-            FfiConverterTypeProductAccountId.write(signer, into: &buf)
-            FfiConverterData.write(genesisHash, into: &buf)
-            FfiConverterData.write(callData, into: &buf)
-            FfiConverterSequenceTypeTxPayloadExtension.write(extensions, into: &buf)
-            FfiConverterUInt8.write(txExtVersion, into: &buf)
-            
-        
-        case let .legacyAccount(signer,genesisHash,callData,extensions,txExtVersion):
-            writeInt(&buf, Int32(2))
-            FfiConverterData.write(signer, into: &buf)
-            FfiConverterData.write(genesisHash, into: &buf)
-            FfiConverterData.write(callData, into: &buf)
-            FfiConverterSequenceTypeTxPayloadExtension.write(extensions, into: &buf)
-            FfiConverterUInt8.write(txExtVersion, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCreateTransactionReview_lift(_ buf: RustBuffer) throws -> CreateTransactionReview {
-    return try FfiConverterTypeCreateTransactionReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCreateTransactionReview_lower(_ value: CreateTransactionReview) -> RustBuffer {
-    return FfiConverterTypeCreateTransactionReview.lower(value)
-}
-
-
-extension CreateTransactionReview: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Account selector within a product subtree (RFC 0022): plain index or raw
- * 32-byte derivation index.
- */
-
-public enum DerivationIndex {
-    
-    /**
-     * Plain account index — the primary, enumerable form.
-     */
-    case index(UInt32
-    )
-    /**
-     * Raw 32-byte derivation index (widened to `Vec<u8>` for FFI).
-     */
-    case raw(Data
-    )
-}
-
-
-#if compiler(>=6)
-extension DerivationIndex: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeDerivationIndex: FfiConverterRustBuffer {
-    typealias SwiftType = DerivationIndex
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DerivationIndex {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .index(try FfiConverterUInt32.read(from: &buf)
-        )
-        
-        case 2: return .raw(try FfiConverterData.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: DerivationIndex, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .index(v1):
-            writeInt(&buf, Int32(1))
-            FfiConverterUInt32.write(v1, into: &buf)
-            
-        
-        case let .raw(v1):
-            writeInt(&buf, Int32(2))
-            FfiConverterData.write(v1, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeDerivationIndex_lift(_ buf: RustBuffer) throws -> DerivationIndex {
-    return try FfiConverterTypeDerivationIndex.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeDerivationIndex_lower(_ value: DerivationIndex) -> RustBuffer {
-    return FfiConverterTypeDerivationIndex.lower(value)
-}
-
-
-extension DerivationIndex: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`v01::HostFeatureSupportedRequest`].
- */
-
-public enum FeatureSupportedRequest {
-    
-    /**
-     * Ask whether the host can interact with the chain identified by genesis hash.
-     */
-    case chain(
-        /**
-         * Chain genesis hash.
-         */genesisHash: Data
-    )
-}
-
-
-#if compiler(>=6)
-extension FeatureSupportedRequest: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeFeatureSupportedRequest: FfiConverterRustBuffer {
-    typealias SwiftType = FeatureSupportedRequest
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FeatureSupportedRequest {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .chain(genesisHash: try FfiConverterData.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: FeatureSupportedRequest, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .chain(genesisHash):
-            writeInt(&buf, Int32(1))
-            FfiConverterData.write(genesisHash, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFeatureSupportedRequest_lift(_ buf: RustBuffer) throws -> FeatureSupportedRequest {
-    return try FfiConverterTypeFeatureSupportedRequest.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFeatureSupportedRequest_lower(_ value: FeatureSupportedRequest) -> RustBuffer {
-    return FfiConverterTypeFeatureSupportedRequest.lower(value)
-}
-
-
-extension FeatureSupportedRequest: Equatable, Hashable {}
-
-
-
-
-
-
-
-/**
- * Native-friendly navigation error.
- */
-public enum HostNavigateRejection: Swift.Error {
-
-    
-    
-    /**
-     * User declined the navigation.
-     */
-    case PermissionDenied
-    /**
-     * Catch-all.
-     */
-    case Unknown(
-        /**
-         * Human-readable reason.
-         */reason: String
-    )
-}
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4705,12 +2527,11 @@ public struct FfiConverterTypeHostNavigateRejection: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
-        case 1: return .PermissionDenied
-        case 2: return .Unknown(
-            reason: try FfiConverterString.read(from: &buf)
+
+
+        case 1: return .Navigate(
+            try FfiConverterTypeHostNavigateToError.read(from: &buf)
             )
 
          default: throw UniffiInternalError.unexpectedEnumCase
@@ -4720,18 +2541,14 @@ public struct FfiConverterTypeHostNavigateRejection: FfiConverterRustBuffer {
     public static func write(_ value: HostNavigateRejection, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
-        case .PermissionDenied:
+
+
+
+        case let .Navigate(v1):
             writeInt(&buf, Int32(1))
-        
-        
-        case let .Unknown(reason):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(reason, into: &buf)
-            
+            FfiConverterTypeHostNavigateToError.write(v1, into: &buf)
+
         }
     }
 }
@@ -4752,29 +2569,22 @@ public func FfiConverterTypeHostNavigateRejection_lower(_ value: HostNavigateRej
 }
 
 
-extension HostNavigateRejection: Equatable, Hashable {}
-
-
-
-
-extension HostNavigateRejection: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
-
-
 /**
- * Native-friendly rejection error returned by callback methods that map
- * onto [`truapi::v01::GenericError`].
+ * Native-friendly rejection error returned by callback methods that map onto
+ * [`truapi::v01::GenericError`].
+ *
+ * [`uniffi::Error` is the value-style error mapping and only supports enums;
+ * UniFFI's struct alternative is an `Arc`-backed object
+ * error](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html). Making the
+ * canonical SCALE value an object would require Rust-owned handles and foreign
+ * construction solely to carry one string. This local enum keeps the native
+ * exception value-like without changing the canonical wire representation.
  */
-public enum HostRejection: Swift.Error {
+public
+enum HostRejection: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     /**
      * Caller rejected the operation.
      */
@@ -4783,8 +2593,21 @@ public enum HostRejection: Swift.Error {
          * Human-readable rejection reason.
          */reason: String
     )
+
+
+
+
+
+
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+
 }
 
+#if compiler(>=6)
+extension HostRejection: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4796,9 +2619,9 @@ public struct FfiConverterTypeHostRejection: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .Rejected(
             reason: try FfiConverterString.read(from: &buf)
             )
@@ -4810,14 +2633,14 @@ public struct FfiConverterTypeHostRejection: FfiConverterRustBuffer {
     public static func write(_ value: HostRejection, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .Rejected(reason):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(reason, into: &buf)
-            
+
         }
     }
 }
@@ -4838,43 +2661,44 @@ public func FfiConverterTypeHostRejection_lower(_ value: HostRejection) -> RustB
 }
 
 
-extension HostRejection: Equatable, Hashable {}
+/**
+ * Host-thrown storage failure wrapping the canonical error payload, so its
+ * variants remain defined once in `truapi`.
+ *
+ * [UniFFI 0.32 exposes `Result` failures as error enums or `Arc`-backed error
+ * objects](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html). Although
+ * the canonical enum can be exposed as an external error, Kotlin foreign-trait
+ * callbacks must lower thrown errors into this namespace's `RustBuffer`; the
+ * external converter returns the canonical namespace's distinct `RustBuffer`
+ * type. There is no derive-based bridge between them. `uniffi::remote(Error)`
+ * would instead duplicate every canonical variant and field, so this local
+ * one-variant wrapper preserves the canonical definition.
+ */
+public
+enum HostStorageError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+
+
+    /**
+     * Canonical storage failure payload.
+     */
+    case Storage(HostLocalStorageReadError
+    )
 
 
 
 
-extension HostRejection: Foundation.LocalizedError {
+
+
     public var errorDescription: String? {
         String(reflecting: self)
     }
+
 }
 
-
-
-
-
-/**
- * Native-friendly storage error. Mirrors the v0.1 wire shape so the
- * callback surface stays SCALE-free.
- */
-public enum HostStorageError: Swift.Error {
-
-    
-    
-    /**
-     * Quota exhausted.
-     */
-    case Full
-    /**
-     * Catch-all.
-     */
-    case Unknown(
-        /**
-         * Human-readable failure reason.
-         */reason: String
-    )
-}
-
+#if compiler(>=6)
+extension HostStorageError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -4886,12 +2710,11 @@ public struct FfiConverterTypeHostStorageError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
-        case 1: return .Full
-        case 2: return .Unknown(
-            reason: try FfiConverterString.read(from: &buf)
+
+
+        case 1: return .Storage(
+            try FfiConverterTypeHostLocalStorageReadError.read(from: &buf)
             )
 
          default: throw UniffiInternalError.unexpectedEnumCase
@@ -4901,18 +2724,14 @@ public struct FfiConverterTypeHostStorageError: FfiConverterRustBuffer {
     public static func write(_ value: HostStorageError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
-        case .Full:
+
+
+
+        case let .Storage(v1):
             writeInt(&buf, Int32(1))
-        
-        
-        case let .Unknown(reason):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(reason, into: &buf)
-            
+            FfiConverterTypeHostLocalStorageReadError.write(v1, into: &buf)
+
         }
     }
 }
@@ -4933,256 +2752,12 @@ public func FfiConverterTypeHostStorageError_lower(_ value: HostStorageError) ->
 }
 
 
-extension HostStorageError: Equatable, Hashable {}
-
-
-
-
-extension HostStorageError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly theme enum.
- */
-
-public enum HostTheme {
-    
-    /**
-     * Light host theme.
-     */
-    case light
-    /**
-     * Dark host theme.
-     */
-    case dark
-}
-
-
-#if compiler(>=6)
-extension HostTheme: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeHostTheme: FfiConverterRustBuffer {
-    typealias SwiftType = HostTheme
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostTheme {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .light
-        
-        case 2: return .dark
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: HostTheme, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .light:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .dark:
-            writeInt(&buf, Int32(2))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeHostTheme_lift(_ buf: RustBuffer) throws -> HostTheme {
-    return try FfiConverterTypeHostTheme.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeHostTheme_lower(_ value: HostTheme) -> RustBuffer {
-    return FfiConverterTypeHostTheme.lower(value)
-}
-
-
-extension HostTheme: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`v01::HostDevicePermissionRequest`].
- */
-
-public enum NativeDevicePermission {
-    
-    /**
-     * Showing system notifications.
-     */
-    case notifications
-    /**
-     * Camera capture access.
-     */
-    case camera
-    /**
-     * Microphone capture access.
-     */
-    case microphone
-    /**
-     * Bluetooth device access.
-     */
-    case bluetooth
-    /**
-     * NFC reader access.
-     */
-    case nfc
-    /**
-     * Geolocation access.
-     */
-    case location
-    /**
-     * Clipboard access.
-     */
-    case clipboard
-    /**
-     * Opening URLs outside the host.
-     */
-    case openUrl
-    /**
-     * Biometric authentication.
-     */
-    case biometrics
-}
-
-
-#if compiler(>=6)
-extension NativeDevicePermission: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeDevicePermission: FfiConverterRustBuffer {
-    typealias SwiftType = NativeDevicePermission
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeDevicePermission {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .notifications
-        
-        case 2: return .camera
-        
-        case 3: return .microphone
-        
-        case 4: return .bluetooth
-        
-        case 5: return .nfc
-        
-        case 6: return .location
-        
-        case 7: return .clipboard
-        
-        case 8: return .openUrl
-        
-        case 9: return .biometrics
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeDevicePermission, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .notifications:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .camera:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .microphone:
-            writeInt(&buf, Int32(3))
-        
-        
-        case .bluetooth:
-            writeInt(&buf, Int32(4))
-        
-        
-        case .nfc:
-            writeInt(&buf, Int32(5))
-        
-        
-        case .location:
-            writeInt(&buf, Int32(6))
-        
-        
-        case .clipboard:
-            writeInt(&buf, Int32(7))
-        
-        
-        case .openUrl:
-            writeInt(&buf, Int32(8))
-        
-        
-        case .biometrics:
-            writeInt(&buf, Int32(9))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeDevicePermission_lift(_ buf: RustBuffer) throws -> NativeDevicePermission {
-    return try FfiConverterTypeNativeDevicePermission.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeDevicePermission_lower(_ value: NativeDevicePermission) -> RustBuffer {
-    return FfiConverterTypeNativeDevicePermission.lower(value)
-}
-
-
-extension NativeDevicePermission: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Native-friendly SSO deeplink scheme.
  */
 
-public enum NativePairingDeeplinkScheme {
-    
+public enum NativePairingDeeplinkScheme: Equatable, Hashable {
+
     /**
      * Production Polkadot app.
      */
@@ -5191,8 +2766,12 @@ public enum NativePairingDeeplinkScheme {
      * Development Polkadot app.
      */
     case polkadotAppDev
-}
 
+
+
+
+
+}
 
 #if compiler(>=6)
 extension NativePairingDeeplinkScheme: Sendable {}
@@ -5207,26 +2786,26 @@ public struct FfiConverterTypeNativePairingDeeplinkScheme: FfiConverterRustBuffe
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePairingDeeplinkScheme {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
+
         case 1: return .polkadotApp
-        
+
         case 2: return .polkadotAppDev
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
     public static func write(_ value: NativePairingDeeplinkScheme, into buf: inout [UInt8]) {
         switch value {
-        
-        
+
+
         case .polkadotApp:
             writeInt(&buf, Int32(1))
-        
-        
+
+
         case .polkadotAppDev:
             writeInt(&buf, Int32(2))
-        
+
         }
     }
 }
@@ -5247,337 +2826,15 @@ public func FfiConverterTypeNativePairingDeeplinkScheme_lower(_ value: NativePai
 }
 
 
-extension NativePairingDeeplinkScheme: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`PermissionAuthorizationRequest`]. Flattens the
- * one-field `RemotePermissionRequest` wrapper into the `Remote` payload.
- */
-
-public enum NativePermissionAuthorizationRequest {
-    
-    /**
-     * Device-level permission such as camera, microphone, or location.
-     */
-    case device(NativeDevicePermission
-    )
-    /**
-     * Remote/product-scoped permission such as chain submit or HTTP access.
-     */
-    case remote(NativeRemotePermission
-    )
-    /**
-     * Product-scoped permission to disclose the user's primary identity.
-     */
-    case identityDisclosure
-    /**
-     * Product-scoped permission to access another product's account context.
-     */
-    case accountAccess(
-        /**
-         * Product whose account context may be accessed.
-         */targetProductId: String
-    )
-}
-
-
-#if compiler(>=6)
-extension NativePermissionAuthorizationRequest: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativePermissionAuthorizationRequest: FfiConverterRustBuffer {
-    typealias SwiftType = NativePermissionAuthorizationRequest
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePermissionAuthorizationRequest {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .device(try FfiConverterTypeNativeDevicePermission.read(from: &buf)
-        )
-        
-        case 2: return .remote(try FfiConverterTypeNativeRemotePermission.read(from: &buf)
-        )
-        
-        case 3: return .identityDisclosure
-        
-        case 4: return .accountAccess(targetProductId: try FfiConverterString.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativePermissionAuthorizationRequest, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .device(v1):
-            writeInt(&buf, Int32(1))
-            FfiConverterTypeNativeDevicePermission.write(v1, into: &buf)
-            
-        
-        case let .remote(v1):
-            writeInt(&buf, Int32(2))
-            FfiConverterTypeNativeRemotePermission.write(v1, into: &buf)
-            
-        
-        case .identityDisclosure:
-            writeInt(&buf, Int32(3))
-        
-        
-        case let .accountAccess(targetProductId):
-            writeInt(&buf, Int32(4))
-            FfiConverterString.write(targetProductId, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationRequest_lift(_ buf: RustBuffer) throws -> NativePermissionAuthorizationRequest {
-    return try FfiConverterTypeNativePermissionAuthorizationRequest.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationRequest_lower(_ value: NativePermissionAuthorizationRequest) -> RustBuffer {
-    return FfiConverterTypeNativePermissionAuthorizationRequest.lower(value)
-}
-
-
-extension NativePermissionAuthorizationRequest: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`PermissionAuthorizationStatus`].
- */
-
-public enum NativePermissionAuthorizationStatus {
-    
-    /**
-     * No persisted authorization exists.
-     */
-    case notDetermined
-    /**
-     * Access is denied.
-     */
-    case denied
-    /**
-     * Access is authorized.
-     */
-    case authorized
-}
-
-
-#if compiler(>=6)
-extension NativePermissionAuthorizationStatus: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativePermissionAuthorizationStatus: FfiConverterRustBuffer {
-    typealias SwiftType = NativePermissionAuthorizationStatus
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativePermissionAuthorizationStatus {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .notDetermined
-        
-        case 2: return .denied
-        
-        case 3: return .authorized
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativePermissionAuthorizationStatus, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case .notDetermined:
-            writeInt(&buf, Int32(1))
-        
-        
-        case .denied:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .authorized:
-            writeInt(&buf, Int32(3))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationStatus_lift(_ buf: RustBuffer) throws -> NativePermissionAuthorizationStatus {
-    return try FfiConverterTypeNativePermissionAuthorizationStatus.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativePermissionAuthorizationStatus_lower(_ value: NativePermissionAuthorizationStatus) -> RustBuffer {
-    return FfiConverterTypeNativePermissionAuthorizationStatus.lower(value)
-}
-
-
-extension NativePermissionAuthorizationStatus: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Native-friendly mirror of [`v01::RemotePermission`].
- */
-
-public enum NativeRemotePermission {
-    
-    /**
-     * Outbound HTTP/WebSocket access to a set of domains.
-     */
-    case remote(
-        /**
-         * Domain patterns requested by the product.
-         */domains: [String]
-    )
-    /**
-     * WebRTC media access.
-     */
-    case webRtc
-    /**
-     * Submitting chain transactions on behalf of the user.
-     */
-    case chainSubmit
-    /**
-     * Submitting preimages on behalf of the user.
-     */
-    case preimageSubmit
-    /**
-     * Submitting statements on behalf of the user.
-     */
-    case statementSubmit
-}
-
-
-#if compiler(>=6)
-extension NativeRemotePermission: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeNativeRemotePermission: FfiConverterRustBuffer {
-    typealias SwiftType = NativeRemotePermission
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeRemotePermission {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .remote(domains: try FfiConverterSequenceString.read(from: &buf)
-        )
-        
-        case 2: return .webRtc
-        
-        case 3: return .chainSubmit
-        
-        case 4: return .preimageSubmit
-        
-        case 5: return .statementSubmit
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: NativeRemotePermission, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .remote(domains):
-            writeInt(&buf, Int32(1))
-            FfiConverterSequenceString.write(domains, into: &buf)
-            
-        
-        case .webRtc:
-            writeInt(&buf, Int32(2))
-        
-        
-        case .chainSubmit:
-            writeInt(&buf, Int32(3))
-        
-        
-        case .preimageSubmit:
-            writeInt(&buf, Int32(4))
-        
-        
-        case .statementSubmit:
-            writeInt(&buf, Int32(5))
-        
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRemotePermission_lift(_ buf: RustBuffer) throws -> NativeRemotePermission {
-    return try FfiConverterTypeNativeRemotePermission.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeNativeRemotePermission_lower(_ value: NativeRemotePermission) -> RustBuffer {
-    return FfiConverterTypeNativeRemotePermission.lower(value)
-}
-
-
-extension NativeRemotePermission: Equatable, Hashable {}
-
-
-
-
-
-
 
 /**
  * Native runtime config validation error.
  */
-public enum NativeRuntimeConfigError: Swift.Error {
+public
+enum NativeRuntimeConfigError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     /**
      * Required string field was empty or whitespace-only.
      */
@@ -5642,8 +2899,21 @@ public enum NativeRuntimeConfigError: Swift.Error {
          * Activation failure reason.
          */reason: String
     )
+
+
+
+
+
+
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+
 }
 
+#if compiler(>=6)
+extension NativeRuntimeConfigError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -5655,9 +2925,9 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .EmptyField(
             field: try FfiConverterString.read(from: &buf)
             )
@@ -5690,49 +2960,49 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
     public static func write(_ value: NativeRuntimeConfigError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
-        
+
+
+
         case let .EmptyField(field):
             writeInt(&buf, Int32(1))
             FfiConverterString.write(field, into: &buf)
-            
-        
+
+
         case let .InvalidPeopleChainGenesisHash(actual):
             writeInt(&buf, Int32(2))
             FfiConverterUInt64.write(actual, into: &buf)
-            
-        
+
+
         case let .InvalidBulletinChainGenesisHash(actual):
             writeInt(&buf, Int32(3))
             FfiConverterUInt64.write(actual, into: &buf)
-            
-        
+
+
         case let .InvalidHostIcon(reason):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(reason, into: &buf)
-            
-        
+
+
         case let .InsecureHostIcon(scheme):
             writeInt(&buf, Int32(5))
             FfiConverterString.write(scheme, into: &buf)
-            
-        
+
+
         case let .InvalidDeeplinkScheme(scheme):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(scheme, into: &buf)
-            
-        
+
+
         case let .InvalidProductId(productId):
             writeInt(&buf, Int32(7))
             FfiConverterString.write(productId, into: &buf)
-            
-        
+
+
         case let .LocalSessionActivation(reason):
             writeInt(&buf, Int32(8))
             FfiConverterString.write(reason, into: &buf)
-            
+
         }
     }
 }
@@ -5753,195 +3023,127 @@ public func FfiConverterTypeNativeRuntimeConfigError_lower(_ value: NativeRuntim
 }
 
 
-extension NativeRuntimeConfigError: Equatable, Hashable {}
-
-
-
-
-extension NativeRuntimeConfigError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
- * Native-friendly mirror of [`truapi_platform::UserConfirmationReview`].
+ * How the input URL should be opened. Kept in one enum rather than passing
+ * a raw string so the dispatcher can reject invalid input before reaching
+ * any platform callback. The open variants carry the ready-to-load canonical
+ * URL; `DotName` and `Localhost` keep the dotns/localhost identity visible so
+ * env-aware hosts can rewrite `.dot` names for their active environment and
+ * re-parse without losing information.
  */
 
-public enum NativeUserConfirmationReview {
-    
+public enum NavigateDecision: Equatable, Hashable {
+
     /**
-     * Sign a SCALE payload with a product or legacy account.
+     * A `.dot` identifier plus path/query/hash suffix (no leading `/`).
      */
-    case signPayload(SignPayloadReview
+    case dotName(
+        /**
+         * Lower-cased `.dot` host (e.g. `mytestapp.dot`).
+         */identifier: String,
+        /**
+         * Path/query/hash suffix without a leading `/`.
+         */path: String,
+        /**
+         * Loadable `https://` URL for this decision.
+         */canonicalUrl: String
     )
     /**
-     * Sign raw bytes with a product or legacy account.
+     * A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
      */
-    case signRaw(SignRawReview
+    case localhost(
+        /**
+         * `localhost` with optional `:port` suffix.
+         */host: String,
+        /**
+         * Path/query/hash suffix without a leading `/`.
+         */path: String,
+        /**
+         * Loadable `http://` URL for this decision.
+         */canonicalUrl: String
     )
     /**
-     * Sign a Statement Store proof payload with a product account.
+     * An absolute external URL with an `http(s):` scheme prepended if missing.
      */
-    case statementStoreProductSign(StatementStoreProductSignReview
+    case external(
+        /**
+         * Canonical URL string.
+         */url: String
     )
     /**
-     * Create a transaction with a product or legacy account.
+     * Input that fails every branch: empty, unparseable, or a `.dot` URL
+     * carrying port/userinfo (both forbidden since dotns resolves via the
+     * chain and has no notion of either).
      */
-    case createTransaction(CreateTransactionReview
+    case reject(
+        /**
+         * Human-readable reason for the rejection.
+         */reason: String
     )
-    /**
-     * Allow a product to derive a contextual alias for a ring.
-     */
-    case accountAlias(AccountAliasReview
-    )
-    /**
-     * Allow a product to create a ring-VRF proof for a ring.
-     */
-    case createProof(CreateProofReview
-    )
-    /**
-     * Allow a product to learn the user's primary identity.
-     */
-    case identityDisclosure(IdentityDisclosureReview
-    )
-    /**
-     * Allocate resources for the requesting product.
-     */
-    case resourceAllocation(ResourceAllocationReview
-    )
-    /**
-     * Submit a preimage to the host-selected backend.
-     */
-    case preimageSubmit(PreimageSubmitReview
-    )
-    /**
-     * Allow a product to access another product account.
-     */
-    case accountAccess(AccountAccessReview
-    )
-    /**
-     * Sign an RFC-0023 VRF transcript with a product account.
-     */
-    case signVrf(SignVrfReview
-    )
+
+
+
+
+
 }
 
-
 #if compiler(>=6)
-extension NativeUserConfirmationReview: Sendable {}
+extension NavigateDecision: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeNativeUserConfirmationReview: FfiConverterRustBuffer {
-    typealias SwiftType = NativeUserConfirmationReview
+public struct FfiConverterTypeNavigateDecision: FfiConverterRustBuffer {
+    typealias SwiftType = NavigateDecision
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeUserConfirmationReview {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NavigateDecision {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-        
-        case 1: return .signPayload(try FfiConverterTypeSignPayloadReview.read(from: &buf)
+
+        case 1: return .dotName(identifier: try FfiConverterString.read(from: &buf), path: try FfiConverterString.read(from: &buf), canonicalUrl: try FfiConverterString.read(from: &buf)
         )
-        
-        case 2: return .signRaw(try FfiConverterTypeSignRawReview.read(from: &buf)
+
+        case 2: return .localhost(host: try FfiConverterString.read(from: &buf), path: try FfiConverterString.read(from: &buf), canonicalUrl: try FfiConverterString.read(from: &buf)
         )
-        
-        case 3: return .statementStoreProductSign(try FfiConverterTypeStatementStoreProductSignReview.read(from: &buf)
+
+        case 3: return .external(url: try FfiConverterString.read(from: &buf)
         )
-        
-        case 4: return .createTransaction(try FfiConverterTypeCreateTransactionReview.read(from: &buf)
+
+        case 4: return .reject(reason: try FfiConverterString.read(from: &buf)
         )
-        
-        case 5: return .accountAlias(try FfiConverterTypeAccountAliasReview.read(from: &buf)
-        )
-        
-        case 6: return .createProof(try FfiConverterTypeCreateProofReview.read(from: &buf)
-        )
-        
-        case 7: return .identityDisclosure(try FfiConverterTypeIdentityDisclosureReview.read(from: &buf)
-        )
-        
-        case 8: return .resourceAllocation(try FfiConverterTypeResourceAllocationReview.read(from: &buf)
-        )
-        
-        case 9: return .preimageSubmit(try FfiConverterTypePreimageSubmitReview.read(from: &buf)
-        )
-        
-        case 10: return .accountAccess(try FfiConverterTypeAccountAccessReview.read(from: &buf)
-        )
-        
-        case 11: return .signVrf(try FfiConverterTypeSignVrfReview.read(from: &buf)
-        )
-        
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
-    public static func write(_ value: NativeUserConfirmationReview, into buf: inout [UInt8]) {
+    public static func write(_ value: NavigateDecision, into buf: inout [UInt8]) {
         switch value {
-        
-        
-        case let .signPayload(v1):
+
+
+        case let .dotName(identifier,path,canonicalUrl):
             writeInt(&buf, Int32(1))
-            FfiConverterTypeSignPayloadReview.write(v1, into: &buf)
-            
-        
-        case let .signRaw(v1):
+            FfiConverterString.write(identifier, into: &buf)
+            FfiConverterString.write(path, into: &buf)
+            FfiConverterString.write(canonicalUrl, into: &buf)
+
+
+        case let .localhost(host,path,canonicalUrl):
             writeInt(&buf, Int32(2))
-            FfiConverterTypeSignRawReview.write(v1, into: &buf)
-            
-        
-        case let .statementStoreProductSign(v1):
+            FfiConverterString.write(host, into: &buf)
+            FfiConverterString.write(path, into: &buf)
+            FfiConverterString.write(canonicalUrl, into: &buf)
+
+
+        case let .external(url):
             writeInt(&buf, Int32(3))
-            FfiConverterTypeStatementStoreProductSignReview.write(v1, into: &buf)
-            
-        
-        case let .createTransaction(v1):
+            FfiConverterString.write(url, into: &buf)
+
+
+        case let .reject(reason):
             writeInt(&buf, Int32(4))
-            FfiConverterTypeCreateTransactionReview.write(v1, into: &buf)
-            
-        
-        case let .accountAlias(v1):
-            writeInt(&buf, Int32(5))
-            FfiConverterTypeAccountAliasReview.write(v1, into: &buf)
-            
-        
-        case let .createProof(v1):
-            writeInt(&buf, Int32(6))
-            FfiConverterTypeCreateProofReview.write(v1, into: &buf)
-            
-        
-        case let .identityDisclosure(v1):
-            writeInt(&buf, Int32(7))
-            FfiConverterTypeIdentityDisclosureReview.write(v1, into: &buf)
-            
-        
-        case let .resourceAllocation(v1):
-            writeInt(&buf, Int32(8))
-            FfiConverterTypeResourceAllocationReview.write(v1, into: &buf)
-            
-        
-        case let .preimageSubmit(v1):
-            writeInt(&buf, Int32(9))
-            FfiConverterTypePreimageSubmitReview.write(v1, into: &buf)
-            
-        
-        case let .accountAccess(v1):
-            writeInt(&buf, Int32(10))
-            FfiConverterTypeAccountAccessReview.write(v1, into: &buf)
-            
-        
-        case let .signVrf(v1):
-            writeInt(&buf, Int32(11))
-            FfiConverterTypeSignVrfReview.write(v1, into: &buf)
-            
+            FfiConverterString.write(reason, into: &buf)
+
         }
     }
 }
@@ -5950,419 +3152,52 @@ public struct FfiConverterTypeNativeUserConfirmationReview: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeNativeUserConfirmationReview_lift(_ buf: RustBuffer) throws -> NativeUserConfirmationReview {
-    return try FfiConverterTypeNativeUserConfirmationReview.lift(buf)
+public func FfiConverterTypeNavigateDecision_lift(_ buf: RustBuffer) throws -> NavigateDecision {
+    return try FfiConverterTypeNavigateDecision.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeNativeUserConfirmationReview_lower(_ value: NativeUserConfirmationReview) -> RustBuffer {
-    return FfiConverterTypeNativeUserConfirmationReview.lower(value)
+public func FfiConverterTypeNavigateDecision_lower(_ value: NavigateDecision) -> RustBuffer {
+    return FfiConverterTypeNavigateDecision.lower(value)
 }
-
-
-extension NativeUserConfirmationReview: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Raw data to sign — binary bytes or a string message.
- */
-
-public enum RawPayload {
-    
-    /**
-     * Raw binary data to sign.
-     */
-    case bytes(
-        /**
-         * Raw binary payload bytes.
-         */bytes: Data
-    )
-    /**
-     * String message to sign.
-     */
-    case payload(
-        /**
-         * String payload to sign.
-         */payload: String
-    )
-}
-
-
-#if compiler(>=6)
-extension RawPayload: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeRawPayload: FfiConverterRustBuffer {
-    typealias SwiftType = RawPayload
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RawPayload {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .bytes(bytes: try FfiConverterData.read(from: &buf)
-        )
-        
-        case 2: return .payload(payload: try FfiConverterString.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: RawPayload, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .bytes(bytes):
-            writeInt(&buf, Int32(1))
-            FfiConverterData.write(bytes, into: &buf)
-            
-        
-        case let .payload(payload):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(payload, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeRawPayload_lift(_ buf: RustBuffer) throws -> RawPayload {
-    return try FfiConverterTypeRawPayload.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeRawPayload_lower(_ value: RawPayload) -> RustBuffer {
-    return FfiConverterTypeRawPayload.lower(value)
-}
-
-
-extension RawPayload: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * A single step in a [`RingLocation`] path, addressing a ring within a chain.
- */
-
-public enum RingLocationJunction {
-    
-    /**
-     * Pallet instance hosting the ring collection.
-     */
-    case palletInstance(UInt8
-    )
-    /**
-     * Ring collection identifier within the pallet.
-     */
-    case collectionId(Data
-    )
-}
-
-
-#if compiler(>=6)
-extension RingLocationJunction: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeRingLocationJunction: FfiConverterRustBuffer {
-    typealias SwiftType = RingLocationJunction
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RingLocationJunction {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .palletInstance(try FfiConverterUInt8.read(from: &buf)
-        )
-        
-        case 2: return .collectionId(try FfiConverterData.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: RingLocationJunction, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .palletInstance(v1):
-            writeInt(&buf, Int32(1))
-            FfiConverterUInt8.write(v1, into: &buf)
-            
-        
-        case let .collectionId(v1):
-            writeInt(&buf, Int32(2))
-            FfiConverterData.write(v1, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeRingLocationJunction_lift(_ buf: RustBuffer) throws -> RingLocationJunction {
-    return try FfiConverterTypeRingLocationJunction.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeRingLocationJunction_lower(_ value: RingLocationJunction) -> RustBuffer {
-    return FfiConverterTypeRingLocationJunction.lower(value)
-}
-
-
-extension RingLocationJunction: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Review for a sign-payload request.
- */
-
-public enum SignPayloadReview {
-    
-    /**
-     * Product-account signing request.
-     */
-    case product(
-        /**
-         * Product account that will sign this payload.
-         */account: ProductAccountId, 
-        /**
-         * The extrinsic payload to sign.
-         */payload: SignPayloadData
-    )
-    /**
-     * Legacy-account signing request.
-     */
-    case legacyAccount(
-        /**
-         * Signer address (SS58 or hex) of the legacy account.
-         */signer: String, 
-        /**
-         * The extrinsic payload to sign.
-         */payload: SignPayloadData
-    )
-}
-
-
-#if compiler(>=6)
-extension SignPayloadReview: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeSignPayloadReview: FfiConverterRustBuffer {
-    typealias SwiftType = SignPayloadReview
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignPayloadReview {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .product(account: try FfiConverterTypeProductAccountId.read(from: &buf), payload: try FfiConverterTypeSignPayloadData.read(from: &buf)
-        )
-        
-        case 2: return .legacyAccount(signer: try FfiConverterString.read(from: &buf), payload: try FfiConverterTypeSignPayloadData.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: SignPayloadReview, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .product(account,payload):
-            writeInt(&buf, Int32(1))
-            FfiConverterTypeProductAccountId.write(account, into: &buf)
-            FfiConverterTypeSignPayloadData.write(payload, into: &buf)
-            
-        
-        case let .legacyAccount(signer,payload):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(signer, into: &buf)
-            FfiConverterTypeSignPayloadData.write(payload, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignPayloadReview_lift(_ buf: RustBuffer) throws -> SignPayloadReview {
-    return try FfiConverterTypeSignPayloadReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignPayloadReview_lower(_ value: SignPayloadReview) -> RustBuffer {
-    return FfiConverterTypeSignPayloadReview.lower(value)
-}
-
-
-extension SignPayloadReview: Equatable, Hashable {}
-
-
-
-
-
-
-// Note that we don't yet support `indirect` for enums.
-// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
-/**
- * Review for a sign-raw request.
- */
-
-public enum SignRawReview {
-    
-    /**
-     * Product-account raw signing request.
-     */
-    case product(
-        /**
-         * Product account that will sign this payload.
-         */account: ProductAccountId, 
-        /**
-         * The payload to sign.
-         */payload: RawPayload
-    )
-    /**
-     * Legacy-account raw signing request.
-     */
-    case legacyAccount(
-        /**
-         * Signer address (SS58 or hex) of the legacy account.
-         */signer: String, 
-        /**
-         * The payload to sign.
-         */payload: RawPayload
-    )
-}
-
-
-#if compiler(>=6)
-extension SignRawReview: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeSignRawReview: FfiConverterRustBuffer {
-    typealias SwiftType = SignRawReview
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SignRawReview {
-        let variant: Int32 = try readInt(&buf)
-        switch variant {
-        
-        case 1: return .product(account: try FfiConverterTypeProductAccountId.read(from: &buf), payload: try FfiConverterTypeRawPayload.read(from: &buf)
-        )
-        
-        case 2: return .legacyAccount(signer: try FfiConverterString.read(from: &buf), payload: try FfiConverterTypeRawPayload.read(from: &buf)
-        )
-        
-        default: throw UniffiInternalError.unexpectedEnumCase
-        }
-    }
-
-    public static func write(_ value: SignRawReview, into buf: inout [UInt8]) {
-        switch value {
-        
-        
-        case let .product(account,payload):
-            writeInt(&buf, Int32(1))
-            FfiConverterTypeProductAccountId.write(account, into: &buf)
-            FfiConverterTypeRawPayload.write(payload, into: &buf)
-            
-        
-        case let .legacyAccount(signer,payload):
-            writeInt(&buf, Int32(2))
-            FfiConverterString.write(signer, into: &buf)
-            FfiConverterTypeRawPayload.write(payload, into: &buf)
-            
-        }
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignRawReview_lift(_ buf: RustBuffer) throws -> SignRawReview {
-    return try FfiConverterTypeSignRawReview.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeSignRawReview_lower(_ value: SignRawReview) -> RustBuffer {
-    return FfiConverterTypeSignRawReview.lower(value)
-}
-
-
-extension SignRawReview: Equatable, Hashable {}
-
-
-
-
 
 
 
 /**
  * Failure modes returned from host-facing `start_ws_bridge` wrappers.
  */
-public enum WsBridgeStartError: Swift.Error {
+public
+enum WsBridgeStartError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
-    
-    
+
+
     /**
      * A bridge is already running for this host.
      */
     case AlreadyRunning(message: String)
-    
+
     /**
      * Anything else (bind failure, runtime spin-up failure, ...).
      */
     case Io(message: String)
-    
+
+
+
+
+
+
+
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+
 }
 
+#if compiler(>=6)
+extension WsBridgeStartError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -6374,17 +3209,17 @@ public struct FfiConverterTypeWsBridgeStartError: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        
 
-        
+
+
         case 1: return .AlreadyRunning(
             message: try FfiConverterString.read(from: &buf)
         )
-        
+
         case 2: return .Io(
             message: try FfiConverterString.read(from: &buf)
         )
-        
+
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6393,15 +3228,15 @@ public struct FfiConverterTypeWsBridgeStartError: FfiConverterRustBuffer {
     public static func write(_ value: WsBridgeStartError, into buf: inout [UInt8]) {
         switch value {
 
-        
 
-        
+
+
         case .AlreadyRunning(_ /* message is ignored*/):
             writeInt(&buf, Int32(1))
         case .Io(_ /* message is ignored*/):
             writeInt(&buf, Int32(2))
 
-        
+
         }
     }
 }
@@ -6420,21 +3255,6 @@ public func FfiConverterTypeWsBridgeStartError_lift(_ buf: RustBuffer) throws ->
 public func FfiConverterTypeWsBridgeStartError_lower(_ value: WsBridgeStartError) -> RustBuffer {
     return FfiConverterTypeWsBridgeStartError.lower(value)
 }
-
-
-extension WsBridgeStartError: Equatable, Hashable {}
-
-
-
-
-extension WsBridgeStartError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
-}
-
-
-
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -6455,54 +3275,6 @@ fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterUInt32.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
-    typealias SwiftType = UInt64?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterUInt64.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterUInt64.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
-    typealias SwiftType = Bool?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterBool.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterBool.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -6555,133 +3327,8 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
         }
     }
 }
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
-    typealias SwiftType = [String]
-
-    public static func write(_ value: [String], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterString.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [String]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterString.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeTxPayloadExtension: FfiConverterRustBuffer {
-    typealias SwiftType = [TxPayloadExtension]
-
-    public static func write(_ value: [TxPayloadExtension], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeTxPayloadExtension.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TxPayloadExtension] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [TxPayloadExtension]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeTxPayloadExtension.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeVrfTranscriptItem: FfiConverterRustBuffer {
-    typealias SwiftType = [VrfTranscriptItem]
-
-    public static func write(_ value: [VrfTranscriptItem], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeVrfTranscriptItem.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [VrfTranscriptItem] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [VrfTranscriptItem]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeVrfTranscriptItem.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeAllocatableResource: FfiConverterRustBuffer {
-    typealias SwiftType = [AllocatableResource]
-
-    public static func write(_ value: [AllocatableResource], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeAllocatableResource.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AllocatableResource] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [AllocatableResource]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeAllocatableResource.read(from: &buf))
-        }
-        return seq
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterSequenceTypeRingLocationJunction: FfiConverterRustBuffer {
-    typealias SwiftType = [RingLocationJunction]
-
-    public static func write(_ value: [RingLocationJunction], into buf: inout [UInt8]) {
-        let len = Int32(value.count)
-        writeInt(&buf, len)
-        for item in value {
-            FfiConverterTypeRingLocationJunction.write(item, into: &buf)
-        }
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RingLocationJunction] {
-        let len: Int32 = try readInt(&buf)
-        var seq = [RingLocationJunction]()
-        seq.reserveCapacity(Int(len))
-        for _ in 0 ..< len {
-            seq.append(try FfiConverterTypeRingLocationJunction.read(from: &buf))
-        }
-        return seq
-    }
-}
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
-private let UNIFFI_RUST_FUTURE_POLL_MAYBE_READY: Int8 = 1
+private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
 fileprivate let uniffiContinuationHandleMap = UniffiHandleMap<UnsafeContinuation<Int8, Never>>()
 
@@ -6705,7 +3352,9 @@ fileprivate func uniffiRustCallAsync<F, T>(
         pollResult = await withUnsafeContinuation {
             pollFunc(
                 rustFuture,
-                uniffiFutureContinuationCallback,
+                { handle, pollResult in
+                    uniffiFutureContinuationCallback(handle: handle, pollResult: pollResult)
+                },
                 uniffiContinuationHandleMap.insert(obj: $0)
             )
         }
@@ -6729,8 +3378,9 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
 private func uniffiTraitInterfaceCallAsync<T>(
     makeCall: @escaping () async throws -> T,
     handleSuccess: @escaping (T) -> (),
-    handleError: @escaping (Int8, RustBuffer) -> ()
-) -> UniffiForeignFuture {
+    handleError: @escaping (Int8, RustBuffer) -> (),
+    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+) {
     let task = Task {
         // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
         // call consumes an Arc reference, which means there should be no possibility of a double
@@ -6750,16 +3400,19 @@ private func uniffiTraitInterfaceCallAsync<T>(
         handleSuccess(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
-    return UniffiForeignFuture(handle: handle, free: uniffiForeignFutureFree)
-
+    droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
+        handle: handle,
+        free: uniffiForeignFutureDroppedCallback
+    )
 }
 
 private func uniffiTraitInterfaceCallAsyncWithError<T, E>(
     makeCall: @escaping () async throws -> T,
     handleSuccess: @escaping (T) -> (),
     handleError: @escaping (Int8, RustBuffer) -> (),
-    lowerError: @escaping (E) -> RustBuffer
-) -> UniffiForeignFuture {
+    lowerError: @escaping (E) -> RustBuffer,
+    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+) {
     let task = Task {
         // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
         // `handleError`.
@@ -6776,7 +3429,10 @@ private func uniffiTraitInterfaceCallAsyncWithError<T, E>(
         handleSuccess(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
-    return UniffiForeignFuture(handle: handle, free: uniffiForeignFutureFree)
+    droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
+        handle: handle,
+        free: uniffiForeignFutureDroppedCallback
+    )
 }
 
 // Borrow the callback handle map implementation to store foreign future handles
@@ -6793,7 +3449,7 @@ fileprivate protocol UniffiForeignFutureTask {
 
 extension Task: UniffiForeignFutureTask {}
 
-private func uniffiForeignFutureFree(handle: UInt64) {
+private func uniffiForeignFutureDroppedCallback(handle: UInt64) {
     do {
         let task = try UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.remove(handle: handle)
         // Set the cancellation flag on the task.  If it's still running, the code can check the
@@ -6801,7 +3457,7 @@ private func uniffiForeignFutureFree(handle: UInt64) {
         // a no-op.
         task.cancel()
     } catch {
-        print("uniffiForeignFutureFree: handle missing from handlemap")
+        print("uniffiForeignFutureDroppedCallback: handle missing from handlemap")
     }
 }
 
@@ -6810,14 +3466,29 @@ public func uniffiForeignFutureHandleCountTruapiServer() -> Int {
     UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.count
 }
 /**
+ * Classify a navigation input exactly like the core's internal navigate host
+ * call: `.dot` first, then `localhost`, then normalized external, with
+ * everything else rejected. Pure and stateless; hosts call it on every
+ * webview-internal navigation.
+ */
+public func parseNavigate(input: String) -> NavigateDecision  {
+    return try!  FfiConverterTypeNavigateDecision_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_func_parse_navigate(
+        FfiConverterString.lower(input),uniffiCallStatus
+    )
+})
+}
+/**
  * Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`) for
  * the `tracing` output, which on native routes to stderr (system logs on
  * iOS/Android). Most native diagnostics flow through `on_core_log` instead;
  * this controls the cross-platform `tracing` events shared with wasm.
  */
 public func setLogLevel(level: String)  {try! rustCall() {
+        uniffiCallStatus in
     uniffi_truapi_server_fn_func_set_log_level(
-        FfiConverterString.lower(level),$0
+        FfiConverterString.lower(level),uniffiCallStatus
     )
 }
 }
@@ -6831,116 +3502,121 @@ private enum InitializationResult {
 // the code inside is only computed once.
 private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
-    let bindings_contract_version = 29
+    let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     let scaffolding_contract_version = ffi_truapi_server_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_truapi_server_checksum_func_set_log_level() != 50415) {
+    if (uniffi_truapi_server_checksum_func_parse_navigate() != 58140) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_on_core_log() != 50767) {
+    if (uniffi_truapi_server_checksum_func_set_log_level() != 13010) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_navigate_to() != 33889) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_on_core_log() != 19934) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_push_notification() != 20620) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_navigate_to() != 5582) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_cancel_notification() != 218) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_push_notification() != 62912) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 11113) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_cancel_notification() != 35695) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 56574) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 19880) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 7746) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 25245) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 64217) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 48975) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 64196) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 59238) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 47776) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 35684) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 42528) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 61002) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 4134) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 36320) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 2260) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 10194) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 31125) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 54867) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 20284) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 23589) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 4919) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 33694) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 35425) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 20227) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 9400) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 59741) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 54709) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 38692) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 33044) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_activate_local_session() != 51811) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 6971) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_cancel_login() != 17878) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_activate_local_session() != 19215) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 24011) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_cancel_login() != 26024) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_closed() != 27717) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_response() != 45929) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_closed() != 25320) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_preimage_changed() != 2174) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_response() != 43518) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_session_store_changed() != 41975) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_preimage_changed() != 45611) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 41907) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_session_store_changed() != 10667) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 41676) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 42386) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 19228) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 64697) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 37317) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_stop_ws_bridge() != 16007) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 34234) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_constructor_nativetruapicore_with_runtime_config() != 61549) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_stop_ws_bridge() != 13438) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_constructor_nativetruapicore_with_runtime_config() != 54861) {
         return InitializationResult.apiChecksumMismatch
     }
 
     uniffiCallbackInitHostCallbacks()
+    uniffiEnsureTruapiInitialized()
+    uniffiEnsureTruapiPlatformInitialized()
     return InitializationResult.ok
 }()
 

@@ -20,51 +20,54 @@ use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
 use truapi::v01;
 use truapi_platform::{
-    AuthPresenter, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
+    AuthPresenter, AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
     JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Permissions, PlatformInfo, PreimageHost, ProductContext,
     ProductStorage, RuntimeConfigValidationError, SigningHostConfig, ThemeHost, UserConfirmation,
     UserConfirmationReview, async_trait,
 };
 
-pub mod reviews;
-
-pub use reviews::NativeUserConfirmationReview;
-
 use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
+pub use crate::host_logic::dotns::NavigateDecision;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
 
-/// Native-friendly storage error. Mirrors the v0.1 wire shape so the
-/// callback surface stays SCALE-free.
+/// Host-thrown storage failure wrapping the canonical error payload, so its
+/// variants remain defined once in `truapi`.
+///
+/// [UniFFI 0.32 exposes `Result` failures as error enums or `Arc`-backed error
+/// objects](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html). Although
+/// the canonical enum can be exposed as an external error, Kotlin foreign-trait
+/// callbacks must lower thrown errors into this namespace's `RustBuffer`; the
+/// external converter returns the canonical namespace's distinct `RustBuffer`
+/// type. There is no derive-based bridge between them. `uniffi::remote(Error)`
+/// would instead duplicate every canonical variant and field, so this local
+/// one-variant wrapper preserves the canonical definition.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostStorageError {
-    /// Quota exhausted.
-    #[error("storage quota exhausted")]
-    Full,
-    /// Catch-all.
-    #[error("{reason}")]
-    Unknown {
-        /// Human-readable failure reason.
-        reason: String,
-    },
+    /// Canonical storage failure payload.
+    #[error("{0}")]
+    Storage(v01::HostLocalStorageReadError),
 }
 
 impl From<HostStorageError> for v01::HostLocalStorageReadError {
     fn from(err: HostStorageError) -> Self {
-        match err {
-            HostStorageError::Full => v01::HostLocalStorageReadError::Full,
-            HostStorageError::Unknown { reason } => {
-                v01::HostLocalStorageReadError::Unknown { reason }
-            }
-        }
+        let HostStorageError::Storage(err) = err;
+        err
     }
 }
 
-/// Native-friendly rejection error returned by callback methods that map
-/// onto [`truapi::v01::GenericError`].
+/// Native-friendly rejection error returned by callback methods that map onto
+/// [`truapi::v01::GenericError`].
+///
+/// [`uniffi::Error` is the value-style error mapping and only supports enums;
+/// UniFFI's struct alternative is an `Arc`-backed object
+/// error](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html). Making the
+/// canonical SCALE value an object would require Rust-owned handles and foreign
+/// construction solely to carry one string. This local enum keeps the native
+/// exception value-like without changing the canonical wire representation.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostRejection {
     /// Caller rejected the operation.
@@ -88,101 +91,19 @@ impl From<v01::GenericError> for HostRejection {
     }
 }
 
-/// Native-friendly navigation error.
+/// Host-thrown navigation failure wrapping the canonical error payload.
+///
+/// As described for [`HostStorageError`], [UniFFI's supported error
+/// representations](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html)
+/// do not provide a derive-based way to bridge namespace-specific Kotlin
+/// `RustBuffer` types when an external error is thrown by a foreign-trait
+/// callback. The one-variant wrapper avoids mirroring the canonical navigation
+/// error enum locally.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostNavigateRejection {
-    /// User declined the navigation.
-    #[error("navigation denied by user")]
-    PermissionDenied,
-    /// Catch-all.
-    #[error("{reason}")]
-    Unknown {
-        /// Human-readable reason.
-        reason: String,
-    },
-}
-
-/// Native-friendly theme enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum HostTheme {
-    /// Light host theme.
-    Light,
-    /// Dark host theme.
-    Dark,
-}
-
-impl From<HostTheme> for v01::ThemeVariant {
-    fn from(theme: HostTheme) -> Self {
-        match theme {
-            HostTheme::Light => v01::ThemeVariant::Light,
-            HostTheme::Dark => v01::ThemeVariant::Dark,
-        }
-    }
-}
-
-/// Native-friendly mirror of [`truapi_platform::SessionUiInfo`]: decoded
-/// session fields for host account UI, with byte arrays widened to `Vec<u8>`
-/// for the FFI surface.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct SessionUiInfo {
-    /// 32-byte sr25519 root public key of the active session.
-    pub public_key: Vec<u8>,
-    /// Wallet identity account id used for People-chain username lookup.
-    pub identity_account_id: Option<Vec<u8>>,
-    /// Short username from the People-chain identity record.
-    pub lite_username: Option<String>,
-    /// Fully qualified username from the People-chain identity record.
-    pub full_username: Option<String>,
-}
-
-impl From<truapi_platform::SessionUiInfo> for SessionUiInfo {
-    fn from(info: truapi_platform::SessionUiInfo) -> Self {
-        Self {
-            public_key: info.public_key.to_vec(),
-            identity_account_id: info.identity_account_id.map(|id| id.to_vec()),
-            lite_username: info.lite_username,
-            full_username: info.full_username,
-        }
-    }
-}
-
-/// Native-friendly mirror of [`truapi_platform::AuthState`]. The core emits
-/// these in transition order through `HostCallbacks::auth_state_changed`.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum AuthState {
-    /// No active session and no login in progress.
-    Disconnected,
-    /// A login is in progress: present the pairing deeplink/QR.
-    Pairing {
-        /// Wallet pairing deeplink to render as a QR code or open directly.
-        deeplink: String,
-    },
-    /// A session is active.
-    Connected {
-        /// Decoded session fields for host account UI.
-        info: SessionUiInfo,
-    },
-    /// The last login attempt failed; show the reason and offer a retry.
-    LoginFailed {
-        /// Human-readable failure reason.
-        reason: String,
-    },
-    /// The wallet accepted pairing and the core is resolving the session.
-    Authenticating,
-}
-
-impl From<truapi_platform::AuthState> for AuthState {
-    fn from(state: truapi_platform::AuthState) -> Self {
-        match state {
-            truapi_platform::AuthState::Disconnected => AuthState::Disconnected,
-            truapi_platform::AuthState::Pairing { deeplink } => AuthState::Pairing { deeplink },
-            truapi_platform::AuthState::Connected(info) => {
-                AuthState::Connected { info: info.into() }
-            }
-            truapi_platform::AuthState::LoginFailed { reason } => AuthState::LoginFailed { reason },
-            truapi_platform::AuthState::Authenticating => AuthState::Authenticating,
-        }
-    }
+    /// Canonical navigation failure payload.
+    #[error("{0}")]
+    Navigate(v01::HostNavigateToError),
 }
 
 /// Native-friendly SSO deeplink scheme.
@@ -192,230 +113,6 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotApp,
     /// Development Polkadot app.
     PolkadotAppDev,
-}
-
-/// Native-friendly mirror of [`PermissionAuthorizationStatus`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativePermissionAuthorizationStatus {
-    /// No persisted authorization exists.
-    NotDetermined,
-    /// Access is denied.
-    Denied,
-    /// Access is authorized.
-    Authorized,
-}
-
-impl From<PermissionAuthorizationStatus> for NativePermissionAuthorizationStatus {
-    fn from(status: PermissionAuthorizationStatus) -> Self {
-        match status {
-            PermissionAuthorizationStatus::NotDetermined => Self::NotDetermined,
-            PermissionAuthorizationStatus::Denied => Self::Denied,
-            PermissionAuthorizationStatus::Authorized => Self::Authorized,
-        }
-    }
-}
-
-impl From<NativePermissionAuthorizationStatus> for PermissionAuthorizationStatus {
-    fn from(status: NativePermissionAuthorizationStatus) -> Self {
-        match status {
-            NativePermissionAuthorizationStatus::NotDetermined => Self::NotDetermined,
-            NativePermissionAuthorizationStatus::Denied => Self::Denied,
-            NativePermissionAuthorizationStatus::Authorized => Self::Authorized,
-        }
-    }
-}
-
-/// Native-friendly mirror of [`v01::HostDevicePermissionRequest`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeDevicePermission {
-    /// Showing system notifications.
-    Notifications,
-    /// Camera capture access.
-    Camera,
-    /// Microphone capture access.
-    Microphone,
-    /// Bluetooth device access.
-    Bluetooth,
-    /// NFC reader access.
-    Nfc,
-    /// Geolocation access.
-    Location,
-    /// Clipboard access.
-    Clipboard,
-    /// Opening URLs outside the host.
-    OpenUrl,
-    /// Biometric authentication.
-    Biometrics,
-}
-
-impl From<v01::HostDevicePermissionRequest> for NativeDevicePermission {
-    fn from(request: v01::HostDevicePermissionRequest) -> Self {
-        match request {
-            v01::HostDevicePermissionRequest::Notifications => Self::Notifications,
-            v01::HostDevicePermissionRequest::Camera => Self::Camera,
-            v01::HostDevicePermissionRequest::Microphone => Self::Microphone,
-            v01::HostDevicePermissionRequest::Bluetooth => Self::Bluetooth,
-            v01::HostDevicePermissionRequest::NFC => Self::Nfc,
-            v01::HostDevicePermissionRequest::Location => Self::Location,
-            v01::HostDevicePermissionRequest::Clipboard => Self::Clipboard,
-            v01::HostDevicePermissionRequest::OpenUrl => Self::OpenUrl,
-            v01::HostDevicePermissionRequest::Biometrics => Self::Biometrics,
-        }
-    }
-}
-
-impl From<NativeDevicePermission> for v01::HostDevicePermissionRequest {
-    fn from(request: NativeDevicePermission) -> Self {
-        match request {
-            NativeDevicePermission::Notifications => Self::Notifications,
-            NativeDevicePermission::Camera => Self::Camera,
-            NativeDevicePermission::Microphone => Self::Microphone,
-            NativeDevicePermission::Bluetooth => Self::Bluetooth,
-            NativeDevicePermission::Nfc => Self::NFC,
-            NativeDevicePermission::Location => Self::Location,
-            NativeDevicePermission::Clipboard => Self::Clipboard,
-            NativeDevicePermission::OpenUrl => Self::OpenUrl,
-            NativeDevicePermission::Biometrics => Self::Biometrics,
-        }
-    }
-}
-
-/// Native-friendly mirror of [`v01::RemotePermission`].
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum NativeRemotePermission {
-    /// Outbound HTTP/WebSocket access to a set of domains.
-    Remote {
-        /// Domain patterns requested by the product.
-        domains: Vec<String>,
-    },
-    /// WebRTC media access.
-    WebRtc,
-    /// Submitting chain transactions on behalf of the user.
-    ChainSubmit,
-    /// Submitting preimages on behalf of the user.
-    PreimageSubmit,
-    /// Submitting statements on behalf of the user.
-    StatementSubmit,
-}
-
-impl From<v01::RemotePermission> for NativeRemotePermission {
-    fn from(permission: v01::RemotePermission) -> Self {
-        match permission {
-            v01::RemotePermission::Remote { domains } => Self::Remote { domains },
-            v01::RemotePermission::WebRtc => Self::WebRtc,
-            v01::RemotePermission::ChainSubmit => Self::ChainSubmit,
-            v01::RemotePermission::PreimageSubmit => Self::PreimageSubmit,
-            v01::RemotePermission::StatementSubmit => Self::StatementSubmit,
-        }
-    }
-}
-
-impl From<NativeRemotePermission> for v01::RemotePermission {
-    fn from(permission: NativeRemotePermission) -> Self {
-        match permission {
-            NativeRemotePermission::Remote { domains } => Self::Remote { domains },
-            NativeRemotePermission::WebRtc => Self::WebRtc,
-            NativeRemotePermission::ChainSubmit => Self::ChainSubmit,
-            NativeRemotePermission::PreimageSubmit => Self::PreimageSubmit,
-            NativeRemotePermission::StatementSubmit => Self::StatementSubmit,
-        }
-    }
-}
-
-/// Native-friendly mirror of [`PermissionAuthorizationRequest`]. Flattens the
-/// one-field `RemotePermissionRequest` wrapper into the `Remote` payload.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum NativePermissionAuthorizationRequest {
-    /// Device-level permission such as camera, microphone, or location.
-    Device(NativeDevicePermission),
-    /// Remote/product-scoped permission such as chain submit or HTTP access.
-    Remote(NativeRemotePermission),
-    /// Product-scoped permission to disclose the user's primary identity.
-    IdentityDisclosure,
-    /// Product-scoped permission to access another product's account context.
-    AccountAccess {
-        /// Product whose account context may be accessed.
-        target_product_id: String,
-    },
-}
-
-impl From<PermissionAuthorizationRequest> for NativePermissionAuthorizationRequest {
-    fn from(request: PermissionAuthorizationRequest) -> Self {
-        match request {
-            PermissionAuthorizationRequest::Device(device) => Self::Device(device.into()),
-            PermissionAuthorizationRequest::Remote(remote) => {
-                Self::Remote(remote.permission.into())
-            }
-            PermissionAuthorizationRequest::IdentityDisclosure => Self::IdentityDisclosure,
-            PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
-                Self::AccountAccess { target_product_id }
-            }
-        }
-    }
-}
-
-impl From<NativePermissionAuthorizationRequest> for PermissionAuthorizationRequest {
-    fn from(request: NativePermissionAuthorizationRequest) -> Self {
-        match request {
-            NativePermissionAuthorizationRequest::Device(device) => Self::Device(device.into()),
-            NativePermissionAuthorizationRequest::Remote(permission) => {
-                Self::Remote(v01::RemotePermissionRequest {
-                    permission: permission.into(),
-                })
-            }
-            NativePermissionAuthorizationRequest::IdentityDisclosure => Self::IdentityDisclosure,
-            NativePermissionAuthorizationRequest::AccountAccess { target_product_id } => {
-                Self::AccountAccess { target_product_id }
-            }
-        }
-    }
-}
-
-/// Native-friendly mirror of [`v01::HostPushNotificationRequest`].
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct PushNotificationRequest {
-    /// Notification text.
-    pub text: String,
-    /// Optional URL to open on tap.
-    pub deeplink: Option<String>,
-    /// Optional Unix timestamp in milliseconds (UTC) at which the
-    /// notification should fire. `None` fires immediately.
-    pub scheduled_at: Option<u64>,
-}
-
-impl From<v01::HostPushNotificationRequest> for PushNotificationRequest {
-    fn from(request: v01::HostPushNotificationRequest) -> Self {
-        let v01::HostPushNotificationRequest {
-            text,
-            deeplink,
-            scheduled_at,
-        } = request;
-        Self {
-            text,
-            deeplink,
-            scheduled_at,
-        }
-    }
-}
-
-/// Native-friendly mirror of [`v01::HostFeatureSupportedRequest`].
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum FeatureSupportedRequest {
-    /// Ask whether the host can interact with the chain identified by genesis hash.
-    Chain {
-        /// Chain genesis hash.
-        genesis_hash: Vec<u8>,
-    },
-}
-
-impl From<v01::HostFeatureSupportedRequest> for FeatureSupportedRequest {
-    fn from(request: v01::HostFeatureSupportedRequest) -> Self {
-        match request {
-            v01::HostFeatureSupportedRequest::Chain { genesis_hash } => {
-                Self::Chain { genesis_hash }
-            }
-        }
-    }
 }
 
 /// Native runtime configuration supplied before product calls are handled.
@@ -572,79 +269,8 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
 
 impl From<HostNavigateRejection> for v01::HostNavigateToError {
     fn from(err: HostNavigateRejection) -> Self {
-        match err {
-            HostNavigateRejection::PermissionDenied => v01::HostNavigateToError::PermissionDenied,
-            HostNavigateRejection::Unknown { reason } => {
-                v01::HostNavigateToError::Unknown { reason }
-            }
-        }
-    }
-}
-
-/// Native-friendly mirror of [`dotns::NavigateDecision`], so WebView hosts
-/// classify navigations with the core's dotns logic instead of reimplementing
-/// it. The open variants carry the ready-to-load canonical URL; `identifier`
-/// stays lower-cased/NFC-normalized so hosts can compare it against the
-/// current page's identifier for same-domain checks.
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
-pub enum NavigateDecision {
-    /// A `.dot` identifier plus path/query/hash suffix (no leading `/`).
-    DotName {
-        /// Lower-cased `.dot` host (e.g. `mytestapp.dot`).
-        identifier: String,
-        /// Path/query/hash suffix without a leading `/`.
-        path: String,
-        /// Loadable `https://` URL for this decision.
-        canonical_url: String,
-    },
-    /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
-    Localhost {
-        /// `localhost` with optional `:port` suffix.
-        host: String,
-        /// Path/query/hash suffix without a leading `/`.
-        path: String,
-        /// Loadable `http://` URL for this decision.
-        canonical_url: String,
-    },
-    /// An absolute external URL with an `http(s):` scheme prepended if missing.
-    External {
-        /// Canonical URL string.
-        url: String,
-    },
-    /// Input that fails every branch; must not be loaded.
-    Reject {
-        /// Human-readable reason for the rejection.
-        reason: String,
-    },
-}
-
-impl From<dotns::NavigateDecision> for NavigateDecision {
-    /// Total mapping: an open decision that yields no canonical URL becomes
-    /// `Reject` rather than panicking, so no unwrap can cross the FFI
-    /// boundary and crash the host app.
-    fn from(decision: dotns::NavigateDecision) -> Self {
-        let canonical_url = decision.canonical_url();
-        match (decision, canonical_url) {
-            (dotns::NavigateDecision::DotName { identifier, path }, Some(canonical_url)) => {
-                Self::DotName {
-                    identifier,
-                    path,
-                    canonical_url,
-                }
-            }
-            (dotns::NavigateDecision::Localhost { host, path }, Some(canonical_url)) => {
-                Self::Localhost {
-                    host,
-                    path,
-                    canonical_url,
-                }
-            }
-            (dotns::NavigateDecision::External { url }, _) => Self::External { url },
-            (dotns::NavigateDecision::Reject { reason }, _) => Self::Reject { reason },
-            (open, None) => Self::Reject {
-                reason: format!("{open:?} produced no canonical URL"),
-            },
-        }
+        let HostNavigateRejection::Navigate(err) = err;
+        err
     }
 }
 
@@ -654,7 +280,7 @@ impl From<dotns::NavigateDecision> for NavigateDecision {
 /// webview-internal navigation.
 #[uniffi::export]
 pub fn parse_navigate(input: String) -> NavigateDecision {
-    dotns::parse_navigate(&input).into()
+    dotns::parse_navigate(&input)
 }
 
 /// Callback surface that iOS and Android implement.
@@ -673,7 +299,7 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
 /// dispatcher thread and must return promptly without blocking; in
 /// particular `auth_state_changed` should only hand the state to the host
 /// UI thread, never wait for the user.
-#[uniffi::export(with_foreign)]
+#[uniffi::export(rust, foreign)]
 #[async_trait::async_trait]
 pub trait HostCallbacks: Send + Sync {
     /// Lifecycle logger. Marker is a stable slug, detail is free-form.
@@ -685,7 +311,7 @@ pub trait HostCallbacks: Send + Sync {
     /// Deliver a push notification.
     async fn push_notification(
         &self,
-        request: PushNotificationRequest,
+        request: v01::HostPushNotificationRequest,
     ) -> Result<u32, HostRejection>;
 
     /// Cancel a notification by id.
@@ -695,13 +321,13 @@ pub trait HostCallbacks: Send + Sync {
     /// the host returns whether the permission was granted.
     async fn device_permission(
         &self,
-        request: NativeDevicePermission,
+        request: v01::HostDevicePermissionRequest,
     ) -> Result<bool, HostRejection>;
 
     /// Prompt the user for a remote (product-scoped) permission.
     async fn remote_permission(
         &self,
-        request: NativeRemotePermission,
+        request: v01::RemotePermission,
     ) -> Result<bool, HostRejection>;
 
     /// Observe an auth state change. Emitted only when the state actually
@@ -736,7 +362,7 @@ pub trait HostCallbacks: Send + Sync {
     /// Confirm one user-reviewed core action.
     async fn confirm_user_action(
         &self,
-        review: NativeUserConfirmationReview,
+        review: UserConfirmationReview,
     ) -> Result<bool, HostRejection>;
 
     /// Look up one preimage value by key. The native shim emits this as the
@@ -745,12 +371,12 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Current host theme. The native shim emits this as the current item in
     /// its subscription stream.
-    fn current_theme(&self) -> Result<HostTheme, HostRejection>;
+    fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection>;
 
     /// Answer a feature-support query.
     async fn feature_supported(
         &self,
-        request: FeatureSupportedRequest,
+        request: v01::HostFeatureSupportedRequest,
     ) -> Result<bool, HostRejection>;
 
     /// Read a value from the host's scoped key-value store.
@@ -828,12 +454,11 @@ impl NativeTrUApiCore {
     /// main/UI thread.
     pub fn permission_authorization_status(
         &self,
-        request: NativePermissionAuthorizationRequest,
-    ) -> Result<NativePermissionAuthorizationStatus, HostRejection> {
+        request: PermissionAuthorizationRequest,
+    ) -> Result<PermissionAuthorizationStatus, HostRejection> {
         let admin = self.runtime.product_admin(self.product.clone());
-        let status =
-            futures::executor::block_on(admin.permission_authorization_status(request.into()))?;
-        Ok(status.into())
+        let status = futures::executor::block_on(admin.permission_authorization_status(request))?;
+        Ok(status)
     }
 
     /// Update a stored permission authorization status. Passing
@@ -844,13 +469,11 @@ impl NativeTrUApiCore {
     /// main/UI thread.
     pub fn set_permission_authorization_status(
         &self,
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus,
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus,
     ) -> Result<(), HostRejection> {
         let admin = self.runtime.product_admin(self.product.clone());
-        futures::executor::block_on(
-            admin.set_permission_authorization_status(request.into(), status.into()),
-        )?;
+        futures::executor::block_on(admin.set_permission_authorization_status(request, status))?;
         Ok(())
     }
 
@@ -872,8 +495,8 @@ impl NativeTrUApiCore {
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    pub fn notify_theme_changed(&self, theme: HostTheme) {
-        self.events.notify_theme_changed(theme.into());
+    pub fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+        self.events.notify_theme_changed(theme);
     }
 
     /// Push a preimage lookup update to active subscriptions for `key`.
@@ -1119,7 +742,7 @@ impl Notifications for CallbackPlatform {
 
         let id = self
             .callbacks
-            .push_notification(notification.into())
+            .push_notification(notification)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostPushNotificationResponse { id })
@@ -1149,7 +772,7 @@ impl Permissions for CallbackPlatform {
 
         let granted = self
             .callbacks
-            .device_permission(request.into())
+            .device_permission(request)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostDevicePermissionResponse { granted })
@@ -1166,7 +789,7 @@ impl Permissions for CallbackPlatform {
 
         let granted = self
             .callbacks
-            .remote_permission(request.permission.into())
+            .remote_permission(request.permission)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::RemotePermissionResponse { granted })
@@ -1186,7 +809,7 @@ impl Features for CallbackPlatform {
 
         let supported = self
             .callbacks
-            .feature_supported(request.into())
+            .feature_supported(request)
             .await
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostFeatureSupportedResponse { supported })
@@ -1329,7 +952,7 @@ impl AuthPresenter for CallbackPlatform {
             "truapi.native.callback.auth_state_changed".to_string(),
             String::new(),
         );
-        self.callbacks.auth_state_changed(state.into());
+        self.callbacks.auth_state_changed(state);
     }
 }
 
@@ -1344,7 +967,7 @@ impl UserConfirmation for CallbackPlatform {
             String::new(),
         );
         self.callbacks
-            .confirm_user_action(review.into())
+            .confirm_user_action(review)
             .await
             .map_err(v01::GenericError::from)
     }
@@ -1355,7 +978,6 @@ impl ThemeHost for CallbackPlatform {
         let current = self
             .callbacks
             .current_theme()
-            .map(v01::ThemeVariant::from)
             .map_err(v01::GenericError::from);
         self.events.subscribe_theme(current)
     }
@@ -1383,11 +1005,14 @@ impl PreimageHost for CallbackPlatform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use truapi::Bytes32;
+    use truapi::v01::LegacyAccountTxPayload;
+    use truapi_platform::CreateTransactionReview;
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
     struct EventCallbacks {
-        theme: Mutex<HostTheme>,
+        theme: Mutex<v01::ThemeVariant>,
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
@@ -1399,7 +1024,7 @@ mod tests {
     impl EventCallbacks {
         fn new() -> Self {
             Self {
-                theme: Mutex::new(HostTheme::Light),
+                theme: Mutex::new(v01::ThemeVariant::Light),
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
@@ -1418,7 +1043,7 @@ mod tests {
         }
         async fn push_notification(
             &self,
-            _request: PushNotificationRequest,
+            _request: v01::HostPushNotificationRequest,
         ) -> Result<u32, HostRejection> {
             Ok(0)
         }
@@ -1427,13 +1052,13 @@ mod tests {
         }
         async fn device_permission(
             &self,
-            _request: NativeDevicePermission,
+            _request: v01::HostDevicePermissionRequest,
         ) -> Result<bool, HostRejection> {
             Ok(false)
         }
         async fn remote_permission(
             &self,
-            _request: NativeRemotePermission,
+            _request: v01::RemotePermission,
         ) -> Result<bool, HostRejection> {
             Ok(false)
         }
@@ -1475,7 +1100,7 @@ mod tests {
         }
         async fn confirm_user_action(
             &self,
-            _review: NativeUserConfirmationReview,
+            _review: UserConfirmationReview,
         ) -> Result<bool, HostRejection> {
             Ok(false)
         }
@@ -1488,12 +1113,12 @@ mod tests {
                 .find(|(stored_key, _)| stored_key == &key)
                 .and_then(|(_, value)| value.clone()))
         }
-        fn current_theme(&self) -> Result<HostTheme, HostRejection> {
+        fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
             Ok(*self.theme.lock().expect("theme mutex poisoned"))
         }
         async fn feature_supported(
             &self,
-            _request: FeatureSupportedRequest,
+            _request: v01::HostFeatureSupportedRequest,
         ) -> Result<bool, HostRejection> {
             Ok(false)
         }
@@ -1576,8 +1201,8 @@ mod tests {
         });
 
         for case in cases {
-            let native = NativePermissionAuthorizationRequest::from(case.clone());
-            assert_eq!(PermissionAuthorizationRequest::from(native), case);
+            let native = case.clone();
+            assert_eq!(native, case);
         }
     }
 
@@ -1608,14 +1233,12 @@ mod tests {
                 AuthState::Pairing {
                     deeplink: "polkadotapp://pair?handshake=00".to_string(),
                 },
-                AuthState::Connected {
-                    info: SessionUiInfo {
-                        public_key: vec![7; 32],
-                        identity_account_id: None,
-                        lite_username: Some("alice".to_string()),
-                        full_username: None,
-                    },
-                },
+                AuthState::Connected(truapi_platform::SessionUiInfo {
+                    public_key: [7; 32],
+                    identity_account_id: None,
+                    lite_username: Some("alice".to_string()),
+                    full_username: None,
+                }),
                 AuthState::Disconnected,
             ]
         );
@@ -1627,7 +1250,7 @@ mod tests {
         let mut stream = platform.subscribe_theme();
 
         let first = futures::executor::block_on(stream.next()).unwrap();
-        *callbacks.theme.lock().expect("theme mutex poisoned") = HostTheme::Dark;
+        *callbacks.theme.lock().expect("theme mutex poisoned") = v01::ThemeVariant::Dark;
         events.notify_theme_changed(v01::ThemeVariant::Dark);
         let second = futures::executor::block_on(stream.next()).unwrap();
 
@@ -1768,7 +1391,7 @@ mod tests {
             }
             async fn push_notification(
                 &self,
-                _request: PushNotificationRequest,
+                _request: v01::HostPushNotificationRequest,
             ) -> Result<u32, HostRejection> {
                 Ok(0)
             }
@@ -1777,13 +1400,13 @@ mod tests {
             }
             async fn device_permission(
                 &self,
-                _request: NativeDevicePermission,
+                _request: v01::HostDevicePermissionRequest,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
             async fn remote_permission(
                 &self,
-                _request: NativeRemotePermission,
+                _request: v01::RemotePermission,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
@@ -1816,7 +1439,7 @@ mod tests {
             }
             async fn confirm_user_action(
                 &self,
-                _review: NativeUserConfirmationReview,
+                _review: UserConfirmationReview,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
@@ -1826,12 +1449,12 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<HostTheme, HostRejection> {
-                Ok(HostTheme::Light)
+            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
+                Ok(v01::ThemeVariant::Light)
             }
             async fn feature_supported(
                 &self,
-                _request: FeatureSupportedRequest,
+                _request: v01::HostFeatureSupportedRequest,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
@@ -1900,7 +1523,7 @@ mod tests {
             }
             async fn push_notification(
                 &self,
-                _request: PushNotificationRequest,
+                _request: v01::HostPushNotificationRequest,
             ) -> Result<u32, HostRejection> {
                 Ok(0)
             }
@@ -1909,7 +1532,7 @@ mod tests {
             }
             async fn device_permission(
                 &self,
-                _request: NativeDevicePermission,
+                _request: v01::HostDevicePermissionRequest,
             ) -> Result<bool, HostRejection> {
                 self.permission_entered.store(true, Ordering::SeqCst);
                 self.release
@@ -1922,7 +1545,7 @@ mod tests {
             }
             async fn remote_permission(
                 &self,
-                _request: NativeRemotePermission,
+                _request: v01::RemotePermission,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
@@ -1955,7 +1578,7 @@ mod tests {
             }
             async fn confirm_user_action(
                 &self,
-                _review: NativeUserConfirmationReview,
+                _review: UserConfirmationReview,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
@@ -1965,12 +1588,12 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<HostTheme, HostRejection> {
-                Ok(HostTheme::Light)
+            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
+                Ok(v01::ThemeVariant::Light)
             }
             async fn feature_supported(
                 &self,
-                _request: FeatureSupportedRequest,
+                _request: v01::HostFeatureSupportedRequest,
             ) -> Result<bool, HostRejection> {
                 Ok(true)
             }
@@ -2114,67 +1737,43 @@ mod tests {
     }
 
     #[test]
-    fn exported_parse_navigate_maps_every_variant() {
-        assert_eq!(
-            parse_navigate("mytestapp.dot/some/path?q=1".to_string()),
-            NavigateDecision::DotName {
-                identifier: "mytestapp.dot".to_string(),
-                path: "some/path?q=1".to_string(),
-                canonical_url: "https://mytestapp.dot/some/path?q=1".to_string(),
-            }
-        );
-        assert_eq!(
-            parse_navigate("Example.DOT".to_string()),
-            NavigateDecision::DotName {
-                identifier: "example.dot".to_string(),
-                path: String::new(),
-                canonical_url: "https://example.dot".to_string(),
-            }
-        );
-        assert_eq!(
-            parse_navigate("localhost:3000/path#h".to_string()),
-            NavigateDecision::Localhost {
-                host: "localhost:3000".to_string(),
-                path: "path#h".to_string(),
-                canonical_url: "http://localhost:3000/path#h".to_string(),
-            }
-        );
-        assert_eq!(
-            parse_navigate("google.com".to_string()),
-            NavigateDecision::External {
-                url: "https://google.com/".to_string(),
-            }
-        );
-        assert!(matches!(
-            parse_navigate("javascript:alert(1)".to_string()),
-            NavigateDecision::Reject { .. }
-        ));
+    fn bytes32_widens_to_plain_bytes_on_the_wire() {
+        let mut buf = Vec::new();
+        <Bytes32 as uniffi::Lower<truapi::UniFfiTag>>::write([7; 32], &mut buf);
+        assert_eq!(buf[..4], 32i32.to_be_bytes());
+        assert_eq!(buf[4..], [7; 32]);
     }
 
-    /// The FFI mirror's canonical URL must stay byte-identical to what the
-    /// runtime's internal navigate path computes from the same input.
     #[test]
-    fn exported_canonical_url_matches_host_logic() {
-        let inputs = [
-            "mytestapp.dot",
-            "mytestapp.dot/some/path?q=1#frag",
-            "localhost",
-            "localhost:3000/path",
-            "https://example.com/page",
-        ];
-        for input in inputs {
-            let expected = crate::host_logic::dotns::parse_navigate(input)
-                .canonical_url()
-                .expect("open decision has a canonical URL");
-            let actual = match parse_navigate(input.to_string()) {
-                NavigateDecision::DotName { canonical_url, .. }
-                | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
-                NavigateDecision::External { url } => url,
-                NavigateDecision::Reject { reason } => {
-                    panic!("{input}: unexpected rejection: {reason}")
-                }
-            };
-            assert_eq!(actual, expected, "{input}");
-        }
+    fn bytes32_lift_rejects_wrong_length() {
+        let mut buf = Vec::new();
+        <Vec<u8> as uniffi::Lower<crate::UniFfiTag>>::write(vec![7; 31], &mut buf);
+        assert!(
+            <Bytes32 as uniffi::Lift<truapi::UniFfiTag>>::try_read(&mut buf.as_slice()).is_err()
+        );
+    }
+
+    #[test]
+    fn bytes32_fields_survive_the_ffi_roundtrip() {
+        let review = UserConfirmationReview::CreateTransaction(
+            CreateTransactionReview::LegacyAccount(LegacyAccountTxPayload {
+                signer: [13; 32],
+                genesis_hash: [14; 32],
+                call_data: vec![15],
+                extensions: vec![],
+                tx_ext_version: 0,
+            }),
+        );
+
+        let mut buf = Vec::new();
+        <UserConfirmationReview as uniffi::Lower<crate::UniFfiTag>>::write(
+            review.clone(),
+            &mut buf,
+        );
+        let lifted = <UserConfirmationReview as uniffi::Lift<crate::UniFfiTag>>::try_read(
+            &mut buf.as_slice(),
+        )
+        .expect("review must lift back");
+        assert_eq!(lifted, review);
     }
 }

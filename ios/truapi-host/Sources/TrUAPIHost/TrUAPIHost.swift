@@ -216,13 +216,13 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func cancelLogin()
     func activateLocalSession(secret: Data, liteUsername: String?) throws
     func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
-    ) throws -> NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest
+    ) throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus
     ) throws
-    func notifyThemeChanged(theme: HostTheme)
+    func notifyThemeChanged(theme: ThemeVariant)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -289,22 +289,22 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
 
     /// Read a stored permission authorization status without prompting.
     public func permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest
-    ) throws -> NativePermissionAuthorizationStatus {
+        request: PermissionAuthorizationRequest
+    ) throws -> PermissionAuthorizationStatus {
         try inner.permissionAuthorizationStatus(request: request)
     }
 
     /// Update a stored permission authorization status. `.notDetermined`
     /// clears the stored value so the next product request prompts again.
     public func setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus
     ) throws {
         try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    public func notifyThemeChanged(theme: HostTheme) {
+    public func notifyThemeChanged(theme: ThemeVariant) {
         inner.notifyThemeChanged(theme: theme)
     }
 

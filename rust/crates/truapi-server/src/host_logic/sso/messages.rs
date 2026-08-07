@@ -1063,7 +1063,7 @@ mod tests {
     fn account() -> ProductAccountId {
         ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
-            derivation_index: DerivationIndex::Left(7),
+            derivation_index: DerivationIndex::Index(7),
         }
     }
 
@@ -1149,7 +1149,7 @@ mod tests {
     fn ring_vrf_messages_wire_shape_pin() {
         let context = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: DerivationIndex::Left(0),
+            suffix: DerivationIndex::Index(0),
         };
         let ring_location = RingLocation {
             chain_id: [0x11; 32],
@@ -1273,7 +1273,7 @@ mod tests {
         let payload = HostAccountSignVrfRequest {
             account: ProductAccountId {
                 dot_ns_identifier: "browse.dot".to_string(),
-                derivation_index: DerivationIndex::Left(7),
+                derivation_index: DerivationIndex::Index(7),
             },
             transcript_label: b"ctx".to_vec(),
             items: vec![truapi::v01::VrfTranscriptItem {
@@ -1408,7 +1408,7 @@ mod tests {
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
-                AllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
+                AllocatableResource::SmartContractAllowance(DerivationIndex::Index(9)),
                 AllocatableResource::AutoSigning,
             ],
             OnExistingAllowancePolicy::Increase,
@@ -1427,7 +1427,7 @@ mod tests {
             ProductAccountTxPayload {
                 signer: ProductAccountId {
                     dot_ns_identifier: "truapi-playground.dot".to_string(),
-                    derivation_index: DerivationIndex::Left(0),
+                    derivation_index: DerivationIndex::Index(0),
                 },
                 genesis_hash: sequential_bytes(32),
                 call_data: vec![0, 0],
@@ -1453,7 +1453,7 @@ mod tests {
             ProductAccountTxPayload {
                 signer: ProductAccountId {
                     dot_ns_identifier: "truapi-playground.dot".to_string(),
-                    derivation_index: DerivationIndex::Left(0),
+                    derivation_index: DerivationIndex::Index(0),
                 },
                 genesis_hash: [
                     0xbf, 0x04, 0x88, 0xdb, 0xe9, 0xda, 0xa1, 0xde, 0x1c, 0x08, 0xc5, 0xf7, 0x43,
@@ -1560,7 +1560,7 @@ mod tests {
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
-                AllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
+                AllocatableResource::SmartContractAllowance(DerivationIndex::Index(9)),
                 AllocatableResource::AutoSigning,
             ],
             OnExistingAllowancePolicy::Increase,
@@ -1576,7 +1576,7 @@ mod tests {
             vec![
                 SsoAllocatableResource::StatementStoreAllowance,
                 SsoAllocatableResource::BulletinAllowance,
-                SsoAllocatableResource::SmartContractAllowance(DerivationIndex::Left(9)),
+                SsoAllocatableResource::SmartContractAllowance(DerivationIndex::Index(9)),
                 SsoAllocatableResource::AutoSigning,
             ]
         );
