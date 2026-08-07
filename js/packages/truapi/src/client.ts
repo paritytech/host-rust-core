@@ -61,6 +61,19 @@ export interface CreateTransportOptions {
 }
 
 /**
+ * Report a frame the transport received but cannot act on.
+ *
+ * Every such frame is a disagreement with the peer about the wire, and the
+ * transport has no channel to answer on: the caller is left waiting and
+ * "the host dropped it" is indistinguishable from "the host never sent it".
+ * Warn so the mismatch is diagnosable from the console instead of presenting
+ * as an unexplained hang.
+ */
+function reportProtocolViolation(detail: string): void {
+  console.warn(`[truapi] ${detail}`);
+}
+
+/**
  * Convert a positive protocol version number into the generated version tag
  * used by TrUAPI wire wrappers.
  */
@@ -76,6 +89,12 @@ type HandshakeResponse = ResultPayload<
   CallErrorValue<T.VersionedHostHandshakeError>
 >;
 const HANDSHAKE_WIRE_VERSION = 1;
+
+/**
+ * How long a `system_handshake` call waits for the host's answer. Matches the
+ * allowance the protocol spec gives the handshake.
+ */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 /**
  * Build the versioned handshake response codec for the selected wire version.
@@ -325,17 +344,18 @@ export function createTransport(
       payload.traitId === W.SYSTEM_HANDSHAKE.trait &&
       payload.methodId === W.SYSTEM_HANDSHAKE.request
     ) {
-      // Auto-respond to inbound `host_handshake_request` frames.
-      //
-      // Legacy hosts shipping `@novasamatech/host-api@0.6.x` (e.g. dotli)
-      // initiate their own handshake from the host side at startup and ping
-      // the iframe with `host_handshake_request` every 50ms until they see a
-      // matching response. The legacy host-api `createTransport` registered
-      // an internal handler for this message; preserving that behaviour
-      // keeps `@parity/truapi` a drop-in replacement for legacy bridges.
+      // Auto-respond to inbound `host_handshake_request` frames. Hosts ping
+      // the product at startup and repeat until they see a matching response,
+      // so this handler must always answer and must never tear the transport
+      // down: a host whose codec this client cannot speak is exactly the peer
+      // that needs an answer it can act on.
       //
       // Respond with the handshake method's selected wire version. The inner
-      // request carries the wire codec version.
+      // request carries the wire codec version. A request body this client
+      // cannot decode is itself a codec mismatch -- a codec 1 host's frame
+      // reads as `(0, 0)` here with the old envelope's payload shifted by a
+      // byte -- so it earns the same unsupported-version answer rather than a
+      // raw SCALE error.
       let response: Uint8Array;
       try {
         const request = unwrapVersionedWireValue(
@@ -347,8 +367,12 @@ export function createTransport(
             ? encodeSuccessfulHandshakeResponse(HANDSHAKE_WIRE_VERSION)
             : encodeUnsupportedHandshakeResponse(HANDSHAKE_WIRE_VERSION);
       } catch (error) {
-        closeWithError(toError(error));
-        return;
+        reportProtocolViolation(
+          `undecodable handshake request from the host (expected wire codec ${codecVersion}): ${
+            toError(error).message
+          }`,
+        );
+        response = encodeUnsupportedHandshakeResponse(HANDSHAKE_WIRE_VERSION);
       }
       try {
         send({
@@ -394,6 +418,13 @@ export function createTransport(
         payload.traitId !== p.ids.trait ||
         payload.methodId !== p.ids.response
       ) {
+        // The host answered this request id on a discriminant the method does
+        // not own. Dropping it unreported leaves the caller waiting forever
+        // with no clue why, and a whole-trait skew is what a codec mismatch
+        // looks like from here.
+        reportProtocolViolation(
+          `ignoring frame for request ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}), expected (${p.ids.trait}, ${p.ids.response})`,
+        );
         return;
       }
       pending.delete(requestId);
@@ -427,26 +458,31 @@ export function createTransport(
       ) {
         subscriptions.delete(requestId);
         subscription.onInterrupt?.(payload.value);
-        return;
+      } else {
+        reportProtocolViolation(
+          `ignoring frame for subscription ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}), expected receive (${subscription.ids.trait}, ${subscription.ids.receive}) or interrupt (${subscription.ids.trait}, ${subscription.ids.interrupt})`,
+        );
       }
+      return;
     }
 
     if (UNANSWERED_WIRE_IDS.has(`${payload.traitId}:${payload.methodId}`)) {
       return;
     }
 
+    // Not pending, no subscription, and not a client-bound frame we ignore by
+    // design: this build does not implement the pair. Report it locally AND
+    // answer the peer - a log alone leaves the sender waiting forever.
+    reportProtocolViolation(
+      `unsupported frame with discriminant (${payload.traitId}, ${payload.methodId}): request ${requestId} is not pending and has no subscription`,
+    );
     try {
       send({
         requestId,
         payload: {
           traitId: PROTOCOL_ERROR_TRAIT_ID,
           methodId: PROTOCOL_ERROR_METHOD_ID,
-          value: new Uint8Array([
-            0,
-            0,
-            payload.traitId,
-            payload.methodId,
-          ]),
+          value: new Uint8Array([0, 0, payload.traitId, payload.methodId]),
         },
       });
     } catch {
@@ -580,15 +616,48 @@ export function createTransport(
         }
 
         const requestId = `p:${++idCounter}`;
+        // The handshake is the one method with a bounded answer: it takes no
+        // host-side confirmation and settles the codec question before any
+        // real traffic. A peer that implements the protocol error now answers a
+        // discriminant it does not know, which settles this call as
+        // `Unsupported`; the deadline covers the peer that answers NOTHING -
+        // an older host, or one whose codec skew leaves the frame unroutable -
+        // so the call that exists to detect the mismatch cannot hang on it.
+        const deadline =
+          ids.trait === W.SYSTEM_HANDSHAKE.trait &&
+          ids.request === W.SYSTEM_HANDSHAKE.request
+            ? setTimeout(() => {
+                if (!pending.delete(requestId)) {
+                  return;
+                }
+                reject(
+                  new Error(
+                    `TrUAPI handshake timed out after ${HANDSHAKE_TIMEOUT_MS}ms; the host did not answer on wire codec ${codecVersion}`,
+                  ),
+                );
+              }, HANDSHAKE_TIMEOUT_MS)
+            : undefined;
+
         pending.set(requestId, {
           ids,
-          resolve: (response) => resolve(decodeResponse(response)),
-          resolveUnsupported: () =>
+          resolve: (response) => {
+            clearTimeout(deadline);
+            resolve(decodeResponse(response));
+          },
+          // Clears the deadline like the other two: an explicit `Unsupported`
+          // settles the call, and leaving the timer armed holds the event loop
+          // open for the rest of the timeout for nothing.
+          resolveUnsupported: () => {
+            clearTimeout(deadline);
             resolve({
               success: false,
               value: { tag: "Unsupported" },
-            }),
-          reject,
+            });
+          },
+          reject: (error) => {
+            clearTimeout(deadline);
+            reject(error);
+          },
         });
         try {
           send({

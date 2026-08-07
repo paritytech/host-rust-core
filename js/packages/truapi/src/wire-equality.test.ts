@@ -39,11 +39,12 @@ function unwrap<T>(result: Result<T, { message: string }>, message: string): T {
 }
 
 describe("encodeWireMessage / decodeWireMessage wire equality", () => {
-    it("pins the handshake frame end-to-end: requestId + 0x00 0x00 + payload", () => {
-        // Trait 0 = system, method 0 = handshake request. This locks the
-        // system trait to discriminant zero: the handshake is the first frame
-        // either side sends, so its envelope must never drift.
-        expect(W.SYSTEM_HANDSHAKE.trait).toBe(0);
+    it("pins the handshake frame end-to-end: requestId + 0xc0 0x00 + payload", () => {
+        // Trait 192 = system, method 0 = handshake request. This locks the
+        // system trait to the first id above the codec 1 flat-method range:
+        // the handshake is the first frame either side sends, so its envelope
+        // must never drift, and a codec 1 peer's frame must never reach it.
+        expect(W.SYSTEM_HANDSHAKE.trait).toBe(192);
         expect(W.SYSTEM_HANDSHAKE.request).toBe(0);
 
         const inner = new Uint8Array([0x00, 0x02]); // V1 variant + codec_version=2
@@ -58,17 +59,17 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
             }),
             "encode handshake_request",
         );
-        // [0c 70 3a 31] "p:1" + [00] system trait + [00] handshake request + payload.
-        expect(toHex(encoded)).toBe("0c703a3100000002");
-        expect(toHex(encoded)).toBe(toHex(expectedWire(0, 0, inner)));
+        // [0c 70 3a 31] "p:1" + [c0] system trait + [00] handshake request + payload.
+        expect(toHex(encoded)).toBe("0c703a31c0000002");
+        expect(toHex(encoded)).toBe(toHex(expectedWire(192, 0, inner)));
 
         const decoded = unwrap(decodeWireMessage(encoded), "decode handshake_request");
-        expect(decoded.payload.traitId).toBe(0);
+        expect(decoded.payload.traitId).toBe(192);
         expect(decoded.payload.methodId).toBe(0);
         expect(toHex(decoded.payload.value)).toBe(toHex(inner));
     });
 
-    it("encodes account_get_request (pair (1, 4)) to match the golden fixture", () => {
+    it("encodes account_get_request (pair (193, 4)) to match the golden fixture", () => {
         // payload = V1(("foo", 0u32)); same vector as the Rust golden fixture.
         const inner = new Uint8Array([
             0x00, // V1 variant
@@ -89,8 +90,8 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
             }),
             "encode account_get_request",
         );
-        expect(toHex(encoded)).toBe(toHex(expectedWire(1, 4, inner)));
-        expect(toHex(encoded)).toBe("0c703a310104000c666f6f00000000");
+        expect(toHex(encoded)).toBe(toHex(expectedWire(193, 4, inner)));
+        expect(toHex(encoded)).toBe("0c703a31c104000c666f6f00000000");
     });
 
     it("round-trips a local_storage_read frame through encode + decode", () => {

@@ -132,10 +132,14 @@ package root returns the bare `WireProvider`.
 Frames are SCALE encoded:
 
 ```text
-[requestId: SCALE str][discriminant: u8][payload bytes...]
+[requestId: SCALE str][trait: u8][method: u8][payload bytes...]
 ```
 
-The discriminant table is generated from Rust `#[wire(request_id = N)]` and `#[wire(start_id = N)]` annotations and is written to `src/generated/wire-table.ts`. Discriminant 255 is reserved for method-independent protocol errors. When a peer rejects an unknown API message with that frame, requests resolve as `CallError.Unsupported` and subscriptions terminate with an `UnsupportedMessageError` cause.
+The discriminant is a `(trait, method)` pair: the trait byte names the API trait and the method byte addresses a method within it, so method ids restart at 0 in every trait. The table is generated from the Rust trait-level `#[wire_trait(id = N)]` annotation plus the method-level `#[wire(request_id = N)]` and `#[wire(start_id = N)]` annotations, and is written to `src/generated/wire-table.ts`.
+
+This layout is wire codec version 2 and is not compatible with codec version 1, which addressed methods with a single flat byte.
+
+The pair `(255, 255)` is reserved for method-independent protocol errors. When a peer rejects an unknown API message with that frame, requests resolve as `CallError.Unsupported` and subscriptions terminate with an `UnsupportedMessageError` cause carrying the unsupported `(trait, method)` pair.
 
 ## Generated files
 

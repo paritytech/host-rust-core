@@ -201,6 +201,26 @@ pub mod latest {
 
 pub use truapi_macros::{service, wire, wire_trait};
 
+/// Wire codec version this crate defines. Frames address a method with a
+/// `(trait, method)` byte pair; codec 1 used a single flat method byte. The
+/// handshake accepts only this version, and codegen stamps it into the
+/// generated clients, so every peer derives it from here.
+pub const WIRE_CODEC_VERSION: u8 = 2;
+
+/// Highest method discriminant any codec 1 implementation assigned, and so
+/// the largest first byte a codec 1 frame can carry. This crate reached 164;
+/// `triangle-js-sdks` `host-api` went further, allocating 166..=171 to the
+/// RFC-0024 ring VRF methods, so the bound is theirs rather than ours.
+pub const MAX_CODEC_1_METHOD_ID: u8 = 171;
+
+/// Lowest wire trait id [`WIRE_CODEC_VERSION`] may assign. The first byte
+/// after the request id is the trait, so keeping every trait id above
+/// [`MAX_CODEC_1_METHOD_ID`] means a codec 1 frame can never decode into a
+/// registered trait: it is reported as unroutable instead of executing
+/// whichever trait happens to share its old flat id. Codegen rejects any
+/// `#[wire_trait(id = N)]` below this floor.
+pub const MIN_TRAIT_ID: u8 = 192;
+
 /// Per-message id carried from the transport frame.
 pub type RequestId = String;
 

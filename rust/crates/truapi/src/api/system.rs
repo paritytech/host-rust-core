@@ -12,7 +12,7 @@ use crate::{wire, wire_trait};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
 /// navigation, and runtime information.
-#[wire_trait(id = 0)]
+#[wire_trait(id = 192)]
 #[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.
@@ -29,7 +29,7 @@ pub trait System: Send + Sync {
         request: HostHandshakeRequest,
     ) -> Result<HostHandshakeResponse, CallError<HostHandshakeError>> {
         let HostHandshakeRequest::V1(version) = request;
-        if version.codec_version == 2 {
+        if version.codec_version == crate::WIRE_CODEC_VERSION {
             Ok(HostHandshakeResponse::V1)
         } else {
             Err(CallError::Domain(HostHandshakeError::V1(

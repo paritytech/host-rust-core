@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, HashMap};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+pub use truapi::{MAX_CODEC_1_METHOD_ID, MIN_TRAIT_ID};
+
 /// Minimum rustdoc JSON `format_version` the extractors are tested against.
 /// Emitted by nightly 2026-02-23 (rustc 1.95.0-nightly); older formats may
 /// encode item shapes differently and are rejected outright.
@@ -644,10 +646,15 @@ fn extract_trait(
         }
     }
 
+    let wire_trait_id = match item.docs.as_deref() {
+        Some(docs) => extract_wire_trait_id(&name, docs)?,
+        None => None,
+    };
+
     Ok(TraitDef {
         name,
         module_path,
-        wire_trait_id: item.docs.as_deref().and_then(extract_wire_trait_id),
+        wire_trait_id,
         methods,
         docs: item.docs.clone(),
     })
@@ -817,20 +824,33 @@ fn extract_marker_value<'a>(docs: &'a str, marker: &str) -> Option<&'a str> {
 /// Annotated traits carry the marker via the `#[wire_trait(id = N)]`
 /// proc-macro, which appends a hidden doc string so it propagates through
 /// rustdoc JSON.
-fn extract_wire_trait_id(docs: &str) -> Option<u8> {
+///
+/// The marker owns its whole line and its value must parse as a `u8`: a
+/// malformed value is an error rather than a silent truncation, and a trait
+/// carrying more than one marker is rejected outright. Without that a
+/// hand-written doc line could quietly outrank the attribute and move a
+/// trait's whole method block to a different address on the wire.
+fn extract_wire_trait_id(trait_name: &str, docs: &str) -> Result<Option<u8>> {
+    let mut found = None;
     for line in docs.lines() {
-        let line = line.trim_start();
-        let Some(value) = line.strip_prefix("@wire_trait_id=") else {
+        let Some(value) = line.trim().strip_prefix("@wire_trait_id=") else {
             continue;
         };
-        let end = value
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(value.len());
-        if let Ok(id) = value[..end].parse::<u8>() {
-            return Some(id);
+        let id: u8 = value.trim().parse().with_context(|| {
+            format!(
+                "Trait `{trait_name}` has a malformed `@wire_trait_id={value}` marker; \
+                 expected a value in 0..=255"
+            )
+        })?;
+        if found.is_some() {
+            bail!(
+                "Trait `{trait_name}` carries more than one `@wire_trait_id` marker; \
+                 exactly one `#[wire_trait(id = N)]` attribute must own the trait id"
+            );
         }
+        found = Some(id);
     }
-    None
+    Ok(found)
 }
 
 /// Extracts `@wire_<name>_id=N` markers from a doc comment block. Annotated
@@ -1531,12 +1551,46 @@ mod tests {
     #[test]
     fn extract_wire_trait_id_reads_marker() {
         assert_eq!(
-            extract_wire_trait_id("Trait summary.\n\n@wire_trait_id=14\n"),
+            extract_wire_trait_id("Theme", "Trait summary.\n\n@wire_trait_id=14\n").unwrap(),
             Some(14)
         );
-        assert_eq!(extract_wire_trait_id("Trait summary."), None);
-        // Out-of-range values are ignored rather than truncated.
-        assert_eq!(extract_wire_trait_id("@wire_trait_id=300"), None);
+        assert_eq!(
+            extract_wire_trait_id("Theme", "Trait summary.").unwrap(),
+            None
+        );
+    }
+
+    /// A value the attribute could never emit must fail loudly instead of
+    /// truncating to a valid id or degrading into "missing annotation".
+    #[test]
+    fn extract_wire_trait_id_rejects_malformed_markers() {
+        for docs in [
+            "@wire_trait_id=300",
+            "@wire_trait_id=",
+            "@wire_trait_id=12abc",
+            "@wire_trait_id=-1",
+            "@wire_trait_id=1 2",
+        ] {
+            let err = extract_wire_trait_id("Theme", docs)
+                .expect_err("malformed marker must be rejected");
+            assert!(
+                format!("{err:#}").contains("malformed"),
+                "unexpected error for {docs:?}: {err:#}"
+            );
+        }
+    }
+
+    /// A hand-written doc line must not be able to outrank the attribute: the
+    /// proc-macro appends its marker last, so a silent first-wins or last-wins
+    /// rule would let prose move the trait's whole method block on the wire.
+    #[test]
+    fn extract_wire_trait_id_rejects_a_second_marker() {
+        let err = extract_wire_trait_id("Theme", "@wire_trait_id=99\n@wire_trait_id=14\n")
+            .expect_err("a forged second marker must be rejected");
+        assert!(
+            format!("{err:#}").contains("more than one"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

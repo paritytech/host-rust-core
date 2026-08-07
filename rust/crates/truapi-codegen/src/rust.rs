@@ -270,7 +270,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(0),
+                wire_trait_id: Some(192),
                 methods: vec![make_subscription_method("connection_status_subscribe", 18)],
                 docs: None,
             }],
@@ -302,14 +302,14 @@ mod tests {
                 TraitDef {
                     name: "StatementStore".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(1),
+                    wire_trait_id: Some(193),
                     methods: vec![make_request_method("submit", 62)],
                     docs: None,
                 },
                 TraitDef {
                     name: "Preimage".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(2),
+                    wire_trait_id: Some(194),
                     methods: vec![make_request_method("submit", 68)],
                     docs: None,
                 },
@@ -356,14 +356,14 @@ mod tests {
                 TraitDef {
                     name: "Foo".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(3),
+                    wire_trait_id: Some(195),
                     methods: vec![make_request_method("bar_baz", 10)],
                     docs: None,
                 },
                 TraitDef {
                     name: "FooBar".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(4),
+                    wire_trait_id: Some(196),
                     methods: vec![make_request_method("baz", 12)],
                     docs: None,
                 },
@@ -394,7 +394,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![make_request_method("request_device_permission", 8)],
                 docs: None,
             }],
@@ -421,7 +421,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![
                     make_request_method("alpha", 10),
                     make_request_method("beta", 10),
@@ -434,7 +434,7 @@ mod tests {
         let err = generate_wire_table(&api).expect_err("duplicate ids must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("wire id (5, 10) reused"),
+            msg.contains("wire id (197, 10) reused"),
             "unexpected error message: {msg}",
         );
     }
@@ -448,14 +448,14 @@ mod tests {
                 TraitDef {
                     name: "StatementStore".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(13),
+                    wire_trait_id: Some(205),
                     methods: vec![make_request_method("submit", 0)],
                     docs: None,
                 },
                 TraitDef {
                     name: "Preimage".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(10),
+                    wire_trait_id: Some(202),
                     methods: vec![make_request_method("submit", 0)],
                     docs: None,
                 },
@@ -466,11 +466,11 @@ mod tests {
 
         let table = generate_wire_table(&api).expect("wire_table");
         assert!(
-            table.contains("trait_id: 13,"),
+            table.contains("trait_id: 205,"),
             "missing trait id 13:\n{table}"
         );
         assert!(
-            table.contains("trait_id: 10,"),
+            table.contains("trait_id: 202,"),
             "missing trait id 10:\n{table}"
         );
     }
@@ -483,14 +483,14 @@ mod tests {
                 TraitDef {
                     name: "StatementStore".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(4),
+                    wire_trait_id: Some(196),
                     methods: vec![make_request_method("submit", 0)],
                     docs: None,
                 },
                 TraitDef {
                     name: "Preimage".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(4),
+                    wire_trait_id: Some(196),
                     methods: vec![make_request_method("submit", 0)],
                     docs: None,
                 },
@@ -502,7 +502,7 @@ mod tests {
         let err = generate_wire_table(&api).expect_err("duplicate trait ids must error");
         let msg = format!("{err}");
         assert!(
-            msg.contains("wire trait id 4 reused"),
+            msg.contains("wire trait id 196 reused"),
             "unexpected error message: {msg}",
         );
     }
@@ -556,6 +556,32 @@ mod tests {
         assert!(
             msg.contains("wire trait id 255 reused")
                 && msg.contains("reserved for protocol errors"),
+                "unexpected error message: {msg}",
+        );
+    }
+
+    /// A trait id inside the range codec 1 could address must be refused.
+    /// Codec 2 reads that byte as the trait, so a low id would let a codec 1
+    /// frame decode into a registered trait and execute the wrong method
+    /// instead of being reported as unroutable.
+    #[test]
+    fn wire_table_rejects_trait_id_below_the_codec_1_floor() {
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Permissions".to_string(),
+                module_path: Vec::new(),
+                wire_trait_id: Some(MIN_TRAIT_ID - 1),
+                methods: vec![make_request_method("request_device_permission", 8)],
+                docs: None,
+            }],
+            public_trait_order: vec!["Permissions".to_string()],
+            types: vec![],
+        };
+
+        let err = generate_wire_table(&api).expect_err("a below-floor trait id must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("below the minimum"),
             "unexpected error message: {msg}",
         );
     }
@@ -571,7 +597,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Example".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(7),
+                wire_trait_id: Some(MIN_TRAIT_ID),
                 methods: vec![method],
                 docs: None,
             }],
@@ -579,7 +605,8 @@ mod tests {
             types: vec![],
         };
 
-        generate_wire_table(&api).expect("(7, 255) is an ordinary address");
+        generate_wire_table(&api)
+            .expect("(MIN_TRAIT_ID, 255) is an ordinary address");
     }
 
     /// Pin `wire_const_name`'s `convert_case::Case::UpperSnake` behavior:
@@ -623,7 +650,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -647,7 +674,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(0),
+                wire_trait_id: Some(192),
                 methods: vec![method],
                 docs: None,
             }],
@@ -672,7 +699,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -696,7 +723,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(0),
+                wire_trait_id: Some(192),
                 methods: vec![method],
                 docs: None,
             }],
@@ -728,7 +755,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -762,7 +789,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -797,7 +824,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -827,7 +854,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Permissions".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(5),
+                wire_trait_id: Some(197),
                 methods: vec![method],
                 docs: None,
             }],
@@ -867,7 +894,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(0),
+                wire_trait_id: Some(192),
                 methods: vec![method],
                 docs: None,
             }],

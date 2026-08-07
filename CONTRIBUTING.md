@@ -56,7 +56,7 @@ Canonical design documentation lives in `docs/design/`. To propose updates or ad
 rust/crates/
   truapi/              Rust trait + type definitions (source of truth)
   truapi-codegen/      rustdoc JSON → TypeScript client generator
-  truapi-macros/       #[wire(id = N)] proc-macro
+  truapi-macros/       #[wire_trait(id = N)] + #[wire(...)] proc-macros
 js/packages/
   truapi/              @parity/truapi TypeScript package (generated TS is auto-generated and git-ignored)
 playground/            Next.js interactive playground

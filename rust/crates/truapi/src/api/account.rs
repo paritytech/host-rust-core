@@ -18,7 +18,7 @@ use crate::{CallContext, CallError, Subscription};
 use crate::{wire, wire_trait};
 
 /// Account lookup, aliasing, and proof generation.
-#[wire_trait(id = 1)]
+#[wire_trait(id = 193)]
 #[crate::async_trait]
 pub trait Account: Send + Sync {
     /// Subscribe to account connection status changes.

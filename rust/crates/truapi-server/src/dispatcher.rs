@@ -12,6 +12,7 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use parity_scale_codec::Encode;
 use tracing::instrument;
+use truapi::{MIN_TRAIT_ID, WIRE_CODEC_VERSION};
 
 use crate::frame::{
     PROTOCOL_ERROR_KEY, PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1,
@@ -204,6 +205,23 @@ impl Dispatcher {
             // understood. No log - a peer speaking a wire we do not know could
             // otherwise flood the host's logs one frame at a time.
             let (trait_id, method_id) = key;
+            if trait_id < MIN_TRAIT_ID {
+                // No trait is addressed below this floor, so the first byte
+                // cannot be a trait id. A codec 1 peer, whose frames carry a
+                // single flat method byte here, lands in exactly this range -
+                // worth saying out loud, because it explains total
+                // incompatibility in one line.
+                tracing::error!(
+                    request_id = %message.request_id,
+                    trait_id,
+                    method_id,
+                    "trait id {trait_id} is below the codec {WIRE_CODEC_VERSION} minimum \
+                     {MIN_TRAIT_ID}; the peer appears to be speaking codec 1"
+                );
+            }
+            // Answer either way. A codec 1 peer cannot decode this reply, but a
+            // codec 2 peer that simply asked for something unimplemented can,
+            // and dropping the frame would leave it waiting forever.
             transport.send(ProtocolMessage {
                 request_id: message.request_id,
                 payload: Payload {

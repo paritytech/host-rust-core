@@ -10,7 +10,7 @@ It defines:
 
 - **Versioned data types** under `v01` and `versioned`.
 - **Domain API traits** under `api/`, plus the composed `TrUApi` trait.
-- **Wire ids** via per-method `#[wire(id = N)]` annotations that pin the byte-level method table.
+- **Wire ids** via trait-level `#[wire_trait(id = N)]` and per-method `#[wire(request_id = N)]` annotations that pin the byte-level `(trait, method)` dispatch table.
 - **Subscription primitives** through `Subscription<T>` for streamed host responses.
 - **Authoring types** like `CallContext`, `CallError<D>`, and `CancellationToken`.
 

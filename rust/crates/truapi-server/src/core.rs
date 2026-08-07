@@ -113,7 +113,20 @@ impl TrUApiCore {
     /// richer response shape is a separate API decision.
     #[instrument(skip_all, fields(runtime.method = "core.receive_from_product"))]
     pub async fn receive_from_product(&self, frame: &[u8]) -> Option<Vec<u8>> {
-        let message = ProtocolMessage::decode(&mut &*frame).ok()?;
+        let message = match ProtocolMessage::decode(&mut &*frame) {
+            Ok(message) => message,
+            Err(err) => {
+                // An undecodable frame is a wire mismatch on the product's
+                // side. Report it: dropping it unreported is indistinguishable
+                // from the product never having sent it, and the product is
+                // left waiting for a response that will never come.
+                tracing::error!(
+                    frame_len = frame.len(),
+                    "undecodable product frame; dropping frame: {err}"
+                );
+                return None;
+            }
+        };
         let transport = Arc::new(ResponseTransport::default());
         self.dispatcher
             .dispatch(message, transport.clone() as Arc<dyn Transport>)

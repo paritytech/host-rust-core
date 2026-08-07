@@ -71,6 +71,20 @@ function providerFixture() {
 }
 
 /** Encode a V1 host-handshake response result payload. */
+/** Encode the `UnsupportedProtocolVersion` handshake response payload. */
+function unsupportedHandshakeResponsePayload(): Uint8Array {
+    return versionedV1(ScaleResult(_void, CallError(T.VersionedHostHandshakeError))).enc({
+        tag: "V1",
+        value: {
+            success: false,
+            value: {
+                tag: "Domain",
+                value: { tag: "V1", value: { tag: "UnsupportedProtocolVersion", value: undefined } },
+            },
+        },
+    });
+}
+
 function handshakeResponsePayload(value: { success: true; value: undefined }): Uint8Array {
     return versionedV1(ScaleResult(_void, CallError(T.VersionedHostHandshakeError))).enc({
         tag: "V1",
@@ -202,7 +216,7 @@ describe("generated client transport", () => {
         const expectedPayload = T.VersionedHostAccountGetRequest.enc({ tag: "V1", value: request });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 1; // account trait
+        expectedFrame[str.enc("p:1").length] = 193; // account trait
         expectedFrame[str.enc("p:1").length + 1] = 4; // get_account request
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
@@ -222,7 +236,7 @@ describe("generated client transport", () => {
         });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 0; // system trait
+        expectedFrame[str.enc("p:1").length] = 192; // system trait
         expectedFrame[str.enc("p:1").length + 1] = 0; // handshake request
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
@@ -623,6 +637,68 @@ describe("generated client transport", () => {
             "encode expected handshake_response",
         );
         expect(toHex(fixture.sent[0])).toBe(toHex(expectedFrame));
+    });
+
+    it("refuses a codec 1 handshake ping and stays usable", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+
+        // A codec 1 host frames its ping as [requestId][u8 id=0][V1][codec=1].
+        // Read against the two-byte discriminant that is trait 0, method 0 --
+        // and trait 0 is below the codec 2 floor, so it can never name a real
+        // trait. The ping is refused rather than answered on a wire the peer
+        // cannot parse anyway.
+        const legacyFrame = new Uint8Array([
+            ...str.enc("h:1"),
+            0x00, // old flat discriminant, read as the trait byte
+            0x00, // old V1 tag, read as the method byte
+            0x01, // old codecVersion, read as the whole payload
+        ]);
+        fixture.receive(legacyFrame);
+
+        expect(fixture.sent.length).toBe(0);
+
+        // The transport must survive: a ping it cannot parse is a peer
+        // problem, not grounds for tearing down every pending call.
+        void client.account.getAccount({ productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Left", value: 0 } } });
+        expect(fixture.sent.length).toBe(1);
+    });
+
+    it("ignores a response whose trait does not match the pending request", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const client = createClient(transport);
+
+        const response = client.account.getAccount({ productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Left", value: 0 } } });
+
+        // Right request id, right method id, neighbouring trait: what a whole
+        // trait of discriminant skew looks like from the product side.
+        const skewed = unwrap(
+            encodeWireMessage({
+                requestId: "p:1",
+                payload: {
+                    traitId: W.ACCOUNT_GET_ACCOUNT.trait + 1,
+                    methodId: W.ACCOUNT_GET_ACCOUNT.response,
+                    value: accountGetResponsePayload({
+                        success: false,
+                        value: {
+                            tag: "Domain",
+                            value: { tag: "V1", value: { tag: "NotConnected", value: undefined } },
+                        },
+                    }),
+                },
+            }),
+            "encode skewed account_get response",
+        );
+        fixture.receive(skewed);
+
+        // The frame is refused rather than mistaken for the real response.
+        const settled = await Promise.race([
+            response.then(() => "settled" as const),
+            Promise.resolve().then(() => "pending" as const),
+        ]);
+        expect(settled).toBe("pending");
     });
 
     it("decodes receive frames as wire wrappers and delivers inner values", () => {

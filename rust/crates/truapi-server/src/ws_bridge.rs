@@ -405,8 +405,15 @@ async fn handle_connection(
             Ok(WsMessage::Binary(bytes)) => {
                 in_flight.retain(|task| !task.is_finished());
                 let product_runtime = product_runtime.clone();
+                let frame_logger = logger.clone();
                 in_flight.push(tokio::spawn(async move {
-                    let _ = product_runtime.receive_frame(bytes.to_vec()).await;
+                    // A frame the runtime cannot decode is a wire mismatch on
+                    // the peer's side. Report it: dropping it unreported is
+                    // indistinguishable from the peer never having sent it,
+                    // and the peer is left waiting for a response forever.
+                    if let Err(err) = product_runtime.receive_frame(bytes.to_vec()).await {
+                        frame_logger("truapi.ws_bridge.frame_error", &err.to_string());
+                    }
                 }));
             }
             Ok(WsMessage::Text(_)) => {

@@ -61,7 +61,7 @@ cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
   --version V2 \
-  --codec-version 1
+  --codec-version 2
 ```
 
 ## Typical workflow
@@ -72,7 +72,7 @@ cargo run -p truapi-codegen -- \
   --input target/doc/truapi.json \
   --output js/packages/truapi/src/generated \
   --version V2 \
-  --codec-version 1
+  --codec-version 2
 ```
 
 The repo wraps both steps in [`scripts/codegen.sh`](../../../scripts/codegen.sh), which is what you should run from the repo root.
