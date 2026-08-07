@@ -20,7 +20,6 @@ const REMOTE_RESPONSE_TIMEOUT_MS = 190_000;
 const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
 const SPA_SERVICES = servicesForExecution(services, "Spa");
 const SKIPPED_SERVICES = new Set(["Coin Payment", "Payment"]);
-const SKIPPED_METHODS = new Set(["Account/create_account_proof"]);
 const LONG_TIMEOUT_METHODS = new Set([
   "Account/get_account",
   "Account/get_account_alias",
