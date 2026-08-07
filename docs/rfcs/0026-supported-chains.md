@@ -14,7 +14,7 @@ owner: "@valentinfernandez1"
 
 ## Summary
 
-Add one method to the `Chain` trait. `get_chain_info` takes the chain identifiers a product wants to use, drawn from a closed role enum (`Relay`, `AssetHub`, `People`, `Bulletin`), and returns the ecosystem the host is configured for (for example `"paseo"`) plus one `ChainInfo` (name and genesis hash) per requested identifier, resolved against that environment. It is answered in-core from a single new platform syscall, so each host implements exactly one callback over configuration it already has.
+Add one method to the `Chain` trait. `get_chain_info` takes the chain identifiers a product wants to use, drawn from a closed role enum (`Relay`, `AssetHub`, `People`, `Bulletin`), and returns the ecosystem the host is configured for (for example `"paseo"`) plus one `ChainInfo` (the echoed identifier and the genesis hash) per requested identifier, resolved against that environment. It is answered in-core from a single new platform syscall, so each host implements exactly one callback over configuration it already has.
 
 ## Motivation
 
@@ -69,8 +69,8 @@ enum ChainIdentifier {
 
 /// Resolved chain data for one requested ChainIdentifier.
 struct ChainInfo {
-    /// Host-assigned chain name, e.g. "asset-hub".
-    name: String,
+    /// Identifier this entry resolves, echoed from the request.
+    identifier: ChainIdentifier,
     /// Genesis hash identifying the chain in all chain-scoped calls.
     genesis_hash: [u8; 32],
 }
@@ -91,11 +91,8 @@ struct RemoteChainInfoResponse {
 
 /// Error from get_chain_info.
 enum RemoteChainInfoError {
-    /// The host does not serve one of the requested chains.
-    NotSupported {
-        /// First requested identifier the host does not serve.
-        chain: ChainIdentifier,
-    },
+    /// The host does not serve the first named of the requested chains.
+    NotSupported(ChainIdentifier),
     /// Catch-all.
     Unknown(GenericError),
 }
@@ -108,13 +105,13 @@ The request deliberately carries no network selector. A product does not get to 
 ### Semantics and invariants
 
 - **Serviceability.** Every genesis hash returned by `get_chain_info` is a chain the host will serve `chain.*` and `signing.*` calls for. A `NotSupported` identifier will not be served.
-- **Alignment.** The response's `chains` has exactly one entry per requested identifier, in request order, so products index it positionally.
+- **Alignment.** The response's `chains` has exactly one entry per requested identifier, in request order. Each entry also echoes its identifier, so products can destructure positionally or match by identifier; neither requires trusting the other.
 - **All or nothing.** If any requested identifier is not served, the whole call fails with `NotSupported` naming the first such identifier; there are no partial responses.
 - **Stability.** An identifier resolves to the same chain for the lifetime of a connection. There is no subscription; a product observes host-side changes (such as a testnet wipe) by reconnecting.
 
 `network` is informational, not a selector: it tells a product or SDK which environment the host is running, so tooling can derive the environment from the host instead of asking the developer to configure it. It is an open ecosystem string ("polkadot", "kusama", "paseo", "devnet"), not a `Mainnet`/`Testnet` enum, because a binary flag cannot distinguish two testnets.
 
-`ChainInfo` deliberately excludes display names and token properties. Once a product holds the genesis hash, that metadata is already reachable through `getSpecChainName` and `getSpecProperties`.
+`ChainInfo` deliberately excludes host-assigned name strings, display names, and token properties. The echoed identifier already keys the entry unambiguously, and once a product holds the genesis hash the display metadata is reachable through `getSpecChainName` and `getSpecProperties`.
 
 ### Typical product flow
 

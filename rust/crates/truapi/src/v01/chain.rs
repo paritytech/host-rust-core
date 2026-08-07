@@ -372,8 +372,8 @@ pub enum ChainIdentifier {
 /// Resolved chain data for one requested [`ChainIdentifier`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct ChainInfo {
-    /// Host-assigned chain name, e.g. "asset-hub".
-    pub name: String,
+    /// Identifier this entry resolves, echoed from the request.
+    pub identifier: ChainIdentifier,
     /// Genesis hash identifying the chain in all chain-scoped calls.
     pub genesis_hash: [u8; 32],
 }
@@ -397,11 +397,8 @@ pub struct RemoteChainInfoResponse {
 /// Error from [`crate::api::Chain::get_chain_info`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum RemoteChainInfoError {
-    /// The host does not serve one of the requested chains.
-    NotSupported {
-        /// First requested identifier the host does not serve.
-        chain: ChainIdentifier,
-    },
+    /// The host does not serve the first named of the requested chains.
+    NotSupported(ChainIdentifier),
     /// Catch-all.
     Unknown(GenericError),
 }
