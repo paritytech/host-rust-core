@@ -34,11 +34,17 @@ use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
 
-/// Host-thrown storage failure wrapping the canonical error payload, so the
-/// payload variants are defined once in `truapi`. This wrapper stays local
-/// because uniffi 0.32's Kotlin callback bridge expects this namespace's
-/// `RustBuffer`, while an external error converter returns the canonical
-/// namespace's distinct `RustBuffer` type.
+/// Host-thrown storage failure wrapping the canonical error payload, so its
+/// variants remain defined once in `truapi`.
+///
+/// [UniFFI 0.32 exposes `Result` failures as error enums or `Arc`-backed error
+/// objects](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html). Although
+/// the canonical enum can be exposed as an external error, Kotlin foreign-trait
+/// callbacks must lower thrown errors into this namespace's `RustBuffer`; the
+/// external converter returns the canonical namespace's distinct `RustBuffer`
+/// type. There is no derive-based bridge between them. `uniffi::remote(Error)`
+/// would instead duplicate every canonical variant and field, so this local
+/// one-variant wrapper preserves the canonical definition.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostStorageError {
     /// Canonical storage failure payload.
@@ -53,8 +59,15 @@ impl From<HostStorageError> for v01::HostLocalStorageReadError {
     }
 }
 
-/// Native-friendly rejection error returned by callback methods that map
-/// onto [`truapi::v01::GenericError`].
+/// Native-friendly rejection error returned by callback methods that map onto
+/// [`truapi::v01::GenericError`].
+///
+/// [`uniffi::Error` is the value-style error mapping and only supports enums;
+/// UniFFI's struct alternative is an `Arc`-backed object
+/// error](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html). Making the
+/// canonical SCALE value an object would require Rust-owned handles and foreign
+/// construction solely to carry one string. This local enum keeps the native
+/// exception value-like without changing the canonical wire representation.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostRejection {
     /// Caller rejected the operation.
@@ -78,9 +91,14 @@ impl From<v01::GenericError> for HostRejection {
     }
 }
 
-/// Host-thrown navigation failure wrapping the canonical error payload; the
-/// wrapper is namespace-local for the same uniffi 0.32 Kotlin callback bridge
-/// constraint as [`HostStorageError`].
+/// Host-thrown navigation failure wrapping the canonical error payload.
+///
+/// As described for [`HostStorageError`], [UniFFI's supported error
+/// representations](https://mozilla.github.io/uniffi-rs/0.32/types/errors.html)
+/// do not provide a derive-based way to bridge namespace-specific Kotlin
+/// `RustBuffer` types when an external error is thrown by a foreign-trait
+/// callback. The one-variant wrapper avoids mirroring the canonical navigation
+/// error enum locally.
 #[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
 pub enum HostNavigateRejection {
     /// Canonical navigation failure payload.
