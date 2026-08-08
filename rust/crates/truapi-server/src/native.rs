@@ -202,7 +202,7 @@ pub enum NativePairingDeeplinkScheme {
 pub struct NativePairingPeer {
     /// Pairing host's 32-byte sr25519 Statement Store account id.
     pub statement_account_id: Vec<u8>,
-    /// Pairing host's 65-byte uncompressed SEC1 P-256 public key.
+    /// Pairing host's 32-byte raw X25519 public key.
     pub encryption_public_key: Vec<u8>,
 }
 
@@ -224,8 +224,8 @@ pub enum NativePairingError {
         /// Supplied byte length.
         actual: u64,
     },
-    /// P-256 public key was not exactly 65 bytes.
-    #[error("encryption_public_key must be exactly 65 bytes, got {actual}")]
+    /// X25519 public key was not exactly 32 bytes.
+    #[error("encryption_public_key must be exactly 32 bytes, got {actual}")]
     InvalidEncryptionPublicKey {
         /// Supplied byte length.
         actual: u64,
@@ -2008,7 +2008,7 @@ mod tests {
     fn native_pairing_peer_validates_persisted_key_lengths() {
         let err = ResponderPeer::try_from(NativePairingPeer {
             statement_account_id: vec![0; 31],
-            encryption_public_key: vec![0; 65],
+            encryption_public_key: vec![0; 32],
         })
         .unwrap_err();
         assert!(matches!(
@@ -2018,12 +2018,12 @@ mod tests {
 
         let err = ResponderPeer::try_from(NativePairingPeer {
             statement_account_id: vec![0; 32],
-            encryption_public_key: vec![0; 64],
+            encryption_public_key: vec![0; 31],
         })
         .unwrap_err();
         assert!(matches!(
             err,
-            NativePairingError::InvalidEncryptionPublicKey { actual: 64 }
+            NativePairingError::InvalidEncryptionPublicKey { actual: 31 }
         ));
     }
 

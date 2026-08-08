@@ -44,8 +44,8 @@ use crate::host_logic::sso::messages::{
     build_signed_session_response_statement, decode_incoming_sso_request, v1,
 };
 use crate::host_logic::sso::pairing::{
-    ResponderIdentity, VersionedHandshakeProposal, bootstrap_topic, decode_pairing_deeplink,
-    derive_p256_keypair_from_entropy, encrypt_v2_handshake_response,
+    ResponderIdentity, VersionedHandshakeProposal, bootstrap_channel, bootstrap_topic,
+    decode_pairing_deeplink, derive_x25519_keypair_from_entropy, encrypt_v2_handshake_response,
     establish_responder_session_info, v2,
 };
 use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
@@ -62,9 +62,9 @@ use crate::runtime::statement_store_rpc;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
-/// RFC-0022 domain for the responder's persistent SSO P-256 key.
+/// RFC-0022 domain for the responder's persistent SSO X25519 key.
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
-/// RFC-0022 domain for the identity chat P-256 key shared in the handshake.
+/// RFC-0022 domain for the identity chat X25519 key shared in the handshake.
 const CHAT_ENCRYPTION_DOMAIN: &[u8] = b"chat";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
@@ -81,11 +81,9 @@ fn derive_responder_identity(entropy: &[u8]) -> Result<(ResponderIdentity, [u8; 
     let statement = derive_identity_keypair(entropy)
         .map_err(|err| format!("identity account derivation failed: {err}"))?;
     let (encryption_secret_key, encryption_public_key) =
-        derive_p256_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN)
-            .map_err(|err| format!("SSO P-256 derivation failed: {err}"))?;
+        derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
     let (identity_chat_private_key, _) =
-        derive_p256_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN)
-            .map_err(|err| format!("chat P-256 derivation failed: {err}"))?;
+        derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN);
     Ok((
         ResponderIdentity {
             statement_secret: statement.secret.to_bytes(),
@@ -143,8 +141,8 @@ pub enum ResponderExit {
 pub struct ResponderPeer {
     /// Pairing host's sr25519 Statement Store account id.
     pub statement_account_id: [u8; 32],
-    /// Pairing host's uncompressed SEC1 P-256 public key.
-    pub encryption_public_key: [u8; 65],
+    /// Pairing host's raw X25519 public key.
+    pub encryption_public_key: [u8; 32],
 }
 
 struct ResponderMaterial {
@@ -263,30 +261,83 @@ pub(crate) async fn answer_pairing(
         peer.encryption_public_key,
     )?;
 
+    match submit_pairing_answer(&services, &material, &session, &peer).await {
+        Ok(()) => Ok((peer, session)),
+        Err(reason) => {
+            let failed = v2::EncryptedResponse::Failed(reason.clone());
+            if let Err(status_error) = submit_handshake_response(
+                &services,
+                &session,
+                &peer,
+                &failed,
+                "sso-responder failed status",
+            )
+            .await
+            {
+                warn!(%status_error, "failed to post pairing Failed status");
+            }
+            Err(reason)
+        }
+    }
+}
+
+/// Post the wallet-side pairing answer sequence: a `Pending` status while the
+/// session is being prepared, then the `Success` payload.
+async fn submit_pairing_answer(
+    services: &Arc<RuntimeServices>,
+    material: &ResponderMaterial,
+    session: &SsoSessionInfo,
+    peer: &ResponderPeer,
+) -> Result<(), String> {
+    let pending = v2::EncryptedResponse::Pending(v2::Status::AllowanceAllocation);
+    if let Err(status_error) = submit_handshake_response(
+        services,
+        session,
+        peer,
+        &pending,
+        "sso-responder pending status",
+    )
+    .await
+    {
+        warn!(%status_error, "failed to post pairing Pending status");
+    }
+
     let success = v2::EncryptedResponse::Success(Box::new(v2::Success {
         identity_account_id: material.identity.statement_public_key,
         root_account_id: material.root_account_id,
         identity_chat_private_key: material.identity_chat_private_key,
         sso_enc_pub_key: material.identity.encryption_public_key,
+        // The headless responder has no separate device chat key; chat
+        // envelopes addressed to the device land on the session key.
         device_enc_pub_key: material.identity.encryption_public_key,
         root_entropy_source: material.root_entropy_source,
     }));
-    let handshake = encrypt_v2_handshake_response(peer.encryption_public_key, &success)?;
+    submit_handshake_response(services, session, peer, &success, "sso-responder handshake").await?;
+    debug!("answered pairing handshake");
+    Ok(())
+}
+
+/// Encrypt one handshake response to the peer and post it on the pairing
+/// topic/channel. Each statement uses fresh ephemeral encryption; the shared
+/// channel makes later responses replace earlier statuses in the store.
+async fn submit_handshake_response(
+    services: &Arc<RuntimeServices>,
+    session: &SsoSessionInfo,
+    peer: &ResponderPeer,
+    response: &v2::EncryptedResponse,
+    label: &'static str,
+) -> Result<(), String> {
+    let handshake = encrypt_v2_handshake_response(peer.encryption_public_key, response)?;
     let topic = bootstrap_topic(peer.statement_account_id, peer.encryption_public_key);
+    let channel = bootstrap_channel(peer.statement_account_id, peer.encryption_public_key);
     let statement = build_signed_statement(
-        &session,
-        topic,
+        session,
+        channel,
         topic,
         handshake.encode(),
         fresh_statement_expiry(),
     )?;
-    services
-        .statement_store
-        .submit(statement, "sso-responder handshake")
-        .await?;
-    debug!("answered pairing handshake");
-
-    Ok((peer, session))
+    services.statement_store.submit(statement, label).await
 }
 
 /// Reconstruct responder session material for a previously persisted peer.
@@ -1382,7 +1433,7 @@ mod tests {
         assert_eq!(identity.statement_public_key, rfc_identity);
 
         let (_, host_encryption_public_key) =
-            derive_p256_keypair_from_entropy(&[0x42; 16], b"sso").unwrap();
+            derive_x25519_keypair_from_entropy(&[0x42; 16], b"sso");
         let session =
             establish_responder_session_info(&identity, [0x55; 32], host_encryption_public_key)
                 .unwrap();

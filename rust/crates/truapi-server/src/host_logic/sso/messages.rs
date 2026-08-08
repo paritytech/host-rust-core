@@ -33,7 +33,7 @@ use truapi::v01::{HostAccountSignVrfError, HostAccountSignVrfRequest, VrfSignatu
 
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::pairing::{
-    AES_GCM_NONCE_LEN, SsoStatementData, decrypt_session_statement_data,
+    AEAD_NONCE_LEN, SsoStatementData, decrypt_session_statement_data,
     encrypt_session_statement_data, encrypt_session_statement_data_with_nonce,
     peer_response_channel,
 };
@@ -1004,7 +1004,7 @@ pub fn build_outgoing_request_statement_with_nonce(
     statement_request_id: String,
     messages: Vec<RemoteMessage>,
     expiry: u64,
-    nonce: [u8; AES_GCM_NONCE_LEN],
+    nonce: [u8; AEAD_NONCE_LEN],
 ) -> Result<Vec<u8>, String> {
     let encrypted =
         encrypt_outgoing_request_data_with_nonce(session, statement_request_id, messages, nonce)?;
@@ -1026,7 +1026,7 @@ fn encrypt_outgoing_request_data_with_nonce(
     session: &SsoSessionInfo,
     statement_request_id: String,
     messages: Vec<RemoteMessage>,
-    nonce: [u8; AES_GCM_NONCE_LEN],
+    nonce: [u8; AEAD_NONCE_LEN],
 ) -> Result<Vec<u8>, String> {
     encrypt_session_statement_data_with_nonce(
         session,
@@ -1055,11 +1055,10 @@ mod tests {
     use crate::host_logic::statement_store::{
         StatementField, build_signed_statement, decode_statement_data,
     };
-    use p256::SecretKey as P256SecretKey;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
     use schnorrkel::{ExpansionMode, MiniSecretKey};
     use truapi::latest::{HostSignPayloadData, TxPayloadExtension};
     use truapi::v01::RingLocationJunction;
+    use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
     fn account() -> ProductAccountId {
         ProductAccountId {
@@ -1079,18 +1078,13 @@ mod tests {
     fn session() -> SsoSessionInfo {
         let mini_secret = MiniSecretKey::from_bytes(&[7; 32]).unwrap();
         let keypair = mini_secret.expand_to_keypair(ExpansionMode::Ed25519);
-        let core_secret = P256SecretKey::from_slice(&[1; 32]).unwrap();
-        let peer_secret = P256SecretKey::from_slice(&[2; 32]).unwrap();
+        let core_secret = X25519SecretKey::from([1; 32]);
+        let peer_secret = X25519SecretKey::from([2; 32]);
         SsoSessionInfo {
             ss_secret: keypair.secret.to_bytes(),
             ss_public_key: keypair.public.to_bytes(),
-            enc_secret: core_secret.to_bytes().into(),
-            peer_enc_pubkey: peer_secret
-                .public_key()
-                .to_encoded_point(false)
-                .as_bytes()
-                .try_into()
-                .unwrap(),
+            enc_secret: core_secret.to_bytes(),
+            peer_enc_pubkey: X25519PublicKey::from(&peer_secret).to_bytes(),
             identity_account_id: [3; 32],
             session_id_own: [4; 32],
             session_id_peer: [5; 32],
@@ -1607,7 +1601,7 @@ mod tests {
             "statement-1".to_string(),
             vec![remote_message.clone()],
             99,
-            [9; AES_GCM_NONCE_LEN],
+            [9; AEAD_NONCE_LEN],
         )
         .unwrap();
         let encrypted = decode_statement_data(&statement).unwrap();
@@ -1646,7 +1640,7 @@ mod tests {
             "statement-1".to_string(),
             vec![remote_message],
             fresh_expiry(),
-            [9; AES_GCM_NONCE_LEN],
+            [9; AEAD_NONCE_LEN],
         )
         .unwrap();
 
@@ -1658,7 +1652,7 @@ mod tests {
 
     fn host_and_responder_sessions() -> (SsoSessionInfo, SsoSessionInfo) {
         use crate::host_logic::sso::pairing::{
-            ResponderIdentity, create_pairing_bootstrap, derive_p256_keypair_from_entropy,
+            ResponderIdentity, create_pairing_bootstrap, derive_x25519_keypair_from_entropy,
             establish_responder_session_info, establish_sso_session_info,
         };
         use truapi_platform::{HostInfo, PairingHostConfig, PlatformInfo};
@@ -1680,7 +1674,7 @@ mod tests {
             .unwrap()
             .expand_to_keypair(ExpansionMode::Ed25519);
         let (encryption_secret_key, encryption_public_key) =
-            derive_p256_keypair_from_entropy(&[0xAB; 16], b"sso").unwrap();
+            derive_x25519_keypair_from_entropy(&[0xAB; 16], b"sso");
         let responder = ResponderIdentity {
             statement_secret: statement_keypair.secret.to_bytes(),
             statement_public_key: statement_keypair.public.to_bytes(),
@@ -1864,7 +1858,7 @@ mod tests {
                 request_id: "statement-1".to_string(),
                 response_code: 0,
             },
-            [9; AES_GCM_NONCE_LEN],
+            [9; AEAD_NONCE_LEN],
         )
         .unwrap();
         build_signed_statement(

@@ -2652,7 +2652,7 @@ public struct NativePairingPeer {
      */
     public var statementAccountId: Data
     /**
-     * Pairing host's 65-byte uncompressed SEC1 P-256 public key.
+     * Pairing host's 32-byte raw X25519 public key.
      */
     public var encryptionPublicKey: Data
 
@@ -2663,7 +2663,7 @@ public struct NativePairingPeer {
          * Pairing host's 32-byte sr25519 Statement Store account id.
          */statementAccountId: Data, 
         /**
-         * Pairing host's 65-byte uncompressed SEC1 P-256 public key.
+         * Pairing host's 32-byte raw X25519 public key.
          */encryptionPublicKey: Data) {
         self.statementAccountId = statementAccountId
         self.encryptionPublicKey = encryptionPublicKey
@@ -5495,7 +5495,7 @@ public enum NativePairingError: Swift.Error {
          */actual: UInt64
     )
     /**
-     * P-256 public key was not exactly 65 bytes.
+     * X25519 public key was not exactly 32 bytes.
      */
     case InvalidEncryptionPublicKey(
         /**
