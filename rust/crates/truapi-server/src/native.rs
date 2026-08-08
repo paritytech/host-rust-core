@@ -608,6 +608,7 @@ impl NativeTrUApiHostRuntime {
             platform,
             chat,
             events,
+            shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
             spawner: self.spawner.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -703,6 +704,10 @@ pub struct NativeProductExecution {
     platform: Arc<dyn truapi_platform::Platform>,
     chat: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     events: Arc<NativeEventBus>,
+    /// Host-runtime events back the process-wide services shared by every
+    /// product execution (chain, Statement Store, and Bulletin). Native
+    /// responses must reach this bus as well as the execution-scoped bus.
+    shared_events: Arc<NativeEventBus>,
     #[cfg(feature = "ws-bridge")]
     spawner: Spawner,
     #[cfg(feature = "ws-bridge")]
@@ -798,11 +803,14 @@ impl NativeProductExecution {
 
     /// Notify this execution's chain adapter of one JSON-RPC response.
     pub fn notify_chain_response(&self, connection_id: u32, json: String) {
+        self.shared_events
+            .notify_chain_response(connection_id, json.clone());
         self.events.notify_chain_response(connection_id, json);
     }
 
     /// Notify this execution's chain adapter that a connection closed.
     pub fn notify_chain_closed(&self, connection_id: u32) {
+        self.shared_events.notify_chain_closed(connection_id);
         self.events.notify_chain_closed(connection_id);
     }
 
@@ -2154,6 +2162,40 @@ mod tests {
                 .as_slice(),
             &[42]
         );
+    }
+
+    #[test]
+    fn product_execution_routes_chain_events_to_shared_and_scoped_services() {
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::new()),
+                None,
+                native_execution_config("chain.dot", ProductExecutionKind::Spa),
+            )
+            .expect("SPA execution should open");
+        let mut shared_responses = host.events.register_chain(41);
+        let mut scoped_responses = execution.events.register_chain(41);
+        let response = r#"{"jsonrpc":"2.0","id":"truapi:1","result":true}"#.to_string();
+
+        execution.notify_chain_response(41, response.clone());
+
+        assert_eq!(
+            futures::executor::block_on(shared_responses.next()),
+            Some(response.clone())
+        );
+        assert_eq!(
+            futures::executor::block_on(scoped_responses.next()),
+            Some(response)
+        );
+
+        execution.notify_chain_closed(41);
+        assert_eq!(futures::executor::block_on(shared_responses.next()), None);
+        assert_eq!(futures::executor::block_on(scoped_responses.next()), None);
     }
 
     #[test]
