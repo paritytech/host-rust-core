@@ -98,6 +98,9 @@ fn generate_playground_services_code(
                 doc_url = ts_string_literal(&doc_url),
             )
             .unwrap();
+            if method.wire.host_initiated {
+                writeln!(out, "        hostInitiated: true,").unwrap();
+            }
             if let Some(description) = docs.description {
                 writeln!(
                     out,

@@ -24,4 +24,14 @@ describe("servicesForExecution", () => {
             generatedServices.find(({ name }) => name === "Storage")?.requiredExecution,
         ).toBeUndefined();
     });
+
+    test("generated metadata identifies host-initiated subscriptions", () => {
+        const chat = generatedServices.find(({ name }) => name === "Chat");
+        expect(
+            chat?.methods.find(({ name }) => name === "custom_message_render")?.hostInitiated,
+        ).toBe(true);
+        expect(
+            chat?.methods.find(({ name }) => name === "action_subscribe")?.hostInitiated,
+        ).toBeUndefined();
+    });
 });
