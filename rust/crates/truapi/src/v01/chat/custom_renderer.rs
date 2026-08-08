@@ -305,18 +305,6 @@ pub struct TextFieldProps {
     pub value_change_action: Option<String>,
 }
 
-/// A component in the custom renderer UI tree, combining modifiers, typed props,
-/// and recursive children.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct Component<P> {
-    /// Layout and styling modifiers.
-    pub modifiers: Vec<Modifier>,
-    /// Component-specific properties.
-    pub props: P,
-    /// Child nodes.
-    pub children: Vec<CustomRendererNode>,
-}
-
 /// A node in the custom renderer UI tree. Component variants contain recursive
 /// `children` fields.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
