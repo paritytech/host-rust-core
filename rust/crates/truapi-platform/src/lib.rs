@@ -1,3 +1,8 @@
+#![allow(
+    clippy::double_must_use,
+    reason = "async-trait generates must_use futures for async trait methods"
+)]
+
 //! Capability traits a TrUAPI host must implement.
 //!
 //! Each trait covers a single OS-primitive surface the Rust core cannot reach
