@@ -81,6 +81,8 @@ manifest at the repo root (`Package.swift`) so apps can consume it as a git-URL
 dependency. Its `scripts/rebuild.sh` regenerates the committed bindings and
 container bundle (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
+Native bindings expose the canonical Rust domain and protocol value types;
+native-only adapter types are limited to lifecycle and callback behavior.
 
 ### JS Host SDKs
 

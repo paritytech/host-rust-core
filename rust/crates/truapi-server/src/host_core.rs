@@ -44,9 +44,13 @@ pub trait FrameSink: Send + Sync {
     fn emit_frame(&self, frame: Vec<u8>);
 }
 
-/// Errors returned by [`ProductRuntime::receive_frame`].
-#[derive(Debug, Error)]
+/// Errors returned while routing work through a product runtime.
+#[derive(Debug, Clone, Error)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Error))]
 pub enum ProductRuntimeError {
+    /// No connected product runtime is available.
+    #[error("product is not connected")]
+    NotConnected,
     /// Incoming bytes did not decode as a protocol frame.
     #[error("invalid frame: {reason}")]
     InvalidFrame {

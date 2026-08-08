@@ -118,38 +118,6 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotAppDev,
 }
 
-/// Native failure while routing Chat work to a product connection.
-#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
-pub enum NativeChatError {
-    /// No connected product runtime is available.
-    #[error("chat product is not connected")]
-    NotConnected,
-    /// The connected executable is not a Chat worker.
-    #[error("chat operation denied for this execution")]
-    Denied,
-    /// The product connection has closed.
-    #[error("chat product connection is closed")]
-    Closed,
-    /// The product or host did not install the requested Chat surface.
-    #[error("chat operation is unsupported")]
-    Unsupported,
-    /// The bounded startup action buffer is full.
-    #[error("chat action buffer is full")]
-    BufferFull,
-}
-
-impl From<crate::ProductRuntimeError> for NativeChatError {
-    fn from(error: crate::ProductRuntimeError) -> Self {
-        match error {
-            crate::ProductRuntimeError::Denied => Self::Denied,
-            crate::ProductRuntimeError::Closed => Self::Closed,
-            crate::ProductRuntimeError::Unsupported => Self::Unsupported,
-            crate::ProductRuntimeError::BufferFull => Self::BufferFull,
-            crate::ProductRuntimeError::InvalidFrame { .. } => Self::Unsupported,
-        }
-    }
-}
-
 /// Native runtime configuration supplied before product calls are handled.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NativeRuntimeConfig {
@@ -736,9 +704,9 @@ impl NativeProductExecution {
             .product_admin_with(self.product.clone(), self.adapters())
     }
 
-    fn require_chat(&self) -> Result<(), NativeChatError> {
+    fn require_chat(&self) -> Result<(), crate::ProductRuntimeError> {
         if self.closed.load(Ordering::Acquire) {
-            return Err(NativeChatError::Closed);
+            return Err(crate::ProductRuntimeError::Closed);
         }
         crate::runtime::chat_platform_for(
             self.product.execution_kind,
@@ -746,7 +714,6 @@ impl NativeProductExecution {
             self.chat.as_ref(),
         )
         .map(drop)
-        .map_err(NativeChatError::from)
     }
 
     #[cfg(feature = "ws-bridge")]
@@ -824,13 +791,11 @@ impl NativeProductExecution {
     pub fn publish_chat_action(
         &self,
         action: v01::HostChatActionSubscribeItem,
-    ) -> Result<(), NativeChatError> {
+    ) -> Result<(), crate::ProductRuntimeError> {
         self.require_chat()?;
-        self.chat_connection
-            .publish_action(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
-                action,
-            ))
-            .map_err(NativeChatError::from)
+        self.chat_connection.publish_action(
+            truapi::versioned::chat::HostChatActionSubscribeItem::V1(action),
+        )
     }
 
     /// Request typed native UI for one stored custom Chat message.
@@ -840,7 +805,7 @@ impl NativeProductExecution {
         message_type: String,
         payload: Vec<u8>,
         observer: Box<dyn NativeCustomRendererObserver>,
-    ) -> Result<Arc<NativeCustomRendererSubscription>, NativeChatError> {
+    ) -> Result<Arc<NativeCustomRendererSubscription>, crate::ProductRuntimeError> {
         self.require_chat()?;
         #[cfg(feature = "ws-bridge")]
         {
@@ -849,17 +814,15 @@ impl NativeProductExecution {
                 .lock()
                 .expect("native product control mutex poisoned")
                 .clone()
-                .ok_or(NativeChatError::NotConnected)?;
-            let stream = control
-                .render_custom_message(message_id, message_type, payload)
-                .map_err(NativeChatError::from)?;
+                .ok_or(crate::ProductRuntimeError::NotConnected)?;
+            let stream = control.render_custom_message(message_id, message_type, payload)?;
             let observer: Arc<dyn NativeCustomRendererObserver> = observer.into();
             Ok(observe_renderer(stream, observer, self.spawner.clone()))
         }
         #[cfg(not(feature = "ws-bridge"))]
         {
             let _ = (message_id, message_type, payload, observer);
-            Err(NativeChatError::NotConnected)
+            Err(crate::ProductRuntimeError::NotConnected)
         }
     }
 
@@ -1864,7 +1827,7 @@ mod tests {
         assert!(Arc::ptr_eq(&spa.runtime, &chat.runtime));
         assert!(matches!(
             spa.publish_chat_action(text_chat_action("denied")),
-            Err(NativeChatError::Denied)
+            Err(crate::ProductRuntimeError::Denied)
         ));
         chat.publish_chat_action(text_chat_action("buffered"))
             .expect("Chat action should buffer before connection");
@@ -1878,7 +1841,7 @@ mod tests {
             .expect("replacement Chat execution should open");
         assert!(matches!(
             chat.publish_chat_action(text_chat_action("closed")),
-            Err(NativeChatError::Closed)
+            Err(crate::ProductRuntimeError::Closed)
         ));
         assert!(!replacement.closed.load(Ordering::Acquire));
         replacement
@@ -1903,7 +1866,10 @@ mod tests {
 
         let result = execution.publish_chat_action(text_chat_action("hello"));
 
-        assert!(matches!(result, Err(NativeChatError::Unsupported)));
+        assert!(matches!(
+            result,
+            Err(crate::ProductRuntimeError::Unsupported)
+        ));
     }
 
     #[test]

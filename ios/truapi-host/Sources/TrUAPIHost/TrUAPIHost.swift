@@ -742,7 +742,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
         messageId: String,
         messageType: String,
         payload: Data
-    ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error>
+    ) throws -> AsyncThrowingStream<CustomRendererNode, Error>
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
     ) throws -> PermissionAuthorizationStatus
@@ -797,7 +797,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         messageId: String,
         messageType: String,
         payload: Data
-    ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
+    ) throws -> AsyncThrowingStream<CustomRendererNode, Error> {
         try customRendererStream { observer in
             try inner.renderCustomMessage(
                 messageId: messageId,
@@ -945,9 +945,9 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
 }
 private func customRendererStream(
     _ subscribe: (CustomRendererStreamObserver) throws -> NativeCustomRendererSubscription
-) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
+) throws -> AsyncThrowingStream<CustomRendererNode, Error> {
     let (stream, continuation) = AsyncThrowingStream.makeStream(
-        of: NativeCustomRendererNode.self
+        of: CustomRendererNode.self
     )
     let observer = CustomRendererStreamObserver(continuation: continuation)
     let subscription = try subscribe(observer)
@@ -958,13 +958,13 @@ private func customRendererStream(
 }
 
 private final class CustomRendererStreamObserver: NativeCustomRendererObserver, @unchecked Sendable {
-    private let continuation: AsyncThrowingStream<NativeCustomRendererNode, Error>.Continuation
+    private let continuation: AsyncThrowingStream<CustomRendererNode, Error>.Continuation
 
-    init(continuation: AsyncThrowingStream<NativeCustomRendererNode, Error>.Continuation) {
+    init(continuation: AsyncThrowingStream<CustomRendererNode, Error>.Continuation) {
         self.continuation = continuation
     }
 
-    func onUpdate(node: NativeCustomRendererNode) {
+    func onUpdate(node: CustomRendererNode) {
         continuation.yield(node)
     }
 
@@ -972,4 +972,3 @@ private final class CustomRendererStreamObserver: NativeCustomRendererObserver, 
         continuation.finish()
     }
 }
-

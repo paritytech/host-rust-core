@@ -45,6 +45,11 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   rather than importing a concrete protocol version. Runtime crates may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
+- Native bindings expose canonical Rust domain and protocol types directly.
+  Add feature-gated UniFFI derives to those types and custom conversions for
+  unsupported leaf values instead of defining parallel `Native*` mirrors.
+  Boundary-specific native types are reserved for lifecycle or callback
+  behavior that has no canonical value-type equivalent.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever
