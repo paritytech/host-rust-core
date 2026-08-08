@@ -1,3 +1,8 @@
+#![allow(
+    clippy::double_must_use,
+    reason = "async-trait generates must_use futures for async trait methods"
+)]
+
 //! TrUAPI trait and type definitions for the host product SDK.
 //!
 //! Concrete wire types live in per-version modules. Versioned envelopes are in
