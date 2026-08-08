@@ -1975,7 +1975,7 @@ mod tests {
         ));
         #[cfg(feature = "ws-bridge")]
         chat.publish_chat_action(text_chat_action("buffered"))
-        .expect("Chat action should buffer before connection");
+            .expect("Chat action should buffer before connection");
 
         let replacement = host
             .open_product_execution(
@@ -2218,7 +2218,6 @@ mod tests {
             &[("second-room".to_string(), "Echo: hello".to_string())]
         );
     }
-
 
     #[test]
     fn native_chain_provider_forwards_send_response_and_close() {
