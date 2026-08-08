@@ -738,31 +738,6 @@ public protocol HostCallbacks: AnyObject, Sendable {
      */
     func localStorageClear(key: String) throws
 
-    /**
-     * Return whether this native host installed a Chat storage and UI adapter.
-     */
-    func chatSupported()  -> Bool
-
-    /**
-     * Create or resolve a native product Chat room.
-     */
-    func chatCreateRoom(roomId: String, name: String, icon: String) throws  -> ChatRoomRegistrationStatus
-
-    /**
-     * Persist a text message in native Chat storage.
-     */
-    func chatPostTextMessage(roomId: String, text: String) throws  -> String
-
-    /**
-     * Persist a custom message in native Chat storage.
-     */
-    func chatPostCustomMessage(roomId: String, messageType: String, payload: Data) throws  -> String
-
-    /**
-     * Return the current product-scoped native Chat room list.
-     */
-    func chatListRooms() throws  -> [ChatRoom]
-
 }
 /**
  * Callback surface that iOS and Android implement.
@@ -1140,74 +1115,6 @@ open func localStorageClear(key: String)throws   {try rustCallWithError(FfiConve
         FfiConverterString.lower(key),uniffiCallStatus
     )
 }
-}
-
-    /**
-     * Return whether this native host installed a Chat storage and UI adapter.
-     */
-open func chatSupported() -> Bool  {
-    return try!  FfiConverterBool.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_hostcallbacks_chat_supported(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Create or resolve a native product Chat room.
-     */
-open func chatCreateRoom(roomId: String, name: String, icon: String)throws  -> ChatRoomRegistrationStatus  {
-    return try  FfiConverterTypeChatRoomRegistrationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_hostcallbacks_chat_create_room(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(roomId),
-        FfiConverterString.lower(name),
-        FfiConverterString.lower(icon),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Persist a text message in native Chat storage.
-     */
-open func chatPostTextMessage(roomId: String, text: String)throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_hostcallbacks_chat_post_text_message(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(roomId),
-        FfiConverterString.lower(text),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Persist a custom message in native Chat storage.
-     */
-open func chatPostCustomMessage(roomId: String, messageType: String, payload: Data)throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_hostcallbacks_chat_post_custom_message(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(roomId),
-        FfiConverterString.lower(messageType),
-        FfiConverterData.lower(payload),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Return the current product-scoped native Chat room list.
-     */
-open func chatListRooms()throws  -> [ChatRoom]  {
-    return try  FfiConverterSequenceTypeChatRoom.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_hostcallbacks_chat_list_rooms(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
 }
 
 
@@ -1865,136 +1772,6 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 writeReturn: writeReturn,
                 lowerError: FfiConverterTypeHostStorageError_lower
             )
-        },
-        chatSupported: { (
-            uniffiHandle: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<Int8>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> Bool in
-                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return uniffiObj.chatSupported(
-                )
-            }
-
-
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterBool.lower($0) }
-            uniffiTraitInterfaceCall(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn
-            )
-        },
-        chatCreateRoom: { (
-            uniffiHandle: UInt64,
-            roomId: RustBuffer,
-            name: RustBuffer,
-            icon: RustBuffer,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> ChatRoomRegistrationStatus in
-                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.chatCreateRoom(
-                     roomId: try FfiConverterString.lift(roomId),
-                     name: try FfiConverterString.lift(name),
-                     icon: try FfiConverterString.lift(icon)
-                )
-            }
-
-
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeChatRoomRegistrationStatus_lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeHostRejection_lower
-            )
-        },
-        chatPostTextMessage: { (
-            uniffiHandle: UInt64,
-            roomId: RustBuffer,
-            text: RustBuffer,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> String in
-                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.chatPostTextMessage(
-                     roomId: try FfiConverterString.lift(roomId),
-                     text: try FfiConverterString.lift(text)
-                )
-            }
-
-
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeHostRejection_lower
-            )
-        },
-        chatPostCustomMessage: { (
-            uniffiHandle: UInt64,
-            roomId: RustBuffer,
-            messageType: RustBuffer,
-            payload: RustBuffer,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> String in
-                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.chatPostCustomMessage(
-                     roomId: try FfiConverterString.lift(roomId),
-                     messageType: try FfiConverterString.lift(messageType),
-                     payload: try FfiConverterData.lift(payload)
-                )
-            }
-
-
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeHostRejection_lower
-            )
-        },
-        chatListRooms: { (
-            uniffiHandle: UInt64,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> [ChatRoom] in
-                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.chatListRooms(
-                )
-            }
-
-
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterSequenceTypeChatRoom.lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeHostRejection_lower
-            )
         }
     )
 
@@ -2076,7 +1853,371 @@ public func FfiConverterTypeHostCallbacks_lower(_ value: HostCallbacks) -> UInt6
 
 
 /**
+ * Native Chat storage and UI adapter. Hosts that support the Chat modality
+ * pass an implementation to
+ * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
+ * simply pass `None`. Callbacks run inline on the dispatcher thread and must
+ * return promptly without blocking.
+ */
+public protocol NativeChatCallbacks: AnyObject, Sendable {
+
+    /**
+     * Create or resolve a native product Chat room.
+     */
+    func createRoom(roomId: String, name: String, icon: String) throws  -> ChatRoomRegistrationStatus
+
+    /**
+     * Persist a text message in native Chat storage.
+     */
+    func postTextMessage(roomId: String, text: String) throws  -> String
+
+    /**
+     * Persist a custom message in native Chat storage.
+     */
+    func postCustomMessage(roomId: String, messageType: String, payload: Data) throws  -> String
+
+    /**
+     * Return the current product-scoped native Chat room list.
+     */
+    func listRooms() throws  -> [ChatRoom]
+
+}
+/**
+ * Native Chat storage and UI adapter. Hosts that support the Chat modality
+ * pass an implementation to
+ * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
+ * simply pass `None`. Callbacks run inline on the dispatcher thread and must
+ * return promptly without blocking.
+ */
+open class NativeChatCallbacksImpl: NativeChatCallbacks, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_truapi_server_fn_clone_nativechatcallbacks(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_truapi_server_fn_free_nativechatcallbacks(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Create or resolve a native product Chat room.
+     */
+open func createRoom(roomId: String, name: String, icon: String)throws  -> ChatRoomRegistrationStatus  {
+    return try  FfiConverterTypeChatRoomRegistrationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_create_room(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(roomId),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(icon),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Persist a text message in native Chat storage.
+     */
+open func postTextMessage(roomId: String, text: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_post_text_message(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(roomId),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Persist a custom message in native Chat storage.
+     */
+open func postCustomMessage(roomId: String, messageType: String, payload: Data)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_post_custom_message(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(roomId),
+        FfiConverterString.lower(messageType),
+        FfiConverterData.lower(payload),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Return the current product-scoped native Chat room list.
+     */
+open func listRooms()throws  -> [ChatRoom]  {
+    return try  FfiConverterSequenceTypeChatRoom.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_list_rooms(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceNativeChatCallbacks = UniffiVTableCallbackInterfaceNativeChatCallbacks(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeNativeChatCallbacks.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface NativeChatCallbacks: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeNativeChatCallbacks.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface NativeChatCallbacks: handle missing in uniffiClone")
+            }
+        },
+        createRoom: { (
+            uniffiHandle: UInt64,
+            roomId: RustBuffer,
+            name: RustBuffer,
+            icon: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ChatRoomRegistrationStatus in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.createRoom(
+                     roomId: try FfiConverterString.lift(roomId),
+                     name: try FfiConverterString.lift(name),
+                     icon: try FfiConverterString.lift(icon)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeChatRoomRegistrationStatus_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        postTextMessage: { (
+            uniffiHandle: UInt64,
+            roomId: RustBuffer,
+            text: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.postTextMessage(
+                     roomId: try FfiConverterString.lift(roomId),
+                     text: try FfiConverterString.lift(text)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        postCustomMessage: { (
+            uniffiHandle: UInt64,
+            roomId: RustBuffer,
+            messageType: RustBuffer,
+            payload: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.postCustomMessage(
+                     roomId: try FfiConverterString.lift(roomId),
+                     messageType: try FfiConverterString.lift(messageType),
+                     payload: try FfiConverterData.lift(payload)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        listRooms: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> [ChatRoom] in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.listRooms(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterSequenceTypeChatRoom.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceNativeChatCallbacks> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceNativeChatCallbacks>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitNativeChatCallbacks() {
+    uniffi_truapi_server_fn_init_callback_vtable_nativechatcallbacks(UniffiCallbackInterfaceNativeChatCallbacks.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeChatCallbacks: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<NativeChatCallbacks>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = NativeChatCallbacks
+
+    public static func lift(_ handle: UInt64) throws -> NativeChatCallbacks {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return NativeChatCallbacksImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: NativeChatCallbacks) -> UInt64 {
+         if let rustImpl = value as? NativeChatCallbacksImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeChatCallbacks {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NativeChatCallbacks, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeChatCallbacks_lift(_ handle: UInt64) throws -> NativeChatCallbacks {
+    return try FfiConverterTypeNativeChatCallbacks.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeChatCallbacks_lower(_ value: NativeChatCallbacks) -> UInt64 {
+    return FfiConverterTypeNativeChatCallbacks.lower(value)
+}
+
+
+
+
+
+
+/**
  * Opaque recursive custom-renderer node exposed through typed accessors.
+ *
+ * The child tree is built once per renderer update, so [`Self::children`]
+ * hands out `Arc` clones instead of deep-copying subtrees on every walk.
  */
 public protocol NativeCustomRendererNodeProtocol: AnyObject, Sendable {
 
@@ -2133,6 +2274,9 @@ public protocol NativeCustomRendererNodeProtocol: AnyObject, Sendable {
 }
 /**
  * Opaque recursive custom-renderer node exposed through typed accessors.
+ *
+ * The child tree is built once per renderer update, so [`Self::children`]
+ * hands out `Arc` clones instead of deep-copying subtrees on every walk.
  */
 open class NativeCustomRendererNode: NativeCustomRendererNodeProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -2521,7 +2665,8 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
-     * Publish one native Chat action, buffering it until the connection opens.
+     * Publish one native Chat action, buffering it until the product
+     * connection subscribes.
      */
     func publishChatAction(action: HostChatActionSubscribeItem) throws
 
@@ -2687,7 +2832,8 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
 }
 
     /**
-     * Publish one native Chat action, buffering it until the connection opens.
+     * Publish one native Chat action, buffering it until the product
+     * connection subscribes.
      */
 open func publishChatAction(action: HostChatActionSubscribeItem)throws   {try rustCallWithError(FfiConverterTypeNativeChatError_lift) {
         uniffiCallStatus in
@@ -2864,11 +3010,6 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func notifyChainResponse(connectionId: UInt32, json: String)
 
     /**
-     * Push a complete replacement of the current native Chat room list.
-     */
-    func notifyChatRoomsChanged(rooms: [ChatRoom])
-
-    /**
      * Push a preimage lookup update to active subscriptions for `key`.
      *
      * `value == None` represents a known miss; `Some(bytes)` represents the
@@ -2898,16 +3039,6 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * main/UI thread.
      */
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
-
-    /**
-     * Publish one native Chat action to the connected product worker.
-     */
-    func publishChatAction(action: HostChatActionSubscribeItem) throws
-
-    /**
-     * Request typed native UI for one stored custom Chat message.
-     */
-    func renderCustomMessage(messageId: String, messageType: String, payload: Data, observer: NativeCustomRendererObserver) throws  -> NativeCustomRendererSubscription
 
     /**
      * Update a stored permission authorization status. Passing
@@ -3083,18 +3214,6 @@ open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCal
 }
 
     /**
-     * Push a complete replacement of the current native Chat room list.
-     */
-open func notifyChatRoomsChanged(rooms: [ChatRoom])  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_notify_chat_rooms_changed(
-            self.uniffiCloneHandle(),
-        FfiConverterSequenceTypeChatRoom.lower(rooms),uniffiCallStatus
-    )
-}
-}
-
-    /**
      * Push a preimage lookup update to active subscriptions for `key`.
      *
      * `value == None` represents a known miss; `Some(bytes)` represents the
@@ -3150,34 +3269,6 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
     uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
             self.uniffiCloneHandle(),
         FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Publish one native Chat action to the connected product worker.
-     */
-open func publishChatAction(action: HostChatActionSubscribeItem)throws   {try rustCallWithError(FfiConverterTypeNativeChatError_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_publish_chat_action(
-            self.uniffiCloneHandle(),
-        FfiConverterTypeHostChatActionSubscribeItem_lower(action),uniffiCallStatus
-    )
-}
-}
-
-    /**
-     * Request typed native UI for one stored custom Chat message.
-     */
-open func renderCustomMessage(messageId: String, messageType: String, payload: Data, observer: NativeCustomRendererObserver)throws  -> NativeCustomRendererSubscription  {
-    return try  FfiConverterTypeNativeCustomRendererSubscription_lift(try rustCallWithError(FfiConverterTypeNativeChatError_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_render_custom_message(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(messageId),
-        FfiConverterString.lower(messageType),
-        FfiConverterData.lower(payload),
-        FfiConverterCallbackInterfaceNativeCustomRendererObserver_lower(observer),uniffiCallStatus
     )
 })
 }
@@ -3286,11 +3377,6 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func activateLocalSession(secret: Data, liteUsername: String?) throws
 
     /**
-     * Retained compatibility hook; native signing hosts have no pairing login.
-     */
-    func cancelLogin()
-
-    /**
      * Core-owned logout for the process-wide authentication session.
      */
     func disconnect()
@@ -3306,14 +3392,11 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func notifyChainResponse(connectionId: UInt32, json: String)
 
     /**
-     * Retained compatibility hook; native signing hosts own session state in memory.
-     */
-    func notifySessionStoreChanged()
-
-    /**
      * Open a connection-scoped execution with immutable trusted context.
+     * `chat_callbacks` installs the host's Chat adapter; hosts without the
+     * Chat modality pass `None`.
      */
-    func openProductExecution(callbacks: HostCallbacks, executionConfig: NativeProductExecutionConfig) throws  -> NativeProductExecution
+    func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeChatCallbacks?, executionConfig: NativeProductExecutionConfig) throws  -> NativeProductExecution
 
 }
 /**
@@ -3399,17 +3482,6 @@ open func activateLocalSession(secret: Data, liteUsername: String?)throws   {try
 }
 
     /**
-     * Retained compatibility hook; native signing hosts have no pairing login.
-     */
-open func cancelLogin()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapihostruntime_cancel_login(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-
-    /**
      * Core-owned logout for the process-wide authentication session.
      */
 open func disconnect()  {try! rustCall() {
@@ -3446,25 +3518,17 @@ open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCal
 }
 
     /**
-     * Retained compatibility hook; native signing hosts own session state in memory.
-     */
-open func notifySessionStoreChanged()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapihostruntime_notify_session_store_changed(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-
-    /**
      * Open a connection-scoped execution with immutable trusted context.
+     * `chat_callbacks` installs the host's Chat adapter; hosts without the
+     * Chat modality pass `None`.
      */
-open func openProductExecution(callbacks: HostCallbacks, executionConfig: NativeProductExecutionConfig)throws  -> NativeProductExecution  {
+open func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeChatCallbacks?, executionConfig: NativeProductExecutionConfig)throws  -> NativeProductExecution  {
     return try  FfiConverterTypeNativeProductExecution_lift(try rustCallWithError(FfiConverterTypeNativeRuntimeConfigError_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativetruapihostruntime_open_product_execution(
             self.uniffiCloneHandle(),
         FfiConverterTypeHostCallbacks_lower(callbacks),
+        FfiConverterOptionTypeNativeChatCallbacks.lower(chatCallbacks),
         FfiConverterTypeNativeProductExecutionConfig_lower(executionConfig),uniffiCallStatus
     )
 })
@@ -6288,6 +6352,30 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeNativeChatCallbacks: FfiConverterRustBuffer {
+    typealias SwiftType = NativeChatCallbacks?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNativeChatCallbacks.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNativeChatCallbacks.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeNativeCustomRendererBoxProps: FfiConverterRustBuffer {
     typealias SwiftType = NativeCustomRendererBoxProps?
 
@@ -6942,19 +7030,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 6971) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_supported() != 33741) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_create_room() != 27595) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_text_message() != 10747) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_post_text_message() != 32241) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_custom_message() != 33405) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_post_custom_message() != 50327) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chat_list_rooms() != 56334) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 21374) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 59343) {
@@ -6975,7 +7060,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 40210) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 42431) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_render_custom_message() != 8883) {
@@ -7008,9 +7093,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_response() != 43518) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chat_rooms_changed() != 2525) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_preimage_changed() != 45611) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -7021,12 +7103,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_publish_chat_action() != 31578) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_render_custom_message() != 22561) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 37317) {
@@ -7041,9 +7117,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_activate_local_session() != 40075) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_cancel_login() != 49702) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -7053,10 +7126,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_response() != 26715) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_session_store_changed() != 3751) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 19064) {
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 49537) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativecustomrenderernode_box_props() != 6639) {
@@ -7106,6 +7176,7 @@ private let initializationResult: InitializationResult = {
     }
 
     uniffiCallbackInitHostCallbacks()
+    uniffiCallbackInitNativeChatCallbacks()
     uniffiCallbackInitNativeCustomRendererObserver()
     uniffiEnsureTruapiInitialized()
     uniffiEnsureTruapiPlatformInitialized()
