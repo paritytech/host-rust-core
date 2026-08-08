@@ -1,7 +1,7 @@
 // Copyright 2026 Parity Technologies (UK) Ltd.
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 
 /** Development bundle id of the Polkadot iOS app. */
@@ -69,6 +69,23 @@ export function run(command, args, options = {}) {
       `${command} ${args.join(" ")} failed with ${result.status}`,
     );
   }
+}
+
+/** Run a command without blocking, so callers can overlap independent steps. */
+export function runAsync(command, args, options = {}) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { stdio: "inherit", ...options });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolvePromise();
+      } else {
+        reject(
+          new Error(`${command} ${args.join(" ")} failed with ${code ?? signal}`),
+        );
+      }
+    });
+  });
 }
 
 export function selectSimulator() {

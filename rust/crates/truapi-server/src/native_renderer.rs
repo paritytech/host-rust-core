@@ -196,9 +196,13 @@ pub struct NativeCustomRendererTextFieldProps {
 }
 
 /// Opaque recursive custom-renderer node exposed through typed accessors.
+///
+/// The child tree is built once per renderer update, so [`Self::children`]
+/// hands out `Arc` clones instead of deep-copying subtrees on every walk.
 #[derive(Debug, uniffi::Object)]
 pub struct NativeCustomRendererNode {
     inner: v01::CustomRendererNode,
+    children: Vec<Arc<NativeCustomRendererNode>>,
 }
 
 #[uniffi::export]
@@ -237,11 +241,7 @@ impl NativeCustomRendererNode {
 
     /// Return this component node's recursive children.
     pub fn children(&self) -> Vec<Arc<NativeCustomRendererNode>> {
-        self.component_children()
-            .iter()
-            .cloned()
-            .map(|inner| Arc::new(Self { inner }))
-            .collect()
+        self.children.clone()
     }
 
     /// Return box properties when this is a box node.
@@ -319,33 +319,41 @@ impl NativeCustomRendererNode {
 }
 
 impl NativeCustomRendererNode {
-    fn component_parts(&self) -> (&[v01::Modifier], &[v01::CustomRendererNode]) {
-        match &self.inner {
-            v01::CustomRendererNode::Box(component) => (&component.modifiers, &component.children),
-            v01::CustomRendererNode::Column(component) => {
-                (&component.modifiers, &component.children)
-            }
-            v01::CustomRendererNode::Row(component) => (&component.modifiers, &component.children),
-            v01::CustomRendererNode::Spacer(component) => {
-                (&component.modifiers, &component.children)
-            }
-            v01::CustomRendererNode::Text(component) => (&component.modifiers, &component.children),
-            v01::CustomRendererNode::Button(component) => {
-                (&component.modifiers, &component.children)
-            }
+    /// Build the shared node tree for one renderer update.
+    fn from_tree(mut inner: v01::CustomRendererNode) -> Arc<Self> {
+        let children = Self::take_children(&mut inner)
+            .into_iter()
+            .map(Self::from_tree)
+            .collect();
+        Arc::new(Self { inner, children })
+    }
+
+    fn take_children(inner: &mut v01::CustomRendererNode) -> Vec<v01::CustomRendererNode> {
+        match inner {
+            v01::CustomRendererNode::Box(component) => core::mem::take(&mut component.children),
+            v01::CustomRendererNode::Column(component) => core::mem::take(&mut component.children),
+            v01::CustomRendererNode::Row(component) => core::mem::take(&mut component.children),
+            v01::CustomRendererNode::Spacer(component) => core::mem::take(&mut component.children),
+            v01::CustomRendererNode::Text(component) => core::mem::take(&mut component.children),
+            v01::CustomRendererNode::Button(component) => core::mem::take(&mut component.children),
             v01::CustomRendererNode::TextField(component) => {
-                (&component.modifiers, &component.children)
+                core::mem::take(&mut component.children)
             }
-            v01::CustomRendererNode::Nil | v01::CustomRendererNode::String { .. } => (&[], &[]),
+            v01::CustomRendererNode::Nil | v01::CustomRendererNode::String { .. } => Vec::new(),
         }
     }
 
     fn component_modifiers(&self) -> &[v01::Modifier] {
-        self.component_parts().0
-    }
-
-    fn component_children(&self) -> &[v01::CustomRendererNode] {
-        self.component_parts().1
+        match &self.inner {
+            v01::CustomRendererNode::Box(component) => &component.modifiers,
+            v01::CustomRendererNode::Column(component) => &component.modifiers,
+            v01::CustomRendererNode::Row(component) => &component.modifiers,
+            v01::CustomRendererNode::Spacer(component) => &component.modifiers,
+            v01::CustomRendererNode::Text(component) => &component.modifiers,
+            v01::CustomRendererNode::Button(component) => &component.modifiers,
+            v01::CustomRendererNode::TextField(component) => &component.modifiers,
+            v01::CustomRendererNode::Nil | v01::CustomRendererNode::String { .. } => &[],
+        }
     }
 }
 
@@ -397,7 +405,7 @@ pub(crate) fn observe_renderer(
         let _ = Abortable::new(
             async move {
                 while let Some(inner) = stream.next().await {
-                    observer.on_update(Arc::new(NativeCustomRendererNode { inner }));
+                    observer.on_update(NativeCustomRendererNode::from_tree(inner));
                 }
                 observer.on_complete();
             },
@@ -482,8 +490,8 @@ mod tests {
 
     #[test]
     fn projects_recursive_renderer_nodes_into_typed_native_values() {
-        let node = NativeCustomRendererNode {
-            inner: v01::CustomRendererNode::Column(v01::Component {
+        let node =
+            NativeCustomRendererNode::from_tree(v01::CustomRendererNode::Column(v01::Component {
                 modifiers: vec![v01::Modifier::Padding(v01::Dimensions {
                     top: Compact(12),
                     end: Compact(8),
@@ -510,8 +518,7 @@ mod tests {
                         children: Vec::new(),
                     }),
                 ],
-            }),
-        };
+            }));
 
         assert_eq!(node.kind(), NativeCustomRendererNodeKind::Column);
         assert_eq!(

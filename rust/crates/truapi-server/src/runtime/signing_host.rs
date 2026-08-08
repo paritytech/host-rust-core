@@ -1051,7 +1051,8 @@ mod tests {
         authority: Arc<dyn ProductAuthority>,
     ) -> ProductRuntimeHost {
         ProductRuntimeHost::from_services(
-            services,
+            services.clone(),
+            crate::host_core::ConnectionAdapters::from_services(&services),
             authority,
             ProductContext::new("myapp.dot".to_string()).expect("valid product id"),
         )
@@ -1063,7 +1064,8 @@ mod tests {
         product_id: &str,
     ) -> ProductRuntimeHost {
         ProductRuntimeHost::from_services(
-            services,
+            services.clone(),
+            crate::host_core::ConnectionAdapters::from_services(&services),
             authority,
             ProductContext::new(product_id.to_string()).expect("valid product id"),
         )

@@ -8,6 +8,7 @@ use truapi::Subscription;
 use truapi::versioned::chat::HostChatActionSubscribeItem;
 
 use crate::host_core::ProductRuntimeError;
+#[cfg(any(test, not(target_arch = "wasm32")))]
 const ACTION_BUFFER_CAPACITY: usize = 64;
 
 /// Chat access policy shared by the wire runtime and the native entrypoints:
@@ -59,14 +60,14 @@ impl ChatConnection {
     }
 
     /// Publish one native action, buffering it until the product subscribes.
-    /// On failure the undelivered action is returned alongside the error.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn publish_action(
         &self,
         mut action: HostChatActionSubscribeItem,
-    ) -> Result<(), (ProductRuntimeError, Box<HostChatActionSubscribeItem>)> {
+    ) -> Result<(), ProductRuntimeError> {
         let mut state = self.state.lock().expect("chat state mutex poisoned");
         if state.closed {
-            return Err((ProductRuntimeError::Closed, Box::new(action)));
+            return Err(ProductRuntimeError::Closed);
         }
         if let Some(sender) = state.actions.as_ref() {
             match sender.unbounded_send(action) {
@@ -76,13 +77,21 @@ impl ChatConnection {
             state.actions = None;
         }
         if state.action_buffer.len() == ACTION_BUFFER_CAPACITY {
-            return Err((ProductRuntimeError::BufferFull, Box::new(action)));
+            return Err(ProductRuntimeError::BufferFull);
         }
         state.action_buffer.push_back(action);
         Ok(())
     }
 
+    /// End the current subscriber's stream while keeping buffered actions for
+    /// the next product connection that subscribes.
+    pub(crate) fn detach(&self) {
+        let mut state = self.state.lock().expect("chat state mutex poisoned");
+        state.actions = None;
+    }
+
     /// Close all connection-scoped Chat streams and discard buffered work.
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn close(&self) {
         let mut state = self.state.lock().expect("chat state mutex poisoned");
         state.closed = true;
@@ -135,8 +144,23 @@ mod tests {
 
         assert!(matches!(
             connection.publish_action(action("overflow")),
-            Err((ProductRuntimeError::BufferFull, _))
+            Err(ProductRuntimeError::BufferFull)
         ));
+    }
+
+    #[test]
+    fn detach_keeps_buffered_actions_for_the_next_subscriber() {
+        let connection = connection();
+        let mut first = connection.subscribe_actions();
+        connection.publish_action(action("live")).unwrap();
+        assert_eq!(block_on(first.next()), Some(action("live")));
+
+        connection.detach();
+        assert_eq!(block_on(first.next()), None);
+        connection.publish_action(action("buffered")).unwrap();
+
+        let mut second = connection.subscribe_actions();
+        assert_eq!(block_on(second.next()), Some(action("buffered")));
     }
 
     #[test]
@@ -149,7 +173,7 @@ mod tests {
         assert_eq!(block_on(actions.next()), None);
         assert!(matches!(
             connection.publish_action(action("too late")),
-            Err((ProductRuntimeError::Closed, _))
+            Err(ProductRuntimeError::Closed)
         ));
     }
 
@@ -168,7 +192,7 @@ mod tests {
         second.close();
         assert!(matches!(
             second.publish_action(action("closed")),
-            Err((ProductRuntimeError::Closed, _))
+            Err(ProductRuntimeError::Closed)
         ));
     }
 }

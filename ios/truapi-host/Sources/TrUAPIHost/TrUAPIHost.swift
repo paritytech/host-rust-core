@@ -409,25 +409,28 @@ public protocol HostBridge: AnyObject, Sendable {
     /// and persisted permission decisions.
     var coreStorage: HostCoreStorageBackend { get }
 
-    /// Whether this host installs native Chat storage and UI callbacks.
-    var supportsChat: Bool { get }
+}
 
+/// Native Chat storage and UI surface. Implement and pass to
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:chat:configuration:)``
+/// when the host supports the Chat modality; hosts without it pass nothing.
+public protocol ChatHostBridge: AnyObject, Sendable {
     /// Create or resolve a native product Chat room.
-    func chatCreateRoom(roomId: String, name: String, icon: String) throws
+    func createRoom(roomId: String, name: String, icon: String) throws
         -> ChatRoomRegistrationStatus
 
     /// Persist a text message in native Chat storage.
-    func chatPostTextMessage(roomId: String, text: String) throws -> String
+    func postTextMessage(roomId: String, text: String) throws -> String
 
     /// Persist a custom message in native Chat storage.
-    func chatPostCustomMessage(
+    func postCustomMessage(
         roomId: String,
         messageType: String,
         payload: Data
     ) throws -> String
 
     /// Return the current product-scoped native Chat rooms.
-    func chatListRooms() throws -> [ChatRoom]
+    func listRooms() throws -> [ChatRoom]
 }
 
 public extension HostBridge {
@@ -442,25 +445,60 @@ public extension HostBridge {
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key: Data) async throws -> Data? { nil }
     func currentTheme() throws -> ThemeVariant { .dark }
-    var supportsChat: Bool { false }
-    func chatCreateRoom(
+}
+
+/// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
+/// `NativeChatCallbacks` protocol.
+private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendable {
+    private let bridge: ChatHostBridge
+
+    init(bridge: ChatHostBridge) {
+        self.bridge = bridge
+    }
+
+    func createRoom(
         roomId: String,
         name: String,
         icon: String
     ) throws -> ChatRoomRegistrationStatus {
-        throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
+        try withHostRejection {
+            try bridge.createRoom(roomId: roomId, name: name, icon: icon)
+        }
     }
-    func chatPostTextMessage(roomId: String, text: String) throws -> String {
-        throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
+
+    func postTextMessage(roomId: String, text: String) throws -> String {
+        try withHostRejection {
+            try bridge.postTextMessage(roomId: roomId, text: text)
+        }
     }
-    func chatPostCustomMessage(
+
+    func postCustomMessage(
         roomId: String,
         messageType: String,
         payload: Data
     ) throws -> String {
-        throw HostRejection.Rejected(reason: "native Chat adapter unavailable")
+        try withHostRejection {
+            try bridge.postCustomMessage(
+                roomId: roomId,
+                messageType: messageType,
+                payload: payload
+            )
+        }
     }
-    func chatListRooms() throws -> [ChatRoom] { [] }
+
+    func listRooms() throws -> [ChatRoom] {
+        try withHostRejection { try bridge.listRooms() }
+    }
+
+    private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
+        do {
+            return try operation()
+        } catch let error as HostRejection {
+            throw error
+        } catch {
+            throw HostRejection.Rejected(reason: error.localizedDescription)
+        }
+    }
 }
 
 /// Adapter that bridges the public `HostBridge` to the generated UniFFI
@@ -520,14 +558,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func coreStorageWrite(key: Data, value: Data) throws {
         try withHostRejection {
             try bridge.coreStorage.write(key: key, value: value)
-            LiveSessionStoreForwarder.notifySessionStoreChanged()
         }
     }
 
     func coreStorageClear(key: Data) throws {
         try withHostRejection {
             try bridge.coreStorage.clear(key: key)
-            LiveSessionStoreForwarder.notifySessionStoreChanged()
         }
     }
 
@@ -589,44 +625,6 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         try withStorageError {
             try bridge.storage.clear(key: key)
         }
-    }
-
-    func chatSupported() -> Bool {
-        bridge.supportsChat
-    }
-
-    func chatCreateRoom(
-        roomId: String,
-        name: String,
-        icon: String
-    ) throws -> ChatRoomRegistrationStatus {
-        try withHostRejection {
-            try bridge.chatCreateRoom(roomId: roomId, name: name, icon: icon)
-        }
-    }
-
-    func chatPostTextMessage(roomId: String, text: String) throws -> String {
-        try withHostRejection {
-            try bridge.chatPostTextMessage(roomId: roomId, text: text)
-        }
-    }
-
-    func chatPostCustomMessage(
-        roomId: String,
-        messageType: String,
-        payload: Data
-    ) throws -> String {
-        try withHostRejection {
-            try bridge.chatPostCustomMessage(
-                roomId: roomId,
-                messageType: messageType,
-                payload: payload
-            )
-        }
-    }
-
-    func chatListRooms() throws -> [ChatRoom] {
-        try withHostRejection { try bridge.chatListRooms() }
     }
 
     private func withHostRejection<T>(_ operation: () throws -> T) throws -> T {
@@ -693,37 +691,32 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
             callbacks: adapter,
             runtimeConfig: runtimeConfig.native
         )
-        LiveSessionStoreForwarder.register(self)
-        notifySessionStoreChanged()
-    }
-
-    deinit {
-        LiveSessionStoreForwarder.unregister(self)
     }
 
     /// Open one executable connection with a host-assigned immutable context.
+    /// Pass `chat` to install the host's Chat adapter; hosts without the Chat
+    /// modality omit it.
     public func openProductExecution(
         bridge: HostBridge,
+        chat: ChatHostBridge? = nil,
         configuration: ProductExecutionConfig
     ) throws -> TrUAPIProductExecution {
         let adapter = HostCallbackAdapter(bridge: bridge)
+        let chatAdapter = chat.map { ChatCallbackAdapter(bridge: $0) }
         let execution = try inner.openProductExecution(
             callbacks: adapter,
+            chatCallbacks: chatAdapter,
             executionConfig: configuration.native
         )
-        return TrUAPIProductExecution(inner: execution, callbackRetainer: adapter)
+        return TrUAPIProductExecution(
+            inner: execution,
+            callbackRetainer: adapter,
+            chatRetainer: chatAdapter
+        )
     }
 
     public func disconnect() {
         inner.disconnect()
-    }
-
-    public func notifySessionStoreChanged() {
-        inner.notifySessionStoreChanged()
-    }
-
-    public func cancelLogin() {
-        inner.cancelLogin()
     }
 
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
@@ -768,10 +761,16 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
 public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sendable {
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks
+    private let chatRetainer: NativeChatCallbacks?
 
-    fileprivate init(inner: NativeProductExecution, callbackRetainer: HostCallbacks) {
+    fileprivate init(
+        inner: NativeProductExecution,
+        callbackRetainer: HostCallbacks,
+        chatRetainer: NativeChatCallbacks?
+    ) {
         self.inner = inner
         self.callbackRetainer = callbackRetainer
+        self.chatRetainer = chatRetainer
     }
 
     deinit {
@@ -865,12 +864,6 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
             callbacks: callbacks,
             runtimeConfig: runtimeConfig.native
         )
-        LiveSessionStoreForwarder.register(self)
-        notifySessionStoreChanged()
-    }
-
-    deinit {
-        LiveSessionStoreForwarder.unregister(self)
     }
 
     /// Start the localhost WebSocket bridge. Requires the `ws-bridge`
@@ -884,27 +877,6 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     /// Stop the localhost WebSocket bridge (if running).
     public func stopWsBridge() {
         inner.stopWsBridge()
-    }
-
-    /// Publish a native Chat action to this core's connected Chat worker.
-    public func publishChatAction(_ action: HostChatActionSubscribeItem) throws {
-        try inner.publishChatAction(action: action)
-    }
-
-    /// Stream typed replacement trees for one stored custom Chat message.
-    public func renderCustomMessage(
-        messageId: String,
-        messageType: String,
-        payload: Data
-    ) throws -> AsyncThrowingStream<NativeCustomRendererNode, Error> {
-        try customRendererStream { observer in
-            try inner.renderCustomMessage(
-                messageId: messageId,
-                messageType: messageType,
-                payload: payload,
-                observer: observer
-            )
-        }
     }
 
     /// Core-owned logout/disconnect path. Best-effort notifies the SSO peer,
@@ -970,11 +942,6 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
         inner.notifyChainClosed(connectionId: connectionId)
     }
 
-    /// Push a complete replacement of the native Chat room list to active
-    /// product subscriptions.
-    public func notifyChatRoomsChanged(rooms: [ChatRoom]) {
-        inner.notifyChatRoomsChanged(rooms: rooms)
-    }
 }
 private func customRendererStream(
     _ subscribe: (CustomRendererStreamObserver) throws -> NativeCustomRendererSubscription
@@ -1006,59 +973,3 @@ private final class CustomRendererStreamObserver: NativeCustomRendererObserver, 
     }
 }
 
-private final class WeakReference<Value: AnyObject> {
-    weak var value: Value?
-
-    init(_ value: Value) {
-        self.value = value
-    }
-}
-
-private enum LiveSessionStoreForwarder {
-    private static let lock = NSLock()
-    private static var cores: [ObjectIdentifier: WeakReference<TrUAPIHostCore>] = [:]
-    private static var runtimes: [ObjectIdentifier: WeakReference<TrUAPIHostRuntime>] = [:]
-
-    static func register(_ runtime: TrUAPIHostRuntime) {
-        lock.lock()
-        runtimes[ObjectIdentifier(runtime)] = WeakReference(runtime)
-        lock.unlock()
-    }
-
-    static func unregister(_ runtime: TrUAPIHostRuntime) {
-        lock.lock()
-        runtimes.removeValue(forKey: ObjectIdentifier(runtime))
-        lock.unlock()
-    }
-
-    static func register(_ core: TrUAPIHostCore) {
-        lock.lock()
-        cores[ObjectIdentifier(core)] = WeakReference(core)
-        lock.unlock()
-    }
-
-    static func unregister(_ core: TrUAPIHostCore) {
-        lock.lock()
-        cores.removeValue(forKey: ObjectIdentifier(core))
-        lock.unlock()
-    }
-
-    static func notifySessionStoreChanged() {
-        let liveCores: [TrUAPIHostCore]
-        let liveRuntimes: [TrUAPIHostRuntime]
-
-        lock.lock()
-        cores = cores.filter { $0.value.value != nil }
-        runtimes = runtimes.filter { $0.value.value != nil }
-        liveCores = cores.values.compactMap(\.value)
-        liveRuntimes = runtimes.values.compactMap(\.value)
-        lock.unlock()
-
-        for core in liveCores {
-            core.notifySessionStoreChanged()
-        }
-        for runtime in liveRuntimes {
-            runtime.notifySessionStoreChanged()
-        }
-    }
-}

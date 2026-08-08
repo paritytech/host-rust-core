@@ -78,17 +78,4 @@ final class StubHostCallbacks: HostCallbacks, @unchecked Sendable {
     func localStorageRead(key: String) throws -> Data? { localStore[key] }
     func localStorageWrite(key: String, value: Data) throws { localStore[key] = value }
     func localStorageClear(key: String) throws { localStore[key] = nil }
-    func chatSupported() -> Bool { false }
-    func chatCreateRoom(
-        roomId _: String,
-        name _: String,
-        icon _: String
-    ) throws -> ChatRoomRegistrationStatus { .new }
-    func chatPostTextMessage(roomId _: String, text _: String) throws -> String { "message-id" }
-    func chatPostCustomMessage(
-        roomId _: String,
-        messageType _: String,
-        payload _: Data
-    ) throws -> String { "message-id" }
-    func chatListRooms() throws -> [ChatRoom] { [] }
 }

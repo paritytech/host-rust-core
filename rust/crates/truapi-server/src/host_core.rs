@@ -28,8 +28,8 @@ use truapi_platform::{
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::runtime::{
-    LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit,
-    RuntimeServices, SigningHostRole, respond_to_pairing,
+    ChatConnection, LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost,
+    ResponderExit, RuntimeServices, SigningHostRole, respond_to_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -116,6 +116,7 @@ impl PairingHostRuntime {
             self.services.clone(),
             self.pairing_host.clone(),
             product,
+            ConnectionAdapters::from_services(&self.services),
             sink,
         )
     }
@@ -123,7 +124,12 @@ impl PairingHostRuntime {
     /// Build a product-scoped administration handle from this pairing host.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.product_admin"))]
     pub fn product_admin(&self, product: ProductContext) -> HostAdmin {
-        HostAdmin::new(self.services.clone(), self.pairing_host.clone(), product)
+        HostAdmin::new(
+            self.services.clone(),
+            self.pairing_host.clone(),
+            product,
+            ConnectionAdapters::from_services(&self.services),
+        )
     }
 
     /// Disconnect the active account-authority session.
@@ -323,25 +329,25 @@ impl SigningHostRuntime {
             self.services.clone(),
             self.signing_host.clone(),
             product,
+            ConnectionAdapters::from_services(&self.services),
             sink,
         )
     }
 
-    /// Build one product connection with connection-specific platform
-    /// adapters while sharing this runtime's authentication and core services.
-    pub fn product_runtime_with_platform(
+    /// Build one product connection with adapters scoped to one native
+    /// executable while sharing this runtime's authentication and services.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn product_runtime_with(
         &self,
         product: ProductContext,
-        platform: Arc<dyn Platform>,
-        chat: Option<Arc<dyn ChatPlatform>>,
+        adapters: ConnectionAdapters,
         sink: Arc<dyn FrameSink>,
     ) -> ProductRuntime {
-        ProductRuntime::new_with_platform(
+        ProductRuntime::new(
             self.services.clone(),
             self.signing_host.clone(),
             product,
-            platform,
-            chat,
+            adapters,
             sink,
         )
     }
@@ -349,23 +355,27 @@ impl SigningHostRuntime {
     /// Build a product-scoped administration handle from this signing host.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.product_admin"))]
     pub fn product_admin(&self, product: ProductContext) -> HostAdmin {
-        HostAdmin::new(self.services.clone(), self.signing_host.clone(), product)
+        HostAdmin::new(
+            self.services.clone(),
+            self.signing_host.clone(),
+            product,
+            ConnectionAdapters::from_services(&self.services),
+        )
     }
 
     /// Build a product administration handle with adapters scoped to one
     /// native executable connection.
-    pub fn product_admin_with_platform(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn product_admin_with(
         &self,
         product: ProductContext,
-        platform: Arc<dyn Platform>,
-        chat: Option<Arc<dyn ChatPlatform>>,
+        adapters: ConnectionAdapters,
     ) -> HostAdmin {
-        HostAdmin::new_with_platform(
+        HostAdmin::new(
             self.services.clone(),
             self.signing_host.clone(),
             product,
-            platform,
-            chat,
+            adapters,
         )
     }
 
@@ -432,6 +442,26 @@ impl SigningHostRuntime {
     }
 }
 
+/// Adapters scoped to one product connection: the platform serving its
+/// syscalls, the optional native Chat adapter, and the connection's Chat
+/// stream state. Non-native connections use [`Self::from_services`].
+pub(crate) struct ConnectionAdapters {
+    pub(crate) platform: Arc<dyn Platform>,
+    pub(crate) chat_platform: Option<Arc<dyn ChatPlatform>>,
+    pub(crate) chat: Arc<ChatConnection>,
+}
+
+impl ConnectionAdapters {
+    /// Default adapters for a connection without native scoping.
+    pub(crate) fn from_services(services: &RuntimeServices) -> Self {
+        Self {
+            platform: services.platform.clone(),
+            chat_platform: None,
+            chat: Arc::new(ChatConnection::new()),
+        }
+    }
+}
+
 /// Product-scoped administration handle for host UI.
 ///
 /// Host UI should use this when it needs to inspect or update core-owned state
@@ -442,44 +472,21 @@ pub struct HostAdmin {
 }
 
 impl HostAdmin {
-    /// Build an admin handle from a long-lived host runtime.
+    /// Build an admin handle from a long-lived host runtime and the adapters
+    /// scoped to one product connection.
     #[instrument(skip_all, fields(runtime.method = "host_admin.new"))]
     pub(crate) fn new(
         services: Arc<RuntimeServices>,
         authority: Arc<dyn ProductAuthority>,
         product: ProductContext,
+        adapters: ConnectionAdapters,
     ) -> Self {
         let product_runtime = Arc::new(ProductRuntimeHost::from_services(
             services,
+            adapters,
             authority.clone(),
             product,
         ));
-        Self::from_product_runtime(authority, product_runtime)
-    }
-
-    /// Build an admin handle with adapters scoped to one executable
-    /// connection while retaining the shared host authority.
-    pub(crate) fn new_with_platform(
-        services: Arc<RuntimeServices>,
-        authority: Arc<dyn ProductAuthority>,
-        product: ProductContext,
-        platform: Arc<dyn Platform>,
-        chat: Option<Arc<dyn ChatPlatform>>,
-    ) -> Self {
-        let product_runtime = Arc::new(ProductRuntimeHost::from_services_with_platform(
-            services,
-            platform,
-            chat,
-            authority.clone(),
-            product,
-        ));
-        Self::from_product_runtime(authority, product_runtime)
-    }
-
-    fn from_product_runtime(
-        authority: Arc<dyn ProductAuthority>,
-        product_runtime: Arc<ProductRuntimeHost>,
-    ) -> Self {
         Self {
             authority,
             product_runtime,
@@ -590,18 +597,6 @@ impl ProductRuntimeControl {
         Ok(&self.runtime)
     }
 
-    /// Publish a native Chat action to this connection. On failure the
-    /// undelivered action is returned alongside the error.
-    pub fn publish_chat_action(
-        &self,
-        action: v01::HostChatActionSubscribeItem,
-    ) -> Result<(), (ProductRuntimeError, Box<v01::HostChatActionSubscribeItem>)> {
-        match self.runtime() {
-            Ok(runtime) => runtime.publish_chat_action(action),
-            Err(error) => Err((error, Box::new(action))),
-        }
-    }
-
     /// Request custom-message UI from this connection's product renderer.
     pub fn render_custom_message(
         &self,
@@ -654,38 +649,10 @@ impl ProductRuntime {
         services: Arc<RuntimeServices>,
         authority: Arc<dyn ProductAuthority>,
         product: ProductContext,
+        adapters: ConnectionAdapters,
         sink: Arc<dyn FrameSink>,
     ) -> Self {
-        let admin = HostAdmin::new(services.clone(), authority.clone(), product);
-        Self::from_admin(services, authority, admin, sink)
-    }
-
-    /// Build one connection using execution-scoped platform adapters while
-    /// sharing host-level authentication and infrastructure.
-    pub(crate) fn new_with_platform(
-        services: Arc<RuntimeServices>,
-        authority: Arc<dyn ProductAuthority>,
-        product: ProductContext,
-        platform: Arc<dyn Platform>,
-        chat: Option<Arc<dyn ChatPlatform>>,
-        sink: Arc<dyn FrameSink>,
-    ) -> Self {
-        let admin = HostAdmin::new_with_platform(
-            services.clone(),
-            authority.clone(),
-            product,
-            platform,
-            chat,
-        );
-        Self::from_admin(services, authority, admin, sink)
-    }
-
-    fn from_admin(
-        services: Arc<RuntimeServices>,
-        authority: Arc<dyn ProductAuthority>,
-        admin: HostAdmin,
-        sink: Arc<dyn FrameSink>,
-    ) -> Self {
+        let admin = HostAdmin::new(services.clone(), authority.clone(), product, adapters);
         let disposed = Arc::new(AtomicBool::new(false));
         let transport = Arc::new(SinkTransport {
             sink,
@@ -812,7 +779,7 @@ impl ProductRuntime {
         {
             handle.abort();
         }
-        self.admin.product_runtime.close_chat();
+        self.admin.product_runtime.detach_chat();
         self.host_subscriptions.close();
         self.core.cancel_subscriptions();
     }
@@ -865,16 +832,6 @@ mod tests {
 
     fn assert_send_sync<T: Send + Sync>() {}
 
-    fn text_action(text: &str) -> v01::HostChatActionSubscribeItem {
-        v01::HostChatActionSubscribeItem {
-            room_id: "room".to_string(),
-            peer: "alice".to_string(),
-            payload: v01::ChatActionPayload::MessagePosted(v01::ChatMessageContent::Text {
-                text: text.to_string(),
-            }),
-        }
-    }
-
     #[test]
     fn product_runtime_and_dispatch_future_are_send() {
         assert_send_sync::<ProductRuntime>();
@@ -888,23 +845,6 @@ mod tests {
         );
 
         assert_send(runtime.receive_frame(Vec::new()));
-    }
-
-    #[test]
-    fn spa_connection_rejects_native_chat_actions() {
-        let (host_config, product) = runtime_config("myapp.dot");
-        let runtime = ProductRuntime::from_platform_with_config(
-            Arc::new(StubPlatform::default()),
-            host_config,
-            product,
-            test_spawner(),
-            Arc::new(RecordingSink::default()),
-        );
-
-        assert!(matches!(
-            runtime.control().publish_chat_action(text_action("hello")),
-            Err((ProductRuntimeError::Denied, _))
-        ));
     }
 
     #[test]

@@ -9,8 +9,6 @@
 //! the pairing-host-only entry points are inert.
 
 use std::collections::HashMap;
-#[cfg(feature = "ws-bridge")]
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -38,48 +36,6 @@ use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererS
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
-
-#[cfg(feature = "ws-bridge")]
-const NATIVE_CHAT_ACTION_BUFFER_CAPACITY: usize = 64;
-
-#[cfg(feature = "ws-bridge")]
-#[derive(Default)]
-struct NativeProductControlState {
-    control: Option<crate::ProductRuntimeControl>,
-    pending_chat_actions: VecDeque<v01::HostChatActionSubscribeItem>,
-}
-
-#[cfg(feature = "ws-bridge")]
-impl NativeProductControlState {
-    fn publish_chat_action(
-        &mut self,
-        action: v01::HostChatActionSubscribeItem,
-    ) -> Result<(), NativeChatError> {
-        let action = match self.control.as_ref() {
-            Some(control) => match control.publish_chat_action(action) {
-                Ok(()) => return Ok(()),
-                Err((crate::ProductRuntimeError::Closed, action)) => {
-                    self.control = None;
-                    *action
-                }
-                Err((error, _)) => return Err(error.into()),
-            },
-            None => action,
-        };
-        if self.pending_chat_actions.len() == NATIVE_CHAT_ACTION_BUFFER_CAPACITY {
-            return Err(NativeChatError::BufferFull);
-        }
-        self.pending_chat_actions.push_back(action);
-        Ok(())
-    }
-
-    fn attach(&mut self, control: crate::ProductRuntimeControl) {
-        for action in self.pending_chat_actions.drain(..) {
-            let _ = control.publish_chat_action(action);
-        }
-        self.control = Some(control);
-    }
-}
 
 /// Host-thrown storage failure wrapping the canonical error payload, so its
 /// variants remain defined once in `truapi`.
@@ -548,12 +504,17 @@ pub trait HostCallbacks: Send + Sync {
     fn local_storage_write(&self, key: String, value: Vec<u8>) -> Result<(), HostStorageError>;
     /// Clear a value from the host's scoped key-value store.
     fn local_storage_clear(&self, key: String) -> Result<(), HostStorageError>;
+}
 
-    /// Return whether this native host installed a Chat storage and UI adapter.
-    fn chat_supported(&self) -> bool;
-
+/// Native Chat storage and UI adapter. Hosts that support the Chat modality
+/// pass an implementation to
+/// [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
+/// simply pass `None`. Callbacks run inline on the dispatcher thread and must
+/// return promptly without blocking.
+#[uniffi::export(rust, foreign)]
+pub trait NativeChatCallbacks: Send + Sync {
     /// Create or resolve a native product Chat room.
-    fn chat_create_room(
+    fn create_room(
         &self,
         room_id: String,
         name: String,
@@ -561,14 +522,10 @@ pub trait HostCallbacks: Send + Sync {
     ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection>;
 
     /// Persist a text message in native Chat storage.
-    fn chat_post_text_message(
-        &self,
-        room_id: String,
-        text: String,
-    ) -> Result<String, HostRejection>;
+    fn post_text_message(&self, room_id: String, text: String) -> Result<String, HostRejection>;
 
     /// Persist a custom message in native Chat storage.
-    fn chat_post_custom_message(
+    fn post_custom_message(
         &self,
         room_id: String,
         message_type: String,
@@ -576,7 +533,7 @@ pub trait HostCallbacks: Send + Sync {
     ) -> Result<String, HostRejection>;
 
     /// Return the current product-scoped native Chat room list.
-    fn chat_list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
+    fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection>;
 }
 
 /// Process-owned native TrUAPI runtime shared by all executable connections.
@@ -630,17 +587,21 @@ impl NativeTrUApiHostRuntime {
     fn open_product_execution_with_callbacks(
         &self,
         callbacks: Arc<dyn HostCallbacks>,
+        chat_callbacks: Option<Arc<dyn NativeChatCallbacks>>,
         product: ProductContext,
     ) -> Arc<NativeProductExecution> {
         let events = Arc::new(NativeEventBus::default());
-        let concrete_platform = Arc::new(CallbackPlatform {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
         });
-        let platform: Arc<dyn truapi_platform::Platform> = concrete_platform.clone();
-        let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> = callbacks
-            .chat_supported()
-            .then_some(concrete_platform as Arc<dyn truapi_platform::ChatPlatform>);
+        let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> =
+            chat_callbacks.map(|chat| -> Arc<dyn truapi_platform::ChatPlatform> {
+                Arc::new(ChatCallbackPlatform {
+                    chat,
+                    events: events.clone(),
+                })
+            });
         let execution = Arc::new(NativeProductExecution {
             runtime: self.runtime.clone(),
             product: product.clone(),
@@ -652,10 +613,11 @@ impl NativeTrUApiHostRuntime {
             #[cfg(feature = "ws-bridge")]
             callbacks,
             closed: AtomicBool::new(false),
+            chat_connection: Arc::new(crate::runtime::ChatConnection::new()),
             #[cfg(feature = "ws-bridge")]
             bridge: Mutex::new(None),
             #[cfg(feature = "ws-bridge")]
-            product_control: Arc::new(Mutex::new(NativeProductControlState::default())),
+            product_control: Arc::new(Mutex::new(None)),
         });
 
         if product.execution_kind == ProductExecutionKind::Chat {
@@ -692,13 +654,16 @@ impl NativeTrUApiHostRuntime {
     }
 
     /// Open a connection-scoped execution with immutable trusted context.
+    /// `chat_callbacks` installs the host's Chat adapter; hosts without the
+    /// Chat modality pass `None`.
     pub fn open_product_execution(
         &self,
         callbacks: Arc<dyn HostCallbacks>,
+        chat_callbacks: Option<Arc<dyn NativeChatCallbacks>>,
         execution_config: NativeProductExecutionConfig,
     ) -> Result<Arc<NativeProductExecution>, NativeRuntimeConfigError> {
         let product: ProductContext = execution_config.try_into()?;
-        Ok(self.open_product_execution_with_callbacks(callbacks, product))
+        Ok(self.open_product_execution_with_callbacks(callbacks, chat_callbacks, product))
     }
 
     /// Core-owned logout for the process-wide authentication session.
@@ -728,12 +693,6 @@ impl NativeTrUApiHostRuntime {
     pub fn notify_chain_closed(&self, connection_id: u32) {
         self.events.notify_chain_closed(connection_id);
     }
-
-    /// Retained compatibility hook; native signing hosts own session state in memory.
-    pub fn notify_session_store_changed(&self) {}
-
-    /// Retained compatibility hook; native signing hosts have no pairing login.
-    pub fn cancel_login(&self) {}
 }
 
 /// One native executable connection opened from a process-owned host runtime.
@@ -748,20 +707,28 @@ pub struct NativeProductExecution {
     spawner: Spawner,
     #[cfg(feature = "ws-bridge")]
     callbacks: Arc<dyn HostCallbacks>,
+    /// Single Chat action buffer shared with every product connection this
+    /// execution opens; survives bridge restarts until [`Self::shutdown`].
+    chat_connection: Arc<crate::runtime::ChatConnection>,
     closed: AtomicBool,
     #[cfg(feature = "ws-bridge")]
     bridge: Mutex<Option<WsBridge>>,
     #[cfg(feature = "ws-bridge")]
-    product_control: Arc<Mutex<NativeProductControlState>>,
+    product_control: Arc<Mutex<Option<crate::ProductRuntimeControl>>>,
 }
 
 impl NativeProductExecution {
+    fn adapters(&self) -> crate::host_core::ConnectionAdapters {
+        crate::host_core::ConnectionAdapters {
+            platform: self.platform.clone(),
+            chat_platform: self.chat.clone(),
+            chat: self.chat_connection.clone(),
+        }
+    }
+
     fn admin(&self) -> crate::HostAdmin {
-        self.runtime.product_admin_with_platform(
-            self.product.clone(),
-            self.platform.clone(),
-            self.chat.clone(),
-        )
+        self.runtime
+            .product_admin_with(self.product.clone(), self.adapters())
     }
 
     fn require_chat(&self) -> Result<(), NativeChatError> {
@@ -790,7 +757,7 @@ impl NativeProductExecution {
         *self
             .product_control
             .lock()
-            .expect("native product control mutex poisoned") = NativeProductControlState::default();
+            .expect("native product control mutex poisoned") = None;
     }
 }
 
@@ -844,25 +811,18 @@ impl NativeProductExecution {
         self.events.notify_chat_rooms_changed(rooms);
     }
 
-    /// Publish one native Chat action, buffering it until the connection opens.
+    /// Publish one native Chat action, buffering it until the product
+    /// connection subscribes.
     pub fn publish_chat_action(
         &self,
         action: v01::HostChatActionSubscribeItem,
     ) -> Result<(), NativeChatError> {
         self.require_chat()?;
-
-        #[cfg(feature = "ws-bridge")]
-        {
-            self.product_control
-                .lock()
-                .expect("native product control mutex poisoned")
-                .publish_chat_action(action)
-        }
-        #[cfg(not(feature = "ws-bridge"))]
-        {
-            let _ = action;
-            Err(NativeChatError::NotConnected)
-        }
+        self.chat_connection
+            .publish_action(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
+                action,
+            ))
+            .map_err(NativeChatError::from)
     }
 
     /// Request typed native UI for one stored custom Chat message.
@@ -880,7 +840,6 @@ impl NativeProductExecution {
                 .product_control
                 .lock()
                 .expect("native product control mutex poisoned")
-                .control
                 .clone()
                 .ok_or(NativeChatError::NotConnected)?;
             let stream = control
@@ -907,6 +866,7 @@ impl NativeProductExecution {
         }
         #[cfg(feature = "ws-bridge")]
         self.stop_bridge();
+        self.chat_connection.close();
     }
 }
 
@@ -935,21 +895,21 @@ impl NativeProductExecution {
         };
         let runtime = self.runtime.clone();
         let product = self.product.clone();
-        let platform = self.platform.clone();
-        let chat = self.chat.clone();
+        let adapters = self.adapters();
         let product_control = self.product_control.clone();
         let runtime_factory = Arc::new(move |sink| {
-            let product_runtime = runtime.product_runtime_with_platform(
+            let product_runtime = runtime.product_runtime_with(
                 product.clone(),
-                platform.clone(),
-                chat.clone(),
+                crate::host_core::ConnectionAdapters {
+                    platform: adapters.platform.clone(),
+                    chat_platform: adapters.chat_platform.clone(),
+                    chat: adapters.chat.clone(),
+                },
                 sink,
             );
-            let control = product_runtime.control();
-            product_control
+            *product_control
                 .lock()
-                .expect("native product control mutex poisoned")
-                .attach(control);
+                .expect("native product control mutex poisoned") = Some(product_runtime.control());
             product_runtime
         });
         let (bridge, endpoint) = WsBridge::start(bind_port, runtime_factory, logger)?;
@@ -1010,9 +970,7 @@ impl NativeTrUApiCore {
     /// **Inert on a native host.** A signing host owns the active session in
     /// memory, so there is no session-store sync loop to wake. Retained so
     /// hosts written against the pairing-host surface still link.
-    pub fn notify_session_store_changed(&self) {
-        self.host.notify_session_store_changed();
-    }
+    pub fn notify_session_store_changed(&self) {}
 
     /// Cancel an in-flight pairing login.
     ///
@@ -1021,9 +979,7 @@ impl NativeTrUApiCore {
     /// locally activated session instead. Calling this emits no auth state and
     /// changes nothing. Retained so hosts written against the pairing-host
     /// surface still link.
-    pub fn cancel_login(&self) {
-        self.host.cancel_login();
-    }
+    pub fn cancel_login(&self) {}
 
     /// Read a stored permission authorization status without prompting.
     ///
@@ -1086,31 +1042,6 @@ impl NativeTrUApiCore {
     pub fn notify_chain_closed(&self, connection_id: u32) {
         self.execution.notify_chain_closed(connection_id);
     }
-
-    /// Push a complete replacement of the current native Chat room list.
-    pub fn notify_chat_rooms_changed(&self, rooms: Vec<v01::ChatRoom>) {
-        self.execution.notify_chat_rooms_changed(rooms);
-    }
-
-    /// Publish one native Chat action to the connected product worker.
-    pub fn publish_chat_action(
-        &self,
-        action: v01::HostChatActionSubscribeItem,
-    ) -> Result<(), NativeChatError> {
-        self.execution.publish_chat_action(action)
-    }
-
-    /// Request typed native UI for one stored custom Chat message.
-    pub fn render_custom_message(
-        &self,
-        message_id: String,
-        message_type: String,
-        payload: Vec<u8>,
-        observer: Box<dyn NativeCustomRendererObserver>,
-    ) -> Result<Arc<NativeCustomRendererSubscription>, NativeChatError> {
-        self.execution
-            .render_custom_message(message_id, message_type, payload, observer)
-    }
 }
 
 /// Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`) for
@@ -1132,7 +1063,8 @@ fn native_core_from_platform_config(
         "truapi.native.core.boot",
         "core ready",
     )?;
-    let execution = host.open_product_execution_with_callbacks(callbacks, runtime_config.product);
+    let execution =
+        host.open_product_execution_with_callbacks(callbacks, None, runtime_config.product);
     Ok(Arc::new(NativeTrUApiCore { host, execution }))
 }
 
@@ -1574,22 +1506,29 @@ impl PreimageHost for CallbackPlatform {
     }
 }
 
+/// [`truapi_platform::ChatPlatform`] served by host-provided
+/// [`NativeChatCallbacks`]; constructed only when the host passed one.
+struct ChatCallbackPlatform {
+    chat: Arc<dyn NativeChatCallbacks>,
+    events: Arc<NativeEventBus>,
+}
+
 #[async_trait]
-impl truapi_platform::ChatPlatform for CallbackPlatform {
+impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
     async fn create_room(
         &self,
         _product: &ProductContext,
         request: v01::HostChatCreateRoomRequest,
     ) -> Result<v01::HostChatCreateRoomResponse, v01::HostChatCreateRoomError> {
         let status = self
-            .callbacks
-            .chat_create_room(request.room_id, request.name, request.icon)
+            .chat
+            .create_room(request.room_id, request.name, request.icon)
             .map_err(|error| v01::HostChatCreateRoomError::Unknown {
                 reason: error.to_string(),
             })?;
 
         if status == v01::ChatRoomRegistrationStatus::New
-            && let Ok(rooms) = self.callbacks.chat_list_rooms()
+            && let Ok(rooms) = self.chat.list_rooms()
         {
             self.events.notify_chat_rooms_changed(rooms);
         }
@@ -1604,13 +1543,12 @@ impl truapi_platform::ChatPlatform for CallbackPlatform {
     ) -> Result<v01::HostChatPostMessageResponse, v01::HostChatPostMessageError> {
         let message_id = match request.payload {
             v01::ChatMessageContent::Text { text } => {
-                self.callbacks.chat_post_text_message(request.room_id, text)
+                self.chat.post_text_message(request.room_id, text)
             }
-            v01::ChatMessageContent::Custom(custom) => self.callbacks.chat_post_custom_message(
-                request.room_id,
-                custom.message_type,
-                custom.payload,
-            ),
+            v01::ChatMessageContent::Custom(custom) => {
+                self.chat
+                    .post_custom_message(request.room_id, custom.message_type, custom.payload)
+            }
             _ => {
                 return Err(v01::HostChatPostMessageError::Unknown {
                     reason: "native Chat adapter supports text and custom messages".to_string(),
@@ -1628,7 +1566,7 @@ impl truapi_platform::ChatPlatform for CallbackPlatform {
         _product: &ProductContext,
     ) -> BoxStream<'static, v01::HostChatListSubscribeItem> {
         let current = v01::HostChatListSubscribeItem {
-            rooms: self.callbacks.chat_list_rooms().unwrap_or_default(),
+            rooms: self.chat.list_rooms().unwrap_or_default(),
         };
         self.events.subscribe_chat_rooms(current)
     }
@@ -1653,53 +1591,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "ws-bridge")]
-    macro_rules! impl_no_chat_callbacks {
-        () => {
-            fn chat_supported(&self) -> bool {
-                false
-            }
-
-            fn chat_create_room(
-                &self,
-                _room_id: String,
-                _name: String,
-                _icon: String,
-            ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
-                Err(HostRejection::Rejected {
-                    reason: "native Chat adapter unavailable".to_string(),
-                })
-            }
-
-            fn chat_post_text_message(
-                &self,
-                _room_id: String,
-                _text: String,
-            ) -> Result<String, HostRejection> {
-                Err(HostRejection::Rejected {
-                    reason: "native Chat adapter unavailable".to_string(),
-                })
-            }
-
-            fn chat_post_custom_message(
-                &self,
-                _room_id: String,
-                _message_type: String,
-                _payload: Vec<u8>,
-            ) -> Result<String, HostRejection> {
-                Err(HostRejection::Rejected {
-                    reason: "native Chat adapter unavailable".to_string(),
-                })
-            }
-
-            fn chat_list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
-                Ok(Vec::new())
-            }
-        };
-    }
-
     struct EventCallbacks {
-        chat_supported: bool,
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<String>>,
         chat_posted_text: Mutex<Vec<(String, String)>>,
@@ -1715,7 +1607,6 @@ mod tests {
     impl EventCallbacks {
         fn new() -> Self {
             Self {
-                chat_supported: false,
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
                 chat_posted_text: Mutex::new(Vec::new()),
@@ -1726,13 +1617,6 @@ mod tests {
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn with_chat() -> Self {
-            Self {
-                chat_supported: true,
-                ..Self::new()
             }
         }
     }
@@ -1837,12 +1721,10 @@ mod tests {
         fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
             Ok(())
         }
+    }
 
-        fn chat_supported(&self) -> bool {
-            self.chat_supported
-        }
-
-        fn chat_create_room(
+    impl NativeChatCallbacks for EventCallbacks {
+        fn create_room(
             &self,
             room_id: String,
             _name: String,
@@ -1858,7 +1740,7 @@ mod tests {
                 .expect("room status mutex poisoned"))
         }
 
-        fn chat_post_text_message(
+        fn post_text_message(
             &self,
             room_id: String,
             text: String,
@@ -1870,7 +1752,7 @@ mod tests {
             Ok("message-id".to_string())
         }
 
-        fn chat_post_custom_message(
+        fn post_custom_message(
             &self,
             _room_id: String,
             _message_type: String,
@@ -1879,7 +1761,7 @@ mod tests {
             Ok("message-id".to_string())
         }
 
-        fn chat_list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
+        fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
             let mut room_ids = self
                 .chat_created_rooms
                 .lock()
@@ -1958,12 +1840,15 @@ mod tests {
         let spa = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
+                None,
                 native_execution_config("shared.dot", ProductExecutionKind::Spa),
             )
             .expect("SPA execution should open");
+        let chat_host = Arc::new(EventCallbacks::new());
         let chat = host
             .open_product_execution(
-                Arc::new(EventCallbacks::with_chat()),
+                chat_host.clone(),
+                Some(chat_host.clone()),
                 native_execution_config("shared.dot", ProductExecutionKind::Chat),
             )
             .expect("Chat execution should open");
@@ -1973,13 +1858,13 @@ mod tests {
             spa.publish_chat_action(text_chat_action("denied")),
             Err(NativeChatError::Denied)
         ));
-        #[cfg(feature = "ws-bridge")]
         chat.publish_chat_action(text_chat_action("buffered"))
             .expect("Chat action should buffer before connection");
 
         let replacement = host
             .open_product_execution(
-                Arc::new(EventCallbacks::with_chat()),
+                chat_host.clone(),
+                Some(chat_host.clone()),
                 native_execution_config("shared.dot", ProductExecutionKind::Chat),
             )
             .expect("replacement Chat execution should open");
@@ -1988,7 +1873,6 @@ mod tests {
             Err(NativeChatError::Closed)
         ));
         assert!(!replacement.closed.load(Ordering::Acquire));
-        #[cfg(feature = "ws-bridge")]
         replacement
             .publish_chat_action(text_chat_action("fresh"))
             .expect("replacement execution has a fresh buffer");
@@ -1996,13 +1880,20 @@ mod tests {
 
     #[test]
     fn native_chat_entrypoint_is_unsupported_without_an_adapter() {
-        let mut config = native_runtime_config("chat-product.dot");
-        config.execution_kind = ProductExecutionKind::Chat;
+        let mut config = native_host_runtime_config();
         config.local_session_secret = Some(vec![7; 32]);
-        let core = NativeTrUApiCore::with_runtime_config(Arc::new(EventCallbacks::new()), config)
-            .expect("runtime config should be valid");
+        let host =
+            NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
+                .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::new()),
+                None,
+                native_execution_config("chat-product.dot", ProductExecutionKind::Chat),
+            )
+            .expect("Chat execution should open");
 
-        let result = core.publish_chat_action(text_chat_action("hello"));
+        let result = execution.publish_chat_action(text_chat_action("hello"));
 
         assert!(matches!(result, Err(NativeChatError::Unsupported)));
     }
@@ -2123,7 +2014,11 @@ mod tests {
 
     #[test]
     fn native_chat_room_subscription_emits_current_then_notified_replacement() {
-        let (_callbacks, events, platform) = event_platform();
+        let (callbacks, events, _platform) = event_platform();
+        let platform = ChatCallbackPlatform {
+            chat: callbacks,
+            events: events.clone(),
+        };
         let product =
             ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
                 .unwrap();
@@ -2147,9 +2042,9 @@ mod tests {
 
     #[test]
     fn native_chat_adapter_preserves_room_status_and_message_room() {
-        let callbacks = Arc::new(EventCallbacks::with_chat());
-        let platform = CallbackPlatform {
-            callbacks: callbacks.clone(),
+        let callbacks = Arc::new(EventCallbacks::new());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
         let product =
@@ -2416,8 +2311,6 @@ mod tests {
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
                 Ok(())
             }
-
-            impl_no_chat_callbacks!();
         }
 
         let core = NativeTrUApiCore::with_runtime_config(
@@ -2557,8 +2450,6 @@ mod tests {
             fn local_storage_clear(&self, _key: String) -> Result<(), HostStorageError> {
                 Ok(())
             }
-
-            impl_no_chat_callbacks!();
         }
 
         let (release_tx, release_rx) = tokio::sync::mpsc::channel::<()>(1);

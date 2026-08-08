@@ -75,6 +75,7 @@ impl TrUApiCore {
     ) -> Self {
         let runtime = Arc::new(ProductRuntimeHost::from_services(
             services.clone(),
+            crate::host_core::ConnectionAdapters::from_services(&services),
             authority.clone(),
             product,
         ));

@@ -27,6 +27,7 @@ import {
   isLoopback,
   readPlistValue,
   run,
+  runAsync,
   waitFor,
 } from "./lib/ios-simulator.mjs";
 
@@ -81,14 +82,20 @@ if (linkedTruapiRoot) {
   run("yarn", ["link", "@parity/truapi"], { cwd: productRoot });
 }
 
-if (process.env.TRUAPI_IOS_E2E_SKIP_PRODUCT_BUILD !== "1") {
-  run("yarn", ["build"], { cwd: productRoot });
-}
+// Build the product while the simulator boots; the output is first needed at
+// the worker-copy step below.
+const productBuild =
+  process.env.TRUAPI_IOS_E2E_SKIP_PRODUCT_BUILD !== "1"
+    ? runAsync("yarn", ["build"], { cwd: productRoot })
+    : Promise.resolve();
+productBuild.catch(() => {});
+
+const device = bootAndInstallApp(app);
+
+await productBuild;
 if (!existsSync(worker)) {
   throw new Error(`Chat product worker not found after build: ${worker}`);
 }
-
-const device = bootAndInstallApp(app);
 
 const appData = capture("xcrun", [
   "simctl",

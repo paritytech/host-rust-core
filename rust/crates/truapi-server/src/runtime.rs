@@ -310,40 +310,23 @@ pub struct ProductRuntimeHost {
 }
 
 impl ProductRuntimeHost {
-    /// Build a product-scoped dispatcher target from a long-lived host runtime.
+    /// Build a product-scoped dispatcher target from a long-lived host runtime
+    /// and the adapters scoped to this product connection.
     pub(crate) fn from_services(
         services: Arc<RuntimeServices>,
-        authority: Arc<dyn ProductAuthority>,
-        product: ProductContext,
-    ) -> Self {
-        Self::from_services_with_platform(
-            services.clone(),
-            services.platform.clone(),
-            None,
-            authority,
-            product,
-        )
-    }
-
-    /// Build a dispatcher target with connection-specific platform adapters
-    /// while retaining the host runtime's shared authority and infrastructure.
-    pub(crate) fn from_services_with_platform(
-        services: Arc<RuntimeServices>,
-        platform: Arc<dyn Platform>,
-        chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+        adapters: crate::host_core::ConnectionAdapters,
         authority: Arc<dyn ProductAuthority>,
         product: ProductContext,
     ) -> Self {
         let core_instance = services.next_core_instance();
-        let chat = Arc::new(ChatConnection::new());
         Self {
             services,
-            platform,
-            chat_platform,
+            platform: adapters.platform,
+            chat_platform: adapters.chat_platform,
             authority,
             product,
             core_instance,
-            chat,
+            chat: adapters.chat,
         }
     }
 
@@ -1916,29 +1899,8 @@ impl ProductRuntimeHost {
         })
     }
 
-    pub(crate) fn publish_chat_action(
-        &self,
-        action: v01::HostChatActionSubscribeItem,
-    ) -> Result<
-        (),
-        (
-            crate::host_core::ProductRuntimeError,
-            Box<v01::HostChatActionSubscribeItem>,
-        ),
-    > {
-        if let Err(error) = self.native_chat_platform() {
-            return Err((error, Box::new(action)));
-        }
-        self.chat
-            .publish_action(HostChatActionSubscribeItem::V1(action))
-            .map_err(|(error, action)| {
-                let HostChatActionSubscribeItem::V1(action) = *action;
-                (error, Box::new(action))
-            })
-    }
-
-    pub(crate) fn close_chat(&self) {
-        self.chat.close();
+    pub(crate) fn detach_chat(&self) {
+        self.chat.detach();
     }
 }
 
@@ -2512,10 +2474,16 @@ mod tests {
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let first = ProductRuntimeHost::from_services(
             services.clone(),
+            crate::host_core::ConnectionAdapters::from_services(&services),
             pairing_host.clone(),
             product.clone(),
         );
-        let second = ProductRuntimeHost::from_services(services, pairing_host, product);
+        let second = ProductRuntimeHost::from_services(
+            services.clone(),
+            crate::host_core::ConnectionAdapters::from_services(&services),
+            pairing_host,
+            product,
+        );
 
         assert_eq!(first.follow_id("request-1"), "c1:request-1");
         assert_eq!(second.follow_id("request-1"), "c2:request-1");

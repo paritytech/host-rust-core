@@ -951,6 +951,13 @@ fn generate_client(api: &ApiDefinition, target_version: u32, codec_version: u8) 
           return new SubscriptionError(cause.message, {{ cause }});
         }}
 
+        // `_interrupt` payload sent when a host-initiated request arrives with no
+        // registered handler: SCALE `Result::Err` discriminant, declining the start.
+        const HOST_INITIATED_DECLINE_PAYLOAD = new Uint8Array([0]);
+        // Items buffered per host-initiated stream while the product's handler
+        // observable has no subscriber yet.
+        const HOST_INITIATED_BUFFER_CAPACITY = 64;
+
         "#
     )
     .unwrap();
@@ -1624,8 +1631,8 @@ fn emit_host_initiated_registration(
               ids: W.{wire_const},
               decodeRequest: (payload) => {request_codec}.dec(payload).value,
               encodeItem: (item) => {item_codec}.enc({{ tag: \"V{version}\", value: item }}),
-              interruptPayload: new Uint8Array([0]),
-              bufferCapacity: 64,
+              interruptPayload: HOST_INITIATED_DECLINE_PAYLOAD,
+              bufferCapacity: HOST_INITIATED_BUFFER_CAPACITY,
             }});
         ",
         field = host_registration_field(method),

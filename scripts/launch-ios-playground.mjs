@@ -29,8 +29,12 @@ if (!existsSync(app)) {
   throw new Error(`iOS app bundle not found: ${app}`);
 }
 
-const playgroundProcess = await ensurePlayground();
+// Start (or probe) the dev server first, then boot the simulator while it
+// readies; the readiness await below surfaces any startup failure.
+const playgroundPending = ensurePlayground();
+playgroundPending.catch(() => {});
 const device = bootAndInstallApp(app);
+const playgroundProcess = await playgroundPending;
 const signingHostSession = readSigningHostSession(device.udid);
 run(
   "xcrun",

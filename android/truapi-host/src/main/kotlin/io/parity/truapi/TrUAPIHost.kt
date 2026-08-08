@@ -39,8 +39,6 @@ import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
-import uniffi.truapi.ChatRoom
-import uniffi.truapi.ChatRoomRegistrationStatus
 import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
@@ -376,28 +374,6 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override fun localStorageClear(key: String) =
         bridge.storage.clear(key)
-
-    override fun chatSupported(): Boolean = false
-
-    override fun chatCreateRoom(
-        roomId: String,
-        name: String,
-        icon: String,
-    ): ChatRoomRegistrationStatus = throw chatUnavailable()
-
-    override fun chatPostTextMessage(roomId: String, text: String): String =
-        throw chatUnavailable()
-
-    override fun chatPostCustomMessage(
-        roomId: String,
-        messageType: String,
-        payload: ByteArray,
-    ): String = throw chatUnavailable()
-
-    override fun chatListRooms(): List<ChatRoom> = emptyList()
-
-    private fun chatUnavailable(): HostRejection =
-        HostRejection.Rejected("native Chat adapter unavailable")
 }
 
 /**
