@@ -1,3 +1,8 @@
+#![allow(
+    clippy::double_must_use,
+    reason = "async-trait generates must_use futures for async trait methods"
+)]
+
 //! TrUAPI server runtime: dispatcher, frames, SCALE encoding, stream management.
 //!
 //! Hosts instantiate a role runtime around a [`truapi_platform::Platform`]
