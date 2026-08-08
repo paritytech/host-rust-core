@@ -15,8 +15,8 @@ import PackageDescription
 // The published release asset remains the default for remote consumers.
 let useLocalBinary = ProcessInfo.processInfo.environment["TRUAPI_USE_LOCAL_BINARY"] == "1"
 
-let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.4.0-chat-modality-shared-core.1/truapi_server.xcframework.zip"
-let publishedBinaryChecksum = "eb0d19f57256bc4a57e693cd85b50db9d111c95fb4f7d5f77bc518d537d305fa"
+let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.4.0-chat-modality-shared-core.2/truapi_server.xcframework.zip"
+let publishedBinaryChecksum = "36973b317a857e770f1c12ad5692e55cbe32e0c5b89eac5727f56c454fd14173"
 
 let binaryTarget: Target = useLocalBinary
     ? .binaryTarget(
