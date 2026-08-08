@@ -33,9 +33,15 @@ pub trait Signing: Send + Sync {
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
     ///
-    /// const result = await truapi.signing.createTransaction(payload.value);
-    /// assert(result.isOk(), "createTransaction failed:", result);
-    /// console.log("transaction created:", result.value);
+    /// for (const txExtVersion of [0, 5]) {
+    ///   const version = txExtVersion === 0 ? "V4" : "V5";
+    ///   const result = await truapi.signing.createTransaction({
+    ///     ...payload.value,
+    ///     txExtVersion,
+    ///   });
+    ///   assert(result.isOk(), `${version} createTransaction failed:`, result);
+    ///   console.log(`${version} transaction created:`, result.value);
+    /// }
     /// ```
     #[wire(request_id = 30)]
     async fn create_transaction(
