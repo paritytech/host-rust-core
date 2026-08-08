@@ -431,7 +431,7 @@ mod tests {
     fn context_bytes_pins_derivation_index_preimage() {
         let context = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: DerivationIndex::Left(0),
+            suffix: DerivationIndex::Index(0),
         };
 
         let mut expected = b"product/voting.dot/".to_vec();
@@ -446,11 +446,11 @@ mod tests {
     fn context_bytes_distinguishes_selector_forms() {
         let indexed = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: DerivationIndex::Left(0),
+            suffix: DerivationIndex::Index(0),
         };
         let raw = ProductProofContext {
             product_id: "voting.dot".to_string(),
-            suffix: DerivationIndex::Right([0; 32]),
+            suffix: DerivationIndex::Raw([0; 32]),
         };
 
         assert_ne!(context_bytes(&indexed), context_bytes(&raw));

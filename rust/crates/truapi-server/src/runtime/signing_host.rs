@@ -42,6 +42,7 @@ use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript}
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::{
     Sr25519Signer, build_signed_extrinsic_v4, build_signed_extrinsic_v4_with_signature,
+    build_signed_extrinsic_v5,
 };
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
@@ -494,7 +495,7 @@ impl SigningHost {
         self.sign_raw_with_identity(session, account, payload)
     }
 
-    fn create_identity_transaction_inner(
+    async fn create_identity_transaction_inner(
         &self,
         session: &AuthoritySession,
         request: v01::LegacyAccountTxPayload,
@@ -503,24 +504,29 @@ impl SigningHost {
         let keypair = self.identity_keypair()?;
         if keypair.public.to_bytes() != request.signer {
             return Err(AuthorityError::Unavailable {
-                reason: "signing host: the requested identity account is not available in this CLI wallet"
+                reason: "signing host: the requested identity account is not available in \
+                         this CLI wallet"
                     .to_string(),
             });
         }
         build_local_transaction(
+            &self.services,
             &keypair,
+            request.genesis_hash,
             &request.call_data,
             &request.extensions,
             request.tx_ext_version,
         )
+        .await
     }
 
-    fn create_sso_identity_transaction(
+    async fn create_sso_identity_transaction(
         &self,
         session: &AuthoritySession,
         request: v01::LegacyAccountTxPayload,
     ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
         self.create_identity_transaction_inner(session, request)
+            .await
     }
 
     async fn confirm_ring_vrf_if_cross_product(
@@ -694,11 +700,14 @@ impl ProductAuthority for SigningHost {
                 // enforced upstream, so the derived key defines the signer.
                 let keypair = self.product_keypair(&payload.signer)?;
                 build_local_transaction(
+                    &self.services,
                     &keypair,
+                    payload.genesis_hash,
                     &payload.call_data,
                     &payload.extensions,
                     payload.tx_ext_version,
                 )
+                .await
             }
             CreateTransactionAuthorityRequest::LegacyAccount {
                 product_account,
@@ -716,14 +725,18 @@ impl ProductAuthority for SigningHost {
                     });
                 }
                 build_local_transaction(
+                    &self.services,
                     &keypair,
+                    request.genesis_hash,
                     &request.call_data,
                     &request.extensions,
                     request.tx_ext_version,
                 )
+                .await
             }
             CreateTransactionAuthorityRequest::IdentityAccount(request) => {
                 self.create_identity_transaction_inner(session, request)
+                    .await
             }
         }
     }
@@ -931,24 +944,54 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
 }
 
 /// Assemble and sign a transaction locally from caller-supplied, pre-encoded
-/// parts. Only Extrinsic V4 (`tx_ext_version == 0`) is supported; the caller's
-/// extension bytes carry the whole chain binding, so no metadata is consulted.
-fn build_local_transaction(
+/// parts. V4 needs no metadata. V5 resolves the runtime's call and transaction
+/// extension pipeline from the genesis-pinned Subxt client, while keeping the
+/// caller's already-encoded argument and extension values opaque.
+async fn build_local_transaction(
+    services: &RuntimeServices,
     keypair: &schnorrkel::Keypair,
+    genesis_hash: [u8; 32],
     call_data: &[u8],
     extensions: &[v01::TxPayloadExtension],
     tx_ext_version: u8,
 ) -> Result<v01::HostCreateTransactionResponse, AuthorityError> {
-    if tx_ext_version != 0 {
+    let signer = Sr25519Signer::from_keypair(keypair);
+    if tx_ext_version == 0 {
+        let transaction = build_signed_extrinsic_v4(&signer, call_data, extensions);
+        return Ok(v01::HostCreateTransactionResponse { transaction });
+    }
+    if tx_ext_version != 5 {
         return Err(AuthorityError::NotSupported {
             reason: format!(
-                "signing host: unsupported tx_ext_version {tx_ext_version}; only V4 \
-                 (tx_ext_version = 0) is supported for local transaction construction"
+                "signing host: unsupported tx_ext_version {tx_ext_version}; expected 0 for V4 or 5 for V5"
             ),
         });
     }
-    let signer = Sr25519Signer::from_keypair(keypair);
-    let transaction = build_signed_extrinsic_v4(&signer, call_data, extensions);
+
+    let client = services
+        .chain
+        .online_client(&genesis_hash)
+        .await
+        .map_err(|error| AuthorityError::Unavailable {
+            reason: format!("signing host: cannot load V5 chain metadata: {error}"),
+        })?;
+    let at_block =
+        client
+            .at_current_block()
+            .await
+            .map_err(|error| AuthorityError::Unavailable {
+                reason: format!("signing host: cannot select a V5 metadata block: {error}"),
+            })?;
+    let transaction = build_signed_extrinsic_v5(
+        &signer,
+        genesis_hash,
+        call_data,
+        extensions,
+        at_block.metadata(),
+    )
+    .map_err(|reason| AuthorityError::Unknown {
+        reason: format!("signing host: {reason}"),
+    })?;
     Ok(v01::HostCreateTransactionResponse { transaction })
 }
 
@@ -1055,11 +1098,12 @@ mod tests {
     fn signing_runtime() -> (Arc<RuntimeServices>, Arc<SigningHostRole>) {
         // Auto-confirm raw signing so the role-neutral confirmation gate does
         // not reject before reaching the signing authority.
-        signing_runtime_with_platform(Arc::new(StubPlatform {
+        let platform: Arc<dyn Platform> = Arc::new(StubPlatform {
             sign_raw_confirmed: true,
             sign_vrf_confirmed: true,
             ..StubPlatform::default()
-        }))
+        });
+        signing_runtime_with_platform(platform)
     }
 
     fn signing_runtime_with_platform(
@@ -1113,7 +1157,7 @@ mod tests {
         v01::HostAccountSignVrfRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: product_id.to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             transcript_label: b"pop:autosigning".to_vec(),
             items: vec![v01::VrfTranscriptItem {
@@ -1152,7 +1196,7 @@ mod tests {
         let cx = CallContext::default();
         let context = v01::ProductProofContext {
             product_id: "myapp.dot".to_string(),
-            suffix: v01::DerivationIndex::Left(0),
+            suffix: v01::DerivationIndex::Index(0),
         };
         let ring_location = v01::RingLocation {
             chain_id: [0x22; 32],
@@ -1203,7 +1247,7 @@ mod tests {
         let cx = CallContext::default();
         let context = v01::ProductProofContext {
             product_id: "other.dot".to_string(),
-            suffix: v01::DerivationIndex::Left(0),
+            suffix: v01::DerivationIndex::Index(0),
         };
         let ring_location = v01::RingLocation {
             chain_id: [0x22; 32],
@@ -1258,7 +1302,7 @@ mod tests {
             calling_product_id: "myapp.dot".to_string(),
             context: v01::ProductProofContext {
                 product_id: "other.dot".to_string(),
-                suffix: v01::DerivationIndex::Left(0),
+                suffix: v01::DerivationIndex::Index(0),
             },
             ring_location: v01::RingLocation {
                 chain_id: [0x22; 32],
@@ -1308,7 +1352,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: b"hello world".to_vec(),
@@ -1774,7 +1818,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: vec![1, 2, 3],
@@ -1788,7 +1832,7 @@ mod tests {
     fn product_account(index: u32) -> v01::ProductAccountId {
         v01::ProductAccountId {
             dot_ns_identifier: "myapp.dot".to_string(),
-            derivation_index: v01::DerivationIndex::Left(index),
+            derivation_index: v01::DerivationIndex::Index(index),
         }
     }
 
@@ -1840,7 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn create_transaction_rejects_nonzero_tx_ext_version() {
+    fn create_transaction_rejects_unknown_tx_ext_version() {
         let (_services, activation) = signing_runtime();
         futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
@@ -1852,9 +1896,33 @@ mod tests {
             &session,
             CreateTransactionAuthorityRequest::Product(tx_payload(1)),
         ))
-        .expect_err("v5 unsupported");
+        .expect_err("unknown transaction version is unsupported");
         assert!(
             matches!(err, AuthorityError::NotSupported { reason } if reason.contains("tx_ext_version 1"))
+        );
+    }
+
+    #[test]
+    fn create_transaction_v5_reaches_chain_metadata_resolution() {
+        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(StubPlatform {
+            chain_connect_error: Some("fixture has no live chain"),
+            ..StubPlatform::default()
+        });
+        let (_services, activation) = signing_runtime_with_platform(platform);
+        futures::executor::block_on(activation.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = activation.current_session().expect("active session");
+        let cx = CallContext::default();
+
+        let err = futures::executor::block_on(activation.create_transaction(
+            &cx,
+            &session,
+            CreateTransactionAuthorityRequest::Product(tx_payload(5)),
+        ))
+        .expect_err("fixture cannot resolve metadata");
+        assert!(
+            matches!(err, AuthorityError::Unavailable { reason } if reason.contains("cannot load V5 chain metadata")),
+            "V5 must pass the former NotSupported gate and attempt metadata resolution"
         );
     }
 
@@ -1973,7 +2041,7 @@ mod tests {
         let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
             product_account_id: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
         });
         let err = futures::executor::block_on(runtime.get_account(&cx, request))
@@ -2049,7 +2117,7 @@ mod tests {
         let request = HostSignRawRequest::V1(v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: b"<Bytes>hi</Bytes>".to_vec(),
@@ -2101,7 +2169,7 @@ mod tests {
         let request = v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes {
                 bytes: vec![1, 2, 3],
@@ -2130,7 +2198,7 @@ mod tests {
         let request = v01::HostSignRawRequest {
             account: v01::ProductAccountId {
                 dot_ns_identifier: "myapp.dot".to_string(),
-                derivation_index: v01::DerivationIndex::Left(0),
+                derivation_index: v01::DerivationIndex::Index(0),
             },
             payload: v01::RawPayload::Bytes { bytes: vec![1] },
         };
@@ -2166,7 +2234,9 @@ mod tests {
             "myapp.dot".to_string(),
             v01::HostRequestResourceAllocationRequest {
                 resources: vec![
-                    v01::AllocatableResource::SmartContractAllowance(v01::DerivationIndex::Left(0)),
+                    v01::AllocatableResource::SmartContractAllowance(v01::DerivationIndex::Index(
+                        0,
+                    )),
                     v01::AllocatableResource::AutoSigning,
                 ],
             },

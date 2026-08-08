@@ -26,21 +26,21 @@
 
 package io.parity.truapi
 
-import uniffi.truapi_server.AuthState
-import uniffi.truapi_server.FeatureSupportedRequest
+import uniffi.truapi.HostDevicePermissionRequest
+import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.HostPushNotificationRequest
+import uniffi.truapi.RemotePermission
+import uniffi.truapi.ThemeVariant
+import uniffi.truapi_platform.AuthState
+import uniffi.truapi_platform.PermissionAuthorizationRequest
+import uniffi.truapi_platform.PermissionAuthorizationStatus
+import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
-import uniffi.truapi_server.HostTheme
-import uniffi.truapi_server.NativeDevicePermission
-import uniffi.truapi_server.NativePermissionAuthorizationRequest
-import uniffi.truapi_server.NativePermissionAuthorizationStatus
-import uniffi.truapi_server.NativeRemotePermission
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
-import uniffi.truapi_server.NativeUserConfirmationReview
-import uniffi.truapi_server.PushNotificationRequest
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
 import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDeeplinkScheme
@@ -214,7 +214,7 @@ interface HostBridge {
      * thread and return promptly.
      */
     @Throws(HostRejection::class)
-    suspend fun pushNotification(request: PushNotificationRequest): UInt = 0u
+    suspend fun pushNotification(request: HostPushNotificationRequest): UInt = 0u
 
     /** Cancel a previously scheduled notification id. */
     @Throws(HostRejection::class)
@@ -227,7 +227,7 @@ interface HostBridge {
      * not stall other TrUAPI traffic.
      */
     @Throws(HostRejection::class)
-    suspend fun devicePermission(request: NativeDevicePermission): Boolean
+    suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean
 
     /**
      * Prompt for a remote (product-scoped) permission bundle. Invoked on a
@@ -236,7 +236,7 @@ interface HostBridge {
      * TrUAPI traffic.
      */
     @Throws(HostRejection::class)
-    suspend fun remotePermission(request: NativeRemotePermission): Boolean
+    suspend fun remotePermission(request: RemotePermission): Boolean
 
     /**
      * Observe an auth state change. The core emits states only when they
@@ -268,7 +268,7 @@ interface HostBridge {
      * thread until the user decides.
      */
     @Throws(HostRejection::class)
-    suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean = false
+    suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = false
 
     /** Return the current preimage value for [key], or null for a miss. */
     @Throws(HostRejection::class)
@@ -276,14 +276,14 @@ interface HostBridge {
 
     /** Return the current host theme. */
     @Throws(HostRejection::class)
-    fun currentTheme(): HostTheme = HostTheme.DARK
+    fun currentTheme(): ThemeVariant = ThemeVariant.DARK
 
     /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
      * return promptly.
      */
     @Throws(HostRejection::class)
-    suspend fun featureSupported(request: FeatureSupportedRequest): Boolean
+    suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean
 
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
@@ -304,16 +304,16 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override suspend fun navigateTo(url: String) =
         bridge.navigateTo(url)
 
-    override suspend fun pushNotification(request: PushNotificationRequest): UInt =
+    override suspend fun pushNotification(request: HostPushNotificationRequest): UInt =
         bridge.pushNotification(request)
 
     override fun cancelNotification(id: UInt) =
         bridge.cancelNotification(id)
 
-    override suspend fun devicePermission(request: NativeDevicePermission): Boolean =
+    override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean =
         bridge.devicePermission(request)
 
-    override suspend fun remotePermission(request: NativeRemotePermission): Boolean =
+    override suspend fun remotePermission(request: RemotePermission): Boolean =
         bridge.remotePermission(request)
 
     override fun authStateChanged(state: AuthState) =
@@ -337,16 +337,16 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun chainClose(connectionId: UInt) =
         bridge.chainClose(connectionId)
 
-    override suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean =
+    override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
         bridge.confirmUserAction(review)
 
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         bridge.lookupPreimage(key)
 
-    override fun currentTheme(): HostTheme =
+    override fun currentTheme(): ThemeVariant =
         bridge.currentTheme()
 
-    override suspend fun featureSupported(request: FeatureSupportedRequest): Boolean =
+    override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
         bridge.featureSupported(request)
 
     override fun localStorageRead(key: String): ByteArray? =
@@ -561,8 +561,8 @@ class TrUAPIHostCore private constructor(
     /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)
     fun permissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-    ): NativePermissionAuthorizationStatus =
+        request: PermissionAuthorizationRequest,
+    ): PermissionAuthorizationStatus =
         inner.permissionAuthorizationStatus(request)
 
     /**
@@ -571,14 +571,14 @@ class TrUAPIHostCore private constructor(
      */
     @Throws(HostRejection::class)
     fun setPermissionAuthorizationStatus(
-        request: NativePermissionAuthorizationRequest,
-        status: NativePermissionAuthorizationStatus,
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus,
     ) {
         inner.setPermissionAuthorizationStatus(request, status)
     }
 
     /** Push a host theme update to active TrUAPI theme subscriptions. */
-    fun notifyThemeChanged(theme: HostTheme) {
+    fun notifyThemeChanged(theme: ThemeVariant) {
         inner.notifyThemeChanged(theme)
     }
 

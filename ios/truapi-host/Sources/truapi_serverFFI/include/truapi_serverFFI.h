@@ -50,9 +50,9 @@ typedef void (*UniffiRustFutureContinuationCallback)(uint64_t, int8_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-typedef void (*UniffiForeignFutureFree)(uint64_t
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+typedef void (*UniffiForeignFutureDroppedCallback)(uint64_t
     );
 
 #endif
@@ -62,192 +62,184 @@ typedef void (*UniffiCallbackInterfaceFree)(uint64_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE
-typedef struct UniffiForeignFuture {
-    uint64_t handle;
-    UniffiForeignFutureFree _Nonnull free;
-} UniffiForeignFuture;
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+typedef uint64_t (*UniffiCallbackInterfaceClone)(uint64_t
+    );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-typedef struct UniffiForeignFutureStructU8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+typedef struct UniffiForeignFutureDroppedCallbackStruct {
+    uint64_t handle;
+    UniffiForeignFutureDroppedCallback _Nonnull free;
+} UniffiForeignFutureDroppedCallbackStruct;
+
+#endif
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+typedef struct UniffiForeignFutureResultU8 {
     uint8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU8;
+} UniffiForeignFutureResultU8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
-typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureStructU8
+typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureResultU8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-typedef struct UniffiForeignFutureStructI8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+typedef struct UniffiForeignFutureResultI8 {
     int8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI8;
+} UniffiForeignFutureResultI8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
-typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureStructI8
+typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureResultI8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-typedef struct UniffiForeignFutureStructU16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+typedef struct UniffiForeignFutureResultU16 {
     uint16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU16;
+} UniffiForeignFutureResultU16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
-typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureStructU16
+typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureResultU16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-typedef struct UniffiForeignFutureStructI16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+typedef struct UniffiForeignFutureResultI16 {
     int16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI16;
+} UniffiForeignFutureResultI16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
-typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureStructI16
+typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureResultI16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-typedef struct UniffiForeignFutureStructU32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+typedef struct UniffiForeignFutureResultU32 {
     uint32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU32;
+} UniffiForeignFutureResultU32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
-typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureStructU32
+typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureResultU32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-typedef struct UniffiForeignFutureStructI32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+typedef struct UniffiForeignFutureResultI32 {
     int32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI32;
+} UniffiForeignFutureResultI32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
-typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureStructI32
+typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureResultI32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-typedef struct UniffiForeignFutureStructU64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+typedef struct UniffiForeignFutureResultU64 {
     uint64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU64;
+} UniffiForeignFutureResultU64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
-typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureStructU64
+typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureResultU64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-typedef struct UniffiForeignFutureStructI64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+typedef struct UniffiForeignFutureResultI64 {
     int64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI64;
+} UniffiForeignFutureResultI64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
-typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureStructI64
+typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureResultI64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-typedef struct UniffiForeignFutureStructF32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+typedef struct UniffiForeignFutureResultF32 {
     float returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF32;
+} UniffiForeignFutureResultF32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
-typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureStructF32
+typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureResultF32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-typedef struct UniffiForeignFutureStructF64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+typedef struct UniffiForeignFutureResultF64 {
     double returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF64;
+} UniffiForeignFutureResultF64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
-typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureStructF64
+typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureResultF64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-typedef struct UniffiForeignFutureStructPointer {
-    void*_Nonnull returnValue;
-    RustCallStatus callStatus;
-} UniffiForeignFutureStructPointer;
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-typedef void (*UniffiForeignFutureCompletePointer)(uint64_t, UniffiForeignFutureStructPointer
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-typedef struct UniffiForeignFutureStructRustBuffer {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+typedef struct UniffiForeignFutureResultRustBuffer {
     RustBuffer returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructRustBuffer;
+} UniffiForeignFutureResultRustBuffer;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
-typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureStructRustBuffer
+typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureResultRustBuffer
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-typedef struct UniffiForeignFutureStructVoid {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+typedef struct UniffiForeignFutureResultVoid {
     RustCallStatus callStatus;
-} UniffiForeignFutureStructVoid;
+} UniffiForeignFutureResultVoid;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
-typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureStructVoid
+typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureResultVoid
     );
 
 #endif
@@ -260,13 +252,13 @@ typedef void (*UniffiCallbackInterfaceHostCallbacksMethod0)(uint64_t, RustBuffer
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD1
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD1
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod1)(uint64_t, RustBuffer, UniffiForeignFutureCompleteVoid _Nonnull, uint64_t, UniffiForeignFuture* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod1)(uint64_t, RustBuffer, UniffiForeignFutureCompleteVoid _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD2
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD2
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod2)(uint64_t, RustBuffer, UniffiForeignFutureCompleteU32 _Nonnull, uint64_t, UniffiForeignFuture* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod2)(uint64_t, RustBuffer, UniffiForeignFutureCompleteU32 _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
@@ -279,13 +271,13 @@ typedef void (*UniffiCallbackInterfaceHostCallbacksMethod3)(uint64_t, uint32_t, 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD4
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD4
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod4)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFuture* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod4)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD5
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD5
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod5)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFuture* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod5)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
@@ -347,13 +339,13 @@ typedef void (*UniffiCallbackInterfaceHostCallbacksMethod13)(uint64_t, uint32_t,
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD14
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD14
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod14)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFuture* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod14)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD15
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD15
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod15)(uint64_t, RustBuffer, UniffiForeignFutureCompleteRustBuffer _Nonnull, uint64_t, UniffiForeignFuture* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod15)(uint64_t, RustBuffer, UniffiForeignFutureCompleteRustBuffer _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
@@ -366,7 +358,7 @@ typedef void (*UniffiCallbackInterfaceHostCallbacksMethod16)(uint64_t, RustBuffe
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD17
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD17
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod17)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFuture* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod17)(uint64_t, RustBuffer, UniffiForeignFutureCompleteI8 _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
     );
 
 #endif
@@ -394,6 +386,8 @@ typedef void (*UniffiCallbackInterfaceHostCallbacksMethod20)(uint64_t, RustBuffe
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_HOST_CALLBACKS
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_HOST_CALLBACKS
 typedef struct UniffiVTableCallbackInterfaceHostCallbacks {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceHostCallbacksMethod0 _Nonnull onCoreLog;
     UniffiCallbackInterfaceHostCallbacksMethod1 _Nonnull navigateTo;
     UniffiCallbackInterfaceHostCallbacksMethod2 _Nonnull pushNotification;
@@ -415,18 +409,17 @@ typedef struct UniffiVTableCallbackInterfaceHostCallbacks {
     UniffiCallbackInterfaceHostCallbacksMethod18 _Nonnull localStorageRead;
     UniffiCallbackInterfaceHostCallbacksMethod19 _Nonnull localStorageWrite;
     UniffiCallbackInterfaceHostCallbacksMethod20 _Nonnull localStorageClear;
-    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
 } UniffiVTableCallbackInterfaceHostCallbacks;
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_CLONE_HOSTCALLBACKS
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_CLONE_HOSTCALLBACKS
-void*_Nonnull uniffi_truapi_server_fn_clone_hostcallbacks(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_truapi_server_fn_clone_hostcallbacks(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FREE_HOSTCALLBACKS
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FREE_HOSTCALLBACKS
-void uniffi_truapi_server_fn_free_hostcallbacks(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_free_hostcallbacks(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_INIT_CALLBACK_VTABLE_HOSTCALLBACKS
@@ -436,207 +429,207 @@ void uniffi_truapi_server_fn_init_callback_vtable_hostcallbacks(const UniffiVTab
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_ON_CORE_LOG
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_ON_CORE_LOG
-void uniffi_truapi_server_fn_method_hostcallbacks_on_core_log(void*_Nonnull ptr, RustBuffer marker, RustBuffer detail, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_on_core_log(uint64_t ptr, RustBuffer marker, RustBuffer detail, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_NAVIGATE_TO
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_NAVIGATE_TO
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_navigate_to(void*_Nonnull ptr, RustBuffer url
+uint64_t uniffi_truapi_server_fn_method_hostcallbacks_navigate_to(uint64_t ptr, RustBuffer url
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_PUSH_NOTIFICATION
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_PUSH_NOTIFICATION
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_push_notification(void*_Nonnull ptr, RustBuffer request
+uint64_t uniffi_truapi_server_fn_method_hostcallbacks_push_notification(uint64_t ptr, RustBuffer request
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CANCEL_NOTIFICATION
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CANCEL_NOTIFICATION
-void uniffi_truapi_server_fn_method_hostcallbacks_cancel_notification(void*_Nonnull ptr, uint32_t id, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_cancel_notification(uint64_t ptr, uint32_t id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_DEVICE_PERMISSION
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_DEVICE_PERMISSION
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_device_permission(void*_Nonnull ptr, RustBuffer request
+uint64_t uniffi_truapi_server_fn_method_hostcallbacks_device_permission(uint64_t ptr, RustBuffer request
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_REMOTE_PERMISSION
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_REMOTE_PERMISSION
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_remote_permission(void*_Nonnull ptr, RustBuffer request
+uint64_t uniffi_truapi_server_fn_method_hostcallbacks_remote_permission(uint64_t ptr, RustBuffer request
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_AUTH_STATE_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_AUTH_STATE_CHANGED
-void uniffi_truapi_server_fn_method_hostcallbacks_auth_state_changed(void*_Nonnull ptr, RustBuffer state, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_auth_state_changed(uint64_t ptr, RustBuffer state, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_PAIRING_PEER_DISCONNECTED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_PAIRING_PEER_DISCONNECTED
-void uniffi_truapi_server_fn_method_hostcallbacks_pairing_peer_disconnected(void*_Nonnull ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_pairing_peer_disconnected(uint64_t ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CORE_STORAGE_READ
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CORE_STORAGE_READ
-RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_core_storage_read(void*_Nonnull ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_core_storage_read(uint64_t ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CORE_STORAGE_WRITE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CORE_STORAGE_WRITE
-void uniffi_truapi_server_fn_method_hostcallbacks_core_storage_write(void*_Nonnull ptr, RustBuffer key, RustBuffer value, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_core_storage_write(uint64_t ptr, RustBuffer key, RustBuffer value, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CORE_STORAGE_CLEAR
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CORE_STORAGE_CLEAR
-void uniffi_truapi_server_fn_method_hostcallbacks_core_storage_clear(void*_Nonnull ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_core_storage_clear(uint64_t ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CHAIN_CONNECT
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CHAIN_CONNECT
-RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_chain_connect(void*_Nonnull ptr, RustBuffer genesis_hash, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_chain_connect(uint64_t ptr, RustBuffer genesis_hash, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CHAIN_SEND
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CHAIN_SEND
-void uniffi_truapi_server_fn_method_hostcallbacks_chain_send(void*_Nonnull ptr, uint32_t connection_id, RustBuffer request, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_chain_send(uint64_t ptr, uint32_t connection_id, RustBuffer request, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CHAIN_CLOSE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CHAIN_CLOSE
-void uniffi_truapi_server_fn_method_hostcallbacks_chain_close(void*_Nonnull ptr, uint32_t connection_id, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_chain_close(uint64_t ptr, uint32_t connection_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CONFIRM_USER_ACTION
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CONFIRM_USER_ACTION
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_confirm_user_action(void*_Nonnull ptr, RustBuffer review
+uint64_t uniffi_truapi_server_fn_method_hostcallbacks_confirm_user_action(uint64_t ptr, RustBuffer review
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOOKUP_PREIMAGE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOOKUP_PREIMAGE
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_lookup_preimage(void*_Nonnull ptr, RustBuffer key
+uint64_t uniffi_truapi_server_fn_method_hostcallbacks_lookup_preimage(uint64_t ptr, RustBuffer key
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CURRENT_THEME
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_CURRENT_THEME
-RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_current_theme(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_current_theme(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_FEATURE_SUPPORTED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_FEATURE_SUPPORTED
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_feature_supported(void*_Nonnull ptr, RustBuffer request
+uint64_t uniffi_truapi_server_fn_method_hostcallbacks_feature_supported(uint64_t ptr, RustBuffer request
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOCAL_STORAGE_READ
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOCAL_STORAGE_READ
-RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_local_storage_read(void*_Nonnull ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_local_storage_read(uint64_t ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOCAL_STORAGE_WRITE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOCAL_STORAGE_WRITE
-void uniffi_truapi_server_fn_method_hostcallbacks_local_storage_write(void*_Nonnull ptr, RustBuffer key, RustBuffer value, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_local_storage_write(uint64_t ptr, RustBuffer key, RustBuffer value, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOCAL_STORAGE_CLEAR
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOCAL_STORAGE_CLEAR
-void uniffi_truapi_server_fn_method_hostcallbacks_local_storage_clear(void*_Nonnull ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_hostcallbacks_local_storage_clear(uint64_t ptr, RustBuffer key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_CLONE_NATIVETRUAPICORE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_CLONE_NATIVETRUAPICORE
-void*_Nonnull uniffi_truapi_server_fn_clone_nativetruapicore(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_truapi_server_fn_clone_nativetruapicore(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FREE_NATIVETRUAPICORE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FREE_NATIVETRUAPICORE
-void uniffi_truapi_server_fn_free_nativetruapicore(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_free_nativetruapicore(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_CONSTRUCTOR_NATIVETRUAPICORE_WITH_RUNTIME_CONFIG
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_CONSTRUCTOR_NATIVETRUAPICORE_WITH_RUNTIME_CONFIG
-void*_Nonnull uniffi_truapi_server_fn_constructor_nativetruapicore_with_runtime_config(void*_Nonnull callbacks, RustBuffer runtime_config, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_truapi_server_fn_constructor_nativetruapicore_with_runtime_config(uint64_t callbacks, RustBuffer runtime_config, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_ACTIVATE_LOCAL_SESSION
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_ACTIVATE_LOCAL_SESSION
-void uniffi_truapi_server_fn_method_nativetruapicore_activate_local_session(void*_Nonnull ptr, RustBuffer secret, RustBuffer lite_username, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_activate_local_session(uint64_t ptr, RustBuffer secret, RustBuffer lite_username, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_CANCEL_LOGIN
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_CANCEL_LOGIN
-void uniffi_truapi_server_fn_method_nativetruapicore_cancel_login(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_cancel_login(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_DISCONNECT
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_DISCONNECT
-void uniffi_truapi_server_fn_method_nativetruapicore_disconnect(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_disconnect(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_DISCONNECT_PAIRING
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_DISCONNECT_PAIRING
-void uniffi_truapi_server_fn_method_nativetruapicore_disconnect_pairing(void*_Nonnull ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_disconnect_pairing(uint64_t ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_CHAIN_CLOSED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_CHAIN_CLOSED
-void uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_closed(void*_Nonnull ptr, uint32_t connection_id, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_closed(uint64_t ptr, uint32_t connection_id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_CHAIN_RESPONSE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_CHAIN_RESPONSE
-void uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_response(void*_Nonnull ptr, uint32_t connection_id, RustBuffer json, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_notify_chain_response(uint64_t ptr, uint32_t connection_id, RustBuffer json, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_PREIMAGE_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_PREIMAGE_CHANGED
-void uniffi_truapi_server_fn_method_nativetruapicore_notify_preimage_changed(void*_Nonnull ptr, RustBuffer key, RustBuffer value, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_notify_preimage_changed(uint64_t ptr, RustBuffer key, RustBuffer value, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_SESSION_STORE_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_SESSION_STORE_CHANGED
-void uniffi_truapi_server_fn_method_nativetruapicore_notify_session_store_changed(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_notify_session_store_changed(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_THEME_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_NOTIFY_THEME_CHANGED
-void uniffi_truapi_server_fn_method_nativetruapicore_notify_theme_changed(void*_Nonnull ptr, RustBuffer theme, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_notify_theme_changed(uint64_t ptr, RustBuffer theme, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_PERMISSION_AUTHORIZATION_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_PERMISSION_AUTHORIZATION_STATUS
-RustBuffer uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(void*_Nonnull ptr, RustBuffer request, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(uint64_t ptr, RustBuffer request, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_RESPOND_TO_PAIRING
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_RESPOND_TO_PAIRING
-RustBuffer uniffi_truapi_server_fn_method_nativetruapicore_respond_to_pairing(void*_Nonnull ptr, RustBuffer deeplink, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_truapi_server_fn_method_nativetruapicore_respond_to_pairing(uint64_t ptr, RustBuffer deeplink, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_RESUME_PAIRING
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_RESUME_PAIRING
-void uniffi_truapi_server_fn_method_nativetruapicore_resume_pairing(void*_Nonnull ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_resume_pairing(uint64_t ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_SET_PERMISSION_AUTHORIZATION_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_SET_PERMISSION_AUTHORIZATION_STATUS
-void uniffi_truapi_server_fn_method_nativetruapicore_set_permission_authorization_status(void*_Nonnull ptr, RustBuffer request, RustBuffer status, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_set_permission_authorization_status(uint64_t ptr, RustBuffer request, RustBuffer status, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_START_WS_BRIDGE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_START_WS_BRIDGE
-RustBuffer uniffi_truapi_server_fn_method_nativetruapicore_start_ws_bridge(void*_Nonnull ptr, uint16_t bind_port, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_truapi_server_fn_method_nativetruapicore_start_ws_bridge(uint64_t ptr, uint16_t bind_port, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_STOP_WS_BRIDGE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_STOP_WS_BRIDGE
-void uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_SUSPEND_ALL_PAIRINGS
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_SUSPEND_ALL_PAIRINGS
-void uniffi_truapi_server_fn_method_nativetruapicore_suspend_all_pairings(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_suspend_all_pairings(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_SUSPEND_PAIRING
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVETRUAPICORE_SUSPEND_PAIRING
-void uniffi_truapi_server_fn_method_nativetruapicore_suspend_pairing(void*_Nonnull ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_server_fn_method_nativetruapicore_suspend_pairing(uint64_t ptr, RustBuffer peer, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_FUNC_PARSE_NAVIGATE
@@ -867,26 +860,6 @@ void ffi_truapi_server_rust_future_free_f64(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_COMPLETE_F64
 #define UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_COMPLETE_F64
 double ffi_truapi_server_rust_future_complete_f64(uint64_t handle, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_POLL_POINTER
-#define UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_POLL_POINTER
-void ffi_truapi_server_rust_future_poll_pointer(uint64_t handle, UniffiRustFutureContinuationCallback _Nonnull callback, uint64_t callback_data
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_CANCEL_POINTER
-#define UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_CANCEL_POINTER
-void ffi_truapi_server_rust_future_cancel_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_FREE_POINTER
-#define UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_FREE_POINTER
-void ffi_truapi_server_rust_future_free_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_COMPLETE_POINTER
-void*_Nonnull ffi_truapi_server_rust_future_complete_pointer(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_TRUAPI_SERVER_RUST_FUTURE_POLL_RUST_BUFFER

@@ -1321,6 +1321,7 @@ async fn create_sso_identity_transaction_response(
     .await?;
     signing_host
         .create_sso_identity_transaction(&session, request)
+        .await
         .map(|response| response.transaction)
         .map_err(|err| err.to_string())
 }
@@ -1468,7 +1469,7 @@ mod tests {
                 calling_product_id: "myapp.dot".to_string(),
                 context: api::ProductProofContext {
                     product_id: "other.dot".to_string(),
-                    suffix: api::DerivationIndex::Left(0),
+                    suffix: api::DerivationIndex::Index(0),
                 },
                 ring_location: api::RingLocation {
                     chain_id: [0; 32],
