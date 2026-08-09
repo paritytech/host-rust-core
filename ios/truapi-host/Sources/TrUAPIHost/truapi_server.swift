@@ -1853,7 +1853,831 @@ public func FfiConverterTypeHostCallbacks_lower(_ value: HostCallbacks) -> UInt6
 
 
 /**
- * UniFFI object exposing the TrUAPI core to native hosts.
+ * Native Chat storage and UI adapter. Hosts that support the Chat modality
+ * pass an implementation to
+ * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
+ * simply pass `None`. Callbacks run inline on the dispatcher thread and must
+ * return promptly without blocking.
+ */
+public protocol NativeChatCallbacks: AnyObject, Sendable {
+
+    /**
+     * Create or resolve a native product Chat room.
+     */
+    func createRoom(roomId: String, name: String, icon: String) throws  -> ChatRoomRegistrationStatus
+
+    /**
+     * Persist a text message in native Chat storage.
+     */
+    func postTextMessage(roomId: String, text: String) throws  -> String
+
+    /**
+     * Persist a custom message in native Chat storage.
+     */
+    func postCustomMessage(roomId: String, messageType: String, payload: Data) throws  -> String
+
+    /**
+     * Return the current product-scoped native Chat room list.
+     */
+    func listRooms() throws  -> [ChatRoom]
+
+}
+/**
+ * Native Chat storage and UI adapter. Hosts that support the Chat modality
+ * pass an implementation to
+ * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
+ * simply pass `None`. Callbacks run inline on the dispatcher thread and must
+ * return promptly without blocking.
+ */
+open class NativeChatCallbacksImpl: NativeChatCallbacks, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_truapi_server_fn_clone_nativechatcallbacks(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_truapi_server_fn_free_nativechatcallbacks(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Create or resolve a native product Chat room.
+     */
+open func createRoom(roomId: String, name: String, icon: String)throws  -> ChatRoomRegistrationStatus  {
+    return try  FfiConverterTypeChatRoomRegistrationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_create_room(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(roomId),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(icon),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Persist a text message in native Chat storage.
+     */
+open func postTextMessage(roomId: String, text: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_post_text_message(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(roomId),
+        FfiConverterString.lower(text),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Persist a custom message in native Chat storage.
+     */
+open func postCustomMessage(roomId: String, messageType: String, payload: Data)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_post_custom_message(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(roomId),
+        FfiConverterString.lower(messageType),
+        FfiConverterData.lower(payload),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Return the current product-scoped native Chat room list.
+     */
+open func listRooms()throws  -> [ChatRoom]  {
+    return try  FfiConverterSequenceTypeChatRoom.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_list_rooms(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceNativeChatCallbacks = UniffiVTableCallbackInterfaceNativeChatCallbacks(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypeNativeChatCallbacks.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface NativeChatCallbacks: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypeNativeChatCallbacks.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface NativeChatCallbacks: handle missing in uniffiClone")
+            }
+        },
+        createRoom: { (
+            uniffiHandle: UInt64,
+            roomId: RustBuffer,
+            name: RustBuffer,
+            icon: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ChatRoomRegistrationStatus in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.createRoom(
+                     roomId: try FfiConverterString.lift(roomId),
+                     name: try FfiConverterString.lift(name),
+                     icon: try FfiConverterString.lift(icon)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeChatRoomRegistrationStatus_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        postTextMessage: { (
+            uniffiHandle: UInt64,
+            roomId: RustBuffer,
+            text: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.postTextMessage(
+                     roomId: try FfiConverterString.lift(roomId),
+                     text: try FfiConverterString.lift(text)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        postCustomMessage: { (
+            uniffiHandle: UInt64,
+            roomId: RustBuffer,
+            messageType: RustBuffer,
+            payload: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> String in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.postCustomMessage(
+                     roomId: try FfiConverterString.lift(roomId),
+                     messageType: try FfiConverterString.lift(messageType),
+                     payload: try FfiConverterData.lift(payload)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        listRooms: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> [ChatRoom] in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.listRooms(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterSequenceTypeChatRoom.lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceNativeChatCallbacks> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceNativeChatCallbacks>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitNativeChatCallbacks() {
+    uniffi_truapi_server_fn_init_callback_vtable_nativechatcallbacks(UniffiCallbackInterfaceNativeChatCallbacks.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeChatCallbacks: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<NativeChatCallbacks>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = NativeChatCallbacks
+
+    public static func lift(_ handle: UInt64) throws -> NativeChatCallbacks {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return NativeChatCallbacksImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: NativeChatCallbacks) -> UInt64 {
+         if let rustImpl = value as? NativeChatCallbacksImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeChatCallbacks {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NativeChatCallbacks, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeChatCallbacks_lift(_ handle: UInt64) throws -> NativeChatCallbacks {
+    return try FfiConverterTypeNativeChatCallbacks.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeChatCallbacks_lower(_ value: NativeChatCallbacks) -> UInt64 {
+    return FfiConverterTypeNativeChatCallbacks.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Cancellable native observation of one custom-message render instance.
+ */
+public protocol NativeCustomRendererSubscriptionProtocol: AnyObject, Sendable {
+
+    /**
+     * Stop delivering renderer updates to the native observer.
+     */
+    func cancel()
+
+}
+/**
+ * Cancellable native observation of one custom-message render instance.
+ */
+open class NativeCustomRendererSubscription: NativeCustomRendererSubscriptionProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_truapi_server_fn_clone_nativecustomrenderersubscription(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_truapi_server_fn_free_nativecustomrenderersubscription(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Stop delivering renderer updates to the native observer.
+     */
+open func cancel()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativecustomrenderersubscription_cancel(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeCustomRendererSubscription: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = NativeCustomRendererSubscription
+
+    public static func lift(_ handle: UInt64) throws -> NativeCustomRendererSubscription {
+        return NativeCustomRendererSubscription(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: NativeCustomRendererSubscription) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeCustomRendererSubscription {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NativeCustomRendererSubscription, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCustomRendererSubscription_lift(_ handle: UInt64) throws -> NativeCustomRendererSubscription {
+    return try FfiConverterTypeNativeCustomRendererSubscription.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeCustomRendererSubscription_lower(_ value: NativeCustomRendererSubscription) -> UInt64 {
+    return FfiConverterTypeNativeCustomRendererSubscription.lower(value)
+}
+
+
+
+
+
+
+/**
+ * One native executable connection opened from a process-owned host runtime.
+ */
+public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
+
+    /**
+     * Notify this execution's chain adapter that a connection closed.
+     */
+    func notifyChainClosed(connectionId: UInt32)
+
+    /**
+     * Notify this execution's chain adapter of one JSON-RPC response.
+     */
+    func notifyChainResponse(connectionId: UInt32, json: String)
+
+    /**
+     * Push a complete native Chat room-list replacement to this execution.
+     */
+    func notifyChatRoomsChanged(rooms: [ChatRoom])
+
+    /**
+     * Push a preimage lookup replacement to this execution's subscriptions.
+     */
+    func notifyPreimageChanged(key: Data, value: Data?)
+
+    /**
+     * Push a host theme replacement to this execution's subscriptions.
+     */
+    func notifyThemeChanged(theme: ThemeVariant)
+
+    /**
+     * Read a product-scoped permission authorization without prompting.
+     */
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+
+    /**
+     * Publish one native Chat action, buffering it until the product
+     * connection subscribes.
+     */
+    func publishChatAction(action: HostChatActionSubscribeItem) throws
+
+    /**
+     * Request typed native UI for one stored custom Chat message.
+     */
+    func renderCustomMessage(messageId: String, messageType: String, payload: Data, observer: NativeCustomRendererObserver) throws  -> NativeCustomRendererSubscription
+
+    /**
+     * Update a product-scoped permission authorization.
+     */
+    func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws
+
+    /**
+     * Permanently shut down this executable and all of its connection state.
+     *
+     * This is named `shutdown` rather than `close` because UniFFI Kotlin
+     * objects already implement `AutoCloseable.close()` for releasing the
+     * foreign object handle.
+     */
+    func shutdown()
+
+    /**
+     * Start this execution's independently authenticated localhost bridge.
+     */
+    func startWsBridge(bindPort: UInt16) throws  -> WsBridgeEndpoint
+
+    /**
+     * Stop the active bridge while leaving the execution reusable.
+     */
+    func stopWsBridge()
+
+}
+/**
+ * One native executable connection opened from a process-owned host runtime.
+ */
+open class NativeProductExecution: NativeProductExecutionProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_truapi_server_fn_clone_nativeproductexecution(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_truapi_server_fn_free_nativeproductexecution(handle, $0) }
+    }
+
+
+
+
+    /**
+     * Notify this execution's chain adapter that a connection closed.
+     */
+open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_chain_closed(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(connectionId),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Notify this execution's chain adapter of one JSON-RPC response.
+     */
+open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_chain_response(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(connectionId),
+        FfiConverterString.lower(json),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Push a complete native Chat room-list replacement to this execution.
+     */
+open func notifyChatRoomsChanged(rooms: [ChatRoom])  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_chat_rooms_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeChatRoom.lower(rooms),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Push a preimage lookup replacement to this execution's subscriptions.
+     */
+open func notifyPreimageChanged(key: Data, value: Data?)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_preimage_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(key),
+        FfiConverterOptionData.lower(value),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Push a host theme replacement to this execution's subscriptions.
+     */
+open func notifyThemeChanged(theme: ThemeVariant)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_notify_theme_changed(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeThemeVariant_lower(theme),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Read a product-scoped permission authorization without prompting.
+     */
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
+    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Publish one native Chat action, buffering it until the product
+     * connection subscribes.
+     */
+open func publishChatAction(action: HostChatActionSubscribeItem)throws   {try rustCallWithError(FfiConverterTypeProductRuntimeError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_publish_chat_action(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeHostChatActionSubscribeItem_lower(action),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Request typed native UI for one stored custom Chat message.
+     */
+open func renderCustomMessage(messageId: String, messageType: String, payload: Data, observer: NativeCustomRendererObserver)throws  -> NativeCustomRendererSubscription  {
+    return try  FfiConverterTypeNativeCustomRendererSubscription_lift(try rustCallWithError(FfiConverterTypeProductRuntimeError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_render_custom_message(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(messageId),
+        FfiConverterString.lower(messageType),
+        FfiConverterData.lower(payload),
+        FfiConverterCallbackInterfaceNativeCustomRendererObserver_lower(observer),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Update a product-scoped permission authorization.
+     */
+open func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_set_permission_authorization_status(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePermissionAuthorizationRequest_lower(request),
+        FfiConverterTypePermissionAuthorizationStatus_lower(status),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Permanently shut down this executable and all of its connection state.
+     *
+     * This is named `shutdown` rather than `close` because UniFFI Kotlin
+     * objects already implement `AutoCloseable.close()` for releasing the
+     * foreign object handle.
+     */
+open func shutdown()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_shutdown(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Start this execution's independently authenticated localhost bridge.
+     */
+open func startWsBridge(bindPort: UInt16)throws  -> WsBridgeEndpoint  {
+    return try  FfiConverterTypeWsBridgeEndpoint_lift(try rustCallWithError(FfiConverterTypeWsBridgeStartError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_start_ws_bridge(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt16.lower(bindPort),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Stop the active bridge while leaving the execution reusable.
+     */
+open func stopWsBridge()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_stop_ws_bridge(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeProductExecution: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = NativeProductExecution
+
+    public static func lift(_ handle: UInt64) throws -> NativeProductExecution {
+        return NativeProductExecution(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: NativeProductExecution) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeProductExecution {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NativeProductExecution, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProductExecution_lift(_ handle: UInt64) throws -> NativeProductExecution {
+    return try FfiConverterTypeNativeProductExecution.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProductExecution_lower(_ value: NativeProductExecution) -> UInt64 {
+    return FfiConverterTypeNativeProductExecution.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Legacy single-execution UniFFI object retained for existing embedders.
+ * New native integrations should use [`NativeTrUApiHostRuntime`] and
+ * [`NativeProductExecution`].
  */
 public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
 
@@ -1951,7 +2775,9 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
 
 }
 /**
- * UniFFI object exposing the TrUAPI core to native hosts.
+ * Legacy single-execution UniFFI object retained for existing embedders.
+ * New native integrations should use [`NativeTrUApiHostRuntime`] and
+ * [`NativeProductExecution`].
  */
 open class NativeTrUApiCore: NativeTrUApiCoreProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -2250,6 +3076,432 @@ public func FfiConverterTypeNativeTrUApiCore_lower(_ value: NativeTrUApiCore) ->
 
 
 
+
+
+/**
+ * Process-owned native TrUAPI runtime shared by all executable connections.
+ */
+public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
+
+    /**
+     * Activate or replace the process-wide local signing session.
+     */
+    func activateLocalSession(secret: Data, liteUsername: String?) throws
+
+    /**
+     * Core-owned logout for the process-wide authentication session.
+     */
+    func disconnect()
+
+    /**
+     * Notify the shared chain adapter that a connection closed.
+     */
+    func notifyChainClosed(connectionId: UInt32)
+
+    /**
+     * Notify the shared chain adapter of one JSON-RPC response.
+     */
+    func notifyChainResponse(connectionId: UInt32, json: String)
+
+    /**
+     * Open a connection-scoped execution with immutable trusted context.
+     * `chat_callbacks` installs the host's Chat adapter; hosts without the
+     * Chat modality pass `None`.
+     */
+    func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeChatCallbacks?, executionConfig: NativeProductExecutionConfig) throws  -> NativeProductExecution
+
+}
+/**
+ * Process-owned native TrUAPI runtime shared by all executable connections.
+ */
+open class NativeTrUApiHostRuntime: NativeTrUApiHostRuntimeProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_truapi_server_fn_clone_nativetruapihostruntime(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_truapi_server_fn_free_nativetruapihostruntime(handle, $0) }
+    }
+
+
+    /**
+     * Construct one host-level runtime and optionally activate its local session.
+     */
+public static func withRuntimeConfig(callbacks: HostCallbacks, runtimeConfig: NativeHostRuntimeConfig)throws  -> NativeTrUApiHostRuntime  {
+    return try  FfiConverterTypeNativeTrUApiHostRuntime_lift(try rustCallWithError(FfiConverterTypeNativeRuntimeConfigError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_constructor_nativetruapihostruntime_with_runtime_config(
+        FfiConverterTypeHostCallbacks_lower(callbacks),
+        FfiConverterTypeNativeHostRuntimeConfig_lower(runtimeConfig),uniffiCallStatus
+    )
+})
+}
+
+
+
+    /**
+     * Activate or replace the process-wide local signing session.
+     */
+open func activateLocalSession(secret: Data, liteUsername: String?)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_activate_local_session(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(secret),
+        FfiConverterOptionString.lower(liteUsername),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Core-owned logout for the process-wide authentication session.
+     */
+open func disconnect()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_disconnect(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Notify the shared chain adapter that a connection closed.
+     */
+open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_notify_chain_closed(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(connectionId),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Notify the shared chain adapter of one JSON-RPC response.
+     */
+open func notifyChainResponse(connectionId: UInt32, json: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_notify_chain_response(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(connectionId),
+        FfiConverterString.lower(json),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Open a connection-scoped execution with immutable trusted context.
+     * `chat_callbacks` installs the host's Chat adapter; hosts without the
+     * Chat modality pass `None`.
+     */
+open func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeChatCallbacks?, executionConfig: NativeProductExecutionConfig)throws  -> NativeProductExecution  {
+    return try  FfiConverterTypeNativeProductExecution_lift(try rustCallWithError(FfiConverterTypeNativeRuntimeConfigError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_open_product_execution(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeHostCallbacks_lower(callbacks),
+        FfiConverterOptionTypeNativeChatCallbacks.lower(chatCallbacks),
+        FfiConverterTypeNativeProductExecutionConfig_lower(executionConfig),uniffiCallStatus
+    )
+})
+}
+
+
+
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeTrUApiHostRuntime: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = NativeTrUApiHostRuntime
+
+    public static func lift(_ handle: UInt64) throws -> NativeTrUApiHostRuntime {
+        return NativeTrUApiHostRuntime(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: NativeTrUApiHostRuntime) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeTrUApiHostRuntime {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NativeTrUApiHostRuntime, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTrUApiHostRuntime_lift(_ handle: UInt64) throws -> NativeTrUApiHostRuntime {
+    return try FfiConverterTypeNativeTrUApiHostRuntime.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeTrUApiHostRuntime_lower(_ value: NativeTrUApiHostRuntime) -> UInt64 {
+    return FfiConverterTypeNativeTrUApiHostRuntime.lower(value)
+}
+
+
+
+
+/**
+ * Process-owned native host configuration shared by every product execution.
+ */
+public struct NativeHostRuntimeConfig: Equatable, Hashable {
+    /**
+     * Host name shown by the wallet during SSO pairing.
+     */
+    public var hostName: String
+    /**
+     * Optional host icon URL shown by the wallet during SSO pairing.
+     */
+    public var hostIcon: String?
+    /**
+     * Optional host version shown by the wallet during SSO pairing.
+     */
+    public var hostVersion: String?
+    /**
+     * Optional platform/browser name shown by the wallet during SSO pairing.
+     */
+    public var platformType: String?
+    /**
+     * Optional platform/browser version shown by the wallet during SSO pairing.
+     */
+    public var platformVersion: String?
+    /**
+     * People-chain genesis hash. Must be exactly 32 bytes.
+     */
+    public var peopleChainGenesisHash: Data
+    /**
+     * Bulletin-chain genesis hash. Must be exactly 32 bytes.
+     */
+    public var bulletinChainGenesisHash: Data
+    /**
+     * Optional local signing-host secret material (raw BIP-39 entropy).
+     */
+    public var localSessionSecret: Data?
+    /**
+     * Optional lite username attached to the local signing-host session.
+     */
+    public var localSessionLiteUsername: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Host name shown by the wallet during SSO pairing.
+         */hostName: String,
+        /**
+         * Optional host icon URL shown by the wallet during SSO pairing.
+         */hostIcon: String?,
+        /**
+         * Optional host version shown by the wallet during SSO pairing.
+         */hostVersion: String?,
+        /**
+         * Optional platform/browser name shown by the wallet during SSO pairing.
+         */platformType: String?,
+        /**
+         * Optional platform/browser version shown by the wallet during SSO pairing.
+         */platformVersion: String?,
+        /**
+         * People-chain genesis hash. Must be exactly 32 bytes.
+         */peopleChainGenesisHash: Data,
+        /**
+         * Bulletin-chain genesis hash. Must be exactly 32 bytes.
+         */bulletinChainGenesisHash: Data,
+        /**
+         * Optional local signing-host secret material (raw BIP-39 entropy).
+         */localSessionSecret: Data?,
+        /**
+         * Optional lite username attached to the local signing-host session.
+         */localSessionLiteUsername: String?) {
+        self.hostName = hostName
+        self.hostIcon = hostIcon
+        self.hostVersion = hostVersion
+        self.platformType = platformType
+        self.platformVersion = platformVersion
+        self.peopleChainGenesisHash = peopleChainGenesisHash
+        self.bulletinChainGenesisHash = bulletinChainGenesisHash
+        self.localSessionSecret = localSessionSecret
+        self.localSessionLiteUsername = localSessionLiteUsername
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativeHostRuntimeConfig: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeHostRuntimeConfig {
+        return
+            try NativeHostRuntimeConfig(
+                hostName: FfiConverterString.read(from: &buf),
+                hostIcon: FfiConverterOptionString.read(from: &buf),
+                hostVersion: FfiConverterOptionString.read(from: &buf),
+                platformType: FfiConverterOptionString.read(from: &buf),
+                platformVersion: FfiConverterOptionString.read(from: &buf),
+                peopleChainGenesisHash: FfiConverterData.read(from: &buf),
+                bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
+                localSessionSecret: FfiConverterOptionData.read(from: &buf),
+                localSessionLiteUsername: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NativeHostRuntimeConfig, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.hostName, into: &buf)
+        FfiConverterOptionString.write(value.hostIcon, into: &buf)
+        FfiConverterOptionString.write(value.hostVersion, into: &buf)
+        FfiConverterOptionString.write(value.platformType, into: &buf)
+        FfiConverterOptionString.write(value.platformVersion, into: &buf)
+        FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
+        FfiConverterData.write(value.bulletinChainGenesisHash, into: &buf)
+        FfiConverterOptionData.write(value.localSessionSecret, into: &buf)
+        FfiConverterOptionString.write(value.localSessionLiteUsername, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeHostRuntimeConfig_lift(_ buf: RustBuffer) throws -> NativeHostRuntimeConfig {
+    return try FfiConverterTypeNativeHostRuntimeConfig.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeHostRuntimeConfig_lower(_ value: NativeHostRuntimeConfig) -> RustBuffer {
+    return FfiConverterTypeNativeHostRuntimeConfig.lower(value)
+}
+
+
+/**
+ * Trusted identity attached by a native host to one executable connection.
+ */
+public struct NativeProductExecutionConfig: Equatable, Hashable {
+    /**
+     * Canonical product identifier used for policy, storage, and derivation.
+     */
+    public var productId: String
+    /**
+     * Trusted executable kind selected before product code starts.
+     */
+    public var executionKind: ProductExecutionKind
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Canonical product identifier used for policy, storage, and derivation.
+         */productId: String,
+        /**
+         * Trusted executable kind selected before product code starts.
+         */executionKind: ProductExecutionKind) {
+        self.productId = productId
+        self.executionKind = executionKind
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativeProductExecutionConfig: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeProductExecutionConfig: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeProductExecutionConfig {
+        return
+            try NativeProductExecutionConfig(
+                productId: FfiConverterString.read(from: &buf),
+                executionKind: FfiConverterTypeProductExecutionKind.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NativeProductExecutionConfig, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.productId, into: &buf)
+        FfiConverterTypeProductExecutionKind.write(value.executionKind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProductExecutionConfig_lift(_ buf: RustBuffer) throws -> NativeProductExecutionConfig {
+    return try FfiConverterTypeNativeProductExecutionConfig.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeProductExecutionConfig_lower(_ value: NativeProductExecutionConfig) -> RustBuffer {
+    return FfiConverterTypeNativeProductExecutionConfig.lower(value)
+}
+
+
 /**
  * Native runtime configuration supplied before product calls are handled.
  */
@@ -2258,6 +3510,10 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
      * Canonical product identifier used for account derivation.
      */
     public var productId: String
+    /**
+     * Trusted executable kind derived by the native host before loading it.
+     */
+    public var executionKind: ProductExecutionKind
     /**
      * Host name shown by the wallet during SSO pairing.
      */
@@ -2306,6 +3562,9 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          * Canonical product identifier used for account derivation.
          */productId: String,
         /**
+         * Trusted executable kind derived by the native host before loading it.
+         */executionKind: ProductExecutionKind,
+        /**
          * Host name shown by the wallet during SSO pairing.
          */hostName: String,
         /**
@@ -2336,6 +3595,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          * Deeplink scheme used in pairing QR payloads.
          */pairingDeeplinkScheme: NativePairingDeeplinkScheme) {
         self.productId = productId
+        self.executionKind = executionKind
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
@@ -2365,6 +3625,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
         return
             try NativeRuntimeConfig(
                 productId: FfiConverterString.read(from: &buf),
+                executionKind: FfiConverterTypeProductExecutionKind.read(from: &buf),
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
                 hostVersion: FfiConverterOptionString.read(from: &buf),
@@ -2380,6 +3641,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
 
     public static func write(_ value: NativeRuntimeConfig, into buf: inout [UInt8]) {
         FfiConverterString.write(value.productId, into: &buf)
+        FfiConverterTypeProductExecutionKind.write(value.executionKind, into: &buf)
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
         FfiConverterOptionString.write(value.hostVersion, into: &buf)
@@ -3166,6 +4428,135 @@ public func FfiConverterTypeNavigateDecision_lower(_ value: NavigateDecision) ->
 
 
 /**
+ * Errors returned while routing work through a product runtime.
+ */
+public
+enum ProductRuntimeError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+
+
+    /**
+     * No connected product runtime is available.
+     */
+    case NotConnected
+    /**
+     * Incoming bytes did not decode as a protocol frame.
+     */
+    case InvalidFrame(
+        /**
+         * Decode failure reason.
+         */reason: String
+    )
+    /**
+     * The connection execution kind does not allow the operation.
+     */
+    case Denied
+    /**
+     * The product connection has already closed.
+     */
+    case Closed
+    /**
+     * The product or native host did not install the requested surface.
+     */
+    case Unsupported
+    /**
+     * The bounded pre-subscription action queue is full.
+     */
+    case BufferFull
+
+
+
+
+
+
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+
+}
+
+#if compiler(>=6)
+extension ProductRuntimeError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProductRuntimeError: FfiConverterRustBuffer {
+    typealias SwiftType = ProductRuntimeError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductRuntimeError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+
+
+
+        case 1: return .NotConnected
+        case 2: return .InvalidFrame(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .Denied
+        case 4: return .Closed
+        case 5: return .Unsupported
+        case 6: return .BufferFull
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ProductRuntimeError, into buf: inout [UInt8]) {
+        switch value {
+
+
+
+
+
+        case .NotConnected:
+            writeInt(&buf, Int32(1))
+
+
+        case let .InvalidFrame(reason):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(reason, into: &buf)
+
+
+        case .Denied:
+            writeInt(&buf, Int32(3))
+
+
+        case .Closed:
+            writeInt(&buf, Int32(4))
+
+
+        case .Unsupported:
+            writeInt(&buf, Int32(5))
+
+
+        case .BufferFull:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductRuntimeError_lift(_ buf: RustBuffer) throws -> ProductRuntimeError {
+    return try FfiConverterTypeProductRuntimeError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductRuntimeError_lower(_ value: ProductRuntimeError) -> RustBuffer {
+    return FfiConverterTypeProductRuntimeError.lower(value)
+}
+
+
+/**
  * Failure modes returned from host-facing `start_ws_bridge` wrappers.
  */
 public
@@ -3256,6 +4647,174 @@ public func FfiConverterTypeWsBridgeStartError_lower(_ value: WsBridgeStartError
     return FfiConverterTypeWsBridgeStartError.lower(value)
 }
 
+
+
+
+/**
+ * Observer implemented by a native host to receive renderer tree replacements.
+ */
+public protocol NativeCustomRendererObserver: AnyObject, Sendable {
+
+    /**
+     * Deliver a complete replacement tree.
+     */
+    func onUpdate(node: CustomRendererNode)
+
+    /**
+     * Report that the renderer stream ended.
+     */
+    func onComplete()
+
+}
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfaceNativeCustomRendererObserver {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceNativeCustomRendererObserver = UniffiVTableCallbackInterfaceNativeCustomRendererObserver(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface NativeCustomRendererObserver: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface NativeCustomRendererObserver: handle missing in uniffiClone")
+            }
+        },
+        onUpdate: { (
+            uniffiHandle: UInt64,
+            node: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onUpdate(
+                     node: try FfiConverterTypeCustomRendererNode_lift(node)
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onComplete: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onComplete(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceNativeCustomRendererObserver> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceNativeCustomRendererObserver>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitNativeCustomRendererObserver() {
+    uniffi_truapi_server_fn_init_callback_vtable_nativecustomrendererobserver(UniffiCallbackInterfaceNativeCustomRendererObserver.vtablePtr)
+}
+
+// FfiConverter protocol for callback interfaces
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterCallbackInterfaceNativeCustomRendererObserver {
+    fileprivate static let handleMap = UniffiHandleMap<NativeCustomRendererObserver>()
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+extension FfiConverterCallbackInterfaceNativeCustomRendererObserver : FfiConverter {
+    typealias SwiftType = NativeCustomRendererObserver
+    typealias FfiType = UInt64
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lift(_ handle: UInt64) throws -> SwiftType {
+        try handleMap.get(handle: handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func lower(_ v: SwiftType) -> UInt64 {
+        return handleMap.insert(obj: v)
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public static func write(_ v: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(v))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceNativeCustomRendererObserver_lift(_ handle: UInt64) throws -> NativeCustomRendererObserver {
+    return try FfiConverterCallbackInterfaceNativeCustomRendererObserver.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterCallbackInterfaceNativeCustomRendererObserver_lower(_ v: NativeCustomRendererObserver) -> UInt64 {
+    return FfiConverterCallbackInterfaceNativeCustomRendererObserver.lower(v)
+}
+
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
@@ -3325,6 +4884,55 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
         case 1: return try FfiConverterData.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeNativeChatCallbacks: FfiConverterRustBuffer {
+    typealias SwiftType = NativeChatCallbacks?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNativeChatCallbacks.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNativeChatCallbacks.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeChatRoom: FfiConverterRustBuffer {
+    typealias SwiftType = [ChatRoom]
+
+    public static func write(_ value: [ChatRoom], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeChatRoom.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ChatRoom] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ChatRoom]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeChatRoom.read(from: &buf))
+        }
+        return seq
     }
 }
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
@@ -3574,6 +5182,54 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 6971) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_text_message() != 10747) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_custom_message() != 33405) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 21374) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 59343) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_response() != 39688) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chat_rooms_changed() != 13112) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_preimage_changed() != 21769) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_theme_changed() != 17358) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 31503) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_render_custom_message() != 17716) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_set_permission_authorization_status() != 14164) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_shutdown() != 56769) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_start_ws_bridge() != 16029) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_stop_ws_bridge() != 6101) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_activate_local_session() != 19215) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3610,11 +5266,40 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_stop_ws_bridge() != 13438) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_activate_local_session() != 40075) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_closed() != 55360) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_response() != 26715) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 49537) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativecustomrenderersubscription_cancel() != 26593) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_constructor_nativetruapicore_with_runtime_config() != 54861) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_constructor_nativetruapihostruntime_with_runtime_config() != 39293) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_update() != 1079) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 43817) {
         return InitializationResult.apiChecksumMismatch
     }
 
     uniffiCallbackInitHostCallbacks()
+    uniffiCallbackInitNativeChatCallbacks()
+    uniffiCallbackInitNativeCustomRendererObserver()
     uniffiEnsureTruapiInitialized()
     uniffiEnsureTruapiPlatformInitialized()
     return InitializationResult.ok

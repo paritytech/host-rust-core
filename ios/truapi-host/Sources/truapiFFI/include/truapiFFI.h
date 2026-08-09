@@ -506,7 +506,7 @@ void ffi_truapi_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonn
 #ifndef UNIFFI_FFIDEF_FFI_TRUAPI_UNIFFI_CONTRACT_VERSION
 #define UNIFFI_FFIDEF_FFI_TRUAPI_UNIFFI_CONTRACT_VERSION
 uint32_t ffi_truapi_uniffi_contract_version(void
-    
+
 );
 #endif
 

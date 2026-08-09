@@ -1604,6 +1604,81 @@ public func FfiConverterTypePermissionAuthorizationStatus_lower(_ value: Permiss
 
 
 /**
+ * Trusted kind of product executable attached to a TrUAPI connection.
+ */
+
+public enum ProductExecutionKind: Equatable, Hashable {
+
+    /**
+     * Visible single-page application entrypoint such as `app/index.html`.
+     */
+    case spa
+    /**
+     * Headless worker executable that provides the Chat modality.
+     */
+    case chat
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProductExecutionKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProductExecutionKind: FfiConverterRustBuffer {
+    typealias SwiftType = ProductExecutionKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductExecutionKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .spa
+
+        case 2: return .chat
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ProductExecutionKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .spa:
+            writeInt(&buf, Int32(1))
+
+
+        case .chat:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductExecutionKind_lift(_ buf: RustBuffer) throws -> ProductExecutionKind {
+    return try FfiConverterTypeProductExecutionKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductExecutionKind_lower(_ value: ProductExecutionKind) -> RustBuffer {
+    return FfiConverterTypeProductExecutionKind.lower(value)
+}
+
+
+
+/**
  * Review shown before a sign-payload request is sent to the paired wallet.
  */
 

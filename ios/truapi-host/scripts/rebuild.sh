@@ -24,6 +24,12 @@ for namespace in truapi truapi_platform truapi_server; do
         "$PACKAGE_ROOT/Sources/${namespace}FFI/include/${namespace}FFI.h"
     cp "$UNIFFI_OUT/${namespace}FFI.modulemap" \
         "$PACKAGE_ROOT/Sources/${namespace}FFI/include/module.modulemap"
+    # UniFFI templates emit trailing spaces around optional fragments. Keep the
+    # committed bindings stable so rebuilding only records API changes.
+    perl -pi -e 's/[ \t]+$//' \
+        "$PACKAGE_ROOT/Sources/TrUAPIHost/${namespace}.swift" \
+        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/${namespace}FFI.h" \
+        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/module.modulemap"
 done
 
 rm -rf "$PACKAGE_ROOT/Binaries/truapi_server.xcframework"
