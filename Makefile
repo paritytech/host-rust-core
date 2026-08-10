@@ -206,10 +206,10 @@ android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs 
 android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
 	gradle :truapi-host:publishReleasePublicationToMavenLocal
 
-# --- truapi-provider native packaging -----------------------------------------
-# The provider ships as its own artifacts (iOS xcframework, Android AAR, npm
-# wasm) so a host consumes chain transport without depending on the Rust crate.
-
+# truapi-provider ships as its own per-platform artifacts (iOS xcframework,
+# Android AAR, npm wasm) so a host consumes chain transport without depending on
+# the Rust crate. The `uniffi` feature carries no `ws` backend: these builds are
+# the light client alone.
 PROVIDER_KOTLIN_OUT := android/truapi-provider/src/main/kotlin/generated
 PROVIDER_JNILIBS := android/truapi-provider/src/main/jniLibs
 

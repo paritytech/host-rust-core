@@ -1,13 +1,14 @@
-// TrUAPI Android chain-transport package.
+// TrUAPI Android chain transport.
 //
-// Publishes `io.parity:truapi-provider-android`: the UniFFI Kotlin bindings for
-// the `truapi-provider` crate (embedded smoldot light client plus the bundled
-// chain-spec catalog), together with `libtruapi_provider.so` per ABI.
+// Publishes `io.parity:truapi-provider-android` to Maven: the UniFFI Kotlin
+// bindings for the `truapi-provider` crate (embedded smoldot light client plus
+// the bundled chain-spec catalog), together with `libtruapi_provider.so` per
+// Android ABI. Hosts address a chain by genesis hash and exchange raw JSON-RPC
+// strings; the crate owns the light client and the specs.
 //
-// Unlike `truapi-host`, this AAR bundles the cdylib, so a consumer needs no Rust
-// toolchain: add the Maven coordinate and call `ChainProvider()`. That makes the
-// jniLibs a publish-time requirement rather than an optional extra — see the
-// check wired into the publish tasks below.
+// Bundling the cdylib is what distinguishes this from `truapi-host`, whose AAR
+// leaves it to the integrator. It makes the jniLibs a publish-time requirement
+// rather than an optional extra, enforced by `verifyJniLibs` below.
 
 plugins {
     id("com.android.library")
@@ -63,10 +64,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 
-// Coordinates for the local Maven publication (`publishToMavenLocal`).
-// Distribution is via JitPack, which derives the consumer coordinates from the
-// repo + subproject as `com.github.paritytech.truapi:truapi-provider:<tag>`,
-// overriding the group and artifactId below.
+// Coordinates for the local Maven publication (`publishToMavenLocal`), which is
+// the only publication that exists today. JitPack cannot serve this module: it
+// builds from a git tag, and both the bindings and the cdylib are generated
+// rather than committed. A remote coordinate needs a hosted Maven repository.
 val publicationGroup = "io.parity"
 val publicationArtifact = "truapi-provider-android"
 val publicationVersion = "0.1.0"
@@ -141,8 +142,8 @@ publishing {
     }
 
     repositories {
-        // Maven Local for `gradle publishToMavenLocal` during development and
-        // for JitPack's build environment (see `jitpack.yml`).
+        // `gradle publishToMavenLocal` during development; consumers resolve it
+        // through `mavenLocal()` until a hosted repository is wired up.
         mavenLocal()
     }
 }

@@ -46,16 +46,16 @@ connection.close();
 localStorage.setItem(`chain-db:${genesis}`, await provider.snapshot(genesis));
 ```
 
-Warm start is yours to drive: call `snapshot()` once the light client has synced,
-persist the string wherever you like, and hand it back through `setDatabase()`
-before `build()` on the next launch.
+Warm start is driven by the host: call `snapshot()` once the light client has
+synced, persist the string, and hand it back through `setDatabase()` before
+`build()` on the next launch.
 
 ## Native hosts
 
-Android and iOS do not consume this package. They embed the same
-[`truapi-provider`](../../../rust/crates/truapi-provider) crate through the host
-runtime's own bindings, so a native host asks for a chain the same way and gets
-the same bundled catalog without any JavaScript in the path.
+Android and iOS do not consume this package. The same `truapi-provider` crate is
+published for them as its own artifacts over UniFFI — a `TrUAPIProvider` Swift
+package and a `truapi-provider-android` AAR — exposing the same `ChainProvider`
+contract with the same bundled catalog, so the wiring differs only in language.
 
 ## Building
 

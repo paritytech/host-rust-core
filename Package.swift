@@ -1,16 +1,11 @@
 // swift-tools-version: 5.10
 //
-// Two products, consumed as SPM git dependencies (the manifest must live at the
-// repo root for that):
-//
-//   * TrUAPIHost — the iOS host package for the Rust TrUAPI core. Sources under
-//     ios/truapi-host/.
-//   * TrUAPIProvider — chain transport (embedded smoldot light client plus a
-//     bundled chain-spec catalog) for a native host that wants its own network
-//     access. Sources under ios/truapi-provider/. Independent of TrUAPIHost:
-//     depend on whichever you need.
-//
-// For both, the uniffi-generated bindings are committed build outputs
+// TrUAPIHost — iOS host package for the Rust TrUAPI core — and TrUAPIProvider —
+// chain transport over an embedded smoldot light client with a bundled chain-spec
+// catalog — consumed as SPM git dependencies (the manifest must live at the repo
+// root for that). Package sources live under ios/truapi-host/ and
+// ios/truapi-provider/. The two products are independent and release on separate
+// tags. For both, the uniffi-generated bindings are committed build outputs
 // (regenerate with the package's scripts/rebuild.sh) while the xcframework is
 // gitignored and distributed as a GitHub release asset (scripts/publish.sh).
 
@@ -36,15 +31,16 @@ let binaryTarget: Target = useLocalBinary
         checksum: publishedBinaryChecksum
     )
 
-// The provider ships its own xcframework on the same terms, with its own toggle:
-// the two products release independently, so building one against a local
-// binary must not force the other to have one. Set
-// TRUAPI_PROVIDER_USE_LOCAL_BINARY=1 after ios/truapi-provider/scripts/rebuild.sh.
+// Set TRUAPI_PROVIDER_USE_LOCAL_BINARY=1 to build against the locally generated
+// ios/truapi-provider/Binaries/truapi_provider.xcframework (run rebuild.sh
+// first). Separate from TRUAPI_USE_LOCAL_BINARY because the products release
+// independently: a local build of one must not require a local build of the other.
 let useLocalProviderBinary =
     ProcessInfo.processInfo.environment["TRUAPI_PROVIDER_USE_LOCAL_BINARY"] == "1"
-// Set by ios/truapi-provider/scripts/publish.sh. Until the first release exists,
-// remote resolution of TrUAPIProvider fails on the checksum: build it locally
-// with scripts/rebuild.sh and TRUAPI_PROVIDER_USE_LOCAL_BINARY=1 meanwhile.
+
+// Set by ios/truapi-provider/scripts/publish.sh. No release exists yet, so remote
+// resolution fails on the checksum until the first publish.
+
 let providerBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-provider%400.0.0-unpublished/truapi_provider.xcframework.zip"
 let providerBinaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000"
 

@@ -102,19 +102,21 @@ a single package with tree-shakeable subpath entries:
 
 ### Chain transport
 
-A host that wants its own chain access embeds the `truapi-provider` crate (smoldot
-plus a bundled chain-spec catalog, addressed by genesis hash). It ships as three
-independent binary artifacts, so a consumer needs neither Rust nor a dependency on
-the crate:
+A host that serves chain traffic itself embeds the `truapi-provider` crate: an
+embedded smoldot light client plus a bundled chain-spec catalog, addressed by
+genesis hash, so the host ships no chain specs and never refreshes them. The crate
+compiles to one binary artifact per platform, each exposing the same
+`ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
+dependency on the crate:
 
-| host | artifact | build |
-| --- | --- | --- |
-| browser, webview | [`@parity/truapi-provider`](js/packages/truapi-provider) WASM | `make wasm` |
-| iOS | [`TrUAPIProvider`](ios/truapi-provider) SPM product + xcframework | `make provider-ios` |
-| Android | [`truapi-provider-android`](android/truapi-provider) AAR (bindings + cdylib) | `make provider-android-publish-local` |
-
-All three expose the same `ChainProvider` contract, so the wiring differs only in
-language.
+- [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
+  browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
+- [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
+  `Package.swift`, an xcframework plus committed Swift bindings, built by
+  `make provider-ios`.
+- [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
+  Kotlin bindings and the cdylib per ABI, built by
+  `make provider-android-publish-local`.
 
 ## How it works
 

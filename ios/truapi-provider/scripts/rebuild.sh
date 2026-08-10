@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Regenerate the TrUAPIProvider package's build outputs from the Rust crate:
+# Regenerate the TrUAPIProvider package build outputs in place:
+#   * truapi_provider.xcframework (Binaries/), device and simulator slices
+#   * uniffi-generated Swift bindings
+#     (Sources/TrUAPIProvider + Sources/truapi_providerFFI)
 #
-#   * the uniffi Swift bindings (Sources/TrUAPIProvider + Sources/truapi_providerFFI),
-#     which are committed so consumers get them from a plain git checkout
-#   * Binaries/truapi_provider.xcframework, which is gitignored and published as
-#     a release asset by scripts/publish.sh
+# Run after changing the crate's uniffi surface or refreshing the bundled chain
+# specs, and commit the regenerated bindings with the source change.
+# Usage: ./scripts/rebuild.sh [--sim-only]
 #
-# The simulator slice alone is enough for local builds; the device slice is
-# needed for anything shipped, so both are built by default. Pass --sim-only to
-# skip the device slice while iterating.
+# --sim-only drops the device slice for a faster loop; publish.sh rejects the
+# result, since a release asset without a device slice cannot ship.
 set -euo pipefail
 
 PACKAGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
