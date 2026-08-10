@@ -589,7 +589,7 @@ pub(crate) fn sign_raw_legacy_response_message(
 pub(crate) fn account_id(identifier: &str, index: u32) -> v01::ProductAccountId {
     v01::ProductAccountId {
         dot_ns_identifier: identifier.to_string(),
-        derivation_index: v01::DerivationIndex::Left(index),
+        derivation_index: v01::DerivationIndex::Index(index),
     }
 }
 
@@ -604,7 +604,7 @@ pub(crate) fn raw_payload() -> v01::RawPayload {
 pub(crate) fn product_proof_context(product_id: &str) -> v01::ProductProofContext {
     v01::ProductProofContext {
         product_id: product_id.to_string(),
-        suffix: v01::DerivationIndex::Left(7),
+        suffix: v01::DerivationIndex::Index(7),
     }
 }
 

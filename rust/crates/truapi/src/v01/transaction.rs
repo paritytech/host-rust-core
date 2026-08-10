@@ -10,6 +10,7 @@ pub type AccountId = [u8; 32];
 
 /// A signed extension for a transaction payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct TxPayloadExtension {
     /// Extension name (e.g., `"CheckSpecVersion"`).
     pub id: String,
@@ -25,6 +26,7 @@ pub struct TxPayloadExtension {
 /// The signer is a [`ProductAccountId`]; the host resolves the
 /// corresponding key pair through its account management layer.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ProductAccountTxPayload {
     /// Product account that will sign the transaction.
     pub signer: ProductAccountId,
@@ -43,6 +45,7 @@ pub struct ProductAccountTxPayload {
 /// Identical to [`ProductAccountTxPayload`] except the signer is a raw
 /// 32-byte [`AccountId`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct LegacyAccountTxPayload {
     /// Raw 32-byte public key of the legacy account.
     pub signer: AccountId,

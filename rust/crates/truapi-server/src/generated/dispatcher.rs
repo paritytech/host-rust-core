@@ -12,6 +12,7 @@ use truapi::api::{
     Preimage, ResourceAllocation, Signing, StatementStore, System, Theme,
 };
 use truapi::versioned::{self, Versioned};
+use truapi_platform::ProductExecutionKind;
 
 use crate::dispatcher::Dispatcher;
 use crate::frame::encode_versioned_err_payload;
@@ -19,7 +20,8 @@ use crate::frame::encode_versioned_interrupt_payload;
 use crate::frame::encode_versioned_ok_payload;
 use crate::frame::encode_versioned_unit_ok_payload;
 use crate::generated::wire_table;
-use crate::subscription::subscription_stream;
+use crate::subscription::{HostInitiatedSubscriptionManager, subscription_stream};
+use crate::transport::Transport;
 
 /// Register every TrUAPI method with the dispatcher.
 pub fn register<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
@@ -41,6 +43,19 @@ where
     register_statement_store(dispatcher, host.clone());
     register_system(dispatcher, host.clone());
     register_theme(dispatcher, host);
+}
+
+/// Start the host-initiated `chat_custom_message_render` subscription.
+pub(crate) fn chat_custom_message_render(
+    subscriptions: &HostInitiatedSubscriptionManager,
+    transport: Arc<dyn Transport>,
+    request: versioned::chat::ProductChatCustomMessageRenderRequest,
+) -> truapi::Subscription<versioned::chat::ProductChatCustomMessageRenderItem> {
+    subscriptions.start(
+        wire_table::CHAT_CUSTOM_MESSAGE_RENDER,
+        parity_scale_codec::Encode::encode(&request),
+        transport,
+    )
 }
 
 fn register_account<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
@@ -788,6 +803,7 @@ where
     P: Chat + Send + Sync + 'static,
 {
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
         let host = host.clone();
         dispatcher.on_request(
             wire_table::CHAT_CREATE_ROOM,
@@ -811,6 +827,11 @@ where
                         };
                     let target_version = request.version();
                     let cx = CallContext::with_request_id(request_id.clone());
+                    if !execution_allowed {
+                        let error: truapi::CallError<versioned::chat::HostChatCreateRoomError> =
+                            truapi::CallError::Denied;
+                        return Ok(encode_versioned_err_payload(error, target_version));
+                    }
                     let response: versioned::chat::HostChatCreateRoomResponse =
                         match host.create_room(&cx, request).await {
                             Ok(value) => value,
@@ -824,6 +845,7 @@ where
         );
     }
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
         let host = host.clone();
         dispatcher.on_request(
             wire_table::CHAT_REGISTER_BOT,
@@ -847,6 +869,11 @@ where
                         };
                     let target_version = request.version();
                     let cx = CallContext::with_request_id(request_id.clone());
+                    if !execution_allowed {
+                        let error: truapi::CallError<versioned::chat::HostChatRegisterBotError> =
+                            truapi::CallError::Denied;
+                        return Ok(encode_versioned_err_payload(error, target_version));
+                    }
                     let response: versioned::chat::HostChatRegisterBotResponse =
                         match host.register_bot(&cx, request).await {
                             Ok(value) => value,
@@ -860,6 +887,7 @@ where
         );
     }
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
         let host = host.clone();
         dispatcher.on_subscription(
             wire_table::CHAT_LIST_SUBSCRIBE,
@@ -868,6 +896,9 @@ where
                 Box::pin(async move {
                     let _ = bytes;
                     let cx = CallContext::with_request_id(request_id.clone());
+                    if !execution_allowed {
+                        return Err(Vec::new());
+                    }
                     let stream = host.list_subscribe(&cx).await;
                     Ok(subscription_stream::<
                         versioned::chat::HostChatListSubscribeItem,
@@ -878,6 +909,7 @@ where
         );
     }
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
         let host = host.clone();
         dispatcher.on_request(
             wire_table::CHAT_POST_MESSAGE,
@@ -901,6 +933,11 @@ where
                         };
                     let target_version = request.version();
                     let cx = CallContext::with_request_id(request_id.clone());
+                    if !execution_allowed {
+                        let error: truapi::CallError<versioned::chat::HostChatPostMessageError> =
+                            truapi::CallError::Denied;
+                        return Ok(encode_versioned_err_payload(error, target_version));
+                    }
                     let response: versioned::chat::HostChatPostMessageResponse =
                         match host.post_message(&cx, request).await {
                             Ok(value) => value,
@@ -914,7 +951,8 @@ where
         );
     }
     {
-        let host = host.clone();
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let host = host;
         dispatcher.on_subscription(
             wire_table::CHAT_ACTION_SUBSCRIBE,
             move |request_id: String, bytes: Vec<u8>| {
@@ -922,31 +960,12 @@ where
                 Box::pin(async move {
                     let _ = bytes;
                     let cx = CallContext::with_request_id(request_id.clone());
+                    if !execution_allowed {
+                        return Err(Vec::new());
+                    }
                     let stream = host.action_subscribe(&cx).await;
                     Ok(subscription_stream::<
                         versioned::chat::HostChatActionSubscribeItem,
-                        _,
-                    >(stream))
-                })
-            },
-        );
-    }
-    {
-        let host = host;
-        dispatcher.on_subscription(
-            wire_table::CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE,
-            move |request_id: String, bytes: Vec<u8>| {
-                let host = host.clone();
-                Box::pin(async move {
-                    let request: versioned::chat::ProductChatCustomMessageRenderSubscribeRequest =
-                        match Decode::decode(&mut &bytes[..]) {
-                            Ok(request) => request,
-                            Err(_) => return Err(Vec::new()),
-                        };
-                    let cx = CallContext::with_request_id(request_id.clone());
-                    let stream = host.custom_message_render_subscribe(&cx, request).await;
-                    Ok(subscription_stream::<
-                        versioned::chat::ProductChatCustomMessageRenderSubscribeItem,
                         _,
                     >(stream))
                 })

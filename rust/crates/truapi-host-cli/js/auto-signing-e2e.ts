@@ -99,7 +99,7 @@ export async function runAutoSigningE2e(
       const vrf = await client.account.signVrf({
         account: {
           dotNsIdentifier: productId,
-          derivationIndex: { tag: "Left", value: 0 },
+          derivationIndex: { tag: "Index", value: 0 },
         },
         transcriptLabel: "0x706f703a61697264726f70",
         items: [

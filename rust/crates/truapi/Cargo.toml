@@ -12,9 +12,12 @@ futures = "0.3"
 hex = "0.4"
 parity-scale-codec = { version = "3", features = ["derive"] }
 truapi-macros = { path = "../truapi-macros" }
+uniffi = { workspace = true, optional = true }
 
 [features]
 default = []
+# FFI derives on the protocol types consumed by native hosts.
+uniffi = ["dep:uniffi"]
 
 [lints]
 workspace = true
