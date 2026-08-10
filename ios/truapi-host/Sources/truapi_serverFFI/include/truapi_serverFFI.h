@@ -371,7 +371,8 @@ typedef void (*UniffiCallbackInterfaceHostCallbacksMethod16)(uint64_t, RustBuffe
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD17
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD17
-typedef void (*UniffiCallbackInterfaceHostCallbacksMethod17)(uint64_t, UniffiForeignFutureCompleteRustBuffer _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
+typedef void (*UniffiCallbackInterfaceHostCallbacksMethod17)(uint64_t, RustBuffer* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
@@ -577,7 +578,7 @@ uint64_t uniffi_truapi_server_fn_method_hostcallbacks_feature_supported(uint64_t
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_SUPPORTED_CHAINS
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_SUPPORTED_CHAINS
-uint64_t uniffi_truapi_server_fn_method_hostcallbacks_supported_chains(uint64_t ptr
+RustBuffer uniffi_truapi_server_fn_method_hostcallbacks_supported_chains(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_HOSTCALLBACKS_LOCAL_STORAGE_READ

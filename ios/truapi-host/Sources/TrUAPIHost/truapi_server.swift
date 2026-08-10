@@ -726,9 +726,10 @@ public protocol HostCallbacks: AnyObject, Sendable {
     /**
      * Enumerate the chains this host serves (RFC 0026): its environment plus
      * one entry per chain role. The returned set must match exactly what
-     * `chain_connect` will accept.
+     * `chain_connect` will accept. Invoked on the dispatcher thread; must
+     * return promptly.
      */
-    func supportedChains() async throws  -> HostChainSet
+    func supportedChains() throws  -> HostChainSet
 
     /**
      * Read a value from the host's scoped key-value store.
@@ -1089,22 +1090,16 @@ open func featureSupported(request: HostFeatureSupportedRequest)async throws  ->
     /**
      * Enumerate the chains this host serves (RFC 0026): its environment plus
      * one entry per chain role. The returned set must match exactly what
-     * `chain_connect` will accept.
+     * `chain_connect` will accept. Invoked on the dispatcher thread; must
+     * return promptly.
      */
-open func supportedChains()async throws  -> HostChainSet  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_truapi_server_fn_method_hostcallbacks_supported_chains(
-                        self.uniffiCloneHandle()
-                )
-            },
-            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
-            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
-            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeHostChainSet_lift,
-            errorHandler: FfiConverterTypeHostRejection_lift
-        )
+open func supportedChains()throws  -> HostChainSet  {
+    return try  FfiConverterTypeHostChainSet_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_supported_chains(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -1726,43 +1721,25 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
         },
         supportedChains: { (
             uniffiHandle: UInt64,
-            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
-            uniffiCallbackData: UInt64,
-            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () async throws -> HostChainSet in
+                () throws -> HostChainSet in
                 guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return try await uniffiObj.supportedChains(
+                return try uniffiObj.supportedChains(
                 )
             }
 
-            let uniffiHandleSuccess = { (returnValue: HostChainSet) in
-                uniffiFutureCallback(
-                    uniffiCallbackData,
-                    UniffiForeignFutureResultRustBuffer(
-                        returnValue: FfiConverterTypeHostChainSet_lower(returnValue),
-                        callStatus: RustCallStatus()
-                    )
-                )
-            }
-            let uniffiHandleError = { (statusCode, errorBuf) in
-                uniffiFutureCallback(
-                    uniffiCallbackData,
-                    UniffiForeignFutureResultRustBuffer(
-                        returnValue: RustBuffer.empty(),
-                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
-                    )
-                )
-            }
-            uniffiTraitInterfaceCallAsyncWithError(
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostChainSet_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
                 makeCall: makeCall,
-                handleSuccess: uniffiHandleSuccess,
-                handleError: uniffiHandleError,
-                lowerError: FfiConverterTypeHostRejection_lower,
-                droppedCallback: uniffiOutDroppedCallback
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
             )
         },
         localStorageRead: { (
@@ -5242,7 +5219,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 26390) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 23356) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {

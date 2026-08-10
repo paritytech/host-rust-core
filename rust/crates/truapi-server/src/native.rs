@@ -468,8 +468,9 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Enumerate the chains this host serves (RFC 0026): its environment plus
     /// one entry per chain role. The returned set must match exactly what
-    /// `chain_connect` will accept.
-    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection>;
+    /// `chain_connect` will accept. Invoked on the dispatcher thread; must
+    /// return promptly.
+    fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection>;
 
     /// Read a value from the host's scoped key-value store.
     fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
@@ -1303,7 +1304,6 @@ impl Features for CallbackPlatform {
 
         self.callbacks
             .supported_chains()
-            .await
             .map_err(v01::GenericError::from)
     }
 }
@@ -1696,7 +1696,7 @@ mod tests {
         ) -> Result<bool, HostRejection> {
             Ok(false)
         }
-        async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
+        fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
             Ok(truapi_platform::HostChainSet {
                 network: "paseo".to_string(),
                 chains: Vec::new(),
@@ -2326,9 +2326,7 @@ mod tests {
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
-            async fn supported_chains(
-                &self,
-            ) -> Result<truapi_platform::HostChainSet, HostRejection> {
+            fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
                 Ok(truapi_platform::HostChainSet {
                     network: "paseo".to_string(),
                     chains: Vec::new(),
@@ -2473,9 +2471,7 @@ mod tests {
             ) -> Result<bool, HostRejection> {
                 Ok(true)
             }
-            async fn supported_chains(
-                &self,
-            ) -> Result<truapi_platform::HostChainSet, HostRejection> {
+            fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
                 Ok(truapi_platform::HostChainSet {
                     network: "paseo".to_string(),
                     chains: Vec::new(),
