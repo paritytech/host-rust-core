@@ -1,5 +1,14 @@
 # @parity/truapi
 
+## 0.8.0
+
+### Minor Changes
+
+- Add `chain.getChainInfo` (RFC 0026): products resolve a `ChainIdentifier` role
+  (`Relay`, `AssetHub`, `People`, `Bulletin`) against the host's configured
+  environment and receive the network string plus the chain's genesis hash, so
+  genesis hashes no longer need to be hard-coded into product bundles.
+
 ## 0.7.0
 
 ### Minor Changes
