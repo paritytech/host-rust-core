@@ -724,6 +724,14 @@ public protocol HostCallbacks: AnyObject, Sendable {
     func featureSupported(request: HostFeatureSupportedRequest) async throws  -> Bool
 
     /**
+     * Enumerate the chains this host serves (RFC 0026): its environment plus
+     * one entry per chain role. The returned set must match exactly what
+     * `chain_connect` will accept. Invoked on the dispatcher thread; must
+     * return promptly.
+     */
+    func supportedChains() throws  -> HostChainSet
+
+    /**
      * Read a value from the host's scoped key-value store.
      */
     func localStorageRead(key: String) throws  -> Data?
@@ -1077,6 +1085,21 @@ open func featureSupported(request: HostFeatureSupportedRequest)async throws  ->
             liftFunc: FfiConverterBool.lift,
             errorHandler: FfiConverterTypeHostRejection_lift
         )
+}
+
+    /**
+     * Enumerate the chains this host serves (RFC 0026): its environment plus
+     * one entry per chain role. The returned set must match exactly what
+     * `chain_connect` will accept. Invoked on the dispatcher thread; must
+     * return promptly.
+     */
+open func supportedChains()throws  -> HostChainSet  {
+    return try  FfiConverterTypeHostChainSet_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_hostcallbacks_supported_chains(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -1694,6 +1717,29 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 handleError: uniffiHandleError,
                 lowerError: FfiConverterTypeHostRejection_lower,
                 droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        supportedChains: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> HostChainSet in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.supportedChains(
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostChainSet_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
             )
         },
         localStorageRead: { (
@@ -5173,13 +5219,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 54709) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 23356) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 33044) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 6971) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 62222) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 61208) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {

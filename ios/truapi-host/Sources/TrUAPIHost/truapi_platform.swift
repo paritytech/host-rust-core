@@ -781,6 +781,145 @@ public func FfiConverterTypeCreateProofReview_lower(_ value: CreateProofReview) 
 
 
 /**
+ * One chain a host serves: a protocol chain role mapped to the concrete
+ * chain of the host's configured environment.
+ */
+public struct HostChainEntry: Equatable, Hashable {
+    /**
+     * Protocol role this entry answers for.
+     */
+    public var identifier: ChainIdentifier
+    /**
+     * Genesis hash identifying the chain in all chain-scoped calls.
+     */
+    public var genesisHash: Bytes32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Protocol role this entry answers for.
+         */identifier: ChainIdentifier,
+        /**
+         * Genesis hash identifying the chain in all chain-scoped calls.
+         */genesisHash: Bytes32) {
+        self.identifier = identifier
+        self.genesisHash = genesisHash
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostChainEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostChainEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostChainEntry {
+        return
+            try HostChainEntry(
+                identifier: FfiConverterTypeChainIdentifier.read(from: &buf),
+                genesisHash: FfiConverterTypeBytes32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostChainEntry, into buf: inout [UInt8]) {
+        FfiConverterTypeChainIdentifier.write(value.identifier, into: &buf)
+        FfiConverterTypeBytes32.write(value.genesisHash, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostChainEntry_lift(_ buf: RustBuffer) throws -> HostChainEntry {
+    return try FfiConverterTypeHostChainEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostChainEntry_lower(_ value: HostChainEntry) -> RustBuffer {
+    return FfiConverterTypeHostChainEntry.lower(value)
+}
+
+
+/**
+ * The chain set a host serves: its environment plus one entry per chain role.
+ */
+public struct HostChainSet: Equatable, Hashable {
+    /**
+     * Ecosystem the host is configured for, e.g. "polkadot", "paseo".
+     */
+    public var network: String
+    /**
+     * Complete set of chains available through this host.
+     */
+    public var chains: [HostChainEntry]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Ecosystem the host is configured for, e.g. "polkadot", "paseo".
+         */network: String,
+        /**
+         * Complete set of chains available through this host.
+         */chains: [HostChainEntry]) {
+        self.network = network
+        self.chains = chains
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostChainSet: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostChainSet: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostChainSet {
+        return
+            try HostChainSet(
+                network: FfiConverterString.read(from: &buf),
+                chains: FfiConverterSequenceTypeHostChainEntry.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostChainSet, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.network, into: &buf)
+        FfiConverterSequenceTypeHostChainEntry.write(value.chains, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostChainSet_lift(_ buf: RustBuffer) throws -> HostChainSet {
+    return try FfiConverterTypeHostChainSet.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostChainSet_lower(_ value: HostChainSet) -> RustBuffer {
+    return FfiConverterTypeHostChainSet.lower(value)
+}
+
+
+/**
  * Review shown before a product learns the user's primary identity.
  */
 public struct IdentityDisclosureReview: Equatable, Hashable {
@@ -2082,6 +2221,31 @@ fileprivate struct FfiConverterOptionTypeBytes32: FfiConverterRustBuffer {
         case 1: return try FfiConverterTypeBytes32.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeHostChainEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [HostChainEntry]
+
+    public static func write(_ value: [HostChainEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHostChainEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [HostChainEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [HostChainEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHostChainEntry.read(from: &buf))
+        }
+        return seq
     }
 }
 

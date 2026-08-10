@@ -3689,6 +3689,101 @@ public func FfiConverterTypeButtonVariant_lower(_ value: ButtonVariant) -> RustB
 
 
 /**
+ * Role of a chain within the host's configured environment.
+ */
+
+public enum ChainIdentifier: Equatable, Hashable {
+
+    /**
+     * The relay chain.
+     */
+    case relay
+    /**
+     * The asset hub system chain.
+     */
+    case assetHub
+    /**
+     * The people chain.
+     */
+    case people
+    /**
+     * The bulletin chain.
+     */
+    case bulletin
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ChainIdentifier: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChainIdentifier: FfiConverterRustBuffer {
+    typealias SwiftType = ChainIdentifier
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChainIdentifier {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .relay
+
+        case 2: return .assetHub
+
+        case 3: return .people
+
+        case 4: return .bulletin
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ChainIdentifier, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .relay:
+            writeInt(&buf, Int32(1))
+
+
+        case .assetHub:
+            writeInt(&buf, Int32(2))
+
+
+        case .people:
+            writeInt(&buf, Int32(3))
+
+
+        case .bulletin:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChainIdentifier_lift(_ buf: RustBuffer) throws -> ChainIdentifier {
+    return try FfiConverterTypeChainIdentifier.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChainIdentifier_lower(_ value: ChainIdentifier) -> RustBuffer {
+    return FfiConverterTypeChainIdentifier.lower(value)
+}
+
+
+
+/**
  * Layout for action buttons.
  */
 

@@ -402,6 +402,11 @@ public protocol HostBridge: AnyObject, Sendable {
     /// return promptly.
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool
 
+    /// Enumerate the chains this host serves: its environment plus one entry
+    /// per chain role. Must match exactly what ``chainConnect(genesisHash:)``
+    /// accepts. Invoked on the dispatcher thread; must return promptly.
+    func supportedChains() throws -> HostChainSet
+
     /// Scoped key-value storage for the Rust core.
     var storage: HostStorageBackend { get }
 
@@ -445,6 +450,7 @@ public extension HostBridge {
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key: Data) async throws -> Data? { nil }
     func currentTheme() throws -> ThemeVariant { .dark }
+    func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
 }
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
@@ -606,6 +612,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool {
         try await withHostRejection {
             try await bridge.featureSupported(request: request)
+        }
+    }
+
+    func supportedChains() throws -> HostChainSet {
+        try withHostRejection {
+            try bridge.supportedChains()
         }
     }
 

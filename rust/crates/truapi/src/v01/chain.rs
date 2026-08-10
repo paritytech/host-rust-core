@@ -358,6 +358,7 @@ pub struct RemoteChainTransactionBroadcastResponse {
 
 /// Role of a chain within the host's configured environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChainIdentifier {
     /// The relay chain.
     Relay,
