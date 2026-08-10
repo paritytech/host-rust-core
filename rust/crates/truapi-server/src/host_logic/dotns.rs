@@ -9,8 +9,12 @@ use url::Url;
 
 /// How the input URL should be opened. Kept in one enum rather than passing
 /// a raw string so the dispatcher can reject invalid input before reaching
-/// any platform callback.
+/// any platform callback. The open variants carry the ready-to-load canonical
+/// URL; `DotName` and `Localhost` keep the dotns/localhost identity visible so
+/// env-aware hosts can rewrite `.dot` names for their active environment and
+/// re-parse without losing information.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum NavigateDecision {
     /// A `.dot` identifier plus path/query/hash suffix (no leading `/`).
     DotName {
@@ -18,6 +22,8 @@ pub enum NavigateDecision {
         identifier: String,
         /// Path/query/hash suffix without a leading `/`.
         path: String,
+        /// Loadable `https://` URL for this decision.
+        canonical_url: String,
     },
     /// A `localhost[:port]` URL plus path/query/hash suffix (no leading `/`).
     Localhost {
@@ -25,6 +31,8 @@ pub enum NavigateDecision {
         host: String,
         /// Path/query/hash suffix without a leading `/`.
         path: String,
+        /// Loadable `http://` URL for this decision.
+        canonical_url: String,
     },
     /// An absolute external URL with an `http(s):` scheme prepended if missing.
     External {
@@ -38,21 +46,6 @@ pub enum NavigateDecision {
         /// Human-readable reason for the rejection.
         reason: String,
     },
-}
-
-impl NavigateDecision {
-    /// Canonical URL string for the three `Open*` variants; `None` for
-    /// `Reject`. `DotName` and `Localhost` keep the dotns/localhost identity
-    /// visible so env-aware hosts can rewrite `.dot` names for their active
-    /// environment and re-parse without losing information.
-    pub fn canonical_url(&self) -> Option<String> {
-        match self {
-            Self::DotName { identifier, path } => Some(join_url("https://", identifier, path)),
-            Self::Localhost { host, path } => Some(join_url("http://", host, path)),
-            Self::External { url } => Some(url.clone()),
-            Self::Reject { .. } => None,
-        }
-    }
 }
 
 fn join_url(scheme: &str, host: &str, path: &str) -> String {
@@ -135,9 +128,13 @@ fn classify_dot(input: &str) -> Option<NavigateDecision> {
         });
     }
 
+    let identifier = normalize_host(hostname);
+    let path = strip_leading_slash(parsed.path()) + &suffix(&parsed);
+    let canonical_url = join_url("https://", &identifier, &path);
     Some(NavigateDecision::DotName {
-        identifier: normalize_host(hostname),
-        path: strip_leading_slash(parsed.path()) + &suffix(&parsed),
+        identifier,
+        path,
+        canonical_url,
     })
 }
 
@@ -159,9 +156,12 @@ fn classify_localhost(input: &str) -> Option<NavigateDecision> {
         None => "localhost".to_string(),
     };
 
+    let path = strip_leading_slash(parsed.path()) + &suffix(&parsed);
+    let canonical_url = join_url("http://", &host, &path);
     Some(NavigateDecision::Localhost {
         host,
-        path: strip_leading_slash(parsed.path()) + &suffix(&parsed),
+        path,
+        canonical_url,
     })
 }
 
@@ -223,6 +223,7 @@ mod tests {
         Expected::Decision(NavigateDecision::DotName {
             identifier: identifier.to_string(),
             path: path.to_string(),
+            canonical_url: join_url("https://", identifier, path),
         })
     }
 
@@ -230,6 +231,7 @@ mod tests {
         Expected::Decision(NavigateDecision::Localhost {
             host: host.to_string(),
             path: path.to_string(),
+            canonical_url: join_url("http://", host, path),
         })
     }
 
@@ -458,14 +460,8 @@ mod tests {
         let nfd = parse_navigate("cafe\u{0301}.dot");
         match (&nfc, &nfd) {
             (
-                NavigateDecision::DotName {
-                    identifier: a,
-                    path: _,
-                },
-                NavigateDecision::DotName {
-                    identifier: b,
-                    path: _,
-                },
+                NavigateDecision::DotName { identifier: a, .. },
+                NavigateDecision::DotName { identifier: b, .. },
             ) => assert_eq!(a, b, "NFC and NFD inputs must normalize to one identifier"),
             other => panic!("expected two DotName decisions, got {other:?}"),
         }

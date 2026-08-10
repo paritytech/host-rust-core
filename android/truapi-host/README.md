@@ -69,8 +69,8 @@ The product running in the `WebView` opens a `WebSocket` to the localhost port +
 
 The core's `Permissions` platform trait has two methods, and so does the bridge:
 
-- `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `NativeDevicePermission`.
-- `remotePermission(request)` - per-product capabilities. `request` is a typed `NativeRemotePermission`.
+- `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
+- `remotePermission(request)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
@@ -104,13 +104,13 @@ import io.parity.truapi.RuntimeConfig
 import io.parity.truapi.TrUAPIHostCore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import uniffi.truapi_server.AuthState
-import uniffi.truapi_server.FeatureSupportedRequest
-import uniffi.truapi_server.HostTheme
-import uniffi.truapi_server.NativeDevicePermission
-import uniffi.truapi_server.NativeRemotePermission
-import uniffi.truapi_server.NativeUserConfirmationReview
-import uniffi.truapi_server.PushNotificationRequest
+import uniffi.truapi_platform.AuthState
+import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.ThemeVariant
+import uniffi.truapi.HostDevicePermissionRequest
+import uniffi.truapi.RemotePermission
+import uniffi.truapi_platform.UserConfirmationReview
+import uniffi.truapi.HostPushNotificationRequest
 
 class MyStorage : HostStorage {
     private val map = mutableMapOf<String, ByteArray>()
@@ -140,7 +140,7 @@ class MyBridge(private val webView: WebView) : HostBridge {
         withContext(Dispatchers.Main) { /* startActivity(Intent(ACTION_VIEW, Uri.parse(url))) */ }
     }
 
-    override suspend fun pushNotification(request: PushNotificationRequest): UInt {
+    override suspend fun pushNotification(request: HostPushNotificationRequest): UInt {
         val id = 1u
         withContext(Dispatchers.Main) { /* show request.text / request.deeplink */ }
         return id
@@ -150,15 +150,15 @@ class MyBridge(private val webView: WebView) : HostBridge {
         main.post { /* cancel notification */ }
     }
 
-    override suspend fun devicePermission(request: NativeDevicePermission): Boolean {
+    override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean {
         // Awaited by the core: present the prompt for the requested capability
         // (CAMERA, MICROPHONE, ...) and suspend until the user decides. Other
         // TrUAPI traffic keeps flowing while suspended.
         return withContext(Dispatchers.Main) { /* show prompt; */ false }
     }
 
-    override suspend fun remotePermission(request: NativeRemotePermission): Boolean = false
-    override suspend fun featureSupported(request: FeatureSupportedRequest): Boolean = false
+    override suspend fun remotePermission(request: RemotePermission): Boolean = false
+    override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean = false
 
     // Core-owned auth state stream: render AuthState.Pairing as the pairing
     // QR sheet, connected/disconnected as the account badge, and login-failed
@@ -186,7 +186,7 @@ class MyBridge(private val webView: WebView) : HostBridge {
     // review variant (SignPayload / SignRaw / CreateTransaction / AccountAlias /
     // ResourceAllocation / PreimageSubmit / ...) to render the prompt with its
     // typed fields.
-    override suspend fun confirmUserAction(review: NativeUserConfirmationReview): Boolean {
+    override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean {
         return withContext(Dispatchers.Main) { /* show prompt; */ false }
     }
 }
@@ -208,8 +208,7 @@ val endpoint = core.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates
 // after their immediate current item.
-core.notifySessionStoreChanged()
-core.notifyThemeChanged(HostTheme.DARK)
+core.notifyThemeChanged(ThemeVariant.DARK)
 core.notifyPreimageChanged(preimageKey, preimageBytesOrNull)
 core.notifyChainResponse(chainConnectionId, jsonRpcResponse)
 core.notifyChainClosed(chainConnectionId)

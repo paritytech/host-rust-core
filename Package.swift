@@ -7,15 +7,16 @@
 // ios/truapi-host/scripts/rebuild.sh); the xcframework is gitignored and
 // distributed as a GitHub release asset (ios/truapi-host/scripts/publish.sh).
 
+import Foundation
 import PackageDescription
 
-// Flip to true to build against the locally generated
-// ios/truapi-host/Binaries/truapi_server.xcframework (run rebuild.sh first);
-// false consumes the published release asset below (updated by publish.sh).
-let useLocalBinary = false
+// Set TRUAPI_USE_LOCAL_BINARY=1 to build against the locally generated
+// ios/truapi-host/Binaries/truapi_server.xcframework (run rebuild.sh first).
+// The published release asset remains the default for remote consumers.
+let useLocalBinary = ProcessInfo.processInfo.environment["TRUAPI_USE_LOCAL_BINARY"] == "1"
 
-let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.3.0/truapi_server.xcframework.zip"
-let publishedBinaryChecksum = "c2eeb3d79d3186f4b85de43a18fd7df127a2f3ffe814def9b7dd4e1b897934e0"
+let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.4.0-chat-modality-shared-core.4/truapi_server.xcframework.zip"
+let publishedBinaryChecksum = "b4d7e633e8a86bdaf104a1bcafc883549fc893514451fe7caeb951107e5038f7"
 
 let binaryTarget: Target = useLocalBinary
     ? .binaryTarget(
@@ -36,6 +37,18 @@ let package = Package(
     ],
     targets: [
         .systemLibrary(
+            name: "truapiFFI",
+            path: "ios/truapi-host/Sources/truapiFFI/include",
+            pkgConfig: nil,
+            providers: []
+        ),
+        .systemLibrary(
+            name: "truapi_platformFFI",
+            path: "ios/truapi-host/Sources/truapi_platformFFI/include",
+            pkgConfig: nil,
+            providers: []
+        ),
+        .systemLibrary(
             name: "truapi_serverFFI",
             path: "ios/truapi-host/Sources/truapi_serverFFI/include",
             pkgConfig: nil,
@@ -44,7 +57,9 @@ let package = Package(
         binaryTarget,
         .target(
             name: "TrUAPIHost",
-            dependencies: ["truapi_serverFFI", "truapi_serverFFI_binary"],
+            dependencies: [
+                "truapiFFI", "truapi_platformFFI", "truapi_serverFFI", "truapi_serverFFI_binary",
+            ],
             path: "ios/truapi-host/Sources/TrUAPIHost",
             resources: [.copy("Resources/truapi-container.js")]
         ),
