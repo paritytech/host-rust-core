@@ -466,6 +466,12 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::HostFeatureSupportedRequest,
     ) -> Result<bool, HostRejection>;
 
+    /// Enumerate the chains this host serves (RFC 0026): its environment plus
+    /// one entry per chain role. The returned set must match exactly what
+    /// `chain_connect` will accept. Invoked on the dispatcher thread; must
+    /// return promptly.
+    fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection>;
+
     /// Read a value from the host's scoped key-value store.
     fn local_storage_read(&self, key: String) -> Result<Option<Vec<u8>>, HostStorageError>;
     /// Write a value to the host's scoped key-value store.
@@ -1289,6 +1295,17 @@ impl Features for CallbackPlatform {
             .map_err(v01::GenericError::from)?;
         Ok(v01::HostFeatureSupportedResponse { supported })
     }
+
+    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.supported_chains".to_string(),
+            String::new(),
+        );
+
+        self.callbacks
+            .supported_chains()
+            .map_err(v01::GenericError::from)
+    }
 }
 
 #[async_trait]
@@ -1678,6 +1695,12 @@ mod tests {
             _request: v01::HostFeatureSupportedRequest,
         ) -> Result<bool, HostRejection> {
             Ok(false)
+        }
+        fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
+            Ok(truapi_platform::HostChainSet {
+                network: "paseo".to_string(),
+                chains: Vec::new(),
+            })
         }
         fn local_storage_read(&self, _key: String) -> Result<Option<Vec<u8>>, HostStorageError> {
             Ok(None)
@@ -2303,6 +2326,12 @@ mod tests {
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
+            fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
+                Ok(truapi_platform::HostChainSet {
+                    network: "paseo".to_string(),
+                    chains: Vec::new(),
+                })
+            }
             fn local_storage_read(
                 &self,
                 _key: String,
@@ -2441,6 +2470,12 @@ mod tests {
                 _request: v01::HostFeatureSupportedRequest,
             ) -> Result<bool, HostRejection> {
                 Ok(true)
+            }
+            fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
+                Ok(truapi_platform::HostChainSet {
+                    network: "paseo".to_string(),
+                    chains: Vec::new(),
+                })
             }
             fn local_storage_read(
                 &self,

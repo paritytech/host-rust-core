@@ -32,6 +32,7 @@ import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi_platform.AuthState
+import uniffi.truapi_platform.HostChainSet
 import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
@@ -302,6 +303,13 @@ interface HostBridge {
     @Throws(HostRejection::class)
     suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean
 
+    /**
+     * Enumerate the chains this host serves: its environment plus one entry
+     * per chain role. Must match exactly what [chainConnect] accepts.
+     */
+    @Throws(HostRejection::class)
+    fun supportedChains(): HostChainSet = HostChainSet(network = "", chains = emptyList())
+
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
 
@@ -365,6 +373,9 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
         bridge.featureSupported(request)
+
+    override fun supportedChains(): HostChainSet =
+        bridge.supportedChains()
 
     override fun localStorageRead(key: String): ByteArray? =
         bridge.storage.read(key)
