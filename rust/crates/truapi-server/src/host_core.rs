@@ -1410,7 +1410,8 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "chat:1".into(),
             payload: Payload {
-                id: ids.request_id,
+                trait_id: ids.trait_id,
+                method_id: ids.request_id,
                 value: request.encode(),
             },
         };
@@ -1420,7 +1421,8 @@ mod tests {
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
-        assert_eq!(response.payload.id, ids.response_id);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.response_id);
         let expected = crate::frame::encode_versioned_err_payload(
             truapi::CallError::<truapi::versioned::chat::HostChatCreateRoomError>::Denied,
             1,
@@ -1483,7 +1485,8 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "chat:actions".into(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.start_id,
                 value: Vec::new(),
             },
         };
@@ -1494,7 +1497,8 @@ mod tests {
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
         assert_eq!(response.request_id, "chat:actions");
-        assert_eq!(response.payload.id, ids.interrupt_id);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.interrupt_id);
         assert!(response.payload.value.is_empty());
     }
 

@@ -396,7 +396,8 @@ impl HostInitiatedSubscriptionManager {
         transport.send(ProtocolMessage {
             request_id: request_id.clone(),
             payload: Payload {
-                id: ids.start_id,
+                trait_id: ids.trait_id,
+                method_id: ids.start_id,
                 value: payload,
             },
         });
@@ -426,17 +427,11 @@ impl HostInitiatedSubscriptionManager {
             .expect("host subscription state mutex poisoned");
         let slot = state.active.get(&message.request_id)?;
         let key = (message.payload.trait_id, message.payload.method_id);
-        if key == (slot.ids.trait_id, slot.ids.receive_id) {
-            let sender = slot.sender.clone();
-            drop(state);
-            let _ = sender.unbounded_send(HostInitiatedFrame::Item(message.payload.value));
-        } else if key == (slot.ids.trait_id, slot.ids.interrupt_id) {
-            // Deliver the terminal before dropping the sender, so the stream
-            // reports a declining product rather than a silent end.
-            let sender = slot.sender.clone();
-            let _ = sender.unbounded_send(HostInitiatedFrame::Interrupt);
-            state.active.remove(&message.request_id);
-        } else if key == PROTOCOL_ERROR_KEY {
+        // The protocol-error check MUST precede the trait guard. A protocol
+        // error is addressed to the reserved trait, never to this slot's, so
+        // guarding on the trait first would make the arm below dead code and
+        // silently drop the frame that reports our start as unsupported.
+        if key == PROTOCOL_ERROR_KEY {
             let Ok(VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
                 trait_id,
                 method_id,
@@ -451,6 +446,21 @@ impl HostInitiatedSubscriptionManager {
             }
             let sender = slot.sender.clone();
             let _ = sender.unbounded_send(HostInitiatedFrame::Unsupported);
+            state.active.remove(&message.request_id);
+            return None;
+        }
+        if message.payload.trait_id != slot.ids.trait_id {
+            return None;
+        }
+        if message.payload.method_id == slot.ids.receive_id {
+            let sender = slot.sender.clone();
+            drop(state);
+            let _ = sender.unbounded_send(HostInitiatedFrame::Item(message.payload.value));
+        } else if message.payload.method_id == slot.ids.interrupt_id {
+            // Deliver the terminal before dropping the sender, so the stream
+            // reports a declining product rather than a silent end.
+            let sender = slot.sender.clone();
+            let _ = sender.unbounded_send(HostInitiatedFrame::Interrupt);
             state.active.remove(&message.request_id);
         }
         None
@@ -494,7 +504,8 @@ impl<Item> HostInitiatedSubscription<Item> {
             self.transport.send(ProtocolMessage {
                 request_id: self.request_id.clone(),
                 payload: Payload {
-                    id: self.ids.stop_id,
+                    trait_id: self.ids.trait_id,
+                    method_id: self.ids.stop_id,
                     value: Vec::new(),
                 },
             });
@@ -633,10 +644,23 @@ mod tests {
 
     fn host_ids() -> SubscriptionFrameIds {
         SubscriptionFrameIds {
-            start_id: 52,
-            stop_id: 53,
-            interrupt_id: 54,
-            receive_id: 55,
+            trait_id: 195,
+            start_id: 14,
+            stop_id: 15,
+            interrupt_id: 16,
+            receive_id: 17,
+        }
+    }
+
+    /// Product frame on [`host_ids`]'s trait, carrying one of its method ids.
+    fn host_frame(request_id: &str, method_id: u8, value: Vec<u8>) -> ProtocolMessage {
+        ProtocolMessage {
+            request_id: request_id.into(),
+            payload: Payload {
+                trait_id: host_ids().trait_id,
+                method_id,
+                value,
+            },
         }
     }
 
@@ -648,18 +672,13 @@ mod tests {
         let mut subscription = manager.start::<u32>(host_ids(), vec![0xaa], transport);
 
         assert_eq!(transport_typed.sent()[0].request_id, "h:1");
-        assert_eq!(transport_typed.sent()[0].payload.id, 52);
+        assert_eq!(transport_typed.sent()[0].payload.trait_id, 195);
+        assert_eq!(transport_typed.sent()[0].payload.method_id, 14);
         assert_eq!(transport_typed.sent()[0].payload.value, vec![0xaa]);
 
         assert!(
             manager
-                .handle_message(ProtocolMessage {
-                    request_id: "h:1".into(),
-                    payload: Payload {
-                        id: 55,
-                        value: 7_u32.encode(),
-                    },
-                })
+                .handle_message(host_frame("h:1", 17, 7_u32.encode()))
                 .is_none()
         );
         assert_eq!(
@@ -671,7 +690,8 @@ mod tests {
         let frames = transport_typed.sent();
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[1].request_id, "h:1");
-        assert_eq!(frames[1].payload.id, 53);
+        assert_eq!(frames[1].payload.trait_id, 195);
+        assert_eq!(frames[1].payload.method_id, 15);
         assert!(frames[1].payload.value.is_empty());
     }
 
@@ -771,20 +791,8 @@ mod tests {
         let mut malformed = manager.start::<u32>(host_ids(), vec![], transport.clone());
         let mut healthy = manager.start::<u32>(host_ids(), vec![], transport);
 
-        manager.handle_message(ProtocolMessage {
-            request_id: "h:1".into(),
-            payload: Payload {
-                id: 55,
-                value: vec![0xff],
-            },
-        });
-        manager.handle_message(ProtocolMessage {
-            request_id: "h:2".into(),
-            payload: Payload {
-                id: 55,
-                value: 9_u32.encode(),
-            },
-        });
+        manager.handle_message(host_frame("h:1", 17, vec![0xff]));
+        manager.handle_message(host_frame("h:2", 17, 9_u32.encode()));
 
         // A partial tree left on screen as final is the failure this prevents.
         assert!(matches!(
@@ -794,7 +802,8 @@ mod tests {
         assert_eq!(futures::executor::block_on(malformed.next()), None);
         assert_eq!(futures::executor::block_on(healthy.next()), Some(Ok(9)));
         assert_eq!(transport_typed.sent()[2].request_id, "h:1");
-        assert_eq!(transport_typed.sent()[2].payload.id, 53);
+        assert_eq!(transport_typed.sent()[2].payload.trait_id, 195);
+        assert_eq!(transport_typed.sent()[2].payload.method_id, 15);
     }
 
     #[test]
@@ -804,13 +813,7 @@ mod tests {
         let manager = HostInitiatedSubscriptionManager::new();
         let mut declined = manager.start::<u32>(host_ids(), vec![], transport);
 
-        manager.handle_message(ProtocolMessage {
-            request_id: "h:1".into(),
-            payload: Payload {
-                id: 54,
-                value: vec![0],
-            },
-        });
+        manager.handle_message(host_frame("h:1", 16, vec![0]));
 
         assert!(matches!(
             futures::executor::block_on(declined.next()),
@@ -930,20 +933,8 @@ mod tests {
         assert_eq!(first_transport_typed.sent()[0].request_id, "h:1");
         assert_eq!(second_transport_typed.sent()[0].request_id, "h:1");
 
-        first.handle_message(ProtocolMessage {
-            request_id: "h:1".into(),
-            payload: Payload {
-                id: 55,
-                value: 7_u32.encode(),
-            },
-        });
-        second.handle_message(ProtocolMessage {
-            request_id: "h:1".into(),
-            payload: Payload {
-                id: 55,
-                value: 9_u32.encode(),
-            },
-        });
+        first.handle_message(host_frame("h:1", 17, 7_u32.encode()));
+        second.handle_message(host_frame("h:1", 17, 9_u32.encode()));
 
         assert_eq!(
             futures::executor::block_on(first_render.next()),

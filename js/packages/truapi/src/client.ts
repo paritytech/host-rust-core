@@ -181,6 +181,14 @@ function unwrapVersionedWireValue(value: unknown): unknown {
 }
 
 /**
+ * Map key for a `(trait, method)` wire discriminant pair. Both bytes together
+ * identify a frame, so neither half alone is a usable key.
+ */
+function pairKey(traitId: number, methodId: number): string {
+  return `${traitId}:${methodId}`;
+}
+
+/**
  * Decode `V1(UnsupportedMessage { trait_id, method_id })`. Codec 2 addresses a
  * frame by a pair, so the payload is four bytes: version index, error variant
  * index, then the trait and method of the frame the peer could not handle.
@@ -389,7 +397,7 @@ export function createTransport(
       return;
     }
 
-    const hostRoute = hostRoutes.get(`${payload.traitId}:${payload.methodId}`);
+    const hostRoute = hostRoutes.get(pairKey(payload.traitId, payload.methodId));
     if (hostRoute) {
       startHostSubscription(hostRoute, requestId, payload.value);
       return;
@@ -522,7 +530,8 @@ export function createTransport(
       send({
         requestId,
         payload: {
-          id: route.ids.interrupt,
+          traitId: route.ids.trait,
+          methodId: route.ids.interrupt,
           value: route.interruptPayload,
         },
       });
@@ -577,7 +586,11 @@ export function createTransport(
           try {
             send({
               requestId,
-              payload: { id: route.ids.receive, value: route.encodeItem(item) },
+              payload: {
+                traitId: route.ids.trait,
+                methodId: route.ids.receive,
+                value: route.encodeItem(item),
+              },
             });
           } catch {
             interruptHostSubscription(route, requestId);
@@ -744,8 +757,8 @@ export function createTransport(
       interruptPayload,
       bufferCapacity,
     }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
-      const routeKey = `${ids.trait}:${ids.start}`;
-      if (hostRoutes.has(routeKey)) {
+      const key = pairKey(ids.trait, ids.start);
+      if (hostRoutes.has(key)) {
         throw new Error(
           `host-initiated subscription (${ids.trait}, ${ids.start}) is already registered`,
         );
@@ -759,7 +772,7 @@ export function createTransport(
         buffered: [],
         instances: new Map(),
       };
-      hostRoutes.set(routeKey, route);
+      hostRoutes.set(key, route);
       return {
         setHandler(handler: HostInitiatedSubscriptionHandler<Request, Item>) {
           const installed = handler as (

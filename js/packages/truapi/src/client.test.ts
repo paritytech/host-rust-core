@@ -116,7 +116,8 @@ function rendererStart(
         encodeWireMessage({
             requestId,
             payload: {
-                id: W.CHAT_CUSTOM_MESSAGE_RENDER.start,
+                traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.start,
                 value: T.VersionedProductChatCustomMessageRenderRequest.enc({
                     tag: "V1",
                     value: request,
@@ -132,7 +133,8 @@ function rendererReceive(requestId: string, node: T.CustomRendererNode): Uint8Ar
         encodeWireMessage({
             requestId,
             payload: {
-                id: W.CHAT_CUSTOM_MESSAGE_RENDER.receive,
+                traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.receive,
                 value: T.VersionedProductChatCustomMessageRenderItem.enc({
                     tag: "V1",
                     value: node,
@@ -148,7 +150,8 @@ function rendererInterrupt(requestId: string): Uint8Array {
         encodeWireMessage({
             requestId,
             payload: {
-                id: W.CHAT_CUSTOM_MESSAGE_RENDER.interrupt,
+                traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.interrupt,
                 value: new Uint8Array([0]),
             },
         }),
@@ -161,7 +164,8 @@ function rendererStop(requestId: string): Uint8Array {
         encodeWireMessage({
             requestId,
             payload: {
-                id: W.CHAT_CUSTOM_MESSAGE_RENDER.stop,
+                traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
+                methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.stop,
                 value: new Uint8Array(),
             },
         }),
@@ -661,7 +665,7 @@ describe("generated client transport", () => {
 
         // The transport must survive: a ping it cannot parse is a peer
         // problem, not grounds for tearing down every pending call.
-        void client.account.getAccount({ productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Left", value: 0 } } });
+        void client.account.getAccount({ productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Index", value: 0 } } });
         expect(fixture.sent.length).toBe(1);
     });
 
@@ -670,7 +674,7 @@ describe("generated client transport", () => {
         const transport = createTransport(fixture.provider);
         const client = createClient(transport);
 
-        const response = client.account.getAccount({ productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Left", value: 0 } } });
+        const response = client.account.getAccount({ productAccountId: { dotNsIdentifier: "foo", derivationIndex: { tag: "Index", value: 0 } } });
 
         // Right request id, right method id, neighbouring trait: what a whole
         // trait of discriminant skew looks like from the product side.

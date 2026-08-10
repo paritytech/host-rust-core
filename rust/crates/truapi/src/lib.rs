@@ -208,7 +208,7 @@ pub use truapi_macros::{service, wire, wire_trait};
 pub const WIRE_CODEC_VERSION: u8 = 2;
 
 /// Highest method discriminant any codec 1 implementation assigned, and so
-/// the largest first byte a codec 1 frame can carry. This crate reached 164;
+/// the largest first byte a codec 1 frame can carry. This crate reached 165;
 /// `triangle-js-sdks` `host-api` went further, allocating 166..=171 to the
 /// RFC-0024 ring VRF methods, so the bound is theirs rather than ours.
 pub const MAX_CODEC_1_METHOD_ID: u8 = 171;

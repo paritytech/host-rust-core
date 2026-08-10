@@ -82,10 +82,10 @@ private extension TrUAPIWsBridgeTests {
         )
     }
 
-    // wire_table.rs: SYSTEM_FEATURE_SUPPORTED { trait_id: 0, request_id: 2 }.
+    // wire_table.rs: SYSTEM_FEATURE_SUPPORTED { trait_id: 192, request_id: 2 }.
     // Both bytes are load-bearing: a lone method byte is read as the trait and
     // routes into a different trait's method 0 rather than failing.
-    static let featureSupportedRequestDiscriminant = Data([0x00, 0x02])
+    static let featureSupportedRequestDiscriminant = Data([0xC0, 0x02])
 
     // wire_table.rs: SYSTEM_HOST_INFO.request_id = 192
     static let hostInfoRequestDiscriminant = Data([0xC0])

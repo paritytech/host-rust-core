@@ -59,7 +59,7 @@ The two bytes after the `requestId` are the **`(trait, method)` discriminant pai
 
 Actions are not written by hand. They are derived mechanically from the TrUAPI methods, so the high-level method signature and the wire format can never drift apart. One method expands into several actions depending on its shape: a plain call becomes a request/response pair, while a subscription becomes a small lifecycle of start, stop, interrupt, and receive messages.
 
-Trait discriminants are assigned per trait in the `truapi` crate via the trait-level `#[wire_trait(id = N)]` annotation, with the `System` trait fixed at `0` (so a handshake request frame always starts `[requestId][0x00][0x00]`). Each action carries an explicit method discriminant within its trait — its `request_id`, `response_id`, `start_id`, `stop_id`, `interrupt_id`, or `receive_id` — assigned per method via the `#[wire(...)]` annotation and numbered from `0` independently inside every trait. Ids are **append-only per trait and never reused**: once a `(trait, method)` pair ships it keeps its meaning forever, which is what lets a newer Host and an older Product still understand each other, and adding methods to one trait never disturbs the ids of any other trait. The crate is the source of truth for all values. Trait discriminant `255` is permanently reserved for protocol errors and cannot be assigned to an API trait, so no method can ever be addressed there; a protocol error travels on the pair `(255, 255)`.
+Trait discriminants are assigned per trait in the `truapi` crate via the trait-level `#[wire_trait(id = N)]` annotation, with the `System` trait fixed at `192` — the lowest id the codec permits (see the appendix) — so a handshake request frame always starts `[requestId][0xC0][0x00]`. Each action carries an explicit method discriminant within its trait — its `request_id`, `response_id`, `start_id`, `stop_id`, `interrupt_id`, or `receive_id` — assigned per method via the `#[wire(...)]` annotation and numbered from `0` independently inside every trait. Ids are **append-only per trait and never reused**: once a `(trait, method)` pair ships it keeps its meaning forever, which is what lets a newer Host and an older Product still understand each other, and adding methods to one trait never disturbs the ids of any other trait. The crate is the source of truth for all values. Trait discriminant `255` is permanently reserved for protocol errors and cannot be assigned to an API trait, so no method can ever be addressed there; a protocol error travels on the pair `(255, 255)`.
 
 Payloads are versioned independently of the discriminant pair, so a single message can evolve without renumbering anything around it. The current version `V1` encodes as discriminant `0`:
 
@@ -268,10 +268,10 @@ Per-action mapping (codec-1 flat id → codec-2 `(trait, method)` pair):
 | `chat_action_subscribe_stop` | 49 | (195, 11) |
 | `chat_action_subscribe_interrupt` | 50 | (195, 12) |
 | `chat_action_subscribe_receive` | 51 | (195, 13) |
-| `chat_custom_message_render_subscribe_start` | 52 | (195, 14) |
-| `chat_custom_message_render_subscribe_stop` | 53 | (195, 15) |
-| `chat_custom_message_render_subscribe_interrupt` | 54 | (195, 16) |
-| `chat_custom_message_render_subscribe_receive` | 55 | (195, 17) |
+| `chat_custom_message_render_start` | 52 | (195, 14) |
+| `chat_custom_message_render_stop` | 53 | (195, 15) |
+| `chat_custom_message_render_interrupt` | 54 | (195, 16) |
+| `chat_custom_message_render_receive` | 55 | (195, 17) |
 | `coin_payment_create_purse_request` | 136 | (196, 0) |
 | `coin_payment_create_purse_response` | 137 | (196, 1) |
 | `coin_payment_query_purse_request` | 138 | (196, 2) |
