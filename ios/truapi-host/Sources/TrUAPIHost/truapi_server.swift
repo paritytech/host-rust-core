@@ -724,6 +724,13 @@ public protocol HostCallbacks: AnyObject, Sendable {
     func featureSupported(request: HostFeatureSupportedRequest) async throws  -> Bool
 
     /**
+     * Enumerate the chains this host serves (RFC 0026): its environment plus
+     * one entry per chain role. The returned set must match exactly what
+     * `chain_connect` will accept.
+     */
+    func supportedChains() async throws  -> HostChainSet
+
+    /**
      * Read a value from the host's scoped key-value store.
      */
     func localStorageRead(key: String) throws  -> Data?
@@ -1075,6 +1082,27 @@ open func featureSupported(request: HostFeatureSupportedRequest)async throws  ->
             completeFunc: ffi_truapi_server_rust_future_complete_i8,
             freeFunc: ffi_truapi_server_rust_future_free_i8,
             liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
+}
+
+    /**
+     * Enumerate the chains this host serves (RFC 0026): its environment plus
+     * one entry per chain role. The returned set must match exactly what
+     * `chain_connect` will accept.
+     */
+open func supportedChains()async throws  -> HostChainSet  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_hostcallbacks_supported_chains(
+                        self.uniffiCloneHandle()
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeHostChainSet_lift,
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
@@ -1684,6 +1712,47 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     uniffiCallbackData,
                     UniffiForeignFutureResultI8(
                         returnValue: 0,
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        supportedChains: { (
+            uniffiHandle: UInt64,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> HostChainSet in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.supportedChains(
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: HostChainSet) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: FfiConverterTypeHostChainSet_lower(returnValue),
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: RustBuffer.empty(),
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
@@ -5173,13 +5242,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 54709) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 26390) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 33044) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 6971) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 62222) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 61208) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
