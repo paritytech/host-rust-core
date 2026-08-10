@@ -302,6 +302,11 @@ mod tests {
         assert_eq!(msg.encode(), expected_wire(192, 0, &inner));
     }
 
+    /// Pins where the pair lands for a multi-byte payload. The payload here is
+    /// an arbitrary blob, not a real `HostAccountGetRequest` — this layer
+    /// inlines payload bytes verbatim and never interprets them. The typed
+    /// layout of an `account_get_account` payload is asserted in
+    /// `tests/golden_frame.rs` against the golden fixture.
     #[test]
     fn get_account_request_encodes_with_discriminant_pair() {
         let mut inner = vec![0x00]; // V1 variant

@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 
 import { str } from "./scale.js";
 import { decodeWireMessage, encodeWireMessage } from "./transport.js";
+import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 
 function toHex(u: Uint8Array): string {
@@ -70,15 +71,21 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
     });
 
     it("encodes account_get_request (pair (193, 4)) to match the golden fixture", () => {
-        // payload = V1(("foo", 0u32)); same vector as the Rust golden fixture.
-        const inner = new Uint8Array([
-            0x00, // V1 variant
-            ...str.enc("foo"), // compact-len + utf8
-            0x00,
-            0x00,
-            0x00,
-            0x00, // u32 = 0 LE
-        ]);
+        // Same vector as the Rust golden fixture
+        // (`truapi-server/tests/snapshots/golden-account-get.bin`). Encoded
+        // through the generated codec rather than assembled byte by byte: a
+        // hand-rolled payload keeps encoding the layout it was written against
+        // long after the type has moved on, which is exactly how the Rust
+        // fixture went stale across the 0.6.0 `DerivationIndex` change.
+        const inner = T.VersionedHostAccountGetRequest.enc({
+            tag: "V1",
+            value: {
+                productAccountId: {
+                    dotNsIdentifier: "foo",
+                    derivationIndex: { tag: "Index", value: 0 },
+                },
+            },
+        });
         const encoded = unwrap(
             encodeWireMessage({
                 requestId: "p:1",
@@ -91,7 +98,9 @@ describe("encodeWireMessage / decodeWireMessage wire equality", () => {
             "encode account_get_request",
         );
         expect(toHex(encoded)).toBe(toHex(expectedWire(193, 4, inner)));
-        expect(toHex(encoded)).toBe("0c703a31c104000c666f6f00000000");
+        // [0c 70 3a 31] "p:1" + [c1 04] pair + [00] V1 + [0c 66 6f 6f] "foo"
+        // + [00] DerivationIndex::Index + [00 00 00 00] u32 = 0.
+        expect(toHex(encoded)).toBe("0c703a31c104000c666f6f0000000000");
     });
 
     it("round-trips a local_storage_read frame through encode + decode", () => {
