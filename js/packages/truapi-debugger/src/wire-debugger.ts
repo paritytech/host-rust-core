@@ -267,7 +267,7 @@ export function createWireDebugger(options: WireDebuggerOptions = {}): WireDebug
       key = curKey;
     } else {
       const generation = cur === undefined ? 0 : cur.generation + 1;
-      key = `${baseKey} ${String(generation)}`;
+      key = `${baseKey}\0${String(generation)}`;
       trace = {
         channelId: frame.channelId,
         requestId: frame.requestId,

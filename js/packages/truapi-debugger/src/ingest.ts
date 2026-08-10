@@ -81,12 +81,18 @@ export interface DebugIngestOptions {
  * Ingest that decodes each {@link DebugFrameEnvelope} and forwards the resulting
  * {@link ObservedFrame} to `sink` (typically a {@link WireDebugger}'s `observe`).
  *
- * `role` is left `"unknown"`: lifecycle roles (request/response/receive/…) are
- * derived from request/subscription correlation state, which lived in the client
- * transport and is not carried on the wire. Reconstructing it from the observed
- * request/response ordering is a follow-up; grouping by `requestId` does not need
- * it. An undecodable frame is surfaced as a `"malformed"` sentinel rather than
- * dropped, so the trace records the failure instead of going dark.
+ * `role` is a pure function of the frame's wire discriminant: the generated wire
+ * table already states, per `frameId`, which leg of a method it is, so `role` is
+ * resolved here from `methodNames` rather than reconstructed from correlation
+ * state. Resolving it at ingest is what makes it true for *every* consumer -
+ * the default `console.debug` sink, the `forward` hook, and the trace engine -
+ * instead of only for the view adapter, which resolves one layer further down
+ * (`wireTraceToView`) and would leave the other two reading `"unknown"`.
+ *
+ * `role` falls back to `"unknown"` in exactly two cases: no `methodNames` map was
+ * given, or the id is off-table (a frame from a newer host). An undecodable frame
+ * is surfaced as a `"malformed"` sentinel rather than dropped, so the trace
+ * records the failure instead of going dark.
  *
  * Raw payload bytes are attached only when `retainBytes` is set - the dev-only
  * byte-exposure opt-in that the level-2 decoder consumes; otherwise a frame

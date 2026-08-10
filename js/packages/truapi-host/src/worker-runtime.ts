@@ -168,12 +168,6 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 /**
- * Dev-only link to the debugger the host dials. Fire-and-forget by construction:
- * it opens lazily, buffers a bounded backlog until the socket is up, retries a
- * dropped connection, and swallows every error - a slow, absent, or crashed
- * debugger only loses the trace, it can never throw into the frame path.
- */
-/**
  * Envelope version stamped on each frame, mirroring the debugger's
  * `WIRE_ENVELOPE_VERSION`. Kept in sync by hand (a value constant, not a shared
  * dep, to avoid truapi-host depending on the debugger package).
@@ -185,6 +179,27 @@ const WIRE_ENVELOPE_VERSION = 1;
  * (including sensitive payloads, before the debugger's denylist runs), so it is
  * loopback-only: refuse to stream them off the local machine. `ws://` only,
  * matching the native sink (`native_debug.rs`), which is also ws-only.
+ *
+ * Cleartext is the right call *because* the target is loopback-only. TLS defends
+ * against a party on the path, and a loopback socket has no path: the frames
+ * never reach an interface. `wss://` would instead require the debugger to
+ * present a certificate — unobtainable for `localhost` from a real CA, and
+ * self-signed on iOS costs the developer a CA install plus a manual enable under
+ * Settings → General → About → Certificate Trust Settings before a single frame
+ * arrives. So `wss://` buys no confidentiality here and costs setup, while adding
+ * a second protocol path and a trust surface to the gate.
+ *
+ * Confidentiality for the trace stream comes from the loopback check, not from
+ * the scheme: the frames never cross a network, so there is nothing on a network
+ * to encrypt. A *remote* debugger would need TLS **and** authentication **and**
+ * an explicit opt-in; none of that is a scheme this gate silently accepts today.
+ *
+ * Unlike `WsDebugSink::connect`, which resolves the host and requires every
+ * resolved address to be loopback, this matches the hostname the URL parser
+ * normalized. There is no resolver in a Web Worker, and none is needed: the same
+ * `url` string is passed to `new WebSocket(url)` below, so the browser resolves
+ * exactly what was validated. The Rust "validate one string, dial another" gap
+ * cannot open here because there is only ever one string.
  */
 export function isLoopbackWsUrl(url: string): boolean {
   try {
@@ -203,6 +218,12 @@ export function isLoopbackWsUrl(url: string): boolean {
   }
 }
 
+/**
+ * Dev-only link to the debugger the host dials. Fire-and-forget by construction:
+ * it opens lazily, buffers a bounded backlog until the socket is up, retries a
+ * dropped connection, and swallows every error - a slow, absent, or crashed
+ * debugger only loses the trace, it can never throw into the frame path.
+ */
 function createDebuggerLink(url: string): {
   emit(channelId: string, dir: string, frame: Uint8Array): void;
 } {
