@@ -190,8 +190,8 @@ pub const CHAT_ACTION_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
     receive_id: 51,
 };
 
-/// Wire discriminants for `chat_custom_message_render_subscribe`.
-pub const CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+/// Wire discriminants for `chat_custom_message_render`.
+pub const CHAT_CUSTOM_MESSAGE_RENDER: SubscriptionFrameIds = SubscriptionFrameIds {
     start_id: 52,
     stop_id: 53,
     interrupt_id: 54,
@@ -466,6 +466,12 @@ pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
     response_id: 165,
 };
 
+/// Wire discriminants for `chain_get_chain_info`.
+pub const CHAIN_GET_CHAIN_INFO: RequestFrameIds = RequestFrameIds {
+    request_id: 166,
+    response_id: 167,
+};
+
 /// Wire discriminants for `account_register_ring_vrf_key`.
 pub const ACCOUNT_REGISTER_RING_VRF_KEY: RequestFrameIds = RequestFrameIds {
     request_id: 168,
@@ -580,8 +586,8 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Subscription(CHAT_ACTION_SUBSCRIBE),
     },
     WireEntry {
-        method: "chat_custom_message_render_subscribe",
-        kind: WireKind::Subscription(CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE),
+        method: "chat_custom_message_render",
+        kind: WireKind::Subscription(CHAT_CUSTOM_MESSAGE_RENDER),
     },
     WireEntry {
         method: "statement_store_subscribe",
@@ -746,6 +752,10 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "account_sign_vrf",
         kind: WireKind::Request(ACCOUNT_SIGN_VRF),
+    },
+    WireEntry {
+        method: "chain_get_chain_info",
+        kind: WireKind::Request(CHAIN_GET_CHAIN_INFO),
     },
     WireEntry {
         method: "account_register_ring_vrf_key",

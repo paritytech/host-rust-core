@@ -21,14 +21,15 @@ pub trait Signing: Send + Sync {
     /// Construct a signed transaction for a product account.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
     ///     dotNsIdentifier: "truapi-playground.dot",
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
-    ///   genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+    ///   genesisHash: people.value.genesisHash,
     ///   callData: "0x000000",
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
@@ -55,7 +56,8 @@ pub trait Signing: Send + Sync {
     /// Construct a signed transaction for a non-product (legacy) account.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
@@ -70,7 +72,7 @@ pub trait Signing: Send + Sync {
     ///     dotNsIdentifier: "truapi-playground.dot",
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
-    ///   genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+    ///   genesisHash: people.value.genesisHash,
     ///   callData: "0x000000",
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
@@ -123,7 +125,8 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload with a non-product account.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const accountResult = await truapi.account.getAccount({
     ///   productAccountId: {
@@ -139,7 +142,7 @@ pub trait Signing: Send + Sync {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
     ///     era: "0x00",
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///     method: "0x00003448656c6c6f2c20776f726c6421",
     ///     nonce: "0x00000000",
     ///     signedExtensions: [],
@@ -191,7 +194,8 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.signing.signPayload({
     ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Index", value: 0 } },
@@ -199,7 +203,7 @@ pub trait Signing: Send + Sync {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
     ///     era: "0x00",
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///     method: "0x00003448656c6c6f2c20776f726c6421",
     ///     nonce: "0x00000000",
     ///     signedExtensions: [],

@@ -13,6 +13,7 @@ pub(crate) mod auth_state;
 mod authority;
 /// In-core Bulletin preimage submission over the shared Subxt client.
 pub(crate) mod bulletin_rpc;
+mod chat;
 mod identity;
 mod pairing_host;
 mod ring_vrf_registry;
@@ -41,7 +42,7 @@ use web_time::Instant;
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::bulletin::preimage_key;
 use crate::host_logic::dotns::{NavigateDecision, parse_navigate};
-use crate::host_logic::features::feature_supported;
+use crate::host_logic::features::{chain_info, feature_supported, supported_chains};
 use crate::host_logic::permissions::PermissionsService;
 #[cfg(test)]
 use crate::host_logic::product_account::index_bytes;
@@ -56,6 +57,7 @@ use crate::runtime::bulletin_rpc::BulletinSubmitError;
 #[cfg(test)]
 use crate::subscription::Spawner;
 pub(crate) use authority::{BulletinAllowanceKey, ProductAuthority};
+pub(crate) use chat::{ChatConnection, chat_platform_for};
 #[cfg(test)]
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
@@ -103,6 +105,7 @@ use truapi::versioned::chain::{
     RemoteChainHeadStopOperationRequest, RemoteChainHeadStopOperationResponse,
     RemoteChainHeadStorageError, RemoteChainHeadStorageRequest, RemoteChainHeadStorageResponse,
     RemoteChainHeadUnpinError, RemoteChainHeadUnpinRequest, RemoteChainHeadUnpinResponse,
+    RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
     RemoteChainSpecChainNameError, RemoteChainSpecChainNameRequest,
     RemoteChainSpecChainNameResponse, RemoteChainSpecGenesisHashError,
     RemoteChainSpecGenesisHashRequest, RemoteChainSpecGenesisHashResponse,
@@ -111,6 +114,11 @@ use truapi::versioned::chain::{
     RemoteChainTransactionBroadcastRequest, RemoteChainTransactionBroadcastResponse,
     RemoteChainTransactionStopError, RemoteChainTransactionStopRequest,
     RemoteChainTransactionStopResponse,
+};
+use truapi::versioned::chat::{
+    HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
+    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
+    HostChatPostMessageRequest, HostChatPostMessageResponse,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -160,7 +168,6 @@ use truapi::versioned::system::{
 use truapi::versioned::theme::HostThemeSubscribeItem;
 use truapi::{CallContext, CallError, CancellationReason, Subscription};
 use truapi::{latest, v01};
-#[cfg(test)]
 use truapi_platform::Platform;
 use truapi_platform::{
     AccountAccessReview, CreateTransactionReview, IdentityDisclosureReview,
@@ -299,27 +306,40 @@ fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) ->
 /// `truapi::api::*` trait set the generated dispatcher routes to.
 pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
+    platform: Arc<dyn Platform>,
+    chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     authority: Arc<dyn ProductAuthority>,
     product: ProductContext,
     /// Stable per-product-runtime id used to scope long-lived chain follow
     /// operation ids within one shared host runtime.
     core_instance: u64,
+    chat: Arc<ChatConnection>,
 }
 
 impl ProductRuntimeHost {
-    /// Build a product-scoped dispatcher target from a long-lived host runtime.
+    /// Build a product-scoped dispatcher target from a long-lived host runtime
+    /// and the adapters scoped to this product connection.
     pub(crate) fn from_services(
         services: Arc<RuntimeServices>,
+        adapters: crate::host_core::ConnectionAdapters,
         authority: Arc<dyn ProductAuthority>,
         product: ProductContext,
     ) -> Self {
         let core_instance = services.next_core_instance();
         Self {
             services,
+            platform: adapters.platform,
+            chat_platform: adapters.chat_platform,
             authority,
             product,
             core_instance,
+            chat: adapters.chat,
         }
+    }
+
+    /// Trusted executable kind attached to this product connection.
+    pub(crate) fn execution_kind(&self) -> truapi_platform::ProductExecutionKind {
+        self.product.execution_kind
     }
 
     /// Test constructor building a standalone pairing-host runtime.
@@ -403,11 +423,15 @@ impl ProductRuntimeHost {
         );
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let core_instance = services.next_core_instance();
+        let chat = Arc::new(ChatConnection::new());
         let host = Self {
             services,
+            platform,
+            chat_platform: None,
             authority: pairing_host.clone(),
             product,
             core_instance,
+            chat,
         };
         (host, pairing_host)
     }
@@ -525,11 +549,8 @@ impl ProductRuntimeHost {
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
         let product_id = self.product_id();
-        let service = PermissionsService::new(
-            self.services.platform.as_ref(),
-            self.services.platform.as_ref(),
-            &product_id,
-        );
+        let service =
+            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         service.authorization_status(&request).await
     }
 
@@ -540,11 +561,8 @@ impl ProductRuntimeHost {
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
         let product_id = self.product_id();
-        let service = PermissionsService::new(
-            self.services.platform.as_ref(),
-            self.services.platform.as_ref(),
-            &product_id,
-        );
+        let service =
+            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         service.authorization_statuses(&requests).await
     }
 
@@ -557,11 +575,8 @@ impl ProductRuntimeHost {
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
         let product_id = self.product_id();
-        let service = PermissionsService::new(
-            self.services.platform.as_ref(),
-            self.services.platform.as_ref(),
-            &product_id,
-        );
+        let service =
+            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         service.set_authorization_status(&request, status).await
     }
 
@@ -571,11 +586,8 @@ impl ProductRuntimeHost {
         permission: v01::RemotePermission,
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
-        let service = PermissionsService::new(
-            self.services.platform.as_ref(),
-            self.services.platform.as_ref(),
-            &product_id,
-        );
+        let service =
+            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         service
             .check_or_prompt_remote(v01::RemotePermissionRequest { permission })
             .await
@@ -610,11 +622,8 @@ impl ProductRuntimeHost {
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        let service = PermissionsService::new(
-            self.services.platform.as_ref(),
-            self.services.platform.as_ref(),
-            &product_id,
-        );
+        let service =
+            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         let cached = service
             .authorization_status(&request)
             .await
@@ -627,7 +636,6 @@ impl ProductRuntimeHost {
         // Fail the current disclosure request closed but keep authorization in
         // the ask/default state so the next request can prompt again.
         let confirmed = match self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::IdentityDisclosure(
                 IdentityDisclosureReview {
@@ -685,7 +693,7 @@ impl ProductRuntimeHost {
 }
 
 async fn account_access_authorization(
-    services: &RuntimeServices,
+    platform: &dyn Platform,
     requesting_product_id: &str,
     target_product_id: &str,
 ) -> Result<PermissionAuthorizationStatus, AccountAccessAuthorizationError> {
@@ -696,11 +704,7 @@ async fn account_access_authorization(
     let request = PermissionAuthorizationRequest::AccountAccess {
         target_product_id: target_product_id.to_string(),
     };
-    let service = PermissionsService::new(
-        services.platform.as_ref(),
-        services.platform.as_ref(),
-        requesting_product_id,
-    );
+    let service = PermissionsService::new(platform, platform, requesting_product_id);
     let cached = service
         .authorization_status(&request)
         .await
@@ -709,8 +713,7 @@ async fn account_access_authorization(
         return Ok(cached);
     }
 
-    let confirmed = services
-        .platform
+    let confirmed = platform
         .confirm_user_action(UserConfirmationReview::AccountAccess(AccountAccessReview {
             requesting_product_id: requesting_product_id.to_string(),
             target_product_id: target_product_id.to_string(),
@@ -767,7 +770,7 @@ impl System for ProductRuntimeHost {
         request: HostFeatureSupportedRequest,
     ) -> Result<HostFeatureSupportedResponse, CallError<HostFeatureSupportedError>> {
         let HostFeatureSupportedRequest::V1(inner) = request;
-        feature_supported(self.services.platform.as_ref(), inner)
+        feature_supported(self.platform.as_ref(), inner)
             .await
             .map(HostFeatureSupportedResponse::V1)
             .map_err(|err| CallError::Domain(HostFeatureSupportedError::V1(err)))
@@ -790,8 +793,7 @@ impl System for ProductRuntimeHost {
             | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
             NavigateDecision::External { url } => url,
         };
-        self.services
-            .platform
+        self.platform
             .navigate_to(resolved)
             .await
             .map(|()| HostNavigateToResponse::V1)
@@ -813,11 +815,8 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
         let HostDevicePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service = PermissionsService::new(
-            self.services.platform.as_ref(),
-            self.services.platform.as_ref(),
-            &product_id,
-        );
+        let service =
+            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         match service.check_or_prompt_device(inner).await {
             Ok(decision) => Ok(HostDevicePermissionResponse::V1(
                 v01::HostDevicePermissionResponse {
@@ -838,11 +837,8 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
         let RemotePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service = PermissionsService::new(
-            self.services.platform.as_ref(),
-            self.services.platform.as_ref(),
-            &product_id,
-        );
+        let service =
+            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         match service.check_or_prompt_remote(inner).await {
             Ok(decision) => Ok(RemotePermissionResponse::V1(
                 v01::RemotePermissionResponse {
@@ -869,8 +865,7 @@ impl LocalStorage for ProductRuntimeHost {
         request: HostLocalStorageReadRequest,
     ) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
         let HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest { key }) = request;
-        self.services
-            .platform
+        self.platform
             .read(self.product_storage_key(key))
             .await
             .map(|value| {
@@ -887,8 +882,7 @@ impl LocalStorage for ProductRuntimeHost {
     ) -> Result<HostLocalStorageWriteResponse, CallError<HostLocalStorageWriteError>> {
         let HostLocalStorageWriteRequest::V1(v01::HostLocalStorageWriteRequest { key, value }) =
             request;
-        self.services
-            .platform
+        self.platform
             .write(self.product_storage_key(key), value)
             .await
             .map(|()| HostLocalStorageWriteResponse::V1)
@@ -902,8 +896,7 @@ impl LocalStorage for ProductRuntimeHost {
         request: HostLocalStorageClearRequest,
     ) -> Result<HostLocalStorageClearResponse, CallError<HostLocalStorageClearError>> {
         let HostLocalStorageClearRequest::V1(v01::HostLocalStorageClearRequest { key }) = request;
-        self.services
-            .platform
+        self.platform
             .clear(self.product_storage_key(key))
             .await
             .map(|()| HostLocalStorageClearResponse::V1)
@@ -942,7 +935,7 @@ impl Account for ProductRuntimeHost {
         let product_id = self.product_id();
         if product_account_id.dot_ns_identifier != product_id {
             match account_access_authorization(
-                &self.services,
+                self.platform.as_ref(),
                 &product_id,
                 &product_account_id.dot_ns_identifier,
             )
@@ -1515,7 +1508,6 @@ impl Signing for ProductRuntimeHost {
             )));
         };
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::SignPayload(
                 SignPayloadReview::Product(inner.clone()),
@@ -1568,7 +1560,6 @@ impl Signing for ProductRuntimeHost {
             )));
         };
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::SignRaw(SignRawReview::Product(
                 inner.clone(),
@@ -1621,7 +1612,6 @@ impl Signing for ProductRuntimeHost {
             )));
         };
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::CreateTransaction(
                 CreateTransactionReview::Product(inner.clone()),
@@ -1684,7 +1674,6 @@ impl Signing for ProductRuntimeHost {
         ))
         .await?;
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::SignPayload(
                 SignPayloadReview::LegacyAccount(inner.clone()),
@@ -1744,7 +1733,6 @@ impl Signing for ProductRuntimeHost {
         ))
         .await?;
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::SignRaw(
                 SignRawReview::LegacyAccount(inner.clone()),
@@ -1813,7 +1801,6 @@ impl Signing for ProductRuntimeHost {
         ))
         .await?;
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::CreateTransaction(
                 CreateTransactionReview::LegacyAccount(inner.clone()),
@@ -2089,6 +2076,25 @@ impl Chain for ProductRuntimeHost {
             .map(|()| RemoteChainTransactionStopResponse::V1)
             .map_err(runtime_failure_to_call_error)
     }
+
+    #[instrument(skip_all, fields(runtime.method = "chain.get_chain_info"))]
+    async fn get_chain_info(
+        &self,
+        _cx: &CallContext,
+        request: RemoteChainInfoRequest,
+    ) -> Result<RemoteChainInfoResponse, CallError<RemoteChainInfoError>> {
+        let RemoteChainInfoRequest::V1(inner) = request;
+        let set = supported_chains(self.services.platform.as_ref())
+            .await
+            .map_err(|err| {
+                CallError::Domain(RemoteChainInfoError::V1(
+                    truapi::latest::RemoteChainInfoError::Unknown(err),
+                ))
+            })?;
+        chain_info(&set, &inner)
+            .map(RemoteChainInfoResponse::V1)
+            .map_err(|err| CallError::Domain(RemoteChainInfoError::V1(err)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2097,13 +2103,91 @@ impl Chain for ProductRuntimeHost {
 // Payment and full account proof are explicitly out of current host parity,
 // but products should still observe the host's typed "not implemented" errors
 // rather than a generic transport failure.
-// Chat and CoinPayment remain outside this milestone and keep their generated
-// trait defaults until another host/product needs real implementations.
+// CoinPayment remains outside this milestone and keeps its generated trait
+// defaults until another host/product needs a real implementation.
 
 const PAYMENTS_NOT_IMPLEMENTED: &str = "Payments are not supported in dot.li";
 
-#[truapi::async_trait]
-impl Chat for ProductRuntimeHost {}
+impl ProductRuntimeHost {
+    /// Chat access policy for this connection; see [`chat_platform_for`].
+    pub(crate) fn native_chat_platform(
+        &self,
+    ) -> Result<Arc<dyn truapi_platform::ChatPlatform>, crate::host_core::ProductRuntimeError> {
+        chat_platform_for(
+            self.product.execution_kind,
+            self.authority.session_state().current().is_some(),
+            self.chat_platform.as_ref(),
+        )
+    }
+
+    fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
+        self.native_chat_platform().map_err(|error| match error {
+            crate::host_core::ProductRuntimeError::Denied => CallError::Denied,
+            crate::host_core::ProductRuntimeError::Unsupported => CallError::Unsupported,
+            _ => unreachable!("Chat platform policy only returns Denied or Unsupported"),
+        })
+    }
+
+    pub(crate) fn detach_chat(&self) {
+        self.chat.detach();
+    }
+}
+
+#[truapi_platform::async_trait]
+impl Chat for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "chat.create_room"))]
+    async fn create_room(
+        &self,
+        _cx: &CallContext,
+        request: HostChatCreateRoomRequest,
+    ) -> Result<HostChatCreateRoomResponse, CallError<HostChatCreateRoomError>> {
+        let platform = self.chat_platform()?;
+        let HostChatCreateRoomRequest::V1(request) = request;
+        platform
+            .create_room(&self.product, request)
+            .await
+            .map(HostChatCreateRoomResponse::V1)
+            .map_err(|error| CallError::Domain(HostChatCreateRoomError::V1(error)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "chat.list_subscribe"))]
+    async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
+        let Ok(platform) = self.chat_platform::<()>() else {
+            return Subscription::empty();
+        };
+        Subscription::new(Box::pin(
+            platform
+                .subscribe_rooms(&self.product)
+                .map(HostChatListSubscribeItem::V1),
+        ))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "chat.post_message"))]
+    async fn post_message(
+        &self,
+        _cx: &CallContext,
+        request: HostChatPostMessageRequest,
+    ) -> Result<HostChatPostMessageResponse, CallError<HostChatPostMessageError>> {
+        let platform = self.chat_platform()?;
+        let HostChatPostMessageRequest::V1(request) = request;
+        platform
+            .post_message(&self.product, request)
+            .await
+            .map(HostChatPostMessageResponse::V1)
+            .map_err(|error| CallError::Domain(HostChatPostMessageError::V1(error)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "chat.action_subscribe"))]
+    async fn action_subscribe(
+        &self,
+        _cx: &CallContext,
+    ) -> Subscription<HostChatActionSubscribeItem> {
+        if self.chat_platform::<()>().is_err() {
+            return Subscription::empty();
+        }
+        self.chat.subscribe_actions()
+    }
+}
 #[truapi::async_trait]
 impl CoinPayment for ProductRuntimeHost {}
 #[truapi::async_trait]
@@ -2184,7 +2268,6 @@ impl ResourceAllocation for ProductRuntimeHost {
         };
 
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::ResourceAllocation(
                 ResourceAllocationReview {
@@ -2298,7 +2381,6 @@ impl Preimage for ProductRuntimeHost {
         // miss (the wire item has no error channel and the product still needs
         // its initial current-value/miss emission).
         let stream = self
-            .services
             .platform
             .lookup_preimage(key.clone())
             .filter_map(move |item| {
@@ -2351,7 +2433,6 @@ impl Preimage for ProductRuntimeHost {
         )
         .await?;
         let confirmed = self
-            .services
             .platform
             .confirm_user_action(UserConfirmationReview::PreimageSubmit(
                 PreimageSubmitReview {
@@ -2454,21 +2535,17 @@ fn bulletin_allowance_error_reason(err: AuthorityError) -> String {
 impl Theme for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "theme.subscribe"))]
     async fn subscribe(&self, _cx: &CallContext) -> Subscription<HostThemeSubscribeItem> {
-        let stream = self
-            .services
-            .platform
-            .subscribe_theme()
-            .filter_map(|item| async {
-                // TODO: preserve platform stream errors as terminal
-                // subscription interrupts once subscription items can carry
-                // in-stream failures.
-                item.ok().map(|variant| {
-                    HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
-                        name: v01::ThemeName::Default,
-                        variant,
-                    })
+        let stream = self.platform.subscribe_theme().filter_map(|item| async {
+            // TODO: preserve platform stream errors as terminal
+            // subscription interrupts once subscription items can carry
+            // in-stream failures.
+            item.ok().map(|variant| {
+                HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
+                    name: v01::ThemeName::Default,
+                    variant,
                 })
-            });
+            })
+        });
         Subscription::new(Box::pin(stream))
     }
 }
@@ -2484,8 +2561,7 @@ impl Notifications for ProductRuntimeHost {
         request: HostPushNotificationRequest,
     ) -> Result<HostPushNotificationResponse, CallError<HostPushNotificationError>> {
         let HostPushNotificationRequest::V1(inner) = request;
-        self.services
-            .platform
+        self.platform
             .push_notification(inner)
             .await
             .map(HostPushNotificationResponse::V1)
@@ -2505,8 +2581,7 @@ impl Notifications for ProductRuntimeHost {
     {
         let HostPushNotificationCancelRequest::V1(v01::HostPushNotificationCancelRequest { id }) =
             request;
-        self.services
-            .platform
+        self.platform
             .cancel_notification(id)
             .await
             .map(|()| HostPushNotificationCancelResponse::V1)
@@ -2615,6 +2690,36 @@ mod tests {
     }
 
     #[test]
+    fn get_chain_info_round_trips_through_runtime() {
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let cx = CallContext::default();
+        let request = RemoteChainInfoRequest::V1(v01::RemoteChainInfoRequest {
+            chain: v01::ChainIdentifier::AssetHub,
+        });
+        let response = futures::executor::block_on(host.get_chain_info(&cx, request)).unwrap();
+        let RemoteChainInfoResponse::V1(inner) = response;
+        assert_eq!(inner.network, "paseo");
+        assert_eq!(inner.chain, v01::ChainIdentifier::AssetHub);
+        assert_eq!(inner.genesis_hash, [0xaa; 32]);
+    }
+
+    #[test]
+    fn get_chain_info_unserved_identifier_is_not_supported() {
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let cx = CallContext::default();
+        let request = RemoteChainInfoRequest::V1(v01::RemoteChainInfoRequest {
+            chain: v01::ChainIdentifier::Bulletin,
+        });
+        let error = futures::executor::block_on(host.get_chain_info(&cx, request)).unwrap_err();
+        assert_eq!(
+            error,
+            CallError::Domain(RemoteChainInfoError::V1(
+                v01::RemoteChainInfoError::NotSupported
+            ))
+        );
+    }
+
+    #[test]
     fn chain_follow_ids_are_scoped_per_product_core() {
         let (host_config, product) = runtime_config("same.dot");
         let spawner = test_spawner();
@@ -2628,10 +2733,16 @@ mod tests {
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let first = ProductRuntimeHost::from_services(
             services.clone(),
+            crate::host_core::ConnectionAdapters::from_services(&services),
             pairing_host.clone(),
             product.clone(),
         );
-        let second = ProductRuntimeHost::from_services(services, pairing_host, product);
+        let second = ProductRuntimeHost::from_services(
+            services.clone(),
+            crate::host_core::ConnectionAdapters::from_services(&services),
+            pairing_host,
+            product,
+        );
 
         assert_eq!(first.follow_id("request-1"), "c1:request-1");
         assert_eq!(second.follow_id("request-1"), "c2:request-1");

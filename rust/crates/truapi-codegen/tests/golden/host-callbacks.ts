@@ -9,6 +9,7 @@ import * as S from "@parity/truapi/scale";
 import {
   AllocatableResource,
   Bytes32,
+  ChainIdentifier,
   HostAccountSignVrfRequest,
   HostDevicePermissionRequest,
   HostSignPayloadRequest,
@@ -25,6 +26,11 @@ import {
 
 import type {
   GenericError,
+  HostChatCreateRoomRequest,
+  HostChatCreateRoomResponse,
+  HostChatListSubscribeItem,
+  HostChatPostMessageRequest,
+  HostChatPostMessageResponse,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
@@ -186,6 +192,37 @@ export type CreateTransactionReview =
   | { tag: "LegacyAccount"; value: LegacyAccountTxPayload };
 
 /**
+ * One chain a host serves: a protocol chain role mapped to the concrete
+ * chain of the host's configured environment.
+ */
+export interface HostChainEntry {
+  /**
+   * Protocol role this entry answers for.
+   */
+  identifier: ChainIdentifier;
+
+  /**
+   * Genesis hash identifying the chain in all chain-scoped calls.
+   */
+  genesisHash: Bytes32;
+}
+
+/**
+ * The chain set a host serves: its environment plus one entry per chain role.
+ */
+export interface HostChainSet {
+  /**
+   * Ecosystem the host is configured for, e.g. "polkadot", "paseo".
+   */
+  network: string;
+
+  /**
+   * Complete set of chains available through this host.
+   */
+  chains: Array<HostChainEntry>;
+}
+
+/**
  * Review shown before a product learns the user's primary identity.
  */
 export interface IdentityDisclosureReview {
@@ -237,6 +274,33 @@ export interface PreimageSubmitReview {
    */
   size: bigint;
 }
+
+/**
+ * Product identity attached to one product-facing TrUAPI connection.
+ *
+ * A host may create multiple product runtimes from the same long-lived host
+ * runtime, each with its own product context.
+ */
+export interface ProductContext {
+  /**
+   * Product identifier used for account derivation and product-scoped
+   * storage/permission namespaces.
+   *
+   * Host-spec C.7 defines accepted product id forms:
+   * <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L109-L128>
+   */
+  productId: string;
+
+  /**
+   * Trusted kind of executable attached to this connection by the host.
+   */
+  executionKind: ProductExecutionKind;
+}
+
+/**
+ * Trusted kind of product executable attached to a TrUAPI connection.
+ */
+export type ProductExecutionKind = "Spa" | "Chat";
 
 /**
  * Review shown before allocating resources for a product. Names the
@@ -486,6 +550,29 @@ export const CreateTransactionReview: S.Codec<CreateTransactionReview> = S.lazy(
 );
 
 /**
+ * One chain a host serves: a protocol chain role mapped to the concrete
+ * chain of the host's configured environment.
+ */
+export const HostChainEntry: S.Codec<HostChainEntry> = S.lazy(
+  (): S.Codec<HostChainEntry> =>
+    S.Struct({
+      identifier: ChainIdentifier,
+      genesisHash: Bytes32,
+    }) as S.Codec<HostChainEntry>,
+);
+
+/**
+ * The chain set a host serves: its environment plus one entry per chain role.
+ */
+export const HostChainSet: S.Codec<HostChainSet> = S.lazy(
+  (): S.Codec<HostChainSet> =>
+    S.Struct({
+      network: S.str,
+      chains: S.Vector(HostChainEntry),
+    }) as S.Codec<HostChainSet>,
+);
+
+/**
  * Review shown before a product learns the user's primary identity.
  */
 export const IdentityDisclosureReview: S.Codec<IdentityDisclosureReview> =
@@ -529,6 +616,27 @@ export const PermissionAuthorizationStatus: S.Codec<PermissionAuthorizationStatu
 export const PreimageSubmitReview: S.Codec<PreimageSubmitReview> = S.lazy(
   (): S.Codec<PreimageSubmitReview> =>
     S.Struct({ size: S.u64 }) as S.Codec<PreimageSubmitReview>,
+);
+
+/**
+ * Product identity attached to one product-facing TrUAPI connection.
+ *
+ * A host may create multiple product runtimes from the same long-lived host
+ * runtime, each with its own product context.
+ */
+export const ProductContext: S.Codec<ProductContext> = S.lazy(
+  (): S.Codec<ProductContext> =>
+    S.Struct({
+      productId: S.str,
+      executionKind: ProductExecutionKind,
+    }) as S.Codec<ProductContext>,
+);
+
+/**
+ * Trusted kind of product executable attached to a TrUAPI connection.
+ */
+export const ProductExecutionKind: S.Codec<ProductExecutionKind> = S.lazy(
+  (): S.Codec<ProductExecutionKind> => S.Status("Spa", "Chat"),
 );
 
 /**
@@ -657,6 +765,35 @@ export interface ChainProvider {
 }
 
 /**
+ * Host-implemented adapter through which product Chat calls reach native
+ * storage and UI.
+ */
+export interface ChatPlatform {
+  /**
+   * Create or resolve a product-scoped native chat room.
+   */
+  createRoom(
+    product: ProductContext,
+    request: HostChatCreateRoomRequest,
+  ): Promise<HostChatCreateRoomResponse>;
+
+  /**
+   * Persist a product-authored message in a native chat room.
+   */
+  postMessage(
+    product: ProductContext,
+    request: HostChatPostMessageRequest,
+  ): Promise<HostChatPostMessageResponse>;
+
+  /**
+   * Emit the current product-scoped room list and later replacements.
+   */
+  subscribeRooms(
+    product: ProductContext,
+  ): AsyncIterable<HostChatListSubscribeItem>;
+}
+
+/**
  * Core-owned administration API exposed to host UI.
  *
  * Hosts call this surface to drive global runtime actions or inspect/update
@@ -726,6 +863,13 @@ export interface Features {
   featureSupported(
     request: HostFeatureSupportedRequest,
   ): Promise<HostFeatureSupportedResponse>;
+
+  /**
+   * Enumerate the chains this host serves (RFC 0026). The returned set must
+   * match exactly what `ChainProvider::connect` will accept; the core
+   * resolves `get_chain_info` requests against it.
+   */
+  supportedChains(): Promise<HostChainSet>;
 }
 
 /**

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::double_must_use,
+    reason = "async-trait generates must_use futures for async trait methods"
+)]
+
 //! TrUAPI trait and type definitions for the host product SDK.
 //!
 //! Concrete wire types live in per-version modules. Versioned envelopes are in
@@ -46,8 +51,8 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ContextualAlias, DerivationIndex,
-        GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
+        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ContextualAlias,
+        DerivationIndex, GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
         ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
         RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
         RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
@@ -62,6 +67,28 @@ pub mod latest {
     /// Ring VRF proof creation result.
     pub type HostAccountCreateProofResponse =
         LatestOf<versioned::account::HostAccountCreateProofResponse>;
+    /// Chat action delivered from the native host to a product worker.
+    pub type HostChatActionSubscribeItem = LatestOf<versioned::chat::HostChatActionSubscribeItem>;
+    /// Native chat room creation request.
+    pub type HostChatCreateRoomRequest = LatestOf<versioned::chat::HostChatCreateRoomRequest>;
+    /// Native chat room creation result.
+    pub type HostChatCreateRoomResponse = LatestOf<versioned::chat::HostChatCreateRoomResponse>;
+    /// Native chat room creation failure.
+    pub type HostChatCreateRoomError = LatestOf<versioned::chat::HostChatCreateRoomError>;
+    /// Current native room list for a product.
+    pub type HostChatListSubscribeItem = LatestOf<versioned::chat::HostChatListSubscribeItem>;
+    /// Native chat message posting request.
+    pub type HostChatPostMessageRequest = LatestOf<versioned::chat::HostChatPostMessageRequest>;
+    /// Native chat message posting result.
+    pub type HostChatPostMessageResponse = LatestOf<versioned::chat::HostChatPostMessageResponse>;
+    /// Native chat message posting failure.
+    pub type HostChatPostMessageError = LatestOf<versioned::chat::HostChatPostMessageError>;
+    /// Host-to-product custom render work request.
+    pub type ProductChatCustomMessageRenderRequest =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderRequest>;
+    /// Product-to-host custom renderer tree.
+    pub type ProductChatCustomMessageRenderItem =
+        LatestOf<versioned::chat::ProductChatCustomMessageRenderItem>;
     /// Contextual alias derivation result.
     pub type HostAccountGetAliasResponse =
         LatestOf<versioned::account::HostAccountGetAliasResponse>;
@@ -133,6 +160,12 @@ pub mod latest {
     pub type ProductAccountTxPayload = LatestOf<versioned::signing::HostCreateTransactionRequest>;
     /// Chain-head subscription item.
     pub type RemoteChainHeadFollowItem = LatestOf<versioned::chain::RemoteChainHeadFollowItem>;
+    /// Chain-identifier resolution error.
+    pub type RemoteChainInfoError = LatestOf<versioned::chain::RemoteChainInfoError>;
+    /// Chain-identifier resolution request.
+    pub type RemoteChainInfoRequest = LatestOf<versioned::chain::RemoteChainInfoRequest>;
+    /// Chain-identifier resolution result.
+    pub type RemoteChainInfoResponse = LatestOf<versioned::chain::RemoteChainInfoResponse>;
     /// Chain-head subscription request.
     pub type RemoteChainHeadFollowRequest =
         LatestOf<versioned::chain::RemoteChainHeadFollowRequest>;
@@ -148,7 +181,7 @@ pub mod latest {
     pub type RemotePermissionResponse = LatestOf<versioned::permissions::RemotePermissionResponse>;
 }
 
-pub use truapi_macros::wire;
+pub use truapi_macros::{service, wire};
 
 /// Per-message id carried from the transport frame.
 pub type RequestId = String;

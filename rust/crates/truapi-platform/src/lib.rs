@@ -1,3 +1,8 @@
+#![allow(
+    clippy::double_must_use,
+    reason = "async-trait generates must_use futures for async trait methods"
+)]
+
 //! Capability traits a TrUAPI host must implement.
 //!
 //! Each trait covers a single OS-primitive surface the Rust core cannot reach
@@ -23,10 +28,13 @@ uniffi::use_remote_type!(truapi::Bytes32);
 
 use truapi::Bytes32;
 use truapi::latest::{
-    AllocatableResource, GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
-    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostNavigateToError, HostPushNotificationRequest, HostPushNotificationResponse,
-    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    AllocatableResource, ChainIdentifier, GenericError, HostChatCreateRoomError,
+    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
+    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostDevicePermissionRequest, HostDevicePermissionResponse, HostFeatureSupportedRequest,
+    HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
+    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
     ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
     RemotePermissionResponse, RingLocation, ThemeVariant,
@@ -92,6 +100,19 @@ pub struct ProductContext {
     /// Host-spec C.7 defines accepted product id forms:
     /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L109-L128>
     pub product_id: String,
+    /// Trusted kind of executable attached to this connection by the host.
+    pub execution_kind: ProductExecutionKind,
+}
+
+/// Trusted kind of product executable attached to a TrUAPI connection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum ProductExecutionKind {
+    /// Visible single-page application entrypoint such as `app/index.html`.
+    #[default]
+    Spa,
+    /// Headless worker executable that provides the Chat modality.
+    Chat,
 }
 
 /// Host metadata.
@@ -185,8 +206,17 @@ impl ProductContext {
     /// Build a product context, validating fields whose representation cannot
     /// be made invalid by Rust types alone.
     pub fn new(product_id: String) -> Result<Self, RuntimeConfigValidationError> {
+        Self::new_with_execution(product_id, ProductExecutionKind::Spa)
+    }
+
+    /// Build a product context for a host-selected executable kind.
+    pub fn new_with_execution(
+        product_id: String,
+        execution_kind: ProductExecutionKind,
+    ) -> Result<Self, RuntimeConfigValidationError> {
         Ok(Self {
             product_id: normalize_product_identifier(&product_id)?,
+            execution_kind,
         })
     }
 }
@@ -472,6 +502,27 @@ pub trait PairingHostAdmin: Send + Sync {
     fn notify_session_store_changed(&self);
 }
 
+/// One chain a host serves: a protocol chain role mapped to the concrete
+/// chain of the host's configured environment.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostChainEntry {
+    /// Protocol role this entry answers for.
+    pub identifier: ChainIdentifier,
+    /// Genesis hash identifying the chain in all chain-scoped calls.
+    pub genesis_hash: Bytes32,
+}
+
+/// The chain set a host serves: its environment plus one entry per chain role.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostChainSet {
+    /// Ecosystem the host is configured for, e.g. "polkadot", "paseo".
+    pub network: String,
+    /// Complete set of chains available through this host.
+    pub chains: Vec<HostChainEntry>,
+}
+
 /// Feature-support probing. The host answers whether it can service a given
 /// capability (currently scoped to per-chain support).
 #[async_trait]
@@ -481,6 +532,11 @@ pub trait Features: Send + Sync {
         &self,
         request: HostFeatureSupportedRequest,
     ) -> Result<HostFeatureSupportedResponse, GenericError>;
+
+    /// Enumerate the chains this host serves (RFC 0026). The returned set must
+    /// match exactly what [`ChainProvider::connect`] will accept; the core
+    /// resolves `get_chain_info` requests against it.
+    async fn supported_chains(&self) -> Result<HostChainSet, GenericError>;
 }
 
 /// JSON-RPC provider factory for chain access.
@@ -1098,6 +1154,31 @@ pub trait PreimageHost: Send + Sync {
         &self,
         key: Vec<u8>,
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, GenericError>>;
+}
+
+/// Host-implemented adapter through which product Chat calls reach native
+/// storage and UI.
+#[async_trait]
+pub trait ChatPlatform: Send + Sync {
+    /// Create or resolve a product-scoped native chat room.
+    async fn create_room(
+        &self,
+        product: &ProductContext,
+        request: HostChatCreateRoomRequest,
+    ) -> Result<HostChatCreateRoomResponse, HostChatCreateRoomError>;
+
+    /// Persist a product-authored message in a native chat room.
+    async fn post_message(
+        &self,
+        product: &ProductContext,
+        request: HostChatPostMessageRequest,
+    ) -> Result<HostChatPostMessageResponse, HostChatPostMessageError>;
+
+    /// Emit the current product-scoped room list and later replacements.
+    fn subscribe_rooms(
+        &self,
+        product: &ProductContext,
+    ) -> BoxStream<'static, HostChatListSubscribeItem>;
 }
 
 /// Combined platform interface. A host must provide all capability traits.

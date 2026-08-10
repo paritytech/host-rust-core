@@ -32,6 +32,7 @@ import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi_platform.AuthState
+import uniffi.truapi_platform.HostChainSet
 import uniffi.truapi_platform.PermissionAuthorizationRequest
 import uniffi.truapi_platform.PermissionAuthorizationStatus
 import uniffi.truapi_platform.UserConfirmationReview
@@ -39,6 +40,7 @@ import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
+import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.WsBridgeEndpoint
@@ -63,6 +65,18 @@ enum class PairingDeeplinkScheme {
         }
 }
 
+/** Trusted kind of executable attached to a product connection. */
+enum class ProductExecutionKind {
+    SPA,
+    CHAT;
+
+    internal fun toNative(): UniFfiProductExecutionKind =
+        when (this) {
+            SPA -> UniFfiProductExecutionKind.SPA
+            CHAT -> UniFfiProductExecutionKind.CHAT
+        }
+}
+
 /**
  * Static product and pairing config supplied before the Rust core handles
  * product calls. One core instance represents one product identity.
@@ -75,6 +89,7 @@ enum class PairingDeeplinkScheme {
  */
 data class RuntimeConfig(
     val productId: String,
+    val executionKind: ProductExecutionKind = ProductExecutionKind.SPA,
     val hostName: String,
     val hostIcon: String? = null,
     val hostVersion: String? = null,
@@ -89,6 +104,7 @@ data class RuntimeConfig(
     internal fun toNative(): UniFfiNativeRuntimeConfig =
         UniFfiNativeRuntimeConfig(
             productId = productId,
+            executionKind = executionKind.toNative(),
             hostName = hostName,
             hostIcon = hostIcon,
             hostVersion = hostVersion,
@@ -105,6 +121,7 @@ data class RuntimeConfig(
         if (this === other) return true
         if (other !is RuntimeConfig) return false
         return productId == other.productId &&
+            executionKind == other.executionKind &&
             hostName == other.hostName &&
             hostIcon == other.hostIcon &&
             hostVersion == other.hostVersion &&
@@ -122,6 +139,7 @@ data class RuntimeConfig(
 
     override fun hashCode(): Int {
         var result = productId.hashCode()
+        result = 31 * result + executionKind.hashCode()
         result = 31 * result + hostName.hashCode()
         result = 31 * result + (hostIcon?.hashCode() ?: 0)
         result = 31 * result + (hostVersion?.hashCode() ?: 0)
@@ -285,6 +303,13 @@ interface HostBridge {
     @Throws(HostRejection::class)
     suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean
 
+    /**
+     * Enumerate the chains this host serves: its environment plus one entry
+     * per chain role. Must match exactly what [chainConnect] accepts.
+     */
+    @Throws(HostRejection::class)
+    fun supportedChains(): HostChainSet = HostChainSet(network = "", chains = emptyList())
+
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
 
@@ -348,6 +373,9 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
         bridge.featureSupported(request)
+
+    override fun supportedChains(): HostChainSet =
+        bridge.supportedChains()
 
     override fun localStorageRead(key: String): ByteArray? =
         bridge.storage.read(key)

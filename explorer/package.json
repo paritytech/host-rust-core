@@ -10,6 +10,7 @@
     "build": "tsc -b && vite build",
     "prelint": "npm run generate-matrix",
     "lint": "tsc -b --noEmit",
+    "test": "node --test scripts/*.test.mjs",
     "preview": "vite preview",
     "generate-matrix": "node scripts/aggregate-diagnosis-matrix.mjs --explorer-out src/data/compatibility.ts diagnosis-reports"
   },
@@ -20,7 +21,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.13.1"
+    "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.1",
