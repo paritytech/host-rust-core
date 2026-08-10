@@ -2,9 +2,8 @@
 
 Network transport for the TrUAPI `ChainProvider` contract: an embedded
 [smoldot](https://github.com/smol-dot/smoldot) light client, or a remote
-WebSocket JSON-RPC node, behind one API. This is the WebAssembly build, for
-browser and desktop (webview) hosts. Android and iOS hosts use the same Rust
-crate natively over UniFFI, so network access works the same everywhere.
+WebSocket JSON-RPC node, behind one API. This package is the WebAssembly build,
+for browser and desktop (webview) hosts.
 
 You connect to a network by its genesis hash, and everything else is handled for
 you: the bundled catalog provides the spec and relay wiring, so clients never
@@ -51,37 +50,12 @@ Warm start is yours to drive: call `snapshot()` once the light client has synced
 persist the string wherever you like, and hand it back through `setDatabase()`
 before `build()` on the next launch.
 
-#### Android (Kotlin)
+## Native hosts
 
-Native targets deliver responses to a listener instead of a pull loop, and take
-the genesis hash as 32 raw bytes.
-
-```kotlin
-val provider = ChainProvider()
-
-val connection = provider.connect(genesisHash, object : ChainMessageListener {
-    override fun onMessage(message: String) { /* JSON-RPC response */ }
-    override fun onClosed() {}
-})
-
-connection.send("""{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}""")
-connection.close()
-```
-
-#### iOS (Swift)
-
-```swift
-let provider = ChainProvider()
-
-final class Responses: ChainMessageListener {
-    func onMessage(message: String) { /* JSON-RPC response */ }
-    func onClosed() {}
-}
-
-let connection = try provider.connect(genesisHash: genesis, listener: Responses())
-connection.send(request: #"{"jsonrpc":"2.0","id":1,"method":"chainSpec_v1_genesisHash","params":[]}"#)
-connection.close()
-```
+Android and iOS do not consume this package. They embed the same
+[`truapi-provider`](../../../rust/crates/truapi-provider) crate through the host
+runtime's own bindings, so a native host asks for a chain the same way and gets
+the same bundled catalog without any JavaScript in the path.
 
 ## Building
 

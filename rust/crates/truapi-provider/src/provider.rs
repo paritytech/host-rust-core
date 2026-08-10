@@ -295,6 +295,9 @@ mod tests {
     /// connected directly, only brought up behind one of its parachains.
     #[cfg(feature = "smoldot")]
     #[test]
+    // Without the `ws` backend the enum has a single variant, making the
+    // let-else below irrefutable there.
+    #[allow(irrefutable_let_patterns)]
     fn a_relay_blob_seeds_the_relay_brought_up_behind_a_parachain() {
         use std::collections::HashMap;
 

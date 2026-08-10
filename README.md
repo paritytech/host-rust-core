@@ -70,7 +70,9 @@ js/packages/
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
 playground/                Interactive Next.js playground (truapi-playground.dot)
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
@@ -98,11 +100,21 @@ a single package with tree-shakeable subpath entries:
 - `@parity/truapi-host/worker-runtime` is the Web Worker entrypoint so the WASM core can
   run off the page main thread.
 
-A browser host that wants an in-page light client can supply chain RPC transport with
-[`@parity/truapi-provider`](js/packages/truapi-provider), which compiles the
-`truapi-provider` crate (embedded smoldot plus a bundled chain-spec catalog) to WASM and
-exposes the same `ChainProvider` contract the native hosts use over UniFFI. Both WASM
-bundles are rebuilt by `make wasm`.
+### Chain transport
+
+A host that wants its own chain access embeds the `truapi-provider` crate (smoldot
+plus a bundled chain-spec catalog, addressed by genesis hash). It ships as three
+independent binary artifacts, so a consumer needs neither Rust nor a dependency on
+the crate:
+
+| host | artifact | build |
+| --- | --- | --- |
+| browser, webview | [`@parity/truapi-provider`](js/packages/truapi-provider) WASM | `make wasm` |
+| iOS | [`TrUAPIProvider`](ios/truapi-provider) SPM product + xcframework | `make provider-ios` |
+| Android | [`truapi-provider-android`](android/truapi-provider) AAR (bindings + cdylib) | `make provider-android-publish-local` |
+
+All three expose the same `ChainProvider` contract, so the wiring differs only in
+language.
 
 ## How it works
 

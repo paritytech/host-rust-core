@@ -47,6 +47,11 @@ jobs:
       - name: cargo +nightly clippy wasm32 (truapi-provider browser backends)
         run: cargo +nightly clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
 
+      # The native-bindings build has no `ws` backend, which makes ChainSource a
+      # single-variant enum; --all-features never exercises that shape.
+      - name: cargo +nightly clippy (truapi-provider native bindings)
+        run: cargo +nightly clippy -p truapi-provider --no-default-features --features uniffi --all-targets -- -D warnings
+
       - name: cargo +nightly fmt --check
         run: cargo +nightly fmt --check
 
