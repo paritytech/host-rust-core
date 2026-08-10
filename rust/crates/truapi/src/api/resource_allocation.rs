@@ -17,7 +17,7 @@ pub trait ResourceAllocation: Send + Sync {
     ///   resources: [
     ///     { tag: "StatementStoreAllowance" },
     ///     { tag: "BulletinAllowance" },
-    ///     { tag: "SmartContractAllowance", value: { tag: "Left", value: 0 } },
+    ///     { tag: "SmartContractAllowance", value: { tag: "Index", value: 0 } },
     ///     { tag: "AutoSigning" },
     ///   ],
     /// });

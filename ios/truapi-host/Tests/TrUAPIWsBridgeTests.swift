@@ -60,10 +60,10 @@ final class StubHostCallbacks: HostCallbacks, @unchecked Sendable {
 
     func onCoreLog(marker _: String, detail _: String) {}
     func navigateTo(url _: String) async throws {}
-    func pushNotification(request _: PushNotificationRequest) async throws -> UInt32 { 0 }
+    func pushNotification(request _: HostPushNotificationRequest) async throws -> UInt32 { 0 }
     func cancelNotification(id _: UInt32) throws {}
-    func devicePermission(request _: NativeDevicePermission) async throws -> Bool { false }
-    func remotePermission(request _: NativeRemotePermission) async throws -> Bool { false }
+    func devicePermission(request _: HostDevicePermissionRequest) async throws -> Bool { false }
+    func remotePermission(request _: RemotePermission) async throws -> Bool { false }
     func authStateChanged(state _: AuthState) {}
     func coreStorageRead(key: Data) throws -> Data? { coreStore[key] }
     func coreStorageWrite(key: Data, value: Data) throws { coreStore[key] = value }
@@ -71,10 +71,10 @@ final class StubHostCallbacks: HostCallbacks, @unchecked Sendable {
     func chainConnect(genesisHash _: Data) throws -> UInt32? { nil }
     func chainSend(connectionId _: UInt32, request _: String) throws {}
     func chainClose(connectionId _: UInt32) throws {}
-    func confirmUserAction(review _: NativeUserConfirmationReview) async throws -> Bool { false }
+    func confirmUserAction(review _: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key _: Data) async throws -> Data? { nil }
-    func currentTheme() throws -> HostTheme { .dark }
-    func featureSupported(request _: FeatureSupportedRequest) async throws -> Bool { true }
+    func currentTheme() throws -> ThemeVariant { .dark }
+    func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
     func localStorageRead(key: String) throws -> Data? { localStore[key] }
     func localStorageWrite(key: String, value: Data) throws { localStore[key] = value }
     func localStorageClear(key: String) throws { localStore[key] = nil }

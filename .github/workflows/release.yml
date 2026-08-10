@@ -31,6 +31,8 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    outputs:
+      ios_version: ${{ steps.version.outputs.ios_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,6 +56,7 @@ jobs:
           subject="${subject% (#*)}"
           release="${subject#release: }"
           packages=""
+          ios_version=""
           seen_names="|"
 
           IFS=',' read -ra targets <<< "${release}"
@@ -65,7 +68,7 @@ jobs:
             # Trim whitespace around comma-separated targets.
             target="${target#"${target%%[![:space:]]*}"}"
             target="${target%"${target##*[![:space:]]}"}"
-            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/ios-host)[[:space:]]+([^[:space:]]+)$ ]]; then
               echo "::error::Unsupported release target '${target}' in subject: ${subject}"
               exit 1
             fi
@@ -81,6 +84,14 @@ jobs:
             case "${name}" in
               @parity/truapi) path="js/packages/truapi" ;;
               @parity/truapi-host) path="js/packages/truapi-host" ;;
+              @parity/ios-host)
+                if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+                  echo "::error::Invalid iOS host version '${declared_version}'."
+                  exit 1
+                fi
+                ios_version="${declared_version}"
+                continue
+                ;;
             esac
 
             version="$(jq -r '.version' "${path}/package.json")"
@@ -101,8 +112,10 @@ jobs:
             fi
           done
 
+          echo "ios_version=${ios_version}" >> "$GITHUB_OUTPUT"
+
           if [ -z "${packages}" ]; then
-            echo "All requested packages already exist on npm; nothing to publish."
+            echo "No requested npm packages need publishing."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
             echo "proceed=true" >> "$GITHUB_OUTPUT"
@@ -164,7 +177,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          while IFS='|' read -r name path version tag; do
+          while IFS='|' read -r _name path _version _tag; do
             (cd "${path}" && npm pack --pack-destination "$GITHUB_WORKSPACE/artifacts/")
           done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
         env:
@@ -201,7 +214,7 @@ jobs:
           STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
         run: |
           set -euo pipefail
-          while IFS='|' read -r name path version tag; do
+          while IFS='|' read -r _name _path _version tag; do
             if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
               echo "Tag ${tag} already exists; skipping create."
               continue
@@ -218,7 +231,7 @@ jobs:
           STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
         run: |
           set -euo pipefail
-          while IFS='|' read -r name path version tag; do
+          while IFS='|' read -r name _path version tag; do
             tarball_name="${name#@}"
             tarball_name="${tarball_name//\//-}-${version}.tgz"
             if gh release view "${tag}" >/dev/null 2>&1; then
@@ -230,3 +243,133 @@ jobs:
                 "artifacts/${tarball_name}"
             fi
           done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
+
+  publish-ios:
+    name: Publish iOS host
+    needs: release
+    if: needs.release.outputs.ios_version != ''
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: ios-host-release
+
+      - name: Rebuild iOS host
+        run: |
+          set -euo pipefail
+          ./ios/truapi-host/scripts/rebuild.sh
+          if ! git diff --exit-code; then
+            echo "::error::The release commit has stale generated iOS host outputs. Run ios/truapi-host/scripts/rebuild.sh and commit them."
+            exit 1
+          fi
+
+      - name: Test local XCFramework in the simulator
+        run: |
+          set -euo pipefail
+          sed -i '' -E 's/^let useLocalBinary = false$/let useLocalBinary = true/' Package.swift
+          grep -q '^let useLocalBinary = true$' Package.swift
+          xcodebuild test \
+            -scheme TrUAPIHost \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+          git restore Package.swift
+
+      - name: Publish XCFramework
+        id: ios_publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IOS_RELEASE_TARGET: ${{ github.event.workflow_run.head_sha }}
+          IOS_VERSION: ${{ needs.release.outputs.ios_version }}
+        run: |
+          set -euo pipefail
+
+          read_manifest_value() {
+            sed -n -E "s/^let $1 = \"([^\"]+)\"$/\1/p" Package.swift
+          }
+
+          base_url="$(read_manifest_value publishedBinaryURL)"
+          base_checksum="$(read_manifest_value publishedBinaryChecksum)"
+          ./ios/truapi-host/scripts/publish.sh "${IOS_VERSION}"
+          published_url="$(read_manifest_value publishedBinaryURL)"
+          published_checksum="$(read_manifest_value publishedBinaryChecksum)"
+
+          {
+            echo "base_url=${base_url}"
+            echo "base_checksum=${base_checksum}"
+            echo "published_url=${published_url}"
+            echo "published_checksum=${published_checksum}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit published manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IOS_VERSION: ${{ needs.release.outputs.ios_version }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          BASE_URL: ${{ steps.ios_publish.outputs.base_url }}
+          BASE_CHECKSUM: ${{ steps.ios_publish.outputs.base_checksum }}
+          PUBLISHED_URL: ${{ steps.ios_publish.outputs.published_url }}
+          PUBLISHED_CHECKSUM: ${{ steps.ios_publish.outputs.published_checksum }}
+        run: |
+          set -euo pipefail
+
+          read_manifest_value() {
+            sed -n -E "s/^let $1 = \"([^\"]+)\"$/\1/p" Package.swift
+          }
+
+          git restore Package.swift
+          git fetch origin "${RELEASE_BRANCH}"
+          git switch --force-create ios-manifest-update "origin/${RELEASE_BRANCH}"
+
+          current_url="$(read_manifest_value publishedBinaryURL)"
+          current_checksum="$(read_manifest_value publishedBinaryChecksum)"
+          if [ "${current_url}" = "${PUBLISHED_URL}" ] && [ "${current_checksum}" = "${PUBLISHED_CHECKSUM}" ]; then
+            echo "Package.swift already references @parity/ios-host@${IOS_VERSION}."
+            exit 0
+          fi
+          if [ "${current_url}" != "${BASE_URL}" ] || [ "${current_checksum}" != "${BASE_CHECKSUM}" ]; then
+            echo "::error::Package.swift changed after the release commit; refusing to overwrite the newer manifest."
+            exit 1
+          fi
+
+          sed -i '' -E "s|^let publishedBinaryURL = .*|let publishedBinaryURL = \"${PUBLISHED_URL}\"|" Package.swift
+          sed -i '' -E "s|^let publishedBinaryChecksum = .*|let publishedBinaryChecksum = \"${PUBLISHED_CHECKSUM}\"|" Package.swift
+          grep -q '^let useLocalBinary = false$' Package.swift
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "build(ios): publish host XCFramework ${IOS_VERSION}"
+
+          gh auth setup-git
+          attempt=1
+          until git push origin "HEAD:${RELEASE_BRANCH}"
+          do
+            if [ "${attempt}" -ge 3 ]; then
+              echo "::error::Could not push the Package.swift follow-up commit."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            git fetch origin "${RELEASE_BRANCH}"
+            if ! git rebase "origin/${RELEASE_BRANCH}"; then
+              git rebase --abort
+              echo "::error::Package.swift changed while publishing; resolve the manifest update manually."
+              exit 1
+            fi
+          done

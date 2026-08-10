@@ -7,10 +7,10 @@
 #
 # Follows the repo release naming: tag "@parity/ios-host@<version>", title
 # "@parity/ios-host <version>". Creates the release if the tag does not exist
-# yet (targeting the current branch), otherwise replaces the asset on the
-# existing release. Commit the resulting Package.swift change AFTER the upload
-# succeeds — a manifest pushed before its asset is live breaks every consumer
-# resolving in that window.
+# yet (targeting IOS_RELEASE_TARGET when set, or the current branch), otherwise
+# replaces the asset on the existing release. Commit the resulting Package.swift
+# change AFTER the upload succeeds — a manifest pushed before its asset is live
+# breaks every consumer resolving in that window.
 set -eu
 
 if [ $# -ne 1 ]; then
@@ -25,9 +25,10 @@ PACKAGE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TRUAPI_ROOT="$(cd "$PACKAGE_ROOT/../.." && pwd)"
 XCFRAMEWORK="$PACKAGE_ROOT/Binaries/truapi_server.xcframework"
 BRANCH="$(git -C "$TRUAPI_ROOT" rev-parse --abbrev-ref HEAD)"
+RELEASE_TARGET="${IOS_RELEASE_TARGET:-$BRANCH}"
 
-if [ "$BRANCH" = "HEAD" ]; then
-    echo "error: detached HEAD — check out the branch to publish from" >&2
+if [ "$BRANCH" = "HEAD" ] && [ -z "${IOS_RELEASE_TARGET:-}" ]; then
+    echo "error: detached HEAD — check out the branch or set IOS_RELEASE_TARGET" >&2
     exit 65
 fi
 
@@ -53,7 +54,7 @@ if gh release view "$TAG" --repo paritytech/truapi >/dev/null 2>&1; then
 else
     gh release create "$TAG" "$ZIP" \
         --repo paritytech/truapi \
-        --target "$BRANCH" \
+        --target "$RELEASE_TARGET" \
         --title "$TITLE" \
         --latest=false \
         --notes "truapi_server.xcframework for the TrUAPIHost Swift package."

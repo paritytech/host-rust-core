@@ -1,3 +1,4 @@
+use derive_more::Display;
 use parity_scale_codec::{Decode, Encode};
 
 /// Request to write a value into local storage.
@@ -10,11 +11,14 @@ pub struct HostLocalStorageWriteRequest {
 }
 
 /// Local storage operation error.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostLocalStorageReadError {
     /// Storage quota exceeded.
+    #[display("storage quota exhausted")]
     Full,
     /// Catch-all.
+    #[display("{reason}")]
     Unknown {
         /// Human-readable failure reason.
         reason: String,
