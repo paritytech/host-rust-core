@@ -388,7 +388,9 @@ refresh_spec "paseo-next-v2-bulletin.json"    false "https://paseo-bulletin-next
 refresh_spec "paseo-next-v2-people.json"      false "https://paseo-people-next-system-rpc.polkadot.io" || true
 
 # Previewnet.
-refresh_spec "previewnet.json"                true  "https://previewnet.substrate.dev/relay/alice" || true
+refresh_spec "previewnet.json"                true  "https://previewnet.substrate.dev/relay/alice" \
+                                                    "https://previewnet.substrate.dev/relay/bob" \
+                                                    "https://previewnet.substrate.dev/relay/charlie" || true
 refresh_spec "previewnet-asset-hub.json"      false "https://previewnet.substrate.dev/asset-hub" || true
 refresh_spec "previewnet-bulletin.json"       false "https://previewnet.substrate.dev/bulletin" || true
 refresh_spec "previewnet-people.json"         false "https://previewnet.substrate.dev/people" || true
