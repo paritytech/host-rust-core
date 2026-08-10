@@ -200,7 +200,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "registerRingVrfKey failed:", result);
     /// console.log("ring VRF public key:", result.value);
     /// ```
-    #[wire(request_id = 166)]
+    #[wire(request_id = 168)]
     async fn register_ring_vrf_key(
         &self,
         _cx: &CallContext,
@@ -220,7 +220,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "listRingVrfKeys failed:", result);
     /// console.log("registered ring VRF keys:", result.value);
     /// ```
-    #[wire(request_id = 168)]
+    #[wire(request_id = 170)]
     async fn list_ring_vrf_keys(
         &self,
         _cx: &CallContext,
@@ -243,7 +243,7 @@ pub trait Account: Send + Sync {
     /// assert(result.isOk(), "ringVrfSign failed:", result);
     /// console.log("ring VRF signature:", result.value);
     /// ```
-    #[wire(request_id = 170)]
+    #[wire(request_id = 172)]
     async fn ring_vrf_sign(
         &self,
         _cx: &CallContext,

@@ -468,20 +468,20 @@ pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
 
 /// Wire discriminants for `account_register_ring_vrf_key`.
 pub const ACCOUNT_REGISTER_RING_VRF_KEY: RequestFrameIds = RequestFrameIds {
-    request_id: 166,
-    response_id: 167,
-};
-
-/// Wire discriminants for `account_list_ring_vrf_keys`.
-pub const ACCOUNT_LIST_RING_VRF_KEYS: RequestFrameIds = RequestFrameIds {
     request_id: 168,
     response_id: 169,
 };
 
-/// Wire discriminants for `account_ring_vrf_sign`.
-pub const ACCOUNT_RING_VRF_SIGN: RequestFrameIds = RequestFrameIds {
+/// Wire discriminants for `account_list_ring_vrf_keys`.
+pub const ACCOUNT_LIST_RING_VRF_KEYS: RequestFrameIds = RequestFrameIds {
     request_id: 170,
     response_id: 171,
+};
+
+/// Wire discriminants for `account_ring_vrf_sign`.
+pub const ACCOUNT_RING_VRF_SIGN: RequestFrameIds = RequestFrameIds {
+    request_id: 172,
+    response_id: 173,
 };
 
 /// The full wire table. Ordering is part of the wire protocol;
