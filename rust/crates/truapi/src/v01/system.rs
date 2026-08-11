@@ -1,9 +1,11 @@
+use derive_more::Display;
 use parity_scale_codec::{Decode, Encode};
 
 use super::common::GenericError;
 
 /// Request to query whether a feature is supported by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostFeatureSupportedRequest {
     /// Ask whether the host can interact with the chain identified by genesis hash.
     Chain {
@@ -13,11 +15,14 @@ pub enum HostFeatureSupportedRequest {
 }
 
 /// Error from [`crate::api::System::navigate_to`].
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostNavigateToError {
     /// User denied the navigation prompt.
+    #[display("navigation denied by user")]
     PermissionDenied,
     /// Catch-all.
+    #[display("{reason}")]
     Unknown {
         /// Human-readable failure reason.
         reason: String,

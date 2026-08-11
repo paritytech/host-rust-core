@@ -1,7 +1,8 @@
 #!/bin/sh
 # Regenerate the TrUAPIHost package build outputs in place:
 #   * truapi_server.xcframework (Binaries/)
-#   * uniffi-generated Swift bindings (Sources/TrUAPIHost + Sources/truapi_serverFFI)
+#   * uniffi-generated Swift bindings, one namespace per uniffi crate
+#     (Sources/TrUAPIHost + Sources/<namespace>FFI)
 #   * the bundled TS container (Sources/TrUAPIHost/Resources/truapi-container.js,
 #     built from js/container/)
 #
@@ -15,13 +16,21 @@ TRUAPI_ROOT="$(cd "$PACKAGE_ROOT/../.." && pwd)"
 make -C "$TRUAPI_ROOT" xcframework
 
 UNIFFI_OUT="$TRUAPI_ROOT/target/uniffi-swift-out"
-mkdir -p "$PACKAGE_ROOT/Sources/truapi_serverFFI/include"
-cp "$UNIFFI_OUT/truapi_server.swift" \
-    "$PACKAGE_ROOT/Sources/TrUAPIHost/truapi_server.swift"
-cp "$UNIFFI_OUT/truapi_serverFFI.h" \
-    "$PACKAGE_ROOT/Sources/truapi_serverFFI/include/truapi_serverFFI.h"
-cp "$UNIFFI_OUT/truapi_serverFFI.modulemap" \
-    "$PACKAGE_ROOT/Sources/truapi_serverFFI/include/module.modulemap"
+for namespace in truapi truapi_platform truapi_server; do
+    mkdir -p "$PACKAGE_ROOT/Sources/${namespace}FFI/include"
+    cp "$UNIFFI_OUT/${namespace}.swift" \
+        "$PACKAGE_ROOT/Sources/TrUAPIHost/${namespace}.swift"
+    cp "$UNIFFI_OUT/${namespace}FFI.h" \
+        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/${namespace}FFI.h"
+    cp "$UNIFFI_OUT/${namespace}FFI.modulemap" \
+        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/module.modulemap"
+    # UniFFI templates emit trailing spaces around optional fragments. Keep the
+    # committed bindings stable so rebuilding only records API changes.
+    perl -pi -e 's/[ \t]+$//' \
+        "$PACKAGE_ROOT/Sources/TrUAPIHost/${namespace}.swift" \
+        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/${namespace}FFI.h" \
+        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/module.modulemap"
+done
 
 rm -rf "$PACKAGE_ROOT/Binaries/truapi_server.xcframework"
 mkdir -p "$PACKAGE_ROOT/Binaries"

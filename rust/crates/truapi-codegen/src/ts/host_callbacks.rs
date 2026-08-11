@@ -40,7 +40,7 @@ pub fn generate(
     fs::create_dir_all(callbacks_output_dir)?;
     fs::create_dir_all(adapter_output_dir)?;
     let local_codec_types = collect_local_bridge_payload_types(definition);
-    let body = emit_host_callbacks(definition, codec_types, &local_codec_types)?;
+    let body = emit_host_callbacks(definition, &local_codec_types)?;
     fs::write(
         Path::new(callbacks_output_dir).join("host-callbacks.ts"),
         body,
@@ -83,7 +83,6 @@ fn emit_import_block(out: &mut String, type_only: bool, module: &str, names: &BT
 
 fn emit_host_callbacks(
     definition: &PlatformDefinition,
-    codec_types: &BTreeSet<String>,
     local_codec_types: &BTreeSet<String>,
 ) -> Result<String> {
     let mut out = String::new();
@@ -100,7 +99,7 @@ fn emit_host_callbacks(
     )
     .unwrap();
 
-    let codec_imports = collect_local_codec_imports(definition, codec_types, local_codec_types);
+    let codec_imports = collect_local_codec_imports(definition, local_codec_types);
     if !codec_imports.is_empty() || !local_codec_types.is_empty() {
         writedoc!(
             out,
@@ -1138,9 +1137,11 @@ fn collect_local_from_type(ty: &TypeRef, local: &BTreeSet<String>, out: &mut BTr
     }
 }
 
+/// Collect canonical types referenced by local codec expressions. This must
+/// include aliases: the client exports a runtime codec for every named type,
+/// even when the WASM boundary treats an alias as its primitive representation.
 fn collect_local_codec_imports(
     definition: &PlatformDefinition,
-    codec_types: &BTreeSet<String>,
     local_codec_types: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -1149,46 +1150,11 @@ fn collect_local_codec_imports(
         .iter()
         .filter(|ty| local_codec_types.contains(&ty.name))
     {
-        collect_codec_imports_from_type_def(type_def, codec_types, &mut out);
+        collect_from_type_def(type_def, &mut out);
     }
+    let local = local_names(definition);
+    out.retain(|name| !local.contains(name));
     out
-}
-
-fn collect_codec_imports_from_type_def(
-    type_def: &TypeDef,
-    codec_types: &BTreeSet<String>,
-    out: &mut BTreeSet<String>,
-) {
-    match &type_def.kind {
-        TypeDefKind::Struct(fields) => {
-            for field in fields {
-                collect_codec_imports(&field.type_ref, codec_types, out);
-            }
-        }
-        TypeDefKind::TupleStruct(fields) => {
-            for field in fields {
-                collect_codec_imports(field, codec_types, out);
-            }
-        }
-        TypeDefKind::Enum(variants) => {
-            for variant in variants {
-                match &variant.fields {
-                    VariantFields::Unit => {}
-                    VariantFields::Unnamed(types) => {
-                        for ty in types {
-                            collect_codec_imports(ty, codec_types, out);
-                        }
-                    }
-                    VariantFields::Named(fields) => {
-                        for field in fields {
-                            collect_codec_imports(&field.type_ref, codec_types, out);
-                        }
-                    }
-                }
-            }
-        }
-        TypeDefKind::Alias(type_ref) => collect_codec_imports(type_ref, codec_types, out),
-    }
 }
 
 fn emit_local_codec(type_def: &TypeDef) -> Result<String> {
@@ -1683,6 +1649,36 @@ mod tests {
         .into_iter()
         .map(str::to_string)
         .collect()
+    }
+
+    #[test]
+    fn local_codec_imports_external_alias_as_runtime_value() {
+        let definition = PlatformDefinition {
+            traits: Vec::new(),
+            types: vec![TypeDef {
+                name: "SessionUiInfo".to_string(),
+                module_path: vec!["truapi_platform".to_string()],
+                generic_params: Vec::new(),
+                kind: TypeDefKind::Struct(vec![FieldDef {
+                    name: "public_key".to_string(),
+                    type_ref: named("Bytes32"),
+                    docs: None,
+                }]),
+                docs: None,
+            }],
+            super_trait: None,
+        };
+        let local_codec_types = ["SessionUiInfo".to_string()].into_iter().collect();
+
+        let output = emit_host_callbacks(&definition, &local_codec_types)
+            .expect("host callbacks should render");
+
+        assert!(
+            output.contains("import {\n  Bytes32,\n} from \"@parity/truapi\";"),
+            "external aliases used by a local codec must be runtime imports: {output}"
+        );
+        assert!(!output.contains("import type {\n  Bytes32,"));
+        assert!(output.contains("S.Struct({publicKey: Bytes32})"));
     }
 
     fn platform_with_method(method: PlatformMethod) -> PlatformDefinition {
