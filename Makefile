@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-jni android-publish-local check-android-parity dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli headless install matrix explorer
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli headless install matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -41,6 +41,7 @@ setup: ## First-time setup: submodules, JS dependencies, generated artifacts.
 	# that only exist after codegen.sh, which also builds the packages.
 	npm ci --ignore-scripts
 	./scripts/codegen.sh
+	$(MAKE) uniffi
 	cd $(PLAYGROUND) && yarn install --frozen-lockfile
 	cd $(DOTLI) && bun install --frozen-lockfile
 	$(MAKE) dotli-link
@@ -87,7 +88,7 @@ endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
 
-uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
+uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
 	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
 	rm -rf $(UNIFFI_SWIFT_TMP)
 	mkdir -p $(UNIFFI_SWIFT_TMP)
@@ -95,13 +96,86 @@ uniffi: ## Regenerate Swift bindings from truapi-server cdylib.
 		--library $(UNIFFI_CDYLIB) \
 		--language swift \
 		--out-dir $(UNIFFI_SWIFT_TMP)
-	mkdir -p ios/truapi-host/Sources/truapi_serverFFI/include
-	cp $(UNIFFI_SWIFT_TMP)/truapi_server.swift \
-		ios/truapi-host/Sources/TrUAPIHost/truapi_server.swift
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h \
-		ios/truapi-host/Sources/truapi_serverFFI/include/truapi_serverFFI.h
-	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap \
-		ios/truapi-host/Sources/truapi_serverFFI/include/module.modulemap
+
+IOS_HOST ?= ../polkadot-app-ios-v2
+IOS_DERIVED_DATA ?= $(IOS_HOST)/build/DerivedData
+IOS_CONFIGURATION ?= Debug
+IOS_SWIFT_FLAGS ?= -DNIGHTLY -DW3S -DIOS_PASEO_E2E
+IOS_SIMULATOR_DEVICE ?=
+IOS_XCODE_DESTINATION ?= generic/platform=iOS Simulator
+IOS_BUNDLE ?= io.pcf.polkadotapp.develop
+IOS_GOOGLE_SERVICE_PLIST ?= $(IOS_HOST)/polkadot-app/GoogleService/GoogleService-Info-Release.plist
+IOS_PRODUCT_HOST ?= truapi-playground.dot
+IOS_PRODUCT_URL ?= http://localhost:3100
+IOS_CHAT_PRODUCT_DIR ?= playground
+IOS_CHAT_PRODUCT_HOST ?= truapi-playground.dot
+IOS_CHAT_PRODUCT_NAME ?= TrUAPI Playground
+IOS_CHAT_PRODUCT_URL ?= http://127.0.0.1:3100
+IOS_HOST_PLAYGROUND_DIR ?= ../host-playground
+IOS_HOST_PLAYGROUND_HOST ?= host-playground.dot
+IOS_HOST_PLAYGROUND_NAME ?= Host Playground
+IOS_HOST_PLAYGROUND_URL ?= http://127.0.0.1:3101
+IOS_APP := $(abspath $(IOS_DERIVED_DATA)/Build/Products/$(IOS_CONFIGURATION)-iphonesimulator/polkadot-app.app)
+
+ios-build: ## Rebuild the local Rust package and the TestFlight-configured iOS simulator app.
+	@test -d "$(IOS_HOST)/.git" || { \
+		echo "Missing iOS checkout at $(IOS_HOST); set IOS_HOST to polkadot-app-ios-v2"; \
+		exit 1; \
+	}
+	./ios/truapi-host/scripts/rebuild.sh
+	cd $(IOS_HOST) && \
+		TRUAPI_LOCAL_PATH="$(CURDIR)" \
+		TRUAPI_USE_LOCAL_BINARY=1 \
+		RUN_IN_CI=true xcodebuild \
+		-project polkadot-app.xcodeproj \
+		-scheme polkadot-app \
+		-configuration $(IOS_CONFIGURATION) \
+		-destination '$(IOS_XCODE_DESTINATION)' \
+		-derivedDataPath $(abspath $(IOS_DERIVED_DATA)) \
+		ARCHS=arm64 \
+		ONLY_ACTIVE_ARCH=YES \
+		BASE_SWIFT_FLAGS='$(IOS_SWIFT_FLAGS)' \
+		clean build
+	cp "$(IOS_GOOGLE_SERVICE_PLIST)" "$(IOS_APP)/GoogleService-Info.plist"
+	codesign --force --sign - --preserve-metadata=entitlements "$(IOS_APP)"
+
+ios-run: ios-build ## Build and launch the local TrUAPI playground in an iPhone simulator.
+	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
+	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
+	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
+	TRUAPI_IOS_E2E_PRODUCT_HOST="$(IOS_PRODUCT_HOST)" \
+	TRUAPI_IOS_E2E_PRODUCT_URL="$(IOS_PRODUCT_URL)" \
+	node scripts/launch-ios-playground.mjs
+
+ios-chat-run: ios-build ## Run the TrUAPI Playground Chat diagnosis in an iPhone simulator.
+	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
+	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
+	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(IOS_CHAT_PRODUCT_DIR)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST="$(IOS_CHAT_PRODUCT_HOST)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_CHAT_PRODUCT_NAME)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_CHAT_PRODUCT_URL)" \
+	node scripts/launch-ios-chat-playground.mjs
+
+ios-chat-host-playground-run: ios-build ## Verify Host Playground Chat through the workspace-linked TrUAPI client.
+	TRUAPI_IOS_E2E_DEVICE="$(IOS_SIMULATOR_DEVICE)" \
+	TRUAPI_IOS_E2E_APP="$(IOS_APP)" \
+	TRUAPI_IOS_E2E_BUNDLE="$(IOS_BUNDLE)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_DIR="$(abspath $(IOS_HOST_PLAYGROUND_DIR))" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_HOST="$(IOS_HOST_PLAYGROUND_HOST)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_NAME="$(IOS_HOST_PLAYGROUND_NAME)" \
+	TRUAPI_IOS_E2E_CHAT_PRODUCT_URL="$(IOS_HOST_PLAYGROUND_URL)" \
+	TRUAPI_IOS_E2E_CHAT_ROOM_ID="host-playground-room" \
+	TRUAPI_IOS_E2E_CHAT_MESSAGE="!flip" \
+	TRUAPI_IOS_E2E_CHAT_EXPECTED_REPLY="Flipping the coin!" \
+	TRUAPI_IOS_E2E_CHAT_DIAGNOSIS="0" \
+	TRUAPI_IOS_E2E_CHAT_EXPECTED_STARTUP_MESSAGE="" \
+	TRUAPI_IOS_E2E_CHAT_EXPECT_CUSTOM_RENDERER="1" \
+	TRUAPI_IOS_E2E_CHAT_SCREENSHOT="artifacts/host-playground-coin-flip-chat.png" \
+	TRUAPI_IOS_E2E_CHAT_TRUAPI_DIR="$(abspath js/packages/truapi)" \
+	node scripts/launch-ios-chat-playground.mjs
+
+ios-chat-all: ios-chat-run ios-chat-host-playground-run ## Run both local iOS Chat playground integrations.
 
 UNIFFI_KOTLIN_OUT := android/truapi-host/src/main/kotlin/generated
 
@@ -142,21 +216,6 @@ check: ## Full verification suite (build, fmt, clippy, test, TS tests, playgroun
 	cd $(TRUAPI_PKG) && npm run build && npm test
 	cd $(JS_PACKAGES)/truapi-host && npm install --no-fund --no-audit && npm test
 	cd $(PLAYGROUND) && yarn build && yarn lint
-
-ANDROID_SHELL := android/truapi-host/src/main/kotlin/io/parity/truapi/TrUAPIHost.kt
-ANDROID_SHELL_VENDORED := hosts/android/bindings/truapi-host/src/main/kotlin/io/parity/truapi/TrUAPIHost.kt
-
-check-android-parity: ## Verify the canonical android/truapi-host shell matches the copy vendored in the app (hosts/android). Skips if the submodule is not initialized.
-	@if [ ! -f "$(ANDROID_SHELL_VENDORED)" ]; then \
-		echo "Skipping android parity check: hosts/android not initialized (run 'git submodule update --init hosts/android')."; \
-	elif diff -q "$(ANDROID_SHELL)" "$(ANDROID_SHELL_VENDORED)" >/dev/null; then \
-		echo "android/truapi-host shell matches the vendored app copy."; \
-	else \
-		echo "ERROR: $(ANDROID_SHELL) has drifted from $(ANDROID_SHELL_VENDORED)."; \
-		echo "The host adapter shell is duplicated in truapi and the app; keep them in sync."; \
-		diff "$(ANDROID_SHELL)" "$(ANDROID_SHELL_VENDORED)" || true; \
-		exit 1; \
-	fi
 
 clean: ## Remove local build/test artifacts without deleting dependencies.
 	cargo clean
@@ -229,3 +288,30 @@ matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-repo
 
 explorer: ## Run the explorer dev server standalone at http://localhost:5181.
 	cd $(EXPLORER) && npx vite --base / --port 5181
+
+IOS_DEVICE_TARGET := aarch64-apple-ios
+IOS_SIM_TARGET := aarch64-apple-ios-sim
+# Must match the TrUAPIHost Package.swift platforms entry. Without it rustc/cc
+# stamp objects with the SDK version and every consumer link emits
+# "built for newer iOS version than being linked" warnings.
+IOS_DEPLOYMENT_TARGET := 17.0
+XCFRAMEWORK_OUT := target/truapi_server.xcframework
+XCFRAMEWORK_HEADERS := target/xcframework-headers
+
+xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator.
+	rustup target add $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
+		--features ws-bridge --target $(IOS_DEVICE_TARGET)
+	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
+		--features ws-bridge --target $(IOS_SIM_TARGET)
+	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
+	mkdir -p $(XCFRAMEWORK_HEADERS)
+	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(UNIFFI_SWIFT_TMP)/truapi_platformFFI.h \
+		$(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
+	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
+	xcodebuild -create-xcframework \
+		-library target/$(IOS_DEVICE_TARGET)/release/libtruapi_server.a \
+		-headers $(XCFRAMEWORK_HEADERS) \
+		-library target/$(IOS_SIM_TARGET)/release/libtruapi_server.a \
+		-headers $(XCFRAMEWORK_HEADERS) \
+		-output $(XCFRAMEWORK_OUT)

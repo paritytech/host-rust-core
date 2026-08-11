@@ -612,6 +612,12 @@ impl Features for CliPlatform {
     ) -> Result<api::HostFeatureSupportedResponse, api::GenericError> {
         Ok(api::HostFeatureSupportedResponse { supported: false })
     }
+
+    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, api::GenericError> {
+        Err(api::GenericError {
+            reason: "the CLI host serves no product chains".to_string(),
+        })
+    }
 }
 
 impl truapi_platform::AuthPresenter for CliPlatform {
@@ -1540,7 +1546,7 @@ mod tests {
             truapi_platform::StatementStoreProductSignReview {
                 account: api::ProductAccountId {
                     dot_ns_identifier: "myapp.dot".to_string(),
-                    derivation_index: api::DerivationIndex::Left(0),
+                    derivation_index: api::DerivationIndex::Index(0),
                 },
                 payload: vec![0x42; 128],
             },
@@ -1563,7 +1569,7 @@ mod tests {
             request: truapi::v01::HostAccountSignVrfRequest {
                 account: truapi::v01::ProductAccountId {
                     dot_ns_identifier: "target.dot".to_string(),
-                    derivation_index: truapi::v01::DerivationIndex::Right([7; 32]),
+                    derivation_index: truapi::v01::DerivationIndex::Raw([7; 32]),
                 },
                 transcript_label: b"lottery".to_vec(),
                 items: vec![truapi::v01::VrfTranscriptItem {

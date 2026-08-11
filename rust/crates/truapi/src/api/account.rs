@@ -40,7 +40,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.getAccount({
     ///   productAccountId: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     /// });
     /// assert(result.isOk(), "getAccount failed:", result);
@@ -49,7 +49,7 @@ pub trait Account: Send + Sync {
     /// const otherProduct = await truapi.account.getAccount({
     ///   productAccountId: {
     ///     dotNsIdentifier: "other-product.dot",
-    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     /// });
     /// assert(otherProduct.isOk(), "cross-product getAccount was denied or failed:", otherProduct);
@@ -67,15 +67,16 @@ pub trait Account: Send + Sync {
     /// Retrieve the contextual alias for a context and ring.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const PEOPLE_COLLECTION_ID =
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
     ///
     /// const result = await truapi.account.getAccountAlias({
-    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Left", value: 0 } },
+    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Index", value: 0 } },
     ///   ringLocation: {
-    ///     chainId: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+    ///     chainId: people.value.genesisHash,
     ///     junctions: [
     ///       { tag: "PalletInstance", value: 67 },
     ///       { tag: "CollectionId", value: PEOPLE_COLLECTION_ID },
@@ -97,15 +98,16 @@ pub trait Account: Send + Sync {
     /// Generate a ring VRF proof; the host selects the member key for the ring.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const PEOPLE_COLLECTION_ID =
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
     ///
     /// const result = await truapi.account.createAccountProof({
-    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Left", value: 0 } },
+    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Index", value: 0 } },
     ///   ringLocation: {
-    ///     chainId: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+    ///     chainId: people.value.genesisHash,
     ///     junctions: [
     ///       { tag: "PalletInstance", value: 67 },
     ///       { tag: "CollectionId", value: PEOPLE_COLLECTION_ID },
@@ -136,7 +138,7 @@ pub trait Account: Send + Sync {
     /// const result = await truapi.account.signVrf({
     ///   account: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: { tag: "Left", value: 0 },
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   transcriptLabel: "0x706f703a61697264726f70",
     ///   items: [

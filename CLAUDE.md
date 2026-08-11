@@ -19,6 +19,11 @@ js/packages/
                           `.` (shared host types), `/web` (iframe + Web
                           Worker), `/worker-runtime` (Worker entry).
                           WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+js/container/              TS lockdown container for the iOS host web view; `npm run build`
+                           bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
+ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
+                           SPM manifest at the repo root (Package.swift), rebuild via
+                           ios/truapi-host/scripts/rebuild.sh
 playground/                Next.js interactive playground; deploys to truapi-playground.dot
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
@@ -40,6 +45,11 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   rather than importing a concrete protocol version. Runtime crates may use
   `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
   payloads immediately.
+- Native bindings expose canonical Rust domain and protocol types directly.
+  Add feature-gated UniFFI derives to those types and custom conversions for
+  unsupported leaf values instead of defining parallel `Native*` mirrors.
+  Boundary-specific native types are reserved for lifecycle or callback
+  behavior that has no canonical value-type equivalent.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever
@@ -47,6 +57,14 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   `wasm32-unknown-unknown` to guard the wasm bridge and its offline subxt
   surface, but does not build or publish the packaged bundle; run `make wasm`
   locally before relying on the browser host.
+- After changing UniFFI-exposed types or native bindings, run
+  `./ios/truapi-host/scripts/rebuild.sh` and commit the generated bindings and
+  container output. To publish the binary, include `@parity/ios-host <version>`
+  in the `release:` PR title. The release workflow rebuilds and simulator-tests
+  the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
+  only after the asset is live. `publish.sh <version>` is the manual fallback.
+  Keep `useLocalBinary = false` in committed manifests; `true` is for local
+  testing against the rebuilt XCFramework only.
 
 ## Code style
 

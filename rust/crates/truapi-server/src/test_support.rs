@@ -589,7 +589,7 @@ pub(crate) fn sign_raw_legacy_response_message(
 pub(crate) fn account_id(identifier: &str, index: u32) -> v01::ProductAccountId {
     v01::ProductAccountId {
         dot_ns_identifier: identifier.to_string(),
-        derivation_index: v01::DerivationIndex::Left(index),
+        derivation_index: v01::DerivationIndex::Index(index),
     }
 }
 
@@ -604,7 +604,7 @@ pub(crate) fn raw_payload() -> v01::RawPayload {
 pub(crate) fn product_proof_context(product_id: &str) -> v01::ProductProofContext {
     v01::ProductProofContext {
         product_id: product_id.to_string(),
-        suffix: v01::DerivationIndex::Left(7),
+        suffix: v01::DerivationIndex::Index(7),
     }
 }
 
@@ -889,6 +889,16 @@ impl PlatformFeatures for StubPlatform {
         _request: v01::HostFeatureSupportedRequest,
     ) -> Result<v01::HostFeatureSupportedResponse, v01::GenericError> {
         Ok(v01::HostFeatureSupportedResponse { supported: true })
+    }
+
+    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
+        Ok(truapi_platform::HostChainSet {
+            network: "paseo".to_string(),
+            chains: vec![truapi_platform::HostChainEntry {
+                identifier: v01::ChainIdentifier::AssetHub,
+                genesis_hash: [0xaa; 32],
+            }],
+        })
     }
 }
 

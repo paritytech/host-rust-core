@@ -26,13 +26,21 @@
 
 package io.parity.truapi
 
-import uniffi.truapi_server.AuthState
+import uniffi.truapi.HostDevicePermissionRequest
+import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.HostPushNotificationRequest
+import uniffi.truapi.RemotePermission
+import uniffi.truapi.ThemeVariant
+import uniffi.truapi_platform.AuthState
+import uniffi.truapi_platform.HostChainSet
+import uniffi.truapi_platform.PermissionAuthorizationRequest
+import uniffi.truapi_platform.PermissionAuthorizationStatus
+import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
-import uniffi.truapi_server.HostTheme
-import uniffi.truapi_server.NativePermissionAuthorizationStatus
+import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.WsBridgeEndpoint
@@ -57,6 +65,18 @@ enum class PairingDeeplinkScheme {
         }
 }
 
+/** Trusted kind of executable attached to a product connection. */
+enum class ProductExecutionKind {
+    SPA,
+    CHAT;
+
+    internal fun toNative(): UniFfiProductExecutionKind =
+        when (this) {
+            SPA -> UniFfiProductExecutionKind.SPA
+            CHAT -> UniFfiProductExecutionKind.CHAT
+        }
+}
+
 /**
  * Static product and pairing config supplied before the Rust core handles
  * product calls. One core instance represents one product identity.
@@ -69,6 +89,7 @@ enum class PairingDeeplinkScheme {
  */
 data class RuntimeConfig(
     val productId: String,
+    val executionKind: ProductExecutionKind = ProductExecutionKind.SPA,
     val hostName: String,
     val hostIcon: String? = null,
     val hostVersion: String? = null,
@@ -83,6 +104,7 @@ data class RuntimeConfig(
     internal fun toNative(): UniFfiNativeRuntimeConfig =
         UniFfiNativeRuntimeConfig(
             productId = productId,
+            executionKind = executionKind.toNative(),
             hostName = hostName,
             hostIcon = hostIcon,
             hostVersion = hostVersion,
@@ -99,6 +121,7 @@ data class RuntimeConfig(
         if (this === other) return true
         if (other !is RuntimeConfig) return false
         return productId == other.productId &&
+            executionKind == other.executionKind &&
             hostName == other.hostName &&
             hostIcon == other.hostIcon &&
             hostVersion == other.hostVersion &&
@@ -116,6 +139,7 @@ data class RuntimeConfig(
 
     override fun hashCode(): Int {
         var result = productId.hashCode()
+        result = 31 * result + executionKind.hashCode()
         result = 31 * result + hostName.hashCode()
         result = 31 * result + (hostIcon?.hashCode() ?: 0)
         result = 31 * result + (hostVersion?.hashCode() ?: 0)
@@ -169,15 +193,12 @@ interface HostCoreStorage {
  * keeps the permission split explicit:
  *
  *   * [devicePermission] handles camera / mic / push prompts and similar
- *     OS-scoped grants. `request` is a SCALE-encoded
- *     `v01::HostDevicePermissionRequest`.
- *   * [remotePermission] handles per-product capability bundles requested by
- *     the application running inside the WebView. `request` is a SCALE-encoded
- *     `v01::RemotePermissionRequest`.
+ *     OS-scoped grants.
+ *   * [remotePermission] handles per-product capabilities requested by the
+ *     application running inside the WebView.
  *
- * Embedders typically wire the SCALE payloads through the generated
- * `@parity/truapi` client running on the JS side for UI rendering, then report
- * the user's decision as a `Boolean`.
+ * Embedders render the typed request values in their own UI, then report the
+ * user's decision as a `Boolean`.
  *
  * Threading: the Rust core invokes every callback on a background thread it
  * owns, never the UI (main) thread. These six each run on their own thread from
@@ -203,15 +224,15 @@ interface HostBridge {
      * block the calling thread if the user has to approve the navigation.
      */
     @Throws(HostNavigateRejection::class)
-    fun navigateTo(url: String)
+    suspend fun navigateTo(url: String)
 
     /**
-     * Deliver a push notification (SCALE-encoded `HostPushNotificationRequest`)
-     * and return the host-assigned notification id. Invoked on the dispatcher
-     * thread; marshal any UI work to the main thread and return promptly.
+     * Deliver a push notification and return the host-assigned notification
+     * id. Invoked on the dispatcher thread; marshal any UI work to the main
+     * thread and return promptly.
      */
     @Throws(HostRejection::class)
-    fun pushNotification(payload: ByteArray): UInt = 0u
+    suspend fun pushNotification(request: HostPushNotificationRequest): UInt = 0u
 
     /** Cancel a previously scheduled notification id. */
     @Throws(HostRejection::class)
@@ -224,7 +245,7 @@ interface HostBridge {
      * not stall other TrUAPI traffic.
      */
     @Throws(HostRejection::class)
-    fun devicePermission(request: ByteArray): Boolean
+    suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean
 
     /**
      * Prompt for a remote (product-scoped) permission bundle. Invoked on a
@@ -233,7 +254,7 @@ interface HostBridge {
      * TrUAPI traffic.
      */
     @Throws(HostRejection::class)
-    fun remotePermission(request: ByteArray): Boolean
+    suspend fun remotePermission(request: RemotePermission): Boolean
 
     /**
      * Observe an auth state change. The core emits states only when they
@@ -258,29 +279,36 @@ interface HostBridge {
     fun chainClose(connectionId: UInt) {}
 
     /**
-     * Confirm one user-reviewed core action. `review` is a SCALE-encoded
-     * `UserConfirmationReview`; decode it to pick the prompt (sign payload,
-     * sign raw, create transaction, account alias, resource allocation, or
-     * preimage submit). Invoked on a blocking-pool thread; present the prompt on
-     * the main thread and block the calling thread until the user decides.
+     * Confirm one user-reviewed core action; the review variant picks the
+     * prompt (sign payload, sign raw, create transaction, account alias,
+     * resource allocation, or preimage submit). Invoked on a blocking-pool
+     * thread; present the prompt on the main thread and block the calling
+     * thread until the user decides.
      */
     @Throws(HostRejection::class)
-    fun confirmUserAction(review: ByteArray): Boolean = false
+    suspend fun confirmUserAction(review: UserConfirmationReview): Boolean = false
 
     /** Return the current preimage value for [key], or null for a miss. */
     @Throws(HostRejection::class)
-    fun lookupPreimage(key: ByteArray): ByteArray? = null
+    suspend fun lookupPreimage(key: ByteArray): ByteArray? = null
 
     /** Return the current host theme. */
     @Throws(HostRejection::class)
-    fun currentTheme(): HostTheme = HostTheme.DARK
+    fun currentTheme(): ThemeVariant = ThemeVariant.DARK
 
     /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
      * return promptly.
      */
     @Throws(HostRejection::class)
-    fun featureSupported(request: ByteArray): Boolean
+    suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean
+
+    /**
+     * Enumerate the chains this host serves: its environment plus one entry
+     * per chain role. Must match exactly what [chainConnect] accepts.
+     */
+    @Throws(HostRejection::class)
+    fun supportedChains(): HostChainSet = HostChainSet(network = "", chains = emptyList())
 
     /** Product-scoped key-value storage for the Rust core. */
     val storage: HostStorage
@@ -298,19 +326,19 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun onCoreLog(marker: String, detail: String) =
         bridge.onCoreLog(marker, detail)
 
-    override fun navigateTo(url: String) =
+    override suspend fun navigateTo(url: String) =
         bridge.navigateTo(url)
 
-    override fun pushNotification(payload: ByteArray): UInt =
-        bridge.pushNotification(payload)
+    override suspend fun pushNotification(request: HostPushNotificationRequest): UInt =
+        bridge.pushNotification(request)
 
     override fun cancelNotification(id: UInt) =
         bridge.cancelNotification(id)
 
-    override fun devicePermission(request: ByteArray): Boolean =
+    override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean =
         bridge.devicePermission(request)
 
-    override fun remotePermission(request: ByteArray): Boolean =
+    override suspend fun remotePermission(request: RemotePermission): Boolean =
         bridge.remotePermission(request)
 
     override fun authStateChanged(state: AuthState) =
@@ -334,17 +362,20 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override fun chainClose(connectionId: UInt) =
         bridge.chainClose(connectionId)
 
-    override fun confirmUserAction(review: ByteArray): Boolean =
+    override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
         bridge.confirmUserAction(review)
 
-    override fun lookupPreimage(key: ByteArray): ByteArray? =
+    override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         bridge.lookupPreimage(key)
 
-    override fun currentTheme(): HostTheme =
+    override fun currentTheme(): ThemeVariant =
         bridge.currentTheme()
 
-    override fun featureSupported(request: ByteArray): Boolean =
+    override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
         bridge.featureSupported(request)
+
+    override fun supportedChains(): HostChainSet =
+        bridge.supportedChains()
 
     override fun localStorageRead(key: String): ByteArray? =
         bridge.storage.read(key)
@@ -555,12 +586,11 @@ class TrUAPIHostCore private constructor(
         inner.activateLocalSession(secret, liteUsername)
     }
 
-    /**
-     * Read a stored permission authorization status without prompting.
-     * [request] is a SCALE-encoded `PermissionAuthorizationRequest`.
-     */
+    /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)
-    fun permissionAuthorizationStatus(request: ByteArray): NativePermissionAuthorizationStatus =
+    fun permissionAuthorizationStatus(
+        request: PermissionAuthorizationRequest,
+    ): PermissionAuthorizationStatus =
         inner.permissionAuthorizationStatus(request)
 
     /**
@@ -569,14 +599,14 @@ class TrUAPIHostCore private constructor(
      */
     @Throws(HostRejection::class)
     fun setPermissionAuthorizationStatus(
-        request: ByteArray,
-        status: NativePermissionAuthorizationStatus,
+        request: PermissionAuthorizationRequest,
+        status: PermissionAuthorizationStatus,
     ) {
         inner.setPermissionAuthorizationStatus(request, status)
     }
 
     /** Push a host theme update to active TrUAPI theme subscriptions. */
-    fun notifyThemeChanged(theme: HostTheme) {
+    fun notifyThemeChanged(theme: ThemeVariant) {
         inner.notifyThemeChanged(theme)
     }
 
