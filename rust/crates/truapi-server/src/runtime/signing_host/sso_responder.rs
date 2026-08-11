@@ -872,6 +872,30 @@ pub(super) async fn allocate_statement_store_allowance(
             .await?,
     );
     let metadata = fetch_metadata(&rpc).await?;
+    let period = statement_allowance::slot::current_period(current_unix_secs()?);
+
+    // An allowance already recorded on chain is usable as it stands, so the
+    // steady state needs neither a ring proof nor a submission. Under
+    // `Increase` the caller wants an additional slot, so the scan is skipped.
+    if matches!(policy, OnExistingAllowancePolicy::Ignore)
+        && let Some(seq) = statement_allowance::slot::find_allocated_slot(
+            &rpc,
+            &metadata,
+            bandersnatch,
+            period,
+            &target,
+        )
+        .await?
+    {
+        debug!(
+            %product_id,
+            period,
+            seq,
+            "statement-store allowance already allocated"
+        );
+        return Ok(allowance.secret.to_bytes().to_vec());
+    }
+
     let chain_state = fetch_chain_state(&rpc).await?;
     let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
     let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
@@ -879,7 +903,6 @@ pub(super) async fn allocate_statement_store_allowance(
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "statement-store",
         })?;
-    let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let outcome = register_statement_account(
         &rpc,
         &metadata,

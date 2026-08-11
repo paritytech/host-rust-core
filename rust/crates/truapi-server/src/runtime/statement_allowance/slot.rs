@@ -284,6 +284,33 @@ pub async fn scan_slot_excluding(
         .ok_or_else(|| SlotError::NoFreeStatementStoreSlot { period, max }.into())
 }
 
+/// The slot `target` holds at `period`, if any. `entropy` is our bandersnatch
+/// entropy.
+///
+/// Answers only "is an allowance already in place", so unlike
+/// [`scan_slot_excluding`] it ignores free slots and a fully occupied table is
+/// not an error. Callers on a request path use it to avoid resolving a ring
+/// (which pages through `Members.RingKeys`) when no submission is needed.
+pub async fn find_allocated_slot(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    entropy: [u8; 32],
+    period: u32,
+    target: &[u8; 32],
+) -> Result<Option<u32>, StatementAllowanceError> {
+    let max = max_slots(metadata)?;
+    for seq in 0..max {
+        let alias = slot_alias(entropy, period, seq)?;
+        let key = statement_store_allowance_key(period, &alias);
+        if let Some(bytes) = rpc.get_storage(&key).await?
+            && entry_account_id(&bytes) == Some(*target)
+        {
+            return Ok(Some(seq));
+        }
+    }
+    Ok(None)
+}
+
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
 /// free counter not listed in `excluded`. `entropy` is our bandersnatch entropy.
 pub async fn scan_long_term_storage_counter_excluding(
@@ -309,7 +336,60 @@ pub async fn scan_long_term_storage_counter_excluding(
 
 #[cfg(test)]
 mod tests {
+    use subxt_rpcs::RpcClient as HostRpcClient;
+
+    use super::super::rpc::testing::ScriptedRpc;
     use super::*;
+
+    /// Fixture metadata captured from paseo-next-v2; its
+    /// `LiteStmtStoreSlotsPerPeriod` is 10.
+    const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+    const SLOTS: usize = 10;
+
+    /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
+    /// JSON storage result.
+    fn slot_entry(account: [u8; 32]) -> String {
+        format!(r#""0x{}""#, hex::encode((account, 0u32, 0u64).encode()))
+    }
+
+    /// Run `find_allocated_slot` for `[0x22; 32]` against a scripted period
+    /// whose slot occupancy is `slots`.
+    fn scripted_find(slots: &[Option<[u8; 32]>]) -> Option<u32> {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let entries: Vec<String> = slots
+            .iter()
+            .map(|slot| slot.map_or_else(|| "null".to_string(), slot_entry))
+            .collect();
+        let scripted = ScriptedRpc::new(entries.iter().map(String::as_str));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        futures::executor::block_on(find_allocated_slot(
+            &rpc,
+            &metadata,
+            [0x11; 32],
+            7,
+            &[0x22; 32],
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_empty_period_holds_no_slot() {
+        assert_eq!(scripted_find(&[None; SLOTS]), None);
+    }
+
+    #[test]
+    fn the_slot_the_target_holds_is_found() {
+        let mut slots = [None; SLOTS];
+        slots[2] = Some([0x22; 32]);
+
+        assert_eq!(scripted_find(&slots), Some(2));
+    }
+
+    #[test]
+    fn a_table_filled_by_other_accounts_is_not_an_error() {
+        assert_eq!(scripted_find(&[Some([0x99; 32]); SLOTS]), None);
+    }
 
     #[test]
     fn slot_context_layout() {
