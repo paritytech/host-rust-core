@@ -1,5 +1,19 @@
 # @parity/truapi-host
 
+## 0.5.0
+
+### Minor Changes
+
+- Host callbacks gain `supportedChains()`, returning the host's environment plus
+  one `(ChainIdentifier, genesisHash)` entry per chain role. The core answers
+  `chain.getChainInfo` (RFC 0026) from this single callback; web hosts implement
+  it on the `features` callback group.
+
+### Patch Changes
+
+- Updated dependencies
+  - @parity/truapi@0.8.0
+
 ## 0.4.0
 
 ### Minor Changes
