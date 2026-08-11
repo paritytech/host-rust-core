@@ -401,13 +401,7 @@ impl SigningHost {
         &self,
         targets: Vec<StatementRenewalTarget>,
     ) -> Result<(), String> {
-        let entropy = self.root_entropy().map_err(|err| err.to_string())?;
-        allowance_renewal::track_targets(
-            self.platform.as_ref(),
-            allowance_renewal::owner_key(&entropy)?,
-            targets,
-        )
-        .await
+        allowance_renewal::track(self, targets).await
     }
 
     /// Run one statement-store renewal pass over the tracked targets.

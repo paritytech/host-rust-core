@@ -88,7 +88,7 @@ impl LedgerEntry {
 
 /// Root public key of the identity rooted at `entropy`, used to own raw ledger
 /// entries.
-pub(super) fn owner_key(entropy: &[u8]) -> Result<[u8; 32], String> {
+fn owner_key(entropy: &[u8]) -> Result<[u8; 32], String> {
     derive_root_keypair_from_entropy(entropy)
         .map(|pair| pair.public.to_bytes())
         .map_err(|err| err.to_string())
@@ -100,12 +100,19 @@ pub(super) struct RenewalState {
     /// Serializes slot registrations between the renewal pass and on-demand
     /// allocation so both cannot race for the same free slot.
     registration_lock: Mutex<()>,
+    /// Serializes read-modify-write cycles on the ledger so a concurrent
+    /// allocation cannot drop another's entry.
+    ledger_lock: Mutex<()>,
     loop_started: AtomicBool,
 }
 
 impl RenewalState {
     pub(super) fn registration_lock(&self) -> &Mutex<()> {
         &self.registration_lock
+    }
+
+    fn ledger_lock(&self) -> &Mutex<()> {
+        &self.ledger_lock
     }
 }
 
@@ -134,11 +141,13 @@ async fn read_entries(storage: &(impl CoreStorage + ?Sized)) -> Result<Vec<Ledge
 
 /// Append `new_targets` to the ledger, preserving order and skipping entries
 /// already present.
-pub(super) async fn track_targets(
+async fn track_targets(
     storage: &(impl CoreStorage + ?Sized),
+    ledger_lock: &Mutex<()>,
     owner: [u8; 32],
     new_targets: Vec<StatementRenewalTarget>,
 ) -> Result<(), String> {
+    let _guard = ledger_lock.lock().await;
     let mut entries = read_entries(storage).await?;
     let mut changed = false;
     for target in new_targets {
@@ -206,6 +215,21 @@ fn resolve_target(
     }
 }
 
+/// Record `targets` in the ledger under the active identity.
+pub(super) async fn track(
+    signing_host: &SigningHost,
+    targets: Vec<StatementRenewalTarget>,
+) -> Result<(), String> {
+    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
+    track_targets(
+        signing_host.platform.as_ref(),
+        signing_host.renewal.ledger_lock(),
+        owner_key(&entropy)?,
+        targets,
+    )
+    .await
+}
+
 /// One renewal pass: resolve the ledger against the active session and renew
 /// every target for the current period.
 pub(super) async fn renew_now(
@@ -229,6 +253,7 @@ pub(super) async fn renew_now(
             dropped = foreign.len(),
             "pruning renewal targets promised by a previous identity"
         );
+        let _guard = signing_host.renewal.ledger_lock().lock().await;
         write_entries(storage, &owned).await?;
     }
     let targets: Vec<StatementRenewalTarget> =
@@ -399,6 +424,11 @@ mod tests {
     /// A different identity's root public key.
     const OTHER_OWNER: [u8; 32] = [2; 32];
 
+    /// A fresh ledger lock; each test drives one ledger in isolation.
+    fn lock() -> futures::lock::Mutex<()> {
+        futures::lock::Mutex::new(())
+    }
+
     /// The targets in the ledger visible to the identity rooted at `owner`.
     async fn read_targets(
         storage: &(impl CoreStorage + ?Sized),
@@ -425,6 +455,7 @@ mod tests {
         futures::executor::block_on(async {
             track_targets(
                 &storage,
+                &lock(),
                 OWNER,
                 vec![StatementRenewalTarget::WalletSso, product("a.dot")],
             )
@@ -432,6 +463,7 @@ mod tests {
             .unwrap();
             track_targets(
                 &storage,
+                &lock(),
                 OWNER,
                 vec![
                     product("a.dot"),
@@ -491,7 +523,7 @@ mod tests {
                 .write_core_storage(CoreStorageKey::StatementRenewalTargets, vec![0xff; 3])
                 .await
                 .unwrap();
-            track_targets(&storage, OWNER, vec![product("a.dot")])
+            track_targets(&storage, &lock(), OWNER, vec![product("a.dot")])
                 .await
                 .unwrap();
 
@@ -548,9 +580,14 @@ mod tests {
         };
 
         futures::executor::block_on(async {
-            track_targets(&storage, OWNER, vec![device.clone(), product("a.dot")])
-                .await
-                .unwrap();
+            track_targets(
+                &storage,
+                &lock(),
+                OWNER,
+                vec![device.clone(), product("a.dot")],
+            )
+            .await
+            .unwrap();
 
             // The recipe resolves under any identity; the raw account does not.
             assert_eq!(
@@ -573,10 +610,10 @@ mod tests {
         };
 
         futures::executor::block_on(async {
-            track_targets(&storage, OWNER, vec![device.clone()])
+            track_targets(&storage, &lock(), OWNER, vec![device.clone()])
                 .await
                 .unwrap();
-            track_targets(&storage, OTHER_OWNER, vec![device.clone()])
+            track_targets(&storage, &lock(), OTHER_OWNER, vec![device.clone()])
                 .await
                 .unwrap();
 
