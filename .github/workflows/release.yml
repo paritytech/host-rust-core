@@ -280,16 +280,15 @@ jobs:
           fi
 
       - name: Test local XCFramework in the simulator
+        env:
+          TRUAPI_USE_LOCAL_BINARY: "1"
         run: |
           set -euo pipefail
-          sed -i '' -E 's/^let useLocalBinary = false$/let useLocalBinary = true/' Package.swift
-          grep -q '^let useLocalBinary = true$' Package.swift
           xcodebuild test \
             -scheme TrUAPIHost \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
-          git restore Package.swift
 
       - name: Publish XCFramework
         id: ios_publish
