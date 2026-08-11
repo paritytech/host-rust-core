@@ -19,7 +19,7 @@ use truapi_platform::{CoreStorage, CoreStorageKey};
 use super::SigningHost;
 use super::sso_responder::current_unix_secs;
 use crate::host_logic::product_account::{
-    derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
+    derive_lite_person_ring_vrf_entropy, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
 };
 use crate::runtime::RuntimeServices;
 use crate::runtime::statement_allowance::renewal::{
@@ -56,6 +56,44 @@ pub enum StatementRenewalTarget {
     },
 }
 
+/// One persisted ledger entry.
+///
+/// A derivation recipe resolves under whatever root entropy is active, so it
+/// carries no owner and keeps working across a rotation. A raw account id does
+/// not re-derive, so it records the root public key that promised it and is
+/// ignored under any other identity: without that, a later account would spend
+/// its own slot-table capacity keeping a previous account's peer allowed.
+#[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
+struct LedgerEntry {
+    target: StatementRenewalTarget,
+    owner: Option<[u8; 32]>,
+}
+
+impl LedgerEntry {
+    /// Record `target` under `owner`, which only raw account ids retain.
+    fn new(target: StatementRenewalTarget, owner: [u8; 32]) -> Self {
+        let owner = match &target {
+            StatementRenewalTarget::Account { .. } => Some(owner),
+            StatementRenewalTarget::ProductStatementAllowance { .. }
+            | StatementRenewalTarget::WalletSso => None,
+        };
+        Self { target, owner }
+    }
+
+    /// Whether this entry belongs to the identity rooted at `owner`.
+    fn is_owned_by(&self, owner: [u8; 32]) -> bool {
+        self.owner.is_none_or(|recorded| recorded == owner)
+    }
+}
+
+/// Root public key of the identity rooted at `entropy`, used to own raw ledger
+/// entries.
+pub(super) fn owner_key(entropy: &[u8]) -> Result<[u8; 32], String> {
+    derive_root_keypair_from_entropy(entropy)
+        .map(|pair| pair.public.to_bytes())
+        .map_err(|err| err.to_string())
+}
+
 /// Renewal coordination state owned by [`SigningHost`].
 #[derive(Default)]
 pub(super) struct RenewalState {
@@ -77,9 +115,7 @@ impl RenewalState {
 /// the pass: the entries are recipes and raw account ids that
 /// [`track_targets`] rebuilds on the next allocation or pairing, so refusing to
 /// renew anything is strictly worse than starting over.
-pub(super) async fn read_targets(
-    storage: &(impl CoreStorage + ?Sized),
-) -> Result<Vec<StatementRenewalTarget>, String> {
+async fn read_entries(storage: &(impl CoreStorage + ?Sized)) -> Result<Vec<LedgerEntry>, String> {
     let Some(blob) = storage
         .read_core_storage(CoreStorageKey::StatementRenewalTargets)
         .await
@@ -87,8 +123,8 @@ pub(super) async fn read_targets(
     else {
         return Ok(Vec::new());
     };
-    match decode_targets(&blob) {
-        Ok(targets) => Ok(targets),
+    match decode_entries(&blob) {
+        Ok(entries) => Ok(entries),
         Err(reason) => {
             warn!(%reason, "discarding an undecodable renewal ledger");
             Ok(Vec::new())
@@ -100,33 +136,42 @@ pub(super) async fn read_targets(
 /// already present.
 pub(super) async fn track_targets(
     storage: &(impl CoreStorage + ?Sized),
+    owner: [u8; 32],
     new_targets: Vec<StatementRenewalTarget>,
 ) -> Result<(), String> {
-    let mut targets = read_targets(storage).await?;
+    let mut entries = read_entries(storage).await?;
     let mut changed = false;
     for target in new_targets {
-        if !targets.contains(&target) {
-            targets.push(target);
+        let entry = LedgerEntry::new(target, owner);
+        if !entries.contains(&entry) {
+            entries.push(entry);
             changed = true;
         }
     }
     if !changed {
         return Ok(());
     }
+    write_entries(storage, &entries).await
+}
+
+async fn write_entries(
+    storage: &(impl CoreStorage + ?Sized),
+    entries: &[LedgerEntry],
+) -> Result<(), String> {
     storage
-        .write_core_storage(CoreStorageKey::StatementRenewalTargets, targets.encode())
+        .write_core_storage(CoreStorageKey::StatementRenewalTargets, entries.encode())
         .await
         .map_err(|err| format!("renewal ledger write failed: {}", err.reason))
 }
 
-fn decode_targets(blob: &[u8]) -> Result<Vec<StatementRenewalTarget>, String> {
+fn decode_entries(blob: &[u8]) -> Result<Vec<LedgerEntry>, String> {
     let mut input = blob;
-    let targets = Vec::<StatementRenewalTarget>::decode(&mut input)
+    let entries = Vec::<LedgerEntry>::decode(&mut input)
         .map_err(|err| format!("invalid persisted renewal targets: {err}"))?;
     if !input.is_empty() {
         return Err("invalid persisted renewal targets: trailing bytes".to_string());
     }
-    Ok(targets)
+    Ok(entries)
 }
 
 /// Resolve a ledger entry into a concrete account for this session's entropy.
@@ -171,7 +216,23 @@ pub(super) async fn renew_now(
     let period = statement_allowance::slot::current_period(
         current_unix_secs().map_err(|err| err.to_string())?,
     );
-    let targets = read_targets(signing_host.platform.as_ref()).await?;
+    let owner = owner_key(&entropy)?;
+    let storage = signing_host.platform.as_ref();
+    let entries = read_entries(storage).await?;
+    // Entries promised by a different identity are dropped rather than renewed:
+    // they would consume this identity's slots for an account it never promised.
+    let (owned, foreign): (Vec<_>, Vec<_>) = entries
+        .into_iter()
+        .partition(|entry| entry.is_owned_by(owner));
+    if !foreign.is_empty() {
+        warn!(
+            dropped = foreign.len(),
+            "pruning renewal targets promised by a previous identity"
+        );
+        write_entries(storage, &owned).await?;
+    }
+    let targets: Vec<StatementRenewalTarget> =
+        owned.into_iter().map(|entry| entry.target).collect();
     // A target that cannot be resolved is skipped, not fatal: one malformed
     // ledger entry must not stop every other target from being renewed.
     let resolved = targets
@@ -333,6 +394,24 @@ mod tests {
         }
     }
 
+    /// Root public key standing in for the active identity.
+    const OWNER: [u8; 32] = [1; 32];
+    /// A different identity's root public key.
+    const OTHER_OWNER: [u8; 32] = [2; 32];
+
+    /// The targets in the ledger visible to the identity rooted at `owner`.
+    async fn read_targets(
+        storage: &(impl CoreStorage + ?Sized),
+        owner: [u8; 32],
+    ) -> Result<Vec<StatementRenewalTarget>, String> {
+        Ok(read_entries(storage)
+            .await?
+            .into_iter()
+            .filter(|entry| entry.is_owned_by(owner))
+            .map(|entry| entry.target)
+            .collect())
+    }
+
     fn product(product_id: &str) -> StatementRenewalTarget {
         StatementRenewalTarget::ProductStatementAllowance {
             product_id: product_id.to_string(),
@@ -346,12 +425,14 @@ mod tests {
         futures::executor::block_on(async {
             track_targets(
                 &storage,
+                OWNER,
                 vec![StatementRenewalTarget::WalletSso, product("a.dot")],
             )
             .await
             .unwrap();
             track_targets(
                 &storage,
+                OWNER,
                 vec![
                     product("a.dot"),
                     StatementRenewalTarget::Account {
@@ -364,7 +445,7 @@ mod tests {
             .unwrap();
 
             assert_eq!(
-                read_targets(&storage).await.unwrap(),
+                read_targets(&storage, OWNER).await.unwrap(),
                 vec![
                     StatementRenewalTarget::WalletSso,
                     product("a.dot"),
@@ -379,9 +460,9 @@ mod tests {
 
     #[test]
     fn ledger_rejects_trailing_bytes() {
-        let mut blob = vec![product("a.dot")].encode();
+        let mut blob = vec![LedgerEntry::new(product("a.dot"), OWNER)].encode();
         blob.push(0xff);
-        assert!(decode_targets(&blob).is_err());
+        assert!(decode_entries(&blob).is_err());
     }
 
     #[test]
@@ -397,7 +478,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(read_targets(&storage).await.unwrap(), Vec::new());
+            assert_eq!(read_targets(&storage, OWNER).await.unwrap(), Vec::new());
         });
     }
 
@@ -410,12 +491,12 @@ mod tests {
                 .write_core_storage(CoreStorageKey::StatementRenewalTargets, vec![0xff; 3])
                 .await
                 .unwrap();
-            track_targets(&storage, vec![product("a.dot")])
+            track_targets(&storage, OWNER, vec![product("a.dot")])
                 .await
                 .unwrap();
 
             assert_eq!(
-                read_targets(&storage).await.unwrap(),
+                read_targets(&storage, OWNER).await.unwrap(),
                 vec![product("a.dot")]
             );
         });
@@ -455,6 +536,67 @@ mod tests {
                 label: "wallet-sso".to_string(),
                 account_id: expected,
             }
+        );
+    }
+
+    #[test]
+    fn a_raw_account_is_hidden_from_another_identity() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, OWNER, vec![device.clone(), product("a.dot")])
+                .await
+                .unwrap();
+
+            // The recipe resolves under any identity; the raw account does not.
+            assert_eq!(
+                read_targets(&storage, OWNER).await.unwrap(),
+                vec![device, product("a.dot")]
+            );
+            assert_eq!(
+                read_targets(&storage, OTHER_OWNER).await.unwrap(),
+                vec![product("a.dot")]
+            );
+        });
+    }
+
+    #[test]
+    fn the_same_raw_account_can_be_promised_by_two_identities() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, OWNER, vec![device.clone()])
+                .await
+                .unwrap();
+            track_targets(&storage, OTHER_OWNER, vec![device.clone()])
+                .await
+                .unwrap();
+
+            // Distinct owners, so each identity renews it for itself.
+            assert_eq!(
+                read_targets(&storage, OWNER).await.unwrap(),
+                vec![device.clone()]
+            );
+            assert_eq!(
+                read_targets(&storage, OTHER_OWNER).await.unwrap(),
+                vec![device]
+            );
+        });
+    }
+
+    #[test]
+    fn owner_key_follows_the_root_entropy() {
+        assert_ne!(
+            owner_key(&[7u8; 32]).unwrap(),
+            owner_key(&[8u8; 32]).unwrap()
         );
     }
 }

@@ -919,14 +919,20 @@ pub(super) async fn allocate_statement_store_allowance(
             );
         }
     }
-    if let Err(reason) = allowance_renewal::track_targets(
-        signing_host.platform.as_ref(),
-        vec![StatementRenewalTarget::ProductStatementAllowance {
-            product_id: product_id.to_string(),
-        }],
-    )
-    .await
-    {
+    let tracked = match allowance_renewal::owner_key(&entropy) {
+        Ok(owner) => {
+            allowance_renewal::track_targets(
+                signing_host.platform.as_ref(),
+                owner,
+                vec![StatementRenewalTarget::ProductStatementAllowance {
+                    product_id: product_id.to_string(),
+                }],
+            )
+            .await
+        }
+        Err(reason) => Err(reason),
+    };
+    if let Err(reason) = tracked {
         warn!(%product_id, %reason, "failed to record statement-store renewal target");
     }
     Ok(allowance.secret.to_bytes().to_vec())
