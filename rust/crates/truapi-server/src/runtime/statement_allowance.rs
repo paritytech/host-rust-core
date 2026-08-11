@@ -173,6 +173,9 @@ pub struct ChainContext {
 /// is large, so entries are keyed by genesis hash and revalidated with
 /// `state_getRuntimeVersion` — one small request in place of a metadata
 /// download and a genesis read on every allowance call.
+///
+/// One entry per chain the host is configured for, so the map needs no eviction
+/// policy: it is bounded by that chain set, not by call volume.
 #[derive(Default)]
 pub struct ChainContextCache {
     entries: Mutex<HashMap<[u8; 32], ChainContext>>,
