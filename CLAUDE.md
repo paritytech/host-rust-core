@@ -59,7 +59,11 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   locally before relying on the browser host.
 - After changing UniFFI-exposed types or native bindings, run
   `./ios/truapi-host/scripts/rebuild.sh` and commit the generated bindings and
-  container output. To publish the binary, include `@parity/ios-host <version>`
+  container output. When only the bindings changed, `make uniffi &&
+  ./ios/truapi-host/scripts/sync-bindings.sh` does that part without Xcode. CI
+  enforces it: the `ios-bindings` job regenerates and diffs the committed
+  bindings, but compiles no Swift, so the hand-written conformers are still on
+  you. To publish the binary, include `@parity/ios-host <version>`
   in the `release:` PR title. The release workflow rebuilds and simulator-tests
   the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
   only after the asset is live. `publish.sh <version>` is the manual fallback.
