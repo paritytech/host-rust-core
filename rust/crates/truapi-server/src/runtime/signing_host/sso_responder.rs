@@ -856,8 +856,7 @@ pub(super) async fn allocate_statement_store_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
-        self, RegistrationParams, fetch_chain_state, find_including_ring,
-        register_statement_account,
+        self, RegistrationParams, find_including_ring, register_statement_account,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -871,8 +870,8 @@ pub(super) async fn allocate_statement_store_allowance(
             .client("statement-store allowance")
             .await?,
     );
-    let metadata = services
-        .metadata
+    let chain = services
+        .chain_context
         .get(&rpc, services.statement_store.genesis_hash())
         .await?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
@@ -883,7 +882,7 @@ pub(super) async fn allocate_statement_store_allowance(
     if matches!(policy, OnExistingAllowancePolicy::Ignore)
         && let Some(seq) = statement_allowance::slot::find_allocated_slot(
             &rpc,
-            &metadata,
+            &chain.metadata,
             bandersnatch,
             period,
             &target,
@@ -899,17 +898,16 @@ pub(super) async fn allocate_statement_store_allowance(
         return Ok(allowance.secret.to_bytes().to_vec());
     }
 
-    let chain_state = fetch_chain_state(&rpc).await?;
     let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
-    let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
+    let ring = find_including_ring(&rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "statement-store",
         })?;
     let outcome = register_statement_account(
         &rpc,
-        &metadata,
-        &chain_state,
+        &chain.metadata,
+        &chain.state,
         bandersnatch,
         RegistrationParams {
             target: &target,
@@ -952,8 +950,8 @@ pub(super) async fn allocate_bulletin_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, fetch_chain_state,
-        find_including_ring, wait_bulletin_authorization,
+        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_ring,
+        wait_bulletin_authorization,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -983,27 +981,27 @@ pub(super) async fn allocate_bulletin_allowance(
             .client("bulletin allowance claim")
             .await?,
     );
-    let metadata = services
-        .metadata
+    let chain = services
+        .chain_context
         .get(&people_rpc, services.statement_store.genesis_hash())
         .await?;
-    let chain_state = fetch_chain_state(&people_rpc).await?;
     let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
     let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
-    let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
+    let ring = find_including_ring(&people_rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "Bulletin",
         })?;
-    let period_duration = statement_allowance::slot::long_term_storage_period_duration(&metadata)?;
+    let period_duration =
+        statement_allowance::slot::long_term_storage_period_duration(&chain.metadata)?;
     let period = statement_allowance::slot::current_long_term_storage_period(
         current_unix_secs()?,
         period_duration,
     )?;
     let outcome = claim_long_term_storage(
         &people_rpc,
-        &metadata,
-        &chain_state,
+        &chain.metadata,
+        &chain.state,
         bandersnatch,
         &target,
         period,

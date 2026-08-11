@@ -34,9 +34,10 @@ pub(crate) struct RuntimeServices {
     pub(crate) statement_store: StatementStoreRpc,
     /// In-core Bulletin submission over the configured Bulletin chain.
     pub(crate) bulletin: BulletinRpc,
-    /// Runtime metadata shared by the native allowance paths, per chain.
+    /// Runtime metadata and chain state shared by the native allowance
+    /// paths, per chain.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) metadata: crate::runtime::statement_allowance::MetadataCache,
+    pub(crate) chain_context: crate::runtime::statement_allowance::ChainContextCache,
     /// Values from confirmed in-core submissions, served to `lookup_subscribe`
     /// until the host's content backend has them. Byte-bounded, oldest-first.
     preimage_cache: Mutex<PreimageCache>,
@@ -71,7 +72,7 @@ impl RuntimeServices {
             statement_store,
             bulletin,
             #[cfg(not(target_arch = "wasm32"))]
-            metadata: crate::runtime::statement_allowance::MetadataCache::default(),
+            chain_context: crate::runtime::statement_allowance::ChainContextCache::default(),
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
             spawner,

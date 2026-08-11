@@ -72,6 +72,14 @@ pub enum ChainStateError {
         /// Actual decoded length.
         len: usize,
     },
+    /// The connected chain is not the one the caller asked for.
+    #[error("chain reports genesis 0x{actual}, expected 0x{expected}")]
+    GenesisHashMismatch {
+        /// Genesis hash the caller asked for.
+        expected: String,
+        /// Genesis hash the connected chain reported.
+        actual: String,
+    },
     /// Runtime JSON lacked an expected u32 field.
     #[error("missing/invalid {field}")]
     MissingU32Field {
@@ -115,67 +123,17 @@ pub async fn fetch_metadata(rpc: &RpcClient) -> Result<Metadata, StatementAllowa
     }
 }
 
-/// Read the chain's current runtime spec version.
-pub async fn fetch_spec_version(rpc: &RpcClient) -> Result<u32, StatementAllowanceError> {
+/// Read the chain's runtime `(specVersion, transactionVersion)`.
+pub async fn fetch_runtime_version(rpc: &RpcClient) -> Result<(u32, u32), StatementAllowanceError> {
     let runtime = rpc.call("state_getRuntimeVersion", json!([])).await?;
-    json_u32(&runtime, "specVersion")
+    Ok((
+        json_u32(&runtime, "specVersion")?,
+        json_u32(&runtime, "transactionVersion")?,
+    ))
 }
 
-/// Metadata held for one chain, valid while its spec version is unchanged.
-struct CachedMetadata {
-    spec_version: u32,
-    metadata: Arc<Metadata>,
-}
-
-/// Runtime metadata cached per chain.
-///
-/// A full `state_getMetadata` response is large and only changes across a
-/// runtime upgrade, so entries are keyed by genesis hash and revalidated with
-/// `state_getRuntimeVersion` — one small request instead of a fresh download on
-/// every allowance call.
-#[derive(Default)]
-pub struct MetadataCache {
-    entries: Mutex<HashMap<[u8; 32], CachedMetadata>>,
-}
-
-impl MetadataCache {
-    /// Metadata for the chain at `genesis_hash`, downloaded only when no entry
-    /// matches the chain's current spec version.
-    pub async fn get(
-        &self,
-        rpc: &RpcClient,
-        genesis_hash: [u8; 32],
-    ) -> Result<Arc<Metadata>, StatementAllowanceError> {
-        let spec_version = fetch_spec_version(rpc).await?;
-        if let Some(cached) = self.cached(genesis_hash, spec_version) {
-            return Ok(cached);
-        }
-        let metadata = Arc::new(fetch_metadata(rpc).await?);
-        self.entries
-            .lock()
-            .expect("metadata cache mutex poisoned")
-            .insert(
-                genesis_hash,
-                CachedMetadata {
-                    spec_version,
-                    metadata: Arc::clone(&metadata),
-                },
-            );
-        Ok(metadata)
-    }
-
-    fn cached(&self, genesis_hash: [u8; 32], spec_version: u32) -> Option<Arc<Metadata>> {
-        self.entries
-            .lock()
-            .expect("metadata cache mutex poisoned")
-            .get(&genesis_hash)
-            .filter(|cached| cached.spec_version == spec_version)
-            .map(|cached| Arc::clone(&cached.metadata))
-    }
-}
-
-/// Fetch the chain state needed to fill the signed extensions.
-pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementAllowanceError> {
+/// Read the chain's genesis block hash.
+pub async fn fetch_genesis_hash(rpc: &RpcClient) -> Result<[u8; 32], StatementAllowanceError> {
     let genesis_hex = rpc.call("chain_getBlockHash", json!([0])).await?;
     let genesis_str = genesis_hex
         .as_str()
@@ -183,20 +141,92 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
     let genesis = hex::decode(genesis_str.strip_prefix("0x").unwrap_or(genesis_str))
         .map_err(ChainStateError::GenesisHex)?;
     let len = genesis.len();
-    let genesis_hash: [u8; 32] = genesis
+    genesis
         .try_into()
-        .map_err(|_| ChainStateError::GenesisHashLength { len })?;
+        .map_err(|_| ChainStateError::GenesisHashLength { len }.into())
+}
 
-    let runtime = rpc.call("state_getRuntimeVersion", json!([])).await?;
-    let spec_version = json_u32(&runtime, "specVersion")?;
-    let transaction_version = json_u32(&runtime, "transactionVersion")?;
-
+/// Fetch the chain state needed to fill the signed extensions.
+pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementAllowanceError> {
+    let genesis_hash = fetch_genesis_hash(rpc).await?;
+    let (spec_version, transaction_version) = fetch_runtime_version(rpc).await?;
     Ok(ChainState {
         spec_version,
         transaction_version,
         genesis_hash,
         nonce: 0,
     })
+}
+
+/// Runtime metadata and signed-extension chain state for one chain.
+#[derive(Clone)]
+pub struct ChainContext {
+    /// Decoded runtime metadata.
+    pub metadata: Arc<Metadata>,
+    /// Chain state filling the standard signed extensions.
+    pub state: ChainState,
+}
+
+/// Runtime metadata and chain state cached per chain.
+///
+/// Both are fixed for a given runtime, and a full `state_getMetadata` response
+/// is large, so entries are keyed by genesis hash and revalidated with
+/// `state_getRuntimeVersion` — one small request in place of a metadata
+/// download and a genesis read on every allowance call.
+#[derive(Default)]
+pub struct ChainContextCache {
+    entries: Mutex<HashMap<[u8; 32], ChainContext>>,
+}
+
+impl ChainContextCache {
+    /// Metadata and chain state for the chain at `genesis_hash`, read from the
+    /// chain only when no entry matches its current spec version.
+    ///
+    /// Fails when the connected chain reports a genesis hash other than
+    /// `genesis_hash`: the host has wired this client to the wrong chain, and
+    /// extrinsics built against it would be signed for a chain the caller did
+    /// not ask for.
+    pub async fn get(
+        &self,
+        rpc: &RpcClient,
+        genesis_hash: [u8; 32],
+    ) -> Result<ChainContext, StatementAllowanceError> {
+        let (spec_version, transaction_version) = fetch_runtime_version(rpc).await?;
+        if let Some(cached) = self.cached(genesis_hash, spec_version) {
+            return Ok(cached);
+        }
+        let reported = fetch_genesis_hash(rpc).await?;
+        if reported != genesis_hash {
+            return Err(ChainStateError::GenesisHashMismatch {
+                expected: hex::encode(genesis_hash),
+                actual: hex::encode(reported),
+            }
+            .into());
+        }
+        let context = ChainContext {
+            metadata: Arc::new(fetch_metadata(rpc).await?),
+            state: ChainState {
+                spec_version,
+                transaction_version,
+                genesis_hash,
+                nonce: 0,
+            },
+        };
+        self.entries
+            .lock()
+            .expect("chain context cache mutex poisoned")
+            .insert(genesis_hash, context.clone());
+        Ok(context)
+    }
+
+    fn cached(&self, genesis_hash: [u8; 32], spec_version: u32) -> Option<ChainContext> {
+        self.entries
+            .lock()
+            .expect("chain context cache mutex poisoned")
+            .get(&genesis_hash)
+            .filter(|cached| cached.state.spec_version == spec_version)
+            .cloned()
+    }
 }
 
 /// Read a u32 field from a JSON object.
@@ -675,6 +705,11 @@ mod tests {
         format!(r#""0x{}""#, hex::encode(FIXTURE))
     }
 
+    /// A `chain_getBlockHash(0)` result for `genesis_hash`.
+    fn genesis_result(genesis_hash: [u8; 32]) -> String {
+        format!(r#""0x{}""#, hex::encode(genesis_hash))
+    }
+
     /// Method names the scripted transport saw, in order.
     fn methods(scripted: &ScriptedRpc) -> Vec<String> {
         scripted
@@ -684,43 +719,46 @@ mod tests {
             .collect()
     }
 
-    /// Drive `MetadataCache::get` over `responses`, fetching each entry in
+    /// The requests one cache miss makes, in order.
+    const MISS: [&str; 3] = [
+        "state_getRuntimeVersion",
+        "chain_getBlockHash",
+        "state_getMetadata",
+    ];
+    /// The requests one cache hit makes.
+    const HIT: [&str; 1] = ["state_getRuntimeVersion"];
+
+    /// Drive `ChainContextCache::get` over `responses`, fetching each entry in
     /// `chains` in turn, and report the methods the transport saw.
     fn scripted_cache_run(responses: &[String], chains: &[[u8; 32]]) -> Vec<String> {
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
-        let cache = MetadataCache::default();
+        let cache = ChainContextCache::default();
 
         futures::executor::block_on(async {
             for genesis_hash in chains {
                 cache
                     .get(&rpc, *genesis_hash)
                     .await
-                    .expect("scripted metadata fetch succeeds");
+                    .expect("scripted chain context fetch succeeds");
             }
         });
         methods(&scripted)
     }
 
     #[test]
-    fn metadata_is_downloaded_once_per_spec_version() {
+    fn a_chain_is_read_once_per_spec_version() {
         let seen = scripted_cache_run(
             &[
                 runtime_version(1_000_000),
+                genesis_result([0xaa; 32]),
                 metadata_result(),
                 runtime_version(1_000_000),
             ],
             &[[0xaa; 32], [0xaa; 32]],
         );
 
-        assert_eq!(
-            seen,
-            [
-                "state_getRuntimeVersion",
-                "state_getMetadata",
-                "state_getRuntimeVersion",
-            ]
-        );
+        assert_eq!(seen, [MISS.as_slice(), HIT.as_slice()].concat());
     }
 
     #[test]
@@ -728,22 +766,16 @@ mod tests {
         let seen = scripted_cache_run(
             &[
                 runtime_version(1_000_000),
+                genesis_result([0xaa; 32]),
                 metadata_result(),
                 runtime_version(1_000_001),
+                genesis_result([0xaa; 32]),
                 metadata_result(),
             ],
             &[[0xaa; 32], [0xaa; 32]],
         );
 
-        assert_eq!(
-            seen,
-            [
-                "state_getRuntimeVersion",
-                "state_getMetadata",
-                "state_getRuntimeVersion",
-                "state_getMetadata",
-            ]
-        );
+        assert_eq!(seen, [MISS, MISS].concat());
     }
 
     #[test]
@@ -751,22 +783,39 @@ mod tests {
         let seen = scripted_cache_run(
             &[
                 runtime_version(1_000_000),
+                genesis_result([0xaa; 32]),
                 metadata_result(),
                 runtime_version(1_000_000),
+                genesis_result([0xbb; 32]),
                 metadata_result(),
             ],
             &[[0xaa; 32], [0xbb; 32]],
         );
 
-        assert_eq!(
-            seen,
-            [
-                "state_getRuntimeVersion",
-                "state_getMetadata",
-                "state_getRuntimeVersion",
-                "state_getMetadata",
-            ]
+        assert_eq!(seen, [MISS, MISS].concat());
+    }
+
+    #[test]
+    fn a_chain_reporting_another_genesis_is_rejected() {
+        let responses = [
+            runtime_version(1_000_000),
+            genesis_result([0xbb; 32]),
+            metadata_result(),
+        ];
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+        let cache = ChainContextCache::default();
+
+        let Err(err) = futures::executor::block_on(cache.get(&rpc, [0xaa; 32])) else {
+            panic!("a chain reporting another genesis must be rejected");
+        };
+
+        assert!(
+            err.to_string().contains("expected 0xaaaa"),
+            "unexpected error: {err}"
         );
+        // The mismatch is caught before the metadata download.
+        assert_eq!(methods(&scripted), MISS[..2]);
     }
 
     /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
