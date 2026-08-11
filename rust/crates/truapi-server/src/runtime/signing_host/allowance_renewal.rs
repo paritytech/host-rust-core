@@ -71,7 +71,12 @@ impl RenewalState {
     }
 }
 
-/// Read the renewal ledger; an absent slot is an empty ledger.
+/// Read the renewal ledger; an absent or undecodable slot is an empty ledger.
+///
+/// A ledger this build cannot decode is treated as empty rather than failing
+/// the pass: the entries are recipes and raw account ids that
+/// [`track_targets`] rebuilds on the next allocation or pairing, so refusing to
+/// renew anything is strictly worse than starting over.
 pub(super) async fn read_targets(
     storage: &(impl CoreStorage + ?Sized),
 ) -> Result<Vec<StatementRenewalTarget>, String> {
@@ -82,7 +87,13 @@ pub(super) async fn read_targets(
     else {
         return Ok(Vec::new());
     };
-    decode_targets(&blob)
+    match decode_targets(&blob) {
+        Ok(targets) => Ok(targets),
+        Err(reason) => {
+            warn!(%reason, "discarding an undecodable renewal ledger");
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// Append `new_targets` to the ledger, preserving order and skipping entries
@@ -161,10 +172,18 @@ pub(super) async fn renew_now(
         current_unix_secs().map_err(|err| err.to_string())?,
     );
     let targets = read_targets(signing_host.platform.as_ref()).await?;
+    // A target that cannot be resolved is skipped, not fatal: one malformed
+    // ledger entry must not stop every other target from being renewed.
     let resolved = targets
         .iter()
-        .map(|target| resolve_target(&entropy, target))
-        .collect::<Result<Vec<_>, String>>()?;
+        .filter_map(|target| match resolve_target(&entropy, target) {
+            Ok(resolved) => Some(resolved),
+            Err(reason) => {
+                warn!(?target, %reason, "skipping an unresolvable renewal target");
+                None
+            }
+        })
+        .collect::<Vec<_>>();
     if resolved.is_empty() {
         return Ok(StatementRenewalReport {
             period,
@@ -363,6 +382,43 @@ mod tests {
         let mut blob = vec![product("a.dot")].encode();
         blob.push(0xff);
         assert!(decode_targets(&blob).is_err());
+    }
+
+    #[test]
+    fn an_undecodable_ledger_reads_as_empty() {
+        let storage = MemStorage::default();
+
+        futures::executor::block_on(async {
+            storage
+                .write_core_storage(
+                    CoreStorageKey::StatementRenewalTargets,
+                    vec![0xff, 0xff, 0xff],
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(read_targets(&storage).await.unwrap(), Vec::new());
+        });
+    }
+
+    #[test]
+    fn tracking_over_an_undecodable_ledger_starts_a_fresh_one() {
+        let storage = MemStorage::default();
+
+        futures::executor::block_on(async {
+            storage
+                .write_core_storage(CoreStorageKey::StatementRenewalTargets, vec![0xff; 3])
+                .await
+                .unwrap();
+            track_targets(&storage, vec![product("a.dot")])
+                .await
+                .unwrap();
+
+            assert_eq!(
+                read_targets(&storage).await.unwrap(),
+                vec![product("a.dot")]
+            );
+        });
     }
 
     #[test]
