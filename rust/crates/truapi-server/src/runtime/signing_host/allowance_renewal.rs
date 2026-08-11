@@ -230,6 +230,27 @@ pub(super) async fn track(
     .await
 }
 
+/// Resolve every ledger target under `entropy`, skipping any that cannot be
+/// resolved.
+///
+/// A target is skipped rather than failing the pass: one unusable entry must
+/// not stop every other target from being renewed.
+fn resolve_targets(
+    entropy: &[u8],
+    targets: &[StatementRenewalTarget],
+) -> Vec<ResolvedRenewalTarget> {
+    targets
+        .iter()
+        .filter_map(|target| match resolve_target(entropy, target) {
+            Ok(resolved) => Some(resolved),
+            Err(reason) => {
+                warn!(?target, %reason, "skipping an unresolvable renewal target");
+                None
+            }
+        })
+        .collect()
+}
+
 /// One renewal pass: resolve the ledger against the active session and renew
 /// every target for the current period.
 pub(super) async fn renew_now(
@@ -258,18 +279,7 @@ pub(super) async fn renew_now(
     }
     let targets: Vec<StatementRenewalTarget> =
         owned.into_iter().map(|entry| entry.target).collect();
-    // A target that cannot be resolved is skipped, not fatal: one malformed
-    // ledger entry must not stop every other target from being renewed.
-    let resolved = targets
-        .iter()
-        .filter_map(|target| match resolve_target(&entropy, target) {
-            Ok(resolved) => Some(resolved),
-            Err(reason) => {
-                warn!(?target, %reason, "skipping an unresolvable renewal target");
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+    let resolved = resolve_targets(&entropy, &targets);
     if resolved.is_empty() {
         return Ok(StatementRenewalReport {
             period,
@@ -423,6 +433,94 @@ mod tests {
     const OWNER: [u8; 32] = [1; 32];
     /// A different identity's root public key.
     const OTHER_OWNER: [u8; 32] = [2; 32];
+
+    /// Yield once, so a concurrently polled task can run.
+    async fn yield_once() {
+        let mut yielded = false;
+        futures::future::poll_fn(move |cx| {
+            if yielded {
+                core::task::Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                core::task::Poll::Pending
+            }
+        })
+        .await
+    }
+
+    /// Storage that yields *after* serving a read, so a second reader observes
+    /// the same value before the first writes its update back. Without
+    /// something serializing the cycle, one update is lost.
+    #[derive(Default)]
+    struct YieldingStorage(MemStorage);
+
+    #[truapi_platform::async_trait]
+    impl CoreStorage for YieldingStorage {
+        async fn read_core_storage(
+            &self,
+            key: CoreStorageKey,
+        ) -> Result<Option<Vec<u8>>, GenericError> {
+            let value = self.0.read_core_storage(key).await;
+            yield_once().await;
+            value
+        }
+
+        async fn write_core_storage(
+            &self,
+            key: CoreStorageKey,
+            value: Vec<u8>,
+        ) -> Result<(), GenericError> {
+            self.0.write_core_storage(key, value).await
+        }
+
+        async fn clear_core_storage(&self, key: CoreStorageKey) -> Result<(), GenericError> {
+            self.0.clear_core_storage(key).await
+        }
+    }
+
+    #[test]
+    fn concurrent_tracks_do_not_drop_an_entry() {
+        let storage = YieldingStorage::default();
+        let ledger_lock = lock();
+
+        futures::executor::block_on(async {
+            let (first, second) = futures::join!(
+                track_targets(&storage, &ledger_lock, OWNER, vec![product("a.dot")]),
+                track_targets(&storage, &ledger_lock, OWNER, vec![product("b.dot")]),
+            );
+            first.unwrap();
+            second.unwrap();
+
+            let mut targets = read_targets(&storage, OWNER).await.unwrap();
+            targets.sort_by_key(|target| format!("{target:?}"));
+            assert_eq!(targets, vec![product("a.dot"), product("b.dot")]);
+        });
+    }
+
+    #[test]
+    fn an_unresolvable_target_is_skipped_not_fatal() {
+        // An all-digit product id past `u64::MAX` fails junction derivation with
+        // `NumericJunctionOutOfRange`.
+        let unresolvable = product(&"9".repeat(25));
+        let entropy = [7u8; 32];
+
+        assert!(resolve_target(&entropy, &unresolvable).is_err());
+        let targets = [unresolvable, product("a.dot")];
+
+        // Resolving strictly loses the healthy target with the broken one.
+        assert!(
+            targets
+                .iter()
+                .map(|target| resolve_target(&entropy, target))
+                .collect::<Result<Vec<_>, _>>()
+                .is_err()
+        );
+
+        let resolved = resolve_targets(&entropy, &targets);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].label, "product:a.dot");
+    }
 
     /// A fresh ledger lock; each test drives one ledger in isolation.
     fn lock() -> futures::lock::Mutex<()> {
