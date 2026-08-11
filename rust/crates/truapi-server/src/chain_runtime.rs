@@ -782,25 +782,37 @@ impl ChainRuntime {
         local_follow_id: String,
         with_runtime: bool,
     ) -> Result<String, RuntimeFailure> {
-        let local_follow_id =
-            self.resolve_local_follow_id(method, &connection.genesis_hash, &local_follow_id)?;
-        let follow_start = self
-            .follow_starts
-            .lock()
-            .get(&(connection.genesis_hash.clone(), local_follow_id.clone()))
-            .cloned();
-        if let Some(start) = follow_start {
-            start.await.map_err(|failure| failure.reclassify(method))?;
-        }
-        let requested_id = local_follow_id;
-        let local_follow_id = connection
-            .resolve_local_follow_id(&requested_id)
-            .ok_or_else(|| {
-                RuntimeFailure::host_failure(
+        // The connection owns the sticky alias-to-transport binding, so it
+        // resolves first and always sees the alias the caller asked for. It can
+        // only answer once the follow exists, so a miss falls back to this
+        // chain's pending intent, waits for that setup, and lets the connection
+        // bind the alias afterwards.
+        let local_follow_id = match connection.resolve_local_follow_id(&local_follow_id) {
+            Some(resolved) => resolved,
+            None => {
+                let pending_id = self.resolve_local_follow_id(
                     method,
-                    format!("unknown follow subscription id {requested_id:?}"),
-                )
-            })?;
+                    &connection.genesis_hash,
+                    &local_follow_id,
+                )?;
+                let follow_start = self
+                    .follow_starts
+                    .lock()
+                    .get(&(connection.genesis_hash.clone(), pending_id.clone()))
+                    .cloned();
+                if let Some(start) = follow_start {
+                    start.await.map_err(|failure| failure.reclassify(method))?;
+                }
+                connection
+                    .resolve_local_follow_id(&local_follow_id)
+                    .ok_or_else(|| {
+                        RuntimeFailure::host_failure(
+                            method,
+                            format!("unknown follow subscription id {local_follow_id:?}"),
+                        )
+                    })?
+            }
+        };
         let remote_follow_id = connection
             .require_remote_follow(method, local_follow_id.clone())
             .await?;
@@ -2115,6 +2127,84 @@ mod tests {
         let sent = provider.sent.lock().unwrap().clone();
         assert_eq!(sent.len(), 2);
         assert!(sent[1].contains("chainHead_v1_header"));
+    }
+
+    #[test]
+    fn opening_a_second_follow_keeps_an_established_alias_working() {
+        let follows_started = Arc::new(AtomicUsize::new(0));
+        let script_follows = follows_started.clone();
+        let provider = Arc::new(ScriptedProvider::new(move |request| {
+            let id = extract_id(request).unwrap();
+            if request.contains("chainHead_v1_follow") {
+                let index = script_follows.fetch_add(1, Ordering::SeqCst);
+                Some(format!(
+                    r#"{{"jsonrpc":"2.0","id":"{id}","result":"REMOTE-FOLLOW-{index}"}}"#
+                ))
+            } else if request.contains("chainHead_v1_header") {
+                Some(format!(
+                    r#"{{"jsonrpc":"2.0","id":"{id}","result":"0xdeadbeef"}}"#
+                ))
+            } else {
+                None
+            }
+        }));
+        let runtime = ChainRuntime::new(provider.clone(), spawner_for_tests());
+        let follow_request = || RemoteChainHeadFollowRequest {
+            genesis_hash: vec![0u8; 32],
+            with_runtime: false,
+        };
+        let header_request = |follow_subscription_id: &str| RemoteChainHeadHeaderRequest {
+            genesis_hash: vec![0u8; 32],
+            follow_subscription_id: follow_subscription_id.to_string(),
+            hash: vec![1u8; 32],
+        };
+        let follows_sent = |sent: &[String], count: usize| {
+            sent.iter()
+                .filter(|request| request.contains("chainHead_v1_follow"))
+                .count()
+                == count
+        };
+
+        let _first_follow =
+            runtime.remote_chain_head_follow("c1:follow-one".to_string(), follow_request());
+        wait_for_sent(&provider, |sent| follows_sent(sent, 1));
+        futures::executor::block_on(
+            runtime.remote_chain_head_header(header_request("c1:follow_0")),
+        )
+        .expect("the first alias resolves while one follow is live");
+
+        // Tarik's case: a second follow makes the pending-intent lookup
+        // ambiguous, which must not strand the alias that already works.
+        let _second_follow =
+            runtime.remote_chain_head_follow("c1:follow-two".to_string(), follow_request());
+        wait_for_sent(&provider, |sent| follows_sent(sent, 2));
+        futures::executor::block_on(
+            runtime.remote_chain_head_header(header_request("c1:follow_0")),
+        )
+        .expect("the established alias survives a second follow on the same chain");
+        futures::executor::block_on(
+            runtime.remote_chain_head_header(header_request("c1:follow_1")),
+        )
+        .expect("the second alias binds to the remaining follow");
+
+        let headers: Vec<Value> = provider
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.contains("chainHead_v1_header"))
+            .map(|request| serde_json::from_str(request).unwrap())
+            .collect();
+        assert_eq!(headers.len(), 3);
+        assert_eq!(headers[0]["params"][0], "REMOTE-FOLLOW-0");
+        assert_eq!(
+            headers[1]["params"][0], "REMOTE-FOLLOW-0",
+            "the established alias stayed bound to its own follow",
+        );
+        assert_eq!(
+            headers[2]["params"][0], "REMOTE-FOLLOW-1",
+            "the new alias bound to the second follow",
+        );
     }
 
     #[test]
