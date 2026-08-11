@@ -152,9 +152,17 @@ pub async fn renew_targets(
 pub fn next_tick_delay(now_seconds: u64) -> Duration {
     let next_boundary =
         (now_seconds / STATEMENT_STORE_PERIOD_SECONDS + 1) * STATEMENT_STORE_PERIOD_SECONDS;
-    let until_after_boundary =
-        Duration::from_secs(next_boundary - now_seconds) + PERIOD_BOUNDARY_MARGIN;
-    until_after_boundary.min(MAX_TICK_INTERVAL)
+    let until_boundary = next_boundary - now_seconds;
+    let until_after_boundary = Duration::from_secs(until_boundary) + PERIOD_BOUNDARY_MARGIN;
+    // Once the boundary is within an hour, wait for it plus the margin rather
+    // than capping: a capped tick can land inside the margin, where the local
+    // clock reports the new period but the chain has not rotated into it, and
+    // the pass would scan slots for a period the chain does not agree on.
+    if MAX_TICK_INTERVAL.as_secs() >= until_boundary {
+        until_after_boundary
+    } else {
+        MAX_TICK_INTERVAL
+    }
 }
 
 fn log_target_result(
@@ -252,6 +260,30 @@ mod tests {
         assert_eq!(
             next_tick_delay(just_before_boundary),
             Duration::from_secs(10 + 120)
+        );
+    }
+
+    #[test]
+    fn tick_delay_never_lands_inside_the_post_boundary_margin() {
+        let boundary = 86_400 * 20_001;
+        // Every start in the last two hours before a boundary.
+        for offset in 1..=7_200 {
+            let now = boundary - offset;
+            let landing = now + next_tick_delay(now).as_secs();
+            assert!(
+                landing < boundary || landing >= boundary + PERIOD_BOUNDARY_MARGIN.as_secs(),
+                "tick from {now} lands at {landing}, inside the margin after {boundary}"
+            );
+        }
+    }
+
+    #[test]
+    fn tick_delay_waits_for_the_boundary_once_it_is_within_an_hour() {
+        let boundary = 86_400 * 20_001;
+        // Exactly one hour out, the cap used to land the tick on the boundary.
+        assert_eq!(
+            next_tick_delay(boundary - 3_600),
+            Duration::from_secs(3_600) + PERIOD_BOUNDARY_MARGIN
         );
     }
 
