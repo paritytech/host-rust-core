@@ -15,8 +15,10 @@ use tracing::{debug, info, warn};
 use super::extension::{ChainState, Metadata};
 use super::ring::RingParams;
 use super::rpc::RpcClient;
-use super::slot::STATEMENT_STORE_PERIOD_SECONDS;
-use super::{RegistrationOutcome, RegistrationParams, register_statement_account};
+use super::slot::{STATEMENT_STORE_PERIOD_SECONDS, SlotError};
+use super::{
+    RegistrationOutcome, RegistrationParams, StatementAllowanceError, register_statement_account,
+};
 
 /// Cap between renewal ticks, mirroring the on-chain grace period after a
 /// period boundary.
@@ -24,6 +26,28 @@ const MAX_TICK_INTERVAL: Duration = Duration::from_secs(3_600);
 /// Margin after a period boundary before the boundary tick fires, so the
 /// chain has rotated to the new period by the time we scan slots.
 const PERIOD_BOUNDARY_MARGIN: Duration = Duration::from_secs(120);
+
+/// Why one target's renewal failed, and whether the host had no slot left.
+///
+/// The distinction drives the rest of the pass, so it is read off the typed
+/// error rather than its rendered text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenewalFailure {
+    reason: String,
+    slots_exhausted: bool,
+}
+
+impl From<StatementAllowanceError> for RenewalFailure {
+    fn from(err: StatementAllowanceError) -> Self {
+        Self {
+            slots_exhausted: matches!(
+                err,
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { .. })
+            ),
+            reason: err.to_string(),
+        }
+    }
+}
 
 /// One resolved renewal target: account id plus a label for reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,10 +135,10 @@ pub async fn renew_targets(
                 },
             )
             .await
-            .map_err(|err| err.to_string())
+            .map_err(RenewalFailure::from)
         };
         log_target_result(period, &target.label, &result);
-        let exhausted = matches!(&result, Err(reason) if is_slot_exhaustion(reason));
+        let exhausted = matches!(&result, Err(failure) if failure.slots_exhausted);
         results.push(result);
         if exhausted {
             break;
@@ -133,7 +157,11 @@ pub fn next_tick_delay(now_seconds: u64) -> Duration {
     until_after_boundary.min(MAX_TICK_INTERVAL)
 }
 
-fn log_target_result(period: u32, label: &str, result: &Result<RegistrationOutcome, String>) {
+fn log_target_result(
+    period: u32,
+    label: &str,
+    result: &Result<RegistrationOutcome, RenewalFailure>,
+) {
     match result {
         Ok(RegistrationOutcome::Registered {
             block_hash, seq, ..
@@ -144,7 +172,9 @@ fn log_target_result(period: u32, label: &str, result: &Result<RegistrationOutco
                 label, seq, "statement-store allowance already fresh"
             );
         }
-        Err(reason) => warn!(period, label, %reason, "statement-store renewal failed"),
+        Err(failure) => {
+            warn!(period, label, reason = %failure.reason, "statement-store renewal failed");
+        }
     }
 }
 
@@ -153,7 +183,7 @@ fn log_target_result(period: u32, label: &str, result: &Result<RegistrationOutco
 fn fold_outcomes(
     period: u32,
     targets: &[ResolvedRenewalTarget],
-    results: Vec<Result<RegistrationOutcome, String>>,
+    results: Vec<Result<RegistrationOutcome, RenewalFailure>>,
 ) -> StatementRenewalReport {
     let mut slots_exhausted = false;
     let mut results = results.into_iter();
@@ -167,11 +197,11 @@ fn fold_outcomes(
                 Some(Ok(RegistrationOutcome::AlreadyAllocated { seq })) => {
                     TargetRenewalStatus::AlreadyAllocated { seq }
                 }
-                Some(Err(reason)) => {
-                    if is_slot_exhaustion(&reason) {
-                        slots_exhausted = true;
+                Some(Err(failure)) => {
+                    slots_exhausted |= failure.slots_exhausted;
+                    TargetRenewalStatus::Failed {
+                        reason: failure.reason,
                     }
-                    TargetRenewalStatus::Failed { reason }
                 }
                 None => TargetRenewalStatus::SkippedExhausted,
             };
@@ -185,13 +215,23 @@ fn fold_outcomes(
     }
 }
 
-fn is_slot_exhaustion(reason: &str) -> bool {
-    reason.contains("no free StatementStore slot")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The failure a slot-exhausted registration produces.
+    fn exhausted_failure() -> RenewalFailure {
+        StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period: 7, max: 8 })
+            .into()
+    }
+
+    #[test]
+    fn only_a_missing_slot_counts_as_exhaustion() {
+        assert!(exhausted_failure().slots_exhausted);
+
+        let other: RenewalFailure = StatementAllowanceError::BulletinAuthorizationTimeout.into();
+        assert!(!other.slots_exhausted);
+    }
 
     fn target(label: &str) -> ResolvedRenewalTarget {
         ResolvedRenewalTarget {
@@ -228,7 +268,10 @@ mod tests {
             &targets,
             vec![
                 Ok(RegistrationOutcome::AlreadyAllocated { seq: 1 }),
-                Err("rpc timeout".to_string()),
+                Err(RenewalFailure {
+                    reason: "rpc timeout".to_string(),
+                    slots_exhausted: false,
+                }),
                 Ok(RegistrationOutcome::Registered {
                     block_hash: "0xabc".to_string(),
                     seq: 2,
@@ -272,7 +315,7 @@ mod tests {
             &targets,
             vec![
                 Ok(RegistrationOutcome::AlreadyAllocated { seq: 0 }),
-                Err("no free StatementStore slot in period 7 (max 8)".to_string()),
+                Err(exhausted_failure()),
             ],
         );
         assert_eq!(
@@ -287,7 +330,7 @@ mod tests {
                     (
                         "b".to_string(),
                         TargetRenewalStatus::Failed {
-                            reason: "no free StatementStore slot in period 7 (max 8)".to_string()
+                            reason: exhausted_failure().reason
                         }
                     ),
                     ("c".to_string(), TargetRenewalStatus::SkippedExhausted),
