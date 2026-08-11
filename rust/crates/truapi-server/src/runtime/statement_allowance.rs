@@ -13,6 +13,8 @@ pub mod ring;
 pub mod rpc;
 pub mod slot;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::FutureExt;
@@ -110,6 +112,65 @@ pub async fn fetch_metadata(rpc: &RpcClient) -> Result<Metadata, StatementAllowa
     } else {
         let inner = Vec::<u8>::decode(&mut &bytes[..]).map_err(MetadataError::OpaqueMetadata)?;
         Metadata::decode(&inner)
+    }
+}
+
+/// Read the chain's current runtime spec version.
+pub async fn fetch_spec_version(rpc: &RpcClient) -> Result<u32, StatementAllowanceError> {
+    let runtime = rpc.call("state_getRuntimeVersion", json!([])).await?;
+    json_u32(&runtime, "specVersion")
+}
+
+/// Metadata held for one chain, valid while its spec version is unchanged.
+struct CachedMetadata {
+    spec_version: u32,
+    metadata: Arc<Metadata>,
+}
+
+/// Runtime metadata cached per chain.
+///
+/// A full `state_getMetadata` response is large and only changes across a
+/// runtime upgrade, so entries are keyed by genesis hash and revalidated with
+/// `state_getRuntimeVersion` — one small request instead of a fresh download on
+/// every allowance call.
+#[derive(Default)]
+pub struct MetadataCache {
+    entries: Mutex<HashMap<[u8; 32], CachedMetadata>>,
+}
+
+impl MetadataCache {
+    /// Metadata for the chain at `genesis_hash`, downloaded only when no entry
+    /// matches the chain's current spec version.
+    pub async fn get(
+        &self,
+        rpc: &RpcClient,
+        genesis_hash: [u8; 32],
+    ) -> Result<Arc<Metadata>, StatementAllowanceError> {
+        let spec_version = fetch_spec_version(rpc).await?;
+        if let Some(cached) = self.cached(genesis_hash, spec_version) {
+            return Ok(cached);
+        }
+        let metadata = Arc::new(fetch_metadata(rpc).await?);
+        self.entries
+            .lock()
+            .expect("metadata cache mutex poisoned")
+            .insert(
+                genesis_hash,
+                CachedMetadata {
+                    spec_version,
+                    metadata: Arc::clone(&metadata),
+                },
+            );
+        Ok(metadata)
+    }
+
+    fn cached(&self, genesis_hash: [u8; 32], spec_version: u32) -> Option<Arc<Metadata>> {
+        self.entries
+            .lock()
+            .expect("metadata cache mutex poisoned")
+            .get(&genesis_hash)
+            .filter(|cached| cached.spec_version == spec_version)
+            .map(|cached| Arc::clone(&cached.metadata))
     }
 }
 
@@ -601,6 +662,110 @@ mod tests {
         assert_eq!(
             BulletinAuthorizationScope::decode(&mut encoded.as_slice()).unwrap(),
             scope
+        );
+    }
+
+    /// A `state_getRuntimeVersion` result for `spec_version`.
+    fn runtime_version(spec_version: u32) -> String {
+        format!(r#"{{"specVersion":{spec_version},"transactionVersion":1}}"#)
+    }
+
+    /// The fixture metadata as a `state_getMetadata` hex result.
+    fn metadata_result() -> String {
+        format!(r#""0x{}""#, hex::encode(FIXTURE))
+    }
+
+    /// Method names the scripted transport saw, in order.
+    fn methods(scripted: &ScriptedRpc) -> Vec<String> {
+        scripted
+            .calls()
+            .into_iter()
+            .map(|(method, _)| method)
+            .collect()
+    }
+
+    /// Drive `MetadataCache::get` over `responses`, fetching each entry in
+    /// `chains` in turn, and report the methods the transport saw.
+    fn scripted_cache_run(responses: &[String], chains: &[[u8; 32]]) -> Vec<String> {
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+        let cache = MetadataCache::default();
+
+        futures::executor::block_on(async {
+            for genesis_hash in chains {
+                cache
+                    .get(&rpc, *genesis_hash)
+                    .await
+                    .expect("scripted metadata fetch succeeds");
+            }
+        });
+        methods(&scripted)
+    }
+
+    #[test]
+    fn metadata_is_downloaded_once_per_spec_version() {
+        let seen = scripted_cache_run(
+            &[
+                runtime_version(1_000_000),
+                metadata_result(),
+                runtime_version(1_000_000),
+            ],
+            &[[0xaa; 32], [0xaa; 32]],
+        );
+
+        assert_eq!(
+            seen,
+            [
+                "state_getRuntimeVersion",
+                "state_getMetadata",
+                "state_getRuntimeVersion",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_spec_version_bump_refreshes_the_entry() {
+        let seen = scripted_cache_run(
+            &[
+                runtime_version(1_000_000),
+                metadata_result(),
+                runtime_version(1_000_001),
+                metadata_result(),
+            ],
+            &[[0xaa; 32], [0xaa; 32]],
+        );
+
+        assert_eq!(
+            seen,
+            [
+                "state_getRuntimeVersion",
+                "state_getMetadata",
+                "state_getRuntimeVersion",
+                "state_getMetadata",
+            ]
+        );
+    }
+
+    #[test]
+    fn chains_do_not_share_a_cache_entry() {
+        let seen = scripted_cache_run(
+            &[
+                runtime_version(1_000_000),
+                metadata_result(),
+                runtime_version(1_000_000),
+                metadata_result(),
+            ],
+            &[[0xaa; 32], [0xbb; 32]],
+        );
+
+        assert_eq!(
+            seen,
+            [
+                "state_getRuntimeVersion",
+                "state_getMetadata",
+                "state_getRuntimeVersion",
+                "state_getMetadata",
+            ]
         );
     }
 

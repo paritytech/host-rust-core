@@ -856,7 +856,7 @@ pub(super) async fn allocate_statement_store_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
-        self, RegistrationParams, fetch_chain_state, fetch_metadata, find_including_ring,
+        self, RegistrationParams, fetch_chain_state, find_including_ring,
         register_statement_account,
     };
 
@@ -871,7 +871,10 @@ pub(super) async fn allocate_statement_store_allowance(
             .client("statement-store allowance")
             .await?,
     );
-    let metadata = fetch_metadata(&rpc).await?;
+    let metadata = services
+        .metadata
+        .get(&rpc, services.statement_store.genesis_hash())
+        .await?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
 
     // An allowance already recorded on chain is usable as it stands, so the
@@ -949,7 +952,7 @@ pub(super) async fn allocate_bulletin_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, fetch_chain_state, fetch_metadata,
+        self, claim_long_term_storage, fetch_bulletin_allowance, fetch_chain_state,
         find_including_ring, wait_bulletin_authorization,
     };
 
@@ -980,7 +983,10 @@ pub(super) async fn allocate_bulletin_allowance(
             .client("bulletin allowance claim")
             .await?,
     );
-    let metadata = fetch_metadata(&people_rpc).await?;
+    let metadata = services
+        .metadata
+        .get(&people_rpc, services.statement_store.genesis_hash())
+        .await?;
     let chain_state = fetch_chain_state(&people_rpc).await?;
     let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
     let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
