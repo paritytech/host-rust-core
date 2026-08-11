@@ -1020,7 +1020,7 @@ public convenience init() {
      * `listener` until the connection closes.
      */
 open func connect(genesisHash: Data, listener: ChainMessageListener)throws  -> ChainConnection  {
-    return try  FfiConverterTypeChainConnection_lift(try rustCallWithError(FfiConverterTypeProviderError_lift) {
+    return try  FfiConverterTypeChainConnection_lift(try rustCallWithError(FfiConverterTypeChainProviderError_lift) {
         uniffiCallStatus in
     uniffi_truapi_provider_fn_method_chainprovider_connect(
             self.uniffiCloneHandle(),
@@ -1082,7 +1082,7 @@ public func FfiConverterTypeChainProvider_lower(_ value: ChainProvider) -> UInt6
  * Errors surfaced to the foreign caller.
  */
 public 
-enum ProviderError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+enum ChainProviderError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -1111,16 +1111,16 @@ enum ProviderError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError 
 }
 
 #if compiler(>=6)
-extension ProviderError: Sendable {}
+extension ChainProviderError: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeProviderError: FfiConverterRustBuffer {
-    typealias SwiftType = ProviderError
+public struct FfiConverterTypeChainProviderError: FfiConverterRustBuffer {
+    typealias SwiftType = ChainProviderError
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProviderError {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChainProviderError {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
@@ -1136,7 +1136,7 @@ public struct FfiConverterTypeProviderError: FfiConverterRustBuffer {
         }
     }
 
-    public static func write(_ value: ProviderError, into buf: inout [UInt8]) {
+    public static func write(_ value: ChainProviderError, into buf: inout [UInt8]) {
         switch value {
 
         
@@ -1159,15 +1159,15 @@ public struct FfiConverterTypeProviderError: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeProviderError_lift(_ buf: RustBuffer) throws -> ProviderError {
-    return try FfiConverterTypeProviderError.lift(buf)
+public func FfiConverterTypeChainProviderError_lift(_ buf: RustBuffer) throws -> ChainProviderError {
+    return try FfiConverterTypeChainProviderError.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeProviderError_lower(_ value: ProviderError) -> RustBuffer {
-    return FfiConverterTypeProviderError.lower(value)
+public func FfiConverterTypeChainProviderError_lower(_ value: ChainProviderError) -> RustBuffer {
+    return FfiConverterTypeChainProviderError.lower(value)
 }
 
 private enum InitializationResult {
@@ -1197,7 +1197,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_closed() != 39748) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_provider_checksum_method_chainprovider_connect() != 24258) {
+    if (uniffi_truapi_provider_checksum_method_chainprovider_connect() != 16550) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_provider_checksum_constructor_chainprovider_new() != 37203) {

@@ -58,7 +58,7 @@ const CATALOG: &[NetworkDef] = &[
             statement_protocol: false,
         },
         assethub: ChainDef {
-            genesis_hex: "0xbf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f",
+            genesis_hex: "0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
             spec: include_str!("../networks/paseo-next-v2-asset-hub.json"),
             statement_protocol: false,
         },
@@ -68,7 +68,7 @@ const CATALOG: &[NetworkDef] = &[
             statement_protocol: false,
         },
         people: ChainDef {
-            genesis_hex: "0xc5af1826b31493f08b7e2a823842f98575b806a784126f28da9608c68665afa5",
+            genesis_hex: "0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
             spec: include_str!("../networks/paseo-next-v2-people.json"),
             statement_protocol: true,
         },

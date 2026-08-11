@@ -43,7 +43,7 @@ Everything is generated from [`ffi.rs`](../../rust/crates/truapi-provider/src/ff
 - `ChainProvider` - construct **one per process** and share it. Every connection runs on the single embedded light client, so they share sync, peers, and warm state while keeping their own request queue and response stream. `connect(genesisHash, listener)` resolves the network from the bundled catalog (relay wiring and statement-store placement included), so the 32-byte genesis hash is the only argument.
 - `ChainMessageListener` - the host implements it; `onMessage(message)` receives each JSON-RPC response and notification, `onClosed()` fires once the stream ends.
 - `ChainConnection` - `send(request)` queues a request, `close()` tears the connection down.
-- `ProviderError` - `Connect` when the genesis is outside the catalog or the transport fails, `BadGenesis` when the hash is not 32 bytes.
+- `ChainProviderError` - `Connect` when the genesis is outside the catalog or the transport fails, `BadGenesis` when the hash is not 32 bytes.
 
 ## Architecture
 

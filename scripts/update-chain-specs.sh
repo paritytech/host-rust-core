@@ -22,6 +22,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SPECS_DIR="$PROJECT_DIR/rust/crates/truapi-provider/networks"
 
+# Each refresh_spec call is `|| true` so one network's outage cannot block the
+# others, and that disables `set -e` for the whole function body. Every failure
+# inside it therefore has to be checked by hand, starting with the tools it needs:
+# without this, a missing `node` reports every spec as refreshed while writing
+# nothing.
+for tool in node jq curl; do
+    command -v "$tool" >/dev/null || {
+        echo "error: $tool is required but not on PATH" >&2
+        exit 1
+    }
+done
+
 # Timeout (seconds) for all curl calls.
 TIMEOUT=30
 
@@ -351,7 +363,7 @@ refresh_spec() {
   fi
 
   # lightSyncState can be hundreds of KB, so it goes via stdin; the small state root goes via env.
-  echo "$light_sync_state" | STATE_ROOT="$state_root" \
+  if ! echo "$light_sync_state" | STATE_ROOT="$state_root" \
     node -e '
       const fs = require("fs");
       let stdin = "";
@@ -365,12 +377,21 @@ refresh_spec() {
         else delete spec.lightSyncState;
         fs.writeFileSync(specPath, JSON.stringify(spec));
       });
-    ' "$SPECS_DIR/$spec_file"
+    ' "$SPECS_DIR/$spec_file"; then
+    echo "  ERROR: failed to write $spec_file; leaving it alone."
+    INTEGRITY_FAILURES=$((INTEGRITY_FAILURES + 1))
+    return 1
+  fi
 
-  # Health-check bootNodes only when the chain actually advertises some.
+  # Health-check bootNodes only when the chain actually advertises some. A failure
+  # here leaves the already-written genesis and checkpoint in place, so it is
+  # reported without discarding them.
   if [ "$(echo "$bootnodes" | jq 'length')" -gt 0 ]; then
-    BOOTNODES="$bootnodes" node -e "$BOOTNODES_JS" "$SPECS_DIR/$spec_file"
-    fields+=" + bootNodes"
+    if BOOTNODES="$bootnodes" node -e "$BOOTNODES_JS" "$SPECS_DIR/$spec_file"; then
+      fields+=" + bootNodes"
+    else
+      echo "  WARNING: the bootnode health check failed; $spec_file keeps its existing bootnodes."
+    fi
   fi
 
   echo "  Updated $spec_file: $fields"

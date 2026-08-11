@@ -6,6 +6,11 @@ description = "Network provider backends for ChainProvider: remote WebSocket JSO
 license = "MIT AND Apache-2.0"
 
 [lib]
+# All three are load-bearing, one per artifact this crate ships as: `rlib` for
+# the workspace, its tests and examples; `cdylib` for the wasm-bindgen bundle and
+# the Android JNI library; `staticlib` for the iOS xcframework. Cargo has no way
+# to select these per target, so every build emits all three. Only the linker
+# step for the artifact being built actually consumes one.
 crate-type = ["rlib", "cdylib", "staticlib"]
 
 # Builds the uniffi-bindgen binary used to generate the Swift bindings.
