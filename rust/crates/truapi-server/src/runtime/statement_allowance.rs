@@ -72,14 +72,6 @@ pub enum ChainStateError {
         /// Actual decoded length.
         len: usize,
     },
-    /// The connected chain is not the one the caller asked for.
-    #[error("chain reports genesis 0x{actual}, expected 0x{expected}")]
-    GenesisHashMismatch {
-        /// Genesis hash the caller asked for.
-        expected: String,
-        /// Genesis hash the connected chain reported.
-        actual: String,
-    },
     /// Runtime JSON lacked an expected u32 field.
     #[error("missing/invalid {field}")]
     MissingU32Field {
@@ -182,29 +174,33 @@ pub struct ChainContextCache {
 }
 
 impl ChainContextCache {
-    /// Metadata and chain state for the chain at `genesis_hash`, read from the
+    /// Metadata and chain state for the chain reached over `rpc`, read from the
     /// chain only when no entry matches its current spec version.
     ///
-    /// Fails when the connected chain reports a genesis hash other than
-    /// `genesis_hash`: the host has wired this client to the wrong chain, and
-    /// extrinsics built against it would be signed for a chain the caller did
-    /// not ask for.
+    /// `configured_genesis_hash` is the caller's identity for the chain — the
+    /// hash it routes connections by — and keys the cache. The genesis hash
+    /// placed in [`ChainState`], and therefore signed into every allowance
+    /// extrinsic, is always the one the chain itself reports: a host whose
+    /// configured constant has gone stale (a wiped testnet) still produces
+    /// valid extrinsics. A divergence is logged, since it means the host's
+    /// chain configuration needs refreshing — see RFC-0026, which lets hosts
+    /// discover these hashes instead of hard-coding them.
     pub async fn get(
         &self,
         rpc: &RpcClient,
-        genesis_hash: [u8; 32],
+        configured_genesis_hash: [u8; 32],
     ) -> Result<ChainContext, StatementAllowanceError> {
         let (spec_version, transaction_version) = fetch_runtime_version(rpc).await?;
-        if let Some(cached) = self.cached(genesis_hash, spec_version) {
+        if let Some(cached) = self.cached(configured_genesis_hash, spec_version) {
             return Ok(cached);
         }
-        let reported = fetch_genesis_hash(rpc).await?;
-        if reported != genesis_hash {
-            return Err(ChainStateError::GenesisHashMismatch {
-                expected: hex::encode(genesis_hash),
-                actual: hex::encode(reported),
-            }
-            .into());
+        let genesis_hash = fetch_genesis_hash(rpc).await?;
+        if genesis_hash != configured_genesis_hash {
+            warn!(
+                configured = %hex::encode(configured_genesis_hash),
+                reported = %hex::encode(genesis_hash),
+                "chain reports a different genesis than the host configured; using the chain's"
+            );
         }
         let context = ChainContext {
             metadata: Arc::new(fetch_metadata(rpc).await?),
@@ -218,15 +214,15 @@ impl ChainContextCache {
         self.entries
             .lock()
             .expect("chain context cache mutex poisoned")
-            .insert(genesis_hash, context.clone());
+            .insert(configured_genesis_hash, context.clone());
         Ok(context)
     }
 
-    fn cached(&self, genesis_hash: [u8; 32], spec_version: u32) -> Option<ChainContext> {
+    fn cached(&self, configured_genesis_hash: [u8; 32], spec_version: u32) -> Option<ChainContext> {
         self.entries
             .lock()
             .expect("chain context cache mutex poisoned")
-            .get(&genesis_hash)
+            .get(&configured_genesis_hash)
             .filter(|cached| cached.state.spec_version == spec_version)
             .cloned()
     }
@@ -799,26 +795,37 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_reporting_another_genesis_is_rejected() {
+    fn a_stale_configured_genesis_still_yields_the_chains_own_hash() {
         let responses = [
             runtime_version(1_000_000),
             genesis_result([0xbb; 32]),
             metadata_result(),
         ];
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
-        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
         let cache = ChainContextCache::default();
 
-        let Err(err) = futures::executor::block_on(cache.get(&rpc, [0xaa; 32])) else {
-            panic!("a chain reporting another genesis must be rejected");
-        };
+        let context = futures::executor::block_on(cache.get(&rpc, [0xaa; 32]))
+            .expect("a stale configured genesis is not fatal");
 
-        assert!(
-            err.to_string().contains("expected 0xaaaa"),
-            "unexpected error: {err}"
+        // `CheckGenesis` is signed over this, so it must be the chain's value,
+        // not the caller's possibly-stale constant.
+        assert_eq!(context.state.genesis_hash, [0xbb; 32]);
+    }
+
+    #[test]
+    fn a_stale_configured_genesis_still_keys_the_cache() {
+        let seen = scripted_cache_run(
+            &[
+                runtime_version(1_000_000),
+                genesis_result([0xbb; 32]),
+                metadata_result(),
+                runtime_version(1_000_000),
+            ],
+            &[[0xaa; 32], [0xaa; 32]],
         );
-        // The mismatch is caught before the metadata download.
-        assert_eq!(methods(&scripted), MISS[..2]);
+
+        assert_eq!(seen, [MISS.as_slice(), HIT.as_slice()].concat());
     }
 
     /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted

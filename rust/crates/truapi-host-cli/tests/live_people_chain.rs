@@ -1,0 +1,143 @@
+//! Live People-chain checks for the native allowance chain reads.
+//!
+//! Ignored by default: these need network access and a reachable testnet, so
+//! `cargo test` stays offline and deterministic. Run them explicitly:
+//!
+//! ```bash
+//! cargo +nightly test -p truapi-host-cli --test live_people_chain -- --ignored --nocapture
+//! ```
+//!
+//! `TRUAPI_LIVE_PEOPLE_WS` overrides the endpoint. The default is the
+//! `paseo-next-v2` People chain, matching `network.rs`.
+//!
+//! These read chain state only; nothing here submits an extrinsic.
+
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use truapi_server::statement_allowance::{self as alloc, ChainContextCache};
+
+/// Default People-chain endpoint, kept in step with `network.rs`.
+const DEFAULT_PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";
+
+/// A genesis hash no chain will report, standing in for a host whose configured
+/// constant has gone stale after a testnet wipe.
+const STALE_CONFIGURED_GENESIS: [u8; 32] = [0xff; 32];
+
+fn people_ws() -> String {
+    std::env::var("TRUAPI_LIVE_PEOPLE_WS").unwrap_or_else(|_| DEFAULT_PEOPLE_WS.to_string())
+}
+
+async fn connect() -> alloc::rpc::RpcClient {
+    alloc::rpc::RpcClient::connect(&people_ws())
+        .await
+        .expect("connect to the live People chain")
+}
+
+fn current_period() -> u32 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after UNIX epoch")
+        .as_secs();
+    alloc::slot::current_period(now)
+}
+
+/// The genesis hash signed into allowance extrinsics must be the one the chain
+/// reports, not the caller's constant, and the entry must still be keyed by that
+/// constant so the cache actually hits.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn chain_context_reports_the_chains_genesis_and_caches_by_the_configured_hash() {
+    let rpc = connect().await;
+    let live = alloc::fetch_genesis_hash(&rpc)
+        .await
+        .expect("read the live genesis hash");
+    assert_ne!(
+        live, STALE_CONFIGURED_GENESIS,
+        "the stand-in stale hash must not collide with the real chain"
+    );
+
+    let cache = ChainContextCache::default();
+    let first = cache
+        .get(&rpc, STALE_CONFIGURED_GENESIS)
+        .await
+        .expect("a stale configured genesis is not fatal");
+
+    assert_eq!(
+        first.state.genesis_hash, live,
+        "CheckGenesis is signed over this; it must come from the chain"
+    );
+    assert!(first.state.spec_version > 0);
+    println!(
+        "live People chain: spec_version={} transaction_version={} genesis=0x{}",
+        first.state.spec_version,
+        first.state.transaction_version,
+        hex::encode(live)
+    );
+
+    let second = cache
+        .get(&rpc, STALE_CONFIGURED_GENESIS)
+        .await
+        .expect("second read succeeds");
+    assert!(
+        Arc::ptr_eq(&first.metadata, &second.metadata),
+        "second read re-downloaded metadata; the entry is keyed by the wrong hash"
+    );
+}
+
+/// `find_allocated_slot` must scan a live period without erroring, whatever the
+/// table's occupancy — the property that lets the steady state skip ring
+/// resolution.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn find_allocated_slot_scans_a_live_period_without_erroring() {
+    let rpc = connect().await;
+    let cache = ChainContextCache::default();
+    let chain = cache
+        .get(&rpc, STALE_CONFIGURED_GENESIS)
+        .await
+        .expect("read the live chain context");
+    let period = current_period();
+
+    // Entropy and target are throwaway: no alias derived from them owns a slot,
+    // so the scan must report "no slot held" rather than failing.
+    let held =
+        alloc::slot::find_allocated_slot(&rpc, &chain.metadata, [0x11; 32], period, &[0x22; 32])
+            .await
+            .expect("scanning a live period is not an error");
+
+    assert_eq!(held, None);
+    println!("scanned live period {period}: no slot held by the throwaway target");
+}
+
+/// The live runtime must still expose the metadata shape the allowance path
+/// decodes. The offline fixture is pinned to one spec version, so this is what
+/// catches a runtime upgrade that moves the `AsResources` extension.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn live_metadata_still_exposes_the_allowance_extension_shape() {
+    let rpc = connect().await;
+    let cache = ChainContextCache::default();
+    let chain = cache
+        .get(&rpc, STALE_CONFIGURED_GENESIS)
+        .await
+        .expect("read the live chain context");
+
+    let register = chain
+        .metadata
+        .as_resources_variant_indices("RegisterStatementStoreAllowance")
+        .expect("live runtime exposes RegisterStatementStoreAllowance");
+    let claim = chain
+        .metadata
+        .as_resources_variant_indices("ClaimLongTermStorage")
+        .expect("live runtime exposes ClaimLongTermStorage");
+    let period_duration = alloc::slot::long_term_storage_period_duration(&chain.metadata)
+        .expect("live runtime exposes Resources.LongTermStoragePeriodDuration");
+
+    assert!(period_duration > 0);
+    println!(
+        "live spec {}: RegisterStatementStoreAllowance={register:?} ClaimLongTermStorage={claim:?} \
+         long-term-storage period={period_duration}s",
+        chain.state.spec_version,
+    );
+}
