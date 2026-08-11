@@ -480,7 +480,7 @@ A provider receives no jurisdiction, no verification tier, no user identity, and
 /// Polkadot balance and everything outside it, in either direction.
 trait Funding: Send + Sync {
     /// Open the funding modality for a direction, asset, and amount.
-    #[wire(request_id = 168)]
+    #[wire(request_id = 176)]
     async fn request(
         &self,
         cx: &CallContext,
@@ -488,7 +488,7 @@ trait Funding: Send + Sync {
     ) -> Result<HostFundingResponse, CallError<HostFundingError>>;
 
     /// Watch a funding session to completion.
-    #[wire(start_id = 170)]
+    #[wire(start_id = 178)]
     async fn status_subscribe(
         &self,
         cx: &CallContext,
@@ -502,14 +502,14 @@ trait Funding: Send + Sync {
     ///
     /// Available only to a product whose manifest declares the funding
     /// modality.
-    #[wire(start_id = 174)]
+    #[wire(start_id = 182)]
     async fn serve_subscribe(
         &self,
         cx: &CallContext,
     ) -> Result<Subscription<HostFundingServeSubscribeItem>, CallError<HostFundingServeError>>;
 
     /// Report progress on a session this product is serving.
-    #[wire(request_id = 178)]
+    #[wire(request_id = 186)]
     async fn report(
         &self,
         cx: &CallContext,
@@ -585,7 +585,7 @@ truapi_macros::versioned_type! {
 
 `HostFundingResponse` is the only response carrying a payload.
 
-Ids continue the append-only sequence: `Account::sign_vrf` holds 164–165 and the [Secrets RFC][secrets] claims 166–167, so this RFC takes 168–169 (`request`), 170–173 (`status_subscribe`), 174–177 (`serve_subscribe`), and 178–179 (`report`) — twelve ids. The block is contiguous and reserved on merge; if another RFC lands first, these shift up rather than being reused.
+Ids continue the append-only sequence. `Account::sign_vrf` holds 164–165, `Chain::get_chain_info` holds 166–167, and the ring VRF key management methods of [Personhood as a Product][personhood] hold 168–173. The [Secrets RFC][secrets] reserves 174–175. This RFC therefore takes 176–177 (`request`), 178–181 (`status_subscribe`), 182–185 (`serve_subscribe`), and 186–187 (`report`) — twelve ids. The block is contiguous; if another RFC lands first, these shift up rather than being reused.
 
 ### Behavioral requirements
 

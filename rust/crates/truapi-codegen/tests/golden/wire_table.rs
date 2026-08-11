@@ -468,30 +468,30 @@ pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
 
 /// Wire discriminants for `funding_request`.
 pub const FUNDING_REQUEST: RequestFrameIds = RequestFrameIds {
-    request_id: 168,
-    response_id: 169,
+    request_id: 176,
+    response_id: 177,
 };
 
 /// Wire discriminants for `funding_status_subscribe`.
 pub const FUNDING_STATUS_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
-    start_id: 170,
-    stop_id: 171,
-    interrupt_id: 172,
-    receive_id: 173,
+    start_id: 178,
+    stop_id: 179,
+    interrupt_id: 180,
+    receive_id: 181,
 };
 
 /// Wire discriminants for `funding_serve_subscribe`.
 pub const FUNDING_SERVE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
-    start_id: 174,
-    stop_id: 175,
-    interrupt_id: 176,
-    receive_id: 177,
+    start_id: 182,
+    stop_id: 183,
+    interrupt_id: 184,
+    receive_id: 185,
 };
 
 /// Wire discriminants for `funding_report`.
 pub const FUNDING_REPORT: RequestFrameIds = RequestFrameIds {
-    request_id: 178,
-    response_id: 179,
+    request_id: 186,
+    response_id: 187,
 };
 
 /// The full wire table. Ordering is part of the wire protocol;

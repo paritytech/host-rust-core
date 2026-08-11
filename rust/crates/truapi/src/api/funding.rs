@@ -36,7 +36,7 @@ pub trait Funding: Send + Sync {
     /// assert(result.isOk(), "funding.request failed:", result);
     /// console.log("funding intent:", result.value.intent);
     /// ```
-    #[wire(request_id = 168)]
+    #[wire(request_id = 176)]
     async fn request(
         &self,
         _cx: &CallContext,
@@ -72,7 +72,7 @@ pub trait Funding: Send + Sync {
     /// );
     /// console.log("funding status received:", status);
     /// ```
-    #[wire(start_id = 170)]
+    #[wire(start_id = 178)]
     async fn status_subscribe(
         &self,
         _cx: &CallContext,
@@ -97,7 +97,7 @@ pub trait Funding: Send + Sync {
     /// );
     /// console.log("intent to serve:", intent);
     /// ```
-    #[wire(start_id = 174)]
+    #[wire(start_id = 182)]
     async fn serve_subscribe(
         &self,
         _cx: &CallContext,
@@ -119,7 +119,7 @@ pub trait Funding: Send + Sync {
     /// assert(result.isOk(), "funding.report failed:", result);
     /// console.log("progress reported");
     /// ```
-    #[wire(request_id = 178)]
+    #[wire(request_id = 186)]
     async fn report(
         &self,
         _cx: &CallContext,
