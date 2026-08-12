@@ -268,5 +268,5 @@ debug-panel traffic disappearing when the login popup opens.
 
 ## Deployment
 
-Pushes to `main` trigger `.github/workflows/deploy-playground.yml`, which builds `playground/` and publishes the static export via `bulletin-deploy`. The deploy target is the bare dotNS label `truapi-playground`; dotNS resolves the TLD per network at deploy time, so on Paseo Next v2 the name is `truapi-playground.paseo` and on previewnet it is `truapi-playground.dot`. Never pass a suffixed name to `bulletin-deploy`. The workflow keeps its own copy of the deploy steps because `bulletin-deploy`'s shared reusable workflow lives in a private repo that this public one cannot call.
+Pushes to `main` trigger `.github/workflows/deploy-playground.yml`, which builds `playground/` and publishes the static export via `bulletin-deploy`. Pass the bare dotNS label `truapi-playground`, never a suffixed name: dotNS attaches the top-level domain its network declares, so the live name is `truapi-playground.paseo` on Paseo Next v2. The deploy steps stay in this repo because `bulletin-deploy` ships its shared reusable workflow from a private repo that this public one cannot call.
 Pushes to `main` also trigger `.github/workflows/deploy-docs.yml`, which publishes the explorer (at the Pages root), the playground (under `/playground/`), and the Rust API docs (under `/cargo_doc/`) to GitHub Pages.

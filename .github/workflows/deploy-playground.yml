@@ -64,21 +64,14 @@ jobs:
         working-directory: playground
         run: yarn build
 
-      # bulletin-deploy ships its environment table (RPCs, DotNS contract
-      # addresses) inside the package, so tracking latest is what keeps this
-      # deploy working across testnet resets.
       - name: Install bulletin-deploy
         run: npm install -g bulletin-deploy
 
-      # The deploy steps live here rather than in bulletin-deploy's shared
-      # reusable workflow because that repo is private and this one is public.
       - name: Deploy to DotNS
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         env:
-          # Bare label, never a suffixed name: DotNS resolves the TLD per
-          # network at deploy time (`paseo` on paseo-next-v2, `dot` on
-          # previewnet), so a hardcoded suffix either targets the wrong record
-          # or is rejected outright.
+          # Bare label: dotNS attaches the environment's own top-level domain
+          # and rejects a name that arrives carrying one.
           BULLETIN_LABEL: truapi-playground
           BULLETIN_ENV: ${{ inputs.environment || 'paseo-next-v2' }}
         with:
