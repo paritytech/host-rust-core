@@ -19,9 +19,10 @@ use truapi_platform::{CoreStorage, CoreStorageKey};
 use super::SigningHost;
 use super::sso_responder::current_unix_secs;
 use crate::host_logic::product_account::{
-    derive_lite_person_ring_vrf_entropy, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+    derive_root_keypair_from_entropy, derive_sr25519_hard_path,
 };
 use crate::runtime::RuntimeServices;
+use crate::runtime::authority::ProductAuthority;
 use crate::runtime::statement_allowance::renewal::{
     RenewalChainContext, ResolvedRenewalTarget, StatementRenewalReport, next_tick_delay,
     renew_targets,
@@ -251,6 +252,32 @@ fn resolve_targets(
         .collect()
 }
 
+/// The ledger targets `owner` promised, dropping any it did not.
+///
+/// An entry promised by a different identity would consume this one's slots for
+/// an account it never promised, so it is removed rather than skipped — the cost
+/// is paid once per identity change instead of on every tick. The ledger is only
+/// rewritten when something was actually dropped.
+async fn owned_targets(
+    storage: &(impl CoreStorage + ?Sized),
+    ledger_lock: &Mutex<()>,
+    owner: [u8; 32],
+) -> Result<Vec<StatementRenewalTarget>, String> {
+    let (owned, foreign): (Vec<_>, Vec<_>) = read_entries(storage)
+        .await?
+        .into_iter()
+        .partition(|entry| entry.is_owned_by(owner));
+    if !foreign.is_empty() {
+        warn!(
+            dropped = foreign.len(),
+            "pruning renewal targets promised by a previous identity"
+        );
+        let _guard = ledger_lock.lock().await;
+        write_entries(storage, &owned).await?;
+    }
+    Ok(owned.into_iter().map(|entry| entry.target).collect())
+}
+
 /// One renewal pass: resolve the ledger against the active session and renew
 /// every target for the current period.
 pub(super) async fn renew_now(
@@ -261,24 +288,12 @@ pub(super) async fn renew_now(
     let period = statement_allowance::slot::current_period(
         current_unix_secs().map_err(|err| err.to_string())?,
     );
-    let owner = owner_key(&entropy)?;
-    let storage = signing_host.platform.as_ref();
-    let entries = read_entries(storage).await?;
-    // Entries promised by a different identity are dropped rather than renewed:
-    // they would consume this identity's slots for an account it never promised.
-    let (owned, foreign): (Vec<_>, Vec<_>) = entries
-        .into_iter()
-        .partition(|entry| entry.is_owned_by(owner));
-    if !foreign.is_empty() {
-        warn!(
-            dropped = foreign.len(),
-            "pruning renewal targets promised by a previous identity"
-        );
-        let _guard = signing_host.renewal.ledger_lock().lock().await;
-        write_entries(storage, &owned).await?;
-    }
-    let targets: Vec<StatementRenewalTarget> =
-        owned.into_iter().map(|entry| entry.target).collect();
+    let targets = owned_targets(
+        signing_host.platform.as_ref(),
+        signing_host.renewal.ledger_lock(),
+        owner_key(&entropy)?,
+    )
+    .await?;
     let resolved = resolve_targets(&entropy, &targets);
     if resolved.is_empty() {
         return Ok(StatementRenewalReport {
@@ -288,7 +303,14 @@ pub(super) async fn renew_now(
         });
     }
 
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
+    // The same accessor on-demand allocation uses, so a change to the reserved
+    // key reaches renewal too — and it revalidates the session first.
+    let session = signing_host
+        .current_session()
+        .ok_or_else(|| "no active session for statement-store renewal".to_string())?;
+    let bandersnatch = *signing_host
+        .reserved_lite_person_entropy(&session)
+        .map_err(|err| err.to_string())?;
     let rpc = statement_allowance::rpc::RpcClient::new(
         services
             .statement_store
@@ -392,6 +414,13 @@ mod tests {
     #[derive(Default)]
     struct MemStorage {
         inner: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+        writes: Mutex<usize>,
+    }
+
+    impl MemStorage {
+        fn writes(&self) -> usize {
+            *self.writes.lock().expect("write counter mutex poisoned")
+        }
     }
 
     #[truapi_platform::async_trait]
@@ -413,6 +442,7 @@ mod tests {
             key: CoreStorageKey,
             value: Vec<u8>,
         ) -> Result<(), GenericError> {
+            *self.writes.lock().expect("write counter mutex poisoned") += 1;
             self.inner
                 .lock()
                 .expect("storage mutex poisoned")
@@ -495,6 +525,75 @@ mod tests {
             let mut targets = read_targets(&storage, OWNER).await.unwrap();
             targets.sort_by_key(|target| format!("{target:?}"));
             assert_eq!(targets, vec![product("a.dot"), product("b.dot")]);
+        });
+    }
+
+    /// A raw account promised by a previous identity must not be renewed under a
+    /// later one: it would spend that identity's slots on an account it never
+    /// promised.
+    #[test]
+    fn a_foreign_target_is_dropped_from_the_ledger() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &lock(), OTHER_OWNER, vec![device])
+                .await
+                .unwrap();
+            track_targets(&storage, &lock(), OWNER, vec![product("a.dot")])
+                .await
+                .unwrap();
+
+            let targets = owned_targets(&storage, &lock(), OWNER).await.unwrap();
+
+            assert_eq!(targets, vec![product("a.dot")]);
+            // Dropped, not merely skipped, so the cost is paid once.
+            assert_eq!(
+                read_entries(&storage).await.unwrap(),
+                vec![LedgerEntry::new(product("a.dot"), OWNER)]
+            );
+        });
+    }
+
+    #[test]
+    fn an_all_foreign_ledger_prunes_to_nothing() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &lock(), OTHER_OWNER, vec![device])
+                .await
+                .unwrap();
+
+            assert_eq!(
+                owned_targets(&storage, &lock(), OWNER).await.unwrap(),
+                Vec::new()
+            );
+            assert_eq!(read_entries(&storage).await.unwrap(), Vec::new());
+        });
+    }
+
+    #[test]
+    fn an_all_owned_ledger_is_not_rewritten() {
+        let storage = MemStorage::default();
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &lock(), OWNER, vec![product("a.dot")])
+                .await
+                .unwrap();
+            let after_seeding = storage.writes();
+
+            let targets = owned_targets(&storage, &lock(), OWNER).await.unwrap();
+
+            assert_eq!(targets, vec![product("a.dot")]);
+            // Every tick calls this; rewriting the ledger each time would be waste.
+            assert_eq!(storage.writes(), after_seeding);
         });
     }
 
