@@ -7,7 +7,7 @@
 use parity_scale_codec::{Decode, Encode};
 
 use super::StatementAllowanceError;
-use super::extension::{ChainState, Metadata, MetadataError};
+use super::extension::{AS_RESOURCES, ChainState, Metadata, MetadataError};
 
 /// General-transaction preamble byte: `0b01` (General) | version 5.
 const GENERAL_V5_PREAMBLE: u8 = 0x45;
@@ -145,9 +145,12 @@ pub fn build_unsigned_extrinsic(
     as_resources_extra: &[u8],
 ) -> Result<Vec<u8>, StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
-    let as_resources_index = metadata
-        .as_resources_index()
-        .ok_or(MetadataError::MissingAsResourcesExtension)?;
+    let as_resources_index =
+        metadata
+            .as_resources_index()
+            .ok_or_else(|| MetadataError::MissingExtension {
+                identifier: AS_RESOURCES.to_string(),
+            })?;
 
     let mut body = vec![GENERAL_V5_PREAMBLE, EXTENSION_VERSION];
     for (i, ext) in all.iter().enumerate() {
