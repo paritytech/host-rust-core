@@ -200,6 +200,12 @@ impl Connection {
 
     /// Resolve with the next JSON-RPC response or notification, or
     /// `undefined` once the connection is closed or dead.
+    ///
+    /// Calling this in a loop is not optional: it is the only thing that drains
+    /// the connection. Frames queue until they are taken, and once the backlog
+    /// reaches the connection's budget further [`send`](Connection::send) calls
+    /// come back as JSON-RPC errors instead of being queued, so a caller that
+    /// sends without reading eventually gets nothing but errors.
     #[wasm_bindgen(js_name = nextResponse)]
     pub async fn next_response(&self) -> Option<String> {
         let responses = Arc::clone(&self.responses);

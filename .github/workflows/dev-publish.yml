@@ -25,7 +25,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Nothing reaches npm unverified. release.yml gets this from a `workflow_run`
+  # gate on green CI, which a tag push cannot use (CI runs on branches, not
+  # tags), so the checks that matter for this crate run here instead.
+  verify:
+    name: Verify truapi-provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+
+      - run: cargo +nightly fmt -p truapi-provider --check
+
+      - run: cargo +nightly clippy -p truapi-provider --all-targets --all-features -- -D warnings
+
+      # The published artifact is the wasm build, so lint the target it ships as.
+      - run: cargo +nightly clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
+
+      - run: cargo test -p truapi-provider --all-features
+
   dev-publish:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

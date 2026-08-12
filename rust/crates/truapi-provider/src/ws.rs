@@ -7,6 +7,7 @@
 //! stream, and the consumer recovers by connecting again.
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration;
 use std::sync::Mutex;
 
 use futures::channel::mpsc;
@@ -138,6 +139,15 @@ impl Drop for WsConnection {
     }
 }
 
+/// How often a quiet connection is pinged, and how long the reader waits for any
+/// frame before declaring the socket dead.
+///
+/// The read timeout is a multiple of the ping interval so that one lost ping or
+/// a slow peer does not tear down a healthy connection: two pings must go
+/// unanswered first.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
+const READ_TIMEOUT: Duration = Duration::from_secs(50);
+
 /// Drain queued requests into the transport; on queue close, close the
 /// transport gracefully.
 ///
@@ -150,7 +160,23 @@ async fn writer_pump<S: TransportSenderT>(
     mut request_queue: mpsc::Receiver<String>,
     stream_abort: AbortHandle,
 ) {
-    while let Some(request) = request_queue.next().await {
+    loop {
+        // A silent connection still has to be probed: a half-open socket delivers
+        // nothing and reports nothing, so without a ping there is no traffic to
+        // fail on and the reader below waits forever.
+        let next = tokio::time::timeout(KEEPALIVE_INTERVAL, request_queue.next()).await;
+        let request = match next {
+            Ok(Some(request)) => request,
+            Ok(None) => break,
+            Err(_elapsed) => {
+                if let Err(err) = sender.send_ping().await {
+                    tracing::warn!("WebSocket keepalive ping failed: {err}");
+                    stream_abort.abort();
+                    return;
+                }
+                continue;
+            }
+        };
         if let Err(err) = sender.send(request).await {
             tracing::warn!("WebSocket send failed: {err}");
             stream_abort.abort();
@@ -162,17 +188,35 @@ async fn writer_pump<S: TransportSenderT>(
     }
 }
 
-/// Yield every inbound text frame; the stream ends on transport error or EOF,
-/// which is the disconnect signal consumers rely on.
+/// Yield every inbound text frame; the stream ends on transport error, EOF, or
+/// silence past [`READ_TIMEOUT`], which is the disconnect signal consumers rely
+/// on.
+///
+/// The timeout is what makes that signal reliable. A half-open socket — the peer
+/// gone without a FIN, so the kernel keeps the connection open — delivers neither
+/// data nor error, and `receive()` on it simply never returns. The writer pings
+/// every [`KEEPALIVE_INTERVAL`], so a live peer produces at least a `Pong` well
+/// inside this window and only a dead one falls silent for the whole of it.
 fn response_stream<R: TransportReceiverT + Send>(receiver: R) -> impl Stream<Item = String> + Send {
     stream::unfold(receiver, |mut receiver| async move {
         loop {
-            match receiver.receive().await {
+            let received = match tokio::time::timeout(READ_TIMEOUT, receiver.receive()).await {
+                Ok(received) => received,
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        "no WebSocket traffic for {}s; treating the connection as dead",
+                        READ_TIMEOUT.as_secs()
+                    );
+                    return None;
+                }
+            };
+            match received {
                 Ok(ReceivedMessage::Text(text)) => return Some((text, receiver)),
                 Ok(ReceivedMessage::Bytes(bytes)) => match String::from_utf8(bytes) {
                     Ok(text) => return Some((text, receiver)),
                     Err(_) => tracing::warn!("dropping non-UTF-8 binary WebSocket frame"),
                 },
+                // Answers our keepalive: proof of life, nothing to forward.
                 Ok(ReceivedMessage::Pong) => {}
                 Err(err) => {
                     tracing::debug!("WebSocket receive ended: {err}");
@@ -361,6 +405,38 @@ mod tests {
         assert_eq!(harness.sent.next().await, None);
         tokio::task::yield_now().await;
         assert!(*harness.sender_closed.lock().expect("lock"));
+    }
+
+    /// A half-open socket: the peer is gone without a FIN, so the kernel keeps
+    /// the connection and `receive()` neither returns nor errors, ever.
+    struct SilentReceiver;
+
+    #[truapi_platform::async_trait]
+    impl TransportReceiverT for SilentReceiver {
+        type Error = FakeError;
+
+        async fn receive(&mut self) -> Result<ReceivedMessage, Self::Error> {
+            std::future::pending().await
+        }
+    }
+
+    /// Silence must end the stream, because that is the only disconnect signal
+    /// the consumer has. Without the read timeout this test hangs forever.
+    ///
+    /// Time is paused, so tokio advances it as soon as every task is idle and the
+    /// timeout fires immediately instead of after the real `READ_TIMEOUT`.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_socket_ends_the_response_stream() {
+        let (sent, _sent_rx) = mpsc::unbounded::<String>();
+        let connection = WsConnection::start(
+            FakeSender {
+                sent,
+                closed: std::sync::Arc::new(Mutex::new(false)),
+            },
+            SilentReceiver,
+        );
+        let mut responses = connection.responses();
+        assert_eq!(responses.next().await, None);
     }
 
     #[tokio::test]

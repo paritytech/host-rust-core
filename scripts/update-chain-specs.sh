@@ -27,7 +27,7 @@ SPECS_DIR="$PROJECT_DIR/rust/crates/truapi-provider/networks"
 # inside it therefore has to be checked by hand, starting with the tools it needs:
 # without this, a missing `node` reports every spec as refreshed while writing
 # nothing.
-for tool in node jq curl; do
+for tool in node jq curl python3; do
     command -v "$tool" >/dev/null || {
         echo "error: $tool is required but not on PATH" >&2
         exit 1
@@ -129,25 +129,30 @@ function testBootnode(ma, timeoutMs = 5000) {
 # CHECKPOINT_HEADER pins (its first 32 bytes are the parent hash, the compact integer after them the
 # block number):
 #
-#   * The block itself. The peer must report the same parent hash for the canonical block at that
-#     height. Finalized blocks do not reorg, so a peer that answers and disagrees is serving a
-#     different chain.
-#   * The GRANDPA authorities at that block, which is what finality is verified against. A genuine
-#     header paired with a forged authority set would otherwise pass. The authorities are read from
-#     the peer with a runtime call at the pinned block hash, so the two sides describe the same
-#     block and compare byte for byte, with no set-id bookkeeping to reason about. That call also
-#     keeps the response small; asking a peer for its whole chain spec would return the raw genesis
-#     storage with it.
+#   * The block itself, by hash. The header is hashed with blake2b-256 and compared against what the
+#     peer reports for that height, which covers every field it contains. Comparing only its parent
+#     hash would not: siblings share a parent, so a header with a forged state root and a genuine
+#     parent would pass. Finalized blocks do not reorg, so a peer that answers and disagrees is
+#     serving a different chain.
+#   * The GRANDPA authorities at that block, which is what finality is verified against, since a
+#     genuine header paired with a forged authority set would otherwise pass. They are read with a
+#     runtime call at the hash derived above, so both sides describe the same block and compare byte
+#     for byte, with no set-id bookkeeping. That call also keeps the response small; asking a peer
+#     for its whole chain spec would return the raw genesis storage with it.
 #
-# Corroboration requires a peer that confirms the block. A peer that is unreachable, that has not
-# reached the pinned height, or that cannot serve state for it is skipped, and if no peer is left
-# the refresh fails rather than accepting the primary alone. Only a network configured with a single
+# Corroboration requires one peer that confirms both. A peer that is unreachable, behind the pinned
+# height, or unable to serve the authorities is skipped rather than accepted: treating an
+# unanswerable `state_call` as agreement would let any authority set through, and public endpoints
+# refuse it often enough that this is a normal path, not a rare one. If no peer confirms both, the
+# refresh fails rather than accept the primary alone. Only a network configured with a single
 # endpoint is allowed through uncorroborated, because there is nothing to ask.
 CHECKPOINT_JS='
 const header = process.env.CHECKPOINT_HEADER.replace(/^0x/, "");
 const authoritySet = (process.env.CHECKPOINT_AUTHORITY_SET || "").replace(/^0x/, "");
 const peers = JSON.parse(process.env.PEER_RPCS);
-const parentHash = "0x" + header.slice(0, 64);
+// blake2b-256 of the SCALE header, computed by the caller: the crypto module in node
+// offers blake2b512 and blake2s256 but not the 256-bit blake2b Substrate uses.
+const blockHash = process.env.CHECKPOINT_BLOCK_HASH;
 
 // SCALE compact integer at a byte offset, with the width it occupies.
 function compactAt(hex, offset) {
@@ -185,62 +190,77 @@ async function rpc(url, method, params) {
   return body.result;
 }
 
-// Compare the authorities the peer reports at the pinned block. A peer that cannot serve them
-// (pruned state, unsupported call, a blip) downgrades this peer to block-only corroboration rather
-// than discarding a parent hash that already matched.
-async function authoritiesDisagree(peer, blockHash, ours) {
+// Compare the authorities the peer reports at the block the checkpoint pins.
+//
+// Returns "agree", "disagree", or "unavailable". A peer that cannot serve them (pruned state, a
+// node that does not expose state_call, a blip) is not evidence either way, so it must not count as
+// agreement: treating silence as assent is what let an all-zero authority set pass.
+async function compareAuthorities(peer, blockHash, ours) {
   let theirs;
   try {
     const raw = await rpc(peer, "state_call", ["GrandpaApi_grandpa_authorities", "0x", blockHash]);
     theirs = raw ? raw.replace(/^0x/, "") : "";
   } catch (error) {
     console.log("    ? " + peer + " served no authorities (" + (error.message || error) + ")");
-    return false;
+    return "unavailable";
   }
   if (theirs.length === 0) {
-    console.log("    ? " + peer + " served no authorities, confirming the block only");
-    return false;
+    console.log("    ? " + peer + " served no authorities");
+    return "unavailable";
   }
   if (theirs !== ours.hex) {
     console.log("    x " + peer + " reports different GRANDPA authorities at the pinned block");
     console.log("      checkpoint carries " + ours.count + " authorities");
     console.log("      peer reports " + compactAt(theirs, 0).value);
-    return true;
+    return "disagree";
   }
   console.log("    ok " + ours.count + " GRANDPA authorities agree with " + peer);
-  return false;
+  return "agree";
 }
 
 (async () => {
   const number = compactAt(header, 32).value;
   const ours = checkpointAuthorities();
   if (ours === null) {
-    console.log("    ? checkpoint carries no readable authority set, confirming the block only");
+    console.log("    ? checkpoint carries no readable authority set");
   }
 
   for (const peer of peers) {
-    let blockHash;
-    let peerParent;
+    let peerBlockHash;
     try {
-      blockHash = await rpc(peer, "chain_getBlockHash", [number]);
-      if (!blockHash) {
+      peerBlockHash = await rpc(peer, "chain_getBlockHash", [number]);
+      if (!peerBlockHash) {
         console.log("    ? " + peer + " has not reached block " + number);
         continue;
       }
-      peerParent = (await rpc(peer, "chain_getHeader", [blockHash])).parentHash;
     } catch (error) {
       console.log("    ? " + peer + " did not answer (" + (error.message || error) + ")");
       continue;
     }
-    if (peerParent.toLowerCase() !== parentHash.toLowerCase()) {
+
+    // The hash of the checkpoint itself, not of its parent. A parent hash is shared by every sibling at that
+    // height, so comparing it leaves the state root, extrinsics root and digest unchecked: a header
+    // with a forged state root and a genuine parent passes. Comparing the hash covers every field.
+    if (peerBlockHash.toLowerCase() !== blockHash.toLowerCase()) {
       console.log("    x " + peer + " disagrees at block " + number);
-      console.log("      checkpoint parent " + parentHash);
-      console.log("      peer parent       " + peerParent);
+      console.log("      checkpoint block " + blockHash);
+      console.log("      peer block       " + peerBlockHash);
       process.exit(1);
     }
-    if (ours !== null && (await authoritiesDisagree(peer, blockHash, ours))) {
-      process.exit(1);
+
+    if (ours !== null) {
+      // Ask at the hash we derived rather than the one the peer reported. They are equal by now,
+      // but reading from ours keeps the authorities tied to the block being pinned.
+      const verdict = await compareAuthorities(peer, blockHash, ours);
+      if (verdict === "disagree") {
+        process.exit(1);
+      }
+      if (verdict === "unavailable") {
+        // The block matched, but that is only half the checkpoint. Try the next peer.
+        continue;
+      }
     }
+
     console.log("    ok corroborated at block " + number + " by " + peer);
     return;
   }
@@ -249,10 +269,11 @@ async function authoritiesDisagree(peer, blockHash, ours) {
     console.log(
       "  ERROR: none of the " +
         peers.length +
-        " other endpoint(s) confirmed block " +
+        " other endpoint(s) confirmed both the block and the authorities at " +
         number +
-        ". They were unreachable, behind it, or both; either way the checkpoint rests on one" +
-        " endpoint alone, which is also how a checkpoint pinned ahead of every peer would look.",
+        ". They were unreachable, behind that height, or could not serve the authorities; either" +
+        " way the checkpoint rests on one endpoint alone, which is also how a checkpoint pinned" +
+        " ahead of every peer would look.",
     );
     process.exit(1);
   }
@@ -349,9 +370,19 @@ refresh_spec() {
       echo "  ERROR: lightSyncState from $rpc carries no finalized block header."
       return 1
     fi
-    local checkpoint_authorities
+    local checkpoint_authorities checkpoint_block_hash
     checkpoint_authorities=$(echo "$light_sync_state" | jq -r '.grandpaAuthoritySet // empty')
+    checkpoint_block_hash=$(HEADER="$checkpoint_header" python3 -c '
+import hashlib, os, sys
+header = os.environ["HEADER"].removeprefix("0x")
+try:
+    raw = bytes.fromhex(header)
+except ValueError:
+    sys.exit("the checkpoint header is not hex")
+print("0x" + hashlib.blake2b(raw, digest_size=32).hexdigest())
+')
     if ! CHECKPOINT_HEADER="$checkpoint_header" \
+      CHECKPOINT_BLOCK_HASH="$checkpoint_block_hash" \
       CHECKPOINT_AUTHORITY_SET="$checkpoint_authorities" \
       PEER_RPCS="$(printf '%s\n' "${peers[@]:-}" | jq -R . | jq -sc 'map(select(length > 0))')" \
       TIMEOUT="$TIMEOUT" node -e "$CHECKPOINT_JS"; then

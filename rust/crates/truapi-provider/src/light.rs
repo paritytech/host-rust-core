@@ -21,7 +21,7 @@
 //! not install a global logger of its own.
 
 use core::num::{NonZero, NonZeroUsize};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -72,12 +72,29 @@ const STATEMENT_MAX_SEEN: usize = 65_536;
 const STATEMENT_FALSE_POSITIVE_RATE: f64 = 0.01;
 const STATEMENT_AFFINITY_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// JSON-RPC queue budgets for chains added by this backend. The provider is a
-/// trusted in-process client, so the pending cap is generous (smoldot's docs
-/// sanction up to `u32::MAX` for trusted callers); an overflow is still handled
-/// gracefully by synthesizing an error response rather than hanging the caller.
+/// JSON-RPC queue budgets declared to smoldot when adding a chain.
+///
+/// smoldot stores these but does not enforce the pending cap: its request queue
+/// is `async_channel::unbounded()` and `queue_rpc_request` only fails when that
+/// channel is closed, so `TooManyPendingRequests` never fires for capacity. A
+/// caller that sends without draining [`JsonRpcConnection::responses`] therefore
+/// grows the queue without limit, because smoldot's response channel is bounded
+/// and its service stalls once the consumer stops reading. The bound is applied
+/// here instead, by [`MAX_UNDELIVERED_FRAMES`].
 const MAX_PENDING_REQUESTS: u32 = 1024;
 const MAX_SUBSCRIPTIONS: u32 = 1024;
+
+/// How many response frames may be waiting for the consumer before further
+/// requests are refused, mirroring the bounded outbound buffer the WebSocket
+/// backend uses.
+///
+/// Counts frames owed to the consumer, not requests in smoldot: each accepted
+/// request and each synthesized error adds one, and every frame the consumer
+/// takes removes one. Subscription notifications also decrement without a
+/// matching request, so a subscription-heavy connection is allowed more than
+/// this many requests in flight. That errs towards accepting traffic, and still
+/// bounds the case this exists for, where nothing is drained at all.
+const MAX_UNDELIVERED_FRAMES: usize = 1024;
 
 struct LightInner {
     client: Client<Platform, ()>,
@@ -196,6 +213,7 @@ impl LightState {
             relay: relay_genesis,
             errors_tx,
             responses: Mutex::new(Some((responses, errors_rx))),
+            undelivered: Arc::new(AtomicUsize::new(0)),
             closed: AtomicBool::new(false),
         }))
     }
@@ -311,7 +329,43 @@ struct LightConnection {
     /// Taken once by `responses()`: smoldot's response stream paired with the
     /// receiver for `errors_tx`.
     responses: Mutex<Option<(JsonRpcResponses<Platform>, mpsc::UnboundedReceiver<String>)>>,
+    /// Frames owed to the consumer, bounded by [`MAX_UNDELIVERED_FRAMES`].
+    undelivered: Arc<AtomicUsize>,
     closed: AtomicBool,
+}
+
+/// Decrement `counter` unless it is already zero.
+///
+/// Subscription notifications arrive without a matching request, so a plain
+/// `fetch_sub` would wrap past zero and, being a `usize`, land on a value that
+/// refuses every later request. Written as a compare-exchange loop because the
+/// saturating helper on atomics is nightly-only.
+fn decrement_saturating(counter: &AtomicUsize) {
+    let mut current = counter.load(Ordering::Acquire);
+    while current > 0 {
+        match counter.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+impl LightConnection {
+    /// Refuse `request` with a synthetic error frame, keeping the connection
+    /// alive. The consumer correlates by id, so a dropped request without a
+    /// frame for its id would leave it waiting forever.
+    fn refuse(&self, request: &str, reason: &str) {
+        tracing::warn!(reason, "refusing a light-client request");
+        if let Some(frame) = synthetic_error_frame(request, reason) {
+            self.undelivered.fetch_add(1, Ordering::AcqRel);
+            let _ = self.errors_tx.unbounded_send(frame);
+        }
+    }
 }
 
 impl JsonRpcConnection for LightConnection {
@@ -322,18 +376,24 @@ impl JsonRpcConnection for LightConnection {
         if self.closed.load(Ordering::SeqCst) {
             return;
         }
+
+        // smoldot would queue this without limit, so the backpressure is ours to
+        // apply: a consumer that stops reading stops being sent work.
+        if self.undelivered.load(Ordering::Acquire) >= MAX_UNDELIVERED_FRAMES {
+            drop(guard);
+            self.refuse(&request, "light client response queue full");
+            return;
+        }
+
+        self.undelivered.fetch_add(1, Ordering::AcqRel);
         if let Err(HandleRpcError::TooManyPendingRequests { json_rpc_request }) =
             guard.client.json_rpc_request(request, self.chain_id)
         {
-            // The connection stays alive (only this request is refused), so
-            // synthesize an error for its id instead of dropping it silently.
+            // Not reachable while the chain is live (smoldot's queue is
+            // unbounded), but it owes the caller a frame either way.
             drop(guard);
-            tracing::warn!("light-client request queue full; failing the request");
-            if let Some(frame) =
-                synthetic_error_frame(&json_rpc_request, "light client request queue full")
-            {
-                let _ = self.errors_tx.unbounded_send(frame);
-            }
+            self.undelivered.fetch_sub(1, Ordering::AcqRel);
+            self.refuse(&json_rpc_request, "light client request queue full");
         }
     }
 
@@ -343,7 +403,10 @@ impl JsonRpcConnection for LightConnection {
                 let responses = stream::unfold(responses, |mut responses| async move {
                     responses.next().await.map(|item| (item, responses))
                 });
-                stream::select(responses, errors).boxed()
+                let undelivered = Arc::clone(&self.undelivered);
+                stream::select(responses, errors)
+                    .inspect(move |_| decrement_saturating(&undelivered))
+                    .boxed()
             }
             None => stream::empty().boxed(),
         }
@@ -528,6 +591,43 @@ mod tests {
             provider.relay_count(),
             0,
             "the relay must not leak when the parachain add fails"
+        );
+    }
+
+    /// A consumer that never reads must stop being accepted work.
+    ///
+    /// smoldot would queue these without limit: its request channel is unbounded
+    /// and its service stalls once the bounded response channel backs up, so the
+    /// only thing standing between a runaway `send()` loop and unbounded memory
+    /// is the frame budget this asserts.
+    #[test]
+    fn sending_without_draining_is_refused_once_the_budget_is_spent() {
+        let provider = offline_provider();
+        let connection =
+            block_on(provider.connect(RELAY_GENESIS)).expect("offline add_chain succeeds");
+        // Held but deliberately never polled, which is what makes frames pile up.
+        let mut responses = connection.responses();
+
+        let overshoot = 64;
+        for id in 0..super::MAX_UNDELIVERED_FRAMES + overshoot {
+            connection.send(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"chainSpec_v1_chainName","params":[]}}"#
+            ));
+        }
+
+        // Drain what is buffered and count the refusals among it.
+        let mut refusals = 0;
+        while let Some(Some(frame)) = block_on(async { Some(responses.next().await) }) {
+            if frame.contains("response queue full") {
+                refusals += 1;
+            }
+            if refusals >= overshoot {
+                break;
+            }
+        }
+        assert_eq!(
+            refusals, overshoot,
+            "every request past the budget must come back as an error frame"
         );
     }
 
