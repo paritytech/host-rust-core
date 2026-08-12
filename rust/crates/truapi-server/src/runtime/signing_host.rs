@@ -37,8 +37,8 @@ use super::ring_vrf_registry::RingVrfRegistryStore;
 use super::{RuntimeServices, connected_session_ui_info, validate_vrf_transcript};
 use crate::host_logic::entropy::derive_product_entropy;
 use crate::host_logic::extrinsic::{
-    Sr25519Signer, build_signed_extrinsic_v4, build_signed_extrinsic_v4_with_signature,
-    build_signed_extrinsic_v5,
+    Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
+    build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
@@ -1043,10 +1043,15 @@ fn product_authority_error(err: ProductAccountError) -> AuthorityError {
     }
 }
 
-/// Assemble and sign a transaction locally from caller-supplied, pre-encoded
-/// parts. V4 needs no metadata. V5 resolves the runtime's call and transaction
-/// extension pipeline from the genesis-pinned Subxt client, while keeping the
-/// caller's already-encoded argument and extension values opaque.
+/// Assemble a transaction locally from caller-supplied, pre-encoded parts.
+///
+/// V4 needs no metadata. V5 resolves the runtime's call and transaction
+/// extension pipeline from the genesis-pinned Subxt client, keeping the caller's
+/// already-encoded call arguments and extension values opaque apart from
+/// `VerifyMultiSignature`, whose value is checked against the runtime's type.
+///
+/// V5 is signed with the local key only when `extensions` omits
+/// `VerifyMultiSignature`; callers that supply it are assembled unsigned.
 async fn build_local_transaction(
     services: &RuntimeServices,
     keypair: &schnorrkel::Keypair,
@@ -1089,8 +1094,13 @@ async fn build_local_transaction(
         extensions,
         at_block.metadata(),
     )
-    .map_err(|reason| AuthorityError::Unknown {
-        reason: format!("signing host: {reason}"),
+    .map_err(|error| match error {
+        V5BuildError::UnsupportedExtensions(reason) => AuthorityError::NotSupported {
+            reason: format!("signing host: {reason}"),
+        },
+        V5BuildError::Other(reason) => AuthorityError::Unknown {
+            reason: format!("signing host: {reason}"),
+        },
     })?;
     Ok(v01::HostCreateTransactionResponse { transaction })
 }
