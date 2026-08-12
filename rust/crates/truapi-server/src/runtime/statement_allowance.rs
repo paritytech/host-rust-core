@@ -162,9 +162,9 @@ pub struct ChainContext {
 /// Runtime metadata and chain state cached per chain.
 ///
 /// Both are fixed for a given runtime, and a full `state_getMetadata` response
-/// is large, so entries are keyed by genesis hash and revalidated with
-/// `state_getRuntimeVersion` — one small request in place of a metadata
-/// download and a genesis read on every allowance call.
+/// is large, so entries are keyed by genesis hash and revalidated with a
+/// concurrent `state_getRuntimeVersion` + `chain_getBlockHash(0)` — two small
+/// requests in place of a metadata download on every allowance call.
 ///
 /// One entry per chain the host is configured for, so the map needs no eviction
 /// policy: it is bounded by that chain set, not by call volume.
@@ -175,7 +175,7 @@ pub struct ChainContextCache {
 
 impl ChainContextCache {
     /// Metadata and chain state for the chain reached over `rpc`, read from the
-    /// chain only when no entry matches its current spec version.
+    /// chain only when no entry describes the chain as it is now.
     ///
     /// `configured_genesis_hash` is the caller's identity for the chain — the
     /// hash it routes connections by — and keys the cache. The genesis hash
@@ -185,16 +185,23 @@ impl ChainContextCache {
     /// valid extrinsics. A divergence is logged, since it means the host's
     /// chain configuration needs refreshing — see RFC-0026, which lets hosts
     /// discover these hashes instead of hard-coding them.
+    ///
+    /// An entry is reused only when both the spec version **and** the reported
+    /// genesis hash still match. Spec version alone cannot see a chain that was
+    /// wiped and redeployed from the same runtime, which keeps its spec version
+    /// and gets a new genesis; an entry held across that would sign
+    /// `CheckGenesis` for a chain that no longer exists. Both reads are issued
+    /// together, so validating on the pair costs no extra round trip.
     pub async fn get(
         &self,
         rpc: &RpcClient,
         configured_genesis_hash: [u8; 32],
     ) -> Result<ChainContext, StatementAllowanceError> {
-        let (spec_version, transaction_version) = fetch_runtime_version(rpc).await?;
-        if let Some(cached) = self.cached(configured_genesis_hash, spec_version) {
+        let ((spec_version, transaction_version), genesis_hash) =
+            futures::try_join!(fetch_runtime_version(rpc), fetch_genesis_hash(rpc))?;
+        if let Some(cached) = self.cached(configured_genesis_hash, spec_version, genesis_hash) {
             return Ok(cached);
         }
-        let genesis_hash = fetch_genesis_hash(rpc).await?;
         if genesis_hash != configured_genesis_hash {
             warn!(
                 configured = %hex::encode(configured_genesis_hash),
@@ -218,12 +225,20 @@ impl ChainContextCache {
         Ok(context)
     }
 
-    fn cached(&self, configured_genesis_hash: [u8; 32], spec_version: u32) -> Option<ChainContext> {
+    fn cached(
+        &self,
+        configured_genesis_hash: [u8; 32],
+        spec_version: u32,
+        genesis_hash: [u8; 32],
+    ) -> Option<ChainContext> {
         self.entries
             .lock()
             .expect("chain context cache mutex poisoned")
             .get(&configured_genesis_hash)
-            .filter(|cached| cached.state.spec_version == spec_version)
+            .filter(|cached| {
+                cached.state.spec_version == spec_version
+                    && cached.state.genesis_hash == genesis_hash
+            })
             .cloned()
     }
 }
@@ -718,14 +733,25 @@ mod tests {
             .collect()
     }
 
-    /// The requests one cache miss makes, in order.
+    /// The requests one cache miss makes, in order. The two validation reads
+    /// are issued together, so both happen whether or not the entry is reused.
     const MISS: [&str; 3] = [
         "state_getRuntimeVersion",
         "chain_getBlockHash",
         "state_getMetadata",
     ];
-    /// The requests one cache hit makes.
-    const HIT: [&str; 1] = ["state_getRuntimeVersion"];
+    /// The requests one cache hit makes: validation only, no metadata download.
+    const HIT: [&str; 2] = ["state_getRuntimeVersion", "chain_getBlockHash"];
+
+    /// One call's worth of scripted responses: the two validation reads plus,
+    /// when the entry has to be built, the metadata download.
+    fn call_script(spec_version: u32, reported: [u8; 32], downloads: bool) -> Vec<String> {
+        let mut script = vec![runtime_version(spec_version), genesis_result(reported)];
+        if downloads {
+            script.push(metadata_result());
+        }
+        script
+    }
 
     /// Drive `ChainContextCache::get` over `responses`, fetching each entry in
     /// `chains` in turn, and report the methods the transport saw.
@@ -749,11 +775,10 @@ mod tests {
     fn a_chain_is_read_once_per_spec_version() {
         let seen = scripted_cache_run(
             &[
-                runtime_version(1_000_000),
-                genesis_result([0xaa; 32]),
-                metadata_result(),
-                runtime_version(1_000_000),
-            ],
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_000, [0xaa; 32], false),
+            ]
+            .concat(),
             &[[0xaa; 32], [0xaa; 32]],
         );
 
@@ -761,16 +786,53 @@ mod tests {
     }
 
     #[test]
+    fn a_wipe_that_keeps_the_spec_version_refreshes_the_entry() {
+        // A chain redeployed from the same runtime keeps its spec version and
+        // gets a new genesis. Validating on the spec version alone would reuse
+        // the entry and sign `CheckGenesis` for the chain that no longer exists.
+        let seen = scripted_cache_run(
+            &[
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_000, [0xcc; 32], true),
+            ]
+            .concat(),
+            &[[0xaa; 32], [0xaa; 32]],
+        );
+
+        assert_eq!(seen, [MISS, MISS].concat());
+    }
+
+    #[test]
+    fn a_wipe_is_reflected_in_the_signed_genesis_hash() {
+        let responses = [
+            call_script(1_000_000, [0xaa; 32], true),
+            call_script(1_000_000, [0xcc; 32], true),
+        ]
+        .concat();
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+        let cache = ChainContextCache::default();
+
+        futures::executor::block_on(async {
+            let before = cache.get(&rpc, [0xaa; 32]).await.expect("first read");
+            assert_eq!(before.state.genesis_hash, [0xaa; 32]);
+
+            let after = cache
+                .get(&rpc, [0xaa; 32])
+                .await
+                .expect("read after a wipe");
+            assert_eq!(after.state.genesis_hash, [0xcc; 32]);
+        });
+    }
+
+    #[test]
     fn a_spec_version_bump_refreshes_the_entry() {
         let seen = scripted_cache_run(
             &[
-                runtime_version(1_000_000),
-                genesis_result([0xaa; 32]),
-                metadata_result(),
-                runtime_version(1_000_001),
-                genesis_result([0xaa; 32]),
-                metadata_result(),
-            ],
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_001, [0xaa; 32], true),
+            ]
+            .concat(),
             &[[0xaa; 32], [0xaa; 32]],
         );
 
@@ -781,13 +843,10 @@ mod tests {
     fn chains_do_not_share_a_cache_entry() {
         let seen = scripted_cache_run(
             &[
-                runtime_version(1_000_000),
-                genesis_result([0xaa; 32]),
-                metadata_result(),
-                runtime_version(1_000_000),
-                genesis_result([0xbb; 32]),
-                metadata_result(),
-            ],
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_000, [0xbb; 32], true),
+            ]
+            .concat(),
             &[[0xaa; 32], [0xbb; 32]],
         );
 
@@ -796,11 +855,7 @@ mod tests {
 
     #[test]
     fn a_stale_configured_genesis_still_yields_the_chains_own_hash() {
-        let responses = [
-            runtime_version(1_000_000),
-            genesis_result([0xbb; 32]),
-            metadata_result(),
-        ];
+        let responses = call_script(1_000_000, [0xbb; 32], true);
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
         let cache = ChainContextCache::default();
@@ -817,11 +872,10 @@ mod tests {
     fn a_stale_configured_genesis_still_keys_the_cache() {
         let seen = scripted_cache_run(
             &[
-                runtime_version(1_000_000),
-                genesis_result([0xbb; 32]),
-                metadata_result(),
-                runtime_version(1_000_000),
-            ],
+                call_script(1_000_000, [0xbb; 32], true),
+                call_script(1_000_000, [0xbb; 32], false),
+            ]
+            .concat(),
             &[[0xaa; 32], [0xaa; 32]],
         );
 
