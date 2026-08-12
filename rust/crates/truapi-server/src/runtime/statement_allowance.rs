@@ -282,6 +282,10 @@ pub struct RegistrationParams<'a> {
     pub ring: &'a RingParams,
     /// Whether an existing registration for this period may be reused.
     pub reuse_existing: bool,
+    /// A free slot the caller's own scan already selected, used for the first
+    /// attempt so the scan is not repeated. The duplicate-submit retry rescans,
+    /// so this only ever shortcuts the first submission.
+    pub preselected: Option<u32>,
 }
 
 /// Result of a long-term storage claim attempt.
@@ -365,22 +369,33 @@ pub async fn register_statement_account(
     params: RegistrationParams<'_>,
 ) -> Result<RegistrationOutcome, StatementAllowanceError> {
     let mut skipped_duplicate_slots = Vec::new();
+    let mut preselected = params.preselected;
     loop {
-        let seq = match slot::scan_slot_excluding(
-            rpc,
-            metadata,
-            entropy,
-            params.period,
-            params.target,
-            &skipped_duplicate_slots,
-            params.reuse_existing,
-        )
-        .await?
-        {
-            SlotSelection::AlreadyAllocated(seq) => {
-                return Ok(RegistrationOutcome::AlreadyAllocated { seq });
-            }
-            SlotSelection::Free(seq) => seq,
+        let seq = match preselected.take() {
+            Some(seq) => seq,
+            None => match slot::scan_slot_excluding(
+                rpc,
+                metadata,
+                entropy,
+                params.period,
+                params.target,
+                &skipped_duplicate_slots,
+                params.reuse_existing,
+            )
+            .await?
+            {
+                SlotSelection::AlreadyAllocated(seq) => {
+                    return Ok(RegistrationOutcome::AlreadyAllocated { seq });
+                }
+                SlotSelection::Free(seq) => seq,
+                SlotSelection::Full { max } => {
+                    return Err(SlotError::NoFreeStatementStoreSlot {
+                        period: params.period,
+                        max,
+                    }
+                    .into());
+                }
+            },
         };
 
         let context = slot::derive_slot_context(params.period, seq);
@@ -898,6 +913,20 @@ mod tests {
         Result<RegistrationOutcome, StatementAllowanceError>,
         ScriptedRpc,
     ) {
+        scripted_registration_with(verified_entry, None, 10)
+    }
+
+    /// Run `register_statement_account` against a scripted chain: `free_slots`
+    /// slots answered as free, the extrinsic reaching block `0xb10c`, and the
+    /// verification read at that block returning `verified_entry`.
+    fn scripted_registration_with(
+        verified_entry: &str,
+        preselected: Option<u32>,
+        free_slots: usize,
+    ) -> (
+        Result<RegistrationOutcome, StatementAllowanceError>,
+        ScriptedRpc,
+    ) {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let chain_state = ChainState {
             spec_version: 1_000_000,
@@ -913,7 +942,7 @@ mod tests {
             block_hash: "0xfinal".to_string(),
         };
 
-        let mut responses = vec!["null"; 10];
+        let mut responses = vec!["null"; free_slots];
         responses.push(verified_entry);
         let scripted = ScriptedRpc::new(responses);
         scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
@@ -929,9 +958,19 @@ mod tests {
                 period: 7,
                 ring: &ring,
                 reuse_existing: true,
+                preselected,
             },
         ));
         (outcome, scripted)
+    }
+
+    /// Storage reads the scripted transport served.
+    fn storage_reads(scripted: &ScriptedRpc) -> usize {
+        scripted
+            .calls()
+            .iter()
+            .filter(|(method, _)| method == "state_getStorage")
+            .count()
     }
 
     #[test]
@@ -949,6 +988,29 @@ mod tests {
             params.ends_with(r#","0xb10c"]"#),
             "verification read not pinned to the included block: {params}"
         );
+    }
+
+    #[test]
+    fn a_preselected_slot_is_not_rescanned() {
+        // No slots are scripted as free: if the caller's selection were ignored
+        // and the slots rescanned, the scripted transport would run dry.
+        let (outcome, scripted) = scripted_registration_with(&slot_entry([0x22; 32]), Some(0), 0);
+
+        assert!(matches!(
+            outcome.unwrap(),
+            RegistrationOutcome::Registered { seq: 0, .. }
+        ));
+        // The verification read at the included block, and nothing else.
+        assert_eq!(storage_reads(&scripted), 1);
+    }
+
+    #[test]
+    fn a_scan_without_a_preselection_reads_every_slot() {
+        let (outcome, scripted) = scripted_registration(&slot_entry([0x22; 32]));
+
+        assert!(outcome.is_ok());
+        // Ten slots scanned plus the verification read.
+        assert_eq!(storage_reads(&scripted), 11);
     }
 
     #[test]

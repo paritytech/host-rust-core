@@ -85,12 +85,12 @@ async fn chain_context_reports_the_chains_genesis_and_caches_by_the_configured_h
     );
 }
 
-/// `find_allocated_slot` must scan a live period without erroring, whatever the
-/// table's occupancy — the property that lets the steady state skip ring
-/// resolution.
+/// `scan_slot_excluding` must answer for a live period whatever the table's
+/// occupancy — never erroring — since that single answer is what lets the steady
+/// state skip ring resolution.
 #[tokio::test]
 #[ignore = "needs network access to a live People chain"]
-async fn find_allocated_slot_scans_a_live_period_without_erroring() {
+async fn scanning_a_live_period_answers_without_erroring() {
     let rpc = connect().await;
     let cache = ChainContextCache::default();
     let chain = cache
@@ -100,14 +100,24 @@ async fn find_allocated_slot_scans_a_live_period_without_erroring() {
     let period = current_period();
 
     // Entropy and target are throwaway: no alias derived from them owns a slot,
-    // so the scan must report "no slot held" rather than failing.
-    let held =
-        alloc::slot::find_allocated_slot(&rpc, &chain.metadata, [0x11; 32], period, &[0x22; 32])
-            .await
-            .expect("scanning a live period is not an error");
+    // so the scan must offer a free one or report the table full — never error.
+    let selection = alloc::slot::scan_slot_excluding(
+        &rpc,
+        &chain.metadata,
+        [0x11; 32],
+        period,
+        &[0x22; 32],
+        &[],
+        true,
+    )
+    .await
+    .expect("scanning a live period is not an error");
 
-    assert_eq!(held, None);
-    println!("scanned live period {period}: no slot held by the throwaway target");
+    assert!(
+        !matches!(selection, alloc::slot::SlotSelection::AlreadyAllocated(_)),
+        "a throwaway target cannot already hold a slot: {selection:?}"
+    );
+    println!("scanned live period {period}: {selection:?}");
 }
 
 /// The live runtime must still expose the metadata shape the allowance path

@@ -855,6 +855,7 @@ pub(super) async fn allocate_statement_store_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
         self, RegistrationParams, find_including_ring, register_statement_account,
     };
@@ -875,28 +876,40 @@ pub(super) async fn allocate_statement_store_allowance(
         .get(&rpc, services.statement_store.genesis_hash())
         .await?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
+    let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
 
-    // An allowance already recorded on chain is usable as it stands, so the
-    // steady state needs neither a ring proof nor a submission. Under
-    // `Increase` the caller wants an additional slot, so the scan is skipped.
-    if matches!(policy, OnExistingAllowancePolicy::Ignore)
-        && let Some(seq) = statement_allowance::slot::find_allocated_slot(
-            &rpc,
-            &chain.metadata,
-            bandersnatch,
-            period,
-            &target,
-        )
-        .await?
+    // One scan answers both questions: whether an allowance is already recorded
+    // on chain — in which case neither a ring proof nor a submission is needed —
+    // and which slot to claim when it is not. Its result is handed to
+    // `register_statement_account` so the slots are read once, not twice.
+    let preselected = match statement_allowance::slot::scan_slot_excluding(
+        &rpc,
+        &chain.metadata,
+        bandersnatch,
+        period,
+        &target,
+        &[],
+        reuse_existing,
+    )
+    .await?
     {
-        debug!(
-            %product_id,
-            period,
-            seq,
-            "statement-store allowance already allocated"
-        );
-        return Ok(allowance.secret.to_bytes().to_vec());
-    }
+        SlotSelection::AlreadyAllocated(seq) => {
+            debug!(
+                %product_id,
+                period,
+                seq,
+                "statement-store allowance already allocated"
+            );
+            return Ok(allowance.secret.to_bytes().to_vec());
+        }
+        SlotSelection::Free(seq) => seq,
+        SlotSelection::Full { max } => {
+            return Err(
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
+                    .into(),
+            );
+        }
+    };
 
     let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
     let ring = find_including_ring(&rpc, &chain.metadata, bandersnatch, current)
@@ -913,7 +926,8 @@ pub(super) async fn allocate_statement_store_allowance(
             target: &target,
             period,
             ring: &ring,
-            reuse_existing: matches!(policy, OnExistingAllowancePolicy::Ignore),
+            reuse_existing,
+            preselected: Some(preselected),
         },
     )
     .await?;
