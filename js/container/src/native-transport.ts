@@ -16,10 +16,12 @@ export interface NativeTransport {
   /** Sends a request and resolves with the native `value` (or rejects on error). */
   callNative(method: string, params: unknown): Promise<unknown>;
   /**
-   * Routes a native reply to its pending request. Unknown or stale ids are
-   * ignored so a forged or late reply cannot disturb other calls.
+   * Routes a native reply to its pending request. The payload may be a JSON
+   * string or an already-parsed object (some hosts invoke the reply callback
+   * with an object literal). Unknown or stale ids are ignored so a forged or
+   * late reply cannot disturb other calls.
    */
-  dispatch(id: string, payloadJson: string): void;
+  dispatch(id: string, payload: string | object): void;
 }
 
 interface PendingCall {
@@ -52,7 +54,7 @@ export function createNativeTransport(
     });
   }
 
-  function dispatch(id: string, payloadJson: string): void {
+  function dispatch(id: string, payload: string | object): void {
     const entry = pending.get(id);
     if (entry === undefined) {
       return;
@@ -64,7 +66,7 @@ export function createNativeTransport(
       error?: { code?: string; message?: string } | string;
     };
     try {
-      reply = JSON.parse(payloadJson);
+      reply = typeof payload === 'string' ? JSON.parse(payload) : payload;
     } catch {
       entry.reject(new Error('Malformed native reply'));
       return;

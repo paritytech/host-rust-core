@@ -24,8 +24,8 @@ export const CALLBACK_NAME = '__container_callback__';
  */
 export function installNativeBridge(send: NativeSender): NativeTransport {
   const transport = createNativeTransport(send);
-  freezeValue(window, CALLBACK_NAME, (id: string, payloadJson: string) => {
-    transport.dispatch(id, payloadJson);
+  freezeValue(window, CALLBACK_NAME, (id: string, payload: string | object) => {
+    transport.dispatch(id, payload);
   });
   return transport;
 }
