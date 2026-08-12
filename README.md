@@ -235,7 +235,7 @@ use a different state directory while debugging.
 
 Pushes to `main` build and deploy:
 
-- The playground to the dotNS label [`truapi-playground`](https://truapi-playground.paseo.li/) via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml), which calls the shared `paritytech/bulletin-deploy` deploy workflow. dotNS resolves the TLD per network, so the deployed name is `truapi-playground.paseo` on Paseo Next v2.
+- The playground to the dotNS label [`truapi-playground`](https://truapi-playground.paseo.li/) via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml). dotNS resolves the TLD per network, so the deployed name is `truapi-playground.paseo` on Paseo Next v2.
 - The Rust API docs to [https://paritytech.github.io/truapi](https://paritytech.github.io/truapi) via [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
 
 ## Release

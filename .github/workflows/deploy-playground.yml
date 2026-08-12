@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  build-playground:
+  deploy-playground:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,34 +64,24 @@ jobs:
         working-directory: playground
         run: yarn build
 
-      - name: Upload static export
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: truapi-playground-out
-          path: playground/out
-          if-no-files-found: error
+      # bulletin-deploy ships its environment table (RPCs, DotNS contract
+      # addresses) inside the package, so tracking latest is what keeps this
+      # deploy working across testnet resets.
+      - name: Install bulletin-deploy
+        run: npm install -g bulletin-deploy
 
-  # The deploy steps live in bulletin-deploy so DotNS changes (per-network TLDs,
-  # signer modes, contract addresses after a chain reset) arrive with a version
-  # bump instead of a broken deploy.
-  deploy-playground:
-    needs: build-playground
-    permissions:
-      contents: read
-    uses: paritytech/bulletin-deploy/.github/workflows/deploy.yml@v0.15.0
-    with:
-      artifact-name: truapi-playground-out
-      # Bare label, never a suffixed name: DotNS resolves the TLD per network at
-      # deploy time (`paseo` on paseo-next-v2, `dot` on previewnet), so a
-      # hardcoded suffix either targets the wrong record or is rejected.
-      dotns-domain: truapi-playground
-      env: ${{ inputs.environment || 'paseo-next-v2' }}
-      # Display only: the gateway host used to build the URL in the run summary.
-      gateway: ${{ inputs.environment == 'preview' && 'dot.li' || 'paseo.li' }}
-      js-merkle: true
-      max-retries: 3
-    secrets:
-      # Unset in this repo, so bulletin-deploy signs DotNS transactions with its
-      # built-in testnet fallback seed. Defining the secret switches the deploy
-      # to that owner account with no workflow change.
-      mnemonic: ${{ secrets.DOTNS_MNEMONIC }}
+      # The deploy steps live here rather than in bulletin-deploy's shared
+      # reusable workflow because that repo is private and this one is public.
+      - name: Deploy to DotNS
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
+        env:
+          # Bare label, never a suffixed name: DotNS resolves the TLD per
+          # network at deploy time (`paseo` on paseo-next-v2, `dot` on
+          # previewnet), so a hardcoded suffix either targets the wrong record
+          # or is rejected outright.
+          BULLETIN_LABEL: truapi-playground
+          BULLETIN_ENV: ${{ inputs.environment || 'paseo-next-v2' }}
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          command: cd playground && bulletin-deploy ./out "$BULLETIN_LABEL" --js-merkle --env "$BULLETIN_ENV"
