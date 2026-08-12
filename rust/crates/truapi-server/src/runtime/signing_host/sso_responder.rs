@@ -918,7 +918,8 @@ pub(super) async fn allocate_statement_store_allowance(
         .await?;
     let rpc = client.rpc();
     let chain = services.chain_context.get(&client).await?;
-    let period = statement_allowance::slot::current_period(current_unix_secs()?);
+    let now_seconds = current_unix_secs()?;
+    let period = statement_allowance::slot::current_period(now_seconds);
     let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
 
     // Held from the scan through the submission, not just around the submission:
@@ -952,7 +953,7 @@ pub(super) async fn allocate_statement_store_allowance(
             return Ok(allowance.secret.to_bytes().to_vec());
         }
         SlotSelection::Free(seq) => seq,
-        SlotSelection::Full { max } => {
+        SlotSelection::Full { max, .. } => {
             return Err(
                 StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
                     .into(),
@@ -977,6 +978,7 @@ pub(super) async fn allocate_statement_store_allowance(
             ring: &ring,
             reuse_existing,
             preselected: Some(preselected),
+            now_seconds,
         },
     )
     .await?;

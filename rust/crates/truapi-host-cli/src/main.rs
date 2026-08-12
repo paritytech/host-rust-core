@@ -403,8 +403,27 @@ async fn run_alloc_check(
     .await
     {
         Ok(alloc::slot::SlotSelection::Free(seq)) => println!("slot scan: free seq={seq}"),
-        Ok(alloc::slot::SlotSelection::Full { max }) => {
+        Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
+            let cooldown = alloc::slot::replacement_cooldown(&metadata)?;
+            for slot in &occupied {
+                let age = now.saturating_sub(slot.since);
+                let state = if age >= cooldown {
+                    "replaceable"
+                } else {
+                    "in cooldown"
+                };
+                println!(
+                    "  seq={} since={} age={age}s {state} account=0x{}",
+                    slot.seq,
+                    slot.since,
+                    hex::encode(slot.account_id)
+                );
+            }
+            match alloc::slot::replaceable_slot(&occupied, &target, now, cooldown, &[]) {
+                Some(seq) => println!("would replace seq={seq} (oldest replaceable)"),
+                None => println!("nothing replaceable: cooldown={cooldown}s"),
+            }
         }
         Ok(alloc::slot::SlotSelection::AlreadyAllocated(seq)) => {
             println!("slot scan: target already allocated at seq={seq}")
@@ -425,6 +444,7 @@ async fn run_alloc_check(
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                now_seconds: now,
             },
         )
         .await
@@ -1478,12 +1498,11 @@ async fn register_pairing_allowances(
         members: ring.members.len(),
     });
 
-    let period = alloc::slot::current_period(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .context("system clock before UNIX epoch")?
-            .as_secs(),
-    );
+    let now_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock before UNIX epoch")?
+        .as_secs();
+    let period = alloc::slot::current_period(now_seconds);
 
     for (label, target) in [("identity", identity), ("device", device)] {
         terminal_ui::output_event(SystemEvent::AllowanceChecking {
@@ -1500,6 +1519,7 @@ async fn register_pairing_allowances(
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                now_seconds,
             },
         )
         .await

@@ -322,6 +322,9 @@ pub struct RegistrationParams<'a> {
     /// attempt so the scan is not repeated. The duplicate-submit retry rescans,
     /// so this only ever shortcuts the first submission.
     pub preselected: Option<u32>,
+    /// Current unix seconds, used to age occupied slots against the runtime's
+    /// replacement cooldown. Passed in so the choice stays testable.
+    pub now_seconds: u64,
 }
 
 /// Result of a long-term storage claim attempt.
@@ -431,12 +434,26 @@ pub async fn register_statement_account(
                     return Ok(RegistrationOutcome::AlreadyAllocated { seq });
                 }
                 SlotSelection::Free(seq) => seq,
-                SlotSelection::Full { max } => {
-                    return Err(SlotError::NoFreeStatementStoreSlot {
-                        period: params.period,
-                        max,
+                SlotSelection::Full { max, occupied } => {
+                    // Nothing free: replace the oldest slot the runtime will
+                    // let us take, and only then give up.
+                    let cooldown = slot::replacement_cooldown(metadata)?;
+                    match slot::replaceable_slot(
+                        &occupied,
+                        params.target,
+                        params.now_seconds,
+                        cooldown,
+                        &skipped_duplicate_slots,
+                    ) {
+                        Some(seq) => seq,
+                        None => {
+                            return Err(SlotError::NoFreeStatementStoreSlot {
+                                period: params.period,
+                                max,
+                            }
+                            .into());
+                        }
                     }
-                    .into());
                 }
             },
         };
@@ -1030,8 +1047,16 @@ mod tests {
 
     /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
     /// JSON storage result.
+    /// Fixed clock for the scripted registration tests.
+    const NOW: u64 = 10_000_000;
+
     fn slot_entry(account: [u8; 32]) -> String {
-        let entry = (account, 0u32, 0u64).encode();
+        slot_entry_since(account, 0)
+    }
+
+    /// A scripted slot entry that was set at `since`.
+    fn slot_entry_since(account: [u8; 32], since: u64) -> String {
+        let entry = (account, 0u32, since).encode();
         format!(r#""0x{}""#, hex::encode(entry))
     }
 
@@ -1092,6 +1117,7 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected,
+                now_seconds: NOW,
             },
         ));
         (outcome, scripted)
@@ -1104,6 +1130,108 @@ mod tests {
             .iter()
             .filter(|(method, _)| method == "state_getStorage")
             .count()
+    }
+
+    /// A full table is no longer a dead end: the oldest slot the runtime allows
+    /// taking is replaced, and the registration proceeds.
+    #[test]
+    fn a_full_table_replaces_the_oldest_replaceable_slot() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let entropy = [0x11; 32];
+        let ring = RingParams {
+            members: vec![proof::member_key(entropy)],
+            exponent: 9,
+            ring_index: 0,
+            block_hash: "0xfinal".to_string(),
+        };
+
+        // Revision read, then ten occupied slots where seq 3 is the oldest, then
+        // the post-submit verification read.
+        let mut owned = vec!["null".to_string()];
+        owned.extend((0..10u64).map(|seq| {
+            let since = if seq == 3 { 1_000 } else { NOW - 1_000 };
+            slot_entry_since([0x99; 32], since)
+        }));
+        owned.push(slot_entry([0x22; 32]));
+        let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let scripted = ScriptedRpc::new(responses);
+        scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        let outcome = futures::executor::block_on(register_statement_account(
+            &rpc,
+            &metadata,
+            &chain_state,
+            entropy,
+            RegistrationParams {
+                target: &[0x22; 32],
+                period: 7,
+                ring: &ring,
+                reuse_existing: true,
+                preselected: None,
+                now_seconds: NOW,
+            },
+        ));
+
+        assert!(
+            matches!(
+                outcome.unwrap(),
+                RegistrationOutcome::Registered { seq: 3, .. }
+            ),
+            "the oldest occupied slot should have been replaced",
+        );
+    }
+
+    /// Everything occupied and still inside the cooldown stays an error.
+    #[test]
+    fn a_full_table_within_the_cooldown_still_fails() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let entropy = [0x11; 32];
+        let ring = RingParams {
+            members: vec![proof::member_key(entropy)],
+            exponent: 9,
+            ring_index: 0,
+            block_hash: "0xfinal".to_string(),
+        };
+
+        let mut owned = vec!["null".to_string()];
+        owned.extend((0..10).map(|_| slot_entry_since([0x99; 32], NOW - 10)));
+        let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let scripted = ScriptedRpc::new(responses);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let err = futures::executor::block_on(register_statement_account(
+            &rpc,
+            &metadata,
+            &chain_state,
+            entropy,
+            RegistrationParams {
+                target: &[0x22; 32],
+                period: 7,
+                ring: &ring,
+                reuse_existing: true,
+                preselected: None,
+                now_seconds: NOW,
+            },
+        ))
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("no free"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

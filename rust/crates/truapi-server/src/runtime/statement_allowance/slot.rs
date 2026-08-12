@@ -74,6 +74,17 @@ struct StatementStoreAllowanceEntry {
     since: u64,
 }
 
+/// A slot that is occupied, as observed by a scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OccupiedSlot {
+    /// Slot index within the period.
+    pub seq: u32,
+    /// Account the slot currently allows.
+    pub account_id: [u8; 32],
+    /// Unix seconds at which the slot was last set.
+    pub since: u64,
+}
+
 /// The current allowance period for `now_seconds`.
 pub fn current_period(now_seconds: u64) -> u32 {
     (now_seconds / STATEMENT_STORE_PERIOD_SECONDS) as u32
@@ -215,13 +226,45 @@ pub fn long_term_storage_period_duration(
     Ok(u32::from_le_bytes(buf))
 }
 
-/// The account id occupying a slot entry, if the storage value is present.
-/// Entry = `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
-fn entry_account_id(bytes: &[u8]) -> Option<[u8; 32]> {
-    let mut input = bytes;
-    let entry = StatementStoreAllowanceEntry::decode(&mut input).ok()?;
-    let _ = (entry.seq, entry.since);
-    Some(entry.account_id)
+/// Decode a slot entry: `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
+fn decode_entry(bytes: &[u8]) -> Option<StatementStoreAllowanceEntry> {
+    StatementStoreAllowanceEntry::decode(&mut &bytes[..]).ok()
+}
+
+/// The slot to replace once no free slot is left: the oldest one that is not
+/// the target's own and whose replacement cooldown has elapsed.
+///
+/// Takes the candidate list rather than scanning, so a caller can widen the
+/// pool without changing this rule. Ties on `since` break to the lowest `seq`
+/// so the choice is deterministic.
+pub fn replaceable_slot(
+    candidates: &[OccupiedSlot],
+    target: &[u8; 32],
+    now_seconds: u64,
+    cooldown_seconds: u64,
+    excluded: &[u32],
+) -> Option<u32> {
+    candidates
+        .iter()
+        .filter(|slot| slot.account_id != *target)
+        .filter(|slot| !excluded.contains(&slot.seq))
+        .filter(|slot| now_seconds.saturating_sub(slot.since) >= cooldown_seconds)
+        .min_by_key(|slot| (slot.since, slot.seq))
+        .map(|slot| slot.seq)
+}
+
+/// Seconds an occupied slot must age before the runtime allows replacing it.
+pub fn replacement_cooldown(metadata: &Metadata) -> Result<u64, StatementAllowanceError> {
+    let bytes = metadata
+        .constant("Resources", "StmtStoreReplacementCooldown")
+        .ok_or(MetadataError::MissingConstant {
+            pallet: "Resources",
+            constant: "StmtStoreReplacementCooldown",
+        })?;
+    let mut buf = [0u8; 4];
+    let n = bytes.len().min(4);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    Ok(u64::from(u32::from_le_bytes(buf)))
 }
 
 /// The account holding our alias slot `(period, seq)`, read pinned to
@@ -238,11 +281,11 @@ pub async fn read_slot_account_at(
     Ok(rpc
         .get_storage_at(&key, block_hash)
         .await?
-        .and_then(|bytes| entry_account_id(&bytes)))
+        .and_then(|bytes| decode_entry(&bytes).map(|entry| entry.account_id)))
 }
 
 /// Outcome of scanning for a slot to register `target` in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotSelection {
     /// A free `seq` we should claim.
     Free(u32),
@@ -254,6 +297,8 @@ pub enum SlotSelection {
     Full {
         /// Slots the period has, for the caller's error.
         max: u32,
+        /// Every occupied slot, so a caller can choose one to replace.
+        occupied: Vec<OccupiedSlot>,
     },
 }
 
@@ -271,6 +316,7 @@ pub async fn scan_slot_excluding(
 ) -> Result<SlotSelection, StatementAllowanceError> {
     let max = max_slots(metadata)?;
     let mut first_free: Option<u32> = None;
+    let mut occupied = Vec::new();
     for seq in 0..max {
         let alias = slot_alias(entropy, period, seq)?;
         let key = statement_store_allowance_key(period, &alias);
@@ -281,13 +327,21 @@ pub async fn scan_slot_excluding(
                 }
             }
             Some(bytes) => {
-                if reuse_existing && entry_account_id(&bytes) == Some(*target) {
+                let Some(entry) = decode_entry(&bytes) else {
+                    continue;
+                };
+                if reuse_existing && entry.account_id == *target {
                     return Ok(SlotSelection::AlreadyAllocated(seq));
                 }
+                occupied.push(OccupiedSlot {
+                    seq,
+                    account_id: entry.account_id,
+                    since: entry.since,
+                });
             }
         }
     }
-    Ok(first_free.map_or(SlotSelection::Full { max }, SlotSelection::Free))
+    Ok(first_free.map_or(SlotSelection::Full { max, occupied }, SlotSelection::Free))
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -328,7 +382,21 @@ mod tests {
     /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
     /// JSON storage result.
     fn slot_entry(account: [u8; 32]) -> String {
-        format!(r#""0x{}""#, hex::encode((account, 0u32, 0u64).encode()))
+        entry_with_since(account, 0)
+    }
+
+    /// A scripted slot entry that was set at `since`.
+    fn entry_with_since(account: [u8; 32], since: u64) -> String {
+        format!(r#""0x{}""#, hex::encode((account, 0u32, since).encode()))
+    }
+
+    /// An occupied-slot candidate for the replacement rule.
+    fn occupied(seq: u32, account_id: [u8; 32], since: u64) -> OccupiedSlot {
+        OccupiedSlot {
+            seq,
+            account_id,
+            since,
+        }
     }
 
     /// Run `scan_slot_excluding` for `[0x22; 32]` against a scripted period
@@ -369,10 +437,117 @@ mod tests {
 
     #[test]
     fn a_table_filled_by_other_accounts_reports_full_rather_than_erroring() {
+        let SlotSelection::Full { max, occupied } = scripted_find(&[Some([0x99; 32]); SLOTS])
+        else {
+            panic!("a full table should report Full");
+        };
+
+        assert_eq!(max, SLOTS as u32);
+        // Every slot is reported, with the age the replacement rule needs.
+        assert_eq!(occupied.len(), SLOTS);
+        assert_eq!(occupied[0].seq, 0);
+        assert_eq!(occupied[0].account_id, [0x99; 32]);
+    }
+
+    /// `since` values are what the replacement rule sorts on, so the scan has to
+    /// carry them through rather than discard them.
+    #[test]
+    fn the_scan_reports_each_occupied_slots_age() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let entries: Vec<String> = (0..SLOTS)
+            .map(|seq| entry_with_since([0x99; 32], 1_000 + seq as u64))
+            .collect();
+        let scripted = ScriptedRpc::new(entries.iter().map(String::as_str).collect::<Vec<_>>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let SlotSelection::Full { occupied, .. } = futures::executor::block_on(
+            scan_slot_excluding(&rpc, &metadata, [0x11; 32], 7, &[0x22; 32], &[], true),
+        )
+        .unwrap() else {
+            panic!("a full table should report Full");
+        };
+
         assert_eq!(
-            scripted_find(&[Some([0x99; 32]); SLOTS]),
-            SlotSelection::Full { max: SLOTS as u32 }
+            occupied.iter().map(|slot| slot.since).collect::<Vec<_>>(),
+            (0..SLOTS).map(|seq| 1_000 + seq as u64).collect::<Vec<_>>(),
         );
+    }
+
+    /// The oldest slot wins, and the target's own slot is never a candidate.
+    #[test]
+    fn the_oldest_replaceable_slot_is_chosen() {
+        let candidates = [
+            occupied(0, [0x99; 32], 5_000),
+            occupied(1, [0x22; 32], 1_000),
+            occupied(2, [0x98; 32], 2_000),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn a_slot_inside_its_cooldown_is_not_replaceable() {
+        let candidates = [occupied(0, [0x99; 32], 9_990)];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            None,
+        );
+        // One second past the cooldown it becomes a candidate.
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_050, 60, &[]),
+            Some(0),
+        );
+    }
+
+    #[test]
+    fn a_table_of_only_the_targets_own_and_cooling_slots_yields_nothing() {
+        let candidates = [
+            occupied(0, [0x22; 32], 1_000),
+            occupied(1, [0x99; 32], 9_999),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            None,
+        );
+    }
+
+    #[test]
+    fn an_excluded_slot_is_skipped_so_a_failed_replacement_moves_on() {
+        let candidates = [
+            occupied(0, [0x99; 32], 1_000),
+            occupied(1, [0x98; 32], 2_000),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[0]),
+            Some(1),
+        );
+    }
+
+    /// Equal ages resolve to the lowest seq, so retries do not oscillate.
+    #[test]
+    fn equal_ages_break_to_the_lowest_seq() {
+        let candidates = [
+            occupied(5, [0x99; 32], 1_000),
+            occupied(2, [0x98; 32], 1_000),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn the_replacement_cooldown_comes_from_the_runtime() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(replacement_cooldown(&metadata).unwrap(), 60);
     }
 
     #[test]
@@ -416,7 +591,10 @@ mod tests {
         let encoded = entry.encode();
 
         assert_eq!(encoded, (entry.account_id, entry.seq, entry.since).encode());
-        assert_eq!(entry_account_id(&encoded), Some(entry.account_id));
+        assert_eq!(
+            decode_entry(&encoded).map(|e| e.account_id),
+            Some(entry.account_id)
+        );
         assert_eq!(
             StatementStoreAllowanceEntry::decode(&mut encoded.as_slice()).unwrap(),
             entry
@@ -425,6 +603,6 @@ mod tests {
 
     #[test]
     fn truncated_allowance_entry_has_no_account() {
-        assert_eq!(entry_account_id(&[0x42; 32]), None);
+        assert!(decode_entry(&[0x42; 32]).is_none());
     }
 }
