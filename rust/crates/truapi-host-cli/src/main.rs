@@ -400,6 +400,9 @@ async fn run_alloc_check(
     .await
     {
         Ok(alloc::slot::SlotSelection::Free(seq)) => println!("slot scan: free seq={seq}"),
+        Ok(alloc::slot::SlotSelection::Full { max }) => {
+            println!("slot scan: all {max} slots taken, none reusable");
+        }
         Ok(alloc::slot::SlotSelection::AlreadyAllocated(seq)) => {
             println!("slot scan: target already allocated at seq={seq}")
         }
@@ -418,6 +421,7 @@ async fn run_alloc_check(
                 period,
                 ring: &ring,
                 reuse_existing: true,
+                preselected: None,
             },
         )
         .await
@@ -1396,6 +1400,7 @@ async fn register_pairing_allowances(
                 period,
                 ring: &ring,
                 reuse_existing: true,
+                preselected: None,
             },
         )
         .await

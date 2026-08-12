@@ -242,11 +242,19 @@ pub async fn read_slot_account_at(
 }
 
 /// Outcome of scanning for a slot to register `target` in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotSelection {
     /// A free `seq` we should claim.
     Free(u32),
     /// `target` already holds `seq` this period; no registration needed.
     AlreadyAllocated(u32),
+    /// Every slot in the period is taken and none is reusable. Reported rather
+    /// than raised so a caller can ask "is an allowance already in place" and
+    /// get an answer instead of an error.
+    Full {
+        /// Slots the period has, for the caller's error.
+        max: u32,
+    },
 }
 
 /// Scan slots `0..max` for `period`, returning the first non-excluded free seq
@@ -279,9 +287,7 @@ pub async fn scan_slot_excluding(
             }
         }
     }
-    first_free
-        .map(SlotSelection::Free)
-        .ok_or_else(|| SlotError::NoFreeStatementStoreSlot { period, max }.into())
+    Ok(first_free.map_or(SlotSelection::Full { max }, SlotSelection::Free))
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -309,7 +315,65 @@ pub async fn scan_long_term_storage_counter_excluding(
 
 #[cfg(test)]
 mod tests {
+    use subxt_rpcs::RpcClient as HostRpcClient;
+
+    use super::super::rpc::testing::ScriptedRpc;
     use super::*;
+
+    /// Fixture metadata captured from paseo-next-v2; its
+    /// `LiteStmtStoreSlotsPerPeriod` is 10.
+    const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+    const SLOTS: usize = 10;
+
+    /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
+    /// JSON storage result.
+    fn slot_entry(account: [u8; 32]) -> String {
+        format!(r#""0x{}""#, hex::encode((account, 0u32, 0u64).encode()))
+    }
+
+    /// Run `scan_slot_excluding` for `[0x22; 32]` against a scripted period
+    /// whose slot occupancy is `slots`.
+    fn scripted_find(slots: &[Option<[u8; 32]>]) -> SlotSelection {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let entries: Vec<String> = slots
+            .iter()
+            .map(|slot| slot.map_or_else(|| "null".to_string(), slot_entry))
+            .collect();
+        let scripted = ScriptedRpc::new(entries.iter().map(String::as_str));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        futures::executor::block_on(scan_slot_excluding(
+            &rpc,
+            &metadata,
+            [0x11; 32],
+            7,
+            &[0x22; 32],
+            &[],
+            true,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_empty_period_offers_the_first_slot() {
+        assert_eq!(scripted_find(&[None; SLOTS]), SlotSelection::Free(0));
+    }
+
+    #[test]
+    fn the_slot_the_target_holds_is_found() {
+        let mut slots = [None; SLOTS];
+        slots[2] = Some([0x22; 32]);
+
+        assert_eq!(scripted_find(&slots), SlotSelection::AlreadyAllocated(2));
+    }
+
+    #[test]
+    fn a_table_filled_by_other_accounts_reports_full_rather_than_erroring() {
+        assert_eq!(
+            scripted_find(&[Some([0x99; 32]); SLOTS]),
+            SlotSelection::Full { max: SLOTS as u32 }
+        );
+    }
 
     #[test]
     fn slot_context_layout() {
