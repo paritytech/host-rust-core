@@ -226,6 +226,16 @@ pub fn is_product_identifier(identifier: &str) -> bool {
     normalize_product_identifier(identifier).is_ok()
 }
 
+/// Top-level domains that dotNS deployments register product names under.
+pub const DOTNS_TLDS: &[&str] = &["dot", "paseo"];
+
+/// Whether `normalized` ends in one of [`DOTNS_TLDS`].
+fn has_dotns_tld(normalized: &str) -> bool {
+    normalized
+        .rsplit_once('.')
+        .is_some_and(|(_, tld)| DOTNS_TLDS.contains(&tld))
+}
+
 /// Normalize product identifiers before derivation and policy checks.
 pub fn normalize_product_identifier(
     product_id: &str,
@@ -233,7 +243,7 @@ pub fn normalize_product_identifier(
     let trimmed = product_id.trim();
     require_non_empty("product_id", trimmed)?;
     let normalized = trimmed.nfc().collect::<String>().to_lowercase();
-    if normalized.ends_with(".dot")
+    if has_dotns_tld(&normalized)
         || normalized == "localhost"
         || normalized.starts_with("localhost:")
     {
@@ -279,8 +289,8 @@ pub enum RuntimeConfigValidationError {
         /// Actual deeplink scheme value.
         scheme: String,
     },
-    /// Product id was not a `.dot` or localhost product identifier.
-    #[display("product_id must be a .dot or localhost product identifier, got {product_id:?}")]
+    /// Product id was not a dotNS or localhost product identifier.
+    #[display("product_id must be a dotNS or localhost product identifier, got {product_id:?}")]
     InvalidProductId {
         /// Actual product id value.
         product_id: String,
