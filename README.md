@@ -66,6 +66,7 @@ js/packages/
                           `/worker-runtime`
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
+                           (WebRTC permission gate + bridge contract: js/container/README.md)
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground.dot)

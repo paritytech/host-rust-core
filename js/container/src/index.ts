@@ -10,32 +10,9 @@
 // Isolation: Lock down globals so product scripts cannot access platform APIs.
 // =============================================================================
 
-function freezeAndDelete(obj: any, prop: string) {
-  try {
-    Object.defineProperty(obj, prop, {
-      get: () => undefined,
-      set() { /* silently ignore */ },
-      configurable: false,
-    });
-  } catch {
-    // Property may already be non-configurable; try delete as fallback
-    try { delete obj[prop]; } catch { /* best effort */ }
-  }
-}
-
-function freezeValue(obj: any, prop: string, value: any) {
-  try {
-    // Use a getter instead of a data property with writable:false.
-    // A non-writable data property on the prototype chain prevents
-    // descendant objects from shadowing it, which breaks polyfills
-    // that create objects with window/self as prototype.
-    Object.defineProperty(obj, prop, {
-      get: () => value,
-      set() { /* silently ignore */ },
-      configurable: false,
-    });
-  } catch { /* best effort */ }
-}
+import { freezeAndDelete, freezeValue } from './freeze.js';
+import { createNativeBridge } from './native-bridge.js';
+import { WebRtcManager, createWebRtcAccessRequester } from './webrtc-manager.js';
 
 // Capture native fetch BEFORE lockdown so the same-origin gate can use it.
 const _nativeFetch = window.fetch.bind(window);
@@ -121,7 +98,23 @@ freezeValue(document, 'createElement', (tagName: string, options?: ElementCreati
   return _createElement(tagName, options);
 });
 
-// --- WebRTC: no permission path in TrUAPI mode ---
-freezeAndDelete(window, 'RTCPeerConnection');
+// Shared native bridge for permission-gated native APIs (currently WebRTC).
+// Created once; the transport is handed to each consumer. Undefined when the
+// native container handler is absent.
+const _nativeBridge = createNativeBridge();
+
+// --- WebRTC: permission-gated when the native bridge is present, else blocked ---
+const _NativeRTC = window.RTCPeerConnection;
+if (_NativeRTC && _nativeBridge) {
+  freezeValue(
+    window,
+    'RTCPeerConnection',
+    new WebRtcManager(_NativeRTC, createWebRtcAccessRequester(_nativeBridge))
+      .connectionClass,
+  );
+} else {
+  // Fail-closed: no bridge => WebRTC stays blocked as before.
+  freezeAndDelete(window, 'RTCPeerConnection');
+}
 
 export {};
