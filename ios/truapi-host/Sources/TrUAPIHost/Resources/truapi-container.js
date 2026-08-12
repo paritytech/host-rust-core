@@ -47,7 +47,7 @@
         sendToNative(JSON.stringify({ type: "request", id, method, params }));
       });
     }
-    function dispatch(id, payloadJson) {
+    function dispatch(id, payload) {
       const entry = pending.get(id);
       if (entry === void 0) {
         return;
@@ -55,7 +55,7 @@
       pending.delete(id);
       let reply;
       try {
-        reply = JSON.parse(payloadJson);
+        reply = typeof payload === "string" ? JSON.parse(payload) : payload;
       } catch {
         entry.reject(new Error("Malformed native reply"));
         return;
@@ -77,8 +77,8 @@
   var CALLBACK_NAME = "__container_callback__";
   function installNativeBridge(send) {
     const transport = createNativeTransport(send);
-    freezeValue(window, CALLBACK_NAME, (id, payloadJson) => {
-      transport.dispatch(id, payloadJson);
+    freezeValue(window, CALLBACK_NAME, (id, payload) => {
+      transport.dispatch(id, payload);
     });
     return transport;
   }
