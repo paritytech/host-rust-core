@@ -898,6 +898,7 @@ pub(super) async fn allocate_statement_store_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use super::allowance_renewal::{self, StatementRenewalTarget};
     use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
         self, RegistrationParams, find_including_ring, register_statement_account,
@@ -919,6 +920,12 @@ pub(super) async fn allocate_statement_store_allowance(
     let chain = services.chain_context.get(&client).await?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
+
+    // Held from the scan through the submission, not just around the submission:
+    // the scan is what picks the free slot, so a renewal pass scanning in the gap
+    // would choose the same one. Released on the early return below, which
+    // submits nothing.
+    let _registration = signing_host.renewal.registration_lock().lock().await;
 
     // One scan answers both questions: whether an allowance is already recorded
     // on chain — in which case neither a ring proof nor a submission is needed —
@@ -994,6 +1001,16 @@ pub(super) async fn allocate_statement_store_allowance(
                 "statement-store allowance already allocated"
             );
         }
+    }
+    if let Err(reason) = allowance_renewal::track(
+        signing_host,
+        vec![StatementRenewalTarget::ProductStatementAllowance {
+            product_id: product_id.to_string(),
+        }],
+    )
+    .await
+    {
+        warn!(%product_id, %reason, "failed to record statement-store renewal target");
     }
     Ok(allowance.secret.to_bytes().to_vec())
 }
@@ -1117,7 +1134,7 @@ pub(super) async fn allocate_bulletin_allowance(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
+pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())

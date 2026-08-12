@@ -392,6 +392,46 @@ impl Metadata {
         Ok((variant.index, lite_people.index))
     }
 
+    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
+    ///
+    /// The encoded payload has to match it exactly: a short payload is accepted
+    /// locally and then panics the runtime inside `validate_transaction`, so this
+    /// is the offline guard against drifting out of step with the pallet.
+    pub fn as_resources_info_field_count(
+        &self,
+        info_variant: &str,
+    ) -> Result<usize, StatementAllowanceError> {
+        let ext = self
+            .extensions
+            .iter()
+            .find(|e| e.identifier == AS_RESOURCES)
+            .ok_or(MetadataError::MissingAsResourcesExtension)?;
+        let option_type = match &self.resolve_type(ext.extra_type)?.type_def {
+            TypeDef::Composite(_) => self.single_field_type(ext.extra_type)?,
+            _ => ext.extra_type,
+        };
+        let info_type = self
+            .resolve_variant(option_type)?
+            .variants
+            .iter()
+            .find(|v| v.name == "Some")
+            .and_then(|some| match some.fields.as_slice() {
+                [field] => Some(field.ty.id),
+                _ => None,
+            })
+            .ok_or(MetadataError::AsResourcesExtraNotOption)?;
+        Ok(self
+            .resolve_variant(info_type)?
+            .variants
+            .iter()
+            .find(|v| v.name == info_variant)
+            .ok_or_else(|| MetadataError::MissingAsResourcesInfoVariant {
+                variant: info_variant.to_string(),
+            })?
+            .fields
+            .len())
+    }
+
     /// Resolve a type id in the registry.
     fn resolve_type(
         &self,
