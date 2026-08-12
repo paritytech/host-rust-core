@@ -30,6 +30,8 @@ pub(crate) struct RuntimeServices {
     pub(crate) platform: Arc<dyn Platform>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
+    /// People-chain genesis hash, the chain hosting the reserved people rings.
+    pub(crate) people_chain_genesis_hash: [u8; 32],
     /// People-chain statement store RPC client.
     pub(crate) statement_store: StatementStoreRpc,
     /// In-core Bulletin submission over the configured Bulletin chain.
@@ -65,6 +67,7 @@ impl RuntimeServices {
         Arc::new(Self {
             platform,
             chain,
+            people_chain_genesis_hash,
             statement_store,
             bulletin,
             preimage_cache: Mutex::new(PreimageCache::default()),

@@ -285,7 +285,7 @@ pub(in crate::runtime) fn create_proof(
     Ok((proof.to_vec(), alias))
 }
 
-fn collection_id(location: &RingLocation) -> Result<[u8; 32], RingVrfError> {
+pub(super) fn collection_id(location: &RingLocation) -> Result<[u8; 32], RingVrfError> {
     location
         .junctions
         .iter()

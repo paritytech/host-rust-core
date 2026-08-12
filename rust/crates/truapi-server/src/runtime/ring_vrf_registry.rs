@@ -7,6 +7,7 @@ use parity_scale_codec::{Decode, Encode};
 use truapi::v01::{ProductAccountId, RegisteredRingVrfKey, RingLocation};
 use truapi_platform::{CoreStorageKey, Platform, normalize_product_identifier};
 
+use crate::host_logic::product_account::PeopleCollection;
 use crate::host_logic::sso::messages::RingVrfError;
 
 #[derive(Clone, Debug, PartialEq, Eq, Encode, Decode)]
@@ -238,7 +239,12 @@ impl RingVrfRegistryStore {
             .entries
             .iter()
             .any(|entry| entry.handle == handle && entry.rings.contains(&ring));
-        if !registered {
+        // A reserved people key needs no registration, so it is selectable for
+        // its own collection on whatever chain the caller named.
+        let reserved = PeopleCollection::from_handle(&handle).is_some_and(|collection| {
+            PeopleCollection::from_ring_location(&ring) == Some(collection)
+        });
+        if !registered && !reserved {
             return Err(RingVrfError::KeyNotInRing);
         }
         snapshot
@@ -370,10 +376,13 @@ fn validate_snapshot(snapshot: &RegistrySnapshot) -> Result<(), RingVrfError> {
         if !provider_rings.insert(provider.ring.encode()) {
             return Err(invalid_registry("duplicate selected provider"));
         }
-        if !snapshot
-            .entries
-            .iter()
-            .any(|entry| entry.handle == provider.handle && entry.rings.contains(&provider.ring))
+        let reserved = PeopleCollection::from_handle(&provider.handle).is_some_and(|collection| {
+            PeopleCollection::from_ring_location(&provider.ring) == Some(collection)
+        });
+        if !reserved
+            && !snapshot.entries.iter().any(|entry| {
+                entry.handle == provider.handle && entry.rings.contains(&provider.ring)
+            })
         {
             return Err(invalid_registry(
                 "selected provider is not registered for its ring",
@@ -460,6 +469,46 @@ mod tests {
             dot_ns_identifier: owner.to_string(),
             derivation_index: truapi::v01::DerivationIndex::Index(index),
         }
+    }
+
+    /// A paired host validates every remote owner listing, so the reserved
+    /// entries a signing host appends have to survive that validation.
+    #[test]
+    fn a_reserved_people_listing_survives_owner_validation() {
+        let people_chain = [0x22; 32];
+        let mut entries = vec![RegisteredRingVrfKey {
+            handle: handle("peopl.dot", 7),
+            rings: vec![ring(3)],
+            public_key: Some([0xaa; 32]),
+        }];
+        entries.extend(
+            PeopleCollection::ALL
+                .into_iter()
+                .map(|collection| RegisteredRingVrfKey {
+                    handle: collection.handle(),
+                    rings: vec![collection.ring_location(people_chain)],
+                    public_key: Some([0xbb; 32]),
+                }),
+        );
+
+        validate_owner_listing("peopl.dot", &entries).expect("reserved entries validate");
+    }
+
+    /// A reserved provider is selectable without a registration, so a snapshot
+    /// naming one has to persist.
+    #[test]
+    fn a_snapshot_may_select_a_reserved_provider() {
+        let people_chain = [0x22; 32];
+        let snapshot = RegistrySnapshot {
+            entries: Vec::new(),
+            complete_owners: Vec::new(),
+            selected_providers: vec![SelectedProvider {
+                ring: PeopleCollection::People.ring_location(people_chain),
+                handle: PeopleCollection::People.handle(),
+            }],
+        };
+
+        validate_snapshot(&snapshot).expect("a reserved selection persists");
     }
 
     fn ring(byte: u8) -> RingLocation {

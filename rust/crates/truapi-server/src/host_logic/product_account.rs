@@ -114,6 +114,133 @@ fn derive_person_ring_vrf_entropy(root_entropy: &[u8], index: u32) -> [u8; 32] {
     .expect("the reserved personhood product id is a valid junction")
 }
 
+/// Length of a ring collection identifier.
+const RING_COLLECTION_ID_LEN: usize = 32;
+/// Ring collection identifiers are space-padded to their full width.
+const RING_COLLECTION_ID_PAD: u8 = b' ';
+
+/// Reserved collection identifier for the full people ring.
+pub const PEOPLE_COLLECTION_ID: [u8; RING_COLLECTION_ID_LEN] =
+    padded_collection_id(b"pop:polkadot.network/people");
+
+/// Reserved collection identifier for the lite people ring.
+pub const PEOPLE_LITE_COLLECTION_ID: [u8; RING_COLLECTION_ID_LEN] =
+    padded_collection_id(b"pop:polkadot.network/people-lite");
+
+const fn padded_collection_id(prefix: &[u8]) -> [u8; RING_COLLECTION_ID_LEN] {
+    assert!(prefix.len() <= RING_COLLECTION_ID_LEN);
+    let mut bytes = [RING_COLLECTION_ID_PAD; RING_COLLECTION_ID_LEN];
+    let mut index = 0;
+    while index < prefix.len() {
+        bytes[index] = prefix[index];
+        index += 1;
+    }
+    bytes
+}
+
+/// A reserved `peopl.dot` people ring the wallet can always produce aliases for.
+///
+/// The wallet derives both member keys from its own root entropy, so neither
+/// needs an RFC-0024 registration before a product can use it. Full personhood
+/// keeps index 0 and lite personhood index 1, matching the reserved RFC-0022
+/// derivation paths pinned by [`derive_full_person_ring_vrf_entropy`] and
+/// [`derive_lite_person_ring_vrf_entropy`].
+///
+/// The native hosts key these rings off the account holding them rather than a
+/// derivation index, so the same mnemonic yields a different member key there.
+/// Only the collection identifiers are shared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeopleCollection {
+    /// Full personhood ring.
+    People,
+    /// Lite personhood ring, backed by the wallet's own account.
+    LitePeople,
+}
+
+impl PeopleCollection {
+    /// Every reserved collection, full personhood first.
+    pub const ALL: [Self; 2] = [Self::People, Self::LitePeople];
+
+    /// Reserved ring collection identifier addressing this ring.
+    pub const fn collection_id(self) -> [u8; RING_COLLECTION_ID_LEN] {
+        match self {
+            Self::People => PEOPLE_COLLECTION_ID,
+            Self::LitePeople => PEOPLE_LITE_COLLECTION_ID,
+        }
+    }
+
+    /// Index of this collection's member key within the `peopl.dot` domain.
+    pub const fn derivation_index(self) -> u32 {
+        match self {
+            Self::People => 0,
+            Self::LitePeople => 1,
+        }
+    }
+
+    /// Reserved registry handle naming this collection's member key.
+    pub fn handle(self) -> truapi::v01::ProductAccountId {
+        truapi::v01::ProductAccountId {
+            dot_ns_identifier: PERSONHOOD_PRODUCT_ID.to_string(),
+            derivation_index: self.derivation(),
+        }
+    }
+
+    /// Ring-VRF entropy backing this collection's member key.
+    pub fn entropy(self, root_entropy: &[u8]) -> [u8; 32] {
+        derive_person_ring_vrf_entropy(root_entropy, self.derivation_index())
+    }
+
+    /// Ring location addressing this collection on the People chain.
+    pub fn ring_location(self, people_chain_genesis_hash: [u8; 32]) -> truapi::v01::RingLocation {
+        truapi::v01::RingLocation {
+            chain_id: people_chain_genesis_hash,
+            junctions: vec![truapi::v01::RingLocationJunction::CollectionId(
+                self.collection_id().to_vec(),
+            )],
+        }
+    }
+
+    /// The collection a handle names, when it is a reserved one.
+    ///
+    /// `Raw` indices are compared on their derived bytes, because
+    /// [`derivation_index_bytes`] maps `Raw(index_bytes(n))` and `Index(n)` to
+    /// the same ring-VRF key.
+    pub fn from_handle(handle: &truapi::v01::ProductAccountId) -> Option<Self> {
+        if handle.dot_ns_identifier != PERSONHOOD_PRODUCT_ID {
+            return None;
+        }
+        let bytes = derivation_index_bytes(&handle.derivation_index);
+        Self::ALL
+            .into_iter()
+            .find(|collection| derivation_index_bytes(&collection.derivation()) == bytes)
+    }
+
+    /// Derivation index selecting this collection's member key.
+    pub fn derivation(self) -> truapi::v01::DerivationIndex {
+        truapi::v01::DerivationIndex::Index(self.derivation_index())
+    }
+
+    /// The collection a ring location addresses, when it names a reserved one.
+    ///
+    /// Chain-agnostic: only the collection identifier is compared, so a caller
+    /// naming any chain still resolves to the same reserved ring.
+    pub fn from_ring_location(ring: &truapi::v01::RingLocation) -> Option<Self> {
+        ring.junctions.iter().find_map(|junction| match junction {
+            truapi::v01::RingLocationJunction::CollectionId(value) => {
+                Self::from_collection_id(value)
+            }
+            truapi::v01::RingLocationJunction::PalletInstance(_) => None,
+        })
+    }
+
+    /// The collection a ring collection identifier addresses, when reserved.
+    pub fn from_collection_id(collection_id: &[u8]) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|collection| collection.collection_id().as_slice() == collection_id)
+    }
+}
+
 /// Derive arbitrary RFC-0022 ring-VRF entropy:
 /// `hash(root_entropy, "ring-vrf")//{product_id}//{derivation_index}`.
 pub fn derive_ring_vrf_entropy(
@@ -378,6 +505,58 @@ mod tests {
         assert_eq!(
             derivation_index_bytes(&DerivationIndex::Raw([0xEE; 32])),
             [0xEE; 32]
+        );
+    }
+
+    #[test]
+    fn people_collection_ids_are_space_padded_to_the_ring_width() {
+        assert_eq!(
+            PeopleCollection::People.collection_id(),
+            *b"pop:polkadot.network/people     "
+        );
+        assert_eq!(
+            PeopleCollection::LitePeople.collection_id(),
+            *b"pop:polkadot.network/people-lite"
+        );
+    }
+
+    #[test]
+    fn people_collections_round_trip_through_handles_and_collection_ids() {
+        for collection in PeopleCollection::ALL {
+            assert_eq!(
+                PeopleCollection::from_handle(&collection.handle()),
+                Some(collection)
+            );
+            assert_eq!(
+                PeopleCollection::from_collection_id(&collection.collection_id()),
+                Some(collection)
+            );
+        }
+
+        let unreserved = truapi::v01::ProductAccountId {
+            dot_ns_identifier: PERSONHOOD_PRODUCT_ID.to_string(),
+            derivation_index: truapi::v01::DerivationIndex::Index(2),
+        };
+        assert_eq!(PeopleCollection::from_handle(&unreserved), None);
+
+        let other_product = truapi::v01::ProductAccountId {
+            dot_ns_identifier: "myapp.dot".to_string(),
+            derivation_index: truapi::v01::DerivationIndex::Index(0),
+        };
+        assert_eq!(PeopleCollection::from_handle(&other_product), None);
+        assert_eq!(PeopleCollection::from_collection_id(b"not a ring"), None);
+    }
+
+    #[test]
+    fn people_collection_entropy_matches_the_reserved_derivations() {
+        let root_entropy = [7u8; 32];
+        assert_eq!(
+            PeopleCollection::People.entropy(&root_entropy),
+            derive_full_person_ring_vrf_entropy(&root_entropy)
+        );
+        assert_eq!(
+            PeopleCollection::LitePeople.entropy(&root_entropy),
+            derive_lite_person_ring_vrf_entropy(&root_entropy)
         );
     }
 

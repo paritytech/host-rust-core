@@ -35,7 +35,7 @@ use super::statement_store_rpc::StatementStoreRpc;
 use crate::chain_runtime::ChainRuntime;
 use crate::host_logic::entropy::derive_product_entropy_from_source;
 use crate::host_logic::product_account::{
-    derivation_index_bytes, derive_product_keypair_from_subtree_secret,
+    PeopleCollection, derivation_index_bytes, derive_product_keypair_from_subtree_secret,
     derive_ring_vrf_entropy_from_domain,
 };
 use crate::host_logic::session::{SessionInfo, SessionState, encode_persisted_session};
@@ -400,9 +400,17 @@ impl PairingHost {
         let session = self.session_state.current().ok_or(RingVrfError::Unknown {
             reason: "no active session".to_string(),
         })?;
-        self.ring_vrf_registry
+        let mut providers = self
+            .ring_vrf_registry
             .providers(session.public_key, ring)
-            .await
+            .await?;
+        if let Some(collection) = PeopleCollection::from_ring_location(ring) {
+            let reserved = collection.handle();
+            if !providers.contains(&reserved) {
+                providers.push(reserved);
+            }
+        }
+        Ok(providers)
     }
 
     pub(crate) async fn selected_ring_vrf_provider(
