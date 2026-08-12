@@ -1328,6 +1328,98 @@ mod tests {
         (services, signing_host)
     }
 
+    /// Metadata for the People chain the signing fixture is configured for.
+    #[cfg(not(target_arch = "wasm32"))]
+    const PEOPLE_METADATA: &[u8] =
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+
+    /// An existing statement-store allowance must be served without resolving a
+    /// ring or submitting anything. The cache and the scan are covered on their
+    /// own; this pins the composition, so removing the early return fails here
+    /// rather than passing quietly.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_existing_allowance_is_served_without_touching_the_ring() {
+        use futures::FutureExt;
+
+        use crate::host_logic::product_account::derive_sr25519_hard_path;
+
+        let product_id = "myapp.dot";
+        let allowance =
+            derive_sr25519_hard_path(&ENTROPY, &["allowance", "statement-store", product_id])
+                .expect("allowance derivation succeeds");
+        // The scan reads slot 0 first; answering it with an entry naming the
+        // allowance account is the "already allocated" case.
+        let slot_entry = (allowance.public.to_bytes(), 0u32, 0u64).encode();
+
+        let platform = Arc::new(StubPlatform {
+            rpc_responses: vec![
+                r#"{"jsonrpc":"2.0","id":"truapi:1","result":{"specVersion":1000000,"transactionVersion":1}}"#.to_string(),
+                format!(r#"{{"jsonrpc":"2.0","id":"truapi:2","result":"0x{}"}}"#, hex::encode([0u8; 32])),
+                format!(r#"{{"jsonrpc":"2.0","id":"truapi:3","result":"0x{}"}}"#, hex::encode(PEOPLE_METADATA)),
+                format!(r#"{{"jsonrpc":"2.0","id":"truapi:4","result":"0x{}"}}"#, hex::encode(&slot_entry)),
+            ],
+            ..Default::default()
+        });
+        let (services, signing_host) = signing_fixture(platform.clone());
+
+        // Bounded, because the failure mode of losing the early return is a
+        // wait on a chain read the stub deliberately does not answer. Without
+        // the bound that regression hangs instead of reporting.
+        let secret = futures::executor::block_on(async {
+            futures::select! {
+                result = allocate_statement_store_allowance(
+                    &services,
+                    &signing_host,
+                    product_id,
+                    OnExistingAllowancePolicy::Ignore,
+                )
+                .fuse() => result,
+                _ = futures_timer::Delay::new(std::time::Duration::from_secs(5)).fuse() => {
+                    panic!("allocation blocked on a chain read it should not have made")
+                }
+            }
+        })
+        .expect("an existing allowance is returned");
+
+        assert_eq!(secret, allowance.secret.to_bytes().to_vec());
+
+        let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
+        let methods: Vec<String> = sent
+            .iter()
+            .filter_map(|request| {
+                let value: serde_json::Value = serde_json::from_str(request).ok()?;
+                value.get("method")?.as_str().map(ToString::to_string)
+            })
+            .collect();
+
+        // `find_including_ring` opens with `chain_getFinalizedHead`, so none of
+        // these means no ring was resolved.
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "chain_getFinalizedHead")
+                .count(),
+            0,
+            "a ring was resolved for an allowance already in place: {methods:?}"
+        );
+        assert!(
+            !methods
+                .iter()
+                .any(|method| method.starts_with("author_submit")),
+            "an extrinsic was submitted for an allowance already in place: {methods:?}"
+        );
+        // One slot read answered it; the scan stopped at the first match.
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "state_getStorage")
+                .count(),
+            1,
+            "expected a single slot read: {methods:?}"
+        );
+    }
+
     #[test]
     fn responder_advertises_and_signs_with_the_local_uid_identity() {
         let (_services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
