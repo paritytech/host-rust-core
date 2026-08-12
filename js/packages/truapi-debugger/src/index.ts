@@ -41,5 +41,9 @@ export type { RenderTraceDetailOptions } from "./trace-render.js";
 export { detectRetryStorms } from "./retry-storm.js";
 export type { RetryStormOptions } from "./retry-storm.js";
 export { TRACE_DETAIL_CSS } from "./trace-styles.js";
+export {
+  INSPECTOR_LAYOUT_CSS,
+  INSPECTOR_SHELL_CSS,
+} from "./inspector-styles.js";
 export { createInAppDebugger } from "./in-app.js";
 export type { InAppDebugger } from "./in-app.js";
