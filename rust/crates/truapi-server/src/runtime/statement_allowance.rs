@@ -2,7 +2,7 @@
 //!
 //! Mirrors how an iOS/web client obtains statement-store allowance from the real
 //! People chain: build the `Resources.set_statement_store_account` call, prove
-//! LitePeople membership with the RFC-0022 `peopl.dot` index-1 ring-VRF key,
+//! LitePeople membership with the caller's registry-selected ring-VRF key,
 //! and submit the resulting unsigned General (v5) extrinsic. Native only
 //! (needs the `verifiable` prover and live chain reads).
 
@@ -14,6 +14,8 @@ pub mod ring;
 pub mod rpc;
 pub mod slot;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::FutureExt;
@@ -114,8 +116,17 @@ pub async fn fetch_metadata(rpc: &RpcClient) -> Result<Metadata, StatementAllowa
     }
 }
 
-/// Fetch the chain state needed to fill the signed extensions.
-pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementAllowanceError> {
+/// Read the chain's runtime `(specVersion, transactionVersion)`.
+pub async fn fetch_runtime_version(rpc: &RpcClient) -> Result<(u32, u32), StatementAllowanceError> {
+    let runtime = rpc.call("state_getRuntimeVersion", json!([])).await?;
+    Ok((
+        json_u32(&runtime, "specVersion")?,
+        json_u32(&runtime, "transactionVersion")?,
+    ))
+}
+
+/// Read the chain's genesis block hash.
+pub async fn fetch_genesis_hash(rpc: &RpcClient) -> Result<[u8; 32], StatementAllowanceError> {
     let genesis_hex = rpc.call("chain_getBlockHash", json!([0])).await?;
     let genesis_str = genesis_hex
         .as_str()
@@ -123,20 +134,149 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
     let genesis = hex::decode(genesis_str.strip_prefix("0x").unwrap_or(genesis_str))
         .map_err(ChainStateError::GenesisHex)?;
     let len = genesis.len();
-    let genesis_hash: [u8; 32] = genesis
+    genesis
         .try_into()
-        .map_err(|_| ChainStateError::GenesisHashLength { len })?;
+        .map_err(|_| ChainStateError::GenesisHashLength { len }.into())
+}
 
-    let runtime = rpc.call("state_getRuntimeVersion", json!([])).await?;
-    let spec_version = json_u32(&runtime, "specVersion")?;
-    let transaction_version = json_u32(&runtime, "transactionVersion")?;
-
+/// Fetch the chain state needed to fill the signed extensions.
+pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementAllowanceError> {
+    let genesis_hash = fetch_genesis_hash(rpc).await?;
+    let (spec_version, transaction_version) = fetch_runtime_version(rpc).await?;
     Ok(ChainState {
         spec_version,
         transaction_version,
         genesis_hash,
         nonce: 0,
     })
+}
+
+/// An RPC client together with the genesis hash the host routes it by.
+///
+/// Bundled because the two have to agree and nothing at a call site shows when
+/// they do not: that hash keys the chain-context cache and is what a reported
+/// divergence is measured against, so pairing a connection with another chain's
+/// hash silently attributes one chain's metadata to another.
+pub struct ChainClient {
+    rpc: RpcClient,
+    configured_genesis_hash: [u8; 32],
+}
+
+impl ChainClient {
+    /// Scope `rpc` to the chain the host routes by `configured_genesis_hash`.
+    pub fn new(rpc: RpcClient, configured_genesis_hash: [u8; 32]) -> Self {
+        Self {
+            rpc,
+            configured_genesis_hash,
+        }
+    }
+
+    /// The underlying client, for reads that do not need the chain's identity.
+    pub fn rpc(&self) -> &RpcClient {
+        &self.rpc
+    }
+}
+
+/// Runtime metadata and signed-extension chain state for one chain.
+#[derive(Clone)]
+pub struct ChainContext {
+    /// Decoded runtime metadata.
+    pub metadata: Arc<Metadata>,
+    /// Chain state filling the standard signed extensions.
+    pub state: ChainState,
+}
+
+/// Runtime metadata and chain state cached per chain.
+///
+/// Both are fixed for a given runtime, and a full `state_getMetadata` response
+/// is large, so entries are keyed by genesis hash and revalidated with a
+/// concurrent `state_getRuntimeVersion` + `chain_getBlockHash(0)` — two small
+/// requests in place of a metadata download on every allowance call.
+///
+/// One entry per chain the host is configured for, so the map needs no eviction
+/// policy: it is bounded by that chain set, not by call volume.
+#[derive(Default)]
+pub struct ChainContextCache {
+    entries: Mutex<HashMap<[u8; 32], ChainContext>>,
+    /// Held across a miss so concurrent callers do not each download the same
+    /// metadata. `chain_runtime` shares one in-flight future for this, which is
+    /// tidier, but `Shared` needs a `Clone` output and `StatementAllowanceError`
+    /// is not — so the waiters re-check the entry instead.
+    downloads: futures::lock::Mutex<()>,
+}
+
+impl ChainContextCache {
+    /// Metadata and chain state for the chain reached over `rpc`, read from the
+    /// chain only when no entry describes the chain as it is now.
+    ///
+    /// The client carries the caller's identity for the chain — the hash it
+    /// routes connections by — and that keys the cache. The genesis hash
+    /// placed in [`ChainState`], and therefore signed into every allowance
+    /// extrinsic, is always the one the chain itself reports: a host whose
+    /// configured constant has gone stale (a wiped testnet) still produces
+    /// valid extrinsics. A divergence is logged, since it means the host's
+    /// chain configuration needs refreshing — see RFC-0026, which lets hosts
+    /// discover these hashes instead of hard-coding them.
+    ///
+    /// An entry is reused only when both the spec version **and** the reported
+    /// genesis hash still match. Spec version alone cannot see a chain that was
+    /// wiped and redeployed from the same runtime, which keeps its spec version
+    /// and gets a new genesis; an entry held across that would sign
+    /// `CheckGenesis` for a chain that no longer exists. Both reads are issued
+    /// together, so validating on the pair costs no extra round trip.
+    pub async fn get(&self, client: &ChainClient) -> Result<ChainContext, StatementAllowanceError> {
+        let rpc = client.rpc();
+        let configured_genesis_hash = client.configured_genesis_hash;
+        let ((spec_version, transaction_version), genesis_hash) =
+            futures::try_join!(fetch_runtime_version(rpc), fetch_genesis_hash(rpc))?;
+        if let Some(cached) = self.cached(configured_genesis_hash, spec_version, genesis_hash) {
+            return Ok(cached);
+        }
+
+        let _download = self.downloads.lock().await;
+        // Another caller may have finished the download while this one waited.
+        if let Some(cached) = self.cached(configured_genesis_hash, spec_version, genesis_hash) {
+            return Ok(cached);
+        }
+        if genesis_hash != configured_genesis_hash {
+            warn!(
+                configured = %hex::encode(configured_genesis_hash),
+                reported = %hex::encode(genesis_hash),
+                "chain reports a different genesis than the host configured; using the chain's"
+            );
+        }
+        let context = ChainContext {
+            metadata: Arc::new(fetch_metadata(rpc).await?),
+            state: ChainState {
+                spec_version,
+                transaction_version,
+                genesis_hash,
+                nonce: 0,
+            },
+        };
+        self.entries
+            .lock()
+            .expect("chain context cache mutex poisoned")
+            .insert(configured_genesis_hash, context.clone());
+        Ok(context)
+    }
+
+    fn cached(
+        &self,
+        configured_genesis_hash: [u8; 32],
+        spec_version: u32,
+        genesis_hash: [u8; 32],
+    ) -> Option<ChainContext> {
+        self.entries
+            .lock()
+            .expect("chain context cache mutex poisoned")
+            .get(&configured_genesis_hash)
+            .filter(|cached| {
+                cached.state.spec_version == spec_version
+                    && cached.state.genesis_hash == genesis_hash
+            })
+            .cloned()
+    }
 }
 
 /// Read a u32 field from a JSON object.
@@ -178,6 +318,10 @@ pub struct RegistrationParams<'a> {
     pub ring: &'a RingParams,
     /// Whether an existing registration for this period may be reused.
     pub reuse_existing: bool,
+    /// A free slot the caller's own scan already selected, used for the first
+    /// attempt so the scan is not repeated. The duplicate-submit retry rescans,
+    /// so this only ever shortcuts the first submission.
+    pub preselected: Option<u32>,
 }
 
 /// Result of a long-term storage claim attempt.
@@ -261,22 +405,33 @@ pub async fn register_statement_account(
     params: RegistrationParams<'_>,
 ) -> Result<RegistrationOutcome, StatementAllowanceError> {
     let mut skipped_duplicate_slots = Vec::new();
+    let mut preselected = params.preselected;
     loop {
-        let seq = match slot::scan_slot_excluding(
-            rpc,
-            metadata,
-            entropy,
-            params.period,
-            params.target,
-            &skipped_duplicate_slots,
-            params.reuse_existing,
-        )
-        .await?
-        {
-            SlotSelection::AlreadyAllocated(seq) => {
-                return Ok(RegistrationOutcome::AlreadyAllocated { seq });
-            }
-            SlotSelection::Free(seq) => seq,
+        let seq = match preselected.take() {
+            Some(seq) => seq,
+            None => match slot::scan_slot_excluding(
+                rpc,
+                metadata,
+                entropy,
+                params.period,
+                params.target,
+                &skipped_duplicate_slots,
+                params.reuse_existing,
+            )
+            .await?
+            {
+                SlotSelection::AlreadyAllocated(seq) => {
+                    return Ok(RegistrationOutcome::AlreadyAllocated { seq });
+                }
+                SlotSelection::Free(seq) => seq,
+                SlotSelection::Full { max } => {
+                    return Err(SlotError::NoFreeStatementStoreSlot {
+                        period: params.period,
+                        max,
+                    }
+                    .into());
+                }
+            },
         };
 
         let context = slot::derive_slot_context(params.period, seq);
@@ -605,6 +760,263 @@ mod tests {
         );
     }
 
+    /// A `state_getRuntimeVersion` result for `spec_version`.
+    fn runtime_version(spec_version: u32) -> String {
+        format!(r#"{{"specVersion":{spec_version},"transactionVersion":1}}"#)
+    }
+
+    /// The fixture metadata as a `state_getMetadata` hex result.
+    fn metadata_result() -> String {
+        format!(r#""0x{}""#, hex::encode(FIXTURE))
+    }
+
+    /// A `chain_getBlockHash(0)` result for `genesis_hash`.
+    fn genesis_result(genesis_hash: [u8; 32]) -> String {
+        format!(r#""0x{}""#, hex::encode(genesis_hash))
+    }
+
+    /// Method names the scripted transport saw, in order.
+    fn methods(scripted: &ScriptedRpc) -> Vec<String> {
+        scripted
+            .calls()
+            .into_iter()
+            .map(|(method, _)| method)
+            .collect()
+    }
+
+    /// The requests one cache miss makes, in order. The two validation reads
+    /// are issued together, so both happen whether or not the entry is reused.
+    const MISS: [&str; 3] = [
+        "state_getRuntimeVersion",
+        "chain_getBlockHash",
+        "state_getMetadata",
+    ];
+    /// The requests one cache hit makes: validation only, no metadata download.
+    const HIT: [&str; 2] = ["state_getRuntimeVersion", "chain_getBlockHash"];
+
+    /// One call's worth of scripted responses: the two validation reads plus,
+    /// when the entry has to be built, the metadata download.
+    fn call_script(spec_version: u32, reported: [u8; 32], downloads: bool) -> Vec<String> {
+        let mut script = vec![runtime_version(spec_version), genesis_result(reported)];
+        if downloads {
+            script.push(metadata_result());
+        }
+        script
+    }
+
+    /// Drive `ChainContextCache::get` over `responses`, fetching each entry in
+    /// `chains` in turn, and report the methods the transport saw.
+    fn scripted_cache_run(responses: &[String], chains: &[[u8; 32]]) -> Vec<String> {
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
+        let cache = ChainContextCache::default();
+
+        futures::executor::block_on(async {
+            for genesis_hash in chains {
+                let client = ChainClient::new(
+                    RpcClient::new(HostRpcClient::new(scripted.clone())),
+                    *genesis_hash,
+                );
+                cache
+                    .get(&client)
+                    .await
+                    .expect("scripted chain context fetch succeeds");
+            }
+        });
+        methods(&scripted)
+    }
+
+    /// Transport that answers by method rather than in order, and yields inside
+    /// every request so concurrent cache misses genuinely interleave. Counts the
+    /// metadata downloads, which is the cost the cache exists to avoid.
+    #[derive(Clone, Default)]
+    struct CountingRpc(std::sync::Arc<CountingState>);
+
+    #[derive(Default)]
+    struct CountingState {
+        metadata_downloads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingRpc {
+        fn metadata_downloads(&self) -> usize {
+            self.0
+                .metadata_downloads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl subxt_rpcs::client::RpcClientT for CountingRpc {
+        fn request_raw<'a>(
+            &'a self,
+            method: &'a str,
+            _params: Option<Box<subxt_rpcs::client::RawValue>>,
+        ) -> subxt_rpcs::client::RawRpcFuture<'a, Box<subxt_rpcs::client::RawValue>> {
+            let body = match method {
+                "state_getRuntimeVersion" => runtime_version(1_000_000),
+                "chain_getBlockHash" => genesis_result([0xaa; 32]),
+                "state_getMetadata" => {
+                    self.0
+                        .metadata_downloads
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metadata_result()
+                }
+                other => panic!("unexpected request `{other}`"),
+            };
+            Box::pin(async move {
+                // Yield so a concurrently polled caller reaches the same point.
+                let mut yielded = false;
+                futures::future::poll_fn(move |cx| {
+                    if yielded {
+                        core::task::Poll::Ready(())
+                    } else {
+                        yielded = true;
+                        cx.waker().wake_by_ref();
+                        core::task::Poll::Pending
+                    }
+                })
+                .await;
+                Ok(subxt_rpcs::client::RawValue::from_string(body)
+                    .expect("scripted response is valid JSON"))
+            })
+        }
+
+        fn subscribe_raw<'a>(
+            &'a self,
+            _sub: &'a str,
+            _params: Option<Box<subxt_rpcs::client::RawValue>>,
+            _unsub: &'a str,
+        ) -> subxt_rpcs::client::RawRpcFuture<'a, subxt_rpcs::client::RawRpcSubscription> {
+            unreachable!("the chain context cache does not subscribe")
+        }
+    }
+
+    #[test]
+    fn concurrent_misses_download_the_metadata_once() {
+        let counting = CountingRpc::default();
+        let client = ChainClient::new(
+            RpcClient::new(HostRpcClient::new(counting.clone())),
+            [0xaa; 32],
+        );
+        let cache = ChainContextCache::default();
+
+        futures::executor::block_on(async {
+            let (first, second) = futures::join!(cache.get(&client), cache.get(&client));
+            let first = first.expect("first read");
+            let second = second.expect("second read");
+            // Both callers end up on the same entry.
+            assert!(Arc::ptr_eq(&first.metadata, &second.metadata));
+        });
+
+        assert_eq!(counting.metadata_downloads(), 1);
+    }
+
+    #[test]
+    fn a_chain_is_read_once_per_spec_version() {
+        let seen = scripted_cache_run(
+            &[
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_000, [0xaa; 32], false),
+            ]
+            .concat(),
+            &[[0xaa; 32], [0xaa; 32]],
+        );
+
+        assert_eq!(seen, [MISS.as_slice(), HIT.as_slice()].concat());
+    }
+
+    #[test]
+    fn a_wipe_that_keeps_the_spec_version_refreshes_the_entry() {
+        // A chain redeployed from the same runtime keeps its spec version and
+        // gets a new genesis. Validating on the spec version alone would reuse
+        // the entry and sign `CheckGenesis` for the chain that no longer exists.
+        let seen = scripted_cache_run(
+            &[
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_000, [0xcc; 32], true),
+            ]
+            .concat(),
+            &[[0xaa; 32], [0xaa; 32]],
+        );
+
+        assert_eq!(seen, [MISS, MISS].concat());
+    }
+
+    #[test]
+    fn a_wipe_is_reflected_in_the_signed_genesis_hash() {
+        let responses = [
+            call_script(1_000_000, [0xaa; 32], true),
+            call_script(1_000_000, [0xcc; 32], true),
+        ]
+        .concat();
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
+        let client = ChainClient::new(RpcClient::new(HostRpcClient::new(scripted)), [0xaa; 32]);
+        let cache = ChainContextCache::default();
+
+        futures::executor::block_on(async {
+            let before = cache.get(&client).await.expect("first read");
+            assert_eq!(before.state.genesis_hash, [0xaa; 32]);
+
+            let after = cache.get(&client).await.expect("read after a wipe");
+            assert_eq!(after.state.genesis_hash, [0xcc; 32]);
+        });
+    }
+
+    #[test]
+    fn a_spec_version_bump_refreshes_the_entry() {
+        let seen = scripted_cache_run(
+            &[
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_001, [0xaa; 32], true),
+            ]
+            .concat(),
+            &[[0xaa; 32], [0xaa; 32]],
+        );
+
+        assert_eq!(seen, [MISS, MISS].concat());
+    }
+
+    #[test]
+    fn chains_do_not_share_a_cache_entry() {
+        let seen = scripted_cache_run(
+            &[
+                call_script(1_000_000, [0xaa; 32], true),
+                call_script(1_000_000, [0xbb; 32], true),
+            ]
+            .concat(),
+            &[[0xaa; 32], [0xbb; 32]],
+        );
+
+        assert_eq!(seen, [MISS, MISS].concat());
+    }
+
+    #[test]
+    fn a_stale_configured_genesis_still_yields_the_chains_own_hash() {
+        let responses = call_script(1_000_000, [0xbb; 32], true);
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
+        let client = ChainClient::new(RpcClient::new(HostRpcClient::new(scripted)), [0xaa; 32]);
+        let cache = ChainContextCache::default();
+
+        let context = futures::executor::block_on(cache.get(&client))
+            .expect("a stale configured genesis is not fatal");
+
+        // `CheckGenesis` is signed over this, so it must be the chain's value,
+        // not the caller's possibly-stale constant.
+        assert_eq!(context.state.genesis_hash, [0xbb; 32]);
+    }
+
+    #[test]
+    fn a_stale_configured_genesis_still_keys_the_cache() {
+        let seen = scripted_cache_run(
+            &[
+                call_script(1_000_000, [0xbb; 32], true),
+                call_script(1_000_000, [0xbb; 32], false),
+            ]
+            .concat(),
+            &[[0xaa; 32], [0xaa; 32]],
+        );
+
+        assert_eq!(seen, [MISS.as_slice(), HIT.as_slice()].concat());
+    }
+
     /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
     /// JSON storage result.
     fn slot_entry(account: [u8; 32]) -> String {
@@ -617,6 +1029,20 @@ mod tests {
     /// read at that block returns `verified_entry`.
     fn scripted_registration(
         verified_entry: &str,
+    ) -> (
+        Result<RegistrationOutcome, StatementAllowanceError>,
+        ScriptedRpc,
+    ) {
+        scripted_registration_with(verified_entry, None, 10)
+    }
+
+    /// Run `register_statement_account` against a scripted chain: `free_slots`
+    /// slots answered as free, the extrinsic reaching block `0xb10c`, and the
+    /// verification read at that block returning `verified_entry`.
+    fn scripted_registration_with(
+        verified_entry: &str,
+        preselected: Option<u32>,
+        free_slots: usize,
     ) -> (
         Result<RegistrationOutcome, StatementAllowanceError>,
         ScriptedRpc,
@@ -636,7 +1062,7 @@ mod tests {
             block_hash: "0xfinal".to_string(),
         };
 
-        let mut responses = vec!["null"; 10];
+        let mut responses = vec!["null"; free_slots];
         responses.push(verified_entry);
         let scripted = ScriptedRpc::new(responses);
         scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
@@ -652,9 +1078,19 @@ mod tests {
                 period: 7,
                 ring: &ring,
                 reuse_existing: true,
+                preselected,
             },
         ));
         (outcome, scripted)
+    }
+
+    /// Storage reads the scripted transport served.
+    fn storage_reads(scripted: &ScriptedRpc) -> usize {
+        scripted
+            .calls()
+            .iter()
+            .filter(|(method, _)| method == "state_getStorage")
+            .count()
     }
 
     #[test]
@@ -672,6 +1108,29 @@ mod tests {
             params.ends_with(r#","0xb10c"]"#),
             "verification read not pinned to the included block: {params}"
         );
+    }
+
+    #[test]
+    fn a_preselected_slot_is_not_rescanned() {
+        // No slots are scripted as free: if the caller's selection were ignored
+        // and the slots rescanned, the scripted transport would run dry.
+        let (outcome, scripted) = scripted_registration_with(&slot_entry([0x22; 32]), Some(0), 0);
+
+        assert!(matches!(
+            outcome.unwrap(),
+            RegistrationOutcome::Registered { seq: 0, .. }
+        ));
+        // The verification read at the included block, and nothing else.
+        assert_eq!(storage_reads(&scripted), 1);
+    }
+
+    #[test]
+    fn a_scan_without_a_preselection_reads_every_slot() {
+        let (outcome, scripted) = scripted_registration(&slot_entry([0x22; 32]));
+
+        assert!(outcome.is_ok());
+        // Ten slots scanned plus the verification read.
+        assert_eq!(storage_reads(&scripted), 11);
     }
 
     #[test]

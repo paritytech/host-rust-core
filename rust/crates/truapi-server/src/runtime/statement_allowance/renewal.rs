@@ -132,6 +132,8 @@ pub async fn renew_targets(
                     period,
                     ring: context.ring,
                     reuse_existing: true,
+                    // The pass has no scan of its own, so registration scans.
+                    preselected: None,
                 },
             )
             .await
