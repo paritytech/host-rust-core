@@ -1455,20 +1455,36 @@ mod tests {
         // allowance account is the "already allocated" case.
         let slot_entry = (allowance.public.to_bytes(), 0u32, 0u64).encode();
 
+        // Keyed by method, not by request order: this path decodes ~450 KiB of
+        // metadata between two requests, which outruns the ordered script's
+        // fixed-poll pump on a loaded runner.
         let platform = Arc::new(StubPlatform {
-            rpc_responses: vec![
-                r#"{"jsonrpc":"2.0","id":"truapi:1","result":{"specVersion":1000000,"transactionVersion":1}}"#.to_string(),
-                format!(r#"{{"jsonrpc":"2.0","id":"truapi:2","result":"0x{}"}}"#, hex::encode([0u8; 32])),
-                format!(r#"{{"jsonrpc":"2.0","id":"truapi:3","result":"0x{}"}}"#, hex::encode(PEOPLE_METADATA)),
-                format!(r#"{{"jsonrpc":"2.0","id":"truapi:4","result":"0x{}"}}"#, hex::encode(&slot_entry)),
+            rpc_method_responses: vec![
+                (
+                    "state_getRuntimeVersion",
+                    r#"{"specVersion":1000000,"transactionVersion":1}"#.to_string(),
+                ),
+                (
+                    "chain_getBlockHash",
+                    format!(r#""0x{}""#, hex::encode([0u8; 32])),
+                ),
+                (
+                    "state_getMetadata",
+                    format!(r#""0x{}""#, hex::encode(PEOPLE_METADATA)),
+                ),
+                (
+                    "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(&slot_entry)),
+                ),
             ],
             ..Default::default()
         });
         let (services, signing_host) = signing_fixture(platform.clone());
 
         // Bounded, because the failure mode of losing the early return is a
-        // wait on a chain read the stub deliberately does not answer. Without
-        // the bound that regression hangs instead of reporting.
+        // wait on a chain read the stub deliberately does not answer — an
+        // unbounded test would hang instead of reporting. The bound is generous
+        // because it is catching a hang, not asserting latency.
         let secret = futures::executor::block_on(async {
             futures::select! {
                 result = allocate_statement_store_allowance(
@@ -1478,7 +1494,7 @@ mod tests {
                     OnExistingAllowancePolicy::Ignore,
                 )
                 .fuse() => result,
-                _ = futures_timer::Delay::new(std::time::Duration::from_secs(5)).fuse() => {
+                _ = futures_timer::Delay::new(std::time::Duration::from_secs(30)).fuse() => {
                     panic!("allocation blocked on a chain read it should not have made")
                 }
             }
