@@ -31,8 +31,13 @@ use truapi::latest::TxPayloadExtension;
 
 use crate::host_logic::product_account::SR25519_SIGNING_CONTEXT;
 
-/// The runtime name of the V5 authorization extension. Takes the resolver so
-/// its type stays inferred at the call site.
+/// The runtime name of the V5 authorization extension.
+///
+/// Takes the resolver it is resolved against, never reading it, because the one
+/// caller that needs a value form cannot name its resolver: `PortableRegistry`
+/// comes from `scale-info`, which is not a `wasm32` dependency and is not
+/// re-exported through `subxt::ext`. Contexts that are themselves generic over
+/// `R` spell the associated const directly instead.
 fn verify_multi_signature_name<R>(_types: &R) -> &'static str
 where
     R: TypeResolver,
@@ -295,9 +300,11 @@ pub(crate) enum V5BuildError {
     Other(String),
 }
 
-/// Whether a type encodes to zero bytes, mirroring the `is_type_empty` filter
-/// `frame-decode` applies before asking for implicit bytes. Probed by traversing
-/// empty input: a type needing no bytes succeeds.
+/// Whether a type encodes to zero bytes, mirroring the private `is_type_empty`
+/// filter `frame-decode` 0.18 applies before asking for implicit bytes. Probed by
+/// traversing empty input, which can only ever over-validate: every kind that
+/// crate treats as non-empty needs at least one byte, so it cannot decode from
+/// none.
 fn type_is_empty<R: TypeResolver>(type_id: R::TypeId, types: &R) -> bool {
     decode_with_visitor(&mut &[][..], type_id, types, IgnoreVisitor::new()).is_ok()
 }
@@ -391,8 +398,10 @@ pub(crate) fn build_signed_extrinsic_v5(
     for extension in extensions {
         if !declared_at_any_version.contains(extension.id.as_str()) {
             return Err(V5BuildError::UnsupportedExtensions(format!(
-                "transaction extension {:?} is not declared by the runtime; \
-                 pipeline version {transaction_extension_version} declares [{}]",
+                "transaction extension {:?} is not declared by the runtime at \
+                 any pipeline version; encoding uses version \
+                 {transaction_extension_version}, and the declared names across \
+                 all versions are [{}]",
                 extension.id,
                 declared_at_any_version
                     .iter()
