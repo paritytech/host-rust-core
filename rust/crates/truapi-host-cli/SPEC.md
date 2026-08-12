@@ -339,7 +339,7 @@ use `exec '/script <path>'` instead. `/copy` is unavailable. `/clear` and
 
 Accepted product identifiers are:
 
-- a name ending in `.dot`;
+- a name ending in a dotNS TLD (`.dot` or `.paseo`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 

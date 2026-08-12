@@ -229,8 +229,9 @@ pub fn is_product_identifier(identifier: &str) -> bool {
 /// Top-level domains that dotNS deployments register product names under.
 pub const DOTNS_TLDS: &[&str] = &["dot", "paseo"];
 
-/// Whether `normalized` ends in one of [`DOTNS_TLDS`].
-fn has_dotns_tld(normalized: &str) -> bool {
+/// Whether `normalized` ends in one of [`DOTNS_TLDS`]. Expects an
+/// already-lowercased host with no trailing root dot.
+pub fn has_dotns_tld(normalized: &str) -> bool {
     normalized
         .rsplit_once('.')
         .is_some_and(|(_, tld)| DOTNS_TLDS.contains(&tld))
