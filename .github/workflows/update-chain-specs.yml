@@ -51,20 +51,13 @@ jobs:
         if: steps.diff.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          # A PR opened with the default GITHUB_TOKEN does not trigger workflows,
-          # so CI would never run on the refresh and
-          # `every_catalog_genesis_hash_matches_its_bundled_spec` — the check that
-          # catches a re-genesised chain — would be skipped on the one PR it
-          # exists for. Falls back to the default token so the refresh still opens
-          # a PR (unchecked, and the body says so) when the secret is absent.
-          token: ${{ secrets.CHAIN_SPECS_PR_TOKEN || secrets.GITHUB_TOKEN }}
           title: "chore(truapi-provider): refresh bundled chain specs"
           body: |
             Automated refresh of the smoldot chain specs bundled in truapi-provider.
 
-            If no checks appear below, this PR was opened with the default `GITHUB_TOKEN`
-            (the `CHAIN_SPECS_PR_TOKEN` secret is missing), which cannot trigger workflows.
-            Push an empty commit to the branch to run CI before merging.
+            This branch is force-pushed on every run, so the newest head can end up with no
+            checks attached even though earlier ones had them. If none are shown below, push an
+            empty commit before merging rather than assuming the suite passed.
 
             If `every_catalog_genesis_hash_matches_its_bundled_spec` fails, a chain has been
             re-genesised and its `genesis_hex` in `rust/crates/truapi-provider/src/networks.rs`
