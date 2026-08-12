@@ -9,7 +9,7 @@ _The protocol that lets product webviews talk to their Polkadot host._
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/paritytech/truapi/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/truapi/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/truapi)
-[![Playground](https://img.shields.io/badge/playground-live-success?style=flat-square)](https://truapi-playground.dot.li/)
+[![Playground](https://img.shields.io/badge/playground-live-success?style=flat-square)](https://truapi-playground.paseo.li/)
 
 </div>
 
@@ -23,7 +23,7 @@ Browse the published Rust API docs at [paritytech.github.io/truapi](https://pari
 
 The interactive playground lets you browse every method, edit request payloads, and call or subscribe to them live against a connected host. It also drives an end-to-end **Diagnosis** that produces a per-host pass/fail report ([playground/README.md → Diagnosis](playground/README.md#diagnosis)). The explorer aggregates those reports into a cross-host **Compatibility** matrix ([explorer/README.md → Host compatibility matrix](explorer/README.md#host-compatibility-matrix)).
 
-**Live:** [truapi-playground.dot.li](https://truapi-playground.dot.li/) (open from inside the Polkadot Desktop Browser)
+**Live:** [truapi-playground.paseo.li](https://truapi-playground.paseo.li/) (open from inside the Polkadot Desktop Browser)
 
 ## Usage
 
@@ -68,7 +68,7 @@ js/container/              TS lockdown container for the iOS host web view; bund
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
-playground/                Interactive Next.js playground (truapi-playground.dot)
+playground/                Interactive Next.js playground (truapi-playground dotNS label)
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
 scripts/codegen.sh         Regenerate the TS client from the Rust source
@@ -235,7 +235,7 @@ use a different state directory while debugging.
 
 Pushes to `main` build and deploy:
 
-- The playground to [`truapi-playground.dot`](https://truapi-playground.dot.li/) via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml).
+- The playground to the dotNS label [`truapi-playground`](https://truapi-playground.paseo.li/) via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml), which calls the shared `paritytech/bulletin-deploy` deploy workflow. dotNS resolves the TLD per network, so the deployed name is `truapi-playground.paseo` on Paseo Next v2.
 - The Rust API docs to [https://paritytech.github.io/truapi](https://paritytech.github.io/truapi) via [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
 
 ## Release

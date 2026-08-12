@@ -4,7 +4,7 @@ _Browse, edit, and call SPA-compatible TrUAPI methods live against a connected P
 
 The playground is an interactive reference for the SPA-compatible TrUAPI surface: methods are grouped by domain, with live request payload editing, one-click calls, and live subscriptions. It must be opened from inside a TrUAPI host so it can talk to the host over the wire.
 
-**Live app:** [https://truapi-playground.dot.li/](https://truapi-playground.dot.li/)
+**Live app:** [https://truapi-playground.paseo.li/](https://truapi-playground.paseo.li/)
 
 ## Features
 
@@ -92,7 +92,7 @@ compatibility section.
 
 Open the playground inside a TrUAPI host (it cannot run standalone in a browser tab):
 
-- **Web host:** [https://truapi-playground.dot.li/](https://truapi-playground.dot.li/) opened inside dot.li.
+- **Web host:** [https://truapi-playground.paseo.li/](https://truapi-playground.paseo.li/) opened inside dot.li.
 - **Desktop host:** the Polkadot Desktop app pointed at the playground URL.
 
 Before you start:
@@ -143,7 +143,7 @@ Pushes to `main` deploy automatically via the [Deploy Playground workflow](../.g
 ```bash
 yarn install --frozen-lockfile
 yarn build
-bulletin-deploy ./out truapi-playground.dot --js-merkle
+bulletin-deploy ./out truapi-playground --js-merkle
 ```
 
 The build output goes to `./out`. The deploy can fail on transient network errors; CI retries up to 3 times, and you can simply rerun the command locally.
