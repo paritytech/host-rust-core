@@ -4394,18 +4394,18 @@ public func FfiConverterTypeNativeRuntimeConfigError_lower(_ value: NativeRuntim
  * a raw string so the dispatcher can reject invalid input before reaching
  * any platform callback. The open variants carry the ready-to-load canonical
  * URL; `DotName` and `Localhost` keep the dotns/localhost identity visible so
- * env-aware hosts can rewrite `.dot` names for their active environment and
+ * env-aware hosts can rewrite dotNS names for their active environment and
  * re-parse without losing information.
  */
 
 public enum NavigateDecision: Equatable, Hashable {
 
     /**
-     * A `.dot` identifier plus path/query/hash suffix (no leading `/`).
+     * A dotNS identifier plus path/query/hash suffix (no leading `/`).
      */
     case dotName(
         /**
-         * Lower-cased `.dot` host (e.g. `mytestapp.dot`).
+         * Lower-cased dotNS host (e.g. `mytestapp.dot`).
          */identifier: String,
         /**
          * Path/query/hash suffix without a leading `/`.
@@ -4437,7 +4437,7 @@ public enum NavigateDecision: Equatable, Hashable {
          */url: String
     )
     /**
-     * Input that fails every branch: empty, unparseable, or a `.dot` URL
+     * Input that fails every branch: empty, unparseable, or a dotNS URL
      * carrying port/userinfo (both forbidden since dotns resolves via the
      * chain and has no notion of either).
      */
