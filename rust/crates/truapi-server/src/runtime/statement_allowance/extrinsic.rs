@@ -34,6 +34,7 @@ struct ClaimLongTermStorageCallArgs {
 struct RegisterStatementStoreAllowanceInfo {
     proof: Vec<u8>,
     ring_index: u32,
+    revision: u32,
     personhood: u8,
 }
 
@@ -94,15 +95,17 @@ pub fn build_as_resources_extra(
     metadata: &Metadata,
     proof: &[u8],
     ring_index: u32,
+    revision: u32,
 ) -> Result<Vec<u8>, StatementAllowanceError> {
     let (info_index, lite_people) =
         metadata.as_resources_variant_indices("RegisterStatementStoreAllowance")?;
-    let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 1);
+    let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 4 + 1);
     extra.push(OPTION_SOME);
     extra.push(info_index);
     RegisterStatementStoreAllowanceInfo {
         proof: proof.to_vec(),
         ring_index,
+        revision,
         personhood: lite_people,
     }
     .encode_to(&mut extra);
@@ -227,8 +230,9 @@ mod tests {
     fn as_resources_extra_wraps_proof_as_bytes() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let proof = vec![0xEE; 785];
-        let extra = build_as_resources_extra(&metadata, &proof, 3).unwrap();
-        // Some(0x01) ‖ variant(0x02) ‖ compact(785)=0x45,0x0c ‖ 785 bytes ‖ ringIndex LE ‖ LitePeople.
+        let extra = build_as_resources_extra(&metadata, &proof, 3, 9).unwrap();
+        // Some(0x01) ‖ variant(0x02) ‖ compact(785)=0x45,0x0c ‖ 785 bytes
+        // ‖ ringIndex LE ‖ revision LE ‖ LitePeople.
         assert_eq!(
             extra,
             [
@@ -236,6 +240,7 @@ mod tests {
                 Compact(785u32).encode(),
                 proof,
                 3u32.to_le_bytes().to_vec(),
+                9u32.to_le_bytes().to_vec(),
                 vec![0x01],
             ]
             .concat()
@@ -245,6 +250,7 @@ mod tests {
             RegisterStatementStoreAllowanceInfo {
                 proof: vec![0xEE; 785],
                 ring_index: 3,
+                revision: 9,
                 personhood: 1,
             }
         );
@@ -284,7 +290,7 @@ mod tests {
     fn extrinsic_has_general_v5_preamble_and_embeds_call() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let call = build_set_statement_store_account_call(&metadata, 7, 0, &[0u8; 32]).unwrap();
-        let extra = build_as_resources_extra(&metadata, &[0xEE; 785], 0).unwrap();
+        let extra = build_as_resources_extra(&metadata, &[0xEE; 785], 0, 0).unwrap();
         let xt = build_unsigned_extrinsic(&metadata, &fixture_state(), &call, &extra).unwrap();
 
         // Strip the compact length prefix and check the body head + tail.

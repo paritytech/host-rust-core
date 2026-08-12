@@ -404,6 +404,13 @@ pub async fn register_statement_account(
     entropy: [u8; 32],
     params: RegistrationParams<'_>,
 ) -> Result<RegistrationOutcome, StatementAllowanceError> {
+    let revision = ring::read_ring_revision(
+        rpc,
+        metadata,
+        params.ring.ring_index,
+        &params.ring.block_hash,
+    )
+    .await?;
     let mut skipped_duplicate_slots = Vec::new();
     let mut preselected = params.preselected;
     loop {
@@ -445,8 +452,12 @@ pub async fn register_statement_account(
         let domain = proof::domain_for_ring_exponent(params.ring.exponent)?;
         let ring_proof =
             proof::ring_vrf_proof(domain, entropy, &params.ring.members, &context, &message)?;
-        let as_resources_extra =
-            extrinsic::build_as_resources_extra(metadata, &ring_proof, params.ring.ring_index)?;
+        let as_resources_extra = extrinsic::build_as_resources_extra(
+            metadata,
+            &ring_proof,
+            params.ring.ring_index,
+            revision,
+        )?;
         let extrinsic =
             extrinsic::build_unsigned_extrinsic(metadata, chain_state, &call, &as_resources_extra)?;
 
@@ -1062,7 +1073,9 @@ mod tests {
             block_hash: "0xfinal".to_string(),
         };
 
-        let mut responses = vec!["null"; free_slots];
+        // The ring-revision read comes first (absent => revision 0), then the
+        // slot scan, then the post-submit verification read.
+        let mut responses = vec!["null"; free_slots + 1];
         responses.push(verified_entry);
         let scripted = ScriptedRpc::new(responses);
         scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
@@ -1120,8 +1133,9 @@ mod tests {
             outcome.unwrap(),
             RegistrationOutcome::Registered { seq: 0, .. }
         ));
-        // The verification read at the included block, and nothing else.
-        assert_eq!(storage_reads(&scripted), 1);
+        // The ring revision and the verification read at the included block,
+        // and nothing else.
+        assert_eq!(storage_reads(&scripted), 2);
     }
 
     #[test]
@@ -1129,8 +1143,8 @@ mod tests {
         let (outcome, scripted) = scripted_registration(&slot_entry([0x22; 32]));
 
         assert!(outcome.is_ok());
-        // Ten slots scanned plus the verification read.
-        assert_eq!(storage_reads(&scripted), 11);
+        // The ring revision, ten slots scanned, and the verification read.
+        assert_eq!(storage_reads(&scripted), 12);
     }
 
     #[test]

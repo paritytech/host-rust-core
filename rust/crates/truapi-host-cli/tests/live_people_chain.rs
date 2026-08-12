@@ -147,6 +147,24 @@ async fn live_metadata_still_exposes_the_allowance_extension_shape() {
     let period_duration = alloc::slot::long_term_storage_period_duration(&chain.metadata)
         .expect("live runtime exposes Resources.LongTermStoragePeriodDuration");
 
+    // Indices alone are not enough. A runtime upgrade added a `revision` field to
+    // `RegisterStatementStoreAllowance` while its index stayed at 2, so the
+    // encoded payload went one field short and the runtime panicked in
+    // `validate_transaction`. Assert the arity the encoders actually write.
+    for (variant, encoded_fields) in [
+        ("RegisterStatementStoreAllowance", 4usize),
+        ("ClaimLongTermStorage", 4usize),
+    ] {
+        let declared = chain
+            .metadata
+            .as_resources_info_field_count(variant)
+            .unwrap_or_else(|err| panic!("live runtime declares `{variant}`: {err}"));
+        assert_eq!(
+            declared, encoded_fields,
+            "`{variant}`: the encoder writes {encoded_fields} fields, the live runtime declares {declared}"
+        );
+    }
+
     assert!(period_duration > 0);
     println!(
         "live spec {}: RegisterStatementStoreAllowance={register:?} ClaimLongTermStorage={claim:?} \
