@@ -6,11 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: bulletin-deploy environment to publish to (blank = CLI default)
+        description: bulletin-deploy environment to publish to
         type: choice
-        default: ""
+        default: paseo-next-v2
         options:
-          - ""
           - paseo-next-v2
           - preview
           - paseo-next
@@ -71,8 +70,11 @@ jobs:
       - name: Deploy to DotNS
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         env:
-          BULLETIN_ENV: ${{ inputs.environment }}
+          # Bare label: dotNS attaches the environment's own top-level domain
+          # and rejects a name that arrives carrying one.
+          BULLETIN_LABEL: truapi-playground
+          BULLETIN_ENV: ${{ inputs.environment || 'paseo-next-v2' }}
         with:
           timeout_minutes: 10
           max_attempts: 3
-          command: cd playground && bulletin-deploy ./out truapi-playground.dot --js-merkle ${BULLETIN_ENV:+--env "$BULLETIN_ENV"}
+          command: cd playground && bulletin-deploy ./out "$BULLETIN_LABEL" --js-merkle --env "$BULLETIN_ENV"

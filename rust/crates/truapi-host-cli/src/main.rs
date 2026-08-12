@@ -54,7 +54,8 @@ use crate::terminal_ui::{
 };
 
 /// Default product served by the pairing host's frame endpoint. Product ids
-/// must be a `.dot` name or a `localhost` identifier (host-spec product id).
+/// must be a dotNS name (`.dot` or `.paseo`) or a `localhost` identifier
+/// (host-spec product id).
 const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 /// Deeplink scheme advertised by the pairing host.
 const DEEPLINK_SCHEME: &str = "polkadotapp";

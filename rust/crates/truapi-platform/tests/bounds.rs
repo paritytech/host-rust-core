@@ -122,11 +122,19 @@ fn product_context_validation_cases() {
         Ok(())
     );
     assert_eq!(
-        ProductContext::new("example.com".to_string()).map(|_| ()),
-        Err(RuntimeConfigValidationError::InvalidProductId {
-            product_id: "example.com".to_string(),
-        })
+        ProductContext::new("Host-Playground44.PASEO".to_string())
+            .map(|context| context.product_id),
+        Ok("host-playground44.paseo".to_string())
     );
+    for domain in ["example.com", "example.org", "dotli.dotty"] {
+        assert_eq!(
+            ProductContext::new(domain.to_string()).map(|_| ()),
+            Err(RuntimeConfigValidationError::InvalidProductId {
+                product_id: domain.to_string(),
+            }),
+            "{domain} must not be accepted as a product identifier"
+        );
+    }
     assert_eq!(
         ProductContext::new(" ".to_string()).map(|_| ()),
         Err(RuntimeConfigValidationError::EmptyField {
