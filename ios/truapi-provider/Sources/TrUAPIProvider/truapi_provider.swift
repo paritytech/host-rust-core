@@ -543,8 +543,13 @@ public protocol ChainConnectionProtocol: AnyObject, Sendable {
     /**
      * Close the connection; the listener's `on_closed` fires once the stream
      * ends.
+     *
+     * NOT named `close`: uniffi's generated Kotlin object already implements
+     * `AutoCloseable.close()` for handle disposal, so an exported `close`
+     * produces two methods with the same signature and the module does not
+     * compile ("Conflicting overloads").
      */
-    func close() 
+    func disconnect() 
     
     /**
      * Queue a JSON-RPC request string.
@@ -611,10 +616,15 @@ open class ChainConnection: ChainConnectionProtocol, @unchecked Sendable {
     /**
      * Close the connection; the listener's `on_closed` fires once the stream
      * ends.
+     *
+     * NOT named `close`: uniffi's generated Kotlin object already implements
+     * `AutoCloseable.close()` for handle disposal, so an exported `close`
+     * produces two methods with the same signature and the module does not
+     * compile ("Conflicting overloads").
      */
-open func close()  {try! rustCall() {
+open func disconnect()  {try! rustCall() {
         uniffiCallStatus in
-    uniffi_truapi_provider_fn_method_chainconnection_close(
+    uniffi_truapi_provider_fn_method_chainconnection_disconnect(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
@@ -1185,7 +1195,7 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_truapi_provider_checksum_method_chainconnection_close() != 23404) {
+    if (uniffi_truapi_provider_checksum_method_chainconnection_disconnect() != 40440) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_provider_checksum_method_chainconnection_send() != 52883) {

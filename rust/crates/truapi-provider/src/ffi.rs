@@ -228,7 +228,12 @@ impl ChainConnection {
 
     /// Close the connection; the listener's `on_closed` fires once the stream
     /// ends.
-    pub fn close(&self) {
+    ///
+    /// NOT named `close`: uniffi's generated Kotlin object already implements
+    /// `AutoCloseable.close()` for handle disposal, so an exported `close`
+    /// produces two methods with the same signature and the module does not
+    /// compile ("Conflicting overloads").
+    pub fn disconnect(&self) {
         self.inner.close();
     }
 }
