@@ -25,6 +25,21 @@ The generated bindings and the container bundle are committed build outputs; the
                                 # (URL + checksum)
 ```
 
+When only the bindings need refreshing — a Rust surface change with no container
+or xcframework impact — skip the full rebuild, which needs Xcode and the iOS
+targets:
+
+```bash
+# from the repo root
+make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh
+```
+
+CI's `iOS bindings (uniffi)` job runs the same two commands with
+`sync-bindings.sh --check`, which diffs the committed bindings against freshly
+generated ones and writes nothing. It runs on Linux, so it verifies the
+generated files only; the hand-written conformers in `TrUAPIHost.swift` and
+`Tests/` are not compiled by any CI job.
+
 Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, and makes the `Package.swift` follow-up commit only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
 For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
@@ -222,5 +237,5 @@ The product page reads `window.__truapi_localhost.url` (set by the bootstrap scr
 `./scripts/rebuild.sh` orchestrates everything; the underlying pieces, should you need one in isolation:
 
 - **xcframework** — `make xcframework` (repo root) builds `truapi-server` for `aarch64-apple-ios` and `aarch64-apple-ios-sim` and bundles `target/truapi_server.xcframework`; the script copies it into `Binaries/` and strips the per-slice `module.modulemap` (module resolution comes from the `systemLibrary` target; the slice copy collides with other xcframeworks in Xcode's flat include dir).
-- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; the script copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up.
+- **bindings** — `make uniffi` (run automatically by `make xcframework`) emits the Swift bindings into `target/uniffi-swift-out/` via the workspace `uniffi-bindgen-cli`; `scripts/sync-bindings.sh` copies them into `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/`, renaming the emitted `truapi_serverFFI.modulemap` to `module.modulemap` so the SwiftPM `systemLibrary` target picks it up. `rebuild.sh` calls it, and CI's `--check` mode compares against it.
 - **container** — `npm run build` in `js/container/` (repo root) bundles `src/index.ts` into `Sources/TrUAPIHost/Resources/truapi-container.js`.

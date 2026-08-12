@@ -15,22 +15,10 @@ TRUAPI_ROOT="$(cd "$PACKAGE_ROOT/../.." && pwd)"
 
 make -C "$TRUAPI_ROOT" xcframework
 
-UNIFFI_OUT="$TRUAPI_ROOT/target/uniffi-swift-out"
-for namespace in truapi truapi_platform truapi_server; do
-    mkdir -p "$PACKAGE_ROOT/Sources/${namespace}FFI/include"
-    cp "$UNIFFI_OUT/${namespace}.swift" \
-        "$PACKAGE_ROOT/Sources/TrUAPIHost/${namespace}.swift"
-    cp "$UNIFFI_OUT/${namespace}FFI.h" \
-        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/${namespace}FFI.h"
-    cp "$UNIFFI_OUT/${namespace}FFI.modulemap" \
-        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/module.modulemap"
-    # UniFFI templates emit trailing spaces around optional fragments. Keep the
-    # committed bindings stable so rebuilding only records API changes.
-    perl -pi -e 's/[ \t]+$//' \
-        "$PACKAGE_ROOT/Sources/TrUAPIHost/${namespace}.swift" \
-        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/${namespace}FFI.h" \
-        "$PACKAGE_ROOT/Sources/${namespace}FFI/include/module.modulemap"
-done
+# The binding copy and normalization live in sync-bindings.sh so that CI's
+# --check mode and this in-place write share one definition of what the
+# committed bindings should contain.
+sh "$PACKAGE_ROOT/scripts/sync-bindings.sh"
 
 rm -rf "$PACKAGE_ROOT/Binaries/truapi_server.xcframework"
 mkdir -p "$PACKAGE_ROOT/Binaries"
