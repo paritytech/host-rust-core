@@ -37,7 +37,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 use truapi_platform::{HostInfo, PlatformInfo};
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
-use truapi_server::{PairingHostConfig, PairingHostRuntime, SigningHostConfig, SigningHostRuntime};
+use truapi_server::{
+    PairingHostConfig, PairingHostRuntime, SigningHostConfig, SigningHostRuntime,
+    StatementRenewalTarget,
+};
 
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
 use crate::network::{Network, NetworkConfig};
@@ -51,7 +54,8 @@ use crate::terminal_ui::{
 };
 
 /// Default product served by the pairing host's frame endpoint. Product ids
-/// must be a `.dot` name or a `localhost` identifier (host-spec product id).
+/// must be a dotNS name (`.dot` or `.paseo`) or a `localhost` identifier
+/// (host-spec product id).
 const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 /// Deeplink scheme advertised by the pairing host.
 const DEEPLINK_SCHEME: &str = "polkadotapp";
@@ -399,6 +403,9 @@ async fn run_alloc_check(
     .await
     {
         Ok(alloc::slot::SlotSelection::Free(seq)) => println!("slot scan: free seq={seq}"),
+        Ok(alloc::slot::SlotSelection::Full { max }) => {
+            println!("slot scan: all {max} slots taken, none reusable");
+        }
         Ok(alloc::slot::SlotSelection::AlreadyAllocated(seq)) => {
             println!("slot scan: target already allocated at seq={seq}")
         }
@@ -417,6 +424,7 @@ async fn run_alloc_check(
                 period,
                 ring: &ring,
                 reuse_existing: true,
+                preselected: None,
             },
         )
         .await
@@ -898,11 +906,9 @@ fn build_signing_runtime(
         network.bulletin_genesis,
     )
     .context("invalid signing host config")?;
-    Ok(Arc::new(SigningHostRuntime::new(
-        platform,
-        config,
-        tokio_spawner(),
-    )))
+    let runtime = Arc::new(SigningHostRuntime::new(platform, config, tokio_spawner()));
+    runtime.start_statement_allowance_renewal();
+    Ok(runtime)
 }
 
 impl Drop for SigningHostSession {
@@ -1082,7 +1088,10 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
             )
         };
         match register_pairing_allowances(session.network.people_ws, &entropy, deeplink).await {
-            Ok(()) => return Ok(()),
+            Ok(device) => {
+                track_pairing_renewal_targets(session, device).await;
+                return Ok(());
+            }
             Err(err) if auto_managed && is_statement_slot_exhaustion(&err) => {
                 attempts += 1;
                 if attempts > 8 {
@@ -1130,6 +1139,99 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
 
 fn is_statement_slot_exhaustion(err: &anyhow::Error) -> bool {
     err.to_string().contains("no free StatementStore slot")
+}
+
+/// Best-effort: record the pairing allowance accounts in the renewal ledger so
+/// the background renewer keeps them allowed across periods.
+async fn track_pairing_renewal_targets(session: &SigningHostSession, device: [u8; 32]) {
+    let result = session
+        .runtime
+        .track_statement_renewal_targets(vec![
+            StatementRenewalTarget::WalletSso,
+            StatementRenewalTarget::Account {
+                account_id: device,
+                label: "device".to_string(),
+            },
+        ])
+        .await;
+    if let Err(err) = result {
+        tracing::warn!(reason = %err.reason, "failed to record pairing renewal targets");
+    }
+}
+
+/// Renew tracked statement-store allowances now, reporting each target. On
+/// slot exhaustion an auto-managed signer account is marked exhausted so the
+/// next pairing rotates to a fresh one.
+async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
+    use truapi_server::statement_allowance::renewal::TargetRenewalStatus;
+
+    ensure_signer(session).await?;
+    let report = session
+        .runtime
+        .renew_statement_allowances()
+        .await
+        .map_err(|err| anyhow::anyhow!("allowance renewal failed: {}", err.reason))?;
+
+    let (mut renewed, mut fresh, mut failed, mut skipped) = (0usize, 0usize, 0usize, 0usize);
+    for (target, status) in &report.outcomes {
+        match status {
+            TargetRenewalStatus::Registered { seq, block_hash } => {
+                renewed += 1;
+                terminal_ui::output_event(SystemEvent::AllowanceReady {
+                    target: target.clone(),
+                    sequence: *seq,
+                    block_hash: Some(block_hash.clone()),
+                    already_allocated: false,
+                });
+            }
+            TargetRenewalStatus::AlreadyAllocated { seq } => {
+                fresh += 1;
+                terminal_ui::output_event(SystemEvent::AllowanceReady {
+                    target: target.clone(),
+                    sequence: *seq,
+                    block_hash: None,
+                    already_allocated: true,
+                });
+            }
+            TargetRenewalStatus::Failed { reason } => {
+                failed += 1;
+                terminal_ui::output_event(SystemEvent::AllowanceRenewalFailed {
+                    target: target.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            TargetRenewalStatus::SkippedExhausted => skipped += 1,
+        }
+    }
+    terminal_ui::output_event(SystemEvent::AllowanceRenewalReport {
+        period: report.period,
+        renewed,
+        fresh,
+        failed,
+        skipped,
+    });
+
+    if report.slots_exhausted {
+        mark_current_account_exhausted(session)?;
+    }
+    Ok(())
+}
+
+fn mark_current_account_exhausted(session: &SigningHostSession) -> Result<()> {
+    let Some(signer) = session.signer.as_ref() else {
+        return Ok(());
+    };
+    if !signer.auto_managed {
+        return Ok(());
+    }
+    let Some(name) = signer.account_name.clone() else {
+        return Ok(());
+    };
+    let period = accounts::current_statement_period()?;
+    let account_base_path = current_account_base_path(session)?;
+    accounts::mark_account_exhausted(&account_base_path, session.network.id, &name, period)?;
+    terminal_ui::output_event(SystemEvent::SigningHostAccountExhausted { name, period });
+    Ok(())
 }
 
 async fn respond_to_deeplink(session: &mut SigningHostSession, deeplink: String) -> Result<()> {
@@ -1316,11 +1418,13 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
 /// statements during pairing: the signing host's RFC-0022 `uid.dot` identity
 /// account and the pairing host's per-pairing device key (from the deeplink).
 /// Proves the signing account's LitePeople ring membership once and reuses it.
+/// Returns the device statement account id so the caller can track it for
+/// renewal.
 async fn register_pairing_allowances(
     statement_store_url: &str,
     entropy: &[u8],
     deeplink: &str,
-) -> Result<()> {
+) -> Result<[u8; 32]> {
     use truapi_server::host_logic::product_account::{
         derive_identity_keypair, derive_lite_person_ring_vrf_entropy,
     };
@@ -1395,6 +1499,7 @@ async fn register_pairing_allowances(
                 period,
                 ring: &ring,
                 reuse_existing: true,
+                preselected: None,
             },
         )
         .await
@@ -1418,7 +1523,7 @@ async fn register_pairing_allowances(
             }
         }
     }
-    Ok(())
+    Ok(device)
 }
 
 async fn pairing_interactive_loop(
@@ -1527,7 +1632,7 @@ async fn pairing_interactive_loop(
                     Err(error) => ui.error(error.to_string()),
                 }
             }
-            ShellCommand::Pair(_) | ShellCommand::Session(_) => {
+            ShellCommand::Pair(_) | ShellCommand::Session(_) | ShellCommand::Renew => {
                 ui.error("command is only available on the signing host");
             }
         }
@@ -1777,6 +1882,7 @@ async fn execute_interactive_operation(
         ShellCommand::Session(SessionCommand::Switch(name)) => {
             switch_session(session, name).await?;
         }
+        ShellCommand::Renew => run_renew(session).await?,
         ShellCommand::Login => bail!("/login is only available on the pairing host"),
         ShellCommand::Logout => bail!("/logout is only available on the pairing host"),
         ShellCommand::Product(_) => bail!("command must be handled by the terminal UI"),
@@ -1858,6 +1964,7 @@ async fn execute_non_interactive_command(
         ShellCommand::Session(SessionCommand::Switch(name)) => {
             switch_session(session, name).await?;
         }
+        ShellCommand::Renew => run_renew(session).await?,
     }
     Ok(())
 }

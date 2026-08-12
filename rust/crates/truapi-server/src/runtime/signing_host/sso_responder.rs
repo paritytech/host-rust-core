@@ -27,21 +27,19 @@ use super::SigningHost;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-use crate::host_logic::product_account::{
-    ProductAccountError, derive_identity_keypair, derive_root_keypair_from_entropy,
-    product_public_key_to_address,
-};
 #[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
-    derive_lite_person_ring_vrf_entropy, derive_sr25519_hard_path,
+    ProductAccountError, derive_identity_keypair, derive_ring_vrf_domain_entropy,
+    derive_root_keypair_from_entropy, product_public_key_to_address,
 };
 use crate::host_logic::session::SsoSessionInfo;
 use crate::host_logic::sso::messages::{
     self, CreateTransactionPayload, IncomingSsoRequest, OnExistingAllowancePolicy, RemoteMessage,
     RemoteMessageData, ResourceAllocationResponse, RingVrfAliasResponse, RingVrfError,
-    RingVrfProofResponse, SignRawLegacyResponse, SignVrfResponse, SigningPayloadResponseData,
-    SigningRequest, SigningResponse, SsoAllocatableResource, SsoAllocatedResource,
-    SsoAllocationOutcome, SsoResponseCode, build_outgoing_request_statement,
+    RingVrfProofResponse, RingVrfSignResponse, SignRawLegacyResponse, SignVrfResponse,
+    SigningPayloadResponseData, SigningRequest, SigningResponse, SsoAllocatableResource,
+    SsoAllocatedResource, SsoAllocationOutcome, SsoResponseCode, build_outgoing_request_statement,
     build_signed_session_response_statement, decode_incoming_sso_request, v1,
 };
 use crate::host_logic::sso::pairing::{
@@ -52,7 +50,8 @@ use crate::host_logic::sso::pairing::{
 use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
 use crate::runtime::authority::{
     AccountAliasAuthorityRequest, AuthorityError, CreateProofAuthorityRequest,
-    CreateTransactionAuthorityRequest, ProductAuthority, SignPayloadAuthorityRequest,
+    CreateTransactionAuthorityRequest, ListRingVrfKeysAuthorityRequest, ProductAuthority,
+    RegisterRingVrfKeyAuthorityRequest, RingVrfSignAuthorityRequest, SignPayloadAuthorityRequest,
     SignRawAuthorityRequest,
 };
 use crate::runtime::services::RuntimeServices;
@@ -476,6 +475,15 @@ fn remote_response_result(message: &RemoteMessageData) -> ResponseResult {
         v1::RemoteMessage::RingVrfProofResponse(response) => {
             response.payload.as_ref().err().map(ring_vrf_error_reason)
         }
+        v1::RemoteMessage::RegisterRingVrfKeyResponse(response) => {
+            response.payload.as_ref().err().map(ring_vrf_error_reason)
+        }
+        v1::RemoteMessage::ListRingVrfKeysResponse(response) => {
+            response.payload.as_ref().err().map(ring_vrf_error_reason)
+        }
+        v1::RemoteMessage::RingVrfSignResponse(response) => {
+            response.payload.as_ref().err().map(ring_vrf_error_reason)
+        }
         v1::RemoteMessage::ResourceAllocationResponse(response) => {
             return resource_allocation_payload_result(&response.payload, &[]);
         }
@@ -602,6 +610,9 @@ fn ring_vrf_error_reason(error: &RingVrfError) -> String {
     match error {
         RingVrfError::RingNotFound => "RingNotFound".to_string(),
         RingVrfError::NotMember => "NotMember".to_string(),
+        RingVrfError::KeyNotRegistered => "KeyNotRegistered".to_string(),
+        RingVrfError::KeyNotInRing => "KeyNotInRing".to_string(),
+        RingVrfError::NotAllowlisted => "NotAllowlisted".to_string(),
         RingVrfError::Rejected => "Rejected".to_string(),
         RingVrfError::Unknown { reason } => format!("Unknown: {reason}"),
     }
@@ -651,6 +662,27 @@ async fn answer_remote_message(
         v1::RemoteMessage::RingVrfProofRequest(request) => {
             let payload = create_proof_response(signing_host, request).await;
             v1::RemoteMessage::RingVrfProofResponse(RingVrfProofResponse {
+                responding_to: message_id,
+                payload,
+            })
+        }
+        v1::RemoteMessage::RegisterRingVrfKeyRequest(request) => {
+            let payload = register_ring_vrf_key_response(signing_host, request).await;
+            v1::RemoteMessage::RegisterRingVrfKeyResponse(messages::RegisterRingVrfKeyResponse {
+                responding_to: message_id,
+                payload,
+            })
+        }
+        v1::RemoteMessage::ListRingVrfKeysRequest(request) => {
+            let payload = list_ring_vrf_keys_response(signing_host, request).await;
+            v1::RemoteMessage::ListRingVrfKeysResponse(messages::ListRingVrfKeysResponse {
+                responding_to: message_id,
+                payload,
+            })
+        }
+        v1::RemoteMessage::RingVrfSignRequest(request) => {
+            let payload = ring_vrf_sign_response(signing_host, request).await;
+            v1::RemoteMessage::RingVrfSignResponse(RingVrfSignResponse {
                 responding_to: message_id,
                 payload,
             })
@@ -732,6 +764,9 @@ async fn answer_remote_message(
         | v1::RemoteMessage::SignResponse(_)
         | v1::RemoteMessage::RingVrfAliasResponse(_)
         | v1::RemoteMessage::RingVrfProofResponse(_)
+        | v1::RemoteMessage::RegisterRingVrfKeyResponse(_)
+        | v1::RemoteMessage::ListRingVrfKeysResponse(_)
+        | v1::RemoteMessage::RingVrfSignResponse(_)
         | v1::RemoteMessage::ResourceAllocationResponse(_)
         | v1::RemoteMessage::CreateTransactionResponse(_)
         | v1::RemoteMessage::SignRawLegacyResponse(_)
@@ -810,14 +845,22 @@ async fn resource_allocation_response(
             SsoAllocatableResource::SmartContractAllowance(_) => {
                 Ok(SsoAllocationOutcome::NotAvailable)
             }
-            SsoAllocatableResource::AutoSigning => signing_host
-                .product_subtree_secret(&request.calling_product_id)
-                .map(|product_root_private_key| {
-                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::AutoSigning {
+            SsoAllocatableResource::AutoSigning => (|| -> Result<_, AllowanceAllocationError> {
+                let product_root_private_key = signing_host
+                    .product_subtree_secret(&request.calling_product_id)
+                    .map_err(AllowanceAllocationError::Authority)?;
+                let root_entropy = signing_host.root_entropy()?;
+                let ring_vrf_domain_entropy =
+                    derive_ring_vrf_domain_entropy(&root_entropy, &request.calling_product_id)
+                        .map_err(super::product_authority_error)
+                        .map_err(AllowanceAllocationError::Authority)?;
+                Ok(SsoAllocationOutcome::Allocated(
+                    SsoAllocatedResource::AutoSigning {
                         product_root_private_key,
-                    })
-                })
-                .map_err(AllowanceAllocationError::Authority),
+                        ring_vrf_domain_entropy,
+                    },
+                ))
+            })(),
         };
         match outcome {
             Ok(outcome) => outcomes.push(outcome),
@@ -855,41 +898,85 @@ pub(super) async fn allocate_statement_store_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use super::allowance_renewal::{self, StatementRenewalTarget};
+    use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
-        self, RegistrationParams, fetch_chain_state, fetch_metadata, find_including_ring,
-        register_statement_account,
+        self, RegistrationParams, find_including_ring, register_statement_account,
     };
 
     let entropy = signing_host.root_entropy()?;
     let allowance =
         derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
     let target = allowance.public.to_bytes();
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
-    let rpc = statement_allowance::rpc::RpcClient::new(
-        services
-            .statement_store
-            .client("statement-store allowance")
-            .await?,
-    );
-    let metadata = fetch_metadata(&rpc).await?;
-    let chain_state = fetch_chain_state(&rpc).await?;
-    let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
-    let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
+    let session = signing_host
+        .current_session()
+        .ok_or(AuthorityError::Disconnected)?;
+    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
+    let client = services
+        .statement_store
+        .chain_client("statement-store allowance")
+        .await?;
+    let rpc = client.rpc();
+    let chain = services.chain_context.get(&client).await?;
+    let period = statement_allowance::slot::current_period(current_unix_secs()?);
+    let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
+
+    // Held from the scan through the submission, not just around the submission:
+    // the scan is what picks the free slot, so a renewal pass scanning in the gap
+    // would choose the same one. Released on the early return below, which
+    // submits nothing.
+    let _registration = signing_host.renewal.registration_lock().lock().await;
+
+    // One scan answers both questions: whether an allowance is already recorded
+    // on chain — in which case neither a ring proof nor a submission is needed —
+    // and which slot to claim when it is not. Its result is handed to
+    // `register_statement_account` so the slots are read once, not twice.
+    let preselected = match statement_allowance::slot::scan_slot_excluding(
+        rpc,
+        &chain.metadata,
+        bandersnatch,
+        period,
+        &target,
+        &[],
+        reuse_existing,
+    )
+    .await?
+    {
+        SlotSelection::AlreadyAllocated(seq) => {
+            debug!(
+                %product_id,
+                period,
+                seq,
+                "statement-store allowance already allocated"
+            );
+            return Ok(allowance.secret.to_bytes().to_vec());
+        }
+        SlotSelection::Free(seq) => seq,
+        SlotSelection::Full { max } => {
+            return Err(
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
+                    .into(),
+            );
+        }
+    };
+
+    let current = statement_allowance::ring::read_current_ring_index(rpc).await?;
+    let ring = find_including_ring(rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "statement-store",
         })?;
-    let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let outcome = register_statement_account(
-        &rpc,
-        &metadata,
-        &chain_state,
+        rpc,
+        &chain.metadata,
+        &chain.state,
         bandersnatch,
         RegistrationParams {
             target: &target,
             period,
             ring: &ring,
-            reuse_existing: matches!(policy, OnExistingAllowancePolicy::Ignore),
+            reuse_existing,
+            preselected: Some(preselected),
         },
     )
     .await?;
@@ -915,6 +1002,16 @@ pub(super) async fn allocate_statement_store_allowance(
             );
         }
     }
+    if let Err(reason) = allowance_renewal::track(
+        signing_host,
+        vec![StatementRenewalTarget::ProductStatementAllowance {
+            product_id: product_id.to_string(),
+        }],
+    )
+    .await
+    {
+        warn!(%product_id, %reason, "failed to record statement-store renewal target");
+    }
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
@@ -926,8 +1023,8 @@ pub(super) async fn allocate_bulletin_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, fetch_chain_state, fetch_metadata,
-        find_including_ring, wait_bulletin_authorization,
+        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_ring,
+        wait_bulletin_authorization,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -951,30 +1048,32 @@ pub(super) async fn allocate_bulletin_allowance(
         return Ok(allowance.secret.to_bytes().to_vec());
     }
 
-    let people_rpc = statement_allowance::rpc::RpcClient::new(
-        services
-            .statement_store
-            .client("bulletin allowance claim")
-            .await?,
-    );
-    let metadata = fetch_metadata(&people_rpc).await?;
-    let chain_state = fetch_chain_state(&people_rpc).await?;
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
-    let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
-    let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
+    let people_client = services
+        .statement_store
+        .chain_client("bulletin allowance claim")
+        .await?;
+    let people_rpc = people_client.rpc();
+    let chain = services.chain_context.get(&people_client).await?;
+    let session = signing_host
+        .current_session()
+        .ok_or(AuthorityError::Disconnected)?;
+    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
+    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
+    let ring = find_including_ring(people_rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "Bulletin",
         })?;
-    let period_duration = statement_allowance::slot::long_term_storage_period_duration(&metadata)?;
+    let period_duration =
+        statement_allowance::slot::long_term_storage_period_duration(&chain.metadata)?;
     let period = statement_allowance::slot::current_long_term_storage_period(
         current_unix_secs()?,
         period_duration,
     )?;
     let outcome = claim_long_term_storage(
-        &people_rpc,
-        &metadata,
-        &chain_state,
+        people_rpc,
+        &chain.metadata,
+        &chain.state,
         bandersnatch,
         &target,
         period,
@@ -1035,7 +1134,7 @@ pub(super) async fn allocate_bulletin_allowance(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
+pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -1201,6 +1300,7 @@ async fn account_alias_response(
             &session,
             AccountAliasAuthorityRequest {
                 calling_product_id: request.calling_product_id,
+                key_handle: request.key_handle,
                 context: request.context,
                 ring_location: request.ring_location,
             },
@@ -1222,8 +1322,69 @@ async fn create_proof_response(
             &session,
             CreateProofAuthorityRequest {
                 calling_product_id: request.calling_product_id,
+                key_handle: request.key_handle,
                 context: request.context,
                 ring_location: request.ring_location,
+                message: request.message,
+            },
+        )
+        .await
+}
+
+async fn register_ring_vrf_key_response(
+    signing_host: &Arc<SigningHost>,
+    request: messages::RegisterRingVrfKeyRequest,
+) -> Result<api::RingVrfPublicKey, RingVrfError> {
+    let session = signing_host
+        .current_session()
+        .ok_or_else(disconnected_ring_vrf)?;
+    signing_host
+        .register_ring_vrf_key(
+            &CallContext::default(),
+            &session,
+            RegisterRingVrfKeyAuthorityRequest {
+                calling_product_id: request.calling_product_id,
+                index: request.index,
+                ring: request.ring,
+            },
+        )
+        .await
+}
+
+async fn list_ring_vrf_keys_response(
+    signing_host: &Arc<SigningHost>,
+    request: messages::ListRingVrfKeysRequest,
+) -> Result<Vec<api::RegisteredRingVrfKey>, RingVrfError> {
+    let session = signing_host
+        .current_session()
+        .ok_or_else(disconnected_ring_vrf)?;
+    signing_host
+        .list_ring_vrf_keys(
+            &CallContext::default(),
+            &session,
+            ListRingVrfKeysAuthorityRequest {
+                calling_product_id: request.calling_product_id,
+                owner: request.owner,
+                disclosure: request.disclosure,
+            },
+        )
+        .await
+}
+
+async fn ring_vrf_sign_response(
+    signing_host: &Arc<SigningHost>,
+    request: messages::RingVrfSignRequest,
+) -> Result<Vec<u8>, RingVrfError> {
+    let session = signing_host
+        .current_session()
+        .ok_or_else(disconnected_ring_vrf)?;
+    signing_host
+        .ring_vrf_sign(
+            &CallContext::default(),
+            &session,
+            RingVrfSignAuthorityRequest {
+                calling_product_id: request.calling_product_id,
+                key_handle: request.key_handle,
                 message: request.message,
             },
         )
@@ -1287,6 +1448,114 @@ mod tests {
         (services, signing_host)
     }
 
+    /// Metadata for the People chain the signing fixture is configured for.
+    #[cfg(not(target_arch = "wasm32"))]
+    const PEOPLE_METADATA: &[u8] =
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+
+    /// An existing statement-store allowance must be served without resolving a
+    /// ring or submitting anything. The cache and the scan are covered on their
+    /// own; this pins the composition, so removing the early return fails here
+    /// rather than passing quietly.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_existing_allowance_is_served_without_touching_the_ring() {
+        use futures::FutureExt;
+
+        use crate::host_logic::product_account::derive_sr25519_hard_path;
+
+        let product_id = "myapp.dot";
+        let allowance =
+            derive_sr25519_hard_path(&ENTROPY, &["allowance", "statement-store", product_id])
+                .expect("allowance derivation succeeds");
+        // The scan reads slot 0 first; answering it with an entry naming the
+        // allowance account is the "already allocated" case.
+        let slot_entry = (allowance.public.to_bytes(), 0u32, 0u64).encode();
+
+        // Keyed by method, not by request order: this path decodes ~450 KiB of
+        // metadata between two requests, which outruns the ordered script's
+        // fixed-poll pump on a loaded runner.
+        let platform = Arc::new(StubPlatform {
+            rpc_method_responses: vec![
+                (
+                    "state_getRuntimeVersion",
+                    r#"{"specVersion":1000000,"transactionVersion":1}"#.to_string(),
+                ),
+                (
+                    "chain_getBlockHash",
+                    format!(r#""0x{}""#, hex::encode([0u8; 32])),
+                ),
+                (
+                    "state_getMetadata",
+                    format!(r#""0x{}""#, hex::encode(PEOPLE_METADATA)),
+                ),
+                (
+                    "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(&slot_entry)),
+                ),
+            ],
+            ..Default::default()
+        });
+        let (services, signing_host) = signing_fixture(platform.clone());
+
+        // Bounded, because the failure mode of losing the early return is a
+        // wait on a chain read the stub deliberately does not answer — an
+        // unbounded test would hang instead of reporting. The bound is generous
+        // because it is catching a hang, not asserting latency.
+        let secret = futures::executor::block_on(async {
+            futures::select! {
+                result = allocate_statement_store_allowance(
+                    &services,
+                    &signing_host,
+                    product_id,
+                    OnExistingAllowancePolicy::Ignore,
+                )
+                .fuse() => result,
+                _ = futures_timer::Delay::new(std::time::Duration::from_secs(30)).fuse() => {
+                    panic!("allocation blocked on a chain read it should not have made")
+                }
+            }
+        })
+        .expect("an existing allowance is returned");
+
+        assert_eq!(secret, allowance.secret.to_bytes().to_vec());
+
+        let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
+        let methods: Vec<String> = sent
+            .iter()
+            .filter_map(|request| {
+                let value: serde_json::Value = serde_json::from_str(request).ok()?;
+                value.get("method")?.as_str().map(ToString::to_string)
+            })
+            .collect();
+
+        // `find_including_ring` opens with `chain_getFinalizedHead`, so none of
+        // these means no ring was resolved.
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "chain_getFinalizedHead")
+                .count(),
+            0,
+            "a ring was resolved for an allowance already in place: {methods:?}"
+        );
+        assert!(
+            !methods
+                .iter()
+                .any(|method| method.starts_with("author_submit")),
+            "an extrinsic was submitted for an allowance already in place: {methods:?}"
+        );
+        // One slot read answered it; the scan stopped at the first match.
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "state_getStorage")
+                .count(),
+            1,
+            "expected a single slot read: {methods:?}"
+        );
+    }
+
     #[test]
     fn responder_advertises_and_signs_with_the_local_uid_identity() {
         let (_services, signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
@@ -1332,6 +1601,10 @@ mod tests {
             "alias-1".to_string(),
             v1::RemoteMessage::RingVrfAliasRequest(messages::RingVrfAliasRequest {
                 calling_product_id: "myapp.dot".to_string(),
+                key_handle: api::ProductAccountId {
+                    dot_ns_identifier: "peopl.dot".to_string(),
+                    derivation_index: api::DerivationIndex::Index(0),
+                },
                 context: api::ProductProofContext {
                     product_id: "other.dot".to_string(),
                     suffix: api::DerivationIndex::Index(0),
@@ -1490,6 +1763,9 @@ mod tests {
         let expected_secret = signing_host
             .product_subtree_secret("myapp.dot")
             .expect("product subtree secret derives");
+        let expected_ring_vrf_domain_entropy =
+            derive_ring_vrf_domain_entropy(&ENTROPY, "myapp.dot")
+                .expect("ring-VRF domain entropy derives");
 
         let response = futures::executor::block_on(answer_remote_message(
             &services,
@@ -1512,6 +1788,7 @@ mod tests {
             vec![SsoAllocationOutcome::Allocated(
                 SsoAllocatedResource::AutoSigning {
                     product_root_private_key: expected_secret,
+                    ring_vrf_domain_entropy: expected_ring_vrf_domain_entropy,
                 }
             )]
         );

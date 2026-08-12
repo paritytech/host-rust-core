@@ -97,6 +97,15 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn workspace_tempdir(workspace: &Path) -> tempfile::TempDir {
+    let parent = workspace.join("target/codegen-test-tmp");
+    fs::create_dir_all(&parent).expect("create workspace codegen temp directory");
+    tempfile::Builder::new()
+        .prefix("golden-")
+        .tempdir_in(parent)
+        .expect("workspace tempdir")
+}
+
 fn rustfmt_generated(files: &[PathBuf]) {
     if files.is_empty() {
         return;
@@ -142,6 +151,8 @@ fn prettier_generated(workspace_root: &Path, files: &[PathBuf]) {
             "--",
             "prettier",
             "--write",
+            "--ignore-path",
+            "/dev/null",
             "--config",
         ])
         .arg(workspace_root.join(".prettierrc"));
@@ -166,7 +177,7 @@ fn golden_dispatcher_and_wire_table() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = workspace_root();
 
-    let tempdir = tempfile::tempdir().expect("tempdir");
+    let tempdir = workspace_tempdir(&workspace);
     let rustdoc_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
 
     let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
@@ -220,11 +231,11 @@ fn golden_dispatcher_and_wire_table() {
 #[test]
 fn binary_emission_is_idempotent() {
     let workspace = workspace_root();
-    let tempdir = tempfile::tempdir().expect("tempdir");
+    let tempdir = workspace_tempdir(&workspace);
     let rustdoc_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
 
     let run_once = || -> (String, String) {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = workspace_tempdir(&workspace);
         let status = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
             .args([
                 "--input",
@@ -255,7 +266,7 @@ fn golden_host_callbacks_ts() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = workspace_root();
 
-    let tempdir = tempfile::tempdir().expect("tempdir");
+    let tempdir = workspace_tempdir(&workspace);
     let truapi_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
     let platform_json = produce_rustdoc_json_for_package(
         &workspace,

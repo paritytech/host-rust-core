@@ -226,6 +226,17 @@ pub fn is_product_identifier(identifier: &str) -> bool {
     normalize_product_identifier(identifier).is_ok()
 }
 
+/// Top-level domains that dotNS deployments register product names under.
+pub const DOTNS_TLDS: &[&str] = &["dot", "paseo"];
+
+/// Whether `normalized` ends in one of [`DOTNS_TLDS`]. Expects an
+/// already-lowercased host with no trailing root dot.
+pub fn has_dotns_tld(normalized: &str) -> bool {
+    normalized
+        .rsplit_once('.')
+        .is_some_and(|(_, tld)| DOTNS_TLDS.contains(&tld))
+}
+
 /// Normalize product identifiers before derivation and policy checks.
 pub fn normalize_product_identifier(
     product_id: &str,
@@ -233,7 +244,7 @@ pub fn normalize_product_identifier(
     let trimmed = product_id.trim();
     require_non_empty("product_id", trimmed)?;
     let normalized = trimmed.nfc().collect::<String>().to_lowercase();
-    if normalized.ends_with(".dot")
+    if has_dotns_tld(&normalized)
         || normalized == "localhost"
         || normalized.starts_with("localhost:")
     {
@@ -279,8 +290,8 @@ pub enum RuntimeConfigValidationError {
         /// Actual deeplink scheme value.
         scheme: String,
     },
-    /// Product id was not a `.dot` or localhost product identifier.
-    #[display("product_id must be a .dot or localhost product identifier, got {product_id:?}")]
+    /// Product id was not a dotNS or localhost product identifier.
+    #[display("product_id must be a dotNS or localhost product identifier, got {product_id:?}")]
     InvalidProductId {
         /// Actual product id value.
         product_id: String,
@@ -605,7 +616,17 @@ pub enum CoreStorageKey {
     },
     /// Wallet-bound RFC-0010 AutoSigning capabilities for the active pairing.
     AutoSigningKeys,
+    /// Wallet-bound RFC-0024 ring-VRF registry snapshot.
+    #[codec(index = 7)]
+    RingVrfRegistry {
+        /// Root account public key identifying the wallet that owns the registry.
+        root_public_key: [u8; 32],
+    },
+    /// Statement-store allowance targets the signing host keeps renewed.
+    #[codec(index = 8)]
+    StatementRenewalTargets,
 }
+
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
 ///
 /// `kind` is the Rust variant name and is part of the host embedding contract.
@@ -651,6 +672,8 @@ pub fn describe_core_storage_key(
         CoreStorageKey::LastProcessedPairingStatement => ("LastProcessedPairingStatement", None),
         CoreStorageKey::AutoSigningKey { product_id } => ("AutoSigningKey", Some(product_id)),
         CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None),
+        CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None),
+        CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }
@@ -720,6 +743,7 @@ fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissi
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn auth_session_storage_key_has_stable_encoding() {
         assert_eq!(CoreStorageKey::AuthSession.encode(), [0]);
@@ -766,6 +790,18 @@ mod tests {
                 Some("product.dot"),
             ),
             (CoreStorageKey::AutoSigningKeys, "AutoSigningKeys", None),
+            (
+                CoreStorageKey::RingVrfRegistry {
+                    root_public_key: [0x42; 32],
+                },
+                "RingVrfRegistry",
+                None,
+            ),
+            (
+                CoreStorageKey::StatementRenewalTargets,
+                "StatementRenewalTargets",
+                None,
+            ),
         ] {
             let description = describe_core_storage_key(&key.encode()).expect("valid key");
             assert_eq!(description.kind, kind);
@@ -854,8 +890,6 @@ mod tests {
 
     #[test]
     fn remote_permission_authorization_key_handles_separator_chars_in_domains() {
-        // Domain strings containing separator-looking text must not be able to
-        // forge a key that matches an unrelated permission.
         let injecting = RemotePermissionRequest {
             permission: RemotePermission::Remote {
                 domains: vec!["a|b".into(), "c,d".into(), "remote:web-rtc".into()],
@@ -872,8 +906,6 @@ mod tests {
             CoreStorageKey::remote_permission_authorization("product.dot", &benign_same_set);
         assert_ne!(injecting_key, benign_key);
 
-        // The injecting permission must also be distinct from the `WebRtc`
-        // variant it tries to impersonate via crafted strings.
         let webrtc = RemotePermissionRequest {
             permission: RemotePermission::WebRtc,
         };
@@ -882,8 +914,6 @@ mod tests {
             CoreStorageKey::remote_permission_authorization("product.dot", &webrtc)
         );
 
-        // Re-ordering the same domains still collapses to a single key
-        // (canonicalization is order-independent).
         let injecting_reordered = RemotePermissionRequest {
             permission: RemotePermission::Remote {
                 domains: vec!["remote:web-rtc".into(), "c,d".into(), "a|b".into()],
