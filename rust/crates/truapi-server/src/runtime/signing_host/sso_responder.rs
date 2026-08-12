@@ -898,9 +898,9 @@ pub(super) async fn allocate_statement_store_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
-        self, RegistrationParams, fetch_chain_state, fetch_metadata, find_including_ring,
-        register_statement_account,
+        self, RegistrationParams, find_including_ring, register_statement_account,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -911,31 +911,65 @@ pub(super) async fn allocate_statement_store_allowance(
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
     let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
-    let rpc = statement_allowance::rpc::RpcClient::new(
-        services
-            .statement_store
-            .client("statement-store allowance")
-            .await?,
-    );
-    let metadata = fetch_metadata(&rpc).await?;
-    let chain_state = fetch_chain_state(&rpc).await?;
-    let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
-    let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
+    let client = services
+        .statement_store
+        .chain_client("statement-store allowance")
+        .await?;
+    let rpc = client.rpc();
+    let chain = services.chain_context.get(&client).await?;
+    let period = statement_allowance::slot::current_period(current_unix_secs()?);
+    let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
+
+    // One scan answers both questions: whether an allowance is already recorded
+    // on chain — in which case neither a ring proof nor a submission is needed —
+    // and which slot to claim when it is not. Its result is handed to
+    // `register_statement_account` so the slots are read once, not twice.
+    let preselected = match statement_allowance::slot::scan_slot_excluding(
+        rpc,
+        &chain.metadata,
+        bandersnatch,
+        period,
+        &target,
+        &[],
+        reuse_existing,
+    )
+    .await?
+    {
+        SlotSelection::AlreadyAllocated(seq) => {
+            debug!(
+                %product_id,
+                period,
+                seq,
+                "statement-store allowance already allocated"
+            );
+            return Ok(allowance.secret.to_bytes().to_vec());
+        }
+        SlotSelection::Free(seq) => seq,
+        SlotSelection::Full { max } => {
+            return Err(
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
+                    .into(),
+            );
+        }
+    };
+
+    let current = statement_allowance::ring::read_current_ring_index(rpc).await?;
+    let ring = find_including_ring(rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "statement-store",
         })?;
-    let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let outcome = register_statement_account(
-        &rpc,
-        &metadata,
-        &chain_state,
+        rpc,
+        &chain.metadata,
+        &chain.state,
         bandersnatch,
         RegistrationParams {
             target: &target,
             period,
             ring: &ring,
-            reuse_existing: matches!(policy, OnExistingAllowancePolicy::Ignore),
+            reuse_existing,
+            preselected: Some(preselected),
         },
     )
     .await?;
@@ -972,8 +1006,8 @@ pub(super) async fn allocate_bulletin_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, fetch_chain_state, fetch_metadata,
-        find_including_ring, wait_bulletin_authorization,
+        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_ring,
+        wait_bulletin_authorization,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -997,33 +1031,32 @@ pub(super) async fn allocate_bulletin_allowance(
         return Ok(allowance.secret.to_bytes().to_vec());
     }
 
-    let people_rpc = statement_allowance::rpc::RpcClient::new(
-        services
-            .statement_store
-            .client("bulletin allowance claim")
-            .await?,
-    );
-    let metadata = fetch_metadata(&people_rpc).await?;
-    let chain_state = fetch_chain_state(&people_rpc).await?;
+    let people_client = services
+        .statement_store
+        .chain_client("bulletin allowance claim")
+        .await?;
+    let people_rpc = people_client.rpc();
+    let chain = services.chain_context.get(&people_client).await?;
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
     let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
-    let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
-    let ring = find_including_ring(&people_rpc, &metadata, bandersnatch, current)
+    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
+    let ring = find_including_ring(people_rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "Bulletin",
         })?;
-    let period_duration = statement_allowance::slot::long_term_storage_period_duration(&metadata)?;
+    let period_duration =
+        statement_allowance::slot::long_term_storage_period_duration(&chain.metadata)?;
     let period = statement_allowance::slot::current_long_term_storage_period(
         current_unix_secs()?,
         period_duration,
     )?;
     let outcome = claim_long_term_storage(
-        &people_rpc,
-        &metadata,
-        &chain_state,
+        people_rpc,
+        &chain.metadata,
+        &chain.state,
         bandersnatch,
         &target,
         period,
@@ -1396,6 +1429,114 @@ mod tests {
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         (services, signing_host)
+    }
+
+    /// Metadata for the People chain the signing fixture is configured for.
+    #[cfg(not(target_arch = "wasm32"))]
+    const PEOPLE_METADATA: &[u8] =
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+
+    /// An existing statement-store allowance must be served without resolving a
+    /// ring or submitting anything. The cache and the scan are covered on their
+    /// own; this pins the composition, so removing the early return fails here
+    /// rather than passing quietly.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_existing_allowance_is_served_without_touching_the_ring() {
+        use futures::FutureExt;
+
+        use crate::host_logic::product_account::derive_sr25519_hard_path;
+
+        let product_id = "myapp.dot";
+        let allowance =
+            derive_sr25519_hard_path(&ENTROPY, &["allowance", "statement-store", product_id])
+                .expect("allowance derivation succeeds");
+        // The scan reads slot 0 first; answering it with an entry naming the
+        // allowance account is the "already allocated" case.
+        let slot_entry = (allowance.public.to_bytes(), 0u32, 0u64).encode();
+
+        // Keyed by method, not by request order: this path decodes ~450 KiB of
+        // metadata between two requests, which outruns the ordered script's
+        // fixed-poll pump on a loaded runner.
+        let platform = Arc::new(StubPlatform {
+            rpc_method_responses: vec![
+                (
+                    "state_getRuntimeVersion",
+                    r#"{"specVersion":1000000,"transactionVersion":1}"#.to_string(),
+                ),
+                (
+                    "chain_getBlockHash",
+                    format!(r#""0x{}""#, hex::encode([0u8; 32])),
+                ),
+                (
+                    "state_getMetadata",
+                    format!(r#""0x{}""#, hex::encode(PEOPLE_METADATA)),
+                ),
+                (
+                    "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(&slot_entry)),
+                ),
+            ],
+            ..Default::default()
+        });
+        let (services, signing_host) = signing_fixture(platform.clone());
+
+        // Bounded, because the failure mode of losing the early return is a
+        // wait on a chain read the stub deliberately does not answer — an
+        // unbounded test would hang instead of reporting. The bound is generous
+        // because it is catching a hang, not asserting latency.
+        let secret = futures::executor::block_on(async {
+            futures::select! {
+                result = allocate_statement_store_allowance(
+                    &services,
+                    &signing_host,
+                    product_id,
+                    OnExistingAllowancePolicy::Ignore,
+                )
+                .fuse() => result,
+                _ = futures_timer::Delay::new(std::time::Duration::from_secs(30)).fuse() => {
+                    panic!("allocation blocked on a chain read it should not have made")
+                }
+            }
+        })
+        .expect("an existing allowance is returned");
+
+        assert_eq!(secret, allowance.secret.to_bytes().to_vec());
+
+        let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
+        let methods: Vec<String> = sent
+            .iter()
+            .filter_map(|request| {
+                let value: serde_json::Value = serde_json::from_str(request).ok()?;
+                value.get("method")?.as_str().map(ToString::to_string)
+            })
+            .collect();
+
+        // `find_including_ring` opens with `chain_getFinalizedHead`, so none of
+        // these means no ring was resolved.
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "chain_getFinalizedHead")
+                .count(),
+            0,
+            "a ring was resolved for an allowance already in place: {methods:?}"
+        );
+        assert!(
+            !methods
+                .iter()
+                .any(|method| method.starts_with("author_submit")),
+            "an extrinsic was submitted for an allowance already in place: {methods:?}"
+        );
+        // One slot read answered it; the scan stopped at the first match.
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "state_getStorage")
+                .count(),
+            1,
+            "expected a single slot read: {methods:?}"
+        );
     }
 
     #[test]
