@@ -150,6 +150,32 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
     })
 }
 
+/// An RPC client together with the genesis hash the host routes it by.
+///
+/// Bundled because the two have to agree and nothing at a call site shows when
+/// they do not: that hash keys the chain-context cache and is what a reported
+/// divergence is measured against, so pairing a connection with another chain's
+/// hash silently attributes one chain's metadata to another.
+pub struct ChainClient {
+    rpc: RpcClient,
+    configured_genesis_hash: [u8; 32],
+}
+
+impl ChainClient {
+    /// Scope `rpc` to the chain the host routes by `configured_genesis_hash`.
+    pub fn new(rpc: RpcClient, configured_genesis_hash: [u8; 32]) -> Self {
+        Self {
+            rpc,
+            configured_genesis_hash,
+        }
+    }
+
+    /// The underlying client, for reads that do not need the chain's identity.
+    pub fn rpc(&self) -> &RpcClient {
+        &self.rpc
+    }
+}
+
 /// Runtime metadata and signed-extension chain state for one chain.
 #[derive(Clone)]
 pub struct ChainContext {
@@ -182,8 +208,8 @@ impl ChainContextCache {
     /// Metadata and chain state for the chain reached over `rpc`, read from the
     /// chain only when no entry describes the chain as it is now.
     ///
-    /// `configured_genesis_hash` is the caller's identity for the chain — the
-    /// hash it routes connections by — and keys the cache. The genesis hash
+    /// The client carries the caller's identity for the chain — the hash it
+    /// routes connections by — and that keys the cache. The genesis hash
     /// placed in [`ChainState`], and therefore signed into every allowance
     /// extrinsic, is always the one the chain itself reports: a host whose
     /// configured constant has gone stale (a wiped testnet) still produces
@@ -197,11 +223,9 @@ impl ChainContextCache {
     /// and gets a new genesis; an entry held across that would sign
     /// `CheckGenesis` for a chain that no longer exists. Both reads are issued
     /// together, so validating on the pair costs no extra round trip.
-    pub async fn get(
-        &self,
-        rpc: &RpcClient,
-        configured_genesis_hash: [u8; 32],
-    ) -> Result<ChainContext, StatementAllowanceError> {
+    pub async fn get(&self, client: &ChainClient) -> Result<ChainContext, StatementAllowanceError> {
+        let rpc = client.rpc();
+        let configured_genesis_hash = client.configured_genesis_hash;
         let ((spec_version, transaction_version), genesis_hash) =
             futures::try_join!(fetch_runtime_version(rpc), fetch_genesis_hash(rpc))?;
         if let Some(cached) = self.cached(configured_genesis_hash, spec_version, genesis_hash) {
@@ -783,13 +807,16 @@ mod tests {
     /// `chains` in turn, and report the methods the transport saw.
     fn scripted_cache_run(responses: &[String], chains: &[[u8; 32]]) -> Vec<String> {
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
-        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
         let cache = ChainContextCache::default();
 
         futures::executor::block_on(async {
             for genesis_hash in chains {
+                let client = ChainClient::new(
+                    RpcClient::new(HostRpcClient::new(scripted.clone())),
+                    *genesis_hash,
+                );
                 cache
-                    .get(&rpc, *genesis_hash)
+                    .get(&client)
                     .await
                     .expect("scripted chain context fetch succeeds");
             }
@@ -864,12 +891,14 @@ mod tests {
     #[test]
     fn concurrent_misses_download_the_metadata_once() {
         let counting = CountingRpc::default();
-        let rpc = RpcClient::new(HostRpcClient::new(counting.clone()));
+        let client = ChainClient::new(
+            RpcClient::new(HostRpcClient::new(counting.clone())),
+            [0xaa; 32],
+        );
         let cache = ChainContextCache::default();
 
         futures::executor::block_on(async {
-            let (first, second) =
-                futures::join!(cache.get(&rpc, [0xaa; 32]), cache.get(&rpc, [0xaa; 32]),);
+            let (first, second) = futures::join!(cache.get(&client), cache.get(&client));
             let first = first.expect("first read");
             let second = second.expect("second read");
             // Both callers end up on the same entry.
@@ -918,17 +947,14 @@ mod tests {
         ]
         .concat();
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
-        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+        let client = ChainClient::new(RpcClient::new(HostRpcClient::new(scripted)), [0xaa; 32]);
         let cache = ChainContextCache::default();
 
         futures::executor::block_on(async {
-            let before = cache.get(&rpc, [0xaa; 32]).await.expect("first read");
+            let before = cache.get(&client).await.expect("first read");
             assert_eq!(before.state.genesis_hash, [0xaa; 32]);
 
-            let after = cache
-                .get(&rpc, [0xaa; 32])
-                .await
-                .expect("read after a wipe");
+            let after = cache.get(&client).await.expect("read after a wipe");
             assert_eq!(after.state.genesis_hash, [0xcc; 32]);
         });
     }
@@ -965,10 +991,10 @@ mod tests {
     fn a_stale_configured_genesis_still_yields_the_chains_own_hash() {
         let responses = call_script(1_000_000, [0xbb; 32], true);
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str));
-        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+        let client = ChainClient::new(RpcClient::new(HostRpcClient::new(scripted)), [0xaa; 32]);
         let cache = ChainContextCache::default();
 
-        let context = futures::executor::block_on(cache.get(&rpc, [0xaa; 32]))
+        let context = futures::executor::block_on(cache.get(&client))
             .expect("a stale configured genesis is not fatal");
 
         // `CheckGenesis` is signed over this, so it must be the chain's value,

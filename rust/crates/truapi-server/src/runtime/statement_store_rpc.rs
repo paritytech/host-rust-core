@@ -63,12 +63,18 @@ impl StatementStoreRpc {
         }
     }
 
-    /// Genesis hash of the People chain this helper talks to.
-    ///
-    /// Keys the shared metadata cache used by the native allowance paths.
+    /// Open a People-chain RPC client already scoped to its genesis hash, for
+    /// the native allowance paths that key the chain-context cache by it.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn genesis_hash(&self) -> [u8; 32] {
-        self.people_chain_genesis_hash
+    pub(crate) async fn chain_client(
+        &self,
+        label: &'static str,
+    ) -> Result<crate::runtime::statement_allowance::ChainClient, StatementStoreRpcClientError>
+    {
+        Ok(crate::runtime::statement_allowance::ChainClient::new(
+            crate::runtime::statement_allowance::rpc::RpcClient::new(self.client(label).await?),
+            self.people_chain_genesis_hash,
+        ))
     }
 
     /// Open a statement-store RPC client over the host-provided People-chain

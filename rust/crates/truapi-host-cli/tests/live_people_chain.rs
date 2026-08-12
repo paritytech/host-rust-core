@@ -34,6 +34,12 @@ async fn connect() -> alloc::rpc::RpcClient {
         .expect("connect to the live People chain")
 }
 
+/// A live client scoped to the stand-in stale genesis, which is what the cache
+/// keys by.
+async fn stale_scoped_client() -> alloc::ChainClient {
+    alloc::ChainClient::new(connect().await, STALE_CONFIGURED_GENESIS)
+}
+
 fn current_period() -> u32 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -58,8 +64,9 @@ async fn chain_context_reports_the_chains_genesis_and_caches_by_the_configured_h
     );
 
     let cache = ChainContextCache::default();
+    let client = alloc::ChainClient::new(connect().await, STALE_CONFIGURED_GENESIS);
     let first = cache
-        .get(&rpc, STALE_CONFIGURED_GENESIS)
+        .get(&client)
         .await
         .expect("a stale configured genesis is not fatal");
 
@@ -75,10 +82,7 @@ async fn chain_context_reports_the_chains_genesis_and_caches_by_the_configured_h
         hex::encode(live)
     );
 
-    let second = cache
-        .get(&rpc, STALE_CONFIGURED_GENESIS)
-        .await
-        .expect("second read succeeds");
+    let second = cache.get(&client).await.expect("second read succeeds");
     assert!(
         Arc::ptr_eq(&first.metadata, &second.metadata),
         "second read re-downloaded metadata; the entry is keyed by the wrong hash"
@@ -94,7 +98,7 @@ async fn scanning_a_live_period_answers_without_erroring() {
     let rpc = connect().await;
     let cache = ChainContextCache::default();
     let chain = cache
-        .get(&rpc, STALE_CONFIGURED_GENESIS)
+        .get(&stale_scoped_client().await)
         .await
         .expect("read the live chain context");
     let period = current_period();
@@ -126,10 +130,9 @@ async fn scanning_a_live_period_answers_without_erroring() {
 #[tokio::test]
 #[ignore = "needs network access to a live People chain"]
 async fn live_metadata_still_exposes_the_allowance_extension_shape() {
-    let rpc = connect().await;
     let cache = ChainContextCache::default();
     let chain = cache
-        .get(&rpc, STALE_CONFIGURED_GENESIS)
+        .get(&stale_scoped_client().await)
         .await
         .expect("read the live chain context");
 

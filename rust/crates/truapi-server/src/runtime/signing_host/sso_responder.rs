@@ -865,16 +865,12 @@ pub(super) async fn allocate_statement_store_allowance(
         derive_sr25519_hard_path(&entropy, &["allowance", "statement-store", product_id])?;
     let target = allowance.public.to_bytes();
     let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
-    let rpc = statement_allowance::rpc::RpcClient::new(
-        services
-            .statement_store
-            .client("statement-store allowance")
-            .await?,
-    );
-    let chain = services
-        .chain_context
-        .get(&rpc, services.statement_store.genesis_hash())
+    let client = services
+        .statement_store
+        .chain_client("statement-store allowance")
         .await?;
+    let rpc = client.rpc();
+    let chain = services.chain_context.get(&client).await?;
     let period = statement_allowance::slot::current_period(current_unix_secs()?);
     let reuse_existing = matches!(policy, OnExistingAllowancePolicy::Ignore);
 
@@ -883,7 +879,7 @@ pub(super) async fn allocate_statement_store_allowance(
     // and which slot to claim when it is not. Its result is handed to
     // `register_statement_account` so the slots are read once, not twice.
     let preselected = match statement_allowance::slot::scan_slot_excluding(
-        &rpc,
+        rpc,
         &chain.metadata,
         bandersnatch,
         period,
@@ -911,14 +907,14 @@ pub(super) async fn allocate_statement_store_allowance(
         }
     };
 
-    let current = statement_allowance::ring::read_current_ring_index(&rpc).await?;
-    let ring = find_including_ring(&rpc, &chain.metadata, bandersnatch, current)
+    let current = statement_allowance::ring::read_current_ring_index(rpc).await?;
+    let ring = find_including_ring(rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "statement-store",
         })?;
     let outcome = register_statement_account(
-        &rpc,
+        rpc,
         &chain.metadata,
         &chain.state,
         bandersnatch,
@@ -989,19 +985,15 @@ pub(super) async fn allocate_bulletin_allowance(
         return Ok(allowance.secret.to_bytes().to_vec());
     }
 
-    let people_rpc = statement_allowance::rpc::RpcClient::new(
-        services
-            .statement_store
-            .client("bulletin allowance claim")
-            .await?,
-    );
-    let chain = services
-        .chain_context
-        .get(&people_rpc, services.statement_store.genesis_hash())
+    let people_client = services
+        .statement_store
+        .chain_client("bulletin allowance claim")
         .await?;
+    let people_rpc = people_client.rpc();
+    let chain = services.chain_context.get(&people_client).await?;
     let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
-    let current = statement_allowance::ring::read_current_ring_index(&people_rpc).await?;
-    let ring = find_including_ring(&people_rpc, &chain.metadata, bandersnatch, current)
+    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
+    let ring = find_including_ring(people_rpc, &chain.metadata, bandersnatch, current)
         .await?
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "Bulletin",
@@ -1013,7 +1005,7 @@ pub(super) async fn allocate_bulletin_allowance(
         period_duration,
     )?;
     let outcome = claim_long_term_storage(
-        &people_rpc,
+        people_rpc,
         &chain.metadata,
         &chain.state,
         bandersnatch,
