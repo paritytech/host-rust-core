@@ -171,6 +171,11 @@ pub struct ChainContext {
 #[derive(Default)]
 pub struct ChainContextCache {
     entries: Mutex<HashMap<[u8; 32], ChainContext>>,
+    /// Held across a miss so concurrent callers do not each download the same
+    /// metadata. `chain_runtime` shares one in-flight future for this, which is
+    /// tidier, but `Shared` needs a `Clone` output and `StatementAllowanceError`
+    /// is not — so the waiters re-check the entry instead.
+    downloads: futures::lock::Mutex<()>,
 }
 
 impl ChainContextCache {
@@ -199,6 +204,12 @@ impl ChainContextCache {
     ) -> Result<ChainContext, StatementAllowanceError> {
         let ((spec_version, transaction_version), genesis_hash) =
             futures::try_join!(fetch_runtime_version(rpc), fetch_genesis_hash(rpc))?;
+        if let Some(cached) = self.cached(configured_genesis_hash, spec_version, genesis_hash) {
+            return Ok(cached);
+        }
+
+        let _download = self.downloads.lock().await;
+        // Another caller may have finished the download while this one waited.
         if let Some(cached) = self.cached(configured_genesis_hash, spec_version, genesis_hash) {
             return Ok(cached);
         }
@@ -784,6 +795,88 @@ mod tests {
             }
         });
         methods(&scripted)
+    }
+
+    /// Transport that answers by method rather than in order, and yields inside
+    /// every request so concurrent cache misses genuinely interleave. Counts the
+    /// metadata downloads, which is the cost the cache exists to avoid.
+    #[derive(Clone, Default)]
+    struct CountingRpc(std::sync::Arc<CountingState>);
+
+    #[derive(Default)]
+    struct CountingState {
+        metadata_downloads: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingRpc {
+        fn metadata_downloads(&self) -> usize {
+            self.0
+                .metadata_downloads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl subxt_rpcs::client::RpcClientT for CountingRpc {
+        fn request_raw<'a>(
+            &'a self,
+            method: &'a str,
+            _params: Option<Box<subxt_rpcs::client::RawValue>>,
+        ) -> subxt_rpcs::client::RawRpcFuture<'a, Box<subxt_rpcs::client::RawValue>> {
+            let body = match method {
+                "state_getRuntimeVersion" => runtime_version(1_000_000),
+                "chain_getBlockHash" => genesis_result([0xaa; 32]),
+                "state_getMetadata" => {
+                    self.0
+                        .metadata_downloads
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    metadata_result()
+                }
+                other => panic!("unexpected request `{other}`"),
+            };
+            Box::pin(async move {
+                // Yield so a concurrently polled caller reaches the same point.
+                let mut yielded = false;
+                futures::future::poll_fn(move |cx| {
+                    if yielded {
+                        core::task::Poll::Ready(())
+                    } else {
+                        yielded = true;
+                        cx.waker().wake_by_ref();
+                        core::task::Poll::Pending
+                    }
+                })
+                .await;
+                Ok(subxt_rpcs::client::RawValue::from_string(body)
+                    .expect("scripted response is valid JSON"))
+            })
+        }
+
+        fn subscribe_raw<'a>(
+            &'a self,
+            _sub: &'a str,
+            _params: Option<Box<subxt_rpcs::client::RawValue>>,
+            _unsub: &'a str,
+        ) -> subxt_rpcs::client::RawRpcFuture<'a, subxt_rpcs::client::RawRpcSubscription> {
+            unreachable!("the chain context cache does not subscribe")
+        }
+    }
+
+    #[test]
+    fn concurrent_misses_download_the_metadata_once() {
+        let counting = CountingRpc::default();
+        let rpc = RpcClient::new(HostRpcClient::new(counting.clone()));
+        let cache = ChainContextCache::default();
+
+        futures::executor::block_on(async {
+            let (first, second) =
+                futures::join!(cache.get(&rpc, [0xaa; 32]), cache.get(&rpc, [0xaa; 32]),);
+            let first = first.expect("first read");
+            let second = second.expect("second read");
+            // Both callers end up on the same entry.
+            assert!(Arc::ptr_eq(&first.metadata, &second.metadata));
+        });
+
+        assert_eq!(counting.metadata_downloads(), 1);
     }
 
     #[test]
