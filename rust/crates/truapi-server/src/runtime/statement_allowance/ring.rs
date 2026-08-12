@@ -46,7 +46,8 @@ pub enum RingError {
 }
 
 /// LitePeople collection identifier: ASCII, exactly 32 bytes.
-const LITE_PEOPLE_IDENTIFIER: &[u8; 32] = b"pop:polkadot.network/people-lite";
+const LITE_PEOPLE_IDENTIFIER: &[u8; 32] =
+    &crate::host_logic::product_account::PEOPLE_LITE_COLLECTION_ID;
 /// Ring member public key length.
 const MEMBER_LEN: usize = 32;
 
