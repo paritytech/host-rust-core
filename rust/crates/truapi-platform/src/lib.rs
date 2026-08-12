@@ -28,16 +28,16 @@ uniffi::use_remote_type!(truapi::Bytes32);
 
 use truapi::Bytes32;
 use truapi::latest::{
-    AllocatableResource, GenericError, HostChatCreateRoomError, HostChatCreateRoomRequest,
-    HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse, HostDevicePermissionRequest,
-    HostDevicePermissionResponse, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
-    HostLocalStorageReadError, HostNavigateToError, HostPushNotificationRequest,
-    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
-    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
-    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
-    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
-    ThemeVariant,
+    AllocatableResource, ChainIdentifier, GenericError, HostChatCreateRoomError,
+    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
+    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostDevicePermissionRequest, HostDevicePermissionResponse, HostFeatureSupportedRequest,
+    HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
+    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
+    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
+    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
+    RemotePermissionResponse, RingLocation, ThemeVariant,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
@@ -502,6 +502,27 @@ pub trait PairingHostAdmin: Send + Sync {
     fn notify_session_store_changed(&self);
 }
 
+/// One chain a host serves: a protocol chain role mapped to the concrete
+/// chain of the host's configured environment.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostChainEntry {
+    /// Protocol role this entry answers for.
+    pub identifier: ChainIdentifier,
+    /// Genesis hash identifying the chain in all chain-scoped calls.
+    pub genesis_hash: Bytes32,
+}
+
+/// The chain set a host serves: its environment plus one entry per chain role.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostChainSet {
+    /// Ecosystem the host is configured for, e.g. "polkadot", "paseo".
+    pub network: String,
+    /// Complete set of chains available through this host.
+    pub chains: Vec<HostChainEntry>,
+}
+
 /// Feature-support probing. The host answers whether it can service a given
 /// capability (currently scoped to per-chain support).
 #[async_trait]
@@ -511,6 +532,11 @@ pub trait Features: Send + Sync {
         &self,
         request: HostFeatureSupportedRequest,
     ) -> Result<HostFeatureSupportedResponse, GenericError>;
+
+    /// Enumerate the chains this host serves (RFC 0026). The returned set must
+    /// match exactly what [`ChainProvider::connect`] will accept; the core
+    /// resolves `get_chain_info` requests against it.
+    async fn supported_chains(&self) -> Result<HostChainSet, GenericError>;
 }
 
 /// JSON-RPC provider factory for chain access.
