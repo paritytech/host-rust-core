@@ -5228,7 +5228,7 @@ public func uniffiForeignFutureHandleCountTruapiServer() -> Int {
 }
 /**
  * Classify a navigation input exactly like the core's internal navigate host
- * call: `.dot` first, then `localhost`, then normalized external, with
+ * call: dotNS first, then `localhost`, then normalized external, with
  * everything else rejected. Pure and stateless; hosts call it on every
  * webview-internal navigation.
  */
@@ -5269,7 +5269,7 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_truapi_server_checksum_func_parse_navigate() != 58140) {
+    if (uniffi_truapi_server_checksum_func_parse_navigate() != 62582) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_func_set_log_level() != 13010) {
