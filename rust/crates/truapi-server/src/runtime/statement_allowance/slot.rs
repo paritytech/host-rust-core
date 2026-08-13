@@ -22,6 +22,8 @@ use super::rpc::RpcClient;
 pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;
 /// Bulletin long-term-storage claim context prefix.
 const LONG_TERM_STORAGE_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/rsc-lts";
+/// Ring-VRF alias context prefix for an Asset Hub PGAS claim.
+const PGAS_CONTEXT_PREFIX: &[u8] = b"pop:gas:";
 
 /// Error while deriving aliases or selecting allowance slots.
 #[derive(Debug, Error)]
@@ -63,6 +65,14 @@ pub enum SlotError {
         period: u32,
         /// Slot the takeover targeted.
         seq: u32,
+    },
+    /// No unclaimed PGAS slot was found for the day.
+    #[error("no free PGAS slot on day {day} (max {max})")]
+    NoFreePgasSlot {
+        /// Day scanned.
+        day: u32,
+        /// Maximum claims per day.
+        max: u32,
     },
     /// Free slots exist but all were excluded by this call's own submissions.
     #[error(
@@ -133,6 +143,21 @@ pub fn derive_slot_context(period: u32, seq: u32) -> [u8; 32] {
     ctx
 }
 
+/// Derive the 32-byte Asset Hub PGAS claim context:
+/// `"pop:gas:" ‖ u32le(day) ‖ u32le(slot_index) ‖ zero fill`.
+///
+/// The two integers are little-endian here, unlike the big-endian statement-store
+/// and long-term-storage contexts. The mobile wallet writes them this way and the
+/// runtime verifies against the same bytes, so the layout is not ours to tidy.
+pub fn derive_pgas_context(day: u32, slot_index: u32) -> [u8; 32] {
+    let mut ctx = [0u8; 32];
+    ctx[..PGAS_CONTEXT_PREFIX.len()].copy_from_slice(PGAS_CONTEXT_PREFIX);
+    let offset = PGAS_CONTEXT_PREFIX.len();
+    ctx[offset..offset + 4].copy_from_slice(&day.to_le_bytes());
+    ctx[offset + 4..offset + 8].copy_from_slice(&slot_index.to_le_bytes());
+    ctx
+}
+
 /// Derive the 32-byte Bulletin long-term-storage slot context:
 /// `"pop:polkadot.net/rsc-lts" ‖ u32be(period) ‖ counter ‖ zero fill`.
 pub fn derive_long_term_storage_context(period: u32, counter: u8) -> [u8; 32] {
@@ -155,6 +180,23 @@ pub fn slot_alias(
     BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
         SlotError::AliasInContext {
             context: "statement-store slot",
+            error: err,
+        }
+        .into()
+    })
+}
+
+/// The PGAS claim alias for our `entropy` at `(day, slot_index)`.
+pub fn pgas_alias(
+    entropy: [u8; 32],
+    day: u32,
+    slot_index: u32,
+) -> Result<[u8; 32], StatementAllowanceError> {
+    let secret = BandersnatchVrfVerifiable::new_secret(entropy);
+    let context = derive_pgas_context(day, slot_index);
+    BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
+        SlotError::AliasInContext {
+            context: "PGAS claim slot",
             error: err,
         }
         .into()
@@ -185,6 +227,19 @@ fn statement_store_allowance_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
         twox_128(b"Resources").as_slice(),
         twox_128(b"StatementStoreAllowances").as_slice(),
         &period.to_be_bytes(),
+        &blake2_128_concat(alias),
+    ]
+    .concat()
+}
+
+/// `Pgas.ClaimedGasAliases[day][alias]` storage key on Asset Hub.
+/// key1 = Identity(u32be day); key2 = Blake2_128Concat(alias). Presence alone
+/// marks the slot spent; the value is unit.
+fn claimed_gas_alias_key(day: u32, alias: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Pgas").as_slice(),
+        twox_128(b"ClaimedGasAliases").as_slice(),
+        &day.to_be_bytes(),
         &blake2_128_concat(alias),
     ]
     .concat()
@@ -406,6 +461,50 @@ pub async fn scan_slot_excluding(
         (None, true) => SlotSelection::FreeSlotsExcluded,
         (None, false) => SlotSelection::Full { max, occupied },
     })
+}
+
+/// Claims a lite person may make per PGAS period, from
+/// `Pgas.MaxClaimsPerPeriodPerLitePerson`.
+pub fn max_pgas_claims(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
+    let bytes = metadata
+        .constant("Pgas", "MaxClaimsPerPeriodPerLitePerson")
+        .ok_or(MetadataError::MissingConstant {
+            pallet: "Pgas",
+            constant: "MaxClaimsPerPeriodPerLitePerson",
+        })?;
+    let mut buf = [0u8; 4];
+    let n = bytes.len().min(4);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    Ok(u32::from_le_bytes(buf))
+}
+
+/// Scan PGAS slots `0..max` for `day`, returning the first whose alias has not
+/// been claimed and is not listed in `excluded`.
+///
+/// `ClaimedGasAliases` records spent aliases with a unit value, so presence is
+/// the whole answer and nothing is decoded.
+pub async fn scan_pgas_slot_excluding(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    entropy: [u8; 32],
+    day: u32,
+    excluded: &[u32],
+) -> Result<u32, StatementAllowanceError> {
+    let max = max_pgas_claims(metadata)?;
+    for slot_index in 0..max {
+        if excluded.contains(&slot_index) {
+            continue;
+        }
+        let alias = pgas_alias(entropy, day, slot_index)?;
+        if rpc
+            .get_storage(&claimed_gas_alias_key(day, &alias))
+            .await?
+            .is_none()
+        {
+            return Ok(slot_index);
+        }
+    }
+    Err(SlotError::NoFreePgasSlot { day, max }.into())
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -692,6 +791,29 @@ mod tests {
         .unwrap();
 
         assert_eq!(selection, SlotSelection::FreeSlotsExcluded);
+    }
+
+    /// The PGAS context is little-endian where the other two are big-endian, and
+    /// the runtime verifies the proof against these exact bytes.
+    #[test]
+    fn pgas_context_layout_is_little_endian() {
+        let ctx = derive_pgas_context(0x0102_0304, 0x0506_0708);
+
+        assert_eq!(&ctx[..8], b"pop:gas:");
+        assert_eq!(&ctx[8..12], &[0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(&ctx[12..16], &[0x08, 0x07, 0x06, 0x05]);
+        assert_eq!(&ctx[16..], &[0u8; 16]);
+    }
+
+    /// `ClaimedGasAliases` is `Identity(u32be day) ‖ Blake2_128Concat(alias)`.
+    #[test]
+    fn claimed_gas_alias_key_layout() {
+        let alias = [0x42; 32];
+        let key = claimed_gas_alias_key(0x0102_0304, &alias);
+
+        assert_eq!(key.len(), 16 + 16 + 4 + 16 + 32);
+        assert_eq!(&key[32..36], &[0x01, 0x02, 0x03, 0x04], "day is big-endian");
+        assert_eq!(&key[52..], &alias, "alias follows its blake2_128 prefix");
     }
 
     #[test]

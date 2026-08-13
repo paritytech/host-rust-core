@@ -24,6 +24,9 @@ use thiserror::Error;
 
 use super::StatementAllowanceError;
 
+/// Signed-extension identifier that carries the `AsPgas` authorization on Asset Hub.
+pub const AS_PGAS: &str = "AsPgas";
+
 /// Signed-extension identifier that carries the `AsResources` authorization.
 pub const AS_RESOURCES: &str = "AsResources";
 

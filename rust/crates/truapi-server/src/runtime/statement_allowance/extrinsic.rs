@@ -7,7 +7,7 @@
 use parity_scale_codec::{Decode, Encode};
 
 use super::StatementAllowanceError;
-use super::extension::{AS_RESOURCES, ChainState, Metadata, MetadataError};
+use super::extension::{AS_PGAS, AS_RESOURCES, ChainState, Metadata, MetadataError};
 
 /// General-transaction preamble byte: `0b01` (General) | version 5.
 const GENERAL_V5_PREAMBLE: u8 = 0x45;
@@ -28,6 +28,12 @@ struct ClaimLongTermStorageCallArgs {
     account_id: [u8; 32],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+struct ClaimPgasCallArgs {
+    slot_index: u32,
+    target: [u8; 32],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 struct RegisterStatementStoreAllowanceInfo {
     proof: Vec<u8>,
@@ -42,6 +48,15 @@ struct ClaimLongTermStorageInfo {
     ring_index: u32,
     revision: u32,
     personhood: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+struct ClaimPgasInfo {
+    proof: Vec<u8>,
+    ring_index: u32,
+    revision: u32,
+    collection: u8,
+    day: u32,
 }
 
 /// Encode `Resources.set_statement_store_account(period, seq, target)`:
@@ -129,6 +144,54 @@ pub fn build_long_term_storage_extra(
         ring_index,
         revision,
         personhood: lite_people,
+    }
+    .encode_to(&mut extra);
+    Ok(extra)
+}
+
+/// Encode `Pgas.claim_pgas(slot_index, target)` on Asset Hub:
+/// `pallet ‖ call ‖ slot_index_u32LE ‖ target[32]`, with the dispatch indices
+/// resolved from `metadata`.
+pub fn build_claim_pgas_call(
+    metadata: &Metadata,
+    slot_index: u32,
+    target: &[u8; 32],
+) -> Result<Vec<u8>, StatementAllowanceError> {
+    let indices = metadata.call_indices("Pgas", "claim_pgas")?;
+    let mut call = Vec::with_capacity(2 + 4 + 32);
+    call.extend_from_slice(&indices);
+    ClaimPgasCallArgs {
+        slot_index,
+        target: *target,
+    }
+    .encode_to(&mut call);
+    Ok(call)
+}
+
+/// Encode the `AsPgas` extension `extra` for a PGAS claim:
+/// `Some(Claim { proof, ring_index, revision, LitePeople, day })`, with the
+/// variant indices resolved from `metadata`.
+///
+/// `AsPgas` names its membership enum `PgasCollection` rather than
+/// `MembershipCollection`, so the tier is resolved by variant name.
+pub fn build_as_pgas_extra(
+    metadata: &Metadata,
+    proof: &[u8],
+    ring_index: u32,
+    revision: u32,
+    day: u32,
+) -> Result<Vec<u8>, StatementAllowanceError> {
+    let (info_index, lite_people) =
+        metadata.extension_info_and_field_variant_indices(AS_PGAS, "Claim", "LitePeople")?;
+    let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 4 + 1 + 4);
+    extra.push(OPTION_SOME);
+    extra.push(info_index);
+    ClaimPgasInfo {
+        proof: proof.to_vec(),
+        ring_index,
+        revision,
+        collection: lite_people,
+        day,
     }
     .encode_to(&mut extra);
     Ok(extra)
@@ -276,6 +339,49 @@ mod tests {
                 personhood: 1,
             }
         );
+    }
+
+    /// The `AsPgas::Claim` payload the live runtime declares. Encoding fewer
+    /// fields than the runtime expects is accepted locally and then panics inside
+    /// `validate_transaction`, which is how the missing `revision` on
+    /// `RegisterStatementStoreAllowance` went unnoticed until a live submission.
+    #[test]
+    fn pgas_info_carries_the_five_declared_fields() {
+        let info = ClaimPgasInfo {
+            proof: vec![0xaa, 0xbb],
+            ring_index: 7,
+            revision: 9,
+            collection: 1,
+            day: 11,
+        };
+
+        assert_eq!(
+            ClaimPgasInfo::decode(&mut &info.encode()[..]).unwrap(),
+            info
+        );
+        // proof is length-prefixed; the four u32/u8 tail fields follow in order.
+        assert_eq!(
+            info.encode(),
+            [
+                vec![0x08, 0xaa, 0xbb],
+                7u32.encode(),
+                9u32.encode(),
+                vec![1],
+                11u32.encode()
+            ]
+            .concat(),
+        );
+    }
+
+    #[test]
+    fn pgas_call_encodes_slot_then_target() {
+        let target = [0x33; 32];
+        let args = ClaimPgasCallArgs {
+            slot_index: 5,
+            target,
+        };
+
+        assert_eq!(args.encode(), [5u32.encode(), target.to_vec()].concat());
     }
 
     #[test]
