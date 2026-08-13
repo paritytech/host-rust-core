@@ -413,6 +413,11 @@ pub async fn register_statement_account(
     .await?;
     let mut skipped_duplicate_slots = Vec::new();
     let mut preselected = params.preselected;
+    // One registration revokes at most one allowance. The duplicate-submit retry
+    // was written for free slots, where trying another costs nothing; on a full
+    // period each attempt is a revocation, and the earlier submission may still
+    // land, so a second takeover can leave two allowances revoked for one call.
+    let mut took_over_a_slot = false;
     loop {
         let seq = match preselected.take() {
             Some(seq) => seq,
@@ -441,6 +446,13 @@ pub async fn register_statement_account(
                     .into());
                 }
                 SlotSelection::Full { max, occupied } => {
+                    if took_over_a_slot {
+                        return Err(SlotError::NoFreeStatementStoreSlot {
+                            period: params.period,
+                            max,
+                        }
+                        .into());
+                    }
                     // Nothing free: replace the oldest slot the runtime will
                     // let us take, and only then give up.
                     let cooldown = slot::replacement_cooldown(metadata)?;
@@ -452,7 +464,10 @@ pub async fn register_statement_account(
                         cooldown,
                         &skipped_duplicate_slots,
                     ) {
-                        Some(seq) => seq,
+                        Some(seq) => {
+                            took_over_a_slot = true;
+                            seq
+                        }
                         None => {
                             return Err(SlotError::NoFreeStatementStoreSlot {
                                 period: params.period,
@@ -1196,6 +1211,60 @@ mod tests {
                 RegistrationOutcome::Registered { seq: 3, .. }
             ),
             "the oldest occupied slot should have been replaced",
+        );
+    }
+
+    /// A duplicate-submit retry must not revoke a second allowance: the first
+    /// submission can still land, so two takeovers for one call can cost two.
+    #[test]
+    fn a_duplicate_submit_retry_does_not_take_over_a_second_slot() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let entropy = [0x11; 32];
+        let ring = RingParams {
+            members: vec![proof::member_key(entropy)],
+            exponent: 9,
+            ring_index: 0,
+            block_hash: "0xfinal".to_string(),
+        };
+
+        // Revision, ten occupied slots of differing age, the chain clock. The
+        // submission then fails as a duplicate, and the rescan would otherwise
+        // pick a second victim.
+        let mut owned = vec!["null".to_string()];
+        owned.extend((0..10u64).map(|seq| slot_entry_since([0x99; 32], 1_000 + seq)));
+        owned.push(chain_clock(NOW));
+        // Second pass through the loop: revision is cached, so scan then clock.
+        owned.extend((0..10u64).map(|seq| slot_entry_since([0x99; 32], 1_000 + seq)));
+        owned.push(chain_clock(NOW));
+        let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let scripted = ScriptedRpc::new(responses);
+        scripted.script_subscription_errors("already imported", 2);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let err = futures::executor::block_on(register_statement_account(
+            &rpc,
+            &metadata,
+            &chain_state,
+            entropy,
+            RegistrationParams {
+                target: &[0x22; 32],
+                period: 7,
+                ring: &ring,
+                reuse_existing: true,
+                preselected: None,
+            },
+        ))
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("no free"),
+            "a retry after a takeover should stop, not replace again: {err}"
         );
     }
 
