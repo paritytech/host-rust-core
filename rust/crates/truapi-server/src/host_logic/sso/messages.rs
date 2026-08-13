@@ -44,6 +44,11 @@ use crate::host_logic::statement_store::{
 
 pub mod v1;
 
+/// Fixed correlation id used by both sides of the SSO channel to signal session
+/// end. Receivers detect disconnect by message variant, not by this id; the id
+/// is stable so session logs remain correlated across implementations.
+pub const SSO_DISCONNECT_MESSAGE_ID: &str = "truapi:sso:disconnect";
+
 /// Transport-level acknowledgement code for an SSO session statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, derive_more::Display)]
 pub enum SsoResponseCode {

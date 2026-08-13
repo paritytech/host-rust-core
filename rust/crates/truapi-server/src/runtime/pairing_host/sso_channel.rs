@@ -16,11 +16,11 @@ use super::PairingHost;
 use crate::host_logic::session::{SessionInfo, SessionState, SsoSessionInfo};
 use crate::host_logic::sso::messages::{
     OnExistingAllowancePolicy, RemoteMessage, RemoteMessageData, RingVrfError,
-    SsoAllocatedResource, SsoAllocationOutcome, SsoRemoteResponse, SsoSessionStatement,
-    alias_request_message, build_outgoing_request_statement, create_transaction_legacy_message,
-    create_transaction_message, decode_sso_session_statement, product_subtree_request_message,
-    proof_request_message, resource_allocation_message, sign_payload_message,
-    sign_raw_legacy_message, sign_raw_message, sign_vrf_message, v1,
+    SSO_DISCONNECT_MESSAGE_ID, SsoAllocatedResource, SsoAllocationOutcome, SsoRemoteResponse,
+    SsoSessionStatement, alias_request_message, build_outgoing_request_statement,
+    create_transaction_legacy_message, create_transaction_message, decode_sso_session_statement,
+    product_subtree_request_message, proof_request_message, resource_allocation_message,
+    sign_payload_message, sign_raw_legacy_message, sign_raw_message, sign_vrf_message, v1,
 };
 use crate::host_logic::statement_store::parse_new_statements_result;
 
@@ -174,7 +174,7 @@ impl PairingHost {
             .sso
             .as_ref()
             .ok_or_else(|| "No SSO session state".to_string())?;
-        let message_id = "truapi:sso:disconnect".to_string();
+        let message_id = SSO_DISCONNECT_MESSAGE_ID.to_string();
         let message = RemoteMessage {
             message_id: message_id.clone(),
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),

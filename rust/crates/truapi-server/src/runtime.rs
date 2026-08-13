@@ -63,7 +63,7 @@ pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use services::RuntimeServices;
 pub use signing_host::ResponderExit;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, respond_to_pairing,
+    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
 };
 
 use authority::{

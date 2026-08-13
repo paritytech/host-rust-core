@@ -3140,6 +3140,19 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
+     * Answer one decrypted SSO remote message from a wallet-managed
+     * statement-store session.
+     *
+     * `message` is one SCALE-encoded `RemoteMessage` exactly as decrypted from
+     * the session statement. The bytes are deliberately opaque at this
+     * boundary: the wallet forwards wire encodings verbatim and never
+     * constructs them. Session control and transport stay with the wallet —
+     * `Disconnected` is reported, never handled here. Confirmation-gated
+     * requests await `confirm_user_action`, so this can take arbitrarily long.
+     */
+    func handleSsoRequest(message: Data) async throws  -> SsoRequestOutcome
+
+    /**
      * Notify the shared chain adapter that a connection closed.
      */
     func notifyChainClosed(connectionId: UInt32)
@@ -3155,6 +3168,15 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
      * Chat modality pass `None`.
      */
     func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeChatCallbacks?, executionConfig: NativeProductExecutionConfig) throws  -> NativeProductExecution
+
+    /**
+     * Build the SCALE-encoded `Disconnected` message a wallet posts over a
+     * session it is ending. Uses the core's fixed disconnect id
+     * (`truapi:sso:disconnect`, matching the pairing host's convention);
+     * receivers detect disconnect by message variant, not id. Posting and
+     * record cleanup stay with the wallet.
+     */
+    func prepareDisconnectRequest()  -> Data
 
 }
 /**
@@ -3251,6 +3273,33 @@ open func disconnect()  {try! rustCall() {
 }
 
     /**
+     * Answer one decrypted SSO remote message from a wallet-managed
+     * statement-store session.
+     *
+     * `message` is one SCALE-encoded `RemoteMessage` exactly as decrypted from
+     * the session statement. The bytes are deliberately opaque at this
+     * boundary: the wallet forwards wire encodings verbatim and never
+     * constructs them. Session control and transport stay with the wallet —
+     * `Disconnected` is reported, never handled here. Confirmation-gated
+     * requests await `confirm_user_action`, so this can take arbitrarily long.
+     */
+open func handleSsoRequest(message: Data)async throws  -> SsoRequestOutcome  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_nativetruapihostruntime_handle_sso_request(
+                        self.uniffiCloneHandle(),FfiConverterData.lower(message)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSsoRequestOutcome_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
+}
+
+    /**
      * Notify the shared chain adapter that a connection closed.
      */
 open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
@@ -3288,6 +3337,22 @@ open func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeCh
         FfiConverterTypeHostCallbacks_lower(callbacks),
         FfiConverterOptionTypeNativeChatCallbacks.lower(chatCallbacks),
         FfiConverterTypeNativeProductExecutionConfig_lower(executionConfig),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Build the SCALE-encoded `Disconnected` message a wallet posts over a
+     * session it is ending. Uses the core's fixed disconnect id
+     * (`truapi:sso:disconnect`, matching the pairing host's convention);
+     * receivers detect disconnect by message variant, not id. Posting and
+     * record cleanup stay with the wallet.
+     */
+open func prepareDisconnectRequest() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_prepare_disconnect_request(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -4603,6 +4668,103 @@ public func FfiConverterTypeProductRuntimeError_lower(_ value: ProductRuntimeErr
 
 
 /**
+ * Outcome of answering one wallet-supplied SSO request at the FFI boundary.
+ *
+ * Variants carry SCALE-encoded wire bytes rather than decoded Rust types because
+ * the wallet forwards encodings verbatim and never constructs them — the opaque
+ * bytes are the correct boundary representation here.
+ */
+
+public enum SsoRequestOutcome: Equatable, Hashable {
+
+    /**
+     * SCALE-encoded response to post back over the session.
+     */
+    case response(
+        /**
+         * SCALE-encoded `RemoteMessage` response ready to submit over the
+         * session statement store.
+         */message: Data
+    )
+    /**
+     * The peer ended the session; the wallet tears down its transport and
+     * records (host entry, device record, device-removed broadcast).
+     */
+    case disconnected
+    /**
+     * Not a request; nothing to post.
+     */
+    case ignored
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SsoRequestOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSsoRequestOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = SsoRequestOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SsoRequestOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .response(message: try FfiConverterData.read(from: &buf)
+        )
+
+        case 2: return .disconnected
+
+        case 3: return .ignored
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SsoRequestOutcome, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .response(message):
+            writeInt(&buf, Int32(1))
+            FfiConverterData.write(message, into: &buf)
+
+
+        case .disconnected:
+            writeInt(&buf, Int32(2))
+
+
+        case .ignored:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSsoRequestOutcome_lift(_ buf: RustBuffer) throws -> SsoRequestOutcome {
+    return try FfiConverterTypeSsoRequestOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSsoRequestOutcome_lower(_ value: SsoRequestOutcome) -> RustBuffer {
+    return FfiConverterTypeSsoRequestOutcome.lower(value)
+}
+
+
+
+/**
  * Failure modes returned from host-facing `start_ws_bridge` wrappers.
  */
 public
@@ -5321,6 +5483,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_handle_sso_request() != 21060) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_closed() != 55360) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5328,6 +5493,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 49537) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_prepare_disconnect_request() != 48286) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativecustomrenderersubscription_cancel() != 26593) {
