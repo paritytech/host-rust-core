@@ -169,6 +169,82 @@ jobs:
       - name: Check committed iOS bindings are current
         run: ./ios/truapi-host/scripts/sync-bindings.sh --check
 
+  ios-changes:
+    name: iOS change filter
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # Actions has no per-job paths filter, so compute it once here and gate
+      # ios-swift on the output. On pull_request the checkout is the merge
+      # commit, so HEAD^1 is the base. Other events always run the gate.
+      #
+      # The list needs no broader rust/ entry: the generated bindings are
+      # committed under ios/, and ios-bindings runs unconditionally, so a Rust
+      # change that moves the UniFFI surface either carries an ios/ change or
+      # fails there first.
+      - name: Detect iOS-relevant changes
+        id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only HEAD^1 HEAD \
+            | grep -qE '^(ios/|Package\.swift$|Makefile$|rust/crates/truapi-server/src/native)'; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  ios-swift:
+    name: iOS package (swift compile)
+    needs: ios-changes
+    if: needs.ios-changes.outputs.ios == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TRUAPI_USE_LOCAL_BINARY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: ios-swift-gate
+
+      # Simulator slice only, debug profile. This gate compiles Swift and ships
+      # no binary, so the device slice and release codegen are waste. The
+      # published binary is older than the current Rust surface, so
+      # TRUAPI_USE_LOCAL_BINARY points the manifest at this build instead.
+      - name: Build the simulator XCFramework
+        run: make xcframework XCFRAMEWORK_TARGETS=aarch64-apple-ios-sim XCFRAMEWORK_PROFILE=debug
+
+      - name: Stage it into the package
+        run: ./ios/truapi-host/scripts/stage-xcframework.sh
+
+      # Compiling the test target is the point: the hand-written conformers a
+      # generated-file diff cannot see live there and in TrUAPIHost.swift.
+      - name: Compile the package and its tests
+        run: |
+          xcodebuild build-for-testing \
+            -scheme TrUAPIHost \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+
   ts-client:
     name: "@parity/truapi"
     runs-on: ubuntu-latest
@@ -385,6 +461,8 @@ jobs:
         licenses,
         codegen,
         ios-bindings,
+        ios-changes,
+        ios-swift,
         ts-client,
         ts-host,
         playground,
@@ -400,6 +478,10 @@ jobs:
             "${{ needs.licenses.result }}"
             "${{ needs.codegen.result }}"
             "${{ needs.ios-bindings.result }}"
+            # ios-changes is listed because a failure there skips ios-swift,
+            # and skipped counts as a pass below.
+            "${{ needs.ios-changes.result }}"
+            "${{ needs.ios-swift.result }}"
             "${{ needs.ts-client.result }}"
             "${{ needs.ts-host.result }}"
             "${{ needs.playground.result }}"
