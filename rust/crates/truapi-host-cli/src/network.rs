@@ -21,11 +21,15 @@ impl Network {
                 identity_backend_base: "https://identity-backend-next.parity-testnet.parity.io/api/v1",
                 people_ws: "wss://paseo-people-next-system-rpc.polkadot.io",
                 bulletin_ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
+                asset_hub_ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
                 people_genesis: hex_literal_genesis(
                     "c5af1826b31493f08b7e2a823842f98575b806a784126f28da9608c68665afa5",
                 ),
                 bulletin_genesis: hex_literal_genesis(
                     "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
+                ),
+                asset_hub_genesis: hex_literal_genesis(
+                    "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
                 ),
                 live_chain_endpoints: PASEO_NEXT_V2_CHAIN_ENDPOINTS,
             },
@@ -36,7 +40,7 @@ impl Network {
 const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
     ChainEndpoint {
         genesis: hex_literal_genesis(
-            "bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f",
+            "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
         ),
         ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
         required_for_host: false,
@@ -65,8 +69,14 @@ pub struct NetworkConfig {
     pub people_ws: &'static str,
     #[allow(dead_code)]
     pub bulletin_ws: &'static str,
+    /// Asset Hub RPC, where PGAS allowances are claimed.
+    pub asset_hub_ws: &'static str,
     pub people_genesis: [u8; 32],
     pub bulletin_genesis: [u8; 32],
+    /// Asset Hub genesis hash. Routing metadata only: the chain it connects to is
+    /// authoritative for `CheckGenesis`.
+    #[allow(dead_code)]
+    pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
 }
 
