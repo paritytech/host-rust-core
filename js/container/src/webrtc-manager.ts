@@ -48,20 +48,13 @@ export function createWebRtcAccessRequester(
 }
 
 /** Async methods that initiate network activity and must be gated. */
-type GatedMethodName =
-  | 'createOffer'
-  | 'createAnswer'
-  | 'setLocalDescription'
-  | 'setRemoteDescription'
-  | 'addIceCandidate';
-
-const GATED_METHODS: readonly GatedMethodName[] = [
+const GATED_METHODS = [
   'createOffer',
   'createAnswer',
   'setLocalDescription',
   'setRemoteDescription',
   'addIceCandidate',
-];
+] as const;
 
 /** A native async peer-connection method, called generically for gating. */
 type AsyncPeerMethod = (
