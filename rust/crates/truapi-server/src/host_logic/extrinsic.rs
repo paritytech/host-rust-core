@@ -395,7 +395,16 @@ pub(crate) fn build_signed_extrinsic_v5(
             declared_at_any_version.insert(declared.name.into_owned());
         }
     }
+    let mut seen_ids = BTreeSet::new();
     for extension in extensions {
+        if !seen_ids.insert(extension.id.as_str()) {
+            return Err(V5BuildError::UnsupportedExtensions(format!(
+                "transaction extension {:?} is listed more than once; every \
+                 reader takes the first entry, so the rest would be dropped in \
+                 silence",
+                extension.id
+            )));
+        }
         if !declared_at_any_version.contains(extension.id.as_str()) {
             return Err(V5BuildError::UnsupportedExtensions(format!(
                 "transaction extension {:?} is not declared by the runtime at \
@@ -438,7 +447,17 @@ pub(crate) fn build_signed_extrinsic_v5(
                  this transaction"
             )));
         }
-        (None, _) => {}
+        (None, Some(_)) => {}
+        // Nothing supplies the slot and the encoding version has none, so the
+        // host's signature has nowhere to go. Returning the transaction anyway
+        // hands back one that carries no authorization at all.
+        (None, None) => {
+            return Err(V5BuildError::UnsupportedExtensions(format!(
+                "pipeline version {transaction_extension_version} does not declare \
+                 {verify_multi_signature}, so the host cannot authorize this \
+                 transaction"
+            )));
+        }
     }
 
     let verify_signature = supplied_verify_signature
@@ -458,31 +477,40 @@ pub(crate) fn build_signed_extrinsic_v5(
     let call_args = PreencodedCallArgs(call_args);
 
     if transaction_extensions.verify_signature.is_some() {
-        // The signer payload hashes the implicit bytes of every extension after
-        // the authorization cut, taken verbatim from the caller. A short or
-        // empty one there signs a different payload than the node recomputes,
-        // which surfaces as a BadProof with nothing local to read.
+        // The signer payload hashes both blobs of every extension after the
+        // authorization cut, taken verbatim from the caller: the values that
+        // also land in the body, then the implicits that appear nowhere else. A
+        // short or malformed one on either side signs a different payload than
+        // the node recomputes, which surfaces as a BadProof with nothing local
+        // to read.
         let signed_from = extension_info
             .extension_ids
             .iter()
             .rposition(|declared| declared.name == verify_multi_signature)
             .map_or(0, |last| last + 1);
         for declared in &extension_info.extension_ids[signed_from..] {
-            if type_is_empty(declared.implicit_id, metadata.types()) {
-                continue;
-            }
             let Some(supplied) = extensions
                 .iter()
                 .find(|extension| extension.id == declared.name)
             else {
                 continue;
             };
-            traverse_exactly(
-                &supplied.additional_signed,
-                declared.implicit_id,
-                metadata.types(),
-                &format!("{} implicit", declared.name),
-            )?;
+            if !type_is_empty(declared.id, metadata.types()) {
+                traverse_exactly(
+                    &supplied.extra,
+                    declared.id,
+                    metadata.types(),
+                    &format!("{} value", declared.name),
+                )?;
+            }
+            if !type_is_empty(declared.implicit_id, metadata.types()) {
+                traverse_exactly(
+                    &supplied.additional_signed,
+                    declared.implicit_id,
+                    metadata.types(),
+                    &format!("{} implicit", declared.name),
+                )?;
+            }
         }
 
         let signer_payload = encode_v5_signer_payload_with_info(
@@ -1143,6 +1171,96 @@ pub(crate) mod tests {
         }
     }
 
+    /// Post-cut values are hashed into the signer payload alongside the
+    /// implicits, so a malformed one there is signed just as blindly.
+    #[test]
+    fn v5_rejects_a_malformed_post_cut_value() {
+        let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
+        let state = fixture_chain_state();
+
+        for (id, extra, expected) in [
+            ("CheckNonce", vec![0x00, 0xFF], "has 1 trailing byte(s)"),
+            ("CheckMortality", Vec::new(), "does not decode"),
+            ("ChargeAssetTxPayment", vec![0x00], "does not decode"),
+        ] {
+            let mut extensions = fixture_signed_extensions(&allowance_metadata, &state);
+            extensions
+                .iter_mut()
+                .find(|extension| extension.id == id)
+                .unwrap()
+                .extra = extra.clone();
+
+            let error = build_signed_extrinsic_v5(
+                &test_signer(),
+                state.genesis_hash,
+                &fixture_call_data(),
+                &extensions,
+                Metadata::decode_from(FIXTURE_METADATA_BYTES).unwrap().arc(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains(&format!("{id} value")) && error.contains(expected),
+                "{id} extra={extra:?} gave {error:?}"
+            );
+        }
+    }
+
+    /// The value guard must pass a real proof through: `AsResources` carrying a
+    /// ring-VRF claim is the whole point of the caller-authorized path.
+    #[test]
+    fn v5_accepts_a_real_as_resources_proof_value() {
+        use crate::runtime::statement_allowance::extrinsic::build_long_term_storage_extra;
+
+        let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
+        let state = fixture_chain_state();
+        let mut extensions = fixture_signed_extensions(&allowance_metadata, &state);
+        extensions
+            .iter_mut()
+            .find(|extension| extension.id == "AsResources")
+            .unwrap()
+            .extra =
+            build_long_term_storage_extra(&allowance_metadata, &[0xEE; 785], 3, 9).unwrap();
+
+        build_signed_extrinsic_v5(
+            &test_signer(),
+            state.genesis_hash,
+            &fixture_call_data(),
+            &extensions,
+            Metadata::decode_from(FIXTURE_METADATA_BYTES).unwrap().arc(),
+        )
+        .expect("a well-formed proof value must pass the guard");
+    }
+
+    /// Every reader takes the first entry for a name, so a repeat would be
+    /// dropped in silence — and on the authorization slot it would also decide
+    /// whether the host signs.
+    #[test]
+    fn v5_rejects_a_duplicate_extension_id() {
+        let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
+        let state = fixture_chain_state();
+
+        let mut extensions = fixture_signed_extensions(&allowance_metadata, &state);
+        let mut repeated = extensions[0].clone();
+        repeated.extra = vec![0xAB];
+        extensions.push(repeated);
+        let repeated_id = extensions[0].id.clone();
+
+        let error = build_signed_extrinsic_v5(
+            &test_signer(),
+            state.genesis_hash,
+            &fixture_call_data(),
+            &extensions,
+            Metadata::decode_from(FIXTURE_METADATA_BYTES).unwrap().arc(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains(&format!("{repeated_id:?} is listed more than once")),
+            "{error}"
+        );
+    }
+
     /// An empty-typed implicit is filtered out by `frame-decode` before it asks
     /// for bytes, so spurious bytes there are never signed and must not be
     /// rejected.
@@ -1204,18 +1322,195 @@ pub(crate) mod tests {
         assert_eq!(inner, expected, "implicit bytes must not reach the body");
     }
 
-    /// Tripwire for the cross-version union. Subxt synthesises `{0: all}` for
-    /// every V14/V15 blob, so the version count says nothing about the fixture;
-    /// the format does, and a V16 one makes the union testable.
+    /// A V16 blob built from the V14 fixture, declaring the extension pipeline
+    /// at two versions so the cross-version union has something to span.
+    /// Version 0 declares every extension the fixture carries; version 1 — the
+    /// one subxt encodes with, being the highest — declares all but `omitted`.
+    ///
+    /// Subxt synthesises `{0: all}` for any V14 or V15 blob, so a single-version
+    /// fixture cannot tell a union apart from a lookup at the encoding version.
+    /// Only the parts this module reads are carried over: the type registry,
+    /// each pallet's index and call type, and the extension list. Call
+    /// arguments stay opaque, so their field types are never consulted.
+    fn two_version_metadata(omitted: &[&str]) -> ArcMetadata {
+        use std::collections::BTreeMap;
+        use subxt::ext::frame_metadata::{META_RESERVED, v16};
+
+        let RuntimeMetadata::V14(v14) =
+            RuntimeMetadataPrefixed::decode(&mut &FIXTURE_METADATA_BYTES[..])
+                .unwrap()
+                .1
+        else {
+            panic!("fixture is not V14");
+        };
+
+        // `UncheckedExtrinsic<Address, Call, Signature, Extra>`: V14 leaves these
+        // to be read off the type params, V16 names them outright.
+        let extrinsic_ty = v14.types.resolve(v14.extrinsic.ty.id).unwrap();
+        let param = |name: &str| {
+            extrinsic_ty
+                .type_params
+                .iter()
+                .find(|param| param.name == name)
+                .and_then(|param| param.ty)
+                .unwrap_or_else(|| panic!("extrinsic type has no {name} parameter"))
+        };
+        let (address_ty, call_ty, signature_ty) =
+            (param("Address"), param("Call"), param("Signature"));
+
+        let transaction_extensions: Vec<
+            v16::TransactionExtensionMetadata<scale_info::form::PortableForm>,
+        > = v14
+            .extrinsic
+            .signed_extensions
+            .iter()
+            .map(|extension| v16::TransactionExtensionMetadata {
+                identifier: extension.identifier.clone(),
+                ty: extension.ty,
+                implicit: extension.additional_signed,
+            })
+            .collect();
+        let every_extension = (0..transaction_extensions.len() as u32)
+            .map(Compact)
+            .collect();
+        let encoding_version_extensions = transaction_extensions
+            .iter()
+            .enumerate()
+            .filter(|(_, extension)| !omitted.contains(&extension.identifier.as_str()))
+            .map(|(index, _)| Compact(index as u32))
+            .collect();
+
+        let pallets = v14
+            .pallets
+            .iter()
+            .map(|pallet| v16::PalletMetadata {
+                name: pallet.name.clone(),
+                storage: None,
+                calls: pallet.calls.as_ref().map(|calls| v16::PalletCallMetadata {
+                    ty: calls.ty,
+                    deprecation_info: v16::EnumDeprecationInfo::nothing_deprecated(),
+                }),
+                event: None,
+                constants: Vec::new(),
+                error: None,
+                associated_types: Vec::new(),
+                view_functions: Vec::new(),
+                index: pallet.index,
+                docs: Vec::new(),
+                deprecation_info: v16::ItemDeprecationInfo::NotDeprecated,
+            })
+            .collect();
+
+        let metadata = v16::RuntimeMetadataV16 {
+            types: v14.types,
+            pallets,
+            extrinsic: v16::ExtrinsicMetadata {
+                versions: vec![4, 5],
+                address_ty,
+                call_ty,
+                signature_ty,
+                transaction_extensions_by_version: BTreeMap::from_iter([
+                    (0, every_extension),
+                    (1, encoding_version_extensions),
+                ]),
+                transaction_extensions,
+            },
+            apis: Vec::new(),
+            outer_enums: v16::OuterEnums {
+                call_enum_ty: call_ty,
+                event_enum_ty: call_ty,
+                error_enum_ty: call_ty,
+            },
+            custom: v16::CustomMetadata {
+                map: Default::default(),
+            },
+        };
+        let bytes = RuntimeMetadataPrefixed(META_RESERVED, RuntimeMetadata::V16(metadata)).encode();
+        Metadata::decode_from(&bytes).unwrap().arc()
+    }
+
+    /// An id the encoding version omits but another version declares is a
+    /// product reading a different view of the same runtime, not a mistake. The
+    /// encoder never asks for its bytes, so the build stands.
     #[test]
-    fn fixture_is_v14_so_the_cross_version_union_is_untestable() {
-        let prefixed = RuntimeMetadataPrefixed::decode(&mut &FIXTURE_METADATA_BYTES[..]).unwrap();
+    fn v5_accepts_an_id_only_another_pipeline_version_declares() {
+        let metadata = two_version_metadata(&["RestrictOrigins"]);
+        let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
+        let state = fixture_chain_state();
+
+        let encoding_version = metadata
+            .extrinsic()
+            .transaction_extension_version_to_use_for_encoding();
+        assert_eq!(
+            encoding_version, 1,
+            "the highest version is the one encoded"
+        );
         assert!(
-            matches!(prefixed.1, RuntimeMetadata::V14(_)),
-            "fixture is no longer V14: subxt no longer synthesises a single \
-             pipeline version, so write the real cross-version union cases now \
-             (an id declared only at another version, and a supplied \
-             VerifyMultiSignature the encoding version omits)"
+            !metadata
+                .extrinsic_extension_info(Some(encoding_version))
+                .unwrap()
+                .extension_ids
+                .iter()
+                .any(|declared| declared.name == "RestrictOrigins"),
+            "the encoding version must omit the id under test"
+        );
+
+        build_signed_extrinsic_v5(
+            &test_signer(),
+            state.genesis_hash,
+            &fixture_call_data(),
+            &fixture_signed_extensions(&allowance_metadata, &state),
+            metadata,
+        )
+        .expect("an id declared at another version is surplus, not fatal");
+    }
+
+    /// Declining to sign is the caller's whole intent, so an encoding version
+    /// with nowhere to put their bytes must not quietly drop them.
+    #[test]
+    fn v5_rejects_a_supplied_verify_signature_the_encoding_version_omits() {
+        let metadata = two_version_metadata(&["VerifyMultiSignature"]);
+        let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
+        let state = fixture_chain_state();
+
+        let error = build_signed_extrinsic_v5(
+            &test_signer(),
+            state.genesis_hash,
+            &fixture_call_data(),
+            &fixture_extensions(&allowance_metadata, &state),
+            metadata,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("does not declare VerifyMultiSignature")
+                && error.contains("supplied value cannot authorize"),
+            "{error}"
+        );
+    }
+
+    /// The mirror case: nothing supplies the slot and the encoding version has
+    /// none, so the host's signature would be computed and then dropped by the
+    /// body encoder, yielding a transaction with no authorization at all.
+    #[test]
+    fn v5_rejects_a_host_signed_build_with_no_authorization_slot() {
+        let metadata = two_version_metadata(&["VerifyMultiSignature"]);
+        let allowance_metadata = AllowanceMetadata::decode(FIXTURE_METADATA_BYTES).unwrap();
+        let state = fixture_chain_state();
+
+        let error = build_signed_extrinsic_v5(
+            &test_signer(),
+            state.genesis_hash,
+            &fixture_call_data(),
+            &fixture_signed_extensions(&allowance_metadata, &state),
+            metadata,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("does not declare VerifyMultiSignature")
+                && error.contains("host cannot authorize"),
+            "{error}"
         );
     }
 
