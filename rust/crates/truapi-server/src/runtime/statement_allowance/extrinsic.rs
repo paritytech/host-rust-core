@@ -11,8 +11,6 @@ use super::extension::{AS_RESOURCES, ChainState, Metadata, MetadataError};
 
 /// General-transaction preamble byte: `0b01` (General) | version 5.
 const GENERAL_V5_PREAMBLE: u8 = 0x45;
-/// Current signed-extension version byte.
-const EXTENSION_VERSION: u8 = 0x00;
 /// `Option::Some` discriminant for the `AsResources` extension `extra`.
 const OPTION_SOME: u8 = 0x01;
 
@@ -152,7 +150,7 @@ pub fn build_unsigned_extrinsic(
                 identifier: AS_RESOURCES.to_string(),
             })?;
 
-    let mut body = vec![GENERAL_V5_PREAMBLE, EXTENSION_VERSION];
+    let mut body = vec![GENERAL_V5_PREAMBLE, metadata.extension_version()];
     for (i, ext) in all.iter().enumerate() {
         if i == as_resources_index {
             body.extend_from_slice(as_resources_extra);
@@ -289,6 +287,28 @@ mod tests {
         );
     }
 
+    /// The extrinsic declares an extension-pipeline version and the ring-VRF proof
+    /// is signed over a message beginning with the same byte. The runtime rebuilds
+    /// that message to verify, so the two must never diverge.
+    #[test]
+    fn the_body_and_the_proof_message_declare_the_same_extension_version() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let call = build_set_statement_store_account_call(&metadata, 7, 0, &[0u8; 32]).unwrap();
+        let extra = build_as_resources_extra(&metadata, &[0xEE; 785], 0, 0).unwrap();
+        let xt = build_unsigned_extrinsic(&metadata, &fixture_state(), &call, &extra).unwrap();
+
+        let body = &xt[compact_prefix_len(&xt)..];
+        assert_eq!(body[1], metadata.extension_version());
+        // `build_proof_message` prefixes the same byte; recomputing it with a
+        // different version would change the hash, so the frozen known-answer
+        // test alongside this one is what pins the pairing.
+        assert_eq!(
+            metadata.extension_version(),
+            0,
+            "the V14 fixture has no version map"
+        );
+    }
+
     #[test]
     fn extrinsic_has_general_v5_preamble_and_embeds_call() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
@@ -298,7 +318,10 @@ mod tests {
 
         // Strip the compact length prefix and check the body head + tail.
         let body = &xt[compact_prefix_len(&xt)..];
-        assert_eq!(&body[..2], &[GENERAL_V5_PREAMBLE, EXTENSION_VERSION]);
+        assert_eq!(
+            &body[..2],
+            &[GENERAL_V5_PREAMBLE, metadata.extension_version()]
+        );
         assert_eq!(&body[body.len() - call.len()..], &call[..]);
         // The Some(info) extra appears verbatim in the body.
         assert!(

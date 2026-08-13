@@ -1492,6 +1492,9 @@ mod tests {
                     "chain_getBlockHash",
                     format!(r#""0x{}""#, hex::encode([0u8; 32])),
                 ),
+                // `Metadata_metadata_at_version(16)` answering absent, so the
+                // legacy fetch below is what serves the metadata.
+                ("state_call", r#""0x00""#.to_string()),
                 (
                     "state_getMetadata",
                     format!(r#""0x{}""#, hex::encode(PEOPLE_METADATA)),
