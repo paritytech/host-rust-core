@@ -531,15 +531,29 @@ test("a wrong-schema or unstamped host refuses to decode, but still groups", asy
   }
 });
 
-test("isLoopbackDebugHost is an exact allowlist (drives the Host-header guard)", () => {
+test("isLoopbackDebugHost accepts loopback literals and .localhost subdomains", () => {
   expect(isLoopbackDebugHost("127.0.0.1")).toBe(true);
   expect(isLoopbackDebugHost("localhost")).toBe(true);
   expect(isLoopbackDebugHost("::1")).toBe(true);
-  // Everything else is non-loopback. A fuzzy match that read any of these as
-  // loopback would let a rebound page past the DNS-rebinding Host guard.
+  // RFC 6761 reserves `.localhost`: it always resolves to loopback and cannot be
+  // registered, so a sub-hostname under it is loopback too. Real hosts use this -
+  // dotli serves its host realm from `host.localhost`, and dials the debugger
+  // from that origin - so rejecting it locks the shipped host out entirely.
+  expect(isLoopbackDebugHost("host.localhost")).toBe(true);
+  expect(isLoopbackDebugHost("app.host.localhost")).toBe(true);
+});
+
+test("isLoopbackDebugHost rejects loopback-looking names under other domains", () => {
+  // The dangerous direction: a loopback-shaped label under an attacker's domain.
+  // Reading any of these as loopback would let a rebound page past the
+  // DNS-rebinding Host guard and the WS Origin gate.
   for (const host of [
     "0.0.0.0",
     "127.0.0.1.evil.com",
+    "localhost.evil.com",
+    // `.localhost` as a *label*, not the TLD - still an attacker domain.
+    "localhost.com",
+    "notlocalhost",
     "127.0.0.2",
     "[::1]",
     "LOCALHOST",

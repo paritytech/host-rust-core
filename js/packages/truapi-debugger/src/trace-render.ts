@@ -278,6 +278,16 @@ function isSubscription(view: TraceView): boolean {
 }
 
 /**
+ * Whether the op went out and nothing came back: an `orphaned` opener that has
+ * not been answered. This is the shape a timed-out or hung call takes on the
+ * wire - there is no "timeout" frame to observe, only a request with no reply -
+ * so it is the signal the op list has to surface as elapsed time.
+ */
+function isUnanswered(view: TraceView): boolean {
+  return view.badges.includes("orphaned");
+}
+
+/**
  * Render one operation-list row: the primary view's unit, one per op. Shows the
  * method, a request/subscription glyph, op-level badges, frame count, and
  * duration. A subscription with no `stop` frame is marked live.
@@ -286,7 +296,10 @@ function isSubscription(view: TraceView): boolean {
  * `data-request-id` (+ `data-channel-id` when known) identify the row for
  * selection and channel filtering. Payload-blind: only shape and timing here.
  */
-export function renderOperationRow(view: TraceView): string {
+export function renderOperationRow(
+  view: TraceView,
+  options: { now?: number } = {},
+): string {
   const method = operationMethod(view);
   const sub = isSubscription(view);
   const live = sub && !view.frames.some((f) => f.role === "stop");
@@ -299,9 +312,17 @@ export function renderOperationRow(view: TraceView): string {
       : `<span class="td-op-method" title="${esc(method)}">${esc(method)}</span>`;
   const badges = view.badges.map(renderOpBadge).join("");
   const count = view.frames.length;
-  const meta =
-    `${String(count)} frame${count === 1 ? "" : "s"} · ` +
-    (live ? `live · ${formatMs(view.durationMs)}` : formatMs(view.durationMs));
+  // An unanswered request has one frame, so `lastAt - startedAt` is 0 and the op
+  // reads "0ms" - the opposite of the truth for the case a developer most needs
+  // to see, a call that went out and is still hanging. Report the age of the
+  // request instead, so a stuck op counts up rather than looking instant.
+  const waiting = isUnanswered(view) && options.now !== undefined;
+  const meta = waiting
+    ? `${String(count)} frame${count === 1 ? "" : "s"} · waiting ${formatMs(
+        Math.max(0, (options.now ?? 0) - view.startedAt),
+      )}`
+    : `${String(count)} frame${count === 1 ? "" : "s"} · ` +
+      (live ? `live · ${formatMs(view.durationMs)}` : formatMs(view.durationMs));
 
   const channelAttr =
     view.channelId === undefined
@@ -312,7 +333,7 @@ export function renderOperationRow(view: TraceView): string {
   const genAttr = ` data-generation="${String(view.generation ?? 0)}"`;
 
   return (
-    `<div class="td-op ${kindClass}${live ? " td-op-live" : ""}" ` +
+    `<div class="td-op ${kindClass}${live ? " td-op-live" : ""}${waiting ? " td-op-waiting" : ""}" ` +
     `data-request-id="${esc(view.requestId)}"${channelAttr}${genAttr} role="listitem" tabindex="-1">` +
     `<span class="td-op-kind" aria-hidden="true">${kindGlyph}</span>` +
     methodHtml +

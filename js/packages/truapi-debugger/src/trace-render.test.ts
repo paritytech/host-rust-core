@@ -4,7 +4,11 @@
 import { describe, expect, test } from "bun:test";
 import type { FrameValueDetail } from "./decode.js";
 import type { TraceView } from "./trace-view.js";
-import { renderFrameValueDetail, renderTraceDetail } from "./trace-render.js";
+import {
+  renderFrameValueDetail,
+  renderOperationRow,
+  renderTraceDetail,
+} from "./trace-render.js";
 
 const view: TraceView = {
   requestId: "req-1",
@@ -114,5 +118,79 @@ describe("renderFrameValueDetail", () => {
     });
     expect(html).toContain("0x010203");
     expect(html).not.toContain("payload not shown");
+  });
+});
+
+describe("renderOperationRow — an unanswered op reports how long it has waited", () => {
+  /** A request that went out and got nothing back: the shape of a hung call. */
+  const unanswered: TraceView = {
+    requestId: "p:4",
+    channelId: "localhost:3000",
+    startedAt: 1_000,
+    lastAt: 1_000,
+    // One frame, so last === started and the honest span really is 0.
+    durationMs: 0,
+    frames: [
+      {
+        seq: 0,
+        direction: "out",
+        role: "request",
+        method: "account.getAccountAlias",
+        frameId: 24,
+        byteLength: 97,
+        badges: ["orphaned"],
+      },
+    ],
+    badges: ["orphaned"],
+  };
+
+  test("counts up from the request instead of reporting 0ms", () => {
+    // 45s after the request went out, with no reply.
+    const html = renderOperationRow(unanswered, { now: 46_000 });
+    expect(html).toContain("waiting 45.00s");
+    expect(html).not.toContain("· 0ms");
+    // Flagged so the row can be styled as a problem, not a fast success.
+    expect(html).toContain("td-op-waiting");
+  });
+
+  test("the wait grows as the call stays unanswered", () => {
+    const early = renderOperationRow(unanswered, { now: 3_000 });
+    const later = renderOperationRow(unanswered, { now: 30_000 });
+    expect(early).toContain("waiting 2.00s");
+    expect(later).toContain("waiting 29.00s");
+  });
+
+  test("without a clock it falls back to the recorded span", () => {
+    // Callers that cannot supply a clock (or replay a fixed trace) keep the old
+    // behaviour rather than inventing a time.
+    const html = renderOperationRow(unanswered);
+    expect(html).toContain("0ms");
+    expect(html).not.toContain("waiting");
+    expect(html).not.toContain("td-op-waiting");
+  });
+
+  test("an answered op still shows its real round trip, not a wait", () => {
+    const answered: TraceView = {
+      ...unanswered,
+      requestId: "p:2",
+      lastAt: 1_150,
+      durationMs: 150,
+      frames: [
+        { ...unanswered.frames[0]!, badges: [] },
+        {
+          seq: 1,
+          direction: "in",
+          role: "response",
+          method: "account.getAccount",
+          frameId: 23,
+          byteLength: 35,
+          badges: [],
+        },
+      ],
+      badges: [],
+    };
+    const html = renderOperationRow(answered, { now: 999_999 });
+    expect(html).toContain("150ms");
+    expect(html).not.toContain("waiting");
   });
 });

@@ -96,14 +96,9 @@ function originAllowed(origin: string | null): boolean {
   if (origin === null) return true;
   try {
     const host = new URL(origin).hostname;
-    // `new URL("http://[::1]").hostname` keeps the brackets ("[::1]"), so match
-    // that form (a bare "::1" never occurs, but accept it defensively).
-    return (
-      host === "127.0.0.1" ||
-      host === "localhost" ||
-      host === "[::1]" ||
-      host === "::1"
-    );
+    // `new URL("http://[::1]").hostname` keeps the brackets ("[::1]"), so strip
+    // them before classifying (a bare "::1" never occurs, but is handled too).
+    return isLoopbackDebugHost(host === "[::1]" ? "::1" : host);
   } catch {
     return false;
   }
@@ -123,13 +118,26 @@ function optionalInt(raw: string | null): number | null | undefined {
 }
 
 /**
- * Whether `host` is a loopback name. The `Host`-header DNS-rebinding guard keys
- * on this, so an exact allowlist - never a fuzzy match that could read
- * `127.0.0.1.evil.com` as loopback - is the security-relevant classification,
- * unit-tested separately.
+ * Whether `host` is a loopback name. The `Host`-header DNS-rebinding guard and
+ * the WS `Origin` gate both key on this, so the classification is the
+ * security-relevant one and is unit-tested separately.
+ *
+ * Exact literals, plus subdomains of `.localhost`. The subdomain case is not a
+ * fuzzy match: RFC 6761 reserves `.localhost` as a special-use TLD that always
+ * resolves to loopback and cannot be registered publicly, so `host.localhost` is
+ * as much loopback as `localhost` is. Real hosts use it - dotli serves its host
+ * realm from `host.localhost` - and without this they can never reach the
+ * debugger. The dangerous shape this must still reject is the *other* direction,
+ * a loopback-looking label under an attacker's domain (`127.0.0.1.evil.com`,
+ * `localhost.evil.com`); those do not end in `.localhost` and stay rejected.
  */
 export function isLoopbackDebugHost(host: string): boolean {
-  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  return (
+    host === "127.0.0.1" ||
+    host === "localhost" ||
+    host === "::1" ||
+    host.endsWith(".localhost")
+  );
 }
 
 /**
@@ -667,7 +675,10 @@ export function startDebugServer(
         ? `<div style="padding:4px 10px;color:#fca5a5;font-size:11px;border-bottom:1px solid rgba(255,255,255,.08)">⚠ a connected host's wire contract differs from this debugger's — method names below may be wrong</div>`
         : "";
     return (
-      notice + rows.map((t) => renderOperationRow(toView(t, storms))).join("")
+      notice +
+      rows
+        .map((t) => renderOperationRow(toView(t, storms), { now: Date.now() }))
+        .join("")
     );
   }
 

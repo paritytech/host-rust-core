@@ -203,6 +203,9 @@ ${INSPECTOR_LAYOUT_CSS}`;
         if (disposed) return;
         const traces = session.traceEngine.traces();
         const storms = detectRetryStorms(traces);
+        // One clock per render so every waiting op in this pass agrees, and the
+        // 1s refresh makes a hung call visibly count up.
+        const now = Date.now();
         const all = traces.map((trace) =>
           wireTraceToView(trace, session.methodNames, storms.get(trace) ?? []),
         );
@@ -253,7 +256,7 @@ ${INSPECTOR_LAYOUT_CSS}`;
             ? `<div class="td-op-empty">${scoped.length === 0 ? "waiting for frames…" : "no operations match the filter"}</div>`
             : ordered
                 .map((view) => {
-                  const row = renderOperationRow(view);
+                  const row = renderOperationRow(view, { now });
                   return opKey(view) === selected
                     ? row.replace('class="td-op ', 'class="td-op selected ')
                     : row;

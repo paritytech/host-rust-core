@@ -45,7 +45,15 @@ export const INSPECTOR_SHELL_CSS = `
   .td-op-kind { width: 12px; text-align: center; }
   .td-op-req .td-op-kind { color: #fbbf24; }
   .td-op-sub .td-op-kind { color: #c084fc; }
-  .td-op-method { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Truncate the *start*, not the end: sibling methods share a service prefix
+     (account.getAccount vs account.getAccountAlias), so clipping the tail
+     renders two different methods identically. Keeping the tail makes them
+     distinguishable in a narrow list. */
+  .td-op-method { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    direction: rtl; text-align: left; }
+  /* An op that went out and is still unanswered: counts up, and reads as a
+     problem rather than a completed 0ms call. */
+  .td-op-waiting .td-op-meta { color: #fbbf24; }
   .td-op-method.anon { color: #525252; font-style: italic; }
   .td-op-meta { color: #6b7280; font-size: 10.5px; white-space: nowrap; }
   .td-op-live .td-op-meta { color: #4ade80; }
