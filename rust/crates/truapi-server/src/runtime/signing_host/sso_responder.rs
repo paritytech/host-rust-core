@@ -143,6 +143,15 @@ pub(super) enum AllowanceAllocationError {
     /// Signing host session or authority state was unavailable.
     #[error("{0}")]
     Authority(AuthorityError),
+    /// The host serves no chain for this role, so there is nothing to claim on.
+    #[error("host serves no {chain} chain")]
+    ChainNotServed {
+        /// Role that could not be resolved.
+        chain: &'static str,
+    },
+    /// Reading the host's chain set failed.
+    #[error("supported chains: {0}")]
+    SupportedChains(String),
     /// Product-account key derivation failed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
@@ -158,8 +167,8 @@ pub(super) enum AllowanceAllocationError {
     /// Runtime service could not open the required Bulletin RPC client.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{context}: {source}")]
-    BulletinRpcClient {
-        /// Client context.
+    ChainRpcClient {
+        /// Client context, naming which chain failed.
         context: &'static str,
         /// Chain runtime failure.
         #[source]
@@ -842,8 +851,17 @@ async fn resource_allocation_response(
                     slot_account_key,
                 })
             }),
-            SsoAllocatableResource::SmartContractAllowance(_) => {
-                Ok(SsoAllocationOutcome::NotAvailable)
+            SsoAllocatableResource::SmartContractAllowance(index) => {
+                allocate_smart_contract_allowance(
+                    services,
+                    signing_host,
+                    &request.calling_product_id,
+                    index.clone(),
+                )
+                .await
+                .map(|()| {
+                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::SmartContractAllowance)
+                })
             }
             SsoAllocatableResource::AutoSigning => (|| -> Result<_, AllowanceAllocationError> {
                 let product_root_private_key = signing_host
@@ -1043,7 +1061,7 @@ pub(super) async fn allocate_bulletin_allowance(
             .bulletin
             .client("bulletin allowance")
             .await
-            .map_err(|source| AllowanceAllocationError::BulletinRpcClient {
+            .map_err(|source| AllowanceAllocationError::ChainRpcClient {
                 context: "bulletin allowance client",
                 source,
             })?,
@@ -1126,6 +1144,107 @@ pub(super) async fn allocate_statement_store_allowance(
     Err(AllowanceAllocationError::NativeOnly {
         resource: "statement-store",
     })
+}
+
+/// Claim an Asset Hub PGAS allowance for the product account `derivation_index`
+/// selects.
+///
+/// Unlike the statement-store and Bulletin allowances, this credits the product
+/// account itself rather than a dedicated `//allowance//…` account, and returns
+/// nothing: PGAS pre-warms a balance on an account the host already controls, so
+/// there is no key to hand back.
+///
+/// Asset Hub is resolved through the host's chain set rather than a configured
+/// hash, so a host that does not serve it says so instead of claiming against
+/// whatever chain a stale hash happens to reach.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) async fn allocate_smart_contract_allowance(
+    services: &Arc<RuntimeServices>,
+    signing_host: &SigningHost,
+    product_id: &str,
+    derivation_index: v01::DerivationIndex,
+) -> Result<(), AllowanceAllocationError> {
+    use truapi::latest::ChainIdentifier;
+
+    use crate::host_logic::features;
+    use crate::runtime::statement_allowance::{self, ChainClient, find_including_ring, pgas};
+
+    let session = signing_host
+        .current_session()
+        .ok_or(AuthorityError::Disconnected)?;
+
+    // PGAS credits the product account the caller named.
+    let target = signing_host
+        .product_keypair(&v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index,
+        })?
+        .public
+        .to_bytes();
+
+    let chains = features::supported_chains(services.platform.as_ref())
+        .await
+        .map_err(|err| AllowanceAllocationError::SupportedChains(err.reason))?;
+    let asset_hub_genesis = features::genesis_for(&chains, ChainIdentifier::AssetHub)
+        .ok_or(AllowanceAllocationError::ChainNotServed { chain: "Asset Hub" })?;
+    let asset_hub_client = ChainClient::new(
+        statement_allowance::rpc::RpcClient::new(subxt_rpcs::RpcClient::new(
+            services
+                .chain
+                .rpc_client("PGAS allowance", &asset_hub_genesis)
+                .await
+                .map_err(|source| AllowanceAllocationError::ChainRpcClient {
+                    context: "Asset Hub PGAS client",
+                    source,
+                })?,
+        )),
+        asset_hub_genesis,
+    );
+    let asset_hub = services.chain_context.get(&asset_hub_client).await?;
+
+    let people_client = services
+        .statement_store
+        .chain_client("PGAS allowance ring")
+        .await?;
+    let people_rpc = people_client.rpc();
+    let people = services.chain_context.get(&people_client).await?;
+
+    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
+    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
+    let ring = find_including_ring(people_rpc, &people.metadata, bandersnatch, current)
+        .await?
+        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership { resource: "PGAS" })?;
+
+    let outcome = pgas::claim_pgas(pgas::PgasClaim {
+        asset_hub_rpc: asset_hub_client.rpc(),
+        asset_hub: &asset_hub,
+        people_rpc,
+        people_metadata: &people.metadata,
+        entropy: bandersnatch,
+        target: &target,
+        ring: &ring,
+    })
+    .await?;
+    debug!(
+        %product_id,
+        day = outcome.day,
+        slot_index = outcome.slot_index,
+        ring_index = outcome.ring_index,
+        block = %outcome.block_hash,
+        "claimed PGAS allowance"
+    );
+    Ok(())
+}
+
+/// PGAS claims need chain access the wasm host does not have.
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn allocate_smart_contract_allowance(
+    _services: &Arc<RuntimeServices>,
+    _signing_host: &SigningHost,
+    _product_id: &str,
+    _derivation_index: v01::DerivationIndex,
+) -> Result<(), AllowanceAllocationError> {
+    Err(AllowanceAllocationError::NativeOnly { resource: "PGAS" })
 }
 
 #[cfg(target_arch = "wasm32")]
