@@ -210,7 +210,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     env:
+      # Both products carry a binary target, and resolving the package resolves
+      # both whichever scheme is built, so each needs its local build here.
       TRUAPI_USE_LOCAL_BINARY: "1"
+      TRUAPI_PROVIDER_USE_LOCAL_BINARY: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -235,6 +238,12 @@ jobs:
       - name: Stage it into the package
         run: ./ios/truapi-host/scripts/stage-xcframework.sh
 
+      # TrUAPIProvider is the manifest's other product. Its xcframework is a
+      # release asset too, so without a local build the package fails to resolve
+      # and the host gate never gets to compile anything.
+      - name: Build the simulator XCFramework for TrUAPIProvider
+        run: PROFILE=debug ./ios/truapi-provider/scripts/rebuild.sh --sim-only
+
       # Compiling the test target is the point: the hand-written conformers a
       # generated-file diff cannot see live there and in TrUAPIHost.swift.
       - name: Compile the package and its tests
@@ -244,6 +253,11 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
+
+      # The provider ships only generated Swift, so compiling it is the whole
+      # check: nothing else here would catch bindings that no longer build.
+      - name: Compile TrUAPIProvider
+        run: swift build --target TrUAPIProvider
 
   ts-client:
     name: "@parity/truapi"
