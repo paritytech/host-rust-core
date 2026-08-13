@@ -83,15 +83,18 @@ pub enum MetadataError {
         /// Variant name.
         variant: String,
     },
-    /// Named `AsResourcesInfo` variant did not carry a membership collection.
-    #[error("AsResourcesInfo::{variant} carries no MembershipCollection field")]
-    MissingMembershipCollection {
-        /// Variant name.
+    /// Info variant carried no enum field holding the requested variant.
+    #[error(
+        "{identifier} info variant {variant} carries no field enum with a {field_variant} variant"
+    )]
+    MissingExtensionFieldVariant {
+        /// Extension whose info enum was inspected.
+        identifier: String,
+        /// Info variant inspected.
         variant: String,
+        /// Nested variant that was not found.
+        field_variant: String,
     },
-    /// `MembershipCollection::LitePeople` variant was not found.
-    #[error("MembershipCollection::LitePeople not found in metadata")]
-    MissingLitePeopleCollection,
     /// Type id did not resolve in the portable registry.
     #[error("unknown type id {type_id}")]
     UnknownTypeId {
@@ -417,27 +420,44 @@ impl Metadata {
         &self,
         info_variant: &str,
     ) -> Result<(u8, u8), StatementAllowanceError> {
-        let variant = self.extension_info_variant(AS_RESOURCES, info_variant)?;
-        let collection_type = variant
+        self.extension_info_and_field_variant_indices(AS_RESOURCES, info_variant, "LitePeople")
+    }
+
+    /// Resolve `(info variant index, nested field variant index)` for an
+    /// extension shaped as `Wrapper(Option<Info>)` whose named info variant
+    /// carries an enum field.
+    ///
+    /// The field enum is located by the variant name it contains rather than by
+    /// its type name, because each extension names its own collection type
+    /// (`MembershipCollection` for `AsResources`, `PgasCollection` for `AsPgas`)
+    /// while the membership tier inside them is named the same.
+    pub fn extension_info_and_field_variant_indices(
+        &self,
+        identifier: &str,
+        info_variant: &str,
+        field_variant: &str,
+    ) -> Result<(u8, u8), StatementAllowanceError> {
+        let variant = self.extension_info_variant(identifier, info_variant)?;
+        let nested = variant
             .fields
             .iter()
             .rev()
-            .map(|field| field.ty.id)
-            .find(|&id| {
-                self.resolve_type(id).is_ok_and(|ty| {
-                    ty.path.segments.last().map(String::as_str) == Some("MembershipCollection")
-                })
+            .find_map(|field| {
+                self.resolve_variant(field.ty.id)
+                    .ok()
+                    .and_then(|enumeration| {
+                        enumeration
+                            .variants
+                            .iter()
+                            .find(|candidate| candidate.name == field_variant)
+                    })
             })
-            .ok_or_else(|| MetadataError::MissingMembershipCollection {
+            .ok_or_else(|| MetadataError::MissingExtensionFieldVariant {
+                identifier: identifier.to_string(),
                 variant: info_variant.to_string(),
+                field_variant: field_variant.to_string(),
             })?;
-        let lite_people = self
-            .resolve_variant(collection_type)?
-            .variants
-            .iter()
-            .find(|v| v.name == "LitePeople")
-            .ok_or(MetadataError::MissingLitePeopleCollection)?;
-        Ok((variant.index, lite_people.index))
+        Ok((variant.index, nested.index))
     }
 
     /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
@@ -671,12 +691,23 @@ pub fn build_proof_message(
     call_data: &[u8],
     state: &ChainState,
 ) -> Result<[u8; 32], StatementAllowanceError> {
+    build_proof_message_after_extension(metadata, call_data, state, AS_RESOURCES)
+}
+
+/// Same, for any authorizing extension: the tail is the extensions ordered
+/// strictly after `identifier`.
+pub fn build_proof_message_after_extension(
+    metadata: &Metadata,
+    call_data: &[u8],
+    state: &ChainState,
+    identifier: &str,
+) -> Result<[u8; 32], StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
     let tail_start = metadata
-        .as_resources_index()
+        .extension_index(identifier)
         .map(|i| i + 1)
         .ok_or_else(|| MetadataError::MissingExtension {
-            identifier: AS_RESOURCES.to_string(),
+            identifier: identifier.to_string(),
         })?;
     let tail = &all[tail_start..];
 
@@ -781,6 +812,60 @@ mod tests {
                 .unwrap(),
             3,
         );
+    }
+
+    /// The generalized builders must agree with the `AsResources` wrappers they
+    /// now back, or the ring proof stops matching the extrinsic.
+    #[test]
+    fn the_as_resources_wrappers_match_the_general_forms() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let state = fixture_state();
+        let call = fixture_call();
+
+        assert_eq!(
+            build_proof_message(&metadata, &call, &state).unwrap(),
+            build_proof_message_after_extension(&metadata, &call, &state, AS_RESOURCES).unwrap(),
+        );
+        assert_eq!(
+            metadata
+                .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                .unwrap(),
+            metadata
+                .extension_info_and_field_variant_indices(
+                    AS_RESOURCES,
+                    "RegisterStatementStoreAllowance",
+                    "LitePeople",
+                )
+                .unwrap(),
+        );
+    }
+
+    /// An unknown extension, info variant, or nested variant each fail rather
+    /// than resolving to something arbitrary.
+    #[test]
+    fn the_general_resolver_rejects_names_it_cannot_find() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        for (identifier, variant, field) in [
+            (
+                "NoSuchExtension",
+                "RegisterStatementStoreAllowance",
+                "LitePeople",
+            ),
+            (AS_RESOURCES, "NoSuchVariant", "LitePeople"),
+            (
+                AS_RESOURCES,
+                "RegisterStatementStoreAllowance",
+                "NoSuchTier",
+            ),
+        ] {
+            assert!(
+                metadata
+                    .extension_info_and_field_variant_indices(identifier, variant, field)
+                    .is_err(),
+                "{identifier}/{variant}/{field} should not resolve"
+            );
+        }
     }
 
     /// Mainnet keeps more than one transaction-extension pipeline, and a

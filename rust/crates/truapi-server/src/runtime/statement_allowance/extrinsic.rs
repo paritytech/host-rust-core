@@ -142,18 +142,39 @@ pub fn build_unsigned_extrinsic(
     call_data: &[u8],
     as_resources_extra: &[u8],
 ) -> Result<Vec<u8>, StatementAllowanceError> {
+    build_unsigned_extrinsic_with_extra(
+        metadata,
+        state,
+        call_data,
+        AS_RESOURCES,
+        as_resources_extra,
+    )
+}
+
+/// Same, for any authorizing extension: every extension's `extra` in metadata
+/// order, with `identifier`'s replaced by `extra`.
+///
+/// The version byte comes from metadata, so an extension added here encodes for
+/// the pipeline the runtime declares rather than a compiled-in guess.
+pub fn build_unsigned_extrinsic_with_extra(
+    metadata: &Metadata,
+    state: &ChainState,
+    call_data: &[u8],
+    identifier: &str,
+    extra: &[u8],
+) -> Result<Vec<u8>, StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
-    let as_resources_index =
+    let authorizing_index =
         metadata
-            .as_resources_index()
+            .extension_index(identifier)
             .ok_or_else(|| MetadataError::MissingExtension {
-                identifier: AS_RESOURCES.to_string(),
+                identifier: identifier.to_string(),
             })?;
 
     let mut body = vec![GENERAL_V5_PREAMBLE, metadata.extension_version()];
     for (i, ext) in all.iter().enumerate() {
-        if i == as_resources_index {
-            body.extend_from_slice(as_resources_extra);
+        if i == authorizing_index {
+            body.extend_from_slice(extra);
         } else {
             body.extend_from_slice(&ext.extra);
         }
