@@ -144,12 +144,14 @@ pub(super) enum AllowanceAllocationError {
     #[error("{0}")]
     Authority(AuthorityError),
     /// The host serves no chain for this role, so there is nothing to claim on.
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("host serves no {chain} chain")]
     ChainNotServed {
         /// Role that could not be resolved.
         chain: &'static str,
     },
     /// Reading the host's chain set failed.
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("supported chains: {0}")]
     SupportedChains(String),
     /// Product-account key derivation failed.
