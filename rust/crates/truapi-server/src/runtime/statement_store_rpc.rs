@@ -63,6 +63,20 @@ impl StatementStoreRpc {
         }
     }
 
+    /// Open a People-chain RPC client already scoped to its genesis hash, for
+    /// the native allowance paths that key the chain-context cache by it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn chain_client(
+        &self,
+        label: &'static str,
+    ) -> Result<crate::runtime::statement_allowance::ChainClient, StatementStoreRpcClientError>
+    {
+        Ok(crate::runtime::statement_allowance::ChainClient::new(
+            crate::runtime::statement_allowance::rpc::RpcClient::new(self.client(label).await?),
+            self.people_chain_genesis_hash,
+        ))
+    }
+
     /// Open a statement-store RPC client over the host-provided People-chain
     /// connection.
     pub(super) async fn client(

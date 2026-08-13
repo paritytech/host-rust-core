@@ -324,17 +324,19 @@ pub struct SignVrfResponse {
     pub payload: Result<VrfSignature, HostAccountSignVrfError>,
 }
 
-/// Failure returned by the Account Holder for a ring-VRF proof or alias request.
-///
-/// Mirrors the identical error sets of `Account::create_account_proof` and
-/// `Account::get_account_alias` (RFC 0004): the two operations perform the same
-/// ring resolution and member-key selection, so they share these failure modes.
+/// Failure returned by the Account Holder for RFC-0024 ring-VRF operations.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum RingVrfError {
     /// The `RingLocation` did not resolve to a known ring.
     RingNotFound,
-    /// The selected member key is not a member of the requested ring.
+    /// The registered member key is not a member of the requested ring.
     NotMember,
+    /// The requested key handle is not registered.
+    KeyNotRegistered,
+    /// The requested key handle is not registered for the requested ring.
+    KeyNotInRing,
+    /// The foreign key owner has not allowlisted the caller.
+    NotAllowlisted,
     /// User or Account Holder rejected the request.
     Rejected,
     /// Catch-all failure, carrying a diagnostic reason.
@@ -346,13 +348,14 @@ pub enum RingVrfError {
 
 /// Request sent when a product asks the Account Holder for a contextual alias.
 ///
-/// Used by `Account::get_account_alias`; `calling_product_id` names the caller
-/// so the Account Holder can scope context derivation, while `context` and
-/// `ring_location` select the member key and bind the derived alias (RFC 0004).
+/// Used by `Account::get_account_alias`; `calling_product_id` names the caller,
+/// `key_handle` selects a registered member key, and `context` binds the alias.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RingVrfAliasRequest {
     /// Product id of the calling product.
     pub calling_product_id: String,
+    /// Explicit ring-VRF key handle.
+    pub key_handle: ProductAccountId,
     /// Context that scopes the derived alias.
     pub context: ProductProofContext,
     /// Ring whose member key derives the alias.
@@ -377,12 +380,74 @@ pub struct RingVrfAliasResponse {
 pub struct RingVrfProofRequest {
     /// Product id of the calling product.
     pub calling_product_id: String,
+    /// Explicit ring-VRF key handle.
+    pub key_handle: ProductAccountId,
     /// Context that scopes the proof.
     pub context: ProductProofContext,
     /// Ring whose member key produces the proof.
     pub ring_location: RingLocation,
     /// Opaque message bound into the proof.
     pub message: Vec<u8>,
+}
+
+/// Request to register a ring-VRF key with the Account Holder.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RegisterRingVrfKeyRequest {
+    /// Product id of the calling product and key owner.
+    pub calling_product_id: String,
+    /// Key derivation index within the owner's ring-VRF domain.
+    pub index: DerivationIndex,
+    /// Ring declared for the key.
+    pub ring: RingLocation,
+}
+
+/// Response returned by the Account Holder for key registration.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RegisterRingVrfKeyResponse {
+    /// `message_id` of the registration request being answered.
+    pub responding_to: String,
+    /// Member public key or ring-VRF failure.
+    pub payload: Result<[u8; 32], RingVrfError>,
+}
+
+/// Request to list registered ring-VRF keys.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ListRingVrfKeysRequest {
+    /// Product id of the calling product.
+    pub calling_product_id: String,
+    /// Product whose registry entries should be listed.
+    pub owner: String,
+    /// Disclosure requested by the caller.
+    pub disclosure: truapi::v01::RingVrfKeyDisclosure,
+}
+
+/// Response returned by the Account Holder for registry listing.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ListRingVrfKeysResponse {
+    /// `message_id` of the listing request being answered.
+    pub responding_to: String,
+    /// Registry entries or ring-VRF failure.
+    pub payload: Result<Vec<truapi::v01::RegisteredRingVrfKey>, RingVrfError>,
+}
+
+/// Request to sign bytes with a ring-VRF key.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RingVrfSignRequest {
+    /// Product id of the calling product.
+    pub calling_product_id: String,
+    /// Registered key handle.
+    pub key_handle: ProductAccountId,
+    /// Message to sign.
+    pub message: Vec<u8>,
+}
+
+/// Response returned by the Account Holder for direct ring-VRF signing.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct RingVrfSignResponse {
+    /// `message_id` of the signing request being answered.
+    pub responding_to: String,
+    /// Signature bytes or ring-VRF failure.
+    pub payload: Result<Vec<u8>, RingVrfError>,
 }
 
 /// Response returned by the Account Holder for a ring-VRF proof request.
@@ -485,6 +550,8 @@ pub enum SsoAllocatedResource {
     AutoSigning {
         /// Private key of the product subtree root.
         product_root_private_key: [u8; 64],
+        /// Entropy of the product's ring-VRF domain.
+        ring_vrf_domain_entropy: [u8; 32],
     },
 }
 
@@ -592,6 +659,12 @@ pub enum SsoRemoteResponse {
     CreateTransaction(CreateTransactionResponse),
     /// Product subtree public-key response.
     ProductSubtree(ProductSubtreeResponse),
+    /// Ring-VRF key registration response.
+    RegisterRingVrfKey(RegisterRingVrfKeyResponse),
+    /// Ring-VRF key listing response.
+    ListRingVrfKeys(ListRingVrfKeysResponse),
+    /// Direct ring-VRF signing response.
+    RingVrfSign(RingVrfSignResponse),
 }
 
 impl SsoRemoteResponse {
@@ -606,6 +679,9 @@ impl SsoRemoteResponse {
             Self::ResourceAllocation(_) => "resource-allocation",
             Self::CreateTransaction(_) => "create-transaction",
             Self::ProductSubtree(_) => "product-subtree",
+            Self::RegisterRingVrfKey(_) => "register-ring-vrf-key",
+            Self::ListRingVrfKeys(_) => "list-ring-vrf-keys",
+            Self::RingVrfSign(_) => "ring-vrf-sign",
         }
     }
 }
@@ -653,8 +729,7 @@ pub fn decode_sso_session_statement(
         SsoStatementData::Response { .. } => Ok(None),
         SsoStatementData::Request { data, .. } => {
             for message in data {
-                let message = RemoteMessage::decode(&mut message.as_slice())
-                    .map_err(|err| format!("invalid SSO remote message: {err}"))?;
+                let message = decode_remote_message(&message)?;
                 if matches!(
                     &message.data,
                     RemoteMessageData::V1(v1::RemoteMessage::Disconnected)
@@ -729,7 +804,77 @@ fn remote_response_for_message(
         {
             Some(SsoRemoteResponse::ProductSubtree(response))
         }
+        v1::RemoteMessage::RegisterRingVrfKeyResponse(response)
+            if response.responding_to == expected_remote_message_id =>
+        {
+            Some(SsoRemoteResponse::RegisterRingVrfKey(response))
+        }
+        v1::RemoteMessage::ListRingVrfKeysResponse(response)
+            if response.responding_to == expected_remote_message_id =>
+        {
+            Some(SsoRemoteResponse::ListRingVrfKeys(response))
+        }
+        v1::RemoteMessage::RingVrfSignResponse(response)
+            if response.responding_to == expected_remote_message_id =>
+        {
+            Some(SsoRemoteResponse::RingVrfSign(response))
+        }
         _ => None,
+    }
+}
+
+/// Build an RFC-0024 ring-VRF key registration request for the Account Holder.
+pub fn register_ring_vrf_key_message(
+    message_id: String,
+    calling_product_id: String,
+    index: DerivationIndex,
+    ring: RingLocation,
+) -> RemoteMessage {
+    RemoteMessage {
+        message_id,
+        data: RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyRequest(
+            RegisterRingVrfKeyRequest {
+                calling_product_id,
+                index,
+                ring,
+            },
+        )),
+    }
+}
+
+/// Build an RFC-0024 ring-VRF key listing request for the Account Holder.
+pub fn list_ring_vrf_keys_message(
+    message_id: String,
+    calling_product_id: String,
+    owner: String,
+    disclosure: truapi::v01::RingVrfKeyDisclosure,
+) -> RemoteMessage {
+    RemoteMessage {
+        message_id,
+        data: RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysRequest(
+            ListRingVrfKeysRequest {
+                calling_product_id,
+                owner,
+                disclosure,
+            },
+        )),
+    }
+}
+
+/// Build an RFC-0024 direct ring-VRF signing request for the Account Holder.
+pub fn ring_vrf_sign_message(
+    message_id: String,
+    calling_product_id: String,
+    key_handle: ProductAccountId,
+    message: Vec<u8>,
+) -> RemoteMessage {
+    RemoteMessage {
+        message_id,
+        data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignRequest(RingVrfSignRequest {
+            calling_product_id,
+            key_handle,
+            message,
+        })),
     }
 }
 
@@ -795,6 +940,7 @@ pub fn sign_raw_legacy_message(
 pub fn alias_request_message(
     message_id: String,
     calling_product_id: String,
+    key_handle: ProductAccountId,
     context: ProductProofContext,
     ring_location: RingLocation,
 ) -> RemoteMessage {
@@ -803,6 +949,7 @@ pub fn alias_request_message(
         data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasRequest(
             RingVrfAliasRequest {
                 calling_product_id,
+                key_handle,
                 context,
                 ring_location,
             },
@@ -814,6 +961,7 @@ pub fn alias_request_message(
 pub fn proof_request_message(
     message_id: String,
     calling_product_id: String,
+    key_handle: ProductAccountId,
     context: ProductProofContext,
     ring_location: RingLocation,
     message: Vec<u8>,
@@ -823,6 +971,7 @@ pub fn proof_request_message(
         data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfProofRequest(
             RingVrfProofRequest {
                 calling_product_id,
+                key_handle,
                 context,
                 ring_location,
                 message,
@@ -952,10 +1101,7 @@ pub fn decode_incoming_sso_request(
         SsoStatementData::Request { request_id, data } => {
             let messages = data
                 .iter()
-                .map(|message| {
-                    RemoteMessage::decode(&mut message.as_slice())
-                        .map_err(|err| format!("invalid SSO remote message: {err}"))
-                })
+                .map(|message| decode_remote_message(message))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|reason| SsoRequestDecodeError {
                     request_id: Some(request_id.clone()),
@@ -967,6 +1113,16 @@ pub fn decode_incoming_sso_request(
             }))
         }
     }
+}
+
+fn decode_remote_message(message: &[u8]) -> Result<RemoteMessage, String> {
+    let mut input = message;
+    let decoded = RemoteMessage::decode(&mut input)
+        .map_err(|error| format!("invalid SSO remote message: {error}"))?;
+    if !input.is_empty() {
+        return Err("invalid SSO remote message: trailing bytes".to_string());
+    }
+    Ok(decoded)
 }
 
 /// Build the signed transport acknowledgement for a peer-initiated request.
@@ -1131,6 +1287,14 @@ mod tests {
 
     #[test]
     fn late_remote_message_variants_match_host_papp_order() {
+        let ring_location = RingLocation {
+            chain_id: [0; 32],
+            junctions: vec![],
+        };
+        let key_handle = ProductAccountId {
+            dot_ns_identifier: "peopl.dot".to_string(),
+            derivation_index: DerivationIndex::Index(0),
+        };
         let legacy_tx = create_transaction_legacy_message(
             String::new(),
             LegacyAccountTxPayload {
@@ -1145,9 +1309,115 @@ mod tests {
         let legacy_raw =
             sign_raw_legacy_message(String::new(), [1; 32], RawPayload::Bytes { bytes: vec![] })
                 .encode();
+        let register = register_ring_vrf_key_message(
+            String::new(),
+            "caller.dot".to_string(),
+            DerivationIndex::Index(0),
+            ring_location.clone(),
+        )
+        .encode();
+        let register_response = RemoteMessage {
+            message_id: String::new(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyResponse(
+                RegisterRingVrfKeyResponse {
+                    responding_to: String::new(),
+                    payload: Ok([1; 32]),
+                },
+            )),
+        }
+        .encode();
+        let list = list_ring_vrf_keys_message(
+            String::new(),
+            "caller.dot".to_string(),
+            "peopl.dot".to_string(),
+            truapi::v01::RingVrfKeyDisclosure::Anonymized,
+        )
+        .encode();
+        let list_response = RemoteMessage {
+            message_id: String::new(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(
+                ListRingVrfKeysResponse {
+                    responding_to: String::new(),
+                    payload: Ok(Vec::new()),
+                },
+            )),
+        }
+        .encode();
+        let sign =
+            ring_vrf_sign_message(String::new(), "caller.dot".to_string(), key_handle, vec![])
+                .encode();
+        let sign_response = RemoteMessage {
+            message_id: String::new(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignResponse(
+                RingVrfSignResponse {
+                    responding_to: String::new(),
+                    payload: Ok(Vec::new()),
+                },
+            )),
+        }
+        .encode();
 
         assert_eq!(legacy_tx[..3], [0, 0, 9]);
         assert_eq!(legacy_raw[..3], [0, 0, 10]);
+        assert_eq!(register[..3], [0, 0, 18]);
+        assert_eq!(register_response[..3], [0, 0, 19]);
+        assert_eq!(list[..3], [0, 0, 20]);
+        assert_eq!(list_response[..3], [0, 0, 21]);
+        assert_eq!(sign[..3], [0, 0, 22]);
+        assert_eq!(sign_response[..3], [0, 0, 23]);
+        assert_eq!(RingVrfError::RingNotFound.encode()[0], 0);
+        assert_eq!(RingVrfError::NotMember.encode()[0], 1);
+        assert_eq!(RingVrfError::KeyNotRegistered.encode()[0], 2);
+        assert_eq!(RingVrfError::KeyNotInRing.encode()[0], 3);
+        assert_eq!(RingVrfError::NotAllowlisted.encode()[0], 4);
+        assert_eq!(RingVrfError::Rejected.encode()[0], 5);
+        assert_eq!(
+            RingVrfError::Unknown {
+                reason: String::new()
+            }
+            .encode()[0],
+            6
+        );
+    }
+
+    #[test]
+    fn rfc_0024_requests_match_android_scale_fixtures() {
+        let ring = RingLocation {
+            chain_id: [7; 32],
+            junctions: vec![
+                RingLocationJunction::PalletInstance(9),
+                RingLocationJunction::CollectionId(b"pop:polkadot.network/people     ".to_vec()),
+            ],
+        };
+        let handle = ProductAccountId {
+            dot_ns_identifier: "peopl.dot".to_string(),
+            derivation_index: DerivationIndex::Index(0),
+        };
+        let messages = [
+            v1::RemoteMessage::RegisterRingVrfKeyRequest(RegisterRingVrfKeyRequest {
+                calling_product_id: "game.dot".to_string(),
+                index: DerivationIndex::Index(4),
+                ring: ring.clone(),
+            }),
+            v1::RemoteMessage::ListRingVrfKeysRequest(ListRingVrfKeysRequest {
+                calling_product_id: "game.dot".to_string(),
+                owner: "peopl.dot".to_string(),
+                disclosure: truapi::v01::RingVrfKeyDisclosure::PublicKey,
+            }),
+            v1::RemoteMessage::RingVrfSignRequest(RingVrfSignRequest {
+                calling_product_id: "game.dot".to_string(),
+                key_handle: handle,
+                message: (0..16).collect(),
+            }),
+        ];
+        let expected = [
+            "0x122067616d652e646f74000400000007070707070707070707070707070707070707070707070707070707070707070800090180706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652020202020",
+            "0x142067616d652e646f742470656f706c2e646f7401",
+            "0x162067616d652e646f742470656f706c2e646f74000000000040000102030405060708090a0b0c0d0e0f",
+        ];
+        for (message, expected) in messages.into_iter().zip(expected) {
+            assert_eq!(format!("0x{}", hex::encode(message.encode())), expected);
+        }
     }
 
     #[test]
@@ -1163,16 +1433,22 @@ mod tests {
                 RingLocationJunction::CollectionId(b"pop".to_vec()),
             ],
         };
+        let key_handle = ProductAccountId {
+            dot_ns_identifier: "peopl.dot".to_string(),
+            derivation_index: DerivationIndex::Index(0),
+        };
 
         let alias = alias_request_message(
             "m-alias".to_string(),
             "caller.dot".to_string(),
+            key_handle.clone(),
             context.clone(),
             ring_location.clone(),
         );
         let proof = proof_request_message(
             "m-proof".to_string(),
             "caller.dot".to_string(),
+            key_handle,
             context,
             ring_location,
             b"vote".to_vec(),
@@ -1180,11 +1456,11 @@ mod tests {
 
         assert_host_papp_0_8_11_fixture(
             alias,
-            "0x1c6d2d616c69617300032863616c6c65722e646f7428766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f70",
+            "0x1c6d2d616c69617300032863616c6c65722e646f742470656f706c2e646f74000000000028766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f70",
         );
         assert_host_papp_0_8_11_fixture(
             proof,
-            "0x1c6d2d70726f6f66000c2863616c6c65722e646f7428766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f7010766f7465",
+            "0x1c6d2d70726f6f66000c2863616c6c65722e646f742470656f706c2e646f74000000000028766f74696e672e646f7400000000001111111111111111111111111111111111111111111111111111111111111111080043010c706f7010766f7465",
         );
     }
 
@@ -1329,6 +1605,7 @@ mod tests {
                     payload: Ok(vec![SsoAllocationOutcome::Allocated(
                         SsoAllocatedResource::AutoSigning {
                             product_root_private_key: sequential_bytes(0),
+                            ring_vrf_domain_entropy: sequential_bytes(64),
                         },
                     )]),
                 },
@@ -1337,9 +1614,25 @@ mod tests {
         assert_eq!(
             hex::encode(message.encode()),
             format!(
-                "046d0006047200040003{}",
-                hex::encode(sequential_bytes::<64>(0))
+                "046d0006047200040003{}{}",
+                hex::encode(sequential_bytes::<64>(0)),
+                hex::encode(sequential_bytes::<32>(64))
             )
+        );
+    }
+
+    #[test]
+    fn remote_message_decoder_rejects_trailing_bytes() {
+        let mut encoded = RemoteMessage {
+            message_id: "m".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+        }
+        .encode();
+        encoded.push(0);
+
+        assert_eq!(
+            decode_remote_message(&encoded),
+            Err("invalid SSO remote message: trailing bytes".to_string())
         );
     }
 
@@ -1375,6 +1668,7 @@ mod tests {
             payload: Ok(vec![SsoAllocationOutcome::Allocated(
                 SsoAllocatedResource::AutoSigning {
                     product_root_private_key: auto_signing_secret,
+                    ring_vrf_domain_entropy: [0x5A; 32],
                 },
             )]),
         };

@@ -165,6 +165,40 @@ impl PairingHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Registered providers available for an internal well-known-ring feature.
+    pub async fn ring_vrf_providers(
+        &self,
+        ring: &v01::RingLocation,
+    ) -> Result<Vec<v01::ProductAccountId>, v01::GenericError> {
+        self.pairing_host
+            .ring_vrf_providers(ring)
+            .await
+            .map_err(ring_vrf_admin_error)
+    }
+
+    /// Current provider selected for an internal well-known-ring feature.
+    pub async fn selected_ring_vrf_provider(
+        &self,
+        ring: &v01::RingLocation,
+    ) -> Result<Option<v01::ProductAccountId>, v01::GenericError> {
+        self.pairing_host
+            .selected_ring_vrf_provider(ring)
+            .await
+            .map_err(ring_vrf_admin_error)
+    }
+
+    /// Select a registered provider for an internal well-known-ring feature.
+    pub async fn select_ring_vrf_provider(
+        &self,
+        ring: v01::RingLocation,
+        handle: v01::ProductAccountId,
+    ) -> Result<(), v01::GenericError> {
+        self.pairing_host
+            .select_ring_vrf_provider(ring, handle)
+            .await
+            .map_err(ring_vrf_admin_error)
+    }
+
     /// Clear the canonical paired session and all capability caches/storage
     /// without sending a peer-disconnect notice.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.reset_session_state"))]
@@ -417,6 +451,40 @@ impl SigningHostRuntime {
             })
     }
 
+    /// Registered providers available for an internal well-known-ring feature.
+    pub async fn ring_vrf_providers(
+        &self,
+        ring: &v01::RingLocation,
+    ) -> Result<Vec<v01::ProductAccountId>, v01::GenericError> {
+        self.signing_host
+            .ring_vrf_providers(ring)
+            .await
+            .map_err(ring_vrf_admin_error)
+    }
+
+    /// Current provider selected for an internal well-known-ring feature.
+    pub async fn selected_ring_vrf_provider(
+        &self,
+        ring: &v01::RingLocation,
+    ) -> Result<Option<v01::ProductAccountId>, v01::GenericError> {
+        self.signing_host
+            .selected_ring_vrf_provider(ring)
+            .await
+            .map_err(ring_vrf_admin_error)
+    }
+
+    /// Select a registered provider for an internal well-known-ring feature.
+    pub async fn select_ring_vrf_provider(
+        &self,
+        ring: v01::RingLocation,
+        handle: v01::ProductAccountId,
+    ) -> Result<(), v01::GenericError> {
+        self.signing_host
+            .select_ring_vrf_provider(ring, handle)
+            .await
+            .map_err(ring_vrf_admin_error)
+    }
+
     /// Activate a wallet-local session from host-held secret material (raw
     /// BIP-39 entropy).
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.activate_local_session"))]
@@ -481,6 +549,54 @@ impl SigningHostRuntime {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl SigningHostRuntime {
+    /// Record statement-store accounts the host must keep renewed across
+    /// allowance periods.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.track_statement_renewal_targets"))]
+    pub async fn track_statement_renewal_targets(
+        &self,
+        targets: Vec<crate::runtime::StatementRenewalTarget>,
+    ) -> Result<(), v01::GenericError> {
+        self.signing_host
+            .track_statement_renewal_targets(targets)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Run one statement-store renewal pass now and return per-target
+    /// outcomes. This is the primary entry point; hosts whose process cannot
+    /// stay alive (mobile) call it from an OS scheduler instead of
+    /// [`Self::start_statement_allowance_renewal`].
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.renew_statement_allowances"))]
+    pub async fn renew_statement_allowances(
+        &self,
+    ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, v01::GenericError>
+    {
+        self.signing_host
+            .renew_statement_allowances()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Start the periodic statement-store renewal loop (hourly, plus a tick
+    /// just after each period boundary). Idempotent; the loop stops when this
+    /// runtime is dropped.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.start_statement_allowance_renewal"))]
+    pub fn start_statement_allowance_renewal(&self) {
+        self.signing_host.start_statement_allowance_renewal();
+    }
+
+    /// Delay until the next renewal pass is due, for hosts that schedule
+    /// wake-ups through an OS scheduler instead of the in-process loop.
+    pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|now| crate::statement_allowance::renewal::next_tick_delay(now.as_secs()))
+            .unwrap_or(std::time::Duration::from_secs(3_600))
+    }
+}
+
 /// Adapters scoped to one product connection: the platform serving its
 /// syscalls, the optional native Chat adapter, and the connection's Chat
 /// stream state. Non-native connections use [`Self::from_services`].
@@ -498,6 +614,17 @@ impl ConnectionAdapters {
             chat_platform: None,
             chat: Arc::new(ChatConnection::new()),
         }
+    }
+}
+
+fn ring_vrf_admin_error(
+    error: crate::host_logic::sso::messages::RingVrfError,
+) -> v01::GenericError {
+    v01::GenericError {
+        reason: match error {
+            crate::host_logic::sso::messages::RingVrfError::Unknown { reason } => reason,
+            other => format!("{other:?}"),
+        },
     }
 }
 

@@ -117,6 +117,14 @@ pub(crate) struct StubPlatform {
     pub(crate) cancelled_notifications: Arc<Mutex<Vec<v01::NotificationId>>>,
     pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
     pub(crate) rpc_responses: Vec<String>,
+    /// Responses keyed by JSON-RPC method, answered as each request arrives with
+    /// that request's own id echoed back.
+    ///
+    /// Unlike `rpc_responses` this assumes nothing about request order and waits
+    /// indefinitely for the next request, so a slow step between two requests
+    /// cannot outrun the response pump. Prefer it whenever a test drives a path
+    /// that decodes metadata or does other work between calls.
+    pub(crate) rpc_method_responses: Vec<(&'static str, String)>,
     pub(crate) sso_response_script: Option<SsoResponseScript>,
     /// When set, `connect` fails with this reason.
     pub(crate) chain_connect_error: Option<&'static str>,
@@ -138,7 +146,7 @@ pub(crate) enum SsoResponseScript {
     /// Peer acknowledges the request and replies with `response`.
     Success {
         session: SessionInfo,
-        response: RemoteMessage,
+        response: Box<RemoteMessage>,
     },
     /// Peer acknowledges the request and then sends `Disconnected`.
     PeerDisconnect { session: SessionInfo },
@@ -371,7 +379,7 @@ pub(crate) fn sso_success_response_script(
 ) -> SsoResponseScript {
     SsoResponseScript::Success {
         session: session.clone(),
-        response,
+        response: Box::new(response),
     }
 }
 
@@ -619,6 +627,10 @@ pub(crate) fn ring_location_fixture() -> v01::RingLocation {
 /// Contextual-alias request fixture for `product_id`.
 pub(crate) fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequest {
     HostAccountGetAliasRequest::V1(v01::HostAccountGetAliasRequest {
+        key_handle: v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index: v01::DerivationIndex::Index(0),
+        },
         context: product_proof_context(product_id),
         ring_location: ring_location_fixture(),
     })
@@ -627,6 +639,10 @@ pub(crate) fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequ
 /// Ring-VRF proof request fixture for `product_id`.
 pub(crate) fn create_proof_request(product_id: &str) -> HostAccountCreateProofRequest {
     HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
+        key_handle: v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index: v01::DerivationIndex::Index(0),
+        },
         context: product_proof_context(product_id),
         ring_location: ring_location_fixture(),
         message: vec![4, 5, 6],
@@ -905,6 +921,7 @@ impl PlatformFeatures for StubPlatform {
 struct RecordingConnection {
     sent: Arc<Mutex<Vec<String>>>,
     responses: Vec<String>,
+    method_responses: Vec<(&'static str, String)>,
     sso_response_script: Option<SsoResponseScript>,
     auth_states: Arc<Mutex<Vec<AuthState>>>,
     pairing_success_response: bool,
@@ -962,6 +979,15 @@ fn retarget_sso_response(mut response: RemoteMessage, message_id: &str) -> Remot
         RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(response)) => {
             response.responding_to = message_id.to_string();
         }
+        RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
         RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(response)) => {
             response.responding_to = message_id.to_string();
         }
@@ -1017,7 +1043,7 @@ fn sso_scripted_responses(
                 4 => match script {
                     SsoResponseScript::Success { session, response } => {
                         let (_, request) = submitted_sso_request(&sent, &session);
-                        let response = retarget_sso_response(response, &request.message_id);
+                        let response = retarget_sso_response(*response, &request.message_id);
                         Some((
                             new_statements_frame(
                                 "peer-sub",
@@ -1215,6 +1241,9 @@ impl JsonRpcConnection for RecordingConnection {
         if let Some(script) = self.sso_response_script.clone() {
             return sso_scripted_responses(self.sent.clone(), script);
         }
+        if !self.method_responses.is_empty() {
+            return method_keyed_responses(self.sent.clone(), self.method_responses.clone());
+        }
         if self.responses.is_empty() {
             Box::pin(futures::stream::pending())
         } else {
@@ -1235,6 +1264,45 @@ impl JsonRpcConnection for RecordingConnection {
     }
 
     fn close(&self) {}
+}
+
+/// Answer each request as it arrives, by method, echoing its id.
+///
+/// Waits indefinitely for the next request rather than giving up after a fixed
+/// number of polls, so work between requests cannot race the pump.
+fn method_keyed_responses(
+    sent: Arc<Mutex<Vec<String>>>,
+    answers: Vec<(&'static str, String)>,
+) -> BoxStream<'static, String> {
+    Box::pin(stream::unfold(0usize, move |answered| {
+        let sent = sent.clone();
+        let answers = answers.clone();
+        async move {
+            loop {
+                let request = sent
+                    .lock()
+                    .expect("rpc list mutex poisoned")
+                    .get(answered)
+                    .cloned();
+                if let Some(request) = request {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&request).expect("request is valid JSON");
+                    let id = value["id"].as_str().expect("request carries a string id");
+                    let method = value["method"].as_str().expect("request carries a method");
+                    let result = answers
+                        .iter()
+                        .find(|(candidate, _)| *candidate == method)
+                        .map(|(_, body)| body.clone())
+                        .unwrap_or_else(|| panic!("no scripted response for method `{method}`"));
+                    return Some((
+                        format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{result}}}"#),
+                        answered + 1,
+                    ));
+                }
+                futures_timer::Delay::new(Duration::from_millis(1)).await;
+            }
+        }
+    }))
 }
 
 async fn wait_for_matching_request_id(sent: Arc<Mutex<Vec<String>>>, response: &str) {
@@ -1291,6 +1359,7 @@ impl ChainProvider for StubPlatform {
         Ok(Box::new(RecordingConnection {
             sent: self.sent_rpc.clone(),
             responses: self.rpc_responses.clone(),
+            method_responses: self.rpc_method_responses.clone(),
             sso_response_script: self.sso_response_script.clone(),
             auth_states: self.auth_states.clone(),
             pairing_success_response: self.pairing_success_response,

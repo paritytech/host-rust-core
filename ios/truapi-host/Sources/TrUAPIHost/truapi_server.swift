@@ -2799,6 +2799,23 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
+     * List registered providers for a ring so host UI can present the RFC-0024
+     * personhood-provider setting.
+     */
+    func ringVrfProviders(ring: RingLocation) throws  -> [ProductAccountId]
+
+    /**
+     * Persist a user-selected provider after checking that the handle is
+     * registered for the exact ring.
+     */
+    func selectRingVrfProvider(ring: RingLocation, handle: ProductAccountId) throws
+
+    /**
+     * Return the currently selected provider for a ring.
+     */
+    func selectedRingVrfProvider(ring: RingLocation) throws  -> ProductAccountId?
+
+    /**
      * Update a stored permission authorization status. Passing
      * `.notDetermined` clears the stored value so the next product request
      * prompts again.
@@ -3027,6 +3044,47 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
     uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
             self.uniffiCloneHandle(),
         FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * List registered providers for a ring so host UI can present the RFC-0024
+     * personhood-provider setting.
+     */
+open func ringVrfProviders(ring: RingLocation)throws  -> [ProductAccountId]  {
+    return try  FfiConverterSequenceTypeProductAccountId.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_ring_vrf_providers(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRingLocation_lower(ring),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Persist a user-selected provider after checking that the handle is
+     * registered for the exact ring.
+     */
+open func selectRingVrfProvider(ring: RingLocation, handle: ProductAccountId)throws   {try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_select_ring_vrf_provider(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRingLocation_lower(ring),
+        FfiConverterTypeProductAccountId_lower(handle),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Return the currently selected provider for a ring.
+     */
+open func selectedRingVrfProvider(ring: RingLocation)throws  -> ProductAccountId?  {
+    return try  FfiConverterOptionTypeProductAccountId.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_selected_ring_vrf_provider(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeRingLocation_lower(ring),uniffiCallStatus
     )
 })
 }
@@ -4401,18 +4459,18 @@ public func FfiConverterTypeNativeRuntimeConfigError_lower(_ value: NativeRuntim
  * a raw string so the dispatcher can reject invalid input before reaching
  * any platform callback. The open variants carry the ready-to-load canonical
  * URL; `DotName` and `Localhost` keep the dotns/localhost identity visible so
- * env-aware hosts can rewrite `.dot` names for their active environment and
+ * env-aware hosts can rewrite dotNS names for their active environment and
  * re-parse without losing information.
  */
 
 public enum NavigateDecision: Equatable, Hashable {
 
     /**
-     * A `.dot` identifier plus path/query/hash suffix (no leading `/`).
+     * A dotNS identifier plus path/query/hash suffix (no leading `/`).
      */
     case dotName(
         /**
-         * Lower-cased `.dot` host (e.g. `mytestapp.dot`).
+         * Lower-cased dotNS host (e.g. `mytestapp.dot`).
          */identifier: String,
         /**
          * Path/query/hash suffix without a leading `/`.
@@ -4444,7 +4502,7 @@ public enum NavigateDecision: Equatable, Hashable {
          */url: String
     )
     /**
-     * Input that fails every branch: empty, unparseable, or a `.dot` URL
+     * Input that fails every branch: empty, unparseable, or a dotNS URL
      * carrying port/userinfo (both forbidden since dotns resolves via the
      * chain and has no notion of either).
      */
@@ -5122,6 +5180,30 @@ fileprivate struct FfiConverterOptionTypeNativeChatCallbacks: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffer {
+    typealias SwiftType = ProductAccountId?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeProductAccountId.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeProductAccountId.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeChatRoom: FfiConverterRustBuffer {
     typealias SwiftType = [ChatRoom]
 
@@ -5139,6 +5221,31 @@ fileprivate struct FfiConverterSequenceTypeChatRoom: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeChatRoom.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeProductAccountId: FfiConverterRustBuffer {
+    typealias SwiftType = [ProductAccountId]
+
+    public static func write(_ value: [ProductAccountId], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeProductAccountId.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ProductAccountId] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ProductAccountId]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeProductAccountId.read(from: &buf))
         }
         return seq
     }
@@ -5283,7 +5390,7 @@ public func uniffiForeignFutureHandleCountTruapiServer() -> Int {
 }
 /**
  * Classify a navigation input exactly like the core's internal navigate host
- * call: `.dot` first, then `localhost`, then normalized external, with
+ * call: dotNS first, then `localhost`, then normalized external, with
  * everything else rejected. Pure and stateless; hosts call it on every
  * webview-internal navigation.
  */
@@ -5324,7 +5431,7 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_truapi_server_checksum_func_parse_navigate() != 58140) {
+    if (uniffi_truapi_server_checksum_func_parse_navigate() != 62582) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_func_set_log_level() != 13010) {
@@ -5466,6 +5573,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_ring_vrf_providers() != 44875) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_select_ring_vrf_provider() != 24121) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_selected_ring_vrf_provider() != 49670) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 37317) {
