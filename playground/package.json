@@ -14,7 +14,7 @@
     "pretypecheck": "node ./scripts/bundle-rxjs-dts.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:examples": "tsc -p tsconfig.examples.json",
-    "deploy:test": "yarn build && bulletin-deploy ./out truapi-playground.dot && rm out.car",
+    "deploy:test": "yarn build && bulletin-deploy ./out truapi-playground && rm out.car",
     "lint:fix": "next lint --fix",
     "test:unit": "bun test tests/unit",
     "e2e": "playwright test",

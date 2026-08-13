@@ -362,7 +362,7 @@ impl From<HostNavigateRejection> for v01::HostNavigateToError {
 }
 
 /// Classify a navigation input exactly like the core's internal navigate host
-/// call: `.dot` first, then `localhost`, then normalized external, with
+/// call: dotNS first, then `localhost`, then normalized external, with
 /// everything else rejected. Pure and stateless; hosts call it on every
 /// webview-internal navigation.
 #[uniffi::export]

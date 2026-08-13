@@ -151,7 +151,11 @@ export type CoreStorageKey =
   /**
    * Wallet-bound RFC-0024 ring-VRF registry snapshot.
    */
-  | { tag: "RingVrfRegistry"; value: { rootPublicKey: Uint8Array } };
+  | { tag: "RingVrfRegistry"; value: { rootPublicKey: Uint8Array } }
+  /**
+   * Statement-store allowance targets the signing host keeps renewed.
+   */
+  | { tag: "StatementRenewalTargets"; value?: undefined };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -522,6 +526,7 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
       RingVrfRegistry: S.Struct({ rootPublicKey: S.Bytes(32) }) as S.Codec<{
         rootPublicKey: Uint8Array;
       }>,
+      StatementRenewalTargets: S._void,
     }),
 );
 

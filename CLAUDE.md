@@ -24,7 +24,7 @@ js/container/              TS lockdown container for the iOS host web view; `npm
 ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
-playground/                Next.js interactive playground; deploys to truapi-playground.dot
+playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
 hosts/dotli/               dotli submodule
 docs/                      design docs, RFCs, feature proposals
 scripts/codegen.sh         regenerate the TS client from the Rust crate
@@ -268,5 +268,5 @@ debug-panel traffic disappearing when the login popup opens.
 
 ## Deployment
 
-Pushes to `main` trigger `.github/workflows/deploy-playground.yml`, which builds `playground/` and publishes the static export to `truapi-playground.dot` via `bulletin-deploy`.
+Pushes to `main` trigger `.github/workflows/deploy-playground.yml`, which builds `playground/` and publishes the static export via `bulletin-deploy`. Pass the bare dotNS label `truapi-playground`, never a suffixed name: dotNS attaches the top-level domain its network declares, so the live name is `truapi-playground.paseo` on Paseo Next v2. The deploy steps stay in this repo because `bulletin-deploy` ships its shared reusable workflow from a private repo that this public one cannot call.
 Pushes to `main` also trigger `.github/workflows/deploy-docs.yml`, which publishes the explorer (at the Pages root), the playground (under `/playground/`), and the Rust API docs (under `/cargo_doc/`) to GitHub Pages.
