@@ -472,8 +472,17 @@ impl Metadata {
         &self,
         info_variant: &str,
     ) -> Result<usize, StatementAllowanceError> {
+        self.extension_info_field_count(AS_RESOURCES, info_variant)
+    }
+
+    /// Same, for any authorizing extension.
+    pub fn extension_info_field_count(
+        &self,
+        identifier: &str,
+        info_variant: &str,
+    ) -> Result<usize, StatementAllowanceError> {
         Ok(self
-            .extension_info_variant(AS_RESOURCES, info_variant)?
+            .extension_info_variant(identifier, info_variant)?
             .fields
             .len())
     }
