@@ -952,7 +952,13 @@ pub(super) async fn allocate_statement_store_allowance(
             return Ok(allowance.secret.to_bytes().to_vec());
         }
         SlotSelection::Free(seq) => seq,
-        SlotSelection::Full { max } => {
+        SlotSelection::FreeSlotsExcluded => {
+            return Err(
+                StatementAllowanceError::Slot(SlotError::FreeSlotsAwaitingSubmission { period })
+                    .into(),
+            );
+        }
+        SlotSelection::Full { max, .. } => {
             return Err(
                 StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
                     .into(),
@@ -977,6 +983,7 @@ pub(super) async fn allocate_statement_store_allowance(
             ring: &ring,
             reuse_existing,
             preselected: Some(preselected),
+            protected: &[],
         },
     )
     .await?;

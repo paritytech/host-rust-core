@@ -403,8 +403,36 @@ async fn run_alloc_check(
     .await
     {
         Ok(alloc::slot::SlotSelection::Free(seq)) => println!("slot scan: free seq={seq}"),
-        Ok(alloc::slot::SlotSelection::Full { max }) => {
+        Ok(alloc::slot::SlotSelection::FreeSlotsExcluded) => {
+            println!("slot scan: free slots exist but are awaiting earlier submissions");
+        }
+        Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
+            let cooldown = alloc::slot::replacement_cooldown(&metadata)?;
+            // The runtime judges ages against its own clock, which trails ours.
+            let chain_now = alloc::slot::read_chain_now_seconds(&rpc).await?;
+            println!(
+                "  chain clock={chain_now} (host clock is {}s ahead)",
+                now.saturating_sub(chain_now)
+            );
+            for slot in &occupied {
+                let age = chain_now.saturating_sub(slot.since);
+                let state = if age >= cooldown {
+                    "replaceable"
+                } else {
+                    "in cooldown"
+                };
+                println!(
+                    "  seq={} since={} age={age}s {state} account=0x{}",
+                    slot.seq,
+                    slot.since,
+                    hex::encode(slot.account_id)
+                );
+            }
+            match alloc::slot::replaceable_slot(&occupied, &target, chain_now, cooldown, &[]) {
+                Some(seq) => println!("would replace seq={seq} (oldest replaceable)"),
+                None => println!("nothing replaceable: cooldown={cooldown}s"),
+            }
         }
         Ok(alloc::slot::SlotSelection::AlreadyAllocated(seq)) => {
             println!("slot scan: target already allocated at seq={seq}")
@@ -425,6 +453,7 @@ async fn run_alloc_check(
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                protected: &[],
             },
         )
         .await
@@ -1500,6 +1529,7 @@ async fn register_pairing_allowances(
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                protected: &[],
             },
         )
         .await
