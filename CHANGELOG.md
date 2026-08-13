@@ -5,6 +5,29 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.9.0] - 2026-08-13
+
+### RFCs
+
+- **Accepted:** Proof of Personhood as a product
+
+### Added
+
+- replace the oldest slot when a period is full (#378)
+- auto-renew statement-store allowances (#308)
+- land RFC-0024 ring VRF key management (#360)
+
+### Changed
+
+- share one extension-info resolver in allowance metadata (#377)
+- stop re-reading metadata and rings on every allowance call (#366)
+- update ios library to 0.5.0 (#367)
+
+### Fixed
+
+- accept per-network dotNS TLDs in product identifiers (#369)
+- deploy the playground under the new dotNS name format (#375)
+
 ## [0.8.0] - 2026-08-10
 
 ### RFCs
@@ -20,6 +43,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.8.0, @parity/truapi-host 0.5.0, @parity/ios-host 0.5.0 (#364)
 - RFC 0026: Host chain discovery and name resolution (#354)
 - Use canonical types over the native FFI (#345)
 - iOS host integration (#330)
@@ -190,6 +214,26 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 ### Removed
 
 - roll back the CoinPayment (Coinage) host API
+
+## [0.3.1] - 2026-06-17
+
+### Changed
+
+- @parity/truapi 0.3.1 (#228)
+- @parity/truapi 0.3.1
+- @parity/truapi@0.3.0
+- @parity/truapi@0.3.0
+- Revert "Add explorer v0.3.0 version snapshot"
+- Add explorer v0.3.0 version snapshot
+
+### Fixed
+
+- use GitHub API to create release tag
+- correct import paths in explorer 0.3.1 snapshot
+- align HostPaymentTopUpError variant ordering with wire protocol
+- add MIT license field to workspace and all crates
+- remove prepare hooks and add deny.toml from main
+- remove prepare hook from truapi-host package
 
 ## [0.3.0] - 2026-06-03
 
