@@ -257,7 +257,7 @@ pub(crate) mod testing {
     struct Inner {
         calls: Mutex<Vec<(String, String)>>,
         responses: Mutex<Vec<String>>,
-        subscription_items: Mutex<Vec<String>>,
+        subscription_batches: Mutex<Vec<Vec<String>>>,
         subscription_errors: Mutex<Vec<String>>,
     }
 
@@ -270,10 +270,14 @@ pub(crate) mod testing {
             scripted
         }
 
-        /// Queue the notification items for the next subscription.
+        /// Queue the notification items for one subscription. Call once per
+        /// expected submission; batches are replayed in order.
         pub(crate) fn script_subscription<'a>(&self, items: impl IntoIterator<Item = &'a str>) {
-            *self.0.subscription_items.lock().unwrap() =
-                items.into_iter().map(str::to_owned).collect();
+            self.0
+                .subscription_batches
+                .lock()
+                .unwrap()
+                .push(items.into_iter().map(str::to_owned).collect());
         }
 
         /// Fail the next `n` subscriptions with `message`, as the node does when
@@ -330,7 +334,13 @@ pub(crate) mod testing {
             if let Some(message) = failure {
                 return Box::pin(async move { Err(subxt_rpcs::Error::Client(message.into())) });
             }
-            let items: Vec<_> = core::mem::take(&mut *self.0.subscription_items.lock().unwrap())
+            let batch = {
+                let mut batches = self.0.subscription_batches.lock().unwrap();
+                (!batches.is_empty())
+                    .then(|| batches.remove(0))
+                    .unwrap_or_default()
+            };
+            let items: Vec<_> = batch
                 .into_iter()
                 .map(|item| Ok(RawValue::from_string(item).expect("scripted item is valid JSON")))
                 .collect();

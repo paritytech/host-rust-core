@@ -983,6 +983,7 @@ pub(super) async fn allocate_statement_store_allowance(
             ring: &ring,
             reuse_existing,
             preselected: Some(preselected),
+            protected: &[],
         },
     )
     .await?;

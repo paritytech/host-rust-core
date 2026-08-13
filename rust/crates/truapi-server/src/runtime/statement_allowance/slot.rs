@@ -622,6 +622,34 @@ mod tests {
         );
     }
 
+    /// A pass that registers several targets protects the slots it has already
+    /// claimed, so target N cannot take the slot target N-1 just got. Without
+    /// this a pass with more targets than slots undoes its own work forever.
+    #[test]
+    fn slots_already_claimed_in_this_pass_are_protected() {
+        let candidates = [
+            occupied(0, [0x01; 32], 1_000),
+            occupied(1, [0x02; 32], 2_000),
+            occupied(2, [0x03; 32], 3_000),
+        ];
+
+        // Nothing claimed yet: the oldest goes.
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            Some(0),
+        );
+        // Having claimed 0 and 1 earlier in the pass, only 2 is available.
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[0, 1]),
+            Some(2),
+        );
+        // Once every slot is one this pass claimed, the honest answer is none.
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[0, 1, 2]),
+            None,
+        );
+    }
+
     #[test]
     fn the_replacement_cooldown_comes_from_the_runtime() {
         let metadata = Metadata::decode(FIXTURE).unwrap();

@@ -322,6 +322,10 @@ pub struct RegistrationParams<'a> {
     /// attempt so the scan is not repeated. The duplicate-submit retry rescans,
     /// so this only ever shortcuts the first submission.
     pub preselected: Option<u32>,
+    /// Slots the caller has already claimed in this batch and must not lose.
+    /// A multi-target pass would otherwise take a slot back off a target it
+    /// registered moments earlier and never settle.
+    pub protected: &'a [u32],
 }
 
 /// Result of a long-term storage claim attempt.
@@ -462,7 +466,7 @@ pub async fn register_statement_account(
                         params.target,
                         chain_now,
                         cooldown,
-                        &skipped_duplicate_slots,
+                        params.protected,
                     ) {
                         Some(seq) => {
                             took_over_a_slot = true;
@@ -1144,6 +1148,7 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected,
+                protected: &[],
             },
         ));
         (outcome, scripted)
@@ -1202,6 +1207,7 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                protected: &[],
             },
         ));
 
@@ -1258,6 +1264,7 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                protected: &[],
             },
         ))
         .unwrap_err();
@@ -1304,6 +1311,7 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                protected: &[],
             },
         ))
         .unwrap_err();

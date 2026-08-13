@@ -453,6 +453,7 @@ async fn run_alloc_check(
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                protected: &[],
             },
         )
         .await
@@ -1528,6 +1529,7 @@ async fn register_pairing_allowances(
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
+                protected: &[],
             },
         )
         .await
