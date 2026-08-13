@@ -662,17 +662,26 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
 /// `#[wire(..., sensitive)]`. The one iteration the schema-hash fingerprint is
 /// derived from, so the fingerprint tracks exactly what the wire table
 /// publishes.
-fn wire_id_rows(api: &ApiDefinition, target_version: u32) -> Result<Vec<(u8, String, bool)>> {
+/// One row of the wire contract: a frame id, its method leg, whether the method
+/// is `sensitive`, and the structural signature of the payload that frame
+/// carries.
+type WireIdRow = (u8, String, bool, String);
+
+fn wire_id_rows(api: &ApiDefinition, target_version: u32) -> Result<Vec<WireIdRow>> {
     let wrappers = collect_versioned_wrappers(api);
-    let mut seen: BTreeMap<u8, (String, bool)> = BTreeMap::new();
+    let types = types_by_name(api);
+    let mut seen: BTreeMap<u8, (String, bool, String)> = BTreeMap::new();
     for trait_def in &api.traits {
         for method in &trait_def.methods {
             if !method_is_included(trait_def, method, &wrappers, target_version)? {
                 continue;
             }
             let wire_ids = wire_ids_for_method(trait_def, method)?;
+            let payload = method_payload_signature(method, &types);
             for (id, tag) in wire_ids.entries(&method.name) {
-                if let Some((existing, _)) = seen.insert(id, (tag.clone(), method.wire.sensitive)) {
+                if let Some((existing, _, _)) =
+                    seen.insert(id, (tag.clone(), method.wire.sensitive, payload.clone()))
+                {
                     bail!("wire id {id} reused: `{existing}` and `{tag}` collide");
                 }
             }
@@ -680,8 +689,167 @@ fn wire_id_rows(api: &ApiDefinition, target_version: u32) -> Result<Vec<(u8, Str
     }
     Ok(seen
         .into_iter()
-        .map(|(id, (tag, sensitive))| (id, tag, sensitive))
+        .map(|(id, (tag, sensitive, payload))| (id, tag, sensitive, payload))
         .collect())
+}
+
+/// Index the API's user-defined types by their emitted name, so a signature walk
+/// can resolve a [`TypeRef::Named`] to its actual shape.
+fn types_by_name(api: &ApiDefinition) -> HashMap<&str, &TypeDef> {
+    api.types
+        .iter()
+        .map(|def| (def.name.as_str(), def))
+        .collect()
+}
+
+/// Structural signature of everything a method puts on the wire: its parameters
+/// (the request/start payload) and its return shape (the response/item payload).
+///
+/// Folded into the wire schema hash so the fingerprint moves when a payload's
+/// *layout* changes, not only when a frame id or method name does.
+fn method_payload_signature(method: &MethodDef, types: &HashMap<&str, &TypeDef>) -> String {
+    let mut out = String::new();
+    for param in &method.params {
+        let sig = type_signature(&param.type_ref, types, &mut Vec::new());
+        let _ = write!(out, "{}:{sig},", param.name);
+    }
+    out.push_str("->");
+    match &method.return_type {
+        ReturnType::Result { ok, err } => {
+            let _ = write!(
+                out,
+                "res<{},{}>",
+                type_signature(ok, types, &mut Vec::new()),
+                type_signature(err, types, &mut Vec::new())
+            );
+        }
+        ReturnType::Subscription(item) => {
+            let _ = write!(out, "sub<{}>", type_signature(item, types, &mut Vec::new()));
+        }
+        ReturnType::ResultSubscription { item, err } => {
+            let _ = write!(
+                out,
+                "ressub<{},{}>",
+                type_signature(item, types, &mut Vec::new()),
+                type_signature(err, types, &mut Vec::new())
+            );
+        }
+    }
+    out
+}
+
+/// Canonical structural rendering of a type: field order and field types for a
+/// struct, positional variant indices and payloads for an enum, resolved
+/// transitively.
+///
+/// Two layouts that encode differently under SCALE cannot render the same
+/// string: field order, field types, variant order, and arity all appear. A type
+/// this crate does not own (external or generic) degrades to its name, which is
+/// the most that is knowable from rustdoc. `seen` guards recursive types.
+fn type_signature(
+    type_ref: &TypeRef,
+    types: &HashMap<&str, &TypeDef>,
+    seen: &mut Vec<String>,
+) -> String {
+    match type_ref {
+        TypeRef::Primitive(name) => name.clone(),
+        TypeRef::Unit => "()".to_string(),
+        TypeRef::Generic(name) => format!("generic:{name}"),
+        TypeRef::Vec(inner) => format!("vec<{}>", type_signature(inner, types, seen)),
+        TypeRef::Option(inner) => format!("opt<{}>", type_signature(inner, types, seen)),
+        TypeRef::Array(inner, len) => {
+            format!("[{};{len}]", type_signature(inner, types, seen))
+        }
+        TypeRef::Tuple(items) => {
+            let inner: Vec<String> = items
+                .iter()
+                .map(|item| type_signature(item, types, seen))
+                .collect();
+            format!("({})", inner.join(","))
+        }
+        TypeRef::Named { name, args } => {
+            let rendered_args: Vec<String> = args
+                .iter()
+                .map(|arg| type_signature(arg, types, seen))
+                .collect();
+            let suffix = if rendered_args.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", rendered_args.join(","))
+            };
+            // A type already on the walk stack is recursive; naming it closes the
+            // cycle without losing that the edge exists.
+            if seen.iter().any(|entry| entry == name) {
+                return format!("rec:{name}{suffix}");
+            }
+            let Some(def) = types.get(name.as_str()) else {
+                return format!("{name}{suffix}");
+            };
+            seen.push(name.clone());
+            let body = match &def.kind {
+                TypeDefKind::Alias(inner) => {
+                    format!("={}", type_signature(inner, types, seen))
+                }
+                TypeDefKind::Struct(fields) => {
+                    let rendered: Vec<String> = fields
+                        .iter()
+                        .map(|field| {
+                            format!(
+                                "{}:{}",
+                                field.name,
+                                type_signature(&field.type_ref, types, seen)
+                            )
+                        })
+                        .collect();
+                    format!("{{{}}}", rendered.join(","))
+                }
+                TypeDefKind::TupleStruct(items) => {
+                    let rendered: Vec<String> = items
+                        .iter()
+                        .map(|item| type_signature(item, types, seen))
+                        .collect();
+                    format!("({})", rendered.join(","))
+                }
+                TypeDefKind::Enum(variants) => {
+                    let rendered: Vec<String> = variants
+                        .iter()
+                        .enumerate()
+                        .map(|(index, variant)| {
+                            let payload = match &variant.fields {
+                                VariantFields::Unit => String::new(),
+                                VariantFields::Unnamed(items) => {
+                                    let inner: Vec<String> = items
+                                        .iter()
+                                        .map(|item| type_signature(item, types, seen))
+                                        .collect();
+                                    format!("({})", inner.join(","))
+                                }
+                                VariantFields::Named(fields) => {
+                                    let inner: Vec<String> = fields
+                                        .iter()
+                                        .map(|field| {
+                                            format!(
+                                                "{}:{}",
+                                                field.name,
+                                                type_signature(&field.type_ref, types, seen)
+                                            )
+                                        })
+                                        .collect();
+                                    format!("{{{}}}", inner.join(","))
+                                }
+                            };
+                            // The positional index is the SCALE discriminant, so a
+                            // reorder must change the signature.
+                            format!("{index}:{}{payload}", variant.name)
+                        })
+                        .collect();
+                    format!("|{}|", rendered.join(";"))
+                }
+            };
+            seen.pop();
+            format!("{name}{suffix}{body}")
+        }
+    }
 }
 
 /// A stable fingerprint of the wire contract: every frame id, the method leg it
@@ -698,9 +866,9 @@ pub(crate) fn wire_schema_hash(
     codec_version: u8,
 ) -> Result<String> {
     let mut canonical = format!("codec={codec_version}\n");
-    for (id, tag, sensitive) in wire_id_rows(api, target_version)? {
+    for (id, tag, sensitive, payload) in wire_id_rows(api, target_version)? {
         let flag = u8::from(sensitive);
-        canonical.push_str(&format!("{id}:{tag}:{flag}\n"));
+        canonical.push_str(&format!("{id}:{tag}:{flag}:{payload}\n"));
     }
     // FNV-1a 64-bit: deterministic across platforms and Rust versions (unlike
     // `DefaultHasher`), dependency-free, and ample for a contract fingerprint.
@@ -2754,6 +2922,191 @@ mod tests {
             start_id,
             ..WireAttrs::default()
         }
+    }
+
+    /// Build a one-method API whose request payload is `struct Payload`, with the
+    /// given named fields, so a test can vary only the payload layout.
+    fn api_with_payload_fields(fields: Vec<(&str, TypeRef)>) -> ApiDefinition {
+        let payload = TypeDef {
+            name: "Payload".to_string(),
+            module_path: Vec::new(),
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Struct(
+                fields
+                    .into_iter()
+                    .map(|(name, type_ref)| FieldDef {
+                        name: name.to_string(),
+                        type_ref,
+                        docs: None,
+                    })
+                    .collect(),
+            ),
+            docs: None,
+        };
+        let method = MethodDef {
+            name: "do_thing".to_string(),
+            kind: MethodKind::Request,
+            params: vec![ParamDef {
+                name: "request".to_string(),
+                type_ref: TypeRef::Named {
+                    name: "Payload".to_string(),
+                    args: Vec::new(),
+                },
+            }],
+            return_type: ReturnType::Result {
+                ok: TypeRef::Unit,
+                err: TypeRef::Unit,
+            },
+            wire: request_wire(Some(7)),
+            docs: None,
+        };
+        ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Thing".to_string(),
+                module_path: Vec::new(),
+                methods: vec![method],
+                docs: None,
+            }],
+            public_trait_order: vec!["Thing".to_string()],
+            types: vec![payload],
+        }
+    }
+
+    #[test]
+    fn schema_hash_moves_when_a_payload_field_type_changes() {
+        // The drift class this fingerprint exists to catch: same frame ids, same
+        // method names, same sensitivity - only a field's width changed. A newer
+        // host's bytes would otherwise decode on the old table without throwing,
+        // silently yielding wrong values (the shape of the getAccount P0).
+        let before = api_with_payload_fields(vec![
+            ("ring_index", TypeRef::Primitive("u32".to_string())),
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+        ]);
+        let after = api_with_payload_fields(vec![
+            ("ring_index", TypeRef::Primitive("u64".to_string())),
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+        ]);
+
+        assert_ne!(
+            wire_schema_hash(&before, 1, 1).unwrap(),
+            wire_schema_hash(&after, 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn schema_hash_moves_when_same_width_payload_fields_are_reordered() {
+        // Nastier than a width change: the frame length is identical, so no
+        // arithmetic check can see it and the decode cannot fail - the values
+        // simply swap.
+        let before = api_with_payload_fields(vec![
+            ("ring_index", TypeRef::Primitive("u32".to_string())),
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+        ]);
+        let after = api_with_payload_fields(vec![
+            ("ring_revision", TypeRef::Primitive("u32".to_string())),
+            ("ring_index", TypeRef::Primitive("u32".to_string())),
+        ]);
+
+        assert_ne!(
+            wire_schema_hash(&before, 1, 1).unwrap(),
+            wire_schema_hash(&after, 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn schema_hash_is_stable_for_an_unchanged_contract() {
+        // The fingerprint must not be noisy: an identical contract hashes
+        // identically, or every host would look drifted.
+        let api =
+            api_with_payload_fields(vec![("ring_index", TypeRef::Primitive("u32".to_string()))]);
+
+        assert_eq!(
+            wire_schema_hash(&api, 1, 1).unwrap(),
+            wire_schema_hash(&api, 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn type_signature_terminates_on_a_recursive_type() {
+        // `struct Node { next: Option<Node> }` must not recurse forever.
+        let node = TypeDef {
+            name: "Node".to_string(),
+            module_path: Vec::new(),
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Struct(vec![FieldDef {
+                name: "next".to_string(),
+                type_ref: TypeRef::Option(Box::new(TypeRef::Named {
+                    name: "Node".to_string(),
+                    args: Vec::new(),
+                })),
+                docs: None,
+            }]),
+            docs: None,
+        };
+        let types: HashMap<&str, &TypeDef> = [("Node", &node)].into_iter().collect();
+
+        let sig = type_signature(
+            &TypeRef::Named {
+                name: "Node".to_string(),
+                args: Vec::new(),
+            },
+            &types,
+            &mut Vec::new(),
+        );
+
+        assert!(sig.contains("rec:Node"), "unexpected signature: {sig}");
+    }
+
+    #[test]
+    fn schema_hash_moves_when_an_enum_variant_is_reordered() {
+        // Variant position is the SCALE discriminant, so a reorder silently
+        // renumbers every variant on the wire.
+        let variant = |name: &str| VariantDef {
+            name: name.to_string(),
+            fields: VariantFields::Unit,
+            docs: None,
+        };
+        let build = |names: [&str; 2]| {
+            let enum_def = TypeDef {
+                name: "Choice".to_string(),
+                module_path: Vec::new(),
+                generic_params: Vec::new(),
+                kind: TypeDefKind::Enum(names.iter().map(|n| variant(n)).collect()),
+                docs: None,
+            };
+            let method = MethodDef {
+                name: "do_thing".to_string(),
+                kind: MethodKind::Request,
+                params: vec![ParamDef {
+                    name: "choice".to_string(),
+                    type_ref: TypeRef::Named {
+                        name: "Choice".to_string(),
+                        args: Vec::new(),
+                    },
+                }],
+                return_type: ReturnType::Result {
+                    ok: TypeRef::Unit,
+                    err: TypeRef::Unit,
+                },
+                wire: request_wire(Some(7)),
+                docs: None,
+            };
+            ApiDefinition {
+                traits: vec![TraitDef {
+                    name: "Thing".to_string(),
+                    module_path: Vec::new(),
+                    methods: vec![method],
+                    docs: None,
+                }],
+                public_trait_order: vec!["Thing".to_string()],
+                types: vec![enum_def],
+            }
+        };
+
+        assert_ne!(
+            wire_schema_hash(&build(["Allow", "Deny"]), 1, 1).unwrap(),
+            wire_schema_hash(&build(["Deny", "Allow"]), 1, 1).unwrap(),
+        );
     }
 
     #[test]

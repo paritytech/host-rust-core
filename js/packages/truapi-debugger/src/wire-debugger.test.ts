@@ -22,6 +22,21 @@ function frame(
   };
 }
 
+/** The same frame, carrying `bytes` so the per-trace byte cap applies to it. */
+function withBytes(
+  requestId: string,
+  frameId: number,
+  timestamp: number,
+  bytes: number,
+  role: FrameRole = "unknown",
+): ObservedFrame {
+  return {
+    ...frame("app.dot", requestId, frameId, timestamp, role),
+    byteLength: bytes,
+    bytes: new Uint8Array(bytes),
+  };
+}
+
 describe("createWireDebugger grouping", () => {
   test("accumulates every frame of one op under (channel, requestId)", () => {
     // Regression guard: the request and its response share a channel + requestId
@@ -154,41 +169,22 @@ describe("createWireDebugger grouping", () => {
   });
 
   test("the byte cap evicts payload frames but keeps the opener", () => {
-    const withBytes = (
-      requestId: string,
-      frameId: number,
-      timestamp: number,
-      bytes: number,
-      role: FrameRole = "unknown",
-    ): ObservedFrame => ({
-      ...frame("app.dot", requestId, frameId, timestamp, role),
-      byteLength: bytes,
-      bytes: new Uint8Array(bytes),
-    });
     const wd = createWireDebugger({ sink: () => {}, maxBytesPerTrace: 100 });
     wd.observe(withBytes("s:9", 18, 1, 10, "start")); // opener, 10B
     for (let i = 0; i < 20; i++) {
       wd.observe(withBytes("s:9", 21, 2 + i, 40, "receive")); // 40B each
     }
     const [trace] = wd.traces();
-    const retained = trace.frames.reduce((n, f) => n + (f.bytes?.length ?? 0), 0);
+    const retained = trace.frames.reduce(
+      (n, f) => n + (f.bytes?.length ?? 0),
+      0,
+    );
     expect(retained).toBeLessThanOrEqual(100);
     expect(trace.frames[0].frameId).toBe(18); // opener kept
     expect(trace.truncated).toBe(true);
   });
 
   test("a single frame whose payload alone exceeds the byte cap sheds its bytes", () => {
-    const withBytes = (
-      requestId: string,
-      frameId: number,
-      timestamp: number,
-      bytes: number,
-      role: FrameRole = "unknown",
-    ): ObservedFrame => ({
-      ...frame("app.dot", requestId, frameId, timestamp, role),
-      byteLength: bytes,
-      bytes: new Uint8Array(bytes),
-    });
     const wd = createWireDebugger({ sink: () => {}, maxBytesPerTrace: 100 });
     // The opener alone is 500B — larger than the whole 100B budget. It must stay
     // resident as a frame (pairing/retry-storm key on frames[0]) but shed its
@@ -199,8 +195,91 @@ describe("createWireDebugger grouping", () => {
     expect(trace.frames[0].frameId).toBe(18); // frame kept
     expect(trace.frames[0].byteLength).toBe(500); // metadata kept
     expect(trace.frames[0].bytes).toBeUndefined(); // oversized bytes shed
-    const retained = trace.frames.reduce((n, f) => n + (f.bytes?.length ?? 0), 0);
+    const retained = trace.frames.reduce(
+      (n, f) => n + (f.bytes?.length ?? 0),
+      0,
+    );
     expect(retained).toBeLessThanOrEqual(100);
+    expect(trace.truncated).toBe(true);
+  });
+
+  test("a completed op under the byte cap keeps its response", () => {
+    // 700B request + 400B response under a 1000B cap: neither frame is over
+    // budget on its own, and the op is finished. Charging the opener's 700B to a
+    // budget the eviction loop reclaims from evicted the *response* of a
+    // completed op, which then read as `orphaned` (and, in the op list, as a
+    // call still waiting).
+    const wd = createWireDebugger({ sink: () => {}, maxBytesPerTrace: 1000 });
+    wd.observe(withBytes("p:1", 22, 1, 700, "request"));
+    wd.observe(withBytes("p:1", 23, 2, 400, "response"));
+
+    const [trace] = wd.traces();
+    expect(trace.frames.map((f) => f.frameId)).toEqual([22, 23]);
+    expect(trace.frames[1].bytes?.length).toBe(400);
+    expect(trace.dropped.framesByBytes).toBe(0);
+    expect(trace.truncated).toBe(false);
+  });
+
+  test("an opener whose payload equals the byte cap does not evict every later frame", () => {
+    // The opener is exempt from eviction but used to be counted, so a trace whose
+    // opener alone filled the budget was permanently over it: every subsequent
+    // frame was evicted on arrival and the trace could never hold more than the
+    // opener. 20 receives observed, 1 frame retained, unrecoverable.
+    const wd = createWireDebugger({ sink: () => {}, maxBytesPerTrace: 100 });
+    wd.observe(withBytes("s:2", 18, 1, 100, "start")); // opener exactly at the cap
+    for (let i = 0; i < 20; i++) {
+      wd.observe(withBytes("s:2", 21, 2 + i, 1, "receive")); // 1B each
+    }
+    const [trace] = wd.traces();
+    expect(trace.frames).toHaveLength(21);
+    expect(trace.dropped.framesByBytes).toBe(0);
+    expect(trace.truncated).toBe(false);
+  });
+
+  test("dropped counts the two cap axes separately", () => {
+    // A boolean `truncated` renders "1 frame lost" and "77 lost" identically and
+    // cannot say which cap took them.
+    const byCount = createWireDebugger({
+      sink: () => {},
+      maxFramesPerTrace: 3,
+    });
+    byCount.observe(frame("app.dot", "s:7", 18, 1, "start"));
+    for (let i = 0; i < 10; i++) {
+      byCount.observe(frame("app.dot", "s:7", 21, 2 + i, "receive"));
+    }
+    const counted = byCount.traces()[0];
+    expect(counted.dropped).toEqual({
+      framesByCount: 8,
+      framesByBytes: 0,
+      payloadsShed: 0,
+    });
+    expect(counted.truncated).toBe(true);
+
+    const byBytes = createWireDebugger({
+      sink: () => {},
+      maxBytesPerTrace: 100,
+    });
+    byBytes.observe(withBytes("s:8", 18, 1, 10, "start"));
+    for (let i = 0; i < 20; i++) {
+      byBytes.observe(withBytes("s:8", 21, 2 + i, 40, "receive"));
+    }
+    const bytesTrace = byBytes.traces()[0];
+    expect(bytesTrace.dropped.framesByCount).toBe(0);
+    expect(bytesTrace.dropped.framesByBytes).toBeGreaterThan(0);
+    expect(bytesTrace.dropped.payloadsShed).toBe(0);
+  });
+
+  test("a shed payload counts on its own axis, not as a lost frame", () => {
+    // The frame is still in the sequence with its metadata — nothing is missing
+    // from the op, so pairing stays sound even though bytes are gone.
+    const wd = createWireDebugger({ sink: () => {}, maxBytesPerTrace: 100 });
+    wd.observe(withBytes("s:3", 18, 1, 500, "start"));
+    const [trace] = wd.traces();
+    expect(trace.dropped).toEqual({
+      framesByCount: 0,
+      framesByBytes: 0,
+      payloadsShed: 1,
+    });
     expect(trace.truncated).toBe(true);
   });
 

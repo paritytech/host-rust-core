@@ -3,12 +3,65 @@
 
 import { describe, expect, test } from "bun:test";
 import type { FrameValueDetail } from "./decode.js";
+import type { FrameRole, ObservedFrame } from "./observed-frame.js";
 import type { TraceView } from "./trace-view.js";
+import { wireTraceToView } from "./trace-view.js";
+import type {
+  TraceDropCounts,
+  WireMethodInfo,
+  WireTrace,
+} from "./wire-debugger.js";
 import {
   renderFrameValueDetail,
   renderOperationRow,
   renderTraceDetail,
 } from "./trace-render.js";
+
+/** Wire ids for one unary method and one subscription, as the wire table has them. */
+const WIRE: ReadonlyMap<number, WireMethodInfo> = new Map([
+  [22, { method: "account.getAccount", kind: "request" }],
+  [23, { method: "account.getAccount", kind: "response" }],
+  [40, { method: "account.connectionStatus", kind: "start" }],
+  [41, { method: "account.connectionStatus", kind: "receive" }],
+  [42, { method: "account.connectionStatus", kind: "stop" }],
+  [43, { method: "account.connectionStatus", kind: "interrupt" }],
+]);
+
+/**
+ * Build a view the way a mount does - through the wire adapter - so the badges
+ * under test are the ones the engine really assigns, not hand-written ones.
+ */
+function viewOf(
+  frames: readonly [number, number][],
+  dropped?: TraceDropCounts,
+): TraceView {
+  const observed: ObservedFrame[] = frames.map(([frameId, timestamp]) => ({
+    channelId: "localhost:3000",
+    // Real ingest cannot know the lifecycle role; the adapter resolves it from
+    // the frame id's wire-table kind.
+    role: "unknown" as FrameRole,
+    direction: "out",
+    requestId: "p:1",
+    frameId,
+    byteLength: 8,
+    timestamp,
+  }));
+  const trace: WireTrace = {
+    channelId: "localhost:3000",
+    requestId: "p:1",
+    generation: 0,
+    frames: observed,
+    startedAt: observed[0]?.timestamp ?? 0,
+    lastAt: observed[observed.length - 1]?.timestamp ?? 0,
+    truncated: dropped !== undefined,
+    dropped: dropped ?? {
+      framesByCount: 0,
+      framesByBytes: 0,
+      payloadsShed: 0,
+    },
+  };
+  return wireTraceToView(trace, WIRE);
+}
 
 const view: TraceView = {
   requestId: "req-1",
@@ -97,7 +150,10 @@ describe("renderTraceDetail", () => {
   });
 
   test("op-level badges appear in the header", () => {
-    const html = renderTraceDetail({ ...view, badges: ["orphaned", "retry-storm"] });
+    const html = renderTraceDetail({
+      ...view,
+      badges: ["orphaned", "retry-storm"],
+    });
     expect(html).toContain("td-badge-orphaned");
     expect(html).toContain("retry storm");
   });
@@ -192,5 +248,203 @@ describe("renderOperationRow — an unanswered op reports how long it has waited
     const html = renderOperationRow(answered, { now: 999_999 });
     expect(html).toContain("150ms");
     expect(html).not.toContain("waiting");
+  });
+
+  test("an unanswered subscribe (orphaned start) also counts up", () => {
+    // The true-positive on the `start` leg: a subscribe that never delivered.
+    const view = viewOf([[40, 1_000]]);
+    expect(view.frames[0].badges).toContain("orphaned");
+    const html = renderOperationRow(view, { now: 6_000 });
+    expect(html).toContain("waiting 5.00s");
+    // It is a subscription with no terminator, so it is live AND waiting: the row
+    // carries both classes and the stylesheet's precedence rule decides the
+    // colour. The meta text reports the wait, not the span.
+    expect(html).toContain("td-op-live");
+    expect(html).toContain("td-op-waiting");
+  });
+});
+
+describe("renderOperationRow — `waiting` needs an unanswered OPENER, not an orphan badge", () => {
+  // The op-level `orphaned` badge also fires on a closer with no opener. Reading
+  // it as "unanswered" pre-empts the honest duration with a nonsense wait.
+
+  test("a receive that raced past the stop keeps the op's real duration", () => {
+    const view = viewOf([
+      [40, 1_000], // start
+      [41, 1_100], // receive
+      [42, 1_200], // stop
+      [41, 1_205], // a receive already in flight lands after the stop
+    ]);
+    // The late receive is a closer with no opener left on the stack: orphaned.
+    expect(view.badges).toContain("orphaned");
+    expect(view.durationMs).toBe(205);
+    const html = renderOperationRow(view, { now: 1_000 + 3_600_000 });
+    expect(html).toContain("205ms");
+    expect(html).not.toContain("waiting");
+    expect(html).not.toContain("td-op-waiting");
+  });
+
+  test("a subscription observed receive-only reports live, not a wait", () => {
+    // The debugger attached mid-session, so the `start` was never observed and
+    // every receive orphans. The sub is delivering a frame a second.
+    const view = viewOf([
+      [41, 1_000],
+      [41, 2_000],
+      [41, 3_000],
+    ]);
+    expect(view.badges).toContain("orphaned");
+    const html = renderOperationRow(view, { now: 301_000 });
+    expect(html).not.toContain("waiting");
+    expect(html).toContain("live");
+  });
+
+  test("an off-table opener leaves a completed round trip reading as one", () => {
+    // Frame id 999 is not on this debugger's table, so the opener resolves to
+    // role "unknown" and its response orphans — but the call did complete.
+    const view = viewOf([
+      [999, 1_000],
+      [23, 1_120],
+    ]);
+    expect(view.badges).toContain("orphaned");
+    const html = renderOperationRow(view, { now: 1_000 + 3_600_000 });
+    expect(html).toContain("120ms");
+    expect(html).not.toContain("waiting");
+  });
+});
+
+describe("renderOperationRow — liveness", () => {
+  test("a subscription the host interrupted is not live", () => {
+    // `interrupt` is the host's terminator. Testing only for `stop` leaves every
+    // host-ended subscription reading live for the rest of the session.
+    const view = viewOf([
+      [40, 1_000],
+      [41, 1_100],
+      [43, 1_200], // interrupt
+    ]);
+    const html = renderOperationRow(view);
+    expect(html).toContain("td-op-sub");
+    expect(html).not.toContain("td-op-live");
+    expect(html).not.toContain("live");
+  });
+
+  test("a subscription with no terminator is still live", () => {
+    const html = renderOperationRow(
+      viewOf([
+        [40, 1_000],
+        [41, 1_100],
+      ]),
+    );
+    expect(html).toContain("td-op-live");
+  });
+});
+
+describe("truncation is reported per axis, not as one boolean", () => {
+  test("the badge carries the count and names the cap that took the frames", () => {
+    const view = viewOf([[40, 1_000]], {
+      framesByCount: 77,
+      framesByBytes: 0,
+      payloadsShed: 0,
+    });
+    const html = renderOperationRow(view);
+    expect(html).toContain("td-badge-truncated");
+    expect(html).toContain("truncated 77");
+    expect(html).toContain("77 frames dropped (frame cap)");
+  });
+
+  test("one frame lost does not render like seventy-seven", () => {
+    const one = renderOperationRow(
+      viewOf([[40, 1_000]], {
+        framesByCount: 1,
+        framesByBytes: 0,
+        payloadsShed: 0,
+      }),
+    );
+    const many = renderOperationRow(
+      viewOf([[40, 1_000]], {
+        framesByCount: 77,
+        framesByBytes: 0,
+        payloadsShed: 0,
+      }),
+    );
+    expect(one).toContain("truncated 1");
+    expect(many).toContain("truncated 77");
+    expect(one).not.toBe(many);
+  });
+
+  test("the byte axis is distinguishable from the frame axis", () => {
+    const html = renderTraceDetail(
+      viewOf([[40, 1_000]], {
+        framesByCount: 0,
+        framesByBytes: 4,
+        payloadsShed: 2,
+      }),
+    );
+    expect(html).toContain("4 frames dropped (byte cap)");
+    expect(html).toContain("2 payloads shed");
+    expect(html).not.toContain("frame cap");
+  });
+});
+
+describe("duration formatting", () => {
+  test("a long wait reads in hours, not thousands of seconds", () => {
+    const view: TraceView = {
+      requestId: "p:9",
+      startedAt: 0,
+      lastAt: 0,
+      durationMs: 0,
+      frames: [
+        {
+          seq: 0,
+          direction: "out",
+          role: "request",
+          method: "account.getAccount",
+          frameId: 22,
+          byteLength: 8,
+          timestamp: 0,
+          latencyFromStartMs: 0,
+          badges: ["orphaned"],
+          decodable: false,
+        },
+      ],
+      badges: ["orphaned"],
+    };
+    expect(renderOperationRow(view, { now: 10_800_000 })).toContain(
+      "waiting 3h 00m",
+    );
+    expect(renderOperationRow(view, { now: 10_800_000 })).not.toContain(
+      "10800.00s",
+    );
+    expect(renderOperationRow(view, { now: 205_000 })).toContain(
+      "waiting 3m 25s",
+    );
+    // Under a minute still reads in seconds.
+    expect(renderOperationRow(view, { now: 45_000 })).toContain(
+      "waiting 45.00s",
+    );
+  });
+
+  test("a multi-minute op's span reads in minutes", () => {
+    const html = renderOperationRow(
+      viewOf([
+        [40, 0],
+        [41, 205_000],
+      ]),
+    );
+    expect(html).toContain("3m 25s");
+  });
+});
+
+describe("method labels survive left-truncation", () => {
+  test("the method is emitted inside an explicit LTR isolate", () => {
+    // `.td-op-method` uses `direction: rtl` to put the ellipsis on the left, which
+    // reorders any label that is not a pure LTR identifier (`account.getAccount:`
+    // → `:account.getAccount`). The isolate keeps it one left-to-right run.
+    const html = renderOperationRow(
+      viewOf([
+        [22, 1_000],
+        [23, 1_100],
+      ]),
+    );
+    expect(html).toContain('<bdi dir="ltr">account.getAccount</bdi>');
   });
 });

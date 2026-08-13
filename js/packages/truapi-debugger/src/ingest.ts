@@ -27,11 +27,66 @@ import type { WireMethodInfo } from "./wire-debugger.js";
 export const WIRE_ENVELOPE_VERSION = 1;
 
 /**
- * Default cap on retained `channelId` / `requestId` length. Shared so the
- * debugger server's channel registry clamps to the same bound as ingest and the
- * two keys stay equal (the UI filters by the clamped key).
+ * Default cap on `channelId` / `requestId` length, above which the id is
+ * replaced by a digest ({@link normalizeId}). Shared so the debugger server's
+ * channel registry normalizes to the same bound as ingest and the two keys stay
+ * equal (the UI filters by the normalized key).
  */
 export const DEFAULT_MAX_ID_CHARS = 256;
+
+/**
+ * FNV-1a over `text`'s UTF-16 code units, in 32 bits. Not cryptographic: this
+ * only has to keep two *distinct* ids distinct, which a shared prefix does not.
+ */
+function fnv1a32(text: string, seed: number): number {
+  let hash = seed >>> 0;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/** Two independently-seeded FNV-1a passes, as 16 hex chars. */
+function digest(text: string): string {
+  const lo = fnv1a32(text, 0x811c9dc5).toString(16).padStart(8, "0");
+  const hi = fnv1a32(text, 0x9dc5811c).toString(16).padStart(8, "0");
+  return `${lo}${hi}`;
+}
+
+/**
+ * Bound an id's retained length: returned unchanged when it is within
+ * `maxChars`, otherwise replaced by `…<digest>:<length>`.
+ *
+ * A digest, not a truncation, for two reasons.
+ *
+ *  - Retention. `String.prototype.slice` yields a view that keeps its *parent*
+ *   alive in both JSC and V8, so truncating a 250k-char id retains the whole
+ *   250k chars while accounting for 256 - and `retainBytes: false` is no
+ *   mitigation, because the ids are retained on every {@link ObservedFrame}
+ *   regardless. The digest is computed arithmetically, so nothing references the
+ *   input.
+ *  - Identity. Two distinct ids sharing a `maxChars` prefix truncate to the same
+ *   key and merge into one trace, fabricating a `roundTripMs` between two
+ *   unrelated ops and clearing a genuinely `orphaned` badge. Distinct ids digest
+ *   to distinct keys.
+ *
+ * Rejecting the frame instead would take the op dark, which is the opposite of
+ * the ingest's own rule for input it cannot use (an undecodable frame becomes a
+ * `"malformed"` sentinel, never a drop), and it would discard legitimate frames
+ * from any host whose ids are merely long. The digest keeps the op observable
+ * and correlatable while bounding what is retained.
+ *
+ * The length suffix is diagnostic: it says how long the id the host sent
+ * actually was, which is the fact an operator needs to see.
+ */
+export function normalizeId(
+  id: string,
+  maxChars: number = DEFAULT_MAX_ID_CHARS,
+): string {
+  if (id.length <= maxChars) return id;
+  return `…${digest(id)}:${String(id.length)}`;
+}
 
 /**
  * One wire frame as it crosses the host tap, matching the Rust
@@ -49,6 +104,66 @@ export interface DebugFrameEnvelope {
   dir: "in" | "out";
   /** Raw SCALE `ProtocolMessage` bytes. */
   frame: Uint8Array;
+  /**
+   * Epoch ms at which the *producer* saw the frame cross the tap, stamped by the
+   * host link at emit time.
+   *
+   * The debugger's own clock cannot stand in for this. A host tap buffers a
+   * backlog while the debugger is absent and flushes it in one loop on connect,
+   * so every frame of a session that ran before the debugger started would be
+   * stamped with the same flush instant: durations collapse to 0ms and ops
+   * minutes apart land inside the retry-storm window. The producer is the only
+   * party that knows when a frame actually crossed.
+   *
+   * Optional because a host may not stamp it (a pre-identity or foreign tap);
+   * such frames fall back to the ingest clock and are marked as such - see
+   * {@link ObservedFrame.timestampFromProducer}.
+   */
+  observedAt?: number;
+  /**
+   * The producer replayed this frame from its backlog rather than streaming it
+   * live, so its arrival order and arrival time are the link's, not the
+   * session's. Piggybacked on the envelope the same way `dropped` is.
+   */
+  buffered?: boolean;
+}
+
+// Both fields below are produced *only* here, and `ObservedFrame` is the contract
+// every consumer reads, so they are declared onto it rather than pushing every
+// consumer through an ingest-specific subtype. Fold them into
+// `observed-frame.ts` proper when that file is next touched.
+declare module "./observed-frame.js" {
+  interface ObservedFrame {
+    /**
+     * The producer replayed this frame from its backlog (the debugger was absent
+     * or slow) instead of streaming it live. Present only when true.
+     *
+     * Provenance, not a verdict on `timestamp`: a buffered frame that also
+     * carries {@link ObservedFrame.timestampFromProducer} has a real observation
+     * time and its timings are sound. A buffered frame *without* it has only the
+     * flush instant, and every duration derived from it - `roundTripMs`, the
+     * retry-storm window - is meaningless.
+     */
+    buffered?: true;
+    /**
+     * `timestamp` is the producer's own observation time rather than the moment
+     * ingest decoded the frame. Present only when true.
+     */
+    timestampFromProducer?: true;
+  }
+}
+
+/**
+ * An `observedAt` fit to be used as a timestamp, or `undefined`.
+ *
+ * Anything able to reach the tap can put anything in this field, and it feeds
+ * trace ordering and every duration, so a non-finite or non-positive value falls
+ * back to the ingest clock rather than poisoning the trace list.
+ */
+function producerTimestamp(observedAt: number | undefined): number | undefined {
+  if (typeof observedAt !== "number") return undefined;
+  if (!Number.isFinite(observedAt) || observedAt <= 0) return undefined;
+  return observedAt;
 }
 
 /** Options for {@link createDebugIngest}. */
@@ -70,9 +185,10 @@ export interface DebugIngestOptions {
    */
   methodNames?: ReadonlyMap<number, WireMethodInfo>;
   /**
-   * Cap on retained `channelId` / `requestId` length. Anything able to reach the
-   * host tap could otherwise send 200k-char ids, one copy per frame; real ids are
-   * short (`myapp.dot`, `p:1`). Default 256.
+   * Length above which a `channelId` / `requestId` is replaced by a digest
+   * ({@link normalizeId}). Anything able to reach the host tap could otherwise
+   * send 200k-char ids, one copy per frame; real ids are short (`myapp.dot`,
+   * `p:1`). Default 256.
    */
   maxIdChars?: number;
 }
@@ -97,6 +213,14 @@ export interface DebugIngestOptions {
  * Raw payload bytes are attached only when `retainBytes` is set - the dev-only
  * byte-exposure opt-in that the level-2 decoder consumes; otherwise a frame
  * carries its byte length and no payload.
+ *
+ * `timestamp` is the producer's `observedAt` whenever the tap stamped a usable
+ * one, and the ingest clock otherwise. Which of the two it is, and whether the
+ * frame was replayed from the tap's backlog, are recorded on the frame
+ * ({@link ObservedFrame.timestampFromProducer}, {@link ObservedFrame.buffered}),
+ * because a flushed backlog arrives in a single loop: read as observation times,
+ * those instants collapse every duration to 0ms and pull ops minutes apart into
+ * one retry-storm window.
  */
 export function createDebugIngest(
   sink: TransportObserver,
@@ -105,10 +229,18 @@ export function createDebugIngest(
   const retainBytes = options.retainBytes ?? false;
   const methodNames = options.methodNames;
   const maxIdChars = options.maxIdChars ?? DEFAULT_MAX_ID_CHARS;
-  const clampId = (id: string): string =>
-    id.length > maxIdChars ? id.slice(0, maxIdChars) : id;
   return (envelope) => {
-    const channelId = clampId(envelope.channelId);
+    const channelId = normalizeId(envelope.channelId, maxIdChars);
+    // Prefer the producer's observation time; the ingest clock is a fallback, and
+    // one that is wrong by the whole duration of the session for a flushed
+    // backlog. `provenance` is what lets a consumer tell the two apart instead of
+    // reading every timestamp as an observation time.
+    const producerAt = producerTimestamp(envelope.observedAt);
+    const timestamp = producerAt ?? Date.now();
+    const provenance = {
+      ...(envelope.buffered === true ? { buffered: true as const } : {}),
+      ...(producerAt !== undefined ? { timestampFromProducer: true as const } : {}),
+    };
     const decoded = decodeWireMessage(envelope.frame);
     if (decoded.isErr()) {
       sink({
@@ -118,7 +250,8 @@ export function createDebugIngest(
         frameId: -1,
         role: "malformed",
         byteLength: envelope.frame.length,
-        timestamp: Date.now(),
+        timestamp,
+        ...provenance,
       });
       return;
     }
@@ -126,14 +259,15 @@ export function createDebugIngest(
     const frame: ObservedFrame = {
       channelId,
       direction: envelope.dir,
-      requestId: clampId(requestId),
+      requestId: normalizeId(requestId, maxIdChars),
       frameId: payload.id,
       // Resolve the lifecycle role from the frame id's wire-table kind (the same
       // kind wireTraceToView falls back to). Left "unknown" when no map is given
       // or the id is off-table.
       role: methodNames?.get(payload.id)?.kind ?? "unknown",
       byteLength: payload.value.length,
-      timestamp: Date.now(),
+      timestamp,
+      ...provenance,
       ...(retainBytes ? { bytes: payload.value } : {}),
     };
     sink(frame);

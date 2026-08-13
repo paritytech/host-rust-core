@@ -8,11 +8,115 @@
  * the shell in a full page; the in-app embed puts the same shell in a panel
  * inside the host. Neither owns these rules, so a change lands in both.
  *
+ * The rules are written FLAT (`.ins-top`, `.td-op`, …) because that is correct
+ * for the standalone: it owns its document, and flat rules keep the shared source
+ * readable and diffable against dotli's stylesheet. An embed shares a document
+ * with the host application, where a flat `.td-*` rule would restyle the host's
+ * own debug panel, so the embed does not inject these constants directly - it runs
+ * them through {@link scopeCss} first. That keeps one source of truth with two
+ * correct injections instead of a second, pre-scoped copy.
+ *
  * Deliberately free of page-level rules (`html`, `body`, viewport units): a mount
  * scopes its own container, and an embed must never restyle its host's page.
  *
  * @module
  */
+
+/**
+ * At-rules whose body is a list of style rules, so scoping recurses into it.
+ * Anything else with a block (`@keyframes`, `@font-face`, `@property`) has a body
+ * that is NOT selectors and is passed through untouched.
+ */
+const NESTED_AT_RULES: ReadonlySet<string> = new Set([
+  "media",
+  "supports",
+  "layer",
+  "container",
+]);
+
+/** Index of the `}` matching the `{` at `open`, or the end of the string. */
+function matchBrace(css: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < css.length; i++) {
+    const c = css[i];
+    // A quoted value may contain a brace (`content: "}"`); skip the string.
+    if (c === '"' || c === "'") {
+      const end = css.indexOf(c, i + 1);
+      if (end === -1) return css.length;
+      i = end;
+      continue;
+    }
+    if (c === "{") depth += 1;
+    else if (c === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return css.length;
+}
+
+/** Prefix every selector in a comma-separated list with `scope`. */
+function scopeSelectorList(selectors: string, scope: string): string {
+  return selectors
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s !== "")
+    .map((s) => `${scope} ${s}`)
+    .join(", ");
+}
+
+/**
+ * Rewrite every rule in `css` so it only matches inside `scope`.
+ *
+ * This is what lets one flat shared stylesheet serve both mounts: the standalone
+ * injects the constants as-is (it owns the page), and an embed injects
+ * `scopeCss(css, ".td-inapp")` so not one rule can reach the host application's
+ * own markup. Every selector is prefixed, so relative precedence inside the
+ * block is unchanged (each selector gains the same specificity) - the cascade the
+ * standalone sees is the cascade the embed sees.
+ *
+ * `scope` is a selector (`".td-inapp"`), not a class name. Rules that target the
+ * mount root itself are the mount's own business and are written already-scoped,
+ * not passed through here.
+ */
+export function scopeCss(css: string, scope: string): string {
+  // Comments can contain braces and selectors; drop them before parsing.
+  return scopeRules(css.replace(/\/\*[\s\S]*?\*\//g, ""), scope);
+}
+
+/** Scope one block's worth of rules (top level, or an at-rule body). */
+function scopeRules(css: string, scope: string): string {
+  const out: string[] = [];
+  let i = 0;
+  while (i < css.length) {
+    const brace = css.indexOf("{", i);
+    if (brace === -1) break;
+    let prelude = css.slice(i, brace).trim();
+    const end = matchBrace(css, brace);
+    const body = css.slice(brace + 1, end);
+    // Statement at-rules (`@import`, `@charset`) end in `;` and carry no block;
+    // they must stay verbatim and at the top, so split them off the prelude.
+    const semi = prelude.lastIndexOf(";");
+    if (semi !== -1) {
+      out.push(prelude.slice(0, semi + 1).trim());
+      prelude = prelude.slice(semi + 1).trim();
+    }
+    if (prelude.startsWith("@")) {
+      const name = /^@([\w-]+)/.exec(prelude)?.[1] ?? "";
+      out.push(
+        NESTED_AT_RULES.has(name)
+          ? `${prelude} {\n${scopeRules(body, scope)}\n}`
+          : `${prelude} {${body}}`,
+      );
+    } else if (prelude === "") {
+      out.push(`{${body}}`);
+    } else {
+      out.push(`${scopeSelectorList(prelude, scope)} {${body}}`);
+    }
+    i = end + 1;
+  }
+  return out.join("\n");
+}
 
 /**
  * The shell: top bar, channel chips, the list/detail split, and operation rows.
@@ -51,12 +155,19 @@ export const INSPECTOR_SHELL_CSS = `
      distinguishable in a narrow list. */
   .td-op-method { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left; }
-  /* An op that went out and is still unanswered: counts up, and reads as a
-     problem rather than a completed 0ms call. */
-  .td-op-waiting .td-op-meta { color: #fbbf24; }
   .td-op-method.anon { color: #525252; font-style: italic; }
   .td-op-meta { color: #6b7280; font-size: 10.5px; white-space: nowrap; }
   .td-op-live .td-op-meta { color: #4ade80; }
+  /* An op that went out and is still unanswered: counts up amber, and reads as a
+     problem rather than a completed 0ms call.
+
+     PRECEDENCE (pinned by a test): a live subscription whose start frame was
+     never answered carries BOTH td-op-live and td-op-waiting, and waiting must
+     win - the row is reporting a stall, not health. Two guards, because either
+     alone is one edit away from silently flipping the colour back to green: this
+     rule sits AFTER the .td-op-live rule, and the extra .td-op raises its
+     specificity above it. */
+  .td-op.td-op-waiting .td-op-meta { color: #fbbf24; }
   .td-op-badges { display: inline-flex; gap: 4px; }
   .td-op-empty, .td-detail-empty { color: #6b7280; padding: 14px; }
   .td-frame.cursor { background: rgba(255,255,255,.06); box-shadow: inset 2px 0 0 #94a3b8; }

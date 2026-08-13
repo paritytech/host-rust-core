@@ -161,17 +161,38 @@ const provider = await runtime.createProvider({ productId: "first.dot" });
 
 The worker can stream every product↔core wire frame to the wire debugger. It is
 off by default and enabled purely from the host page — the product needs no
-changes. Set a debugger URL in the host origin's `localStorage`, then run the
-debugger (`@parity/truapi-debugger`, `npm run serve`, `:9231`):
+changes. Two conditions must **both** hold or nothing dials, the core installs no
+tap, and nothing is logged:
 
-```js
-localStorage.setItem("truapi:debugger", "ws://localhost:9231");
-```
+1. **The host page is a dev build.** The `localStorage` read sits behind a hard
+   `import.meta.env.DEV` gate, which bundlers replace with a boolean literal: in
+   a production bundle it returns `null` unconditionally, so no stored key can
+   turn the tap on. A production build that shows no frames is this gate, not a
+   broken debugger.
+2. **The host origin's `localStorage` carries a `ws://` loopback URL**, read on
+   the host page at runtime boot and forwarded to the worker in its `init`
+   message:
 
-On the next runtime boot the worker reads that URL, dials the debugger, and (via
+   ```js
+   localStorage.setItem("truapi:debugger", "ws://127.0.0.1:9231");
+   ```
+
+Run the debugger at the other end (`@parity/truapi-debugger`, `npm run serve`,
+`127.0.0.1:9231`). On the next runtime boot the worker dials that URL and (via
 the Rust core's `DebugSink` tap) sends each frame as `{ channelId, dir, frame }`.
-Unset in production, so nothing dials and the core installs no tap. Design:
-`docs/design/wire-observability-debug-host.md`.
+
+The URL must be `ws://` on a loopback host. Anything else — `wss://`, `http://`,
+a LAN or public address, a non-loopback hostname — yields an inert link and a
+`wire debugger URL rejected` console warning; there is no certificate or `wss`
+path. Prefer the literal `127.0.0.1` over `localhost`: `localhost` passes the
+gate, but it resolves `::1` first on macOS while the debugger binds `127.0.0.1`
+alone, so the same URL handed to a native host (`truapi-server`'s `WsDebugSink`
+dials the first resolved address) silently never connects.
+
+The debugger owns all decoding and decodes every frame it can, including signing
+and payment payloads; its safety is the dev-build gate above, not redaction. See
+`js/packages/truapi-debugger/README.md` for the tap, the envelope, and the
+host-dials-debugger topology.
 
 ## Publishing
 

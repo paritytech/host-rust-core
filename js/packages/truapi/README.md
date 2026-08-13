@@ -108,17 +108,25 @@ The debugger does not live in this package, and the product transport carries no
 its Rust core (`truapi-server`'s `DebugSink`) and streams each one - as `{ channelId, dir, frame:
 bytes }`, opaque bytes - to a separate debugger app, which decodes and groups them.
 
-- Architecture (the tap, the envelope, the host-dials-debugger topology, `wss`/cert setup):
-  `docs/design/wire-observability-debug-host.md`.
-- The debugger app itself (trace + envelope-decode engines + the WS server): `@parity/truapi-debugger`.
+- The tap: `DebugSink` in `rust/crates/truapi-server/src/host_core.rs`, unset by default. It is read
+  at two choke points — inbound before the frame is decoded, outbound after the product's copy is
+  sent — and is fire-and-forget, so an absent or slow debugger loses traces, never a session.
+- Topology: the host always dials the debugger, over `ws://` on a loopback host **only**. `wss://`,
+  certificates, and non-loopback targets are rejected by both the native
+  (`truapi-server/src/native_debug.rs`) and web (`@parity/truapi-host`'s worker) dial gates.
+- The debugger app itself (trace, envelope-decode, and value-decode engines; the standalone WS
+  server and the in-app embed): `@parity/truapi-debugger`, documented in
+  `js/packages/truapi-debugger/README.md`.
 
 The generated `WIRE_DECODE_TABLE` on the `./wire-decode` subpath (raw SCALE bytes → typed value)
 stays here, since it is generated from this package's contract. It is the decode source the
 [`@parity/truapi-debugger`](../truapi-debugger/) app uses to render frame values. That app is a
-strictly dev-only tool: it decodes every frame by default (there is no redaction), and its safety
-is that it is compiled out of production, not that it hides fields. `TRUAPI_DEBUGGER_DECODE_VALUES=0`
-turns decode off for a payload-blind demo. `@parity/truapi` itself never decodes payloads — the
-envelope decode it does expose (`decodeWireMessage`: `requestId`, frame id) carries no payload value.
+strictly dev-only tool: it decodes every frame by default (there is no redaction, no denylist, and no
+reveal toggle), and its safety is that a host must opt the tap in — which the web host's
+`import.meta.env.DEV` gate makes impossible in a production bundle — not that it hides fields.
+`TRUAPI_DEBUGGER_DECODE_VALUES=0` turns decode off for a payload-blind demo. `@parity/truapi` itself
+never decodes payloads — the envelope decode it does expose (`decodeWireMessage`: `requestId`, frame
+id) carries no payload value.
 
 ## Wire format
 

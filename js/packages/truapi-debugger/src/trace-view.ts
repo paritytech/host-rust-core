@@ -25,7 +25,11 @@
  */
 
 import type { FrameDirection, FrameRole } from "./observed-frame.js";
-import type { WireMethodInfo, WireTrace } from "./wire-debugger.js";
+import type {
+  TraceDropCounts,
+  WireMethodInfo,
+  WireTrace,
+} from "./wire-debugger.js";
 
 /**
  * An op-level badge, surfaced against the whole trace in the drill-down header.
@@ -39,7 +43,10 @@ import type { WireMethodInfo, WireTrace } from "./wire-debugger.js";
  *    own, so it is supplied by the caller (the list/engine layer) rather than
  *    derived here. Left as a follow-up for the engine to compute.
  *  - `truncated`: older frames of this op were dropped to stay under the engine's
- *    frame/byte cap, so the sequence shown is not the whole op.
+ *    frame/byte cap, so the sequence shown is not the whole op. How many, and
+ *    which cap took them, is in {@link TraceView.dropped}. Because the dropped
+ *    frames may be the ones that answered the opener, a truncated op does not
+ *    derive `orphaned`.
  */
 export type TraceBadge = "orphaned" | "malformed" | "retry-storm" | "truncated";
 
@@ -114,6 +121,13 @@ export interface TraceView {
   frames: TraceFrameView[];
   /** Op-level badges. */
   badges: TraceBadge[];
+  /**
+   * What the vantage's retention caps dropped from this op, per axis, when the
+   * vantage caps at all (the wire engine does; dotli's bridge does not, and
+   * leaves this unset). The `truncated` badge says only *that* frames are
+   * missing; these counts say how many and which cap took them.
+   */
+  dropped?: TraceDropCounts;
 }
 
 /** Roles that open an op (expect a matching close later in the trace). */
@@ -128,6 +142,29 @@ const CLOSING_ROLES: ReadonlySet<FrameRole> = new Set<FrameRole>([
   "receive",
   "interrupt",
   "stop",
+]);
+
+/**
+ * Roles that mark an op as a subscription rather than a request/response. A
+ * `receive`/`stop`/`interrupt` is enough on its own: the debugger can attach
+ * mid-session and never see the `start`.
+ */
+const SUBSCRIPTION_ROLES: ReadonlySet<FrameRole> = new Set<FrameRole>([
+  "start",
+  "receive",
+  "stop",
+  "interrupt",
+]);
+
+/**
+ * Roles that end a subscription for good, so no further `receive` is expected:
+ * the product's own `stop`, or the host's `interrupt`. Deliberately *not*
+ * {@link CLOSING_ROLES}, which also contains `receive` - a receive continues a
+ * subscription rather than ending it.
+ */
+const TERMINAL_ROLES: ReadonlySet<FrameRole> = new Set<FrameRole>([
+  "stop",
+  "interrupt",
 ]);
 
 /**
@@ -160,9 +197,15 @@ export interface TraceViewInput {
   frames: readonly TraceFrameInput[];
   /**
    * Op-level signals the caller computes across traces (e.g. `retry-storm`).
-   * Within-trace badges (`orphaned`, `malformed`) are derived here.
+   * Within-trace badges (`orphaned`, `malformed`, `truncated`) are derived here.
    */
   extraBadges?: readonly TraceBadge[];
+  /**
+   * What the vantage's retention caps dropped, when it caps. Drives the
+   * `truncated` badge, and suppresses the `orphaned` verdict on an opener whose
+   * answering frames may be among the evicted.
+   */
+  dropped?: TraceDropCounts;
 }
 
 /**
@@ -186,7 +229,20 @@ export function buildTraceView(input: TraceViewInput): TraceView {
     decodable: frame.decodable,
   }));
 
-  annotatePairing(frames);
+  // Frames actually missing from the sequence (a shed payload leaves its frame in
+  // place, so it does not count): the answering frames of an opener may be among
+  // them, which makes an "opener never answered" verdict unsound.
+  const framesEvicted =
+    (input.dropped?.framesByCount ?? 0) + (input.dropped?.framesByBytes ?? 0) >
+    0;
+  const anythingDropped =
+    framesEvicted || (input.dropped?.payloadsShed ?? 0) > 0;
+
+  annotatePairing(frames, framesEvicted);
+
+  const extraBadges = anythingDropped
+    ? [...(input.extraBadges ?? []), "truncated" as const]
+    : (input.extraBadges ?? []);
 
   return {
     requestId: input.requestId,
@@ -196,20 +252,45 @@ export function buildTraceView(input: TraceViewInput): TraceView {
     lastAt: input.lastAt,
     durationMs: input.lastAt - input.startedAt,
     frames,
-    badges: deriveOpBadges(frames, input.extraBadges ?? []),
+    badges: deriveOpBadges(frames, extraBadges),
+    dropped: input.dropped,
   };
 }
 
 /**
- * The op's method for display and filtering: the opening (request/start) frame's
- * method, else the first frame that resolves one. Shared so both terminal
- * frontends and the summary renderer agree on an op's name.
+ * THE definition of an op's method, for display, filtering, sorting and stats:
+ * the opening (request/start) frame's method, else the first frame that resolves
+ * one, else `undefined` when no frame's id was on the table. Every consumer -
+ * both mounts, the op row, the summary stats - must call this rather than
+ * re-deriving it, so an op is never named one thing in the list and another in
+ * the stats. Callers that need a placeholder supply their own (`?? "(unknown)"`).
  */
-export function viewMethod(view: TraceView): string {
-  const opener =
-    view.frames.find((f) => f.role === "request" || f.role === "start") ??
-    view.frames.find((f) => f.method !== undefined);
-  return opener?.method ?? "(unknown)";
+export function operationMethod(view: TraceView): string | undefined {
+  const opener = view.frames.find((f) => OPENING_ROLES.has(f.role));
+  if (opener?.method !== undefined) return opener.method;
+  return view.frames.find((f) => f.method !== undefined)?.method;
+}
+
+/** Whether the op is a subscription (has a start/receive/stop/interrupt frame). */
+export function isSubscription(view: TraceView): boolean {
+  return view.frames.some((f) => SUBSCRIPTION_ROLES.has(f.role));
+}
+
+/**
+ * THE definition of a live subscription: a subscription op that has not been
+ * terminated by either side. Every consumer - the op row's `live` marker, the
+ * standalone summary's `liveSubscriptions` tile, the in-app panel's "live sub"
+ * stat - must call this rather than re-deriving it, or the same session reports
+ * different numbers in different places.
+ *
+ * Termination is {@link TERMINAL_ROLES}: a product `stop` *or* a host
+ * `interrupt`. Testing only for `stop` leaves every host-terminated subscription
+ * reading "live" forever, which inflates the live count monotonically.
+ */
+export function isLiveSubscription(view: TraceView): boolean {
+  return (
+    isSubscription(view) && !view.frames.some((f) => TERMINAL_ROLES.has(f.role))
+  );
 }
 
 /**
@@ -228,8 +309,10 @@ export function wireTraceToView(
     generation: trace.generation,
     startedAt: trace.startedAt,
     lastAt: trace.lastAt,
-    // Surface engine-level frame/byte-cap eviction as an op badge.
-    extraBadges: trace.truncated ? [...extraBadges, "truncated"] : extraBadges,
+    // Engine-level frame/byte-cap eviction: `dropped` drives the `truncated`
+    // badge and the orphan suppression in buildTraceView.
+    extraBadges,
+    dropped: trace.dropped,
     frames: trace.frames.map((frame): TraceFrameInput => {
       // A frame may still arrive `role: "unknown"` (a vantage with no wire
       // frameId, or an off-table id); the frameId's wire-table `kind` is the
@@ -260,8 +343,18 @@ export function wireTraceToView(
  * delivered); a closer with no opener before it is orphaned. An opener that got
  * at least one close is not orphaned even if it stays open - a live
  * subscription (start + receives, no stop yet) is healthy, not dropped.
+ *
+ * `framesEvicted` says frames are missing from this sequence because a retention
+ * cap dropped them. Caps only ever evict from index 1, so the opener is still
+ * here but the frames that answered it may not be: "no close was observed" no
+ * longer implies "no close happened", and the opener is left unflagged rather
+ * than blamed for the engine's own eviction. A closer with no opener is still
+ * orphaned - an opener is never the frame that gets evicted.
  */
-function annotatePairing(views: TraceFrameView[]): void {
+function annotatePairing(
+  views: TraceFrameView[],
+  framesEvicted: boolean,
+): void {
   const openStack: number[] = [];
   const matched = new Set<number>();
   for (let i = 0; i < views.length; i++) {
@@ -287,7 +380,9 @@ function annotatePairing(views: TraceFrameView[]): void {
     }
   }
   // Openers still open AND never answered are orphaned; a matched-but-open
-  // opener (live subscription) is not.
+  // opener (live subscription) is not. Under eviction the answering frames may
+  // simply have been dropped, so no opener verdict is sound.
+  if (framesEvicted) return;
   for (const openerIndex of openStack) {
     if (!matched.has(openerIndex)) {
       markOrphan(views[openerIndex]);

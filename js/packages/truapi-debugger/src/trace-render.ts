@@ -25,12 +25,18 @@
  */
 
 import type { FrameValueDetail } from "./decode.js";
+import {
+  isLiveSubscription,
+  isSubscription,
+  operationMethod,
+} from "./trace-view.js";
 import type {
   TraceBadge,
   TraceFrameBadge,
   TraceFrameView,
   TraceView,
 } from "./trace-view.js";
+import type { TraceDropCounts } from "./wire-debugger.js";
 
 /** Options controlling a single drill-down render. */
 export interface RenderTraceDetailOptions {
@@ -65,10 +71,24 @@ function esc(value: string): string {
   });
 }
 
-/** `1234` → `1.23s`, `42` → `42ms`, for compact latency display. */
+/**
+ * Compact duration: `42` → `42ms`, `1234` → `1.23s`, `205_000` → `3m 25s`,
+ * `10_800_000` → `3h 00m`.
+ *
+ * Seconds cannot be the largest unit: this also formats how long an unanswered
+ * call has been waiting, and a session left open renders "10800.00s" - a number
+ * nobody reads as three hours.
+ */
 function formatMs(ms: number): string {
   if (ms < 1000) return `${String(Math.round(ms))}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`;
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  const totalSeconds = Math.floor(ms / 1000);
+  if (ms < 3_600_000) {
+    return `${String(Math.floor(totalSeconds / 60))}m ${pad(totalSeconds % 60)}s`;
+  }
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  return `${String(Math.floor(totalMinutes / 60))}h ${pad(totalMinutes % 60)}m`;
 }
 
 const DIRECTION_GLYPH: Record<TraceFrameView["direction"], string> = {
@@ -89,9 +109,7 @@ export function renderTraceDetail(
 
   const header = renderHeader(view);
   const rows = view.frames
-    .map((frame) =>
-      renderFrameRow(frame, offerDecode, decoded?.get(frame.seq)),
-    )
+    .map((frame) => renderFrameRow(frame, offerDecode, decoded?.get(frame.seq)))
     .join("");
 
   return (
@@ -103,7 +121,9 @@ export function renderTraceDetail(
 }
 
 function renderHeader(view: TraceView): string {
-  const badges = view.badges.map(renderOpBadge).join("");
+  const badges = view.badges
+    .map((b) => renderOpBadge(b, view.dropped))
+    .join("");
   const frameCount = view.frames.length;
   return (
     `<div class="td-trace-head">` +
@@ -121,11 +141,41 @@ const OP_BADGE_LABEL: Record<TraceBadge, string> = {
   truncated: "truncated",
 };
 
-function renderOpBadge(badge: TraceBadge): string {
-  return `<span class="td-badge td-badge-${badge}" title="${esc(badgeTitle(badge))}">${esc(OP_BADGE_LABEL[badge])}</span>`;
+function renderOpBadge(badge: TraceBadge, dropped?: TraceDropCounts): string {
+  // `truncated` carries a count when the vantage supplies one, so "1 frame lost"
+  // and "77 lost" don't render identically.
+  const label =
+    badge === "truncated" && dropped !== undefined
+      ? `truncated ${String(droppedTotal(dropped))}`
+      : OP_BADGE_LABEL[badge];
+  return `<span class="td-badge td-badge-${badge}" title="${esc(badgeTitle(badge, dropped))}">${esc(label)}</span>`;
 }
 
-function badgeTitle(badge: TraceBadge): string {
+/** Frames missing plus payloads shed: everything the caps took from this op. */
+function droppedTotal(dropped: TraceDropCounts): number {
+  return dropped.framesByCount + dropped.framesByBytes + dropped.payloadsShed;
+}
+
+/** Spell out which cap took what, so the two axes are distinguishable. */
+function truncationTitle(dropped: TraceDropCounts): string {
+  const parts: string[] = [];
+  if (dropped.framesByCount > 0) {
+    parts.push(`${String(dropped.framesByCount)} frames dropped (frame cap)`);
+  }
+  if (dropped.framesByBytes > 0) {
+    parts.push(`${String(dropped.framesByBytes)} frames dropped (byte cap)`);
+  }
+  if (dropped.payloadsShed > 0) {
+    parts.push(
+      `${String(dropped.payloadsShed)} payloads shed (single frame over the byte cap; frame kept)`,
+    );
+  }
+  return parts.length === 0
+    ? "Older frames were dropped to stay under the frame/byte cap"
+    : parts.join(" · ");
+}
+
+function badgeTitle(badge: TraceBadge, dropped?: TraceDropCounts): string {
   switch (badge) {
     case "orphaned":
       return "An opening frame has no matching close, or a close has no opener";
@@ -134,7 +184,9 @@ function badgeTitle(badge: TraceBadge): string {
     case "retry-storm":
       return "This op is one of a burst of like ops in a short window";
     case "truncated":
-      return "Older frames were dropped to stay under the frame/byte cap";
+      return dropped === undefined
+        ? "Older frames were dropped to stay under the frame/byte cap"
+        : truncationTitle(dropped);
   }
 }
 
@@ -253,38 +305,26 @@ function stringifyValue(value: unknown): string {
   }
 }
 
-/** Roles that mark an op as a subscription rather than a request/response. */
-const SUBSCRIPTION_ROLES: ReadonlySet<TraceFrameView["role"]> = new Set([
-  "start",
-  "receive",
-  "stop",
-  "interrupt",
-]);
-
-/** The op's method: the first opening frame's method, else the first known one. */
-function operationMethod(view: TraceView): string | undefined {
-  const opener = view.frames.find(
-    (f) => f.role === "request" || f.role === "start",
-  );
-  if (opener?.method !== undefined) {
-    return opener.method;
-  }
-  return view.frames.find((f) => f.method !== undefined)?.method;
-}
-
-/** Whether the op is a subscription (has a start/receive/stop/interrupt frame). */
-function isSubscription(view: TraceView): boolean {
-  return view.frames.some((f) => SUBSCRIPTION_ROLES.has(f.role));
-}
-
 /**
- * Whether the op went out and nothing came back: an `orphaned` opener that has
- * not been answered. This is the shape a timed-out or hung call takes on the
- * wire - there is no "timeout" frame to observe, only a request with no reply -
- * so it is the signal the op list has to surface as elapsed time.
+ * Whether the op went out and nothing came back: an *opening* frame carrying the
+ * `orphaned` badge. This is the shape a timed-out or hung call takes on the wire
+ * - there is no "timeout" frame to observe, only a request with no reply - so it
+ * is the signal the op list has to surface as elapsed time.
+ *
+ * The op-level `orphaned` badge is NOT this predicate. It also fires on a closer
+ * with no opener, which is a different and often perfectly live shape: a
+ * `receive` that arrived after the `stop`, a subscription the debugger attached
+ * to mid-session and only ever saw receives of, an opener whose frame id was off
+ * this debugger's table. Reading the op badge as "unanswered" reports a
+ * subscription that is delivering a frame a second as "waiting 300s", and turns
+ * a completed 120ms round trip into "waiting 120s".
  */
 function isUnanswered(view: TraceView): boolean {
-  return view.badges.includes("orphaned");
+  return view.frames.some(
+    (f) =>
+      (f.role === "request" || f.role === "start") &&
+      f.badges.includes("orphaned"),
+  );
 }
 
 /**
@@ -302,15 +342,26 @@ export function renderOperationRow(
 ): string {
   const method = operationMethod(view);
   const sub = isSubscription(view);
-  const live = sub && !view.frames.some((f) => f.role === "stop");
+  // Liveness comes from the canonical predicate: a subscription the host ended
+  // with an `interrupt` is not live either, and counting it as live inflates the
+  // live-subscription total for the rest of the session.
+  const live = isLiveSubscription(view);
   const kindGlyph = sub ? "⟳" : "▶";
   const kindClass = sub ? "td-op-sub" : "td-op-req";
 
+  // `.td-op-method` is truncated on the left (`direction: rtl`), which reorders
+  // any label that is not a pure LTR identifier: `account.getAccount:` renders as
+  // `:account.getAccount` and `22.getAccount` as `getAccount.22`, because `.`,
+  // `:` and digits are direction-neutral. An explicit LTR isolate around the
+  // method keeps it a single left-to-right run while the ellipsis stays on the
+  // left, where the whole point of the rtl trick is to put it.
   const methodHtml =
     method === undefined
       ? `<span class="td-op-method anon">(unknown)</span>`
-      : `<span class="td-op-method" title="${esc(method)}">${esc(method)}</span>`;
-  const badges = view.badges.map(renderOpBadge).join("");
+      : `<span class="td-op-method" title="${esc(method)}"><bdi dir="ltr">${esc(method)}</bdi></span>`;
+  const badges = view.badges
+    .map((b) => renderOpBadge(b, view.dropped))
+    .join("");
   const count = view.frames.length;
   // An unanswered request has one frame, so `lastAt - startedAt` is 0 and the op
   // reads "0ms" - the opposite of the truth for the case a developer most needs
@@ -322,7 +373,9 @@ export function renderOperationRow(
         Math.max(0, (options.now ?? 0) - view.startedAt),
       )}`
     : `${String(count)} frame${count === 1 ? "" : "s"} · ` +
-      (live ? `live · ${formatMs(view.durationMs)}` : formatMs(view.durationMs));
+      (live
+        ? `live · ${formatMs(view.durationMs)}`
+        : formatMs(view.durationMs));
 
   const channelAttr =
     view.channelId === undefined

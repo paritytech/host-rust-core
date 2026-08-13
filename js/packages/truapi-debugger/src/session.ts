@@ -22,7 +22,12 @@ import {
 } from "./wire-debugger.js";
 import { createDebugIngest, type DebugFrameEnvelope } from "./ingest.js";
 import { createFrameDecoder, type FrameValueDetail } from "./decode.js";
-import type { TraceView } from "./trace-view.js";
+import {
+  isLiveSubscription,
+  isSubscription,
+  operationMethod,
+  type TraceView,
+} from "./trace-view.js";
 import * as W from "@parity/truapi/wire-table";
 import { createClient, createTransport } from "@parity/truapi";
 
@@ -45,6 +50,164 @@ export interface DebugSessionOptions {
    * decoded values). When off, `frameDetail` reports byte length only.
    */
   decodeValues?: boolean;
+  /**
+   * Cap on retained operations, LRU-evicted (see
+   * {@link WireDebuggerOptions.maxTraces}). Defaults to the engine's own default.
+   * A mount that shares a tab with the observed app should lower it: the product
+   * pays for whatever the panel retains.
+   */
+  maxTraces?: number;
+  /**
+   * Cap on retained frames within one operation (see
+   * {@link WireDebuggerOptions.maxFramesPerTrace}). Defaults to the engine's own
+   * default.
+   */
+  maxFramesPerTrace?: number;
+  /**
+   * Cap on retained payload bytes within one operation (see
+   * {@link WireDebuggerOptions.maxBytesPerTrace}); only bites while
+   * {@link DebugSessionOptions.decodeValues} retains bytes. Defaults to the
+   * engine's own default.
+   */
+  maxBytesPerTrace?: number;
+}
+
+/** How many methods the busiest-methods roll-up reports. */
+const TOP_METHOD_LIMIT = 5;
+
+/** What the busiest-methods roll-up calls an op whose ids were all off-table. */
+const UNKNOWN_METHOD = "(unknown)";
+
+/**
+ * Facts about a session that no single {@link TraceView} can carry, supplied by
+ * the mount that owns the link: whole-op eviction, link-level drops, and whether
+ * a feeding host's wire contract disagrees with this debugger's.
+ */
+export interface TraceStatsExtras {
+  /** Whole operations LRU-evicted (`traceEngine.evictedTraces()`). */
+  evictedTraces?: number;
+  /** Frames the feeding host reported dropping before delivery. */
+  droppedByHost?: number;
+  /** Whether any feeding host declared a wire contract this debugger can't decode against. */
+  codecMismatch?: boolean;
+}
+
+/**
+ * The payload-blind aggregate roll-up behind a mount's summary strip: counts,
+ * byte totals, durations, health tallies, the direction split, and the busiest
+ * methods. Shape and timing only - never a byte or a decoded value.
+ */
+export interface TraceStats {
+  ops: number;
+  frames: number;
+  bytes: number;
+  subscriptions: number;
+  liveSubscriptions: number;
+  malformed: number;
+  orphaned: number;
+  retryStorms: number;
+  truncated: number;
+  evictedTraces: number;
+  droppedByHost: number;
+  codecMismatch: boolean;
+  out: number;
+  in: number;
+  avgDurationMs: number;
+  maxDurationMs: number;
+  topMethods: { method: string; count: number }[];
+}
+
+/**
+ * Roll a set of {@link TraceView}s up into the summary strip's numbers.
+ *
+ * This is THE aggregate computation for every mount. A second implementation is
+ * how the two mounts silently disagree about the same stream (one reporting
+ * `malformed 1`, the other reporting no malformed at all), so the standalone
+ * server's `/stats` and the in-app embed's strip both go through here rather than
+ * each summing views their own way.
+ *
+ * `avgDurationMs` averages over ALL ops, not only completed ones: an op that is
+ * still open contributes its elapsed span, so a stream full of hung calls does
+ * not read as a fast session.
+ */
+export function computeTraceStats(
+  views: readonly TraceView[],
+  extras: TraceStatsExtras = {},
+): TraceStats {
+  let frames = 0;
+  let bytes = 0;
+  let subscriptions = 0;
+  let liveSubscriptions = 0;
+  let malformed = 0;
+  let orphaned = 0;
+  let retryStorms = 0;
+  let truncated = 0;
+  let out = 0;
+  let inbound = 0;
+  let durationTotal = 0;
+  let durationMax = 0;
+  const methodCounts = new Map<string, number>();
+  for (const view of views) {
+    frames += view.frames.length;
+    durationTotal += view.durationMs;
+    if (view.durationMs > durationMax) durationMax = view.durationMs;
+    if (view.badges.includes("malformed")) malformed += 1;
+    if (view.badges.includes("orphaned")) orphaned += 1;
+    if (view.badges.includes("retry-storm")) retryStorms += 1;
+    if (view.badges.includes("truncated")) truncated += 1;
+    // Subscription liveness comes from the shared definitions rather than a
+    // local role test, so the strip's "subs · N live" can't disagree with the
+    // `live` marker the op rows show.
+    if (isSubscription(view)) {
+      subscriptions += 1;
+      if (isLiveSubscription(view)) liveSubscriptions += 1;
+    }
+    for (const f of view.frames) {
+      bytes += f.byteLength ?? 0;
+      if (f.direction === "out") out += 1;
+      else inbound += 1;
+    }
+    const method = operationMethod(view) ?? UNKNOWN_METHOD;
+    methodCounts.set(method, (methodCounts.get(method) ?? 0) + 1);
+  }
+  const ops = views.length;
+  return {
+    ops,
+    frames,
+    bytes,
+    subscriptions,
+    liveSubscriptions,
+    malformed,
+    orphaned,
+    retryStorms,
+    truncated,
+    evictedTraces: extras.evictedTraces ?? 0,
+    droppedByHost: extras.droppedByHost ?? 0,
+    codecMismatch: extras.codecMismatch ?? false,
+    out,
+    in: inbound,
+    avgDurationMs: ops === 0 ? 0 : Math.round(durationTotal / ops),
+    maxDurationMs: Math.round(durationMax),
+    topMethods: [...methodCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_METHOD_LIMIT)
+      .map(([method, count]) => ({ method, count })),
+  };
+}
+
+/**
+ * `512 B` / `1.4 KB` / `2.10 MB`, for a {@link TraceStats} byte total. Shared so
+ * the two mounts' summary strips read the same number the same way.
+ */
+export function formatStatBytes(n: number): string {
+  if (n < 1024) return `${String(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/** `340ms` / `1.20s`, for a {@link TraceStats} duration. Shared, as above. */
+export function formatStatMs(ms: number): string {
+  return ms < 1000 ? `${String(Math.round(ms))}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
 
 /** Live debug session: feed it envelopes, read back grouped traces. */
@@ -104,7 +267,22 @@ export function createDebugSession(
   // No `sink`: a session accumulates traces for the view/`/traces`; it must not
   // spam the server console with a line per frame (the sink default is
   // `console.debug`). Consumers read `traceEngine`, not stdout.
-  const wireDebugger = createWireDebugger({ methodNames, sink: () => {} });
+  //
+  // The retention caps are the session's memory ceiling
+  // (`maxTraces × maxFramesPerTrace`, bounded in bytes by `maxBytesPerTrace`), so
+  // they are forwarded rather than left at the engine default: a mount that lives
+  // in the observed app's own tab has to be able to lower them.
+  const wireDebugger = createWireDebugger({
+    methodNames,
+    sink: () => {},
+    ...(options.maxTraces === undefined ? {} : { maxTraces: options.maxTraces }),
+    ...(options.maxFramesPerTrace === undefined
+      ? {}
+      : { maxFramesPerTrace: options.maxFramesPerTrace }),
+    ...(options.maxBytesPerTrace === undefined
+      ? {}
+      : { maxBytesPerTrace: options.maxBytesPerTrace }),
+  });
   // Raw bytes are retained only when decode is on - they exist solely to feed
   // the drill-down decoder, and `/traces` never serializes them. `methodNames`
   // resolves each frame's role at ingest, so the engine and any forward hook see

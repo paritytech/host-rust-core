@@ -7,7 +7,13 @@ import {
 } from "@parity/truapi";
 import * as W from "@parity/truapi/wire-table";
 
-import { isLoopbackDebugHost, startDebugServer } from "./server.js";
+import {
+  decodeValuesFromEnv,
+  hostHeaderAllowed,
+  isLoopbackDebugHost,
+  portFromEnv,
+  startDebugServer,
+} from "./server.js";
 
 interface TraceFrameView {
   direction: string;
@@ -556,10 +562,75 @@ test("isLoopbackDebugHost rejects loopback-looking names under other domains", (
     "notlocalhost",
     "127.0.0.2",
     "[::1]",
-    "LOCALHOST",
     "example.com",
   ]) {
     expect(isLoopbackDebugHost(host)).toBe(false);
+  }
+});
+
+test("the Host guard classifies RAW header strings, case included", async () => {
+  // `isLoopbackDebugHost` only ever sees a WHATWG-normalized (lowercased)
+  // hostname, so asserting `isLoopbackDebugHost("LOCALHOST") === false` encodes a
+  // belief the system does NOT have: the gate lowercases first, and `Host:
+  // LOCALHOST` is accepted live. Assert through the gate, with raw headers.
+  expect(hostHeaderAllowed("LOCALHOST")).toBe(true);
+  expect(hostHeaderAllowed("LocalHost:9231")).toBe(true);
+  expect(hostHeaderAllowed("127.0.0.1:9231")).toBe(true);
+  expect(hostHeaderAllowed("[::1]:9231")).toBe(true);
+  // Absent/empty Host: a non-browser client, allowed like a missing Origin.
+  expect(hostHeaderAllowed(null)).toBe(true);
+  expect(hostHeaderAllowed("")).toBe(true);
+  // Case does not launder an attacker domain either.
+  expect(hostHeaderAllowed("EVIL.COM")).toBe(false);
+  expect(hostHeaderAllowed("LOCALHOST.EVIL.COM")).toBe(false);
+
+  // And live, through the real server, with the raw header on the wire.
+  const server = startDebugServer({ port: 0 });
+  try {
+    const base = `http://localhost:${server.port}`;
+    const status = async (host: string): Promise<number> =>
+      (await fetch(`${base}/traces`, { headers: { host } })).status;
+    expect(await status(`LOCALHOST:${server.port}`)).toBe(200);
+    expect(await status(`EVIL.LOCALHOST:${server.port}`)).toBe(403);
+  } finally {
+    server.stop();
+  }
+});
+
+test("the Host guard is narrower than the Origin gate: *.localhost is not a target", async () => {
+  // `.localhost` is a legitimate *origin* for a page that dials in (dotli serves
+  // its host realm from host.localhost), but never a legitimate *target*: this
+  // server binds 127.0.0.1 and answers for three names only. Accepting
+  // `Host: x.localhost` would only widen the rebinding surface to a
+  // wildcard-`*.localhost` zone, for a client that cannot exist.
+  expect(isLoopbackDebugHost("host.localhost")).toBe(true);
+  expect(hostHeaderAllowed("host.localhost")).toBe(false);
+  expect(hostHeaderAllowed("host.localhost:9231")).toBe(false);
+  const server = startDebugServer({ port: 0 });
+  try {
+    const res = await fetch(`http://localhost:${server.port}/traces`, {
+      headers: { host: `host.localhost:${server.port}` },
+    });
+    expect(res.status).toBe(403);
+  } finally {
+    server.stop();
+  }
+});
+
+test("an unparseable Host is a 403, not a 500 out of the route dispatcher", async () => {
+  const server = startDebugServer({ port: 0 });
+  try {
+    // Bun builds `req.url` from the Host header, so an out-of-range port makes
+    // `new URL(req.url)` throw. The rebinding gate runs first, so the header gets
+    // the 403 it already earns instead of a 500 plus a stack trace per request.
+    for (const host of ["localhost:99999", "localhost:notaport", "["]) {
+      const res = await fetch(`http://localhost:${server.port}/traces`, {
+        headers: { host },
+      });
+      expect(res.status).toBe(403);
+    }
+  } finally {
+    server.stop();
   }
 });
 
@@ -692,5 +763,412 @@ test("groups by (channel, requestId) — two hosts minting the same id do not me
     expect(detailA).not.toEqual(detailB);
   } finally {
     server.stop();
+  }
+});
+
+/** Open a WS, run `body`, then close it. */
+async function withSocket(
+  port: number,
+  body: (ws: WebSocket) => Promise<void>,
+): Promise<void> {
+  const ws = new WebSocket(`ws://localhost:${port}`);
+  await new Promise<void>((resolve, reject) => {
+    ws.onopen = () => resolve();
+    ws.onerror = () => reject(new Error("ws failed to open"));
+  });
+  try {
+    await body(ws);
+  } finally {
+    ws.close();
+  }
+}
+
+/** The `/stats` fields these tests assert on. */
+interface StatsShape {
+  ops: number;
+  frames: number;
+  droppedByHost: number;
+  envelopeRejects: number;
+  envelopeRejectReasons: Record<string, number>;
+  oversizedMessages: number;
+  abnormalCloses: number;
+  invalidDroppedFields: number;
+}
+
+/** Poll `/stats` until `done` or the budget runs out; returns the last payload. */
+async function statsUntil(
+  base: string,
+  done: (s: StatsShape) => boolean,
+  query = "",
+): Promise<StatsShape> {
+  let stats = {} as StatsShape;
+  for (let i = 0; i < 100; i++) {
+    stats = (await (await fetch(`${base}/stats${query}`)).json()) as StatsShape;
+    if (done(stats)) return stats;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return stats;
+}
+
+test("a matching schema with a mismatched envelope version blocks the CHANNEL-LESS decode path", async () => {
+  const server = startDebugServer({ port: 0, decodeValues: true });
+  const base = `http://localhost:${server.port}`;
+  try {
+    // The gap a `!identityConfirmed`-only flag leaves open: this host stamps the
+    // matching schema hash (so `identityConfirmed`) AND a wrong envelope version
+    // (so `identityMismatch`). The scoped path always refused it; the unscoped one
+    // must too, because `codec` is the only signal for a payload-layout drift the
+    // schema hash is blind to — and the shipped UI itself omits `&channel=` when
+    // it has no channel.
+    await withSocket(server.port, async (ws) => {
+      ws.send(
+        JSON.stringify({
+          v: 2,
+          codec: 1,
+          schema: TRUAPI_WIRE_SCHEMA_HASH,
+          channelId: "drift.dot",
+          dir: "out",
+          frame: signFrame("p:sign"),
+        }),
+      );
+      for (let i = 0; i < 50; i++) {
+        const t = (await (await fetch(`${base}/traces`)).json()) as unknown[];
+        if (t.length > 0) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    });
+
+    // Scoped by channel: refused (this already held).
+    expect(
+      (await fetch(`${base}/frame?id=p:sign&i=0&channel=drift.dot`)).status,
+    ).toBe(409);
+    // UNSCOPED: must be refused too — the hole.
+    expect((await fetch(`${base}/frame?id=p:sign&i=0`)).status).toBe(409);
+    // And the HTML drill-down the default page actually renders must not carry the
+    // decoded payload either.
+    const html = await (await fetch(`${base}/op?id=p:sign`)).text();
+    expect(html).not.toContain("alice.dot");
+    expect(html).toContain("payload not shown");
+    // Payload-blind grouping is unaffected.
+    const traces = (await (await fetch(`${base}/traces`)).json()) as unknown[];
+    expect(traces.length).toBe(1);
+  } finally {
+    server.stop();
+  }
+});
+
+test("a frame larger than the engine's per-trace budget is ingested, not killed by the WS cap", async () => {
+  const server = startDebugServer({ port: 0, decodeValues: true });
+  const base = `http://localhost:${server.port}`;
+  try {
+    // 1.5 MiB raw payload: base64 inflates it by 4/3, so a 1 MiB message cap would
+    // sit BELOW what the producers can legitimately send. Bun does not drop an
+    // over-cap message, it closes the socket (1006) without ever calling
+    // `message()`, so the whole stream would die mid-session with every counter
+    // untouched.
+    const big = encodeFrame(
+      "p:big",
+      W.ACCOUNT_GET_ACCOUNT.request,
+      new Uint8Array(1536 * 1024).fill(7),
+    );
+    expect(Buffer.from(big, "base64").length).toBeGreaterThan(1024 * 1024);
+    const traces = await streamFrame(base, server.port, big);
+    expect(traces).toHaveLength(1);
+    expect(traces[0].requestId).toBe("p:big");
+    const stats = (await (await fetch(`${base}/stats`)).json()) as {
+      oversizedMessages: number;
+      abnormalCloses: number;
+    };
+    expect(stats.oversizedMessages).toBe(0);
+    expect(stats.abnormalCloses).toBe(0);
+  } finally {
+    server.stop();
+  }
+});
+
+test("a socket closed for an over-cap message is counted and surfaced on /stats", async () => {
+  const server = startDebugServer({ port: 0 });
+  const base = `http://localhost:${server.port}`;
+  try {
+    // Above MAX_INBOUND_MESSAGE_BYTES (9 MiB): Bun closes with 1006 "Received too
+    // big message" and never calls `message()`. Without a counter here the loss is
+    // literally unobservable — /stats byte-for-byte identical before and after.
+    await withSocket(server.port, async (ws) => {
+      ws.send("x".repeat(10 * 1024 * 1024));
+      await new Promise((r) => setTimeout(r, 200));
+    });
+    const stats = await statsUntil(base, (s) => s.oversizedMessages === 1);
+    expect(stats.oversizedMessages).toBe(1);
+    expect(stats.abnormalCloses).toBe(1);
+    // Nothing was ingested, and no envelope reject is claimed: the message never
+    // reached the parser.
+    expect(stats.envelopeRejects).toBe(0);
+    expect(stats.frames).toBe(0);
+  } finally {
+    server.stop();
+  }
+});
+
+test("envelope-level rejects are counted by reason and surfaced on /stats", async () => {
+  const server = startDebugServer({ port: 0 });
+  const base = `http://localhost:${server.port}`;
+  try {
+    const frame = encodeFrame("p:1", W.SYSTEM_HANDSHAKE.request, new Uint8Array([1]));
+    await withSocket(server.port, async (ws) => {
+      ws.send("{not json");
+      ws.send("42");
+      ws.send(JSON.stringify({ channelId: "a.dot", dir: "sideways", frame }));
+      // A renamed field — the shape a wire-envelope drift actually takes.
+      ws.send(JSON.stringify({ channel_id: "a.dot", dir: "out", frame }));
+      ws.send(JSON.stringify({ channelId: "a.dot", dir: "out" }));
+      // `""` collides with the "all channels" sentinel: that host could never be
+      // selected or decode-scoped, so it is refused at ingest.
+      ws.send(JSON.stringify({ channelId: "", dir: "out", frame }));
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    const stats = await statsUntil(base, (s) => s.envelopeRejects === 6);
+    expect(stats.envelopeRejects).toBe(6);
+    expect(stats.envelopeRejectReasons).toEqual({
+      "bad-json": 1,
+      "not-object": 1,
+      "bad-channel-id": 1,
+      "empty-channel-id": 1,
+      "bad-dir": 1,
+      "bad-frame": 1,
+      "ingest-threw": 0,
+    });
+    // Six refusals and nothing ingested: /traces and /channels stay empty, which
+    // without the counters is indistinguishable from "the host never dialed".
+    expect(((await (await fetch(`${base}/traces`)).json()) as unknown[]).length).toBe(0);
+    const channels = (await (await fetch(`${base}/channels`)).json()) as {
+      channels: unknown[];
+    };
+    expect(channels.channels.length).toBe(0);
+  } finally {
+    server.stop();
+  }
+});
+
+test("the inspector page renders the socket count from /channels", async () => {
+  const server = startDebugServer({ port: 0 });
+  try {
+    const html = await (await fetch(`http://localhost:${server.port}/`)).text();
+    // `sockets` was computed and serialized but never rendered: one socket with
+    // zero ops (a host that is talking and being refused) looked identical to no
+    // host at all.
+    expect(html).toContain("data.sockets");
+    expect(html).toContain("socket");
+    // The summary strip reports link-level loss even with zero ops.
+    expect(html).toContain("linkLoss");
+  } finally {
+    server.stop();
+  }
+});
+
+test("/channels counts an open socket", async () => {
+  const server = startDebugServer({ port: 0 });
+  const base = `http://localhost:${server.port}`;
+  try {
+    await withSocket(server.port, async () => {
+      let sockets = 0;
+      for (let i = 0; i < 50 && sockets === 0; i++) {
+        sockets = (
+          (await (await fetch(`${base}/channels`)).json()) as { sockets: number }
+        ).sockets;
+        if (sockets === 0) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(sockets).toBe(1);
+    });
+  } finally {
+    server.stop();
+  }
+});
+
+test("a non-integer `dropped` cannot poison the session's droppedByHost total", async () => {
+  const server = startDebugServer({ port: 0 });
+  const base = `http://localhost:${server.port}`;
+  try {
+    const frame = encodeFrame("p:1", W.SYSTEM_HANDSHAKE.request, new Uint8Array([1]));
+    await withSocket(server.port, async (ws) => {
+      // Raw text, because `JSON.stringify` would already turn Infinity into null:
+      // `1e999` is VALID JSON that parses to Infinity. Summed, the whole session's
+      // total becomes Infinity, which `JSON.stringify` emits as `null` and the UI
+      // renders as "0 dropped" for every channel — the declared
+      // `droppedByHost: number` contract broken by one envelope.
+      ws.send(
+        `{"channelId":"liar.dot","dir":"out","frame":"${frame}",` +
+          `"schema":"${TRUAPI_WIRE_SCHEMA_HASH}","dropped":1e999}`,
+      );
+      // A real host's honest count, on another channel, must survive it.
+      ws.send(
+        JSON.stringify({
+          channelId: "honest.dot",
+          dir: "out",
+          frame,
+          schema: TRUAPI_WIRE_SCHEMA_HASH,
+          dropped: 5,
+        }),
+      );
+      // Wrong types are discarded too, and counted.
+      ws.send(
+        JSON.stringify({
+          channelId: "liar.dot",
+          dir: "out",
+          frame,
+          schema: TRUAPI_WIRE_SCHEMA_HASH,
+          dropped: "5",
+        }),
+      );
+      ws.send(
+        JSON.stringify({
+          channelId: "liar.dot",
+          dir: "out",
+          frame,
+          schema: TRUAPI_WIRE_SCHEMA_HASH,
+          dropped: 1.5,
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    const stats = await statsUntil(base, (s) => s.invalidDroppedFields === 3);
+    // A finite integer total, not `null` — and the honest host's 5 is intact.
+    expect(stats.droppedByHost).toBe(5);
+    expect(stats.invalidDroppedFields).toBe(3);
+    const scoped = await statsUntil(
+      base,
+      () => true,
+      "?channel=liar.dot",
+    );
+    expect(scoped.droppedByHost).toBe(0);
+    // The raw JSON must not carry a `null` where a number is declared.
+    const raw = await (await fetch(`${base}/stats`)).text();
+    expect(raw).not.toContain('"droppedByHost":null');
+  } finally {
+    server.stop();
+  }
+});
+
+test("/view renders a bounded window, not every trace with every payload", async () => {
+  const server = startDebugServer({ port: 0, decodeValues: true });
+  const base = `http://localhost:${server.port}`;
+  try {
+    const total = 25;
+    await withSocket(server.port, async (ws) => {
+      for (let i = 0; i < total; i++) {
+        ws.send(
+          JSON.stringify({
+            channelId: "myapp.dot",
+            dir: "out",
+            frame: signFrame(`p:${i}`),
+            schema: TRUAPI_WIRE_SCHEMA_HASH,
+          }),
+        );
+      }
+      for (let i = 0; i < 100; i++) {
+        const t = (await (await fetch(`${base}/traces`)).json()) as unknown[];
+        if (t.length >= total) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    });
+
+    const count = (html: string): number =>
+      html.split('data-request-id="').length - 1;
+    // Unbounded, this endpoint renders every retained frame's decoded value into
+    // one string — at the engine's own caps that is hundreds of MB and seconds of
+    // blocked event loop for a single GET.
+    const first = await (await fetch(`${base}/view`)).text();
+    expect(count(first)).toBe(20);
+    expect(first).toContain(`showing 1-20 of ${total} ops`);
+    // The window is addressable, so nothing is unreachable.
+    const rest = await (await fetch(`${base}/view?offset=20`)).text();
+    expect(count(rest)).toBe(5);
+    expect(rest).not.toContain("showing");
+    const small = await (await fetch(`${base}/view?limit=2`)).text();
+    expect(count(small)).toBe(2);
+    // A malformed or unbounded window is a 400, never an unbounded render.
+    for (const q of ["?limit=0", "?limit=101", "?limit=abc", "?offset=-1", "?offset=1.5"]) {
+      expect((await fetch(`${base}/view${q}`)).status).toBe(400);
+    }
+  } finally {
+    server.stop();
+  }
+});
+
+test("an empty ?channel= means all channels, not a channel named ''", async () => {
+  const server = startDebugServer({ port: 0, decodeValues: true });
+  const base = `http://localhost:${server.port}`;
+  try {
+    await streamFrame(base, server.port, signFrame("p:sign"));
+    // A client building the query with `?? ""` used to pin itself to a channel that
+    // can never exist, and got a permanent 409 "codec mismatch" that was false.
+    const detail = await fetch(`${base}/frame?id=p:sign&i=0&channel=`);
+    expect(detail.status).toBe(200);
+    expect(JSON.stringify(await detail.json())).toContain("alice.dot");
+    const html = await (await fetch(`${base}/op?id=p:sign&channel=&gen=0`)).text();
+    expect(html).toContain("alice.dot");
+    // The list endpoints agree: empty means unfiltered, not "no such channel".
+    expect(await (await fetch(`${base}/op-list?channel=`)).text()).toContain(
+      'data-request-id="p:sign"',
+    );
+    const stats = (await (await fetch(`${base}/stats?channel=`)).json()) as {
+      ops: number;
+    };
+    expect(stats.ops).toBe(1);
+  } finally {
+    server.stop();
+  }
+});
+
+test("every numeric query param goes through the same canonical-integer parse", async () => {
+  const server = startDebugServer({ port: 0, decodeValues: true });
+  const base = `http://localhost:${server.port}`;
+  try {
+    const frame = encodeFrame("p:1", W.ACCOUNT_GET_ACCOUNT.request, new Uint8Array([0]));
+    await streamFrame(base, server.port, frame);
+    // `?i=` used to bypass this file's own `optionalInt`, so `Number()` coercion
+    // resolved a real frame for four spellings of "not an integer" while `?gen=`
+    // correctly 400'd on the same input — split-brain inside one file.
+    for (const i of ["-0", "0x0", "1e1", "007", "+1", " ", ""]) {
+      const res = await fetch(`${base}/frame?id=p:1&i=${encodeURIComponent(i)}`);
+      expect(res.status).toBe(400);
+    }
+    // Canonical values still resolve (or 404 out of range), unchanged.
+    expect((await fetch(`${base}/frame?id=p:1&i=0`)).status).toBe(200);
+    expect((await fetch(`${base}/frame?id=p:1&i=-1`)).status).toBe(404);
+    expect((await fetch(`${base}/frame?id=p:1&i=0&gen=0`)).status).toBe(200);
+    // Same parse on `?gen=` and on `/view`'s window.
+    expect((await fetch(`${base}/frame?id=p:1&i=0&gen=-0`)).status).toBe(400);
+    expect((await fetch(`${base}/op?gen=0x0`)).status).toBe(400);
+    expect((await fetch(`${base}/view?limit=0x2`)).status).toBe(400);
+  } finally {
+    server.stop();
+  }
+});
+
+test("the decode kill-switch fails closed on untrimmed env values", () => {
+  // The switch that stops full payload decode must not be defeated by the exact
+  // shapes a shell or a .env file produces.
+  for (const off of ["0", "false", "no", "off", "OFF", "0 ", " false", "false\n", "\tno\t"]) {
+    expect(decodeValuesFromEnv(off)).toBe(false);
+  }
+  // Anything else (including unset) means on: this is a dev tool that decodes.
+  for (const on of [undefined, "", " ", "1", "true", "yes", "0x0", "falsey"]) {
+    expect(decodeValuesFromEnv(on)).toBe(true);
+  }
+});
+
+test("TRUAPI_DEBUGGER_PORT is validated, not silently clamped or coerced", () => {
+  expect(portFromEnv("9231")).toBe(9231);
+  expect(portFromEnv(" 9231 ")).toBe(9231);
+  expect(portFromEnv(undefined)).toBe(9231);
+  expect(portFromEnv("")).toBe(9231);
+  expect(portFromEnv("65535")).toBe(65535);
+  expect(portFromEnv("1")).toBe(1);
+  // `Number.isFinite(x) && x > 0` accepted every one of these: 99999 binds a
+  // DIFFERENT port (the OS truncates to 65535) that no host's debug URL points
+  // at, and 1.5 crashes the process on port 1. A debugger listening somewhere
+  // else is indistinguishable from a host that never dialed.
+  for (const bad of ["99999", "65536", "1.5", "0", "-1", "1e4", "0x10", "abc", "9231x"]) {
+    expect(portFromEnv(bad)).toBeNull();
   }
 });

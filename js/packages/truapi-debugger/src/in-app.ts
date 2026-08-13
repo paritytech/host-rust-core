@@ -5,24 +5,48 @@
  * the SAME app as the host — no server, no dial-out, no relay. A host running in
  * the page (dotli) feeds each tapped frame via {@link InAppDebugger.handleFrame};
  * {@link InAppDebugger.mount} renders them with the same engine, the same
- * renderers, and the same stylesheet the standalone app uses, decoding every
- * frame by default (dev-only tool).
+ * renderers, and the same stylesheet the standalone app uses.
  *
  * This is the "host and debugger in the same bits" transport: the frames never
  * leave the app, so each browser tab is its own tenant — nothing to host or
  * scope. Browser-only (uses `document`).
  *
+ * Three consequences of sharing the app follow from that, and they are the
+ * invariants this module holds:
+ *
+ *  - **The tap is in the product's frame path.** Feeding a frame can never throw
+ *    into the caller, so {@link InAppDebugger.handleFrame} is contained.
+ *  - **The feeding host is not this debugger's build.** dotli pins its own truapi
+ *    dependencies, so a frame id may mean a different method here than it did
+ *    there. Decode is therefore gated on an {@link InAppFrameIdentity} that
+ *    affirmatively matches this build's wire schema — exactly the gate the
+ *    standalone server applies to a dialing host. An unattested frame still
+ *    groups (payload-blind grouping needs no contract) but never decodes.
+ *  - **The document belongs to the host application.** Every shared rule is
+ *    scoped to the mount root before injection (`scopeCss`), so the panel cannot
+ *    restyle the host's own UI.
+ *
  * The standalone app is a thin client over server-rendered fragments; this mount
  * has the session in-process, so it renders the same fragments directly and needs
  * no polling. Everything visible — the summary strip, the operation list, the
- * drill-down — comes from the shared renderers and the shared stylesheet, so the
- * two mounts cannot drift apart.
+ * drill-down — comes from the shared renderers, the shared aggregate
+ * ({@link computeTraceStats}), and the shared stylesheet, so the two mounts cannot
+ * drift apart.
  *
  * @module
  */
 
-import { createDebugSession, decodeTraceFrames } from "./session.js";
+import { TRUAPI_CODEC_VERSION, TRUAPI_WIRE_SCHEMA_HASH } from "@parity/truapi";
+import {
+  computeTraceStats,
+  createDebugSession,
+  decodeTraceFrames,
+  formatStatBytes,
+  formatStatMs,
+  type TraceStats,
+} from "./session.js";
 import type { DebugSession, DebugSessionOptions } from "./session.js";
+import { DEFAULT_MAX_ID_CHARS, WIRE_ENVELOPE_VERSION } from "./ingest.js";
 import { wireTraceToView, type TraceView } from "./trace-view.js";
 import { renderOperationRow, renderTraceDetail } from "./trace-render.js";
 import { detectRetryStorms } from "./retry-storm.js";
@@ -30,10 +54,70 @@ import { TRACE_DETAIL_CSS } from "./trace-styles.js";
 import {
   INSPECTOR_LAYOUT_CSS,
   INSPECTOR_SHELL_CSS,
+  scopeCss,
 } from "./inspector-styles.js";
 
 /** How an operation list is ordered. */
 type SortMode = "arrival" | "slowest" | "frames";
+
+/** The mount root's class; also the CSS scope every injected rule is confined to. */
+const MOUNT_CLASS = "td-inapp";
+
+/**
+ * Retention caps for an embed, deliberately below the engine defaults the
+ * standalone runs with. The standalone is its own process — if it retains a few
+ * hundred MiB of traces, only the debugger pays. An embed retains inside the
+ * observed application's own tab, where the same ceiling is the product's crash,
+ * so the panel keeps a shorter, byte-bounded history.
+ */
+const EMBED_MAX_TRACES = 128;
+/** @see EMBED_MAX_TRACES */
+const EMBED_MAX_FRAMES_PER_TRACE = 256;
+/** @see EMBED_MAX_TRACES */
+const EMBED_MAX_BYTES_PER_TRACE = 256 * 1024;
+
+/**
+ * Cap on tracked channels, matching the standalone's registry: a host feeding
+ * frames under many distinct channelIds must not grow the identity map without
+ * bound.
+ */
+const MAX_CHANNELS = 256;
+
+/**
+ * The wire identity a feeding host stamps on a tapped frame — the same
+ * `v`/`codec`/`schema` triple a dialing host puts on the standalone's envelope.
+ *
+ * A frame id is a `u8` discriminant that gets reassigned as the API evolves, so a
+ * frame from a host built against a different wire table decodes to the WRONG
+ * method and the wrong value off this debugger's table. The embed is the mount
+ * most exposed to that: dotli pins its truapi dependencies independently of the
+ * debugger's. Without an identity a frame is grouped but not decoded.
+ */
+export interface InAppFrameIdentity {
+  /** Envelope version the feeder speaks; see {@link WIRE_ENVELOPE_VERSION}. */
+  v?: number;
+  /** The feeding host's wire codec version (`TRUAPI_CODEC_VERSION`). */
+  codec?: number;
+  /**
+   * The feeding host's wire-contract fingerprint (`TRUAPI_WIRE_SCHEMA_HASH`): a
+   * hash of every frame id and its method leg. This is the field decode is gated
+   * on — unlike `codec` (the coarse handshake number, bumped ~never), it changes
+   * whenever a frame id is reassigned.
+   */
+  schema?: string;
+  /** Frames this tap dropped before this one; surfaced in the summary strip. */
+  dropped?: number;
+}
+
+/** What one channel has declared about its wire contract, across all its frames. */
+interface ChannelIdentity {
+  /** `false` once a frame declared a `v`/`codec`/`schema` that differs. Sticky. */
+  codecOk: boolean;
+  /** `true` once a frame affirmatively declared a matching `schema`. */
+  schemaOk: boolean;
+  /** Frames the feeding tap reported dropping. */
+  dropped: number;
+}
 
 /** A same-app debugger: feed it frames, mount its panel. */
 export interface InAppDebugger {
@@ -42,12 +126,31 @@ export interface InAppDebugger {
   /**
    * Feed one tapped frame: the raw SCALE `ProtocolMessage` bytes, opaque. `dir`
    * is product-vantage (`out` = left the product), matching the standalone tap.
+   *
+   * `identity` is the feeder's wire contract. Pass it — a frame fed WITHOUT an
+   * identity that matches this build's `TRUAPI_WIRE_SCHEMA_HASH` is grouped and
+   * listed but never decoded, because its ids cannot be trusted to mean what this
+   * debugger's table says they mean. Never throws: this runs inside the product's
+   * own frame path.
    */
-  handleFrame(channelId: string, dir: "in" | "out", frame: Uint8Array): void;
+  handleFrame(
+    channelId: string,
+    dir: "in" | "out",
+    frame: Uint8Array,
+    identity?: InAppFrameIdentity,
+  ): void;
+  /**
+   * Whether a decoded value may be surfaced for a channel's frames: it declared a
+   * matching wire schema and never declared a mismatching identity. The panel
+   * gates itself on this; an embedding host can read it to gate its own views.
+   * Always `true` when the session has decode off (nothing decodes anyway).
+   */
+  decodeTrusted(channelId?: string): boolean;
   /**
    * Render a live, self-contained panel into `el` and keep it refreshed; returns
-   * a disposer that tears the panel down. Decodes every frame unless the session
-   * was created with `decodeValues: false`.
+   * a disposer that tears the panel down. Decodes the open op's frames when the
+   * session has `decodeValues` on AND the op's channel is
+   * {@link InAppDebugger.decodeTrusted}.
    */
   mount(el: HTMLElement, options?: { refreshMs?: number }): () => void;
 }
@@ -61,70 +164,67 @@ function esc(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** `1.2s` / `340ms`, matching the standalone's tile formatting. */
-function formatMs(ms: number): string {
-  return ms >= 1000
-    ? `${(ms / 1000).toFixed(1)}s`
-    : `${String(Math.round(ms))}ms`;
-}
-
 /** One metric tile in the aggregate strip. */
-function stat(n: string, k: string, cls = ""): string {
+function stat(n: string, k: string, sub = "", cls = ""): string {
   return (
     `<div class="ins-stat${cls === "" ? "" : ` ${cls}`}">` +
-    `<span class="n">${esc(n)}</span><span class="k">${esc(k)}</span></div>`
+    `<span class="n">${esc(n)}` +
+    (sub === "" ? "" : ` <span class="sub">${esc(sub)}</span>`) +
+    `</span><span class="k">${esc(k)}</span></div>`
   );
 }
 
-/** The aggregate summary strip: the "at a glance" row above the list. */
-function renderSummary(views: readonly TraceView[]): string {
-  if (views.length === 0) return "waiting for frames…";
+/** A tile that reads red when non-zero and muted at zero. */
+function warnStat(n: number, k: string): string {
+  return stat(String(n), k, "", n === 0 ? "warn zero" : "warn");
+}
 
-  const frames = views.reduce((sum, v) => sum + v.frames.length, 0);
-  // `byteLength` is absent on vantages that do not tap the raw wire (dotli's
-  // bridge), so an op contributes only the frames that carry a length.
-  const bytes = views.reduce(
-    (sum, v) => sum + v.frames.reduce((b, f) => b + (f.byteLength ?? 0), 0),
-    0,
-  );
-  const live = views.filter(
-    (v) =>
-      v.frames.some((f) => f.role === "start") &&
-      !v.frames.some((f) => f.role === "stop"),
-  ).length;
-  const done = views.filter((v) => v.durationMs > 0);
-  const avg =
-    done.length === 0
-      ? 0
-      : done.reduce((sum, v) => sum + v.durationMs, 0) / done.length;
-  const orphaned = views.filter((v) => v.badges.includes("orphaned")).length;
-  const storms = views.filter((v) => v.badges.includes("retry-storm")).length;
+/**
+ * The aggregate summary strip: the "at a glance" row above the list.
+ *
+ * Every number comes from the shared {@link computeTraceStats}, and the tiles
+ * mirror the standalone's strip one-for-one — same set, same labels, same
+ * formatting. That is the whole point: a bespoke second roll-up here is how the
+ * standalone came to report `malformed 1 / truncated 1` on a stream this mount
+ * showed as clean.
+ */
+function renderSummary(stats: TraceStats): string {
+  if (stats.ops === 0) return "waiting for frames…";
 
-  // Top methods by frequency, rendered as the standalone's clickable pills.
-  const counts = new Map<string, number>();
-  for (const view of views) {
-    const method = view.frames[0]?.method;
-    if (method === undefined) continue;
-    counts.set(method, (counts.get(method) ?? 0) + 1);
-  }
-  const pills = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
+  const pills = stats.topMethods
     .map(
-      ([method, n]) =>
+      ({ method, count }) =>
         `<span class="ins-method" data-method="${esc(method)}">` +
-        `${esc(method)} <b>${String(n)}</b></span>`,
+        `${esc(method)} <b>${String(count)}</b></span>`,
     )
     .join("");
 
   return (
-    stat(String(views.length), "ops") +
-    stat(String(frames), "frames") +
-    stat(`${String(bytes)} B`, "bytes") +
-    stat(String(live), "live sub", live > 0 ? "good" : "") +
-    stat(formatMs(avg), "avg") +
-    stat(String(orphaned), "orphaned", orphaned > 0 ? "warn" : "warn zero") +
-    stat(String(storms), "retry storms", storms > 0 ? "warn" : "warn zero") +
+    stat(String(stats.ops), "ops") +
+    stat(
+      String(stats.frames),
+      "frames",
+      `${String(stats.out)}▶ ${String(stats.in)}◀`,
+    ) +
+    stat(formatStatBytes(stats.bytes), "data") +
+    stat(
+      String(stats.subscriptions),
+      "subs",
+      stats.liveSubscriptions > 0
+        ? `${String(stats.liveSubscriptions)} live`
+        : "",
+    ) +
+    stat(
+      formatStatMs(stats.avgDurationMs),
+      "avg op",
+      `max ${formatStatMs(stats.maxDurationMs)}, observed`,
+    ) +
+    warnStat(stats.malformed, "malformed") +
+    warnStat(stats.orphaned, "orphaned") +
+    warnStat(stats.retryStorms, "retry storms") +
+    warnStat(stats.truncated, "truncated") +
+    warnStat(stats.evictedTraces, "evicted") +
+    warnStat(stats.droppedByHost, "dropped") +
     (pills === "" ? "" : `<span class="ins-methods">${pills}</span>`)
   );
 }
@@ -135,33 +235,130 @@ function opKey(view: TraceView): string {
 }
 
 /**
- * Create an in-app debugger. Decode is ON by default (dev-only tool); pass
- * `decodeValues: false` to keep a bundled mount payload-blind.
+ * Create an in-app debugger. Decode is ON by default (dev-only tool) for frames
+ * whose feeder attests a matching wire schema; pass `decodeValues: false` to keep
+ * a bundled mount payload-blind regardless. Retention defaults to the
+ * embed-appropriate caps ({@link EMBED_MAX_TRACES}); override any of them through
+ * {@link DebugSessionOptions}.
  */
 export function createInAppDebugger(
   options: DebugSessionOptions = {},
 ): InAppDebugger {
-  const session = createDebugSession(options);
+  const session = createDebugSession({
+    ...options,
+    maxTraces: options.maxTraces ?? EMBED_MAX_TRACES,
+    maxFramesPerTrace: options.maxFramesPerTrace ?? EMBED_MAX_FRAMES_PER_TRACE,
+    maxBytesPerTrace: options.maxBytesPerTrace ?? EMBED_MAX_BYTES_PER_TRACE,
+  });
+
+  // Clamp to the same bound ingest uses so this registry's key matches the
+  // trace-engine key the panel filters by.
+  const clampChannelId = (id: string): string =>
+    id.length > DEFAULT_MAX_ID_CHARS ? id.slice(0, DEFAULT_MAX_ID_CHARS) : id;
+  const channels = new Map<string, ChannelIdentity>();
+  // Sticky: some frame arrived unattested (or mismatched) this session. The
+  // no-channel decode query keys on this rather than scanning the registry, whose
+  // records can be evicted while the frames they described survive.
+  let sawUnconfirmed = false;
+
+  /** Fold one frame's declared identity into its channel's record. */
+  const recordIdentity = (
+    channelId: string,
+    identity: InAppFrameIdentity | undefined,
+  ): void => {
+    const mismatch =
+      (typeof identity?.v === "number" && identity.v !== WIRE_ENVELOPE_VERSION) ||
+      (typeof identity?.codec === "number" &&
+        identity.codec !== TRUAPI_CODEC_VERSION) ||
+      (typeof identity?.schema === "string" &&
+        identity.schema !== TRUAPI_WIRE_SCHEMA_HASH);
+    // Confirmed only by an affirmative match. An absent schema is NOT trusted:
+    // "omit the identity and decode anyway" is the hole this closes.
+    const confirmed = identity?.schema === TRUAPI_WIRE_SCHEMA_HASH;
+    if (!confirmed || mismatch) sawUnconfirmed = true;
+    const dropped =
+      typeof identity?.dropped === "number" && identity.dropped > 0
+        ? identity.dropped
+        : 0;
+    const key = clampChannelId(channelId);
+    const existing = channels.get(key);
+    if (existing) {
+      if (mismatch) existing.codecOk = false;
+      if (confirmed) existing.schemaOk = true;
+      existing.dropped += dropped;
+      return;
+    }
+    if (channels.size >= MAX_CHANNELS) {
+      const oldest = channels.keys().next().value;
+      if (oldest !== undefined) channels.delete(oldest);
+    }
+    channels.set(key, {
+      codecOk: !mismatch,
+      schemaOk: confirmed,
+      dropped,
+    });
+  };
+
+  const decodeTrusted = (channelId?: string): boolean => {
+    // Payload-blind mode never decodes, so the gate has nothing to guard.
+    if (!session.decodeValues) return true;
+    if (channelId !== undefined) {
+      const c = channels.get(clampChannelId(channelId));
+      return c !== undefined && c.codecOk && c.schemaOk;
+    }
+    // No channel to key on: refuse once anything unattested has been seen.
+    return !sawUnconfirmed;
+  };
+
+  /** Channels whose method names (and values) can't be trusted to this table. */
+  const untrustedChannels = (): { any: boolean; mismatch: boolean } => {
+    let any = false;
+    let mismatch = false;
+    for (const c of channels.values()) {
+      if (!c.codecOk) {
+        mismatch = true;
+        any = true;
+      } else if (!c.schemaOk) any = true;
+    }
+    return { any, mismatch };
+  };
+
   return {
     session,
-    handleFrame(channelId, dir, frame) {
-      session.handleEnvelope({ channelId, dir, frame });
+    decodeTrusted,
+    handleFrame(channelId, dir, frame, identity) {
+      // A debug tap must never disturb the frame path. In this mount that is not
+      // a slogan: `handleFrame` is called from the host's own send/receive path in
+      // the same call stack, so a throw here surfaces to the product as a
+      // protocol failure. The standalone's socket callback carries the same guard
+      // for the same reason; here the blast radius is larger.
+      try {
+        recordIdentity(channelId, identity);
+        session.handleEnvelope({ channelId, dir, frame });
+      } catch {
+        // Drop the frame; the observed session is worth more than one trace.
+      }
     },
     mount(el, mountOptions = {}) {
       const style = document.createElement("style");
-      // Scoped to the panel root: the embed styles its own container and never
-      // reaches for `html`/`body`, which belong to the host page.
+      // The shared rules are FLAT (`.ins-*`, `.td-*`) because that is right for
+      // the standalone, which owns its page. Here they share a document with the
+      // host application — an unscoped rule would restyle the host's own debug
+      // panel, which `INSPECTOR_LAYOUT_CSS` is written to override — so every one
+      // of them is rewritten to `.td-inapp <selector>` before injection. Only the
+      // root rules below are written already-scoped.
       style.textContent = `
-.td-inapp { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
+.${MOUNT_CLASS} { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto;
   height: 100%; min-height: 0; overflow: hidden; background: #0a0a0a; color: #e0e0e0;
   font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
-.td-inapp * { box-sizing: border-box; }
-${INSPECTOR_SHELL_CSS}
-${TRACE_DETAIL_CSS}
-${INSPECTOR_LAYOUT_CSS}`;
+.${MOUNT_CLASS} * { box-sizing: border-box; }
+${scopeCss(
+  `${INSPECTOR_SHELL_CSS}\n${TRACE_DETAIL_CSS}\n${INSPECTOR_LAYOUT_CSS}`,
+  `.${MOUNT_CLASS}`,
+)}`;
 
       const root = document.createElement("div");
-      root.className = "td-inapp";
+      root.className = MOUNT_CLASS;
       root.innerHTML = `
 <div class="ins-top">
   <span class="ins-title">TrUAPI <span class="accent">Wire Inspector</span></span>
@@ -198,6 +395,12 @@ ${INSPECTOR_LAYOUT_CSS}`;
       let selected: string | null = null;
       let channel: string | null = null;
       let disposed = false;
+      // Fingerprint of what the detail pane is currently showing. The refresh
+      // ticks once a second, but re-rendering the open op means re-decoding and
+      // re-hexing every one of its frames — tens of ms of blocked main thread, in
+      // the product's own tab, for an op that has not changed. Skip unless the
+      // fingerprint moves.
+      let detailKey: string | null = null;
 
       const render = (): void => {
         if (disposed) return;
@@ -233,8 +436,18 @@ ${INSPECTOR_LAYOUT_CSS}`;
 
         const scoped =
           channel === null ? all : all.filter((v) => v.channelId === channel);
+        const untrusted = untrustedChannels();
         summaryEl.className = `ins-summary${scoped.length === 0 ? " empty" : ""}`;
-        summaryEl.innerHTML = renderSummary(scoped);
+        summaryEl.innerHTML = renderSummary(
+          computeTraceStats(scoped, {
+            evictedTraces: session.traceEngine.evictedTraces(),
+            droppedByHost: [...channels.values()].reduce(
+              (n, c) => n + c.dropped,
+              0,
+            ),
+            codecMismatch: untrusted.mismatch,
+          }),
+        );
 
         const needle = filterEl.value.trim().toLowerCase();
         const filtered =
@@ -251,10 +464,24 @@ ${INSPECTOR_LAYOUT_CSS}`;
           return a.startedAt - b.startedAt;
         });
 
+        // A row whose channel never attested a matching wire contract carries
+        // method names resolved off THIS debugger's table, which may be wrong for
+        // it. Say so above the rows, as the standalone does, rather than only in
+        // the status bar.
+        const listedUntrusted = ordered.some((v) => !decodeTrusted(v.channelId));
+        const notice =
+          !listedUntrusted || !session.decodeValues
+            ? ""
+            : `<div style="padding:4px 10px;color:#fca5a5;font-size:11px;border-bottom:1px solid rgba(255,255,255,.08)">⚠ ${
+                untrusted.mismatch
+                  ? "a feeding host's wire contract differs from this debugger's — method names below may be wrong and values are not decoded"
+                  : "a feeding host declared no wire contract — method names below may be wrong and values are not decoded"
+              }</div>`;
         listEl.innerHTML =
           ordered.length === 0
             ? `<div class="td-op-empty">${scoped.length === 0 ? "waiting for frames…" : "no operations match the filter"}</div>`
-            : ordered
+            : notice +
+              ordered
                 .map((view) => {
                   const row = renderOperationRow(view, { now });
                   return opKey(view) === selected
@@ -264,21 +491,46 @@ ${INSPECTOR_LAYOUT_CSS}`;
                 .join("");
 
         const open = ordered.find((v) => opKey(v) === selected);
-        detailEl.innerHTML =
+        const trusted = open !== undefined && decodeTrusted(open.channelId);
+        // Everything the detail render depends on, and nothing that ticks: frame
+        // count and `lastAt` move whenever a frame lands, badges move when the op
+        // changes shape, and the trust flag moves when an identity arrives.
+        const nextDetailKey =
           open === undefined
-            ? `<div class="td-detail-empty">Select an operation to inspect its frames.</div>`
-            : renderTraceDetail(open, {
-                offerDecode: session.decodeValues,
-                decoded: decodeTraceFrames(session, open),
-              });
+            ? ""
+            : [
+                opKey(open),
+                String(open.frames.length),
+                String(open.lastAt),
+                open.badges.join("|"),
+                trusted ? "t" : "u",
+              ].join(" ");
+        if (nextDetailKey !== detailKey) {
+          detailKey = nextDetailKey;
+          detailEl.innerHTML =
+            open === undefined
+              ? `<div class="td-detail-empty">Select an operation to inspect its frames.</div>`
+              : renderTraceDetail(open, {
+                  offerDecode: session.decodeValues,
+                  // Same wire-identity gate the standalone applies to a dialing
+                  // host: an unattested channel groups but surfaces no value.
+                  decoded: trusted ? decodeTraceFrames(session, open) : undefined,
+                });
+        }
 
         const evicted = session.traceEngine.evictedTraces();
+        const identityWarning = untrusted.mismatch
+          ? `<span class="mismatch" title="A feeding host declared a wire contract this debugger cannot decode against; value decode is refused for it.">⚠ codec mismatch</span>`
+          : untrusted.any || (session.decodeValues && sawUnconfirmed)
+            ? `<span class="mismatch" title="A feeding host did not declare a matching wire schema; value decode is refused for it.">⚠ wire identity unconfirmed</span>`
+            : "";
         statusEl.innerHTML =
           `<span>${String(all.length)} ops</span>` +
           `<span class="live">in-app · decode ${session.decodeValues ? "on" : "off"}</span>` +
           (evicted > 0
             ? `<span class="mismatch">${String(evicted)} evicted</span>`
-            : "");
+            : "") +
+          identityWarning;
       };
 
       // Selecting a row is the only interaction that changes what the detail

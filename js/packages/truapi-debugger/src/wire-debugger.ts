@@ -21,6 +21,29 @@
 import type { ObservedFrame, TransportObserver } from "./observed-frame.js";
 
 /**
+ * What a trace's retention caps dropped, counted per axis.
+ *
+ * {@link WireTrace.truncated} collapses all of this to a boolean, which cannot
+ * tell "one frame lost" from "seventy-seven lost", nor which cap did it. The
+ * counts are the honest signal: `framesByCount` and `framesByBytes` are frames
+ * that no longer exist in the trace, `payloadsShed` frames that are still there
+ * with their metadata but without their payload bytes.
+ */
+export interface TraceDropCounts {
+  /** Frames evicted to stay under {@link WireDebuggerOptions.maxFramesPerTrace}. */
+  framesByCount: number;
+  /** Frames evicted to stay under {@link WireDebuggerOptions.maxBytesPerTrace}. */
+  framesByBytes: number;
+  /**
+   * Frames retained but stripped of their bytes because a single payload
+   * exceeded the whole byte budget. The frame, its `frameId` and its
+   * `byteLength` survive; only the bytes are gone, so no frame is *missing*
+   * from the sequence on this axis.
+   */
+  payloadsShed: number;
+}
+
+/**
  * A single op's frames, in arrival order, grouped by their shared
  * `(channelId, requestId)`. `requestId` alone is not unique across channels -
  * each host mints its own `p:1`, `p:2`, … - so the channel is part of a trace's
@@ -48,11 +71,18 @@ export interface WireTrace {
    */
   generation: number;
   /**
-   * Whether older frames were dropped from this trace to stay under the frame or
-   * byte cap. Surfaced as a `truncated` op badge so the operator can tell "older
-   * frames dropped" from a genuinely short op.
+   * Whether anything was dropped from this trace to stay under the frame or byte
+   * cap: the boolean collapse of {@link WireTrace.dropped}. Surfaced as a
+   * `truncated` op badge so the operator can tell "older frames dropped" from a
+   * genuinely short op.
    */
   truncated: boolean;
+  /**
+   * Per-axis counts behind {@link WireTrace.truncated}: how many frames each cap
+   * dropped, and how many payloads were shed. Lets a mount report "77 frames
+   * dropped (byte cap)" instead of a bare "truncated".
+   */
+  dropped: TraceDropCounts;
 }
 
 /** Sink for fully-formatted debug lines (defaults to `console.debug`). */
@@ -152,15 +182,24 @@ export interface WireDebuggerOptions {
    */
   maxFramesPerTrace?: number;
   /**
-   * Cap on total retained payload bytes within a single trace, opener included -
-   * a TRUE bound, so no single frame pins more than the cap. Only bites when the
-   * ingest retains bytes (level-2 decode); with decode off, frames carry no bytes
-   * and this never triggers. Without it, a burst of large payloads sharing one
-   * long-lived `requestId` grows memory unbounded even under
-   * {@link maxFramesPerTrace} (count-capped, not byte-capped). A single frame
-   * whose own payload exceeds the cap has its bytes shed (metadata + byteLength
-   * kept); otherwise oldest non-opener frames are evicted until under budget.
-   * Default 1 MiB.
+   * Cap on retained payload bytes across a trace's *evictable* frames - every
+   * frame but the opener. Only bites when the ingest retains bytes (level-2
+   * decode); with decode off, frames carry no bytes and this never triggers.
+   * Without it, a burst of large payloads sharing one long-lived `requestId`
+   * grows memory unbounded even under {@link maxFramesPerTrace} (count-capped,
+   * not byte-capped). A single frame whose own payload exceeds the cap has its
+   * bytes shed (metadata + byteLength kept); otherwise oldest non-opener frames
+   * are evicted until under budget. Default 1 MiB.
+   *
+   * The opener (`frames[0]`) is never evicted - pairing (`orphaned`) and
+   * retry-storm both key on it - so its bytes are excluded from this budget
+   * rather than charged against it. Charging an un-evictable frame's bytes to a
+   * budget the eviction loop then tries to reclaim makes the loop evict frames
+   * that are not the problem: a 700B request plus a 400B response under a 1000B
+   * cap would evict the response of a *completed* op, and an opener whose own
+   * payload equals the cap would evict every frame that ever follows it. Bytes
+   * held by a trace are therefore bounded by the opener's own payload (itself
+   * capped by the shedding rule) plus this cap, not by this cap alone.
    */
   maxBytesPerTrace?: number;
   /**
@@ -217,9 +256,10 @@ function formatFrame(
  * `sink`, forwarded through `forward` (if set), and grouped into
  * per-`requestId` {@link WireTrace}s for correlation with product-sdk spans.
  */
-export function createWireDebugger(options: WireDebuggerOptions = {}): WireDebugger {
-  const sink: WireDebugSink =
-    options.sink ?? ((line) => console.debug(line));
+export function createWireDebugger(
+  options: WireDebuggerOptions = {},
+): WireDebugger {
+  const sink: WireDebugSink = options.sink ?? ((line) => console.debug(line));
   const forward = options.forward;
   const maxTraces = options.maxTraces ?? 256;
   const maxFramesPerTrace = options.maxFramesPerTrace ?? 1024;
@@ -276,6 +316,7 @@ export function createWireDebugger(options: WireDebuggerOptions = {}): WireDebug
         startedAt: frame.timestamp,
         lastAt: frame.timestamp,
         truncated: false,
+        dropped: { framesByCount: 0, framesByBytes: 0, payloadsShed: 0 },
       };
     }
     trace.frames.push(frame);
@@ -284,12 +325,11 @@ export function createWireDebugger(options: WireDebuggerOptions = {}): WireDebug
       // it is the request/start the pairing (`orphaned`) and retry-storm signals
       // key on, so dropping it would falsely orphan a long-lived subscription
       // (e.g. account.connectionStatus). Ring-buffer from index 1 instead.
-      trace.frames.splice(1, trace.frames.length - maxFramesPerTrace);
-      trace.truncated = true;
+      const excess = trace.frames.length - maxFramesPerTrace;
+      trace.frames.splice(1, excess);
+      trace.dropped.framesByCount += excess;
     }
-    // Byte cap: only bites when bytes are retained (level-2 decode). A TRUE bound
-    // on retained payload, opener included, so no single frame pins more than the
-    // cap.
+    // Byte cap: only bites when bytes are retained (level-2 decode).
     if (frame.bytes !== undefined && maxBytesPerTrace !== Infinity) {
       // A single frame whose own payload exceeds the whole budget can never fit;
       // shed its bytes (keeping its metadata + byteLength) rather than evict every
@@ -298,20 +338,31 @@ export function createWireDebugger(options: WireDebuggerOptions = {}): WireDebug
       for (const f of trace.frames) {
         if ((f.bytes?.length ?? 0) > maxBytesPerTrace) {
           f.bytes = undefined;
-          trace.truncated = true;
+          trace.dropped.payloadsShed += 1;
         }
       }
-      // Opener bytes count toward the budget too. Evict oldest non-opener frames
-      // (from index 1) until under budget, so one id's large payloads can't grow
-      // memory without bound even under the count cap.
+      // Budget the evictable frames only (index 1 and up). The opener can never be
+      // evicted, so charging its bytes to a budget this loop reclaims from would
+      // evict frames that are not the cause — up to and including the response of
+      // an already-completed op, or every frame after an opener that is itself at
+      // the cap. Evict oldest-first until the evictable frames are under budget.
       let retained = 0;
-      for (const f of trace.frames) retained += f.bytes?.length ?? 0;
+      for (let i = 1; i < trace.frames.length; i++) {
+        retained += trace.frames[i].bytes?.length ?? 0;
+      }
       while (retained > maxBytesPerTrace && trace.frames.length > 1) {
         const [removed] = trace.frames.splice(1, 1);
         retained -= removed?.bytes?.length ?? 0;
-        trace.truncated = true;
+        trace.dropped.framesByBytes += 1;
       }
     }
+    // `truncated` is the boolean collapse of the per-axis counts, so the two can
+    // never disagree.
+    trace.truncated =
+      trace.dropped.framesByCount +
+        trace.dropped.framesByBytes +
+        trace.dropped.payloadsShed >
+      0;
     trace.lastAt = frame.timestamp;
     traces.set(key, trace);
     current.set(baseKey, key);

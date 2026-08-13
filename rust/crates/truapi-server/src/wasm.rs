@@ -71,6 +71,20 @@ impl FrameSink for WasmFrameSink {
     }
 }
 
+/// This core's wire-contract fingerprint, for a host to stamp on each debug
+/// envelope it forwards to the debugger.
+///
+/// The frames a web host taps are encoded by *this* core, so the identity the
+/// debugger checks has to come from here. A host that stamped its JS client's
+/// hash instead would attest to a table it did not encode with: `dist/wasm/web/`
+/// is a hand-built, gitignored artifact, so a stale core paired with a fresh
+/// client would pass the identity check while emitting frames from a different
+/// contract - exactly the silent mis-decode the fingerprint exists to stop.
+#[wasm_bindgen(js_name = wireSchemaHash)]
+pub fn wire_schema_hash() -> String {
+    crate::generated::wire_table::TRUAPI_WIRE_SCHEMA_HASH.to_string()
+}
+
 /// Streams tapped debug frames out to a JS `debugEmit(channelId, dir, frame)`
 /// callback so the host worker can forward them to the debugger it dials.
 /// Dev-only: installed only when the host provides the callback, and

@@ -35,6 +35,28 @@ import { TRACE_DETAIL_CSS } from "./trace-styles.js";
 /** Default port the debugger listens on; a host points its debug URL here. */
 const DEFAULT_PORT = 9231;
 
+/** Ops one `/view` request renders when the caller names no window. */
+const VIEW_DEFAULT_LIMIT = 20;
+
+/** Largest `?limit=` `/view` will honour, so one request stays bounded. */
+const VIEW_MAX_LIMIT = 100;
+
+/**
+ * Cap on one inbound WS message.
+ *
+ * Deliberately ABOVE every producer's own per-message ceiling. The native
+ * `WsDebugSink` budgets its outbound queue at 8 MiB and refuses to enqueue a
+ * serialized line that alone exceeds it, so 8 MiB is the largest envelope a
+ * conforming host can send - and base64 inflates a frame by 4/3, so a cap set at
+ * the engine's 1 MiB per-trace budget would sit *below* the producer and make an
+ * ordinary large payload fatal. Bun does not drop an over-cap message: it CLOSES
+ * the connection (1006, "Received too big message") without ever invoking
+ * `message`, so an under-set cap silently kills the host's stream mid-session.
+ * The cap still bounds memory (well under Bun's 16 MiB default) for anything else
+ * that reaches the port.
+ */
+const MAX_INBOUND_MESSAGE_BYTES = 9 * 1024 * 1024;
+
 /** Frame roles that make an op a subscription rather than a request/response. */
 const SUBSCRIPTION_ROLES = new Set<string>([
   "start",
@@ -84,6 +106,13 @@ interface ParsedWireMessage {
   identityConfirmed: boolean;
   /** Frames the host reported dropping before this one. */
   dropped: number;
+  /**
+   * `true` when the host sent a `dropped` that is not a finite non-negative
+   * integer (`Infinity`, a float, a string). The frame is still ingested and the
+   * bogus count is discarded, but the fact is counted so a host reporting loss in
+   * a shape this debugger can't sum is visible rather than read as "no loss".
+   */
+  droppedFieldInvalid: boolean;
 }
 
 /**
@@ -106,43 +135,66 @@ function originAllowed(origin: string | null): boolean {
 
 /**
  * Parse an optional integer query param: `undefined` if absent, `null` if
- * malformed. Requires a canonical integer so `""`, `" "`, `"1e3"`, `"0x10"`,
- * `"1.5"`, and `"+1"` all reject rather than silently coercing (`Number("")===0`).
+ * malformed. Requires a CANONICAL decimal integer, so `""`, `" "`, `"1e3"`,
+ * `"0x10"`, `"1.5"`, `"+1"`, `"007"`, and `"-0"` all reject rather than silently
+ * coercing (`Number("") === 0`, `Number("0x10") === 16`, and `frames[-0]` is
+ * `frames[0]`). Every numeric query param on every route goes through this, so
+ * one spelling of "not an integer" can't 400 on one route and resolve a real
+ * record on another.
  */
 function optionalInt(raw: string | null): number | null | undefined {
   if (raw === null) return undefined;
   const t = raw.trim();
-  if (!/^-?\d+$/.test(t)) return null;
+  // No leading zeros, no signed zero: exactly one spelling per value.
+  if (!/^(0|-?[1-9]\d*)$/.test(t)) return null;
   const n = Number(t);
   return Number.isInteger(n) ? n : null;
 }
 
 /**
- * Whether `host` is a loopback name. The `Host`-header DNS-rebinding guard and
- * the WS `Origin` gate both key on this, so the classification is the
- * security-relevant one and is unit-tested separately.
+ * Parse an optional `?channel=` param. An empty (or whitespace-only) value means
+ * ABSENT, not "the channel named `''`": a client that builds the query with
+ * `?? ""` would otherwise pin itself to a channel that can never exist, and the
+ * decode gate would answer with a 409 "codec mismatch" that is simply false.
+ */
+function optionalChannel(raw: string | null): string | null {
+  if (raw === null) return null;
+  const t = raw.trim();
+  return t === "" ? null : t;
+}
+
+/**
+ * The three names this server binds and answers for. Note the case: every caller
+ * passes a hostname already normalized by the WHATWG URL parser, which lowercases
+ * it, so these literals see `LOCALHOST` as `localhost`. The classifier is never
+ * handed a raw header.
+ */
+const LOOPBACK_LITERALS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/**
+ * Whether `host` is a loopback ORIGIN this server accepts a WS upgrade from: the
+ * loopback literals, plus subdomains of `.localhost`.
  *
- * Exact literals, plus subdomains of `.localhost`. The subdomain case is not a
- * fuzzy match: RFC 6761 reserves `.localhost` as a special-use TLD that always
- * resolves to loopback and cannot be registered publicly, so `host.localhost` is
- * as much loopback as `localhost` is. Real hosts use it - dotli serves its host
- * realm from `host.localhost` - and without this they can never reach the
- * debugger. The dangerous shape this must still reject is the *other* direction,
- * a loopback-looking label under an attacker's domain (`127.0.0.1.evil.com`,
+ * The subdomain case is not a fuzzy match: RFC 6761 reserves `.localhost` as a
+ * special-use TLD that always resolves to loopback and cannot be registered
+ * publicly, so `host.localhost` is as much loopback as `localhost` is. Real hosts
+ * use it - dotli serves its host realm from `host.localhost`, and dials the
+ * debugger from that origin - and without this they can never reach the debugger.
+ * The dangerous shape this must still reject is the *other* direction, a
+ * loopback-looking label under an attacker's domain (`127.0.0.1.evil.com`,
  * `localhost.evil.com`); those do not end in `.localhost` and stay rejected.
+ *
+ * `Host` headers are NOT classified here - see {@link hostHeaderAllowed}.
+ * The input is a WHATWG-normalized (lowercased) hostname, so this is
+ * case-sensitive by design.
  */
 export function isLoopbackDebugHost(host: string): boolean {
-  return (
-    host === "127.0.0.1" ||
-    host === "localhost" ||
-    host === "::1" ||
-    host.endsWith(".localhost")
-  );
+  return LOOPBACK_LITERALS.has(host) || host.endsWith(".localhost");
 }
 
 /**
  * Whether a request's `Host` header targets an address this server is willing to
- * answer for: a loopback name.
+ * answer for: one of the three names it can actually be reached at.
  *
  * This is the DNS-rebinding guard. Binding to loopback keeps off-box peers out,
  * but a page served from `evil.com` whose DNS has been rebound to `127.0.0.1`
@@ -150,6 +202,13 @@ export function isLoopbackDebugHost(host: string): boolean {
  * requests still carry `Host: evil.com`. Requiring a loopback Host rejects them
  * with a 403. A `Host`-less request (a non-browser client that omits it) is
  * allowed, matching the WS Origin gate's posture.
+ *
+ * Deliberately NARROWER than the Origin gate: `*.localhost` is a legitimate
+ * *origin* for a page that dials in, but never a legitimate *target* - this
+ * server binds `127.0.0.1`, and a browser that resolved `x.localhost` to
+ * loopback still sends `Host: x.localhost`, an address the debugger does not
+ * serve. Accepting it only widens the rebinding surface (a wildcard-DNS
+ * `*.localhost` zone under an attacker's control) for no reachable client.
  */
 export function hostHeaderAllowed(hostHeader: string | null): boolean {
   if (hostHeader === null || hostHeader === "") return true;
@@ -161,36 +220,93 @@ export function hostHeaderAllowed(hostHeader: string | null): boolean {
   }
   // `new URL("http://[::1]").hostname` keeps the brackets; normalize to bare.
   const normalized = hostname === "[::1]" ? "::1" : hostname;
-  return isLoopbackDebugHost(normalized);
+  return LOOPBACK_LITERALS.has(normalized);
 }
 
-/** Parse and validate one inbound WS text message, or `null`. */
-function parseWireMessage(raw: string): ParsedWireMessage | null {
+/**
+ * Why an inbound WS message was not ingested. Every rejection is counted under
+ * one of these and surfaced on `/stats`: a silently discarded envelope is
+ * indistinguishable from a host that never dialed, which is exactly the state a
+ * debugger must never leave its user guessing about.
+ */
+export type WireRejectReason =
+  | "bad-json"
+  | "not-object"
+  | "bad-channel-id"
+  | "empty-channel-id"
+  | "bad-dir"
+  | "bad-frame"
+  | "ingest-threw";
+
+/** Every reject reason, so `/stats` always serializes the same key set. */
+const WIRE_REJECT_REASONS: readonly WireRejectReason[] = [
+  "bad-json",
+  "not-object",
+  "bad-channel-id",
+  "empty-channel-id",
+  "bad-dir",
+  "bad-frame",
+  "ingest-threw",
+];
+
+/** One parse attempt: the message, or the reason it was refused. */
+type WireParseResult =
+  | { ok: true; value: ParsedWireMessage }
+  | { ok: false; reason: WireRejectReason };
+
+/** Parse and validate one inbound WS text message. */
+function parseWireMessage(raw: string): WireParseResult {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return null;
+    return { ok: false, reason: "bad-json" };
   }
-  if (typeof parsed !== "object" || parsed === null) return null;
+  if (typeof parsed !== "object" || parsed === null) {
+    return { ok: false, reason: "not-object" };
+  }
   const m = parsed as Partial<WireMessage>;
-  if (typeof m.channelId !== "string") return null;
-  if (m.dir !== "in" && m.dir !== "out") return null;
-  if (typeof m.frame !== "string") return null;
+  if (typeof m.channelId !== "string") {
+    return { ok: false, reason: "bad-channel-id" };
+  }
+  // `""` is the "all channels" sentinel every filtering endpoint reads as absent,
+  // so a host using it as its own id could never be selected, filtered, or
+  // decode-scoped. Refuse it at ingest rather than admit an unaddressable host.
+  if (m.channelId === "") return { ok: false, reason: "empty-channel-id" };
+  if (m.dir !== "in" && m.dir !== "out") return { ok: false, reason: "bad-dir" };
+  if (typeof m.frame !== "string") return { ok: false, reason: "bad-frame" };
   const schema = typeof m.schema === "string" ? m.schema : undefined;
   const identityMismatch =
     (typeof m.v === "number" && m.v !== WIRE_ENVELOPE_VERSION) ||
     (typeof m.codec === "number" && m.codec !== TRUAPI_CODEC_VERSION) ||
     (schema !== undefined && schema !== TRUAPI_WIRE_SCHEMA_HASH);
+  // `dropped` feeds a summed `droppedByHost: number`, so anything but a finite
+  // non-negative integer is not a smaller number - it poisons the whole session's
+  // total. `1e999` is `Infinity`, which `JSON.stringify` emits as `null` and the
+  // UI renders as "0 dropped" for every channel; a float or a string would break
+  // the declared contract just as quietly.
+  const droppedRaw = m.dropped;
+  const droppedValid =
+    droppedRaw === undefined ||
+    (typeof droppedRaw === "number" &&
+      Number.isInteger(droppedRaw) &&
+      droppedRaw >= 0);
   return {
-    envelope: {
-      channelId: m.channelId,
-      dir: m.dir,
-      frame: new Uint8Array(Buffer.from(m.frame, "base64")),
+    ok: true,
+    value: {
+      envelope: {
+        channelId: m.channelId,
+        dir: m.dir,
+        frame: new Uint8Array(Buffer.from(m.frame, "base64")),
+      },
+      identityMismatch,
+      identityConfirmed: schema === TRUAPI_WIRE_SCHEMA_HASH,
+      dropped:
+        droppedValid && typeof droppedRaw === "number" && droppedRaw > 0
+          ? droppedRaw
+          : 0,
+      droppedFieldInvalid: !droppedValid,
     },
-    identityMismatch,
-    identityConfirmed: schema === TRUAPI_WIRE_SCHEMA_HASH,
-    dropped: typeof m.dropped === "number" && m.dropped > 0 ? m.dropped : 0,
   };
 }
 
@@ -225,9 +341,13 @@ function safeStringify(value: unknown): string {
  * frame a host streams to it. `port: 0` binds an ephemeral port, read back from
  * {@link DebugServer.port}.
  *
- * Level-2 value decode is off unless `decodeValues` is set (the CLI entry point
- * derives it from `TRUAPI_DEBUGGER_DECODE_VALUES`). It only ever affects the
- * `/frame` drill-down; `/traces` is byte- and value-free either way.
+ * Level-2 value decode is ON unless `decodeValues: false` is passed - this is a
+ * dev-only tool that decodes everything (the CLI entry point derives the
+ * off-switch from `TRUAPI_DEBUGGER_DECODE_VALUES`). It affects all three
+ * drill-down paths, which render or serialize a decoded value: `/op` (the default
+ * page's detail pane), `/view` (the standalone fragment), and `/frame` (the JSON
+ * endpoint). The list-level endpoints - `/traces`, `/op-list`, `/stats` - are
+ * byte- and value-free either way.
  */
 export function startDebugServer(
   options: {
@@ -294,20 +414,15 @@ export function startDebugServer(
   /** The `/frame?id=<requestId>&i=<index>[&channel=<channelId>]` drill-down detail response. */
   function frameResponse(url: URL): Response {
     const id = url.searchParams.get("id");
-    const rawIndex = url.searchParams.get("i");
-    const channel = url.searchParams.get("channel") ?? undefined;
-    // `Number("")`/`Number(" ")` are both 0 and pass Number.isInteger, so an
-    // empty or whitespace `?i=` or `?gen=` would otherwise resolve frame 0 /
-    // generation 0 (the oldest recycled op) with a 200; optionalInt rejects them.
+    const channel = optionalChannel(url.searchParams.get("channel")) ?? undefined;
+    // Both numeric params go through `optionalInt`: `Number("")`/`Number(" ")` are
+    // 0 and pass `Number.isInteger`, `Number("0x0")` is 0, and `frames[-0]` is
+    // `frames[0]`, so a bare `Number()` would resolve frame 0 / generation 0 (the
+    // oldest recycled op) with a 200 for four different spellings of "not a
+    // number".
     const generation = optionalInt(url.searchParams.get("gen"));
-    const index = Number(rawIndex);
-    if (
-      id === null ||
-      rawIndex === null ||
-      rawIndex.trim() === "" ||
-      !Number.isInteger(index) ||
-      generation === null
-    ) {
+    const index = optionalInt(url.searchParams.get("i"));
+    if (id === null || index === null || index === undefined || generation === null) {
       return new Response('{"error":"id and integer i required"}', {
         status: 400,
         headers: { "content-type": "application/json" },
@@ -327,33 +442,58 @@ export function startDebugServer(
   }
 
   /**
-   * The `/view` fragment: every trace rendered by the shared
-   * {@link renderTraceDetail}, the same renderer dotli's panel mounts. Each
-   * frame's value is decoded inline for a trusted channel; an untrusted (codec-
-   * mismatched) channel groups but shows no value.
+   * The `/view?offset=&limit=` fragment: a WINDOW of traces rendered by the
+   * shared {@link renderTraceDetail}, the same renderer dotli's panel mounts.
+   * Each frame's value is decoded inline for a trusted channel; an untrusted
+   * (codec-mismatched) channel groups but shows no value.
+   *
+   * Bounded per request, and `null` for a malformed window (the caller gets a
+   * 400). This is the only endpoint that renders every retained frame's decoded
+   * value, so an unbounded response is quadratic in the session's own limits: at
+   * the engine's caps a single `/view` would build a multi-hundred-MB string in
+   * memory, block the event loop for seconds, and spike RSS by gigabytes. The
+   * window keeps one response proportional to what a human reads.
    */
-  function viewHtml(): string {
-    const entries = viewsFor(session.traceEngine.traces());
+  function viewHtml(url: URL): string | null {
+    // `null` (malformed) must not collapse into the default the way `undefined`
+    // (absent) does, so the two are separated before either gets a fallback.
+    const rawOffset = optionalInt(url.searchParams.get("offset"));
+    const rawLimit = optionalInt(url.searchParams.get("limit"));
+    if (rawOffset === null || rawLimit === null) return null;
+    const offset = rawOffset ?? 0;
+    const limit = rawLimit ?? VIEW_DEFAULT_LIMIT;
+    if (offset < 0 || limit < 1 || limit > VIEW_MAX_LIMIT) return null;
+    const traces = session.traceEngine.traces();
+    const entries = viewsFor(traces.slice(offset, offset + limit));
     if (entries.length === 0) {
       return `<div class="td-empty">no frames yet</div>`;
     }
+    const shown = offset + entries.length;
+    // Say so when the window hides ops, so a truncated read is never mistaken for
+    // the whole session (the failure mode the `evicted`/`dropped` tiles exist for).
+    const more =
+      shown < traces.length
+        ? `<div class="td-empty">showing ${offset + 1}-${shown} of ${traces.length} ops — ?offset=${shown} for more</div>`
+        : "";
     // Wrap each rendered op in `.td-drilldown` - dotli's verbatim card wrapper -
     // so the standalone list gets the same per-op framing without a bespoke rule.
-    return entries
-      .map(
-        ({ view }) =>
-          `<div class="td-drilldown">` +
-          renderTraceDetail(view, {
-            offerDecode: session.decodeValues,
-            // Same codec/schema-drift guard the `/frame` endpoint enforces: an
-            // untrusted channel's frames group but never surface a decoded value.
-            decoded: decodeTrusted(view.channelId)
-              ? decodeTraceFrames(session, view)
-              : undefined,
-          }) +
-          `</div>`,
-      )
-      .join("");
+    return (
+      entries
+        .map(
+          ({ view }) =>
+            `<div class="td-drilldown">` +
+            renderTraceDetail(view, {
+              offerDecode: session.decodeValues,
+              // Same codec/schema-drift guard the `/frame` endpoint enforces: an
+              // untrusted channel's frames group but never surface a decoded value.
+              decoded: decodeTrusted(view.channelId)
+                ? decodeTraceFrames(session, view)
+                : undefined,
+            }) +
+            `</div>`,
+        )
+        .join("") + more
+    );
   }
 
   // Per-channel liveness for the inspector's host dimension. The envelope
@@ -404,9 +544,34 @@ export function startDebugServer(
   // registry, because an untrusted host's channel record can be LRU-evicted (see
   // MAX_CHANNELS) while its frames survive in the trace engine.
   let sawUntrusted = false;
+  // Envelopes refused at ingest, by reason. Every reason is pre-seeded so the
+  // `/stats` key set is fixed and a client can chart a reason that is still zero.
+  const rejectCounts = new Map<WireRejectReason, number>(
+    WIRE_REJECT_REASONS.map((r) => [r, 0]),
+  );
+  // Sockets Bun closed abnormally (code 1006), and the subset it closed because an
+  // inbound message exceeded MAX_INBOUND_MESSAGE_BYTES. An over-cap message never
+  // reaches `message()`, so this close is the ONLY place the loss can be counted:
+  // without it an over-cap host's stream simply stops with every counter untouched.
+  let abnormalCloses = 0;
+  let oversizedMessages = 0;
+  // Frames whose `dropped` field was unusable (see `droppedFieldInvalid`).
+  let invalidDroppedFields = 0;
+
+  /** Count one refused envelope under its reason. */
+  function recordReject(reason: WireRejectReason): void {
+    rejectCounts.set(reason, (rejectCounts.get(reason) ?? 0) + 1);
+  }
 
   function recordChannel(channelId: string, parsed: ParsedWireMessage): void {
-    if (!parsed.identityConfirmed) sawUntrusted = true;
+    // A host is untrusted if it did not confirm the schema OR if any declared
+    // identity field mismatched. Keying only on `identityConfirmed` would let the
+    // `matching schema + mismatched v/codec` host (confirmed AND mismatched) leave
+    // this flag false, and with it the whole channel-less decode path open -
+    // discarding the one signal that sees a payload-layout drift the schema hash
+    // is blind to.
+    if (!parsed.identityConfirmed || parsed.identityMismatch) sawUntrusted = true;
+    if (parsed.droppedFieldInvalid) invalidDroppedFields += 1;
     const now = Date.now();
     const key = clampChannelId(channelId);
     const existing = channels.get(key);
@@ -516,6 +681,19 @@ export function startDebugServer(
       avgDurationMs: number;
       maxDurationMs: number;
       topMethods: { method: string; count: number }[];
+      /**
+       * Link-level loss and liveness, SESSION-WIDE (never narrowed by
+       * `?channel=`): a rejected envelope has no channel to attribute it to, and a
+       * closed socket may have carried several. Grouped so a client can tell "the
+       * host is quiet" from "the host is talking and this debugger is refusing or
+       * losing what it says".
+       */
+      sockets: number;
+      envelopeRejects: number;
+      envelopeRejectReasons: Record<string, number>;
+      oversizedMessages: number;
+      abnormalCloses: number;
+      invalidDroppedFields: number;
     }
     const traces =
       channel === null
@@ -597,6 +775,12 @@ export function startDebugServer(
       avgDurationMs: ops === 0 ? 0 : Math.round(durationTotal / ops),
       maxDurationMs: Math.round(durationMax),
       topMethods,
+      sockets: openSockets,
+      envelopeRejects: [...rejectCounts.values()].reduce((n, c) => n + c, 0),
+      envelopeRejectReasons: Object.fromEntries(rejectCounts),
+      oversizedMessages,
+      abnormalCloses,
+      invalidDroppedFields,
     };
     return JSON.stringify(payload);
   }
@@ -714,6 +898,84 @@ export function startDebugServer(
     });
   }
 
+  const htmlHeaders = { "content-type": "text/html; charset=utf-8" };
+
+  /**
+   * Route one request. Every throw is contained by the caller, so a malformed
+   * request can only ever cost its own response.
+   */
+  function route(req: Request, srv: Bun.Server<undefined>): Response | undefined {
+    const url = new URL(req.url);
+    // Reject cross-origin WebSocket upgrades (CSWSH): binding to loopback keeps
+    // off-box peers out, but a page open in the dev's own browser could still
+    // dial ws://127.0.0.1:<port> to inject frames or drive the decoder over
+    // hostile bytes. A same-origin inspector and non-browser clients are
+    // allowed; a foreign browser Origin is not.
+    if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      if (!originAllowed(req.headers.get("origin"))) {
+        return new Response("forbidden origin", { status: 403 });
+      }
+      if (srv.upgrade(req)) return undefined;
+    }
+    if (url.pathname === "/traces") {
+      return new Response(tracesJson(), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/channels") {
+      return new Response(channelsJson(), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/stats") {
+      return new Response(statsJson(optionalChannel(url.searchParams.get("channel"))), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname === "/op-list") {
+      return new Response(
+        opListHtml(
+          optionalChannel(url.searchParams.get("channel")),
+          url.searchParams.get("sort"),
+        ),
+        { headers: htmlHeaders },
+      );
+    }
+    if (url.pathname === "/op") {
+      const id = url.searchParams.get("id");
+      const generation = optionalInt(url.searchParams.get("gen"));
+      if (generation === null) {
+        return new Response(`<div class="td-detail-empty">bad request</div>`, {
+          status: 400,
+          headers: htmlHeaders,
+        });
+      }
+      return new Response(
+        id === null
+          ? `<div class="td-detail-empty">select an operation</div>`
+          : opDetailHtml(
+              id,
+              optionalChannel(url.searchParams.get("channel")),
+              generation,
+            ),
+        { headers: htmlHeaders },
+      );
+    }
+    if (url.pathname === "/view") {
+      const html = viewHtml(url);
+      return html === null
+        ? new Response(`<div class="td-empty">bad request</div>`, {
+            status: 400,
+            headers: htmlHeaders,
+          })
+        : new Response(html, { headers: htmlHeaders });
+    }
+    if (url.pathname === "/frame") {
+      return frameResponse(url);
+    }
+    return new Response(VIEW_HTML, { headers: htmlHeaders });
+  }
+
   const server = Bun.serve({
     port: options.port ?? DEFAULT_PORT,
     // Loopback only: the debugger holds every trace (and, with decode on,
@@ -721,84 +983,44 @@ export function startDebugServer(
     // could read or inject.
     hostname: "127.0.0.1",
     fetch(req, srv) {
-      const url = new URL(req.url);
-      const htmlHeaders = { "content-type": "text/html; charset=utf-8" };
-      // DNS-rebinding guard: the request's Host must be loopback. This blocks a
-      // rebound `evil.com -> 127.0.0.1` page from reading decoded frames over
-      // same-origin fetches, which binding to loopback alone does not prevent.
-      // Applies before any route dispatch.
+      // DNS-rebinding guard: the request's Host must be one this server answers
+      // for. This blocks a rebound `evil.com -> 127.0.0.1` page from reading
+      // decoded frames over same-origin fetches, which binding to loopback alone
+      // does not prevent.
+      //
+      // FIRST, before `new URL(req.url)`: Bun builds `req.url` from the Host
+      // header, so an unparseable authority (`Host: localhost:99999`) throws
+      // inside the URL constructor. Gating first turns that into the 403 the
+      // header already earns, instead of a 500 plus a stack trace per request.
       if (!hostHeaderAllowed(req.headers.get("host"))) {
         return new Response("forbidden host", { status: 403 });
       }
-      // Reject cross-origin WebSocket upgrades (CSWSH): binding to loopback keeps
-      // off-box peers out, but a page open in the dev's own browser could still
-      // dial ws://127.0.0.1:<port> to inject frames or drive the decoder over
-      // hostile bytes. A same-origin inspector and non-browser clients are
-      // allowed; a foreign browser Origin is not.
-      if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        if (!originAllowed(req.headers.get("origin"))) {
-          return new Response("forbidden origin", { status: 403 });
-        }
-        if (srv.upgrade(req)) return undefined;
+      // The WS handler is explicitly exception-safe; so is the route dispatcher.
+      // One malformed request must cost its own response and nothing else - no
+      // 500 with a stack trace, and no unhandled rejection taking the process
+      // down mid-session.
+      try {
+        return route(req, srv);
+      } catch {
+        return new Response("bad request", { status: 400 });
       }
-      if (url.pathname === "/traces") {
-        return new Response(tracesJson(), {
-          headers: { "content-type": "application/json" },
-        });
-      }
-      if (url.pathname === "/channels") {
-        return new Response(channelsJson(), {
-          headers: { "content-type": "application/json" },
-        });
-      }
-      if (url.pathname === "/stats") {
-        return new Response(statsJson(url.searchParams.get("channel")), {
-          headers: { "content-type": "application/json" },
-        });
-      }
-      if (url.pathname === "/op-list") {
-        return new Response(
-          opListHtml(
-            url.searchParams.get("channel"),
-            url.searchParams.get("sort"),
-          ),
-          { headers: htmlHeaders },
-        );
-      }
-      if (url.pathname === "/op") {
-        const id = url.searchParams.get("id");
-        const generation = optionalInt(url.searchParams.get("gen"));
-        if (generation === null) {
-          return new Response(`<div class="td-detail-empty">bad request</div>`, {
-            status: 400,
-            headers: htmlHeaders,
-          });
-        }
-        return new Response(
-          id === null
-            ? `<div class="td-detail-empty">select an operation</div>`
-            : opDetailHtml(id, url.searchParams.get("channel"), generation),
-          { headers: htmlHeaders },
-        );
-      }
-      if (url.pathname === "/view") {
-        return new Response(viewHtml(), { headers: htmlHeaders });
-      }
-      if (url.pathname === "/frame") {
-        return frameResponse(url);
-      }
-      return new Response(VIEW_HTML, { headers: htmlHeaders });
     },
     websocket: {
-      // Cap one inbound frame at 1 MiB rather than Bun's 16 MiB default: a host
-      // dial is one small SCALE frame per message, so a larger payload is either
-      // a bug or an attempt to exhaust memory. Bun drops an over-cap message.
-      maxPayloadLength: 1024 * 1024,
+      maxPayloadLength: MAX_INBOUND_MESSAGE_BYTES,
       open() {
         openSockets += 1;
       },
-      close() {
+      close(_ws, code, reason) {
         openSockets = Math.max(0, openSockets - 1);
+        // An over-cap message is not dropped: Bun closes the socket (1006,
+        // "Received too big message") without invoking `message`, so this is the
+        // only place the loss is observable. Count the specific case, and every
+        // abnormal close, so a stream that dies mid-session shows up on /stats
+        // instead of looking like a host that simply went quiet.
+        if (code === 1006) {
+          abnormalCloses += 1;
+          if (/too big/i.test(reason ?? "")) oversizedMessages += 1;
+        }
       },
       message(_ws, message) {
         // Defensive: a malformed frame must never take down the socket callback.
@@ -807,14 +1029,17 @@ export function startDebugServer(
         try {
           const raw = typeof message === "string" ? message : message.toString();
           const parsed = parseWireMessage(raw);
-          if (parsed) {
-            recordChannel(parsed.envelope.channelId, parsed);
+          if (parsed.ok) {
+            recordChannel(parsed.value.envelope.channelId, parsed.value);
             // Still grouped (payload-blind is safe and useful); a mismatch only
             // blocks the value-decode path, via decodeTrusted.
-            session.handleEnvelope(parsed.envelope);
+            session.handleEnvelope(parsed.value.envelope);
+          } else {
+            recordReject(parsed.reason);
           }
         } catch {
           // Drop the frame; the observed session is worth more than one trace.
+          recordReject("ingest-threw");
         }
       },
     },
@@ -1077,7 +1302,14 @@ ${INSPECTOR_LAYOUT_CSS}
     var codecWarn = data.codecMismatch
       ? ' · <span class="mismatch" title="A host is streaming a wire codec this debugger cannot decode against; value decode is refused for it.">⚠ codec mismatch</span>'
       : "";
+    // Open WS sockets, distinct from "hosts": one socket can multiplex several
+    // channelIds, and a host can be recency-idle with its socket still open.
+    // Rendered because 0 sockets with 0 ops is "nobody dialed", while 1 socket
+    // with 0 ops is "a host is connected and nothing is being ingested" - the
+    // exact state the reject counters explain.
+    var sockets = data.sockets || 0;
     statusEl.innerHTML = rows().length + " ops · " + hosts + " host" + (hosts === 1 ? "" : "s") +
+      " · " + sockets + " socket" + (sockets === 1 ? "" : "s") +
       " · " + (live > 0 ? '<span class="live">' + live + " live</span>" : "idle") + codecWarn;
   }
   function escHtml(s) {
@@ -1105,10 +1337,27 @@ ${INSPECTOR_LAYOUT_CSS}
     return '<div class="ins-stat warn' + (n === 0 ? " zero" : "") +
       '"><span class="n">' + n + '</span><span class="k">' + escHtml(k) + "</span></div>";
   }
+  // Envelopes the server refused, plus sockets it lost: link-level loss that has
+  // no op to hang off, so it is reported even when the op list is empty.
+  function linkLoss(s) {
+    return (s.envelopeRejects || 0) + (s.oversizedMessages || 0) +
+      (s.abnormalCloses || 0) + (s.invalidDroppedFields || 0);
+  }
   function renderStats(s) {
-    if (!s || !s.ops) {
+    if (!s || (!s.ops && !linkLoss(s))) {
       summaryEl.className = "ins-summary empty";
       summaryEl.textContent = "waiting for frames…";
+      return;
+    }
+    // A host that is talking while nothing is ingested must never read as
+    // "waiting for frames…": show the refusal counters even with zero ops.
+    if (!s.ops) {
+      summaryEl.className = "ins-summary";
+      summaryEl.innerHTML = statTile(0, "ops") +
+        warnTile(s.envelopeRejects || 0, "rejected") +
+        warnTile(s.oversizedMessages || 0, "oversized") +
+        warnTile(s.abnormalCloses || 0, "socket drops") +
+        warnTile(s.invalidDroppedFields || 0, "bad drop count");
       return;
     }
     summaryEl.className = "ins-summary";
@@ -1122,7 +1371,10 @@ ${INSPECTOR_LAYOUT_CSS}
       warnTile(s.retryStorms, "retry storms") +
       warnTile(s.truncated || 0, "truncated") +
       warnTile(s.evictedTraces || 0, "evicted") +
-      warnTile(s.droppedByHost || 0, "dropped");
+      warnTile(s.droppedByHost || 0, "dropped") +
+      warnTile(s.envelopeRejects || 0, "rejected") +
+      warnTile(s.oversizedMessages || 0, "oversized") +
+      warnTile(s.abnormalCloses || 0, "socket drops");
     if (s.topMethods && s.topMethods.length) {
       var m = '<div class="ins-methods">';
       s.topMethods.forEach(function (t) {
@@ -1185,20 +1437,54 @@ ${INSPECTOR_LAYOUT_CSS}
 </script>
 `;
 
+/**
+ * Whether value decode is on, from `TRUAPI_DEBUGGER_DECODE_VALUES`.
+ *
+ * On by default (dev-only tool); `0`/`false`/`no`/`off` in any case turns it off.
+ * TRIMMED first: this is the switch that stops full payload decode, so it must
+ * fail CLOSED on the shapes a shell or a `.env` file actually produces -
+ * `DECODE_VALUES="0 "` and `DECODE_VALUES=$'false\n'` are how a human writes
+ * "off", and an untrimmed match reads both as "on".
+ */
+export function decodeValuesFromEnv(raw: string | undefined): boolean {
+  return !/^(0|false|no|off)$/i.test((raw ?? "").trim());
+}
+
+/**
+ * The listen port from `TRUAPI_DEBUGGER_PORT`: the value, `DEFAULT_PORT` when
+ * unset/empty, or `null` when it is not a usable port.
+ *
+ * Rejects rather than coerces. `Number.isFinite(x) && x > 0` accepts `99999`,
+ * which the OS truncates to a DIFFERENT port (65535) that the host's debug URL
+ * will not be pointing at, and `1.5`, which crashes the process on port 1. A
+ * silently-wrong port on a debugger is indistinguishable from a host that never
+ * dialed - the single most expensive failure this tool can have.
+ */
+export function portFromEnv(raw: string | undefined): number | null {
+  const t = (raw ?? "").trim();
+  if (t === "") return DEFAULT_PORT;
+  if (!/^\d+$/.test(t)) return null;
+  const port = Number(t);
+  // 0 would bind an ephemeral port nobody can predict; 65535 is the TCP ceiling.
+  return port >= 1 && port <= 65535 ? port : null;
+}
+
 // Entry point: `bun run src/server.ts` (or `npm run serve`) starts the server.
 // Port comes from TRUAPI_DEBUGGER_PORT, else the default. This is a DEV-ONLY,
 // loopback-only tool: value decode is ON by default (set
 // TRUAPI_DEBUGGER_DECODE_VALUES to 0/false/no/off to turn decode off for a demo).
 if (import.meta.main) {
-  const envPort = Number(Bun.env.TRUAPI_DEBUGGER_PORT);
-  // Dev-only tool: value decode is ON by default. Set TRUAPI_DEBUGGER_DECODE_VALUES
-  // to a falsy value (0/false/no/off) to turn decode off for a demo.
-  const decodeValues = !/^(0|false|no|off)$/i.test(
-    Bun.env.TRUAPI_DEBUGGER_DECODE_VALUES ?? "",
-  );
+  const port = portFromEnv(Bun.env.TRUAPI_DEBUGGER_PORT);
+  if (port === null) {
+    console.error(
+      `[truapi-debugger] TRUAPI_DEBUGGER_PORT must be an integer in 1-65535,` +
+        ` got ${JSON.stringify(Bun.env.TRUAPI_DEBUGGER_PORT)}`,
+    );
+    process.exit(1);
+  }
   const server = startDebugServer({
-    port: Number.isFinite(envPort) && envPort > 0 ? envPort : DEFAULT_PORT,
-    decodeValues,
+    port,
+    decodeValues: decodeValuesFromEnv(Bun.env.TRUAPI_DEBUGGER_DECODE_VALUES),
   });
   console.log(
     `[truapi-debugger] listening on http://127.0.0.1:${server.port}` +

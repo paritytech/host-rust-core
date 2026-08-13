@@ -53,10 +53,14 @@ pub trait FrameSink: Send + Sync {
 pub trait DebugSink: Send + Sync {
     /// Hand one event to the sink.
     ///
-    /// Must not block, and must not panic: `emit` is called from inside the
-    /// inbound and outbound frame paths, so a panic here would unwind into a
-    /// live dispatch. Serialize and enqueue only; never do fallible work that
-    /// can `unwrap`/panic on the caller's thread.
+    /// Must not block, and must not panic. This is a contract on the
+    /// implementor, not something the core can enforce: `emit` is called from
+    /// inside the inbound and outbound frame paths, and every profile that
+    /// ships a host aborts on panic (`panic = "abort"` for `release`, which
+    /// `codegen` inherits, and `wasm32` cannot unwind at all), so a panic here
+    /// takes the whole host process down rather than losing one trace. Serialize
+    /// and enqueue only; never do fallible work that can `unwrap`/panic on the
+    /// caller's thread.
     fn emit(&self, event: DebugEvent);
 }
 
@@ -86,22 +90,6 @@ impl FrameDirection {
             FrameDirection::In => "out",
             FrameDirection::Out => "in",
         }
-    }
-}
-
-/// Hand one event to a [`DebugSink`] without letting a misbehaving out-of-repo
-/// implementation take down a live dispatch.
-///
-/// The trait contract forbids `emit` from panicking, but the trait is `pub`, so
-/// this guards the two in-path call sites: a panic is caught, logged, and
-/// swallowed. `DebugEvent` is `UnwindSafe` (a `ChannelId`/`Vec<u8>`), so the
-/// caught closure carries no broken invariant across the boundary.
-fn emit_debug(sink: &dyn DebugSink, event: DebugEvent) {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        sink.emit(event);
-    }));
-    if result.is_err() {
-        tracing::error!("truapi debug sink panicked in emit; frame dropped, session unaffected");
     }
 }
 
@@ -961,14 +949,11 @@ impl ProductRuntime {
 
         // Tap inbound before decode, so a corrupt frame is still observed.
         if let Some((channel_id, debug)) = self.transport.debug() {
-            emit_debug(
-                debug.as_ref(),
-                DebugEvent::Frame {
-                    channel_id,
-                    dir: FrameDirection::In,
-                    bytes: frame.clone(),
-                },
-            );
+            debug.emit(DebugEvent::Frame {
+                channel_id,
+                dir: FrameDirection::In,
+                bytes: frame.clone(),
+            });
         }
 
         let message = ProtocolMessage::decode(&mut frame.as_slice()).map_err(|err| {
@@ -1121,14 +1106,11 @@ impl Transport for SinkTransport {
         match self.debug() {
             Some((channel_id, debug)) => {
                 self.sink.emit_frame(encoded.clone());
-                emit_debug(
-                    debug.as_ref(),
-                    DebugEvent::Frame {
-                        channel_id,
-                        dir: FrameDirection::Out,
-                        bytes: encoded,
-                    },
-                );
+                debug.emit(DebugEvent::Frame {
+                    channel_id,
+                    dir: FrameDirection::Out,
+                    bytes: encoded,
+                });
             }
             None => self.sink.emit_frame(encoded),
         }
@@ -1292,45 +1274,39 @@ mod tests {
         );
     }
 
-    struct PanickingDebugSink;
-
-    impl DebugSink for PanickingDebugSink {
-        fn emit(&self, _event: DebugEvent) {
-            panic!("misbehaving out-of-repo debug sink");
-        }
-    }
-
+    /// [`DebugSink::emit`] documents its no-panic rule as caller-enforced
+    /// because every profile that ships a host aborts on panic, so no in-process
+    /// guard is possible. A `catch_unwind` around the two tap call sites could
+    /// never fire there, and no unit test could show that: Cargo ignores the
+    /// `panic` setting for test profiles, so a "the guard protects dispatch" test
+    /// passes even under `--release`.
+    ///
+    /// What *is* checkable is the premise. This fails if the profiles stop
+    /// aborting, which is the point at which the doc comment on `DebugSink::emit`
+    /// needs revisiting (and a guard becomes worth its cost).
     #[test]
-    fn a_panicking_debug_sink_does_not_take_down_the_dispatch() {
-        // The trait forbids panicking, but it is `pub`, so a bad out-of-repo sink
-        // could. `emit_debug` catches it: `receive_frame` must still succeed.
-        let (host_config, product) = runtime_config("myapp.dot");
-        let runtime = ProductRuntime::from_platform_with_config(
-            Arc::new(StubPlatform::default()),
-            host_config,
-            product,
-            test_spawner(),
-            Arc::new(RecordingSink::default()),
-        );
-        runtime.set_debug_sink(
-            ChannelId("myapp.dot".to_string()),
-            Arc::new(PanickingDebugSink),
-        );
-
-        let ids = subscription_ids("theme_subscribe").expect("known subscription");
-        let raw = ProtocolMessage {
-            request_id: "theme:1".to_string(),
-            payload: Payload {
-                id: ids.start_id,
-                value: Vec::new(),
-            },
-        }
-        .encode();
-        // The inbound tap panics inside receive_frame; the guard swallows it.
-        let result = futures::executor::block_on(runtime.receive_frame(raw));
+    fn shipping_profiles_abort_on_panic_so_the_sink_contract_is_caller_enforced() {
+        let workspace_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("crate lives at <workspace>/rust/crates/truapi-server")
+            .join("Cargo.toml");
+        let manifest = std::fs::read_to_string(&workspace_manifest)
+            .expect("workspace manifest is readable from the crate directory");
+        let release = manifest
+            .split("[profile.release]")
+            .nth(1)
+            .expect("workspace defines [profile.release]")
+            .split("\n[")
+            .next()
+            .expect("release profile section");
         assert!(
-            result.is_ok(),
-            "a panicking sink must not fail the dispatch"
+            release.contains("panic = \"abort\""),
+            "release no longer aborts on panic: revisit DebugSink::emit's contract docs"
+        );
+        assert!(
+            manifest.contains("[profile.codegen]") && manifest.contains("inherits = \"release\""),
+            "codegen no longer inherits release: recheck what the ws-bridge artifacts build with"
         );
     }
 

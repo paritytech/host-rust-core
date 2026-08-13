@@ -85,9 +85,12 @@ impl Parse for WireArgs {
                 }
                 args.host_initiated = true;
             } else if key == "sensitive" {
-                // `sensitive` is a bare flag with no `= N` value: it marks the
-                // method's payloads as carrying key material or bearer secrets,
-                // so the wire debugger never decodes them.
+                // `sensitive` is a bare flag with no `= N` value: it classifies
+                // the method's payloads as carrying key material or bearer
+                // secrets. The classification is folded into the wire
+                // schema-hash fingerprint, so a change in a frame's sensitivity
+                // is caught as contract drift. It suppresses no decoding: it
+                // reaches neither the generated TS nor any runtime.
                 if args.sensitive {
                     return Err(syn::Error::new(key.span(), "duplicate `sensitive`"));
                 }
@@ -152,9 +155,12 @@ fn set_id(args: &mut WireArgs, key: &Ident, value: u8) -> syn::Result<()> {
 /// #[wire(start_id = 42)]
 /// async fn host_account_connection_status_subscribe(...) -> ...;
 ///
-/// // Mark a method whose payloads carry key material or bearer secrets. The
-/// // flag is folded into the wire schema-hash fingerprint, so a change in a
-/// // frame's sensitivity classification is caught as contract drift.
+/// // Classify a method whose payloads carry key material or bearer secrets.
+/// // The flag is folded into the wire schema-hash fingerprint, so a change in a
+/// // frame's sensitivity classification is caught as contract drift. It is a
+/// // classification only, and grants no confidentiality: it reaches neither the
+/// // generated TypeScript nor any runtime, and nothing suppresses decoding of
+/// // the payload.
 /// #[wire(request_id = 114, sensitive)]
 /// async fn sign_raw(...) -> ...;
 /// ```
