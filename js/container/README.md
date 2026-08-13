@@ -82,15 +82,6 @@ pair. Three id-leak channels are each closed:
 The bundle is an IIFE, so `pending`, the id source, and the captured native
 sender live in a closure the product cannot reflect into.
 
-### Residual limitation
-
-This raises the bar very high within one realm but is not a formal trust
-boundary; exotic intrinsic tampering (e.g. replacing `Map.prototype.get`) is the
-same class of concern as the whole same-realm lockdown. The proper fix is
-converging the iOS host onto the web host's cross-origin iframe + Web Worker
-model (already used by `@parity/truapi-host`'s `/web` entry), tracked as a
-separate effort.
-
 ## Develop
 
 ```bash
