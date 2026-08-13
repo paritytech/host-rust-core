@@ -525,6 +525,17 @@ pub async fn register_statement_account(
             Err(err) if duplicate_submit_error(&err.to_string()) => {
                 skipped_duplicate_slots.push(seq);
             }
+            Err(err) if took_over_a_slot && invalid_transaction_error(&err.to_string()) => {
+                // The runtime re-checks the replacement cooldown against its own
+                // clock and rejects at validation, so a takeover can lose a race
+                // it looked eligible for. Name that rather than surfacing a raw
+                // RPC failure the caller cannot act on.
+                return Err(SlotError::ReplacementRefused {
+                    period: params.period,
+                    seq,
+                }
+                .into());
+            }
             Err(err) => return Err(err),
         }
     }
@@ -732,6 +743,13 @@ async fn fetch_block_number(rpc: &RpcClient) -> Result<u32, StatementAllowanceEr
 /// Pool responses meaning an equivalent claim already occupies the pool, so
 /// the scan should move to the next slot. Bans and validity failures are hard
 /// errors for the caller.
+/// Whether the node rejected the extrinsic as invalid rather than accepting it
+/// into the pool. The runtime's `AsResources` validity check answers this way
+/// when a slot is not replaceable yet.
+fn invalid_transaction_error(message: &str) -> bool {
+    message.to_ascii_lowercase().contains("invalid transaction")
+}
+
 fn duplicate_submit_error(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("priority is too low") || message.contains("already imported")
@@ -1272,6 +1290,55 @@ mod tests {
         assert!(
             err.to_string().contains("no free"),
             "a retry after a takeover should stop, not replace again: {err}"
+        );
+    }
+
+    /// A takeover the runtime refuses is reported as such, not as a bare RPC
+    /// failure: the host loses the race whenever the chain's clock disagrees.
+    #[test]
+    fn a_refused_takeover_is_named() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let entropy = [0x11; 32];
+        let ring = RingParams {
+            members: vec![proof::member_key(entropy)],
+            exponent: 9,
+            ring_index: 0,
+            block_hash: "0xfinal".to_string(),
+        };
+
+        let mut owned = vec!["null".to_string()];
+        owned.extend((0..10u64).map(|seq| slot_entry_since([0x99; 32], 1_000 + seq)));
+        owned.push(chain_clock(NOW));
+        let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let scripted = ScriptedRpc::new(responses);
+        scripted.script_subscription_errors("User error: Invalid Transaction (1010)", 1);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let err = futures::executor::block_on(register_statement_account(
+            &rpc,
+            &metadata,
+            &chain_state,
+            entropy,
+            RegistrationParams {
+                target: &[0x22; 32],
+                period: 7,
+                ring: &ring,
+                reuse_existing: true,
+                preselected: None,
+                protected: &[],
+            },
+        ))
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not replaceable yet"),
+            "unexpected error: {err}"
         );
     }
 

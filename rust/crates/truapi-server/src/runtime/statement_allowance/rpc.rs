@@ -336,9 +336,11 @@ pub(crate) mod testing {
             }
             let batch = {
                 let mut batches = self.0.subscription_batches.lock().unwrap();
-                (!batches.is_empty())
-                    .then(|| batches.remove(0))
-                    .unwrap_or_default()
+                if batches.is_empty() {
+                    Vec::new()
+                } else {
+                    batches.remove(0)
+                }
             };
             let items: Vec<_> = batch
                 .into_iter()

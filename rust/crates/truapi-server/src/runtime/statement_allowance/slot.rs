@@ -53,6 +53,17 @@ pub enum SlotError {
         /// Maximum slot count.
         max: u8,
     },
+    /// The runtime refused a takeover: the slot was not old enough by its own
+    /// clock, or another registration reached it first.
+    #[error(
+        "runtime refused replacing slot (period {period}, seq {seq}): it is not replaceable yet"
+    )]
+    ReplacementRefused {
+        /// Period the takeover targeted.
+        period: u32,
+        /// Slot the takeover targeted.
+        seq: u32,
+    },
     /// Free slots exist but all were excluded by this call's own submissions.
     #[error(
         "every free StatementStore slot in period {period} is awaiting one of this call's own submissions"
