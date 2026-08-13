@@ -6075,7 +6075,7 @@ mod tests {
             1
         );
         let message = submitted_remote_message(&platform, &session);
-        assert_eq!(message.message_id, "truapi:sso:disconnect");
+        assert_eq!(message.message_id.len(), 8, "opaque nanoid message id");
         assert!(matches!(
             message.data,
             RemoteMessageData::V1(v1::RemoteMessage::Disconnected)

@@ -28,15 +28,15 @@ use truapi_platform::{
 };
 
 use crate::SigningHostRuntime;
-use crate::host_core::SsoMessageOutcome;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::NavigateDecision;
 use crate::host_logic::sso::messages::{
-    RemoteMessage, RemoteMessageData, SSO_DISCONNECT_MESSAGE_ID, v1,
+    RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome, v1,
 };
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererSubscription};
+use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
@@ -122,7 +122,9 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotAppDev,
 }
 
-/// Outcome of answering one wallet-supplied SSO request at the FFI boundary.
+/// FFI projection of the canonical
+/// [`SsoRequestOutcome`](crate::host_logic::sso::messages::SsoRequestOutcome),
+/// concrete because UniFFI cannot export generics.
 ///
 /// Variants carry SCALE-encoded wire bytes rather than decoded Rust types because
 /// the wallet forwards encodings verbatim and never constructs them — the opaque
@@ -702,22 +704,22 @@ impl NativeTrUApiHostRuntime {
             }
         })?;
         Ok(match self.runtime.answer_sso_message(message).await {
-            SsoMessageOutcome::Response(response) => SsoRequestOutcome::Response {
+            CoreSsoRequestOutcome::Response(response) => SsoRequestOutcome::Response {
                 message: response.encode(),
             },
-            SsoMessageOutcome::Disconnected => SsoRequestOutcome::Disconnected,
-            SsoMessageOutcome::Ignored => SsoRequestOutcome::Ignored,
+            CoreSsoRequestOutcome::Disconnected => SsoRequestOutcome::Disconnected,
+            CoreSsoRequestOutcome::Ignored => SsoRequestOutcome::Ignored,
         })
     }
 
     /// Build the SCALE-encoded `Disconnected` message a wallet posts over a
-    /// session it is ending. Uses the core's fixed disconnect id
-    /// (`truapi:sso:disconnect`, matching the pairing host's convention);
-    /// receivers detect disconnect by message variant, not id. Posting and
-    /// record cleanup stay with the wallet.
+    /// session it is ending. Each call carries a fresh opaque message id,
+    /// like every outgoing SSO message; receivers detect disconnect by
+    /// message variant, not id. Posting and record cleanup stay with the
+    /// wallet.
     pub fn prepare_disconnect_request(&self) -> Vec<u8> {
         RemoteMessage {
-            message_id: SSO_DISCONNECT_MESSAGE_ID.to_string(),
+            message_id: sso_message_id(),
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
         }
         .encode()
@@ -2747,17 +2749,23 @@ mod tests {
     }
 
     #[test]
-    fn prepare_disconnect_request_round_trips() {
+    fn prepare_disconnect_request_round_trips_with_fresh_ids() {
         use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
         use parity_scale_codec::Decode;
         let runtime = native_host_runtime_no_session();
         let bytes = runtime.prepare_disconnect_request();
         let message = RemoteMessage::decode(&mut bytes.as_slice()).expect("valid encoding");
-        assert_eq!(message.message_id, "truapi:sso:disconnect");
+        assert_eq!(message.message_id.len(), 8, "opaque nanoid message id");
         assert!(matches!(
             message.data,
             RemoteMessageData::V1(v1::RemoteMessage::Disconnected)
         ));
+        let second = RemoteMessage::decode(&mut runtime.prepare_disconnect_request().as_slice())
+            .expect("valid encoding");
+        assert_ne!(
+            message.message_id, second.message_id,
+            "each disconnect message carries its own id"
+        );
     }
 
     #[test]

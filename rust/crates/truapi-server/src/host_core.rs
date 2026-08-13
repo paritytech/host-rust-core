@@ -27,7 +27,7 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
-use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
+use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
 use crate::runtime::{
     ChatConnection, LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost,
     ResponderExit, RuntimeServices, SigningHostRole, answer_remote_message, respond_to_pairing,
@@ -323,17 +323,6 @@ impl PairingHostAdmin for PairingHostRuntime {
     }
 }
 
-/// Outcome of answering one wallet-supplied SSO remote message.
-pub enum SsoMessageOutcome {
-    /// Response message to post back over the session.
-    Response(RemoteMessage),
-    /// The peer ended the session; the wallet tears down its transport and
-    /// records. The core holds no per-peer state to clear.
-    Disconnected,
-    /// Not a request (a `*Response` variant); nothing to do.
-    Ignored,
-}
-
 /// A wallet-local signing host: the user's keys are held on this device.
 ///
 /// Owns the shared services plus signing-host state. There is no pairing flow,
@@ -530,10 +519,13 @@ impl SigningHostRuntime {
     /// Session control stays with the caller: `Disconnected` is reported as an
     /// outcome, never handled here.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.answer_sso_message"))]
-    pub async fn answer_sso_message(&self, message: RemoteMessage) -> SsoMessageOutcome {
+    pub async fn answer_sso_message(
+        &self,
+        message: RemoteMessage,
+    ) -> SsoRequestOutcome<RemoteMessage> {
         let RemoteMessageData::V1(request) = message.data;
         if matches!(request, v1::RemoteMessage::Disconnected) {
-            return SsoMessageOutcome::Disconnected;
+            return SsoRequestOutcome::Disconnected;
         }
         match answer_remote_message(
             &self.services,
@@ -543,8 +535,8 @@ impl SigningHostRuntime {
         )
         .await
         {
-            Some(answer) => SsoMessageOutcome::Response(answer.response),
-            None => SsoMessageOutcome::Ignored,
+            Some(answer) => SsoRequestOutcome::Response(answer.response),
+            None => SsoRequestOutcome::Ignored,
         }
     }
 }
@@ -1172,7 +1164,7 @@ mod tests {
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
         };
         let outcome = futures::executor::block_on(runtime.answer_sso_message(disconnected));
-        assert!(matches!(outcome, SsoMessageOutcome::Disconnected));
+        assert!(matches!(outcome, SsoRequestOutcome::Disconnected));
 
         let response_variant = RemoteMessage {
             message_id: "m2".to_string(),
@@ -1184,6 +1176,6 @@ mod tests {
             )),
         };
         let outcome = futures::executor::block_on(runtime.answer_sso_message(response_variant));
-        assert!(matches!(outcome, SsoMessageOutcome::Ignored));
+        assert!(matches!(outcome, SsoRequestOutcome::Ignored));
     }
 }

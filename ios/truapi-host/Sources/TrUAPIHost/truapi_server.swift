@@ -3229,10 +3229,10 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
 
     /**
      * Build the SCALE-encoded `Disconnected` message a wallet posts over a
-     * session it is ending. Uses the core's fixed disconnect id
-     * (`truapi:sso:disconnect`, matching the pairing host's convention);
-     * receivers detect disconnect by message variant, not id. Posting and
-     * record cleanup stay with the wallet.
+     * session it is ending. Each call carries a fresh opaque message id,
+     * like every outgoing SSO message; receivers detect disconnect by
+     * message variant, not id. Posting and record cleanup stay with the
+     * wallet.
      */
     func prepareDisconnectRequest()  -> Data
 
@@ -3401,10 +3401,10 @@ open func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeCh
 
     /**
      * Build the SCALE-encoded `Disconnected` message a wallet posts over a
-     * session it is ending. Uses the core's fixed disconnect id
-     * (`truapi:sso:disconnect`, matching the pairing host's convention);
-     * receivers detect disconnect by message variant, not id. Posting and
-     * record cleanup stay with the wallet.
+     * session it is ending. Each call carries a fresh opaque message id,
+     * like every outgoing SSO message; receivers detect disconnect by
+     * message variant, not id. Posting and record cleanup stay with the
+     * wallet.
      */
 open func prepareDisconnectRequest() -> Data  {
     return try!  FfiConverterData.lift(try! rustCall() {
@@ -4726,7 +4726,9 @@ public func FfiConverterTypeProductRuntimeError_lower(_ value: ProductRuntimeErr
 
 
 /**
- * Outcome of answering one wallet-supplied SSO request at the FFI boundary.
+ * FFI projection of the canonical
+ * [`SsoRequestOutcome`](crate::host_logic::sso::messages::SsoRequestOutcome),
+ * concrete because UniFFI cannot export generics.
  *
  * Variants carry SCALE-encoded wire bytes rather than decoded Rust types because
  * the wallet forwards encodings verbatim and never constructs them — the opaque
@@ -5611,7 +5613,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 49537) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_prepare_disconnect_request() != 48286) {
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_prepare_disconnect_request() != 17252) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativecustomrenderersubscription_cancel() != 26593) {

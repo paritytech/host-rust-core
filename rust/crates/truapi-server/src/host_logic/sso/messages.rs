@@ -44,11 +44,6 @@ use crate::host_logic::statement_store::{
 
 pub mod v1;
 
-/// Fixed correlation id used by both sides of the SSO channel to signal session
-/// end. Receivers detect disconnect by message variant, not by this id; the id
-/// is stable so session logs remain correlated across implementations.
-pub const SSO_DISCONNECT_MESSAGE_ID: &str = "truapi:sso:disconnect";
-
 /// Transport-level acknowledgement code for an SSO session statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, derive_more::Display)]
 pub enum SsoResponseCode {
@@ -95,6 +90,21 @@ pub enum RemoteMessageData {
     /// Version 1 of the remote message catalog.
     #[display("{_0}")]
     V1(v1::RemoteMessage),
+}
+
+/// Outcome of answering one SSO remote message on behalf of a caller that
+/// owns the session transport. Generic over the response representation:
+/// the typed runtime layer carries a decoded [`RemoteMessage`], the FFI
+/// boundary carries its SCALE encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SsoRequestOutcome<T> {
+    /// Response to post back over the session.
+    Response(T),
+    /// The peer ended the session; the caller tears down its transport and
+    /// records. The core holds no per-peer state to clear.
+    Disconnected,
+    /// Not a request (a `*Response` variant); nothing to do.
+    Ignored,
 }
 
 /// Signing request flavor sent to the signing host.
