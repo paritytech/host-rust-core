@@ -403,6 +403,9 @@ async fn run_alloc_check(
     .await
     {
         Ok(alloc::slot::SlotSelection::Free(seq)) => println!("slot scan: free seq={seq}"),
+        Ok(alloc::slot::SlotSelection::FreeSlotsExcluded) => {
+            println!("slot scan: free slots exist but are awaiting earlier submissions");
+        }
         Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
             let cooldown = alloc::slot::replacement_cooldown(&metadata)?;

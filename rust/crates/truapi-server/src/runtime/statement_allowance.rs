@@ -431,6 +431,15 @@ pub async fn register_statement_account(
                     return Ok(RegistrationOutcome::AlreadyAllocated { seq });
                 }
                 SlotSelection::Free(seq) => seq,
+                SlotSelection::FreeSlotsExcluded => {
+                    // A free slot exists; it is only held back by one of this
+                    // call's own in-flight submissions. Evicting a live slot
+                    // instead would revoke an allowance for no reason.
+                    return Err(SlotError::FreeSlotsAwaitingSubmission {
+                        period: params.period,
+                    }
+                    .into());
+                }
                 SlotSelection::Full { max, occupied } => {
                     // Nothing free: replace the oldest slot the runtime will
                     // let us take, and only then give up.

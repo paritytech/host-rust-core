@@ -53,6 +53,14 @@ pub enum SlotError {
         /// Maximum slot count.
         max: u8,
     },
+    /// Free slots exist but all were excluded by this call's own submissions.
+    #[error(
+        "every free StatementStore slot in period {period} is awaiting one of this call's own submissions"
+    )]
+    FreeSlotsAwaitingSubmission {
+        /// Period scanned.
+        period: u32,
+    },
     /// `Timestamp.Now` was absent or undecodable, so slot ages cannot be judged.
     #[error("Timestamp.Now missing from chain state")]
     MissingChainTimestamp,
@@ -333,6 +341,11 @@ pub enum SlotSelection {
         /// Every occupied slot, so a caller can choose one to replace.
         occupied: Vec<OccupiedSlot>,
     },
+    /// Slots are free but every one was excluded by this call's own earlier
+    /// submissions. Distinct from [`SlotSelection::Full`]: replacing a live slot
+    /// here would destroy capacity that is about to free up, because the
+    /// excluded slots are only unavailable until those submissions resolve.
+    FreeSlotsExcluded,
 }
 
 /// Scan slots `0..max` for `period`, returning the first non-excluded free seq
@@ -349,13 +362,16 @@ pub async fn scan_slot_excluding(
 ) -> Result<SlotSelection, StatementAllowanceError> {
     let max = max_slots(metadata)?;
     let mut first_free: Option<u32> = None;
+    let mut excluded_free = false;
     let mut occupied = Vec::new();
     for seq in 0..max {
         let alias = slot_alias(entropy, period, seq)?;
         let key = statement_store_allowance_key(period, &alias);
         match rpc.get_storage(&key).await? {
             None => {
-                if first_free.is_none() && !excluded.contains(&seq) {
+                if excluded.contains(&seq) {
+                    excluded_free = true;
+                } else if first_free.is_none() {
                     first_free = Some(seq);
                 }
             }
@@ -374,7 +390,11 @@ pub async fn scan_slot_excluding(
             }
         }
     }
-    Ok(first_free.map_or(SlotSelection::Full { max, occupied }, SlotSelection::Free))
+    Ok(match (first_free, excluded_free) {
+        (Some(seq), _) => SlotSelection::Free(seq),
+        (None, true) => SlotSelection::FreeSlotsExcluded,
+        (None, false) => SlotSelection::Full { max, occupied },
+    })
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -607,6 +627,32 @@ mod tests {
         let metadata = Metadata::decode(FIXTURE).unwrap();
 
         assert_eq!(replacement_cooldown(&metadata).unwrap(), 60);
+    }
+
+    /// Excluding a slot because a submission for it is in flight must not read as
+    /// "the period is full": the free slot is coming back, and a caller that
+    /// treats this as full would replace a live slot for nothing.
+    #[test]
+    fn an_excluded_free_slot_is_not_reported_as_a_full_period() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        // Only seq 9 is free, and the caller already excluded it.
+        let mut entries: Vec<String> = (0..SLOTS - 1).map(|_| slot_entry([0x99; 32])).collect();
+        entries.push("null".to_string());
+        let scripted = ScriptedRpc::new(entries.iter().map(String::as_str).collect::<Vec<_>>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let selection = futures::executor::block_on(scan_slot_excluding(
+            &rpc,
+            &metadata,
+            [0x11; 32],
+            7,
+            &[0x22; 32],
+            &[(SLOTS - 1) as u32],
+            true,
+        ))
+        .unwrap();
+
+        assert_eq!(selection, SlotSelection::FreeSlotsExcluded);
     }
 
     #[test]
