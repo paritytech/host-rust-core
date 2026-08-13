@@ -22,7 +22,7 @@ One binary, `truapi-host`:
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
 | `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username. |
-| `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. |
+| `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
 
 The repository's `make e2e-dotli` target builds this binary and runs the
 dotli/playground Diagnosis suite with a non-interactive signing-host responder.
@@ -47,7 +47,9 @@ available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
 Otherwise it auto-selects or creates a stored account under `--base-path` (default
 `$XDG_STATE_HOME/truapi-host` or `~/.local/state/truapi-host`), attests it
 through the identity backend, waits for ring readiness, and rotates when the
-current account exhausts Statement Store slots.
+current account exhausts Statement Store slots. A full period replaces the
+oldest slot past the runtime's replacement cooldown, so rotation only happens
+when no slot is replaceable.
 
 ### Interactive terminal UI
 
@@ -215,7 +217,8 @@ res.match(
 );
 ```
 
-`--product-id` (a `.dot` name or `localhost` identifier; default
+`--product-id` (a dotNS name ending in `.dot` or `.paseo`, or a `localhost`
+identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
 WebSockets so clients reconnect with a new product context; the network,
@@ -305,9 +308,9 @@ Five scripts ship under `js/scripts/`:
 - `whoami.ts` — calls `getUserId` and prints `WHOAMI <primary username>`; this
   remains available as an explicit `/script <path>` example.
 - `signing-smoke.ts` — a focused product-account signing check.
-- `ring-vrf-smoke.ts` — calls `getAccountAlias` and `createAccountProof`
-  against the Paseo Next v2 LitePeople ring, then verifies both calls return
-  the same contextual alias.
+- `ring-vrf-smoke.ts` — registers and lists an explicit RFC-0024 key, derives
+  its alias, verifies a fresh non-member key returns `NotMember` for a proof,
+  and exercises direct ring-VRF signing.
 - `preimage-smoke.ts` — a focused Bulletin preimage flow check.
 
 The generated examples are baked to the `truapi-playground.dot` product. With
@@ -318,8 +321,10 @@ long-term storage before returning the product-scoped Bulletin allowance key.
 It needs the playground's deps (`cd playground && yarn install --frozen-lockfile`;
 bun does not resolve the `link:` dependency on `@parity/truapi`). Repeated live
 runs can exhaust the signer's per-period Statement Store or Bulletin allocation
-slots; the signing host rotates auto-managed signer accounts when Statement
-Store slots are exhausted.
+slots. Statement Store registration replaces the oldest slot whose replacement
+cooldown has elapsed, so exhaustion needs every slot to be within that
+cooldown; the signing host rotates auto-managed signer accounts if that
+happens.
 
 ## Confirmations
 

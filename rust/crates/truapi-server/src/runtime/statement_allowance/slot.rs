@@ -53,6 +53,28 @@ pub enum SlotError {
         /// Maximum slot count.
         max: u8,
     },
+    /// The runtime refused a takeover: the slot was not old enough by its own
+    /// clock, or another registration reached it first.
+    #[error(
+        "runtime refused replacing slot (period {period}, seq {seq}): it is not replaceable yet"
+    )]
+    ReplacementRefused {
+        /// Period the takeover targeted.
+        period: u32,
+        /// Slot the takeover targeted.
+        seq: u32,
+    },
+    /// Free slots exist but all were excluded by this call's own submissions.
+    #[error(
+        "every free StatementStore slot in period {period} is awaiting one of this call's own submissions"
+    )]
+    FreeSlotsAwaitingSubmission {
+        /// Period scanned.
+        period: u32,
+    },
+    /// `Timestamp.Now` was absent or undecodable, so slot ages cannot be judged.
+    #[error("Timestamp.Now missing from chain state")]
+    MissingChainTimestamp,
     /// Registration reached a block but the slot was not held by the target.
     #[error(
         "registration reached block {block_hash} but slot (period {period}, seq {seq}) is not held by the target account"
@@ -72,6 +94,17 @@ struct StatementStoreAllowanceEntry {
     account_id: [u8; 32],
     seq: u32,
     since: u64,
+}
+
+/// A slot that is occupied, as observed by a scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OccupiedSlot {
+    /// Slot index within the period.
+    pub seq: u32,
+    /// Account the slot currently allows.
+    pub account_id: [u8; 32],
+    /// Unix seconds at which the slot was last set.
+    pub since: u64,
 }
 
 /// The current allowance period for `now_seconds`.
@@ -215,13 +248,75 @@ pub fn long_term_storage_period_duration(
     Ok(u32::from_le_bytes(buf))
 }
 
-/// The account id occupying a slot entry, if the storage value is present.
-/// Entry = `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
-fn entry_account_id(bytes: &[u8]) -> Option<[u8; 32]> {
-    let mut input = bytes;
-    let entry = StatementStoreAllowanceEntry::decode(&mut input).ok()?;
-    let _ = (entry.seq, entry.since);
-    Some(entry.account_id)
+/// Decode a slot entry: `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
+fn decode_entry(bytes: &[u8]) -> Option<StatementStoreAllowanceEntry> {
+    StatementStoreAllowanceEntry::decode(&mut &bytes[..]).ok()
+}
+
+/// The slot to replace once no free slot is left: the oldest one that is not
+/// the target's own and whose replacement cooldown has elapsed.
+///
+/// `chain_now_seconds` must come from the chain, not the host: `since` is a chain
+/// timestamp and the runtime re-checks the cooldown against its own clock when it
+/// validates the extrinsic. A host clock runs ahead of the chain by up to a block,
+/// which would offer slots the runtime then refuses.
+///
+/// The comparison is strict because the runtime requires `now > since + cooldown`;
+/// a slot at exactly the cooldown is still refused.
+///
+/// Takes the candidate list rather than scanning, so a caller can widen the
+/// pool without changing this rule. Ties on `since` break to the lowest `seq`
+/// so the choice is deterministic.
+pub fn replaceable_slot(
+    candidates: &[OccupiedSlot],
+    target: &[u8; 32],
+    chain_now_seconds: u64,
+    cooldown_seconds: u64,
+    excluded: &[u32],
+) -> Option<u32> {
+    candidates
+        .iter()
+        .filter(|slot| slot.account_id != *target)
+        .filter(|slot| !excluded.contains(&slot.seq))
+        .filter(|slot| chain_now_seconds.saturating_sub(slot.since) > cooldown_seconds)
+        .min_by_key(|slot| (slot.since, slot.seq))
+        .map(|slot| slot.seq)
+}
+
+/// `Timestamp.Now` storage key.
+fn timestamp_now_key() -> Vec<u8> {
+    [
+        twox_128(b"Timestamp").as_slice(),
+        twox_128(b"Now").as_slice(),
+    ]
+    .concat()
+}
+
+/// The chain's clock in unix seconds, decoded from `Timestamp.Now` milliseconds.
+///
+/// Slot ages are judged against this rather than the host clock, which runs up to
+/// one block ahead of it.
+pub async fn read_chain_now_seconds(rpc: &RpcClient) -> Result<u64, StatementAllowanceError> {
+    let bytes = rpc
+        .get_storage(&timestamp_now_key())
+        .await?
+        .ok_or(SlotError::MissingChainTimestamp)?;
+    let millis = u64::decode(&mut &bytes[..]).map_err(|_| SlotError::MissingChainTimestamp)?;
+    Ok(millis / 1_000)
+}
+
+/// Seconds an occupied slot must age before the runtime allows replacing it.
+pub fn replacement_cooldown(metadata: &Metadata) -> Result<u64, StatementAllowanceError> {
+    let bytes = metadata
+        .constant("Resources", "StmtStoreReplacementCooldown")
+        .ok_or(MetadataError::MissingConstant {
+            pallet: "Resources",
+            constant: "StmtStoreReplacementCooldown",
+        })?;
+    let mut buf = [0u8; 4];
+    let n = bytes.len().min(4);
+    buf[..n].copy_from_slice(&bytes[..n]);
+    Ok(u64::from(u32::from_le_bytes(buf)))
 }
 
 /// The account holding our alias slot `(period, seq)`, read pinned to
@@ -238,15 +333,30 @@ pub async fn read_slot_account_at(
     Ok(rpc
         .get_storage_at(&key, block_hash)
         .await?
-        .and_then(|bytes| entry_account_id(&bytes)))
+        .and_then(|bytes| decode_entry(&bytes).map(|entry| entry.account_id)))
 }
 
 /// Outcome of scanning for a slot to register `target` in.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotSelection {
     /// A free `seq` we should claim.
     Free(u32),
     /// `target` already holds `seq` this period; no registration needed.
     AlreadyAllocated(u32),
+    /// Every slot in the period is taken and none is reusable. Reported rather
+    /// than raised so a caller can ask "is an allowance already in place" and
+    /// get an answer instead of an error.
+    Full {
+        /// Slots the period has, for the caller's error.
+        max: u32,
+        /// Every occupied slot, so a caller can choose one to replace.
+        occupied: Vec<OccupiedSlot>,
+    },
+    /// Slots are free but every one was excluded by this call's own earlier
+    /// submissions. Distinct from [`SlotSelection::Full`]: replacing a live slot
+    /// here would destroy capacity that is about to free up, because the
+    /// excluded slots are only unavailable until those submissions resolve.
+    FreeSlotsExcluded,
 }
 
 /// Scan slots `0..max` for `period`, returning the first non-excluded free seq
@@ -263,25 +373,39 @@ pub async fn scan_slot_excluding(
 ) -> Result<SlotSelection, StatementAllowanceError> {
     let max = max_slots(metadata)?;
     let mut first_free: Option<u32> = None;
+    let mut excluded_free = false;
+    let mut occupied = Vec::new();
     for seq in 0..max {
         let alias = slot_alias(entropy, period, seq)?;
         let key = statement_store_allowance_key(period, &alias);
         match rpc.get_storage(&key).await? {
             None => {
-                if first_free.is_none() && !excluded.contains(&seq) {
+                if excluded.contains(&seq) {
+                    excluded_free = true;
+                } else if first_free.is_none() {
                     first_free = Some(seq);
                 }
             }
             Some(bytes) => {
-                if reuse_existing && entry_account_id(&bytes) == Some(*target) {
+                let Some(entry) = decode_entry(&bytes) else {
+                    continue;
+                };
+                if reuse_existing && entry.account_id == *target {
                     return Ok(SlotSelection::AlreadyAllocated(seq));
                 }
+                occupied.push(OccupiedSlot {
+                    seq,
+                    account_id: entry.account_id,
+                    since: entry.since,
+                });
             }
         }
     }
-    first_free
-        .map(SlotSelection::Free)
-        .ok_or_else(|| SlotError::NoFreeStatementStoreSlot { period, max }.into())
+    Ok(match (first_free, excluded_free) {
+        (Some(seq), _) => SlotSelection::Free(seq),
+        (None, true) => SlotSelection::FreeSlotsExcluded,
+        (None, false) => SlotSelection::Full { max, occupied },
+    })
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -309,7 +433,266 @@ pub async fn scan_long_term_storage_counter_excluding(
 
 #[cfg(test)]
 mod tests {
+    use subxt_rpcs::RpcClient as HostRpcClient;
+
+    use super::super::rpc::testing::ScriptedRpc;
     use super::*;
+
+    /// Fixture metadata captured from paseo-next-v2; its
+    /// `LiteStmtStoreSlotsPerPeriod` is 10.
+    const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+    const SLOTS: usize = 10;
+
+    /// `StmtStoreAllowanceEntry { account_id, seq: 0, since: 0 }` as a scripted
+    /// JSON storage result.
+    fn slot_entry(account: [u8; 32]) -> String {
+        entry_with_since(account, 0)
+    }
+
+    /// A scripted slot entry that was set at `since`.
+    fn entry_with_since(account: [u8; 32], since: u64) -> String {
+        format!(r#""0x{}""#, hex::encode((account, 0u32, since).encode()))
+    }
+
+    /// An occupied-slot candidate for the replacement rule.
+    fn occupied(seq: u32, account_id: [u8; 32], since: u64) -> OccupiedSlot {
+        OccupiedSlot {
+            seq,
+            account_id,
+            since,
+        }
+    }
+
+    /// Run `scan_slot_excluding` for `[0x22; 32]` against a scripted period
+    /// whose slot occupancy is `slots`.
+    fn scripted_find(slots: &[Option<[u8; 32]>]) -> SlotSelection {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let entries: Vec<String> = slots
+            .iter()
+            .map(|slot| slot.map_or_else(|| "null".to_string(), slot_entry))
+            .collect();
+        let scripted = ScriptedRpc::new(entries.iter().map(String::as_str));
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        futures::executor::block_on(scan_slot_excluding(
+            &rpc,
+            &metadata,
+            [0x11; 32],
+            7,
+            &[0x22; 32],
+            &[],
+            true,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_empty_period_offers_the_first_slot() {
+        assert_eq!(scripted_find(&[None; SLOTS]), SlotSelection::Free(0));
+    }
+
+    #[test]
+    fn the_slot_the_target_holds_is_found() {
+        let mut slots = [None; SLOTS];
+        slots[2] = Some([0x22; 32]);
+
+        assert_eq!(scripted_find(&slots), SlotSelection::AlreadyAllocated(2));
+    }
+
+    #[test]
+    fn a_table_filled_by_other_accounts_reports_full_rather_than_erroring() {
+        let SlotSelection::Full { max, occupied } = scripted_find(&[Some([0x99; 32]); SLOTS])
+        else {
+            panic!("a full table should report Full");
+        };
+
+        assert_eq!(max, SLOTS as u32);
+        // Every slot is reported, with the age the replacement rule needs.
+        assert_eq!(occupied.len(), SLOTS);
+        assert_eq!(occupied[0].seq, 0);
+        assert_eq!(occupied[0].account_id, [0x99; 32]);
+    }
+
+    /// `since` values are what the replacement rule sorts on, so the scan has to
+    /// carry them through rather than discard them.
+    #[test]
+    fn the_scan_reports_each_occupied_slots_age() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let entries: Vec<String> = (0..SLOTS)
+            .map(|seq| entry_with_since([0x99; 32], 1_000 + seq as u64))
+            .collect();
+        let scripted = ScriptedRpc::new(entries.iter().map(String::as_str).collect::<Vec<_>>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let SlotSelection::Full { occupied, .. } = futures::executor::block_on(
+            scan_slot_excluding(&rpc, &metadata, [0x11; 32], 7, &[0x22; 32], &[], true),
+        )
+        .unwrap() else {
+            panic!("a full table should report Full");
+        };
+
+        assert_eq!(
+            occupied.iter().map(|slot| slot.since).collect::<Vec<_>>(),
+            (0..SLOTS).map(|seq| 1_000 + seq as u64).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The oldest slot wins, and the target's own slot is never a candidate.
+    #[test]
+    fn the_oldest_replaceable_slot_is_chosen() {
+        let candidates = [
+            occupied(0, [0x99; 32], 5_000),
+            occupied(1, [0x22; 32], 1_000),
+            occupied(2, [0x98; 32], 2_000),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn a_slot_inside_its_cooldown_is_not_replaceable() {
+        let candidates = [occupied(0, [0x99; 32], 9_990)];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            None,
+        );
+    }
+
+    /// The runtime requires `now > since + cooldown`, so a slot at exactly the
+    /// cooldown is still refused. Offering it means an extrinsic the chain
+    /// rejects as invalid, which is not retried.
+    #[test]
+    fn the_cooldown_boundary_is_strict() {
+        let candidates = [occupied(0, [0x99; 32], 1_000)];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 1_060, 60, &[]),
+            None,
+            "age exactly at the cooldown must not be offered",
+        );
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 1_061, 60, &[]),
+            Some(0),
+            "one second past the cooldown is replaceable",
+        );
+    }
+
+    /// `Timestamp.Now` is milliseconds; ages are judged in seconds.
+    #[test]
+    fn the_chain_clock_is_read_in_seconds() {
+        let scripted = ScriptedRpc::new(vec![r#""0x60ea000000000000""#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        assert_eq!(
+            futures::executor::block_on(read_chain_now_seconds(&rpc)).unwrap(),
+            60,
+        );
+    }
+
+    #[test]
+    fn a_table_of_only_the_targets_own_and_cooling_slots_yields_nothing() {
+        let candidates = [
+            occupied(0, [0x22; 32], 1_000),
+            occupied(1, [0x99; 32], 9_999),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            None,
+        );
+    }
+
+    #[test]
+    fn an_excluded_slot_is_skipped_so_a_failed_replacement_moves_on() {
+        let candidates = [
+            occupied(0, [0x99; 32], 1_000),
+            occupied(1, [0x98; 32], 2_000),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[0]),
+            Some(1),
+        );
+    }
+
+    /// Equal ages resolve to the lowest seq, so retries do not oscillate.
+    #[test]
+    fn equal_ages_break_to_the_lowest_seq() {
+        let candidates = [
+            occupied(5, [0x99; 32], 1_000),
+            occupied(2, [0x98; 32], 1_000),
+        ];
+
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            Some(2),
+        );
+    }
+
+    /// A pass that registers several targets protects the slots it has already
+    /// claimed, so target N cannot take the slot target N-1 just got. Without
+    /// this a pass with more targets than slots undoes its own work forever.
+    #[test]
+    fn slots_already_claimed_in_this_pass_are_protected() {
+        let candidates = [
+            occupied(0, [0x01; 32], 1_000),
+            occupied(1, [0x02; 32], 2_000),
+            occupied(2, [0x03; 32], 3_000),
+        ];
+
+        // Nothing claimed yet: the oldest goes.
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
+            Some(0),
+        );
+        // Having claimed 0 and 1 earlier in the pass, only 2 is available.
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[0, 1]),
+            Some(2),
+        );
+        // Once every slot is one this pass claimed, the honest answer is none.
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[0, 1, 2]),
+            None,
+        );
+    }
+
+    #[test]
+    fn the_replacement_cooldown_comes_from_the_runtime() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(replacement_cooldown(&metadata).unwrap(), 60);
+    }
+
+    /// Excluding a slot because a submission for it is in flight must not read as
+    /// "the period is full": the free slot is coming back, and a caller that
+    /// treats this as full would replace a live slot for nothing.
+    #[test]
+    fn an_excluded_free_slot_is_not_reported_as_a_full_period() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        // Only seq 9 is free, and the caller already excluded it.
+        let mut entries: Vec<String> = (0..SLOTS - 1).map(|_| slot_entry([0x99; 32])).collect();
+        entries.push("null".to_string());
+        let scripted = ScriptedRpc::new(entries.iter().map(String::as_str).collect::<Vec<_>>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let selection = futures::executor::block_on(scan_slot_excluding(
+            &rpc,
+            &metadata,
+            [0x11; 32],
+            7,
+            &[0x22; 32],
+            &[(SLOTS - 1) as u32],
+            true,
+        ))
+        .unwrap();
+
+        assert_eq!(selection, SlotSelection::FreeSlotsExcluded);
+    }
 
     #[test]
     fn slot_context_layout() {
@@ -352,7 +735,10 @@ mod tests {
         let encoded = entry.encode();
 
         assert_eq!(encoded, (entry.account_id, entry.seq, entry.since).encode());
-        assert_eq!(entry_account_id(&encoded), Some(entry.account_id));
+        assert_eq!(
+            decode_entry(&encoded).map(|e| e.account_id),
+            Some(entry.account_id)
+        );
         assert_eq!(
             StatementStoreAllowanceEntry::decode(&mut encoded.as_slice()).unwrap(),
             entry
@@ -361,6 +747,6 @@ mod tests {
 
     #[test]
     fn truncated_allowance_entry_has_no_account() {
-        assert_eq!(entry_account_id(&[0x42; 32]), None);
+        assert!(decode_entry(&[0x42; 32]).is_none());
     }
 }

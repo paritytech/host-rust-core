@@ -63,15 +63,23 @@ pub enum MetadataError {
         /// Call name.
         call: String,
     },
-    /// `AsResources` extension is absent from metadata.
-    #[error("{AS_RESOURCES} extension not found in metadata")]
-    MissingAsResourcesExtension,
-    /// `AsResources` extra type did not contain the expected `Option`.
-    #[error("{AS_RESOURCES} extra is not an Option")]
-    AsResourcesExtraNotOption,
-    /// Named `AsResourcesInfo` variant was not found.
-    #[error("AsResourcesInfo::{variant} not found in metadata")]
-    MissingAsResourcesInfoVariant {
+    /// Named transaction extension is absent from metadata.
+    #[error("{identifier} extension not found in metadata")]
+    MissingExtension {
+        /// Extension identifier.
+        identifier: String,
+    },
+    /// Extension's extra type did not contain the expected `Option`.
+    #[error("{identifier} extra is not an Option")]
+    ExtensionExtraNotOption {
+        /// Extension whose extra was inspected.
+        identifier: String,
+    },
+    /// Named authorization variant was not found on the extension's info enum.
+    #[error("{identifier} info variant {variant} not found in metadata")]
+    MissingExtensionVariant {
+        /// Extension whose info enum was inspected.
+        identifier: String,
         /// Variant name.
         variant: String,
     },
@@ -341,35 +349,7 @@ impl Metadata {
         &self,
         info_variant: &str,
     ) -> Result<(u8, u8), StatementAllowanceError> {
-        let ext = self
-            .extensions
-            .iter()
-            .find(|e| e.identifier == AS_RESOURCES)
-            .ok_or(MetadataError::MissingAsResourcesExtension)?;
-        // extra = `AsResources(Option<AsResourcesInfo>)`, with or without the
-        // struct wrapper.
-        let option_type = match &self.resolve_type(ext.extra_type)?.type_def {
-            TypeDef::Composite(_) => self.single_field_type(ext.extra_type)?,
-            _ => ext.extra_type,
-        };
-        let info_type = self
-            .resolve_variant(option_type)?
-            .variants
-            .iter()
-            .find(|v| v.name == "Some")
-            .and_then(|some| match some.fields.as_slice() {
-                [field] => Some(field.ty.id),
-                _ => None,
-            })
-            .ok_or(MetadataError::AsResourcesExtraNotOption)?;
-        let variant = self
-            .resolve_variant(info_type)?
-            .variants
-            .iter()
-            .find(|v| v.name == info_variant)
-            .ok_or_else(|| MetadataError::MissingAsResourcesInfoVariant {
-                variant: info_variant.to_string(),
-            })?;
+        let variant = self.extension_info_variant(AS_RESOURCES, info_variant)?;
         let collection_type = variant
             .fields
             .iter()
@@ -390,6 +370,82 @@ impl Metadata {
             .find(|v| v.name == "LitePeople")
             .ok_or(MetadataError::MissingLitePeopleCollection)?;
         Ok((variant.index, lite_people.index))
+    }
+
+    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
+    ///
+    /// The encoded payload has to match it exactly: a short payload is accepted
+    /// locally and then panics the runtime inside `validate_transaction`, so this
+    /// is the offline guard against drifting out of step with the pallet.
+    pub fn as_resources_info_field_count(
+        &self,
+        info_variant: &str,
+    ) -> Result<usize, StatementAllowanceError> {
+        Ok(self
+            .extension_info_variant(AS_RESOURCES, info_variant)?
+            .fields
+            .len())
+    }
+
+    /// Position of a transaction extension in the runtime's implication
+    /// pipeline.
+    pub fn extension_index(&self, identifier: &str) -> Option<usize> {
+        self.extensions
+            .iter()
+            .position(|extension| extension.identifier == identifier)
+    }
+
+    /// Enum index of a named authorization carried by an extension shaped as
+    /// `Wrapper(Option<Info>)`.
+    pub fn extension_info_variant_index(
+        &self,
+        identifier: &str,
+        variant: &str,
+    ) -> Result<u8, StatementAllowanceError> {
+        Ok(self.extension_info_variant(identifier, variant)?.index)
+    }
+
+    /// Resolve one named authorization variant on an extension shaped as
+    /// `Wrapper(Option<Info>)`, with or without the struct wrapper.
+    fn extension_info_variant(
+        &self,
+        identifier: &str,
+        variant: &str,
+    ) -> Result<&scale_info::Variant<PortableForm>, StatementAllowanceError> {
+        let extension = self
+            .extensions
+            .iter()
+            .find(|extension| extension.identifier == identifier)
+            .ok_or_else(|| MetadataError::MissingExtension {
+                identifier: identifier.to_string(),
+            })?;
+        let option_type = match &self.resolve_type(extension.extra_type)?.type_def {
+            TypeDef::Composite(_) => self.single_field_type(extension.extra_type)?,
+            _ => extension.extra_type,
+        };
+        let info_type = self
+            .resolve_variant(option_type)?
+            .variants
+            .iter()
+            .find(|candidate| candidate.name == "Some")
+            .and_then(|some| match some.fields.as_slice() {
+                [field] => Some(field.ty.id),
+                _ => None,
+            })
+            .ok_or_else(|| MetadataError::ExtensionExtraNotOption {
+                identifier: identifier.to_string(),
+            })?;
+        self.resolve_variant(info_type)?
+            .variants
+            .iter()
+            .find(|candidate| candidate.name == variant)
+            .ok_or_else(|| {
+                MetadataError::MissingExtensionVariant {
+                    identifier: identifier.to_string(),
+                    variant: variant.to_string(),
+                }
+                .into()
+            })
     }
 
     /// Resolve a type id in the registry.
@@ -533,9 +589,7 @@ impl Metadata {
 
     /// Index of `AsResources` in the extension list, if present.
     pub fn as_resources_index(&self) -> Option<usize> {
-        self.extensions
-            .iter()
-            .position(|e| e.identifier == AS_RESOURCES)
+        self.extension_index(AS_RESOURCES)
     }
 }
 
@@ -552,7 +606,9 @@ pub fn build_proof_message(
     let tail_start = metadata
         .as_resources_index()
         .map(|i| i + 1)
-        .ok_or(MetadataError::MissingAsResourcesExtension)?;
+        .ok_or_else(|| MetadataError::MissingExtension {
+            identifier: AS_RESOURCES.to_string(),
+        })?;
     let tail = &all[tail_start..];
 
     let mut payload = Vec::with_capacity(1 + call_data.len());
@@ -658,6 +714,44 @@ mod tests {
                     .unwrap(),
             ),
             ([0x3f, 0x0a], [0x3f, 0x0c], (0x02, 0x01), (0x03, 0x01)),
+        );
+    }
+
+    /// The `AsResources` helpers are thin wrappers over the generic extension
+    /// lookups, so the two must not drift apart.
+    #[test]
+    fn the_generic_lookups_agree_with_the_as_resources_wrappers() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(
+            metadata.extension_index(AS_RESOURCES),
+            metadata.as_resources_index(),
+        );
+        for variant in ["RegisterStatementStoreAllowance", "ClaimLongTermStorage"] {
+            assert_eq!(
+                metadata
+                    .extension_info_variant_index(AS_RESOURCES, variant)
+                    .unwrap(),
+                metadata.as_resources_variant_indices(variant).unwrap().0,
+                "{variant}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_generic_lookups_reject_unknown_extensions_and_variants() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(metadata.extension_index("NoSuchExtension"), None);
+        assert!(
+            metadata
+                .extension_info_variant_index("NoSuchExtension", "RegisterStatementStoreAllowance")
+                .is_err()
+        );
+        assert!(
+            metadata
+                .extension_info_variant_index(AS_RESOURCES, "NoSuchVariant")
+                .is_err()
         );
     }
 
