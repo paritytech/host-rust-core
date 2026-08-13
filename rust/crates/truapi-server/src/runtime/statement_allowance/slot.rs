@@ -53,6 +53,9 @@ pub enum SlotError {
         /// Maximum slot count.
         max: u8,
     },
+    /// `Timestamp.Now` was absent or undecodable, so slot ages cannot be judged.
+    #[error("Timestamp.Now missing from chain state")]
+    MissingChainTimestamp,
     /// Registration reached a block but the slot was not held by the target.
     #[error(
         "registration reached block {block_hash} but slot (period {period}, seq {seq}) is not held by the target account"
@@ -234,13 +237,21 @@ fn decode_entry(bytes: &[u8]) -> Option<StatementStoreAllowanceEntry> {
 /// The slot to replace once no free slot is left: the oldest one that is not
 /// the target's own and whose replacement cooldown has elapsed.
 ///
+/// `chain_now_seconds` must come from the chain, not the host: `since` is a chain
+/// timestamp and the runtime re-checks the cooldown against its own clock when it
+/// validates the extrinsic. A host clock runs ahead of the chain by up to a block,
+/// which would offer slots the runtime then refuses.
+///
+/// The comparison is strict because the runtime requires `now > since + cooldown`;
+/// a slot at exactly the cooldown is still refused.
+///
 /// Takes the candidate list rather than scanning, so a caller can widen the
 /// pool without changing this rule. Ties on `since` break to the lowest `seq`
 /// so the choice is deterministic.
 pub fn replaceable_slot(
     candidates: &[OccupiedSlot],
     target: &[u8; 32],
-    now_seconds: u64,
+    chain_now_seconds: u64,
     cooldown_seconds: u64,
     excluded: &[u32],
 ) -> Option<u32> {
@@ -248,9 +259,31 @@ pub fn replaceable_slot(
         .iter()
         .filter(|slot| slot.account_id != *target)
         .filter(|slot| !excluded.contains(&slot.seq))
-        .filter(|slot| now_seconds.saturating_sub(slot.since) >= cooldown_seconds)
+        .filter(|slot| chain_now_seconds.saturating_sub(slot.since) > cooldown_seconds)
         .min_by_key(|slot| (slot.since, slot.seq))
         .map(|slot| slot.seq)
+}
+
+/// `Timestamp.Now` storage key.
+fn timestamp_now_key() -> Vec<u8> {
+    [
+        twox_128(b"Timestamp").as_slice(),
+        twox_128(b"Now").as_slice(),
+    ]
+    .concat()
+}
+
+/// The chain's clock in unix seconds, decoded from `Timestamp.Now` milliseconds.
+///
+/// Slot ages are judged against this rather than the host clock, which runs up to
+/// one block ahead of it.
+pub async fn read_chain_now_seconds(rpc: &RpcClient) -> Result<u64, StatementAllowanceError> {
+    let bytes = rpc
+        .get_storage(&timestamp_now_key())
+        .await?
+        .ok_or(SlotError::MissingChainTimestamp)?;
+    let millis = u64::decode(&mut &bytes[..]).map_err(|_| SlotError::MissingChainTimestamp)?;
+    Ok(millis / 1_000)
 }
 
 /// Seconds an occupied slot must age before the runtime allows replacing it.
@@ -496,10 +529,36 @@ mod tests {
             replaceable_slot(&candidates, &[0x22; 32], 10_000, 60, &[]),
             None,
         );
-        // One second past the cooldown it becomes a candidate.
+    }
+
+    /// The runtime requires `now > since + cooldown`, so a slot at exactly the
+    /// cooldown is still refused. Offering it means an extrinsic the chain
+    /// rejects as invalid, which is not retried.
+    #[test]
+    fn the_cooldown_boundary_is_strict() {
+        let candidates = [occupied(0, [0x99; 32], 1_000)];
+
         assert_eq!(
-            replaceable_slot(&candidates, &[0x22; 32], 10_050, 60, &[]),
+            replaceable_slot(&candidates, &[0x22; 32], 1_060, 60, &[]),
+            None,
+            "age exactly at the cooldown must not be offered",
+        );
+        assert_eq!(
+            replaceable_slot(&candidates, &[0x22; 32], 1_061, 60, &[]),
             Some(0),
+            "one second past the cooldown is replaceable",
+        );
+    }
+
+    /// `Timestamp.Now` is milliseconds; ages are judged in seconds.
+    #[test]
+    fn the_chain_clock_is_read_in_seconds() {
+        let scripted = ScriptedRpc::new(vec![r#""0x60ea000000000000""#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        assert_eq!(
+            futures::executor::block_on(read_chain_now_seconds(&rpc)).unwrap(),
+            60,
         );
     }
 

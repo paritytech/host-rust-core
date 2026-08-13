@@ -285,8 +285,9 @@ pub(super) async fn renew_now(
     signing_host: &SigningHost,
 ) -> Result<StatementRenewalReport, String> {
     let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
-    let now_seconds = current_unix_secs().map_err(|err| err.to_string())?;
-    let period = statement_allowance::slot::current_period(now_seconds);
+    let period = statement_allowance::slot::current_period(
+        current_unix_secs().map_err(|err| err.to_string())?,
+    );
     let targets = owned_targets(
         signing_host.platform.as_ref(),
         signing_host.renewal.ledger_lock(),
@@ -341,7 +342,6 @@ pub(super) async fn renew_now(
         &context,
         bandersnatch,
         period,
-        now_seconds,
         &resolved,
         signing_host.renewal.registration_lock(),
     )

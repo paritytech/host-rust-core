@@ -322,9 +322,6 @@ pub struct RegistrationParams<'a> {
     /// attempt so the scan is not repeated. The duplicate-submit retry rescans,
     /// so this only ever shortcuts the first submission.
     pub preselected: Option<u32>,
-    /// Current unix seconds, used to age occupied slots against the runtime's
-    /// replacement cooldown. Passed in so the choice stays testable.
-    pub now_seconds: u64,
 }
 
 /// Result of a long-term storage claim attempt.
@@ -438,10 +435,11 @@ pub async fn register_statement_account(
                     // Nothing free: replace the oldest slot the runtime will
                     // let us take, and only then give up.
                     let cooldown = slot::replacement_cooldown(metadata)?;
+                    let chain_now = slot::read_chain_now_seconds(rpc).await?;
                     match slot::replaceable_slot(
                         &occupied,
                         params.target,
-                        params.now_seconds,
+                        chain_now,
                         cooldown,
                         &skipped_duplicate_slots,
                     ) {
@@ -1060,6 +1058,11 @@ mod tests {
         format!(r#""0x{}""#, hex::encode(entry))
     }
 
+    /// `Timestamp.Now` as a scripted storage result: unix seconds in millis.
+    fn chain_clock(seconds: u64) -> String {
+        format!(r#""0x{}""#, hex::encode((seconds * 1_000).encode()))
+    }
+
     /// Run `register_statement_account` against a scripted chain: all ten
     /// slots free, the extrinsic reaches block `0xb10c`, and the verification
     /// read at that block returns `verified_entry`.
@@ -1117,7 +1120,6 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected,
-                now_seconds: NOW,
             },
         ));
         (outcome, scripted)
@@ -1158,6 +1160,7 @@ mod tests {
             let since = if seq == 3 { 1_000 } else { NOW - 1_000 };
             slot_entry_since([0x99; 32], since)
         }));
+        owned.push(chain_clock(NOW));
         owned.push(slot_entry([0x22; 32]));
         let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
         let scripted = ScriptedRpc::new(responses);
@@ -1175,7 +1178,6 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
-                now_seconds: NOW,
             },
         ));
 
@@ -1208,6 +1210,7 @@ mod tests {
 
         let mut owned = vec!["null".to_string()];
         owned.extend((0..10).map(|_| slot_entry_since([0x99; 32], NOW - 10)));
+        owned.push(chain_clock(NOW));
         let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
         let scripted = ScriptedRpc::new(responses);
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
@@ -1223,7 +1226,6 @@ mod tests {
                 ring: &ring,
                 reuse_existing: true,
                 preselected: None,
-                now_seconds: NOW,
             },
         ))
         .unwrap_err();

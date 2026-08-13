@@ -115,7 +115,6 @@ pub async fn renew_targets(
     context: &RenewalChainContext<'_>,
     entropy: [u8; 32],
     period: u32,
-    now_seconds: u64,
     targets: &[ResolvedRenewalTarget],
     registration_lock: &Mutex<()>,
 ) -> StatementRenewalReport {
@@ -133,7 +132,6 @@ pub async fn renew_targets(
                     period,
                     ring: context.ring,
                     reuse_existing: true,
-                    now_seconds,
                     // The pass has no scan of its own, so registration scans.
                     preselected: None,
                 },
