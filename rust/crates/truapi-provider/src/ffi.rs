@@ -196,7 +196,8 @@ mod tests {
     }
 
     /// The whole foreign contract end to end: connect by catalog genesis, send a
-    /// request, receive it on the listener, and see `on_closed` after `close()`.
+    /// request, receive it on the listener, and see `on_closed` after
+    /// `disconnect()`.
     #[test]
     fn a_catalog_chain_answers_on_the_listener_and_closes() {
         let (listener, messages, closed) = Collector::new();
@@ -212,10 +213,10 @@ mod tests {
             .expect("smoldot answers spec-local queries without a network");
         assert!(response.contains("Paseo"), "unexpected: {response}");
 
-        connection.close();
+        connection.disconnect();
         closed
             .recv_timeout(Duration::from_secs(30))
-            .expect("closing the connection ends the stream and fires on_closed");
+            .expect("disconnecting ends the stream and fires on_closed");
     }
 }
 
