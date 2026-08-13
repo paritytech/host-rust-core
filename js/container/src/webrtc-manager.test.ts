@@ -137,6 +137,64 @@ describe('WebRtcManager', () => {
   });
 });
 
+// A hostile product shares the container's realm, so the gate must be
+// irremovable. These reproduce the three ways a subclass-based gate leaked the
+// native method; each must stay denied.
+describe('WebRtcManager gate is irremovable by product code', () => {
+  const deny = () => Promise.resolve(false);
+
+  it('installs the gate on the native class in place (no subclass)', () => {
+    const { NativeClass } = makeNativeClass();
+    const connectionClass = new WebRtcManager(NativeClass, deny).connectionClass;
+    // Patched in place: there is no separate gated subclass to route around.
+    expect(connectionClass).toBe(NativeClass);
+  });
+
+  it('resists deleting the gated prototype method', async () => {
+    const { NativeClass } = makeNativeClass();
+    const Gated = new WebRtcManager(NativeClass, deny).connectionClass;
+
+    const proto = Gated.prototype as unknown as { createOffer?: unknown };
+    // Non-configurable: delete throws in strict mode (ESM test module).
+    expect(() => {
+      delete proto.createOffer;
+    }).toThrow();
+    await expect(new Gated().createOffer()).rejects.toThrow(
+      'WebRTC access is not allowed',
+    );
+  });
+
+  it('leaves no ungated method reachable by walking the prototype chain', async () => {
+    const { NativeClass } = makeNativeClass();
+    const Gated = new WebRtcManager(NativeClass, deny).connectionClass;
+    const pc = new Gated();
+
+    // The only createOffer on the chain is the gated one.
+    const ownProto = Object.getPrototypeOf(pc) as {
+      createOffer: (this: RTCPeerConnection) => Promise<unknown>;
+    };
+    await expect(ownProto.createOffer.call(pc)).rejects.toThrow(
+      'WebRTC access is not allowed',
+    );
+    const grandparent = Object.getPrototypeOf(Object.getPrototypeOf(pc)) as {
+      createOffer?: unknown;
+    } | null;
+    expect(grandparent?.createOffer).toBeUndefined();
+  });
+
+  it('exposes no ungated native constructor via the class [[Prototype]]', () => {
+    const { NativeClass } = makeNativeClass();
+    const Gated = new WebRtcManager(NativeClass, deny).connectionClass;
+
+    // The parent constructor is not another RTCPeerConnection with an ungated
+    // createOffer (the old subclass handed back the native class here).
+    const parentCtor = Object.getPrototypeOf(Gated) as {
+      prototype?: { createOffer?: unknown };
+    };
+    expect(parentCtor.prototype?.createOffer).toBeUndefined();
+  });
+});
+
 describe('createWebRtcAccessRequester', () => {
   it('calls the allowWebRtcAccess method and resolves true when granted', async () => {
     const { transport, calls } = mockTransport({ allowed: true });

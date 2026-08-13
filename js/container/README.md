@@ -30,8 +30,8 @@ IIFE at `../../ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js`
 ## WebRTC gating
 
 `RTCPeerConnection` is **not** deleted outright. When a native container bridge
-is present (iOS or Android), the container installs a gated subclass in its
-place; otherwise it deletes the constructor (fail-closed — WebRTC blocked).
+is present (iOS or Android), the container gates it in place; otherwise it
+deletes the constructor (fail-closed — WebRTC blocked).
 
 A peer connection is inert until it touches the network, so the constructor is
 ungated. The five network-initiating async methods — `createOffer`,
@@ -40,6 +40,15 @@ ungated. The five network-initiating async methods — `createOffer`,
 asks the host for app-level WebRTC access; the decision is cached per
 connection. Denial closes the connection and throws
 `TypeError('WebRTC access is not allowed')`.
+
+The gate is patched **onto the native prototype in place** as
+non-configurable/non-writable methods, and the native class itself is installed
+as `window.RTCPeerConnection` — not a subclass. In the same realm as product
+code this matters: a subclass would leave the native method reachable (a
+deletable shadow, the ungated parent prototype, or the native constructor
+recovered via the subclass `[[Prototype]]`). In place there is no ungated method
+anywhere on the chain, nothing to delete or overwrite, and no native twin to
+construct.
 
 Camera and microphone (`navigator.mediaDevices.getUserMedia`) are not touched
 here — they stay gated natively by the host (on iOS, the

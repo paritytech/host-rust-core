@@ -149,21 +149,20 @@
           }
         });
       };
-      class GatedRTCPeerConnection extends nativeConnectionClass {
-      }
-      const proto = GatedRTCPeerConnection.prototype;
+      const proto = nativeConnectionClass.prototype;
       for (const name of GATED_METHODS) {
-        const nativeMethod = nativeConnectionClass.prototype[name];
+        const nativeMethod = proto[name];
         Object.defineProperty(proto, name, {
-          configurable: true,
-          writable: true,
+          configurable: false,
+          writable: false,
+          enumerable: true,
           value: async function(...args) {
             await ensureAllowed(this);
             return nativeMethod.apply(this, args);
           }
         });
       }
-      this.connectionClass = GatedRTCPeerConnection;
+      this.connectionClass = nativeConnectionClass;
     }
   };
 

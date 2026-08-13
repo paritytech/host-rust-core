@@ -1,10 +1,21 @@
 // =============================================================================
 // Platform-agnostic, permission-gated RTCPeerConnection.
 //
-// The manager subclasses the native RTCPeerConnection and gates the async
-// methods that initiate network activity (SDP exchange and ICE). A peer
-// connection is inert until one of these is called, so the constructor is
-// intentionally not gated. Access is requested once per connection and the
+// The manager patches the async methods that initiate network activity (SDP
+// exchange and ICE) directly onto the native RTCPeerConnection prototype, as
+// non-configurable / non-writable properties, and exposes the native class
+// itself as `connectionClass`.
+//
+// Patching in place — rather than subclassing — is required for the same-realm
+// threat model: a product script must not be able to reach an ungated method.
+// A subclass leaves three holes (a deletable shadow, the ungated parent
+// prototype, and the native constructor recoverable via the subclass
+// `[[Prototype]]`); an in-place patch has none — the sole method on the chain is
+// the gated one, it cannot be deleted or overwritten, and there is no native
+// twin to construct.
+//
+// A peer connection is inert until a gated method touches the network, so the
+// constructor is not gated. Access is requested once per connection and the
 // decision is cached; a denial closes the connection and throws.
 //
 // `createWebRtcAccessRequester` adapts a NativeTransport into the requester the
@@ -59,11 +70,11 @@ type AsyncPeerMethod = (
 ) => Promise<unknown>;
 
 /**
- * Wraps a native RTCPeerConnection class in a permission gate. Install
- * `connectionClass` as the drop-in replacement for `window.RTCPeerConnection`.
+ * Gates a native RTCPeerConnection class in place. Install `connectionClass`
+ * (the same native class, now patched) as `window.RTCPeerConnection`.
  */
 export class WebRtcManager {
-  /** Gated RTCPeerConnection subclass to install in place of the native one. */
+  /** The native RTCPeerConnection class, patched in place with the gate. */
   readonly connectionClass: typeof RTCPeerConnection;
 
   constructor(
@@ -87,19 +98,18 @@ export class WebRtcManager {
       });
     };
 
-    class GatedRTCPeerConnection extends nativeConnectionClass {}
-
-    const proto = GatedRTCPeerConnection.prototype;
+    const proto = nativeConnectionClass.prototype;
     for (const name of GATED_METHODS) {
-      // The native class' overloaded DOM signatures cannot be forwarded
-      // through a uniform wrapper without losing overloads, so read the method
-      // once as a generic async function and apply it after the gate resolves.
-      const nativeMethod = nativeConnectionClass.prototype[
-        name
-      ] as unknown as AsyncPeerMethod;
+      // Capture the native method, then replace it on the native prototype as a
+      // non-configurable / non-writable data property so product code cannot
+      // delete, overwrite, or walk past the gate. The overloaded DOM signatures
+      // can't be forwarded through a typed wrapper, so treat it as a generic
+      // async function.
+      const nativeMethod = proto[name] as unknown as AsyncPeerMethod;
       Object.defineProperty(proto, name, {
-        configurable: true,
-        writable: true,
+        configurable: false,
+        writable: false,
+        enumerable: true,
         value: async function (
           this: RTCPeerConnection,
           ...args: unknown[]
@@ -110,6 +120,6 @@ export class WebRtcManager {
       });
     }
 
-    this.connectionClass = GatedRTCPeerConnection;
+    this.connectionClass = nativeConnectionClass;
   }
 }
