@@ -181,6 +181,26 @@ enum Command {
         #[arg(long)]
         submit: bool,
     },
+    /// Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring
+    /// membership on People, revision propagation to Asset Hub, the day's free
+    /// slot, and the `Pgas.claim_pgas` extrinsic.
+    PgasCheck {
+        /// BIP-39 mnemonic proving LitePeople ring membership.
+        #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
+        mnemonic: String,
+        /// Network preset to use for People and Asset Hub RPC.
+        #[arg(long, value_enum, default_value = "paseo-next-v2")]
+        network: Network,
+        /// Account (hex, 32 bytes) the claim credits. Required with `--submit`.
+        #[arg(long)]
+        target: Option<String>,
+        /// How many rings back from the current index to scan for our member.
+        #[arg(long, default_value_t = 8)]
+        lookback: u32,
+        /// Submit the claim instead of only reporting what it would do.
+        #[arg(long)]
+        submit: bool,
+    },
 }
 
 #[derive(Args)]
@@ -308,7 +328,167 @@ async fn main() -> Result<()> {
             lookback,
             submit,
         } => run_alloc_check(mnemonic, network.config(), target, lookback, submit).await,
+        Command::PgasCheck {
+            mnemonic,
+            network,
+            target,
+            lookback,
+            submit,
+        } => run_pgas_check(mnemonic, network.config(), target, lookback, submit).await,
     }
+}
+
+/// Diagnose an Asset Hub PGAS claim, and optionally submit it.
+///
+/// Connects to both chains directly rather than through the host's
+/// `ChainProvider`: that filters Asset Hub out unless `E2E_LIVE_CHAIN=1` and then
+/// falls back to the People chain, which would silently exercise the wrong chain.
+async fn run_pgas_check(
+    mnemonic: String,
+    network: crate::network::NetworkConfig,
+    target: Option<String>,
+    lookback: u32,
+    submit: bool,
+) -> Result<()> {
+    use std::sync::Arc;
+
+    use truapi_server::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
+    use truapi_server::statement_allowance::pgas;
+
+    let entropy = bip39::Mnemonic::parse(mnemonic.trim())
+        .context("invalid BIP-39 mnemonic")?
+        .to_entropy();
+    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
+
+    if submit && target.is_none() {
+        bail!("--target is required with --submit; a claim has to credit an account");
+    }
+    let target = match target {
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str.strip_prefix("0x").unwrap_or(&hex_str))
+                .context("invalid --target hex")?;
+            <[u8; 32]>::try_from(bytes.as_slice())
+                .map_err(|_| anyhow::anyhow!("--target must be 32 bytes"))?
+        }
+        None => [0u8; 32],
+    };
+
+    let people_rpc = alloc::rpc::RpcClient::connect(network.people_ws)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let people_metadata = alloc::fetch_metadata(&people_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let asset_hub_rpc = alloc::rpc::RpcClient::connect(network.asset_hub_ws)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let asset_hub_metadata = alloc::fetch_metadata(&asset_hub_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let asset_hub_state = alloc::fetch_chain_state(&asset_hub_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    println!(
+        "asset hub: metadata V{} specVersion={} txVersion={} genesis=0x{}",
+        asset_hub_metadata.metadata_version(),
+        asset_hub_state.spec_version,
+        asset_hub_state.transaction_version,
+        hex::encode(asset_hub_state.genesis_hash),
+    );
+
+    println!(
+        "bandersnatch member=0x{}",
+        hex::encode(alloc::proof::member_key(bandersnatch))
+    );
+    let current_ring = alloc::ring::read_current_ring_index(&people_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let Some(ring) = alloc::find_including_ring(
+        &people_rpc,
+        &people_metadata,
+        bandersnatch,
+        lookback.min(current_ring.saturating_add(1)),
+    )
+    .await
+    .map_err(anyhow::Error::msg)?
+    else {
+        bail!("member is not in the last {lookback} rings (onboarding pending)");
+    };
+    println!(
+        "member INCLUDED in ring_index={} exponent={} members={}",
+        ring.ring_index,
+        ring.exponent,
+        ring.members.len()
+    );
+
+    let revision = alloc::ring::read_ring_revision(
+        &people_rpc,
+        &people_metadata,
+        ring.ring_index,
+        &ring.block_hash,
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    println!("people ring revision={revision}");
+    match pgas::await_ring_revision(
+        &asset_hub_rpc,
+        &asset_hub_metadata,
+        ring.ring_index,
+        revision,
+    )
+    .await
+    {
+        Ok(()) => println!("asset hub has imported revision {revision}"),
+        Err(err) => bail!("asset hub cannot authorize this ring: {err}"),
+    }
+
+    let day = alloc::slot::current_period(
+        alloc::slot::read_chain_now_seconds(&asset_hub_rpc)
+            .await
+            .map_err(anyhow::Error::msg)?,
+    );
+    let max = alloc::slot::max_pgas_claims(&asset_hub_metadata).map_err(anyhow::Error::msg)?;
+    println!(
+        "day={day} max_claims_per_day={max} target=0x{}",
+        hex::encode(target)
+    );
+    match alloc::slot::scan_pgas_slot_excluding(
+        &asset_hub_rpc,
+        &asset_hub_metadata,
+        bandersnatch,
+        day,
+        &[],
+    )
+    .await
+    {
+        Ok(slot_index) => println!("slot scan: free slot_index={slot_index}"),
+        Err(err) => println!("slot scan: {err}"),
+    }
+
+    if !submit {
+        return Ok(());
+    }
+
+    let asset_hub = alloc::ChainContext {
+        metadata: Arc::new(asset_hub_metadata),
+        state: asset_hub_state,
+    };
+    let outcome = pgas::claim_pgas(pgas::PgasClaim {
+        asset_hub_rpc: &asset_hub_rpc,
+        asset_hub: &asset_hub,
+        people_rpc: &people_rpc,
+        people_metadata: &people_metadata,
+        entropy: bandersnatch,
+        target: &target,
+        ring: &ring,
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("claim failed: {err}"))?;
+    println!(
+        "CLAIMED day={} slot_index={} ring_index={} block={}",
+        outcome.day, outcome.slot_index, outcome.ring_index, outcome.block_hash
+    );
+    Ok(())
 }
 
 fn log_target_is_visible(target: &str) -> bool {
