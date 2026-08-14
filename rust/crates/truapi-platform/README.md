@@ -10,8 +10,13 @@ flows, permission state, and auth state transitions.
 
 ## Type Imports
 
-Host-facing wire types are imported from `truapi::latest` by this crate and are
-exposed through the trait signatures below.
+Most host-facing wire types are imported from `truapi::latest` by this crate and
+are exposed through the trait signatures below. `ProductContext` and
+`ProductExecutionKind` are defined here instead, and codegen emits their host
+codecs from these definitions. Both are SCALE-encodable so they can cross the
+wasm callback boundary, where every parameter is encoded with
+`parity-scale-codec`; `ProductContext` decodes through its validating
+constructor, so a context off the wire carries a normalized product id.
 
 ## Host Callback Traits
 
@@ -28,9 +33,12 @@ exposed through the trait signatures below.
   preimage actions before the core asks the paired wallet.
 - `ThemeHost`: stream the host theme into the runtime.
 - `PreimageHost`: submit and look up preimages through the host-selected backend.
+- `ChatPlatform`: create product-scoped native chat rooms, post messages into
+  them, and stream the product's room list.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above.
+traits above except `ChatPlatform`, which a host supplies separately and only
+when it provides the Chat modality.
 
 ## Core-Owned Admin API
 

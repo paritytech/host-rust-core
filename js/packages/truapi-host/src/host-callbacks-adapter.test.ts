@@ -18,6 +18,8 @@ import { createWasmRawCallbacks } from "./generated/host-callbacks-adapter.js";
 import {
   AuthState,
   CoreStorageKey,
+  ProductContext,
+  ProductExecutionKind,
   UserConfirmationReview,
 } from "./generated/host-callbacks.js";
 import { makeHostCallbacks, settle } from "./test-support.js";
@@ -486,5 +488,26 @@ describe("createWasmRawCallbacks", () => {
     expect(received).toEqual(responses);
     connection!.close();
     expect(closes).toBe(1);
+  });
+});
+
+describe("ProductContext codec", () => {
+  // Mirror of the Rust test
+  // `product_context_encoding_matches_the_generated_host_codec` in
+  // `rust/crates/truapi-platform/src/lib.rs`, which pins these same bytes
+  // through `parity-scale-codec`. Both halves must be edited together: a
+  // ProductContext travels the wasm callback boundary encoded in Rust and
+  // decoded here.
+  it("product context encoding matches the Rust platform codec", () => {
+    expect([...ProductExecutionKind.enc("Spa")]).toEqual([0]);
+    expect([...ProductExecutionKind.enc("Chat")]).toEqual([1]);
+
+    const context = { productId: "app.dot", executionKind: "Chat" } as const;
+    expect([...ProductContext.enc(context)]).toEqual([
+      28,
+      ...new TextEncoder().encode("app.dot"),
+      1,
+    ]);
+    expect(ProductContext.dec(ProductContext.enc(context))).toEqual(context);
   });
 });
