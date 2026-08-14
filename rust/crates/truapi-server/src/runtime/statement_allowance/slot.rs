@@ -259,16 +259,7 @@ fn spent_long_term_storage_alias_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
 
 /// Max StatementStore slots per period from `Resources.LiteStmtStoreSlotsPerPeriod`.
 fn max_slots(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
-    let bytes = metadata
-        .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
-        .ok_or(MetadataError::MissingConstant {
-            pallet: "Resources",
-            constant: "LiteStmtStoreSlotsPerPeriod",
-        })?;
-    let mut buf = [0u8; 4];
-    let n = bytes.len().min(4);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    Ok(u32::from_le_bytes(buf))
+    metadata.constant_u32("Resources", "LiteStmtStoreSlotsPerPeriod")
 }
 
 /// Max long-term-storage claims per period from
@@ -291,16 +282,7 @@ fn long_term_storage_claims_per_period(metadata: &Metadata) -> Result<u8, Statem
 pub fn long_term_storage_period_duration(
     metadata: &Metadata,
 ) -> Result<u32, StatementAllowanceError> {
-    let bytes = metadata
-        .constant("Resources", "LongTermStoragePeriodDuration")
-        .ok_or(MetadataError::MissingConstant {
-            pallet: "Resources",
-            constant: "LongTermStoragePeriodDuration",
-        })?;
-    let mut buf = [0u8; 4];
-    let n = bytes.len().min(4);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    Ok(u32::from_le_bytes(buf))
+    metadata.constant_u32("Resources", "LongTermStoragePeriodDuration")
 }
 
 /// Decode a slot entry: `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
@@ -362,16 +344,9 @@ pub async fn read_chain_now_seconds(rpc: &RpcClient) -> Result<u64, StatementAll
 
 /// Seconds an occupied slot must age before the runtime allows replacing it.
 pub fn replacement_cooldown(metadata: &Metadata) -> Result<u64, StatementAllowanceError> {
-    let bytes = metadata
-        .constant("Resources", "StmtStoreReplacementCooldown")
-        .ok_or(MetadataError::MissingConstant {
-            pallet: "Resources",
-            constant: "StmtStoreReplacementCooldown",
-        })?;
-    let mut buf = [0u8; 4];
-    let n = bytes.len().min(4);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    Ok(u64::from(u32::from_le_bytes(buf)))
+    metadata
+        .constant_u32("Resources", "StmtStoreReplacementCooldown")
+        .map(u64::from)
 }
 
 /// The account holding our alias slot `(period, seq)`, read pinned to
@@ -466,16 +441,7 @@ pub async fn scan_slot_excluding(
 /// Claims a lite person may make per PGAS period, from
 /// `Pgas.MaxClaimsPerPeriodPerLitePerson`.
 pub fn max_pgas_claims(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
-    let bytes = metadata
-        .constant("Pgas", "MaxClaimsPerPeriodPerLitePerson")
-        .ok_or(MetadataError::MissingConstant {
-            pallet: "Pgas",
-            constant: "MaxClaimsPerPeriodPerLitePerson",
-        })?;
-    let mut buf = [0u8; 4];
-    let n = bytes.len().min(4);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    Ok(u32::from_le_bytes(buf))
+    metadata.constant_u32("Pgas", "MaxClaimsPerPeriodPerLitePerson")
 }
 
 /// Scan PGAS slots `0..max` for `day`, returning the first whose alias has not

@@ -463,7 +463,29 @@ impl Metadata {
         Ok((variant.index, nested.index))
     }
 
-    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
+    /// A pallet constant decoded as `u32`.
+    ///
+    /// Runtime constants are SCALE-encoded at their declared width, which for
+    /// these is `u32` or narrower, so short values are zero-extended rather than
+    /// rejected: a `u8` slot count is a valid count, not a decode failure.
+    pub fn constant_u32(
+        &self,
+        pallet: &'static str,
+        name: &'static str,
+    ) -> Result<u32, StatementAllowanceError> {
+        let bytes = self
+            .constant(pallet, name)
+            .ok_or(MetadataError::MissingConstant {
+                pallet,
+                constant: name,
+            })?;
+        let mut buf = [0u8; 4];
+        let n = bytes.len().min(4);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
     ///
     /// The encoded payload has to match it exactly: a short payload is accepted
     /// locally and then panics the runtime inside `validate_transaction`, so this
@@ -897,6 +919,34 @@ mod tests {
             "two pipelines: encode for the newer"
         );
         assert_eq!(encoding_extension_version([2u8, 0, 1].iter()), 2);
+    }
+
+    /// Constants are encoded at their declared width, so a `u8` count has to read
+    /// as that count rather than failing. A constant the pallet does not declare is
+    /// still an error.
+    #[test]
+    fn constants_read_as_u32_whatever_width_they_declare() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(
+            metadata
+                .constant_u32("Resources", "LiteStmtStoreSlotsPerPeriod")
+                .unwrap(),
+            10,
+            "a u32 constant"
+        );
+        assert_eq!(
+            metadata
+                .constant_u32("Resources", "LongTermStorageClaimsPerPeriod")
+                .unwrap(),
+            10,
+            "a u8 constant zero-extends rather than erroring"
+        );
+        assert!(
+            metadata
+                .constant_u32("Resources", "NoSuchConstant")
+                .is_err()
+        );
     }
 
     /// A pipeline may list a subset, in its own order, so the map decides both
