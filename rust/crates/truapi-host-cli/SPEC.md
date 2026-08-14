@@ -1104,7 +1104,7 @@ v0.1 supports only `paseo-next-v2`.
 | --- | --- |
 | Identity backend | `https://identity-backend-next.parity-testnet.parity.io/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
-| People genesis | `0xc5af1826b31493f08b7e2a823842f98575b806a784126f28da9608c68665afa5` |
+| People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
