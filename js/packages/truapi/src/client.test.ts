@@ -7,7 +7,7 @@ import type { Codec } from "./scale.js";
 import { createClient, SubscriptionError } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
-import { encodeWireMessage } from "./transport.js";
+import { createMessagePortProvider, encodeWireMessage, RequestTimeoutError } from "./transport.js";
 
 /** Wrap a codec in the `{ V1: [0, codec] }` indexed-tagged-union envelope. */
 const versionedV1 = <T>(codec: Codec<T>) => indexedTaggedUnion({ V1: [0, codec] });
@@ -669,5 +669,168 @@ describe("generated client transport", () => {
         expect(errors[0].message).toBe("provider closed");
         expect((errors[0] as SubscriptionError).reason).toBeUndefined();
         expect(errors[0].cause).toBe(providerError);
+    });
+});
+
+describe("request timeouts", () => {
+    it("rejects a request the peer accepts and never answers", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+        const client = createClient(transport);
+
+        const outcome = await client.system.handshake().then<unknown, unknown>(
+            (result) => result,
+            (error: unknown) => error,
+        );
+
+        expect(fixture.sent).toHaveLength(1);
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+        expect((outcome as RequestTimeoutError).timeoutMs).toBe(5);
+    });
+
+    it("ignores a reply that arrives after the bound fired", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+        let decodeCalls = 0;
+
+        const outcome = await transport
+            .request<undefined, never>({
+                ids: W.SYSTEM_HANDSHAKE,
+                payload: T.VersionedHostHandshakeRequest.enc({
+                    tag: "V1",
+                    value: { codecVersion: 1 },
+                }),
+                decodeResponse: () => {
+                    decodeCalls += 1;
+                    return { success: true, value: undefined };
+                },
+            })
+            .then<unknown, unknown>(
+                (result) => result,
+                (error: unknown) => error,
+            );
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+
+        const lateReply = unwrap(
+            encodeWireMessage({
+                requestId: "p:1",
+                payload: {
+                    id: W.SYSTEM_HANDSHAKE.response,
+                    value: handshakeResponsePayload({ success: true, value: undefined }),
+                },
+            }),
+            "encode late handshake_response",
+        );
+        expect(() => fixture.receive(lateReply)).not.toThrow();
+        expect(decodeCalls).toBe(0);
+    });
+
+    it("bounds a request buffered by a provider whose port never resolves", async () => {
+        const { promise: unresolvedPort } = Promise.withResolvers<MessagePort>();
+        const provider = createMessagePortProvider(unresolvedPort);
+        const transport = createTransport(provider, { requestTimeoutMs: 5 });
+        const client = createClient(transport);
+
+        const outcome = await client.system.handshake().then<unknown, unknown>(
+            (result) => result,
+            (error: unknown) => error,
+        );
+
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+    });
+
+    it("keeps a slow-answering method on its floor instead of the configured bound", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+
+        // Ordering, not wall-clock: the floored request carries a 190s bound, so
+        // the 5ms control request must settle first. Racing the two keeps the
+        // assertion deterministic without a guessed sleep.
+        const floored = transport
+            .request<undefined, never>({
+                ids: W.RESOURCE_ALLOCATION_REQUEST,
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true, value: undefined }),
+            })
+            .then<string, string>(
+                () => "floored",
+                () => "floored",
+            );
+        const control = transport
+            .request<undefined, never>({
+                ids: W.SYSTEM_HANDSHAKE,
+                payload: T.VersionedHostHandshakeRequest.enc({
+                    tag: "V1",
+                    value: { codecVersion: 1 },
+                }),
+                decodeResponse: () => ({ success: true, value: undefined }),
+            })
+            .then<string, string>(
+                () => "control",
+                () => "control",
+            );
+
+        expect(await Promise.race([floored, control])).toBe("control");
+        expect(fixture.sent).toHaveLength(2);
+        transport.dispose();
+        expect(await floored).toBe("floored");
+    });
+
+    it("rejects with the close error, not a timeout, when the transport is disposed", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5_000 });
+        const client = createClient(transport);
+
+        const response = client.system.handshake();
+        transport.dispose();
+
+        const outcome = await response.then<unknown, unknown>(
+            (result) => result,
+            (error: unknown) => error,
+        );
+        expect(outcome).toBeInstanceOf(Error);
+        expect(outcome).not.toBeInstanceOf(RequestTimeoutError);
+        expect((outcome as Error).message).toBe("transport disposed");
+    });
+
+    it("surfaces a timeout as a rejection that neither match callback sees", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+        const client = createClient(transport);
+        let okCalls = 0;
+        let errCalls = 0;
+
+        const outcome = await client.system
+            .handshake()
+            .match(
+                () => {
+                    okCalls += 1;
+                },
+                () => {
+                    errCalls += 1;
+                },
+            )
+            .then<unknown, unknown>(
+                (value) => value,
+                (error: unknown) => error,
+            );
+
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+        expect(okCalls).toBe(0);
+        expect(errCalls).toBe(0);
+    });
+
+    it("rejects a request bound that setTimeout cannot schedule", () => {
+        const fixture = providerFixture();
+
+        expect(() => createTransport(fixture.provider, { requestTimeoutMs: Infinity })).toThrow(
+            /Invalid TrUAPI request timeout/,
+        );
+        expect(() => createTransport(fixture.provider, { requestTimeoutMs: 0 })).toThrow(
+            /Invalid TrUAPI request timeout/,
+        );
+        expect(() =>
+            createTransport(fixture.provider, { requestTimeoutMs: 2_147_483_648 }),
+        ).toThrow(/Invalid TrUAPI request timeout/);
     });
 });
