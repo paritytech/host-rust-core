@@ -26,7 +26,6 @@ use truapi_platform::{
 use super::SigningHost;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
-use crate::host_logic::device_key::read_or_create_device_encryption_secret;
 use crate::host_logic::entropy::root_entropy_source;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_sr25519_hard_path;
@@ -236,12 +235,7 @@ pub(crate) async fn respond_to_pairing(
         .map_err(|err| format!("root account derivation failed: {err}"))?;
     let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
         .map_err(|err| format!("responder identity derivation failed: {err}"))?;
-    let device_enc_pub_key = {
-        let _guard = signing_host.device_encryption_key_guard().await;
-        x25519_public_key(
-            read_or_create_device_encryption_secret(services.platform.as_ref()).await?,
-        )
-    };
+    let device_enc_pub_key = x25519_public_key(services.device_encryption_secret().await?);
     let session = establish_responder_session_info(
         &identity,
         proposal.device.statement_account_id,
@@ -1735,12 +1729,10 @@ mod tests {
 
     #[test]
     fn advertised_device_key_is_independent_of_the_identity() {
-        let platform = Arc::new(StubPlatform::default());
-        let storage: Arc<dyn Platform> = platform.clone();
+        let (services, _signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
 
         let advertised = x25519_public_key(
-            futures::executor::block_on(read_or_create_device_encryption_secret(storage.as_ref()))
-                .unwrap(),
+            futures::executor::block_on(services.device_encryption_secret()).unwrap(),
         );
 
         // The regression this guards: advertising the SSO channel key as the

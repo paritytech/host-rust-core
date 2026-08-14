@@ -27,7 +27,6 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
-use crate::host_logic::device_key::read_or_create_device_encryption_secret;
 use crate::runtime::{
     ChatConnection, LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost,
     ResponderExit, RuntimeServices, SigningHostRole, respond_to_pairing,
@@ -213,7 +212,8 @@ impl PairingHostRuntime {
     /// sync. Generated and persisted on first read.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.device_encryption_key"))]
     pub async fn device_encryption_key(&self) -> Result<[u8; 32], v01::GenericError> {
-        read_or_create_device_encryption_secret(self.services.platform.as_ref())
+        self.services
+            .device_encryption_secret()
             .await
             .map_err(|reason| v01::GenericError { reason })
     }
@@ -723,7 +723,9 @@ impl CoreAdmin for HostAdmin {
     }
 
     async fn get_device_encryption_key(&self) -> Result<[u8; 32], v01::GenericError> {
-        read_or_create_device_encryption_secret(self.product_runtime.platform().as_ref())
+        self.product_runtime
+            .services()
+            .device_encryption_secret()
             .await
             .map_err(|reason| v01::GenericError { reason })
     }

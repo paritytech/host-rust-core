@@ -798,6 +798,12 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
       );
     },
     getDeviceEncryptionKey(): Promise<Uint8Array> {
+      // A key has no safe empty value: callers encrypt with what they get back,
+      // so a disposed runtime must fail rather than hand out a zero-length one.
+      // The check is synchronous with the send, so the fallback is unreachable.
+      if (state.disposed) {
+        return Promise.reject(new Error("worker host runtime is disposed"));
+      }
       return sendWorkerRequest<Uint8Array>(
         state,
         state.pendingDeviceEncryptionKeys,

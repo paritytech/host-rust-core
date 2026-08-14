@@ -111,10 +111,6 @@ pub(crate) struct SigningHost {
     local_grants: Mutex<LocalGrantState>,
     /// Durable RFC-0024 registry, scoped by the active wallet root.
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
-    /// Serializes the read-or-create of the persisted device encryption key.
-    /// Concurrent pairing answers would otherwise each generate a key and
-    /// advertise it, leaving the overwritten peer unable to reach this device.
-    device_encryption_key: futures::lock::Mutex<()>,
     #[cfg(not(target_arch = "wasm32"))]
     renewal: allowance_renewal::RenewalState,
 }
@@ -133,7 +129,6 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
-            device_encryption_key: futures::lock::Mutex::new(()),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
@@ -159,7 +154,6 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
-            device_encryption_key: futures::lock::Mutex::new(()),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
@@ -168,12 +162,6 @@ impl SigningHost {
     /// Shared session holder for connection-status subscriptions.
     pub(super) fn session_state(&self) -> Arc<SessionState> {
         self.session_state.clone()
-    }
-
-    /// Hold while reading-or-creating the persisted device encryption key, so
-    /// concurrent pairing answers agree on the key they advertise.
-    pub(super) async fn device_encryption_key_guard(&self) -> futures::lock::MutexGuard<'_, ()> {
-        self.device_encryption_key.lock().await
     }
 
     /// Current root entropy, or [`AuthorityError::Disconnected`] when no local
