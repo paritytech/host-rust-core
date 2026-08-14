@@ -18,7 +18,12 @@ use crate::{CallContext, CallError};
 /// Signing operations.
 #[crate::async_trait]
 pub trait Signing: Send + Sync {
-    /// Construct a signed transaction for a product account.
+    /// Construct a transaction for a product account.
+    ///
+    /// Under Extrinsic V5, omitting `VerifyMultiSignature` from `extensions`
+    /// lets the host sign with the signer's key. Listing it — as `Disabled`,
+    /// with a proof in a later extension — encodes the given bytes verbatim and
+    /// returns an unsigned transaction.
     ///
     /// ```ts
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
@@ -36,8 +41,17 @@ pub trait Signing: Send + Sync {
     ///
     /// for (const txExtVersion of [0, 5]) {
     ///   const version = txExtVersion === 0 ? "V4" : "V5";
+    ///   // V5 leaves VerifyMultiSignature to the host, which signs. V4 keeps
+    ///   // it: that body is a plain concatenation, so dropping one shifts the rest.
+    ///   const extensions =
+    ///     txExtVersion === 5
+    ///       ? payload.value.extensions.filter(
+    ///           (ext) => ext.id !== "VerifyMultiSignature",
+    ///         )
+    ///       : payload.value.extensions;
     ///   const result = await truapi.signing.createTransaction({
     ///     ...payload.value,
+    ///     extensions,
     ///     txExtVersion,
     ///   });
     ///   assert(result.isOk(), `${version} createTransaction failed:`, result);
@@ -53,7 +67,11 @@ pub trait Signing: Send + Sync {
         Err(CallError::unavailable())
     }
 
-    /// Construct a signed transaction for a non-product (legacy) account.
+    /// Construct a transaction for a non-product (legacy) account.
+    ///
+    /// The V5 `VerifyMultiSignature` rule is the same as
+    /// [`Signing::create_transaction`]: omit it and the host signs, list it and
+    /// the given bytes are used with no host signature.
     ///
     /// ```ts
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
@@ -77,8 +95,18 @@ pub trait Signing: Send + Sync {
     /// });
     /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
     ///
+    /// // Host-owned under V5 only: a V4 body is a plain concatenation, so
+    /// // dropping a declared extension there shifts every one after it.
+    /// const extensions =
+    ///   payload.value.txExtVersion === 5
+    ///     ? payload.value.extensions.filter(
+    ///         (ext) => ext.id !== "VerifyMultiSignature",
+    ///       )
+    ///     : payload.value.extensions;
+    ///
     /// const result = await truapi.signing.createTransactionWithLegacyAccount({
     ///   ...payload.value,
+    ///   extensions,
     ///   signer: accountResult.value.account.publicKey,
     /// });
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
