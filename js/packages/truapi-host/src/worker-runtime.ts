@@ -175,10 +175,11 @@ function toBase64(bytes: Uint8Array): string {
 const WIRE_ENVELOPE_VERSION = 1;
 
 /**
- * Is `url` a `ws://` URL on a loopback host? The debug tap forwards raw frames
- * (including sensitive payloads, before the debugger's denylist runs), so it is
- * loopback-only: refuse to stream them off the local machine. `ws://` only,
- * matching the native sink (`native_debug.rs`), which is also ws-only.
+ * Is `url` a `ws://` URL on a loopback host? The debug tap forwards every frame
+ * verbatim, including payloads carrying key material: there is no denylist and
+ * nothing is redacted anywhere in this pipeline, so the loopback requirement is
+ * the whole confinement story - refuse to stream them off the local machine.
+ * `ws://` only, matching the native sink (`native_debug.rs`), also ws-only.
  *
  * Cleartext is the right call *because* the target is loopback-only. TLS defends
  * against a party on the path, and a loopback socket has no path: the frames
@@ -296,6 +297,19 @@ const RECONNECT_MAX_MS = 5000;
  * instead.
  */
 const MAX_SOCKET_BUFFERED_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Ceiling on a SINGLE encoded message, checked on the live path as well as the
+ * queued one.
+ *
+ * `MAX_SOCKET_BUFFERED_BYTES` bounds the socket's cumulative backlog, which one
+ * oversized frame passes straight through on an otherwise idle socket. The
+ * debugger closes the connection on an over-cap message rather than dropping it
+ * (Bun: close 1006, "Received too big message"), so an unshed frame costs the
+ * whole stream. Base64 inflates 4/3, so this sits below the server's own limit
+ * with room for the envelope's other fields.
+ */
+const MAX_MESSAGE_BYTES = 6 * 1024 * 1024;
 
 /**
  * Dev-only link to the debugger the host dials. Fire-and-forget by construction:
@@ -425,11 +439,15 @@ export function createDebuggerLink(
     });
   }
 
-  function send(message: string): void {
+  function send(message: string): boolean {
     try {
       socket?.send(message);
+      return true;
     } catch {
-      // A dead socket must never break the frame path.
+      // A dead socket must never break the frame path. The caller keeps its
+      // pending drop count rather than clearing it against a send that failed -
+      // otherwise a gap the host really did cause is reported as no gap at all.
+      return false;
     }
   }
 
@@ -481,12 +499,17 @@ export function createDebuggerLink(
           // Piggyback any frames dropped while the link was down onto the next
           // live frame, so the debugger attributes the gap to the link, not the
           // host.
-          send(
+          const message =
             droppedSinceSend > 0
               ? JSON.stringify({ ...base, dropped: droppedSinceSend })
-              : JSON.stringify(base),
-          );
-          droppedSinceSend = 0;
+              : JSON.stringify(base);
+          // One over-cap message closes the debugger's socket, taking the whole
+          // stream with it. Shedding this frame keeps the rest.
+          if (message.length > MAX_MESSAGE_BYTES) {
+            shed();
+            return;
+          }
+          if (send(message)) droppedSinceSend = 0;
           return;
         }
         // Nothing leaves the queue except through flush(), so everything that

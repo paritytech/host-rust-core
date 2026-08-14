@@ -1233,3 +1233,50 @@ test("a replayed backlog keeps the producer's clock through the real socket", as
     server.stop();
   }
 });
+
+test("a host-terminated subscription stops counting as live on /stats", async () => {
+  // `interrupt` ends a subscription just as `stop` does — a chain switch or a
+  // revoked permission is ordinary lifecycle, not an anomaly. Testing only for
+  // `stop` left every such subscription "live" forever, so the tile climbed all
+  // session while the op list beside it showed nothing live. The two mounts
+  // disagreed because each had its own aggregation; both now share one.
+  const server = startDebugServer({ port: 0 });
+  const base = `http://localhost:${server.port}`;
+  try {
+    const send = (id: number, dir: "in" | "out"): string => {
+      const encoded = encodeWireMessage({
+        requestId: "p:1",
+        payload: { id, value: new Uint8Array([0]) },
+      });
+      if (encoded.isErr()) throw encoded.error;
+      return JSON.stringify({
+        channelId: "myapp.dot",
+        dir,
+        frame: Buffer.from(encoded.value).toString("base64"),
+        schema: TRUAPI_WIRE_SCHEMA_HASH,
+        codec: TRUAPI_CODEC_VERSION,
+        v: WIRE_ENVELOPE_VERSION,
+      });
+    };
+
+    const ws = new WebSocket(`ws://localhost:${server.port}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error("ws failed to open"));
+    });
+    ws.send(send(W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start, "out"));
+    ws.send(send(W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt, "in"));
+
+    let stats = { subscriptions: 0, liveSubscriptions: -1 };
+    for (let i = 0; i < 50 && stats.subscriptions === 0; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      stats = (await (await fetch(`${base}/stats`)).json()) as typeof stats;
+    }
+    ws.close();
+
+    expect(stats.subscriptions).toBe(1);
+    expect(stats.liveSubscriptions).toBe(0);
+  } finally {
+    server.stop();
+  }
+});

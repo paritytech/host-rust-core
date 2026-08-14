@@ -20,7 +20,11 @@
  */
 
 import { TRUAPI_CODEC_VERSION, TRUAPI_WIRE_SCHEMA_HASH } from "@parity/truapi";
-import { createDebugSession, decodeTraceFrames } from "./session.js";
+import {
+  computeTraceStats,
+  createDebugSession,
+  decodeTraceFrames,
+} from "./session.js";
 import {
   normalizeId,
   WIRE_ENVELOPE_VERSION,
@@ -58,13 +62,6 @@ const VIEW_MAX_LIMIT = 100;
 const MAX_INBOUND_MESSAGE_BYTES = 9 * 1024 * 1024;
 
 /** Frame roles that make an op a subscription rather than a request/response. */
-const SUBSCRIPTION_ROLES = new Set<string>([
-  "start",
-  "receive",
-  "stop",
-  "interrupt",
-]);
-
 /**
  * The text message a host sends per frame: the envelope with a base64 frame,
  * plus the optional identity fields (`v`, `codec`) a versioned host stamps.
@@ -712,53 +709,12 @@ export function startDebugServer(
       channel === null
         ? session.traceEngine.traces()
         : session.traceEngine.tracesForChannel(normalizeId(channel));
-    let frames = 0;
-    let bytes = 0;
-    let subscriptions = 0;
-    let liveSubscriptions = 0;
-    let malformed = 0;
-    let orphaned = 0;
-    let retryStorms = 0;
-    let truncated = 0;
-    let out = 0;
-    let inbound = 0;
-    let durationTotal = 0;
-    let durationMax = 0;
-    const methodCounts = new Map<string, number>();
-    for (const { view } of viewsFor(traces)) {
-      frames += view.frames.length;
-      durationTotal += view.durationMs;
-      if (view.durationMs > durationMax) durationMax = view.durationMs;
-      if (view.badges.includes("malformed")) malformed += 1;
-      if (view.badges.includes("orphaned")) orphaned += 1;
-      if (view.badges.includes("retry-storm")) retryStorms += 1;
-      if (view.badges.includes("truncated")) truncated += 1;
-      if (view.frames.some((f) => SUBSCRIPTION_ROLES.has(f.role))) {
-        subscriptions += 1;
-        if (!view.frames.some((f) => f.role === "stop")) {
-          liveSubscriptions += 1;
-        }
-      }
-      for (const f of view.frames) {
-        bytes += f.byteLength ?? 0;
-        if (f.direction === "out") out += 1;
-        else inbound += 1;
-      }
-      const opener =
-        view.frames.find((f) => f.role === "request" || f.role === "start") ??
-        view.frames.find((f) => f.method !== undefined);
-      const method = opener?.method ?? "(unknown)";
-      methodCounts.set(method, (methodCounts.get(method) ?? 0) + 1);
-    }
-    const ops = traces.length;
-    const topMethods = [...methodCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([method, count]) => ({ method, count }));
-    // Whole-op eviction (session-wide) and host-reported drops are loss the ops
-    // list can't show: `ops` counts only the survivors, so without these a
-    // 10k-op session that kept 256 reads as "256 ops" with no sign the rest were
-    // dropped. `codecMismatch` flags a host whose wire contract differs.
+    // ONE aggregate for both mounts. A second implementation here is exactly how
+    // the two silently disagreed: this block tested `!some(role === "stop")` for
+    // liveness, ignoring `interrupt`, so every host-terminated subscription
+    // (chain switch, revoked permission) counted as live forever and the tile
+    // climbed all session above an op list showing nothing live.
+    const stats = computeTraceStats(viewsFor(traces).map(({ view }) => view));
     const evictedTraces = session.traceEngine.evictedTraces();
     const chanList =
       channel === null
@@ -771,23 +727,10 @@ export function startDebugServer(
     // Typed so a dropped/renamed field is a compile error, not a silent gap in
     // the payload a client parses back.
     const payload: StatsPayload = {
-      ops,
-      frames,
-      bytes,
-      subscriptions,
-      liveSubscriptions,
-      malformed,
-      orphaned,
-      retryStorms,
-      truncated,
+      ...stats,
       evictedTraces,
       droppedByHost,
       codecMismatch,
-      out,
-      in: inbound,
-      avgDurationMs: ops === 0 ? 0 : Math.round(durationTotal / ops),
-      maxDurationMs: Math.round(durationMax),
-      topMethods,
       sockets: openSockets,
       envelopeRejects: [...rejectCounts.values()].reduce((n, c) => n + c, 0),
       envelopeRejectReasons: Object.fromEntries(rejectCounts),
