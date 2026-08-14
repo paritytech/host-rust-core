@@ -1371,6 +1371,10 @@ public enum AuthState: Equatable, Hashable {
      */
     case loginFailed(
         /**
+         * What kind of failure this was. Hosts branch on this and treat
+         * `reason` as display copy only.
+         */kind: LoginFailureKind,
+        /**
          * Human-readable failure reason.
          */reason: String
     )
@@ -1409,7 +1413,7 @@ public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
         case 3: return .connected(try FfiConverterTypeSessionUiInfo.read(from: &buf)
         )
 
-        case 4: return .loginFailed(reason: try FfiConverterString.read(from: &buf)
+        case 4: return .loginFailed(kind: try FfiConverterTypeLoginFailureKind.read(from: &buf), reason: try FfiConverterString.read(from: &buf)
         )
 
         case 5: return .authenticating
@@ -1436,8 +1440,9 @@ public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
             FfiConverterTypeSessionUiInfo.write(v1, into: &buf)
 
 
-        case let .loginFailed(reason):
+        case let .loginFailed(kind,reason):
             writeInt(&buf, Int32(4))
+            FfiConverterTypeLoginFailureKind.write(kind, into: &buf)
             FfiConverterString.write(reason, into: &buf)
 
 
@@ -1542,6 +1547,84 @@ public func FfiConverterTypeCreateTransactionReview_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeCreateTransactionReview_lower(_ value: CreateTransactionReview) -> RustBuffer {
     return FfiConverterTypeCreateTransactionReview.lower(value)
+}
+
+
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+
+public enum LoginFailureKind: Equatable, Hashable {
+
+    /**
+     * The wallet has no free statement-store allowance slot for this period,
+     * so it cannot register the device. Deterministic until the period rolls
+     * over: retrying wastes the user's remaining budget.
+     */
+    case noFreeAllowanceSlots
+    /**
+     * Anything else. `reason` carries the detail.
+     */
+    case other
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LoginFailureKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLoginFailureKind: FfiConverterRustBuffer {
+    typealias SwiftType = LoginFailureKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LoginFailureKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .noFreeAllowanceSlots
+
+        case 2: return .other
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LoginFailureKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .noFreeAllowanceSlots:
+            writeInt(&buf, Int32(1))
+
+
+        case .other:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLoginFailureKind_lift(_ buf: RustBuffer) throws -> LoginFailureKind {
+    return try FfiConverterTypeLoginFailureKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLoginFailureKind_lower(_ value: LoginFailureKind) -> RustBuffer {
+    return FfiConverterTypeLoginFailureKind.lower(value)
 }
 
 

@@ -5,7 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot;
-use truapi_platform::{AuthPresenter, AuthState, Platform, SessionUiInfo};
+use truapi_platform::{AuthPresenter, AuthState, LoginFailureKind, Platform, SessionUiInfo};
+
+use crate::runtime::login_failure::classify_login_failure;
 
 /// Serialized auth-state machine bound to the platform's `auth_state_changed`
 /// sink. Each transition mutates under the lock, releases it, then emits the
@@ -71,6 +73,8 @@ impl AuthStateMachine {
     }
 
     /// Active login -> `LoginFailed`: the in-flight login reported a failure.
+    /// The kind is recovered from `reason`, which is the only form the wallet
+    /// reports a refusal in.
     pub(super) fn login_failed(&self, reason: String) {
         self.transition(|inner| {
             if !matches!(
@@ -80,7 +84,10 @@ impl AuthStateMachine {
                 return None;
             }
             inner.cancel_tx = None;
-            inner.state = AuthState::LoginFailed { reason };
+            inner.state = AuthState::LoginFailed {
+                kind: classify_login_failure(&reason),
+                reason,
+            };
             Some(())
         });
     }
@@ -97,7 +104,12 @@ impl AuthStateMachine {
             ) {
                 return None;
             }
-            inner.state = AuthState::LoginFailed { reason };
+            // Pre-pairing failures are the pairing host's own (device identity,
+            // bootstrap); allowance exhaustion is only ever wallet-reported.
+            inner.state = AuthState::LoginFailed {
+                kind: LoginFailureKind::Other,
+                reason,
+            };
             Some(())
         });
     }
