@@ -15,6 +15,22 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
 
+## Bundler requirements
+
+The worker imports the WASM glue by a literal specifier, so bundlers resolve it
+statically and emit `truapi_server.js` and `truapi_server_bg.wasm` themselves —
+hosts need no copy step and should not reach into `dist/wasm/web/` by path.
+
+That import makes the worker a code-split chunk, so a Vite host must ask for ES
+workers; the default `iife` format cannot code-split and fails the build:
+
+```ts
+export default defineConfig({ worker: { format: "es" } });
+```
+
+Hosts that serve the precompressed `.wasm.gz` / `.wasm.br` sidecars still copy
+those themselves: only the `.wasm` the glue references is emitted for them.
+
 ## Generated WASM artefacts
 
 The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.
