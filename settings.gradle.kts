@@ -28,3 +28,6 @@ rootProject.name = "truapi"
 
 include(":truapi-host")
 project(":truapi-host").projectDir = file("android/truapi-host")
+
+include(":truapi-provider")
+project(":truapi-provider").projectDir = file("android/truapi-provider")
