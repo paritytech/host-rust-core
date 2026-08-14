@@ -432,6 +432,45 @@ describe("createWebWorkerPairingHostRuntime", () => {
     provider.dispose();
   });
 
+  it("returns the session chat identity key as hex, and undefined when absent", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x77);
+    const pending = provider.getSessionChatIdentityKey();
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getSessionChatIdentityKey");
+
+    worker.emit({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    // A session that predates retention reports absence rather than an error.
+    const missing = provider.getSessionChatIdentityKey();
+    worker.emit({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: true,
+      key: undefined,
+    });
+    expect(await missing).toBeUndefined();
+
+    provider.dispose();
+  });
+
   it("dispatches callback requests to host hooks", async () => {
     const worker = new FakeWorker();
     let clears = 0;

@@ -8,7 +8,7 @@ import type {
   RequiredHostCallbacks,
   TrUApiProductProvider,
 } from "../index.js";
-import type { GenericError } from "@parity/truapi";
+import type { Bytes32, GenericError } from "@parity/truapi";
 import { PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec } from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -48,6 +48,8 @@ export interface WorkerPairingHostRuntime {
     request: PermissionAuthorizationRequest,
     status: PermissionAuthorizationStatus,
   ): Promise<void>;
+  getSessionChatIdentityKey(): Promise<Uint8Array | undefined>;
+  getDeviceEncryptionKey(): Promise<Uint8Array>;
   setLogLevel(level: LogLevel): void;
   dispose(): void;
 }
@@ -97,6 +99,17 @@ interface RuntimeState {
     number,
     { resolve: () => void; reject: (error: Error) => void }
   >;
+  pendingSessionChatIdentityKeys: Map<
+    number,
+    {
+      resolve: (key: Uint8Array | undefined) => void;
+      reject: (error: Error) => void;
+    }
+  >;
+  pendingDeviceEncryptionKeys: Map<
+    number,
+    { resolve: (key: Uint8Array) => void; reject: (error: Error) => void }
+  >;
   closedError: Error | null;
   logLevel: LogLevel;
   disposed: boolean;
@@ -109,6 +122,8 @@ function debugLoggingEnabled(state: RuntimeState): boolean {
 
 let nextDisconnectRequestId = 0;
 let nextPermissionAuthorizationRequestId = 0;
+let nextSessionChatIdentityKeyRequestId = 0;
+let nextDeviceEncryptionKeyRequestId = 0;
 function encodePermissionAuthorizationRequest(
   request: PermissionAuthorizationRequest,
 ): Uint8Array {
@@ -388,11 +403,39 @@ function handleSetPermissionAuthorizationStatusResponse(
   );
 }
 
+function handleSessionChatIdentityKeyResponse(
+  state: RuntimeState,
+  msg:
+    | { requestId: number; ok: true; key: Uint8Array | undefined }
+    | { requestId: number; ok: false; error: string },
+): void {
+  settlePending(
+    state.pendingSessionChatIdentityKeys,
+    msg.requestId,
+    msg.ok ? { ok: true, value: msg.key } : { ok: false, error: msg.error },
+  );
+}
+
+function handleDeviceEncryptionKeyResponse(
+  state: RuntimeState,
+  msg:
+    | { requestId: number; ok: true; key: Uint8Array }
+    | { requestId: number; ok: false; error: string },
+): void {
+  settlePending(
+    state.pendingDeviceEncryptionKeys,
+    msg.requestId,
+    msg.ok ? { ok: true, value: msg.key } : { ok: false, error: msg.error },
+  );
+}
+
 function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingDisconnects, error);
   rejectAll(state.pendingPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingPermissionAuthorizationStatusBatches, error);
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
+  rejectAll(state.pendingSessionChatIdentityKeys, error);
+  rejectAll(state.pendingDeviceEncryptionKeys, error);
   for (const pending of state.pendingCores.values()) {
     pending.reject(error);
   }
@@ -492,6 +535,8 @@ export function createWebWorkerPairingHostRuntime(
       pendingPermissionAuthorizationStatuses: new Map(),
       pendingPermissionAuthorizationStatusBatches: new Map(),
       pendingSetPermissionAuthorizationStatuses: new Map(),
+      pendingSessionChatIdentityKeys: new Map(),
+      pendingDeviceEncryptionKeys: new Map(),
       closedError: null,
       logLevel: devLogLevelOverride ?? options.logLevel ?? "off",
       disposed: false,
@@ -546,6 +591,12 @@ export function createWebWorkerPairingHostRuntime(
           break;
         case "setPermissionAuthorizationStatusResponse":
           handleSetPermissionAuthorizationStatusResponse(state, msg);
+          break;
+        case "sessionChatIdentityKeyResponse":
+          handleSessionChatIdentityKeyResponse(state, msg);
+          break;
+        case "deviceEncryptionKeyResponse":
+          handleDeviceEncryptionKeyResponse(state, msg);
           break;
         case "callbackRequest":
           if (debugLoggingEnabled(state)) {
@@ -737,6 +788,24 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         kind: "cancelPairing",
       } satisfies MainToWorker);
     },
+    getSessionChatIdentityKey(): Promise<Uint8Array | undefined> {
+      return sendWorkerRequest<Uint8Array | undefined>(
+        state,
+        state.pendingSessionChatIdentityKeys,
+        () => ++nextSessionChatIdentityKeyRequestId,
+        undefined,
+        (requestId) => ({ kind: "getSessionChatIdentityKey", requestId }),
+      );
+    },
+    getDeviceEncryptionKey(): Promise<Uint8Array> {
+      return sendWorkerRequest<Uint8Array>(
+        state,
+        state.pendingDeviceEncryptionKeys,
+        () => ++nextDeviceEncryptionKeyRequestId,
+        new Uint8Array(),
+        (requestId) => ({ kind: "getDeviceEncryptionKey", requestId }),
+      );
+    },
     notifySessionStoreChanged(): void {
       if (state.disposed) return;
       state.worker.postMessage({
@@ -839,6 +908,17 @@ function buildProvider(
     disconnectSession(): Promise<void> {
       if (core.disposed) return Promise.resolve();
       return runtime.disconnectSession();
+    },
+    async getSessionChatIdentityKey(): Promise<Bytes32 | undefined> {
+      if (core.disposed) return undefined;
+      const key = await runtime.getSessionChatIdentityKey();
+      return key && bytesToHex(key);
+    },
+    async getDeviceEncryptionKey(): Promise<Bytes32> {
+      if (core.disposed) {
+        throw new Error("product connection is closed");
+      }
+      return bytesToHex(await runtime.getDeviceEncryptionKey());
     },
     getPermissionAuthorizationStatus(request) {
       if (core.disposed) return Promise.resolve("NotDetermined");

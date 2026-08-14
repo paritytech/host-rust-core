@@ -1122,6 +1122,23 @@ public struct SessionUiInfo: Equatable, Hashable {
      */
     public var identityAccountId: Bytes32?
     /**
+     * X25519 public key addressing this identity in chat. Public counterpart
+     * of the key [`CoreAdmin::get_session_chat_identity_key`] serves.
+     */
+    public var chatPublicKey: Bytes32?
+    /**
+     * X25519 public key of the wallet device that answered pairing. Hosts
+     * running their own encrypted device-sync channel key it against this.
+     */
+    public var deviceEncPublicKey: Bytes32?
+    /**
+     * Statement-store account id the paired wallet signs every session-channel
+     * statement with. Whether it is scoped to the wallet device or to the
+     * wallet identity is the wallet's choice, so hosts must not treat it as a
+     * device discriminator; use [`Self::device_enc_public_key`] for that.
+     */
+    public var peerStatementAccountId: Bytes32?
+    /**
      * Short username from the People-chain identity record.
      */
     public var liteUsername: String?
@@ -1140,6 +1157,20 @@ public struct SessionUiInfo: Equatable, Hashable {
          * Wallet identity account id used for People-chain username lookup.
          */identityAccountId: Bytes32?,
         /**
+         * X25519 public key addressing this identity in chat. Public counterpart
+         * of the key [`CoreAdmin::get_session_chat_identity_key`] serves.
+         */chatPublicKey: Bytes32?,
+        /**
+         * X25519 public key of the wallet device that answered pairing. Hosts
+         * running their own encrypted device-sync channel key it against this.
+         */deviceEncPublicKey: Bytes32?,
+        /**
+         * Statement-store account id the paired wallet signs every session-channel
+         * statement with. Whether it is scoped to the wallet device or to the
+         * wallet identity is the wallet's choice, so hosts must not treat it as a
+         * device discriminator; use [`Self::device_enc_public_key`] for that.
+         */peerStatementAccountId: Bytes32?,
+        /**
          * Short username from the People-chain identity record.
          */liteUsername: String?,
         /**
@@ -1147,6 +1178,9 @@ public struct SessionUiInfo: Equatable, Hashable {
          */fullUsername: String?) {
         self.publicKey = publicKey
         self.identityAccountId = identityAccountId
+        self.chatPublicKey = chatPublicKey
+        self.deviceEncPublicKey = deviceEncPublicKey
+        self.peerStatementAccountId = peerStatementAccountId
         self.liteUsername = liteUsername
         self.fullUsername = fullUsername
     }
@@ -1169,6 +1203,9 @@ public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
             try SessionUiInfo(
                 publicKey: FfiConverterTypeBytes32.read(from: &buf),
                 identityAccountId: FfiConverterOptionTypeBytes32.read(from: &buf),
+                chatPublicKey: FfiConverterOptionTypeBytes32.read(from: &buf),
+                deviceEncPublicKey: FfiConverterOptionTypeBytes32.read(from: &buf),
+                peerStatementAccountId: FfiConverterOptionTypeBytes32.read(from: &buf),
                 liteUsername: FfiConverterOptionString.read(from: &buf),
                 fullUsername: FfiConverterOptionString.read(from: &buf)
         )
@@ -1177,6 +1214,9 @@ public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
     public static func write(_ value: SessionUiInfo, into buf: inout [UInt8]) {
         FfiConverterTypeBytes32.write(value.publicKey, into: &buf)
         FfiConverterOptionTypeBytes32.write(value.identityAccountId, into: &buf)
+        FfiConverterOptionTypeBytes32.write(value.chatPublicKey, into: &buf)
+        FfiConverterOptionTypeBytes32.write(value.deviceEncPublicKey, into: &buf)
+        FfiConverterOptionTypeBytes32.write(value.peerStatementAccountId, into: &buf)
         FfiConverterOptionString.write(value.liteUsername, into: &buf)
         FfiConverterOptionString.write(value.fullUsername, into: &buf)
     }
