@@ -1,6 +1,7 @@
 //! Host-backed JSON-RPC helpers for statement-store allowance registration.
 
 use core::time::Duration;
+use std::collections::HashMap;
 
 use futures::{FutureExt, pin_mut};
 use serde_json::{Value, json};
@@ -141,6 +142,55 @@ impl RpcClient {
             Value::String(hex_value) => Ok(Some(decode_hex(&hex_value)?)),
             _ => Ok(None),
         }
+    }
+
+    /// `state_queryStorageAt(keys)` at the current best block -> each key's raw
+    /// value in the order asked, `None` where the key is absent.
+    ///
+    /// One round trip for the whole set. Scanning a slot table key by key costs a
+    /// round trip per slot, which dominates everything else the scan does.
+    pub async fn get_storage_many(
+        &self,
+        keys: &[Vec<u8>],
+    ) -> Result<Vec<Option<Vec<u8>>>, StatementAllowanceError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hex_keys: Vec<String> = keys
+            .iter()
+            .map(|key| format!("0x{}", hex::encode(key)))
+            .collect();
+        let response = self
+            .inner
+            .request::<Value>("state_queryStorageAt", rpc_params![hex_keys.clone()])
+            .await
+            .map_err(|err| RpcError::Request {
+                method: "state_queryStorageAt".to_string(),
+                source: err,
+            })?;
+        // `[{ block, changes: [[key, value|null], ..] }]`, and the changes are not
+        // required to come back in the order asked, so index them by key.
+        let mut found: HashMap<&str, &str> = HashMap::new();
+        let changes = response
+            .as_array()
+            .and_then(|blocks| blocks.first())
+            .and_then(|block| block.get("changes"))
+            .and_then(Value::as_array);
+        for change in changes.into_iter().flatten() {
+            let Some(pair) = change.as_array() else {
+                continue;
+            };
+            if let [Value::String(key), Value::String(value)] = pair.as_slice() {
+                found.insert(key.as_str(), value.as_str());
+            }
+        }
+        hex_keys
+            .iter()
+            .map(|key| match found.get(key.as_str()) {
+                Some(value) => decode_hex(value).map(Some),
+                None => Ok(None),
+            })
+            .collect()
     }
 
     /// `chain_getFinalizedHead` -> hash of the latest finalized block.

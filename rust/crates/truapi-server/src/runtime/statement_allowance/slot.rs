@@ -24,6 +24,14 @@ pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;
 const LONG_TERM_STORAGE_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/rsc-lts";
 /// Ring-VRF alias context prefix for an Asset Hub PGAS claim.
 const PGAS_CONTEXT_PREFIX: &[u8] = b"pop:gas:";
+/// Slots probed per batched storage read while scanning for a free PGAS slot.
+///
+/// Reading every slot in one request would cost a round trip flat, but each slot's
+/// key needs a bandersnatch alias first, and those are milliseconds each — paying
+/// for all of them when the first slot is usually free is the worse trade. A batch
+/// keeps the common case to one round trip and bounds the full-table case to a
+/// handful.
+const PGAS_SCAN_BATCH: u32 = 10;
 
 /// Error while deriving aliases or selecting allowance slots.
 #[derive(Debug, Error)]
@@ -457,20 +465,62 @@ pub async fn scan_pgas_slot_excluding(
     excluded: &[u32],
 ) -> Result<u32, StatementAllowanceError> {
     let max = max_pgas_claims(metadata)?;
-    for slot_index in 0..max {
-        if excluded.contains(&slot_index) {
+    scan_pgas_slot_in(rpc, entropy, day, max, excluded).await
+}
+
+/// The scan itself, over a known slot count.
+///
+/// Split from the constant read so it can be exercised without Asset Hub metadata.
+async fn scan_pgas_slot_in(
+    rpc: &RpcClient,
+    entropy: [u8; 32],
+    day: u32,
+    max: u32,
+    excluded: &[u32],
+) -> Result<u32, StatementAllowanceError> {
+    let mut probed = 0;
+    while probed < max {
+        let batch: Vec<u32> = (probed..max.min(probed + PGAS_SCAN_BATCH))
+            .filter(|slot_index| !excluded.contains(slot_index))
+            .collect();
+        probed = max.min(probed + PGAS_SCAN_BATCH);
+        if batch.is_empty() {
             continue;
         }
-        let alias = pgas_alias(entropy, day, slot_index)?;
-        if rpc
-            .get_storage(&claimed_gas_alias_key(day, &alias))
-            .await?
-            .is_none()
+        let keys = batch
+            .iter()
+            .map(|&slot_index| {
+                pgas_alias(entropy, day, slot_index).map(|alias| claimed_gas_alias_key(day, &alias))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let claimed = rpc.get_storage_many(&keys).await?;
+        if let Some(slot_index) = batch
+            .iter()
+            .zip(claimed)
+            .find_map(|(&slot_index, value)| value.is_none().then_some(slot_index))
         {
             return Ok(slot_index);
         }
     }
     Err(SlotError::NoFreePgasSlot { day, max }.into())
+}
+
+/// Whether `day`'s PGAS slot for `slot_index` is recorded as claimed at
+/// `block_hash`.
+///
+/// A claim reaching a block does not mean it succeeded: `Pgas.claim_pgas` can
+/// dispatch-error and the extrinsic still lands. The pallet marks the alias spent
+/// on success, so its presence at the included block is what distinguishes the two.
+pub async fn pgas_slot_is_claimed_at(
+    rpc: &RpcClient,
+    entropy: [u8; 32],
+    day: u32,
+    slot_index: u32,
+    block_hash: &str,
+) -> Result<bool, StatementAllowanceError> {
+    let alias = pgas_alias(entropy, day, slot_index)?;
+    let key = claimed_gas_alias_key(day, &alias);
+    Ok(rpc.get_storage_at(&key, block_hash).await?.is_some())
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -759,7 +809,75 @@ mod tests {
         assert_eq!(selection, SlotSelection::FreeSlotsExcluded);
     }
 
-    /// The PGAS context is little-endian where the other two are big-endian, and
+    /// The scan probes a batch per round trip, not a key per round trip, and still
+    /// returns the first free slot in order. One round trip per slot cost seconds
+    /// against a live chain when the early slots were taken.
+    #[test]
+    fn the_pgas_scan_reads_a_batch_per_round_trip() {
+        const ENTROPY: [u8; 32] = [0x11; 32];
+        const DAY: u32 = 20678;
+
+        // Slots 0-2 are claimed; 3 is free. `state_queryStorageAt` reports only the
+        // keys that exist, so the absent ones are simply missing from `changes`.
+        let claimed: Vec<String> = (0..3u32)
+            .map(|slot_index| {
+                let alias = pgas_alias(ENTROPY, DAY, slot_index).unwrap();
+                format!(
+                    r#"["0x{}","0x"]"#,
+                    hex::encode(claimed_gas_alias_key(DAY, &alias))
+                )
+            })
+            .collect();
+        let response = format!(
+            r#"[{{"block":"0xb10c","changes":[{}]}}]"#,
+            claimed.join(",")
+        );
+        let scripted = ScriptedRpc::new(vec![response.as_str()]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        let chosen =
+            futures::executor::block_on(scan_pgas_slot_in(&rpc, ENTROPY, DAY, 40, &[])).unwrap();
+
+        assert_eq!(chosen, 3, "the first free slot, in order");
+        let calls = scripted.calls();
+        assert_eq!(calls.len(), 1, "one round trip covered the whole batch");
+        assert_eq!(calls[0].0, "state_queryStorageAt");
+    }
+
+    /// Inclusion is not success: the pallet marks the alias spent only when the
+    /// claim dispatches cleanly, so its absence at the included block is how a
+    /// dispatch error is caught.
+    #[test]
+    fn a_claim_is_only_recorded_when_the_alias_is_spent() {
+        const ENTROPY: [u8; 32] = [0x11; 32];
+        const DAY: u32 = 20678;
+
+        let spent = ScriptedRpc::new(vec![r#""0x""#]);
+        let absent = ScriptedRpc::new(vec!["null"]);
+
+        assert!(
+            futures::executor::block_on(pgas_slot_is_claimed_at(
+                &RpcClient::new(HostRpcClient::new(spent)),
+                ENTROPY,
+                DAY,
+                0,
+                "0xb10c",
+            ))
+            .unwrap()
+        );
+        assert!(
+            !futures::executor::block_on(pgas_slot_is_claimed_at(
+                &RpcClient::new(HostRpcClient::new(absent)),
+                ENTROPY,
+                DAY,
+                0,
+                "0xb10c",
+            ))
+            .unwrap()
+        );
+    }
+
+    /// The PGAS context is little-endian where the other two are big-endian, and    /// The PGAS context is little-endian where the other two are big-endian, and    /// The PGAS context is little-endian where the other two are big-endian, and
     /// the runtime verifies the proof against these exact bytes.
     #[test]
     fn pgas_context_layout_is_little_endian() {

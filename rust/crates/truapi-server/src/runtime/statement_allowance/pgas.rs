@@ -51,6 +51,19 @@ pub enum PgasError {
         /// Revision the proof was built against.
         revision: u32,
     },
+    /// The claim reached a block but the slot is not recorded as claimed, so the
+    /// call dispatch-errored and nothing was minted.
+    #[error(
+        "claim reached block {block_hash} but PGAS slot (day {day}, slot {slot_index}) is not claimed"
+    )]
+    ClaimNotRecorded {
+        /// Block the claim reached.
+        block_hash: String,
+        /// Day claimed for.
+        day: u32,
+        /// Slot claimed.
+        slot_index: u32,
+    },
 }
 
 /// One `MembersSubscriber.RingRoots` record, projected to the field that decides
@@ -175,6 +188,26 @@ pub async fn claim_pgas(
 
         match asset_hub_rpc.submit_and_watch(&claim).await {
             Ok(block_hash) => {
+                // Inclusion is not success. `Pgas.claim_pgas` can dispatch-error —
+                // `AlreadyClaimed`, `PgasMintFailed` — and the extrinsic still lands,
+                // so reporting an allowance now would promise PGAS that was never
+                // minted. The pallet marks the alias spent on success; check that.
+                if !slot::pgas_slot_is_claimed_at(
+                    asset_hub_rpc,
+                    entropy,
+                    day,
+                    slot_index,
+                    &block_hash,
+                )
+                .await?
+                {
+                    return Err(PgasError::ClaimNotRecorded {
+                        block_hash,
+                        day,
+                        slot_index,
+                    }
+                    .into());
+                }
                 return Ok(PgasClaimOutcome {
                     block_hash,
                     day,
