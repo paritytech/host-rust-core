@@ -929,6 +929,7 @@ impl ProductAuthority for SigningHost {
                         self,
                         &product_id,
                         index,
+                        OnExistingAllowancePolicy::Increase,
                     )
                     .await
                     .map(|()| v01::AllocationOutcome::Allocated)

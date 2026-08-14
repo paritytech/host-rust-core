@@ -12,6 +12,7 @@
 
 use std::time::{Duration, Instant};
 
+use parity_scale_codec::Decode;
 use scale_decode::DecodeAsType;
 use sp_crypto_hashing::twox_128;
 use thiserror::Error;
@@ -51,6 +52,9 @@ pub enum PgasError {
         /// Revision the proof was built against.
         revision: u32,
     },
+    /// The asset account's leading balance failed to decode.
+    #[error("PGAS balance: {0}")]
+    BalanceDecode(#[source] parity_scale_codec::Error),
     /// The claim reached a block but the slot is not recorded as claimed, so the
     /// call dispatch-errored and nothing was minted.
     #[error(
@@ -119,7 +123,40 @@ pub struct PgasClaim<'a> {
     pub ring: &'a RingParams,
 }
 
-/// Claim one PGAS allowance for `target`, proving membership in the
+/// `Assets.Account[(asset_id, who)]` storage key on Asset Hub.
+fn pgas_balance_key(asset_id: u32, who: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Assets").as_slice(),
+        twox_128(b"Account").as_slice(),
+        &blake2_128_concat(&asset_id.to_le_bytes()),
+        &blake2_128_concat(who),
+    ]
+    .concat()
+}
+
+/// Whether `target` already holds a full claim's worth of PGAS.
+///
+/// A claim spends one of the day's slots, so a caller that asked to leave an
+/// existing allowance alone should not burn one topping up an account that is
+/// already warm. "Warm" is a whole `PgasClaimAmount` rather than any balance at
+/// all: a dust balance is not what the claim would have provided.
+///
+/// `AssetAccount` leads with its `u128` balance, which is all this needs.
+pub async fn holds_a_full_claim(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    target: &[u8; 32],
+) -> Result<bool, StatementAllowanceError> {
+    let asset_id = metadata.constant_u32("Pgas", "PgasAssetId")?;
+    let claim_amount = metadata.constant_u128("Pgas", "PgasClaimAmount")?;
+    let Some(bytes) = rpc.get_storage(&pgas_balance_key(asset_id, target)).await? else {
+        return Ok(false);
+    };
+    let balance = u128::decode(&mut &bytes[..]).map_err(PgasError::BalanceDecode)?;
+    Ok(balance >= claim_amount)
+}
+
+/// Claim one PGAS allowance for `target`, proving membership in the/// Claim one PGAS allowance for `target`, proving membership in the
 /// already-located People `ring`.
 ///
 /// A duplicate submission retries against a different slot, as the statement-store

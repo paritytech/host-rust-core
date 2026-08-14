@@ -485,7 +485,25 @@ impl Metadata {
         Ok(u32::from_le_bytes(buf))
     }
 
-    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
+    /// A pallet constant decoded as `u128`, zero-extended like [`Self::constant_u32`].
+    pub fn constant_u128(
+        &self,
+        pallet: &'static str,
+        name: &'static str,
+    ) -> Result<u128, StatementAllowanceError> {
+        let bytes = self
+            .constant(pallet, name)
+            .ok_or(MetadataError::MissingConstant {
+                pallet,
+                constant: name,
+            })?;
+        let mut buf = [0u8; 16];
+        let n = bytes.len().min(16);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        Ok(u128::from_le_bytes(buf))
+    }
+
+    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
     ///
     /// The encoded payload has to match it exactly: a short payload is accepted
     /// locally and then panics the runtime inside `validate_transaction`, so this

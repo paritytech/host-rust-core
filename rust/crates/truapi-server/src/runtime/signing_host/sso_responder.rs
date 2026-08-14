@@ -859,6 +859,7 @@ async fn resource_allocation_response(
                     signing_host,
                     &request.calling_product_id,
                     index.clone(),
+                    request.on_existing,
                 )
                 .await
                 .map(|()| {
@@ -1165,6 +1166,7 @@ pub(super) async fn allocate_smart_contract_allowance(
     signing_host: &SigningHost,
     product_id: &str,
     derivation_index: v01::DerivationIndex,
+    policy: OnExistingAllowancePolicy,
 ) -> Result<(), AllowanceAllocationError> {
     use truapi::latest::ChainIdentifier;
 
@@ -1203,6 +1205,15 @@ pub(super) async fn allocate_smart_contract_allowance(
         asset_hub_genesis,
     );
     let asset_hub = services.chain_context.get(&asset_hub_client).await?;
+
+    // A claim spends one of the day's slots, so honour a caller that asked to leave
+    // an existing allowance alone rather than topping up an already-warm account.
+    if matches!(policy, OnExistingAllowancePolicy::Ignore)
+        && pgas::holds_a_full_claim(asset_hub_client.rpc(), &asset_hub.metadata, &target).await?
+    {
+        debug!(%product_id, "PGAS allowance already funded; leaving it alone");
+        return Ok(());
+    }
 
     let people_client = services
         .statement_store
@@ -1245,6 +1256,7 @@ pub(super) async fn allocate_smart_contract_allowance(
     _signing_host: &SigningHost,
     _product_id: &str,
     _derivation_index: v01::DerivationIndex,
+    _policy: OnExistingAllowancePolicy,
 ) -> Result<(), AllowanceAllocationError> {
     Err(AllowanceAllocationError::NativeOnly { resource: "PGAS" })
 }

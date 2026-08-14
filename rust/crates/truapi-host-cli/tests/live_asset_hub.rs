@@ -100,3 +100,36 @@ async fn live_asset_hub_reports_a_pruned_revision_rather_than_waiting() {
         "a pruned revision should not be waited out: {err}"
     );
 }
+
+/// The already-funded check reads a real asset account. The test identity claimed
+/// PGAS earlier, so it must read as funded, and an account that never claimed must
+/// not — a check that answered the same either way would silently disable itself.
+#[tokio::test]
+#[ignore = "needs network access to a live Asset Hub"]
+async fn live_asset_hub_reports_whether_an_account_holds_a_full_claim() {
+    let (rpc, metadata) = asset_hub().await;
+
+    let claim_amount = metadata.constant_u128("Pgas", "PgasClaimAmount").unwrap();
+    let asset_id = metadata.constant_u32("Pgas", "PgasAssetId").unwrap();
+    println!("PGAS asset {asset_id}, claim amount {claim_amount}");
+
+    // The onboarded test identity's own account, credited by earlier claims.
+    let funded: [u8; 32] =
+        hex::decode("ba7ec9e74688af5ae483a3f2c9421443f02a688b2928a1e6f43cc06692c5293c")
+            .unwrap()
+            .try_into()
+            .unwrap();
+    assert!(
+        pgas::holds_a_full_claim(&rpc, &metadata, &funded)
+            .await
+            .expect("balance read"),
+        "the test identity has claimed PGAS, so it should read as funded"
+    );
+
+    assert!(
+        !pgas::holds_a_full_claim(&rpc, &metadata, &[0xcd; 32])
+            .await
+            .expect("balance read"),
+        "an account that never claimed holds nothing"
+    );
+}
