@@ -1,6 +1,7 @@
 import { runExample, type LogEntry, type RunResult } from "./example-runner";
 import { getClientSync } from "@parity/truapi/sandbox";
 import type { MethodInfo, ServiceInfo } from "./services";
+import { WEBRTC_METHOD_NAME, WEBRTC_SERVICE_NAME } from "./webrtc-check";
 import type { DiagnosisStatus } from "@/shared/diagnosis";
 
 export const DIAGNOSIS_ID = "__diagnosis__";
@@ -47,6 +48,8 @@ const METHOD_TIMEOUT_MS = new Map<string, number>([
   ["Statement Store/create_proof_authorized", LIVE_ALLOCATION_TIMEOUT_MS],
   ["Statement Store/submit", LIVE_ALLOCATION_TIMEOUT_MS],
   ["Statement Store/subscribe", LIVE_ALLOCATION_TIMEOUT_MS],
+  // Two permission prompts (camera, microphone) may need the user.
+  [`${WEBRTC_SERVICE_NAME}/${WEBRTC_METHOD_NAME}`, SSO_TIMEOUT_MS],
 ]);
 
 type RunOneOpts = {
