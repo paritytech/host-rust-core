@@ -30,7 +30,7 @@ use futures::channel::mpsc;
 use futures::stream::{self, BoxStream, StreamExt};
 use smoldot_light::{
     AddChainConfig, AddChainConfigJsonRpc, ChainId, Client, HandleRpcError, JsonRpcResponses,
-    network_service::StatementProtocolConfig,
+    StatementProtocolConfig,
 };
 use truapi_platform::JsonRpcConnection;
 
