@@ -530,8 +530,7 @@ async fn run_pairing_host(
         (None, None)
     };
     let platform = CliPlatform::new(
-        network.people_ws,
-        network.live_chain_endpoints,
+        network,
         Some(storage_paths),
         approval_policy(args.auto_accept),
         ui_handle,
@@ -922,8 +921,7 @@ fn build_signing_runtime(
     ui: Option<UiHandle>,
 ) -> Result<Arc<SigningHostRuntime>> {
     let platform = CliPlatform::new(
-        network.people_ws,
-        network.live_chain_endpoints,
+        network,
         Some(CliStoragePaths::new(storage_path, product_storage_dir)),
         approval,
         ui,

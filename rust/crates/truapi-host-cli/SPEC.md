@@ -1234,9 +1234,11 @@ Deliberately unavailable methods:
 - all nine generated Coin Payment methods; and
 - all four generated Payment methods.
 
-A successful `System/feature_supported` call returns `supported: false` for
-every queried feature in the CLI platform. Success means the method is wired,
-not that every feature is present.
+A successful `System/feature_supported` call resolves the queried chain against
+the host's chain set, the same set `Chain/get_chain_info` answers from, so it
+returns `true` for the preset's People and Bulletin genesis hashes and `false`
+for anything else, AssetHub included. Success means the method is wired, not
+that every feature is present.
 
 ### 15.2 Platform-specific semantics
 
