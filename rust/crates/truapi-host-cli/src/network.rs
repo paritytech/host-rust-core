@@ -163,33 +163,6 @@ mod tests {
     /// This catches the two copies disagreeing, which is what an edit to one of
     /// them causes. It cannot catch both being wrong in the same way; only a
     /// live connection distinguishes that.
-    /// Anchors the served set itself. Every other test that reads it iterates, so
-    /// all of them pass on an empty set; this is what notices a dropped role, and it
-    /// covers each preset rather than only the default.
-    #[test]
-    fn every_preset_serves_exactly_the_expected_roles() {
-        for network in Network::value_variants() {
-            let config = network.config();
-            let served: Vec<ChainIdentifier> = config
-                .host_chain_set()
-                .chains
-                .iter()
-                .map(|entry| entry.identifier)
-                .collect();
-
-            assert_eq!(
-                served,
-                vec![
-                    ChainIdentifier::People,
-                    ChainIdentifier::Bulletin,
-                    ChainIdentifier::AssetHub,
-                ],
-                "{} serves an unexpected role set",
-                config.id
-            );
-        }
-    }
-
     #[test]
     fn served_chain_genesis_hashes_match_the_endpoint_routes() {
         for network in Network::value_variants() {
@@ -224,6 +197,33 @@ mod tests {
                     expected_ws
                 );
             }
+        }
+    }
+
+    /// Anchors the served set itself. Every other test that reads it iterates, so
+    /// all of them pass on an empty set; this is what notices a dropped role, and it
+    /// covers each preset rather than only the default.
+    #[test]
+    fn every_preset_serves_exactly_the_expected_roles() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let served: Vec<ChainIdentifier> = config
+                .host_chain_set()
+                .chains
+                .iter()
+                .map(|entry| entry.identifier)
+                .collect();
+
+            assert_eq!(
+                served,
+                vec![
+                    ChainIdentifier::People,
+                    ChainIdentifier::Bulletin,
+                    ChainIdentifier::AssetHub,
+                ],
+                "{} serves an unexpected role set",
+                config.id
+            );
         }
     }
 

@@ -1113,8 +1113,10 @@ v0.1 supports only `paseo-next-v2`.
 There are no public endpoint override flags.
 
 Every role the preset serves — People, Bulletin and Asset Hub — is always routed,
-because host internals require all three: the SSO sentinel, preimage submission and
-PGAS claims respectively. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
+because host internals require all three: statement-store traffic addressed to the
+People genesis, preimage submission, and PGAS claims respectively. The SSO sentinel is
+a separate case — it is an unmapped genesis and reaches People through the fallback
+below, not through People's own route. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
 preset carries without serving them as a role, of which `paseo-next-v2` has none.
 
 The all-zero SSO sentinel and every genesis hash not present in the active

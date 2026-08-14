@@ -61,6 +61,16 @@ impl WsChainProvider {
         }
     }
 
+    /// Whether a genesis is mapped rather than answered by the fallback.
+    ///
+    /// Test-only because production has no reason to care: `url_for` resolves either
+    /// way. A test does, since the fallback is the People URL, so asserting on the
+    /// resolved URL cannot tell a routed People from a dropped one.
+    #[cfg(test)]
+    fn routes(&self, genesis_hash: &[u8; 32]) -> bool {
+        self.by_genesis.contains_key(genesis_hash)
+    }
+
     fn url_for(&self, genesis_hash: &[u8; 32]) -> &str {
         self.by_genesis
             .get(genesis_hash)
@@ -228,6 +238,12 @@ mod tests {
                     ChainIdentifier::AssetHub => config.asset_hub_ws,
                     other => panic!("{} serves {other:?} with no preset URL", config.id),
                 };
+                assert!(
+                    provider.routes(&entry.genesis_hash),
+                    "{} serves {:?} but does not route it; the fallback would hide this",
+                    config.id,
+                    entry.identifier
+                );
                 assert_eq!(
                     provider.url_for(&entry.genesis_hash),
                     expected,

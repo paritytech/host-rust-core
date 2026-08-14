@@ -1,6 +1,19 @@
 /// <reference path="../runner.ts" />
 export {};
 
+// The script is the product, so it logs in first. Allocation begins with
+// `require_current_session`, and without this a host with no session yet fails with
+// "resource allocation failed", which points away from the real cause.
+const login = await truapi.account.requestLogin({ reason: undefined });
+if (
+  !login.isOk() ||
+  (login.value !== "Success" && login.value !== "AlreadyConnected")
+) {
+  throw new Error(
+    `requestLogin failed: ${login.isOk() ? login.value : JSON.stringify(login.error)}`,
+  );
+}
+
 // A PGAS allowance credits the product account the derivation index names, so this
 // asks for index 0.
 const index = { tag: "Index" as const, value: 0 };

@@ -311,7 +311,11 @@ Six scripts ship under `js/scripts/`:
 - `signing-smoke.ts` — a focused product-account signing check.
 - `smart-contract-allowance-smoke.ts` — requests a PGAS allowance for product
   account index 0. Reports `Allocated` against `paseo-next-v2`; a host that serves
-  no Asset Hub role reports `NotAvailable` rather than failing.
+  no Asset Hub role reports `NotAvailable` rather than failing. The direct path asks
+  for `Increase`, so each run submits a real claim and spends one of the day's slots
+  rather than noticing the account is already funded: repeat runs within a day can
+  exhaust them and then fail for that reason rather than a regression. The host logs
+  the real cause, which the wire value flattens to `NotAvailable`.
 - `ring-vrf-smoke.ts` — registers and lists an explicit RFC-0024 key, derives
   its alias, verifies a fresh non-member key returns `NotMember` for a proof,
   and exercises direct ring-VRF signing.
