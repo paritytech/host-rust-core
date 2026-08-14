@@ -92,7 +92,10 @@ pub struct SigningHostConfig {
 /// A host may create multiple product runtimes from the same long-lived host
 /// runtime, each with its own product context.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+// `Decode` is hand-written below so decoding cannot bypass the validating
+// constructor. Not a doc comment: wire-type docs are emitted into the generated
+// host API, and this is a Rust-side implementation note.
+#[derive(Debug, Clone, PartialEq, Eq, Encode)]
 pub struct ProductContext {
     /// Product identifier used for account derivation and product-scoped
     /// storage/permission namespaces.
@@ -218,6 +221,23 @@ impl ProductContext {
             product_id: normalize_product_identifier(&product_id)?,
             execution_kind,
         })
+    }
+}
+
+/// Decoding routes through [`ProductContext::new_with_execution`] so a frame
+/// off the wire cannot produce a context the constructor rejects. The runtime
+/// treats a `ProductContext` as already validated (product storage keys are
+/// built with `expect`), and derivation/storage scopes are keyed by
+/// `product_id`, so an unnormalized id would split one logical product across
+/// two scopes.
+impl Decode for ProductContext {
+    fn decode<I: parity_scale_codec::Input>(
+        input: &mut I,
+    ) -> Result<Self, parity_scale_codec::Error> {
+        let product_id = String::decode(input)?;
+        let execution_kind = ProductExecutionKind::decode(input)?;
+        Self::new_with_execution(product_id, execution_kind)
+            .map_err(|_| "ProductContext.product_id is not an accepted product identifier".into())
     }
 }
 
@@ -754,7 +774,10 @@ mod tests {
         // The generated TS host codec is
         // `S.Struct({productId: S.str, executionKind: S.Status("Spa", "Chat")})`,
         // so the field order and the variant indices below are the wire
-        // contract every JS host decodes against.
+        // contract every JS host decodes against. The JS half of this pair is
+        // `product context encoding matches the Rust platform codec` in
+        // `js/packages/truapi-host/src/host-callbacks-adapter.test.ts`, which
+        // asserts the same bytes through that generated codec.
         assert_eq!(ProductExecutionKind::Spa.encode(), [0]);
         assert_eq!(ProductExecutionKind::Chat.encode(), [1]);
 
@@ -768,6 +791,34 @@ mod tests {
         assert_eq!(
             ProductContext::decode(&mut context.encode().as_slice()),
             Ok(context)
+        );
+    }
+
+    #[test]
+    fn product_context_decoding_rejects_ids_the_constructor_rejects() {
+        // Hand-built frames, not values this crate can encode: `Decode` must
+        // apply the same product-id policy as the constructor so decoding
+        // cannot mint a context with an unscoped or empty product id.
+        for product_id in ["evil.com", "", "  "] {
+            let frame = (product_id.to_string(), ProductExecutionKind::Spa).encode();
+            assert!(
+                ProductContext::decode(&mut frame.as_slice()).is_err(),
+                "{product_id:?} must not decode into a ProductContext"
+            );
+        }
+    }
+
+    #[test]
+    fn product_context_decoding_normalizes_the_product_id() {
+        // Derivation and product-scoped storage are keyed by `product_id`, so
+        // a non-canonical id off the wire has to land in the same scope the
+        // constructor would produce rather than opening a second one.
+        let frame = ("App.DOT".to_string(), ProductExecutionKind::Spa).encode();
+        let decoded = ProductContext::decode(&mut frame.as_slice()).expect("product id normalizes");
+        assert_eq!(decoded.product_id, "app.dot");
+        assert_eq!(
+            decoded,
+            ProductContext::new("app.dot".to_string()).expect("product id is valid")
         );
     }
 
