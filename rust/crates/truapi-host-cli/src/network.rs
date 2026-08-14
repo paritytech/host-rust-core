@@ -1,4 +1,6 @@
 use clap::ValueEnum;
+use truapi::latest::ChainIdentifier;
+use truapi_platform::{HostChainEntry, HostChainSet};
 
 /// Supported live network presets for the headless hosts.
 ///
@@ -79,6 +81,32 @@ pub struct ChainEndpoint {
     pub required_for_host: bool,
 }
 
+impl NetworkConfig {
+    /// The chain set this preset serves, for `Features::supported_chains`.
+    ///
+    /// Only `People` and `Bulletin` are listed, because they are the two roles
+    /// this struct names a genesis hash for. `live_chain_endpoints` cannot fill
+    /// the rest even where it holds the data: [`ChainEndpoint`] carries no
+    /// role, so an endpoint's identifier is not recoverable from it. AssetHub
+    /// is the case in point, routed at a pinned genesis that nothing can label.
+    /// Serving it needs a role on [`ChainEndpoint`], not more genesis hashes.
+    pub fn host_chain_set(&self) -> HostChainSet {
+        HostChainSet {
+            network: self.id.to_string(),
+            chains: vec![
+                HostChainEntry {
+                    identifier: ChainIdentifier::People,
+                    genesis_hash: self.people_genesis,
+                },
+                HostChainEntry {
+                    identifier: ChainIdentifier::Bulletin,
+                    genesis_hash: self.bulletin_genesis,
+                },
+            ],
+        }
+    }
+}
+
 /// Decode a 64-char hex genesis at compile time.
 const fn hex_literal_genesis(hex: &str) -> [u8; 32] {
     let bytes = hex.as_bytes();
@@ -102,6 +130,54 @@ const fn hex_nibble(c: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every served role must match an endpoint that actually routes it, at the
+    /// URL the preset names for that role.
+    ///
+    /// `WsChainProvider::url_for` falls back to `people_ws` for an unrecognised
+    /// genesis, so a drifted `people_genesis` still resolves to a working URL
+    /// and satisfies every routing assertion. Pinning against
+    /// `live_chain_endpoints` checks the constants themselves rather than the
+    /// plumbing that reads them.
+    ///
+    /// This catches the two copies disagreeing, which is what an edit to one of
+    /// them causes. It cannot catch both being wrong in the same way; only a
+    /// live connection distinguishes that.
+    #[test]
+    fn served_chain_genesis_hashes_match_the_endpoint_routes() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            for entry in config.host_chain_set().chains {
+                let expected_ws = match entry.identifier {
+                    ChainIdentifier::People => config.people_ws,
+                    ChainIdentifier::Bulletin => config.bulletin_ws,
+                    other => panic!("{} serves {other:?} with no preset URL", config.id),
+                };
+                let endpoint = config
+                    .live_chain_endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.genesis == entry.genesis_hash)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} serves {:?} at genesis {} which no endpoint routes",
+                            config.id,
+                            entry.identifier,
+                            hex::encode(entry.genesis_hash)
+                        )
+                    });
+                assert_eq!(
+                    endpoint.ws,
+                    expected_ws,
+                    "{} routes {:?} (genesis {}) to {}, but the preset names {}",
+                    config.id,
+                    entry.identifier,
+                    hex::encode(entry.genesis_hash),
+                    endpoint.ws,
+                    expected_ws
+                );
+            }
+        }
+    }
 
     /// Guards the invariant documented on [`Network`]: the plaintext mnemonic
     /// store is only safe for disposable identities, so no preset may point at a

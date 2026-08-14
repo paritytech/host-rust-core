@@ -93,6 +93,8 @@ impl CliStoragePaths {
 /// Headless-host platform shared by both roles.
 pub struct CliPlatform {
     chain: WsChainProvider,
+    /// Chain roles this host serves, answered by `Features::supported_chains`.
+    chains: truapi_platform::HostChainSet,
     product_storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     product_storage_dir: Mutex<Option<PathBuf>>,
@@ -117,8 +119,7 @@ impl CliPlatform {
     /// Build a platform whose chain provider connects to the network's People
     /// chain and whose optional state directory backs product/core storage.
     pub fn new(
-        statement_store_url: impl Into<String>,
-        live_chain_endpoints: &[crate::network::ChainEndpoint],
+        network: crate::network::NetworkConfig,
         storage: Option<CliStoragePaths>,
         approval: ApprovalPolicy,
         ui: Option<UiHandle>,
@@ -151,7 +152,8 @@ impl CliPlatform {
             .unwrap_or_default();
 
         Arc::new(Self {
-            chain: WsChainProvider::new(statement_store_url, live_chain_endpoints),
+            chain: WsChainProvider::new(network.people_ws, network.live_chain_endpoints),
+            chains: network.host_chain_set(),
             product_storage: Mutex::new(product_storage),
             core_storage: Mutex::new(core_storage),
             product_storage_dir: Mutex::new(product_storage_dir),
@@ -608,15 +610,19 @@ impl Permissions for CliPlatform {
 impl Features for CliPlatform {
     async fn feature_supported(
         &self,
-        _request: api::HostFeatureSupportedRequest,
+        request: api::HostFeatureSupportedRequest,
     ) -> Result<api::HostFeatureSupportedResponse, api::GenericError> {
-        Ok(api::HostFeatureSupportedResponse { supported: false })
+        let api::HostFeatureSupportedRequest::Chain { genesis_hash } = request;
+        let supported = self
+            .chains
+            .chains
+            .iter()
+            .any(|entry| entry.genesis_hash.as_slice() == genesis_hash.as_slice());
+        Ok(api::HostFeatureSupportedResponse { supported })
     }
 
     async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, api::GenericError> {
-        Err(api::GenericError {
-            reason: "the CLI host serves no product chains".to_string(),
-        })
+        Ok(self.chains.clone())
     }
 }
 
@@ -1170,6 +1176,89 @@ fn save_hex_key_map(path: &Path, values: &HashMap<Vec<u8>, Vec<u8>>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The preset production builds from, so tests exercise the same config.
+    fn test_network() -> crate::network::NetworkConfig {
+        crate::network::Network::default().config()
+    }
+
+    /// Battery examples that preflight `getChainInfo` resolve the genesis they
+    /// ask for through this set, so an error here fails every one of them. The
+    /// ring-VRF examples are chain-dependent but not among them: they use the
+    /// hardcoded `PASEO_NEXT_V2_INDIVIDUALITY.genesis` and passed even while
+    /// this returned an error.
+    ///
+    /// Serving the preset's two roles unblocks the preflight in the four
+    /// examples that ask for `People`: account-alias, account-proof, and both
+    /// create-transaction variants. The other seventeen ask for `AssetHub`,
+    /// which no role in this set covers.
+    /// `feature_supported` answers from the same set `supported_chains` serves,
+    /// so the two cannot disagree. AssetHub is the interesting negative: the
+    /// provider routes it under `E2E_LIVE_CHAIN=1`, but no role in the set
+    /// names it, so the host reports it unsupported.
+    #[test]
+    fn feature_supported_resolves_against_the_served_chain_set() {
+        let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::AutoAccept, None);
+        let config = crate::network::Network::default().config();
+        let asset_hub = config
+            .live_chain_endpoints
+            .iter()
+            .map(|endpoint| endpoint.genesis)
+            .find(|genesis| {
+                *genesis != config.people_genesis && *genesis != config.bulletin_genesis
+            })
+            .expect("the preset routes a chain it does not serve as a role");
+
+        let supported = |genesis: Vec<u8>| {
+            futures::executor::block_on(platform.feature_supported(
+                api::HostFeatureSupportedRequest::Chain {
+                    genesis_hash: genesis,
+                },
+            ))
+            .expect("feature_supported is wired")
+            .supported
+        };
+
+        assert!(supported(config.people_genesis.to_vec()));
+        assert!(supported(config.bulletin_genesis.to_vec()));
+        assert!(!supported(asset_hub.to_vec()));
+
+        // A malformed genesis is unsupported, never a panic or a truncated match.
+        assert!(!supported(Vec::new()));
+        assert!(!supported(config.people_genesis[..31].to_vec()));
+        assert!(!supported(
+            [config.people_genesis.as_slice(), &[0u8]].concat()
+        ));
+        assert!(!supported(vec![0u8; 32]));
+    }
+
+    #[test]
+    fn supported_chains_answers_the_configured_network() {
+        let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::AutoAccept, None);
+        let set = futures::executor::block_on(platform.supported_chains())
+            .expect("the CLI host serves the preset's chains");
+
+        let config = crate::network::Network::default().config();
+        assert_eq!(set.network, config.id);
+        let mut served = set
+            .chains
+            .iter()
+            .map(|entry| (entry.identifier, hex::encode(entry.genesis_hash)))
+            .collect::<Vec<_>>();
+        served.sort_by_key(|(identifier, _)| format!("{identifier:?}"));
+        let mut expected = vec![
+            (
+                api::ChainIdentifier::People,
+                hex::encode(config.people_genesis),
+            ),
+            (
+                api::ChainIdentifier::Bulletin,
+                hex::encode(config.bulletin_genesis),
+            ),
+        ];
+        expected.sort_by_key(|(identifier, _)| format!("{identifier:?}"));
+        assert_eq!(served, expected);
+    }
     use tempfile::tempdir;
 
     #[test]
@@ -1196,8 +1285,7 @@ mod tests {
         std::fs::create_dir_all(&network_dir).expect("network dir");
 
         let platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(CliStoragePaths::pairing(network_dir.clone())),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1256,8 +1344,7 @@ mod tests {
         std::fs::create_dir_all(&network_dir).expect("network dir");
 
         let platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(CliStoragePaths::pairing(network_dir)),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1331,8 +1418,7 @@ mod tests {
         .expect("seed core storage");
 
         let platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(CliStoragePaths::new(state_dir, product_dir)),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1448,8 +1534,7 @@ mod tests {
         let temporary = tempdir().expect("create pairing storage root");
         let network_dir = temporary.path().join("testnet");
         let platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(CliStoragePaths::pairing(network_dir.clone())),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1504,8 +1589,7 @@ mod tests {
         )
         .expect("write legacy pairing product storage");
         let platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(CliStoragePaths::pairing(network_dir.clone())),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1591,7 +1675,7 @@ mod tests {
 
     #[test]
     fn cli_notifications_return_stable_ids_and_cancel_idempotently() {
-        let platform = CliPlatform::new("", &[], None, ApprovalPolicy::AutoAccept, None);
+        let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::AutoAccept, None);
         let first = futures::executor::block_on(platform.push_notification(
             api::HostPushNotificationRequest {
                 text: "Hello".to_string(),
@@ -1624,8 +1708,7 @@ mod tests {
         let localhost =
             ProductStorageKey::new("localhost:3000", "theme").expect("localhost product key");
         let platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(test_storage_paths(temporary.path(), "test")),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1659,8 +1742,7 @@ mod tests {
 
         drop(platform);
         let restored = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(test_storage_paths(temporary.path(), "test")),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1683,15 +1765,13 @@ mod tests {
         let temporary = tempdir().expect("create session storage root");
         let key = ProductStorageKey::new("same.dot", "value").expect("product key");
         let first = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(test_storage_paths(temporary.path(), "first")),
             ApprovalPolicy::AutoAccept,
             None,
         );
         let second = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(test_storage_paths(temporary.path(), "second")),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1736,8 +1816,7 @@ mod tests {
         .expect("write legacy product storage");
 
         let platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(test_storage_paths(temporary.path(), "test")),
             ApprovalPolicy::AutoAccept,
             None,
@@ -1772,8 +1851,7 @@ mod tests {
         fs::write(&legacy_path, "{not-json").expect("write corrupt legacy storage");
 
         let _platform = CliPlatform::new(
-            "",
-            &[],
+            test_network(),
             Some(test_storage_paths(temporary.path(), "test")),
             ApprovalPolicy::AutoAccept,
             None,
