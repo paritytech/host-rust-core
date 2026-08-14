@@ -38,6 +38,7 @@ interface PendingCall {
 // observe an outbound id.
 const getRandomValues = crypto.getRandomValues.bind(crypto);
 const TypedArray = Uint8Array;
+const objectCreate = Object.create;
 const stringify = JSON.stringify;
 const parse = JSON.parse;
 const HEX = '0123456789abcdef';
@@ -67,7 +68,14 @@ export function createNativeTransport(
     const id = randomId();
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      sendToNative(stringify({ type: 'request', id, method, params }));
+      // Null-prototype envelope: `stringify` never invokes an inherited
+      // `Object.prototype.toJSON`, so a poisoned toJSON cannot read the id.
+      const envelope: Record<string, unknown> = objectCreate(null);
+      envelope.type = 'request';
+      envelope.id = id;
+      envelope.method = method;
+      envelope.params = params;
+      sendToNative(stringify(envelope));
     });
   }
 

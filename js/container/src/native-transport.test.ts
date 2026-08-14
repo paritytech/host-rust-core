@@ -164,4 +164,32 @@ describe('createNativeTransport', () => {
     expect(id).not.toBe('ff'.repeat(16));
     expect(id).toMatch(/^[0-9a-f]{32}$/);
   });
+
+  it('does not expose the id to a poisoned Object.prototype.toJSON', () => {
+    const sender = makeSender();
+    const transport = createNativeTransport(sender.send);
+
+    const proto = Object.prototype as { toJSON?: unknown };
+    const had = 'toJSON' in proto;
+    const real = proto.toJSON;
+    const seen: unknown[] = [];
+    proto.toJSON = function (this: unknown) {
+      seen.push(this); // records every object stringify calls toJSON on
+      return this;
+    };
+    try {
+      void transport.callNative('allowWebRtcAccess', {});
+    } finally {
+      if (had) proto.toJSON = real;
+      else delete proto.toJSON;
+    }
+
+    // The envelope carries the id but has a null prototype, so its toJSON was
+    // never invoked — no object with an `id` reached the poisoned toJSON.
+    const leakedId = seen.some(
+      (v) => typeof v === 'object' && v !== null && 'id' in v,
+    );
+    expect(leakedId).toBe(false);
+    expect(sender.sent[0].id).toMatch(/^[0-9a-f]{32}$/);
+  });
 });

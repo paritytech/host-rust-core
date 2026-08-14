@@ -31,6 +31,7 @@
   // src/native-transport.ts
   var getRandomValues = crypto.getRandomValues.bind(crypto);
   var TypedArray = Uint8Array;
+  var objectCreate = Object.create;
   var stringify = JSON.stringify;
   var parse = JSON.parse;
   var HEX = "0123456789abcdef";
@@ -50,7 +51,12 @@
       const id = randomId();
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        sendToNative(stringify({ type: "request", id, method, params }));
+        const envelope = objectCreate(null);
+        envelope.type = "request";
+        envelope.id = id;
+        envelope.method = method;
+        envelope.params = params;
+        sendToNative(stringify(envelope));
       });
     }
     function dispatch(id, payload) {

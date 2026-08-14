@@ -114,7 +114,7 @@ channels are each closed:
 | How a product could learn a valid id | Closed by |
 |---|---|
 | Guess / make the id predictable | 128-bit ids from a `crypto.getRandomValues` (and `Uint8Array`) **captured at init**, encoded with a hex lookup — no `Number.prototype.toString` / `padStart` / iterator on the path, so no global override can make ids deterministic |
-| Read the outbound request | the id is serialized with a `JSON.stringify` **captured at init** and sent via the **captured** native sender (`webkit…postMessage` / `Android.call`) — neither the serializer nor the sender on the id's path is a global the product can override |
+| Read the outbound request | the id is serialized with a `JSON.stringify` **captured at init** on a **null-prototype envelope** (so a poisoned `Object.prototype.toJSON` is never invoked on it), then sent via the **captured** native sender (`webkit…postMessage` / `Android.call`) — nothing on the id's outbound path is a global the product can override |
 | Read the inbound reply by wrapping the dispatcher | frozen (non-configurable) `window.__container_callback__` |
 
 The bundle is an IIFE, so `pending`, the captured RNG/serializer, and the
