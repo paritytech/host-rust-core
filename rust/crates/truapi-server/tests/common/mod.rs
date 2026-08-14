@@ -196,7 +196,9 @@ impl UserConfirmation for WireShapePlatform {
 }
 
 impl ThemeHost for WireShapePlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         Box::pin(stream::empty())
     }
 }

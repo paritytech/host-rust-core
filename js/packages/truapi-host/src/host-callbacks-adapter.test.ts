@@ -8,11 +8,16 @@ import {
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   RemotePermissionRequest,
   RemotePermissionResponse,
+} from "@parity/truapi";
+import type {
+  GenericError,
+  HostSignPayloadData,
+  HostThemeSubscribeItem as HostThemeSubscribeItemValue,
   ThemeVariant,
 } from "@parity/truapi";
-import type { GenericError, HostSignPayloadData } from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "./generated/host-callbacks-adapter.js";
 import {
@@ -30,6 +35,19 @@ import { makeHostCallbacks, settle } from "./test-support.js";
 // `Uint8Array`. Primitives, strings and byte blobs pass through unchanged.
 
 const GENESIS = `0x${"11".repeat(32)}` as `0x${string}`;
+
+const defaultTheme = (variant: ThemeVariant): HostThemeSubscribeItemValue => ({
+  name: { tag: "Default" },
+  variant,
+});
+
+const namedTheme = (
+  name: string,
+  variant: ThemeVariant,
+): HostThemeSubscribeItemValue => ({
+  name: { tag: "Custom", value: name },
+  variant,
+});
 const PRODUCT_ACCOUNT = {
   dotNsIdentifier: "playground.dot",
   derivationIndex: { tag: "Index" as const, value: 0 },
@@ -373,8 +391,8 @@ describe("createWasmRawCallbacks", () => {
 
   it("adapts typed result subscriptions", async () => {
     async function* themes() {
-      yield ok<ThemeVariant>("Dark");
-      yield ok<ThemeVariant>("Light");
+      yield ok<HostThemeSubscribeItemValue>(namedTheme("midnight", "Dark"));
+      yield ok<HostThemeSubscribeItemValue>(defaultTheme("Light"));
     }
 
     const raw = createWasmRawCallbacks(
@@ -384,21 +402,26 @@ describe("createWasmRawCallbacks", () => {
         },
       }),
     );
-    const seen: ThemeVariant[] = [];
+    const seen: HostThemeSubscribeItemValue[] = [];
     const dispose = raw.subscribeTheme?.((theme) =>
-      seen.push(ThemeVariant.dec(theme!)),
+      seen.push(HostThemeSubscribeItem.dec(theme!)),
     );
 
     await settle();
 
-    expect(seen).toEqual(["Dark", "Light"]);
+    expect(seen).toEqual([
+      namedTheme("midnight", "Dark"),
+      defaultTheme("Light"),
+    ]);
     dispose?.();
   });
 
   it("propagates typed result subscription errors", async () => {
     async function* themes() {
-      yield ok<ThemeVariant>("Dark");
-      yield err<ThemeVariant, GenericError>({ reason: "theme stream failed" });
+      yield ok<HostThemeSubscribeItemValue>(defaultTheme("Dark"));
+      yield err<HostThemeSubscribeItemValue, GenericError>({
+        reason: "theme stream failed",
+      });
     }
 
     const raw = createWasmRawCallbacks(
@@ -408,23 +431,23 @@ describe("createWasmRawCallbacks", () => {
         },
       }),
     );
-    const seen: ThemeVariant[] = [];
+    const seen: HostThemeSubscribeItemValue[] = [];
     const errors: GenericError[] = [];
     const dispose = raw.subscribeTheme?.(
-      (theme) => seen.push(ThemeVariant.dec(theme!)),
+      (theme) => seen.push(HostThemeSubscribeItem.dec(theme!)),
       (error) => errors.push(error),
     );
 
     await settle();
 
-    expect(seen).toEqual(["Dark"]);
+    expect(seen).toEqual([defaultTheme("Dark")]);
     expect(errors).toEqual([{ reason: "theme stream failed" }]);
     dispose?.();
   });
 
   it("propagates thrown subscription iterator errors", async () => {
     async function* themes() {
-      yield ok<ThemeVariant>("Dark");
+      yield ok<HostThemeSubscribeItemValue>(defaultTheme("Dark"));
       throw new Error("theme iterator failed");
     }
 
@@ -435,16 +458,16 @@ describe("createWasmRawCallbacks", () => {
         },
       }),
     );
-    const seen: ThemeVariant[] = [];
+    const seen: HostThemeSubscribeItemValue[] = [];
     const errors: GenericError[] = [];
     const dispose = raw.subscribeTheme?.(
-      (theme) => seen.push(ThemeVariant.dec(theme!)),
+      (theme) => seen.push(HostThemeSubscribeItem.dec(theme!)),
       (error) => errors.push(error),
     );
 
     await settle();
 
-    expect(seen).toEqual(["Dark"]);
+    expect(seen).toEqual([defaultTheme("Dark")]);
     expect(errors).toEqual([{ reason: "theme iterator failed" }]);
     dispose?.();
   });

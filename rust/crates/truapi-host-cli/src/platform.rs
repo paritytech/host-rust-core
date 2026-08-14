@@ -778,8 +778,15 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
 }
 
 impl ThemeHost for CliPlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<api::ThemeVariant, api::GenericError>> {
-        Box::pin(stream::once(async { Ok(api::ThemeVariant::Dark) }))
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<api::HostThemeSubscribeItem, api::GenericError>> {
+        Box::pin(stream::once(async {
+            Ok(api::HostThemeSubscribeItem {
+                name: api::ThemeName::Default,
+                variant: api::ThemeVariant::Dark,
+            })
+        }))
     }
 }
 
