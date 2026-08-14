@@ -113,6 +113,8 @@ export interface InAppFrameIdentity {
 interface ChannelIdentity {
   /** `false` once a frame declared a `v`/`codec`/`schema` that differs. Sticky. */
   codecOk: boolean;
+  /** Monotonic counter of the last frame seen, so eviction can pick the LRU. */
+  lastSeen: number;
   /** `true` once a frame affirmatively declared a matching `schema`. */
   schemaOk: boolean;
   /** Frames the feeding tap reported dropping. */
@@ -252,6 +254,15 @@ export function createInAppDebugger(
   });
 
   const channels = new Map<string, ChannelIdentity>();
+  /**
+   * Channels evicted while carrying a mismatch verdict. Keys only, so this is
+   * bounded by the number of distinct channels that ever declared a foreign
+   * contract - and a channel that did so must never be able to buy back trust
+   * simply by being forgotten.
+   */
+  const distrusted = new Set<string>();
+  /** Monotonic sequence for LRU ordering. */
+  let seq = 0;
   // Sticky: some frame arrived unattested (or mismatched) this session. The
   // no-channel decode query keys on this rather than scanning the registry, whose
   // records can be evicted while the frames they described survive.
@@ -288,16 +299,42 @@ export function createInAppDebugger(
       if (mismatch) existing.codecOk = false;
       if (confirmed) existing.schemaOk = true;
       existing.dropped += dropped;
+      existing.lastSeen = seq++;
+      // Re-insert so map order tracks recency: without this the map stays in
+      // insertion order and the busiest, longest-lived channel is the FIRST
+      // evicted under pressure.
+      channels.delete(key);
+      channels.set(key, existing);
       return;
     }
     if (channels.size >= MAX_CHANNELS) {
-      const oldest = channels.keys().next().value;
-      if (oldest !== undefined) channels.delete(oldest);
+      // Evict the least recently seen, matching the standalone's registry.
+      let oldestKey: string | undefined;
+      let oldestSeen = Infinity;
+      for (const [candidate, entry] of channels) {
+        if (entry.lastSeen < oldestSeen) {
+          oldestSeen = entry.lastSeen;
+          oldestKey = candidate;
+        }
+      }
+      if (oldestKey !== undefined) {
+        const evicted = channels.get(oldestKey);
+        channels.delete(oldestKey);
+        // A mismatch verdict is sticky FOR THE SESSION, not for as long as the
+        // entry survives. Forgetting it let a flood of distinct channelIds
+        // launder a channel that had already declared a foreign wire contract:
+        // it re-registered clean on its next frame and the panel decoded its
+        // frames — wrong methods and wrong values, presented as truth.
+        if (evicted !== undefined && !evicted.codecOk) {
+          distrusted.add(oldestKey);
+        }
+      }
     }
     channels.set(key, {
-      codecOk: !mismatch,
+      codecOk: !mismatch && !distrusted.has(key),
       schemaOk: confirmed,
       dropped,
+      lastSeen: seq++,
     });
   };
 

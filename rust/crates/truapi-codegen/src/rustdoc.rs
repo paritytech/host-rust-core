@@ -1090,8 +1090,18 @@ pub(crate) fn resolve_type(ty: &serde_json::Value, names: &NameContext) -> Resul
                 "Option", args,
             )?))),
             "Compact" => {
-                expect_single_arg("Compact", args)?;
-                Ok(TypeRef::Primitive("compact".to_string()))
+                // The width is carried in the primitive's NAME, not discarded.
+                // Emission still keys on the `compact` prefix, so generated
+                // output is unchanged - but the wire schema hash can now see the
+                // difference between `Compact<u32>` and `Compact<u64>`. Dropping
+                // it made every compact site render identically, so widening one
+                // left the fingerprint byte-identical while changing which values
+                // a peer can decode.
+                let inner = expect_single_arg("Compact", args)?;
+                let TypeRef::Primitive(width) = &inner else {
+                    bail!("Compact must wrap a primitive integer, found {inner:?}");
+                };
+                Ok(TypeRef::Primitive(format!("compact<{width}>")))
             }
             "OptionBool" => Ok(TypeRef::Primitive("optionBool".to_string())),
             "String" => {

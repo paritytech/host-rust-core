@@ -268,9 +268,47 @@ describe("debugger link: backpressure and drop accounting", () => {
     h.live().failSends = false;
 
     h.link.emit("app.dot", "out", FRAME);
-    // Both the shed frame and the one whose send failed are still reported: a gap
-    // the host really caused must not be reported as no gap at all.
-    expect(h.live().envelopes()[0]?.dropped).toBeGreaterThanOrEqual(1);
+    // EXACT, not >=1: the shed frame AND the frame whose send failed are both
+    // losses. `>=1` was satisfied by the seeded shed alone, so it could not see
+    // the frame that vanished on the failed send.
+    expect(h.live().envelopes()[0]?.dropped).toBe(2);
+  });
+
+  test("a failed backlog drain reports the gap instead of swallowing it", () => {
+    const h = harness();
+    // Queue a backlog and shed past the cap, then fail every send on drain. The
+    // count was cleared before the loop, so a fully-failed flush reported a
+    // clean session while every frame in it was lost.
+    for (let i = 0; i < 1200; i++) h.link.emit("app.dot", "out", FRAME);
+    h.live().failSends = true;
+    h.live().fire("open");
+    h.live().failSends = false;
+
+    h.link.emit("app.dot", "out", FRAME);
+    const reported = h.live().envelopes().at(-1)?.dropped;
+    expect(typeof reported).toBe("number");
+    expect(reported as number).toBeGreaterThan(1000);
+  });
+
+  test("the backlog drain respects the per-message cap", () => {
+    const h = harness();
+    // Queued while the socket is down, drained after it opens. The cap is
+    // documented as applying to both paths; only the live one enforced it, so an
+    // over-cap message reached the debugger on reconnect and closed the stream.
+    h.link.emit("app.dot", "out", new Uint8Array(5 * 1024 * 1024));
+    h.live().fire("open");
+    for (const raw of h.live().sent) {
+      expect(raw.length).toBeLessThanOrEqual(6 * 1024 * 1024);
+    }
+  });
+
+  test("the backlog drain does not force-feed a wedged socket", () => {
+    const h = harness();
+    for (let i = 0; i < 50; i++) h.link.emit("app.dot", "out", FRAME);
+    // Peer stopped reading before the drain begins.
+    h.live().bufferedAmount = 9 * 1024 * 1024;
+    h.live().fire("open");
+    expect(h.live().sent).toHaveLength(0);
   });
 });
 

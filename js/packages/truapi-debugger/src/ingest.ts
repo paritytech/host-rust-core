@@ -162,7 +162,11 @@ declare module "./observed-frame.js" {
  */
 function producerTimestamp(observedAt: number | undefined): number | undefined {
   if (typeof observedAt !== "number") return undefined;
-  if (!Number.isFinite(observedAt) || observedAt <= 0) return undefined;
+  // `isSafeInteger`, not merely finite: `1e308` is a finite positive number and
+  // was accepted as an epoch-ms timestamp, which made `durationMs` overflow to
+  // `Infinity` and serialize as JSON `null` on /stats - a hole in the payload a
+  // client parses back. An epoch-ms value is a safe integer by construction.
+  if (!Number.isSafeInteger(observedAt) || observedAt <= 0) return undefined;
   return observedAt;
 }
 

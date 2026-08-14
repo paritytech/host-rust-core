@@ -878,9 +878,29 @@ pub(crate) fn wire_schema_hash(
     codec_version: u8,
 ) -> Result<String> {
     let mut canonical = format!("codec={codec_version}\n");
+    let mut unresolved: BTreeSet<String> = BTreeSet::new();
     for (id, tag, sensitive, payload) in wire_id_rows(api, target_version)? {
         let flag = u8::from(sensitive);
+        for marker in payload.split("UNRESOLVED<").skip(1) {
+            unresolved.insert(marker.chars().take_while(|c| *c != '>').collect());
+        }
         canonical.push_str(&format!("{id}:{tag}:{flag}:{payload}\n"));
+    }
+    // Fail the BUILD, not a test. A type that does not resolve contributes only
+    // its name, so its own fields or variants stop being fingerprinted and can
+    // change undetected - `CallError` sat on every error leg exactly that way,
+    // and inserting a variant renumbered every error discriminant while the hash
+    // and the whole generated tree stayed byte-identical. Enforcing it here means
+    // a future addition to the extractor's skip list cannot re-open the hole, and
+    // does not depend on a test being wired up to notice.
+    if !unresolved.is_empty() {
+        bail!(
+            "wire schema hash cannot see the shape of {unresolved:?}: these types are \
+             reachable from a wire payload but are not in the API definition, so a \
+             change to their fields or variants would not move the fingerprint. Add \
+             them to `ApiDefinition::framework_types` rather than letting the \
+             signature degrade to a bare name."
+        );
     }
     // FNV-1a 64-bit: deterministic across platforms and Rust versions (unlike
     // `DefaultHasher`), dependency-free, and ample for a contract fingerprint.
@@ -2649,7 +2669,7 @@ fn codec_expr_mode(
             "u32" => Ok("S.u32".to_string()),
             "u64" => Ok("S.u64".to_string()),
             "u128" => Ok("S.u128".to_string()),
-            "compact" => Ok("S.compact".to_string()),
+            name if name.starts_with("compact") => Ok("S.compact".to_string()),
             "optionBool" => Ok("S.OptionBool".to_string()),
             "i8" => Ok("S.i8".to_string()),
             "i16" => Ok("S.i16".to_string()),
@@ -2734,7 +2754,7 @@ fn ts_type_with_named(ty: &TypeRef, qualified: bool, mode: NameMode<'_>) -> Resu
             "bool" => Ok("boolean".to_string()),
             "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" => Ok("number".to_string()),
             "u64" | "u128" | "i64" | "i128" => Ok("bigint".to_string()),
-            "compact" => Ok("number | bigint".to_string()),
+            name if name.starts_with("compact") => Ok("number | bigint".to_string()),
             "optionBool" => Ok("boolean | undefined".to_string()),
             "str" => Ok("string".to_string()),
             _ => bail!("Unsupported primitive type `{name}` in TypeScript type generation"),
@@ -3071,6 +3091,26 @@ mod tests {
     }
 
     #[test]
+    fn schema_hash_moves_when_a_compact_width_changes() {
+        // `Compact<u32>` and `Compact<u64>` encode the same small values the same
+        // way, so the frame length does not change - but the wider type accepts
+        // values the narrower decoder rejects. The extractor used to discard the
+        // argument entirely, collapsing every compact site to one token, so a
+        // widening left the fingerprint byte-identical.
+        let build = |width: &str| {
+            api_with_payload_fields(vec![(
+                "size",
+                TypeRef::Primitive(format!("compact<{width}>")),
+            )])
+        };
+
+        assert_ne!(
+            wire_schema_hash(&build("u32"), 1, 1).unwrap(),
+            wire_schema_hash(&build("u64"), 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
     fn schema_hash_moves_when_an_enum_variant_is_reordered() {
         // Variant position is the SCALE discriminant, so a reorder silently
         // renumbers every variant on the wire.
@@ -3124,43 +3164,56 @@ mod tests {
     }
 
     #[test]
-    fn every_wire_reachable_type_resolves_in_the_signature() {
-        // A type that does not resolve contributes only its NAME to the wire
-        // schema hash, so its own fields or variants can change with no signal.
-        // `CallError` was exactly that: skipped at extraction, yet sitting on
-        // every error leg (62 of 168 rows), so inserting a variant renumbered
-        // every error discriminant and left the fingerprint - and the whole
-        // generated tree - byte-identical.
-        //
-        // This walks the real API surface and fails if ANY payload-reachable
-        // name degrades, so a future addition to the extractor's skip list
-        // cannot silently re-open the hole.
-        let Ok(json) = std::env::var("TRUAPI_RUSTDOC_JSON").map(std::fs::read_to_string) else {
-            // Not wired in this run; the golden test covers the same ground.
-            return;
+    fn an_unresolvable_wire_reachable_type_fails_the_build() {
+        // The guard that replaced an env-gated test which asserted nothing when
+        // the variable was unset. `Missing` is referenced by the payload but is
+        // absent from both `types` and `framework_types`, so its shape cannot be
+        // fingerprinted - exactly the state `CallError` was in.
+        let method = MethodDef {
+            name: "do_thing".to_string(),
+            kind: MethodKind::Request,
+            params: vec![ParamDef {
+                name: "request".to_string(),
+                type_ref: TypeRef::Named {
+                    name: "Missing".to_string(),
+                    args: Vec::new(),
+                },
+            }],
+            return_type: ReturnType::Result {
+                ok: TypeRef::Unit,
+                err: TypeRef::Unit,
+            },
+            wire: request_wire(Some(7)),
+            docs: None,
         };
-        let Ok(json) = json else { return };
-        let krate = crate::rustdoc::parse(&json).unwrap();
-        let api = crate::rustdoc::extract_api(&krate).unwrap();
-        let types = types_by_name(&api);
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Thing".to_string(),
+                module_path: Vec::new(),
+                methods: vec![method],
+                docs: None,
+            }],
+            public_trait_order: vec!["Thing".to_string()],
+            types: Vec::new(),
+            framework_types: Vec::new(),
+        };
 
-        let mut unresolved: std::collections::BTreeSet<String> = Default::default();
-        for trait_def in &api.traits {
-            for method in &trait_def.methods {
-                for part in method_payload_signature(method, &types)
-                    .split("UNRESOLVED<")
-                    .skip(1)
-                {
-                    unresolved.insert(part.chars().take_while(|c| *c != '>').collect());
-                }
-            }
-        }
-
+        let err = wire_schema_hash(&api, 1, 1)
+            .expect_err("an unresolvable payload type must fail codegen");
         assert!(
-            unresolved.is_empty(),
-            "these types are on the wire but contribute only their name to the \
-             schema hash, so their shape can change undetected: {unresolved:?}"
+            format!("{err}").contains("Missing"),
+            "the error must name the offending type: {err}"
         );
+    }
+
+    #[test]
+    fn a_resolvable_payload_hashes_without_complaint() {
+        // The negative control: the guard must not fire on an ordinary payload,
+        // or every codegen run would fail.
+        let api =
+            api_with_payload_fields(vec![("ring_index", TypeRef::Primitive("u32".to_string()))]);
+
+        assert!(wire_schema_hash(&api, 1, 1).is_ok());
     }
 
     #[test]
@@ -3258,6 +3311,20 @@ mod tests {
             params: Vec::new(),
             return_type: ReturnType::Subscription(named_type(item)),
             wire: subscription_wire(wire_id),
+            docs: None,
+        }
+    }
+
+    /// An empty struct `TypeDef`, so a synthetic fixture's payload types resolve.
+    /// A fixture that references a name it never defines is not a realistic API,
+    /// and the schema-hash guard rejects it for the same reason it rejects real
+    /// drift: an unresolvable type contributes only its name to the fingerprint.
+    fn empty_struct(name: &str) -> TypeDef {
+        TypeDef {
+            name: name.to_string(),
+            module_path: Vec::new(),
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Struct(Vec::new()),
             docs: None,
         }
     }
@@ -3640,6 +3707,9 @@ mod tests {
                 versioned_tuple_wrapper_variants("FutureRequest", &[(2, "FutureRequestV2")]),
                 versioned_tuple_wrapper_variants("FutureResponse", &[(2, "FutureResponseV2")]),
                 versioned_tuple_wrapper_variants("FutureError", &[(2, "FutureErrorV2")]),
+                empty_struct("LegacyErrorV1"),
+                empty_struct("LegacyRequestV1"),
+                empty_struct("LegacyResponseV1"),
             ],
             framework_types: Vec::new(),
         };
@@ -3686,6 +3756,10 @@ mod tests {
             types: vec![
                 versioned_tuple_wrapper("ExampleRequest", "LegacyRequest", "LatestRequest"),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
+                empty_struct("LatestRequest"),
+                empty_struct("LatestResponse"),
+                empty_struct("LegacyRequest"),
+                empty_struct("LegacyResponse"),
             ],
             framework_types: Vec::new(),
         };
@@ -3804,6 +3878,9 @@ mod tests {
             types: vec![
                 versioned_tuple_wrapper_variants("ExampleRequest", &[(1, "LegacyRequest")]),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
+                empty_struct("LatestResponse"),
+                empty_struct("LegacyRequest"),
+                empty_struct("LegacyResponse"),
             ],
             framework_types: Vec::new(),
         };

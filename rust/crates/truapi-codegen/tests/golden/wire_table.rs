@@ -50,7 +50,7 @@ pub enum WireKind {
 /// `TRUAPI_WIRE_SCHEMA_HASH`. A host stamps it on each debug envelope so
 /// the debugger refuses to decode a frame whose contract differs from
 /// its own, even when the coarse handshake codec version is unchanged.
-pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "11e091e3d9b0b08f";
+pub const TRUAPI_WIRE_SCHEMA_HASH: &str = "011b775e2c24d30f";
 
 /// Wire discriminants for `system_handshake`.
 pub const SYSTEM_HANDSHAKE: RequestFrameIds = RequestFrameIds {

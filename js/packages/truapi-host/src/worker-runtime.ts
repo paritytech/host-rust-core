@@ -299,8 +299,8 @@ const RECONNECT_MAX_MS = 5000;
 const MAX_SOCKET_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 /**
- * Ceiling on a SINGLE encoded message, checked on the live path as well as the
- * queued one.
+ * Ceiling on a SINGLE encoded message, enforced on the live path and again when
+ * the backlog drains.
  *
  * `MAX_SOCKET_BUFFERED_BYTES` bounds the socket's cumulative backlog, which one
  * oversized frame passes straight through on an otherwise idle socket. The
@@ -390,17 +390,39 @@ export function createDebuggerLink(
     // parse server-side. Drops only happen once the queue is full, so when the
     // count is nonzero there is always a pending frame to carry it; if not, it
     // rides the next live emit.
+    // The count is only cleared once a frame carrying it is actually handed to
+    // the socket. Clearing it up front lost the whole gap whenever the drain
+    // failed - 1100 shed frames reported as a clean session.
+    let carried = 0;
     if (pending.length > 0 && droppedSinceSend > 0) {
       try {
         const first = JSON.parse(pending[0]) as Record<string, unknown>;
         first.dropped = droppedSinceSend;
         pending[0] = JSON.stringify(first);
-        droppedSinceSend = 0;
+        carried = droppedSinceSend;
       } catch {
         // Leave the frame as-is; the count rides the next live emit.
       }
     }
-    for (const message of pending) send(message);
+    for (const [index, message] of pending.entries()) {
+      // The drained path is subject to the same two ceilings as the live one: a
+      // wedged socket must not be force-fed the backlog, and an over-cap message
+      // closes the debugger's connection and costs every frame after it.
+      const open = socket;
+      if (
+        open === null ||
+        open.bufferedAmount > MAX_SOCKET_BUFFERED_BYTES ||
+        message.length > MAX_MESSAGE_BYTES
+      ) {
+        shed();
+        continue;
+      }
+      if (send(message)) {
+        if (index === 0) droppedSinceSend -= carried;
+      } else {
+        shed();
+      }
+    }
   }
 
   function connect(): void {
@@ -440,8 +462,14 @@ export function createDebuggerLink(
   }
 
   function send(message: string): boolean {
+    // A null socket is NOT a success: returning true there would clear the drop
+    // count against a frame that went nowhere. Note the residual limit - per
+    // WHATWG, `WebSocket.send()` on a CLOSING/CLOSED socket discards silently
+    // without throwing, so a `true` here means "handed over", not "delivered".
+    const live = socket;
+    if (live === null) return false;
     try {
-      socket?.send(message);
+      live.send(message);
       return true;
     } catch {
       // A dead socket must never break the frame path. The caller keeps its
@@ -509,7 +537,14 @@ export function createDebuggerLink(
             shed();
             return;
           }
-          if (send(message)) droppedSinceSend = 0;
+          if (send(message)) {
+            droppedSinceSend = 0;
+          } else {
+            // The frame just handed over is lost as well, not only the earlier
+            // ones: counting the prior gap but not this frame under-reports by
+            // exactly the frames whose send failed.
+            shed();
+          }
           return;
         }
         // Nothing leaves the queue except through flush(), so everything that
