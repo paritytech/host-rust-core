@@ -123,6 +123,8 @@ pub enum NativePairingDeeplinkScheme {
 pub struct NativeRuntimeConfig {
     /// Canonical product identifier used for account derivation.
     pub product_id: String,
+    /// Host-attested canonical identity of the verified executable artifact.
+    pub artifact_identity: String,
     /// Trusted executable kind derived by the native host before loading it.
     pub execution_kind: ProductExecutionKind,
     /// Host name shown by the wallet during SSO pairing.
@@ -175,6 +177,8 @@ pub struct NativeHostRuntimeConfig {
 pub struct NativeProductExecutionConfig {
     /// Canonical product identifier used for policy, storage, and derivation.
     pub product_id: String,
+    /// Host-attested canonical identity of the verified executable artifact.
+    pub artifact_identity: String,
     /// Trusted executable kind selected before product code starts.
     pub execution_kind: ProductExecutionKind,
 }
@@ -237,6 +241,20 @@ pub enum NativeRuntimeConfigError {
         /// Actual product id value.
         product_id: String,
     },
+    /// Artifact identity contained surrounding whitespace or a control character.
+    #[error("invalid artifact_identity: {artifact_identity:?}")]
+    InvalidArtifactIdentity {
+        /// Actual artifact identity value.
+        artifact_identity: String,
+    },
+    /// Artifact identity exceeded the conservative trust-boundary limit.
+    #[error("artifact_identity must be at most {maximum} bytes, got {actual}")]
+    ArtifactIdentityTooLong {
+        /// Supplied UTF-8 byte length.
+        actual: u64,
+        /// Maximum accepted UTF-8 byte length.
+        maximum: u64,
+    },
     /// Local signing-host session activation failed.
     #[error("failed to activate local signing session: {reason}")]
     LocalSessionActivation {
@@ -251,6 +269,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
     fn try_from(config: NativeRuntimeConfig) -> Result<Self, Self::Error> {
         let NativeRuntimeConfig {
             product_id,
+            artifact_identity,
             execution_kind,
             host_name,
             host_icon,
@@ -277,6 +296,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
         .try_into()?;
         let product = NativeProductExecutionConfig {
             product_id,
+            artifact_identity,
             execution_kind,
         }
         .try_into()?;
@@ -325,8 +345,12 @@ impl TryFrom<NativeProductExecutionConfig> for ProductContext {
     type Error = NativeRuntimeConfigError;
 
     fn try_from(config: NativeProductExecutionConfig) -> Result<Self, Self::Error> {
-        ProductContext::new_with_execution(config.product_id, config.execution_kind)
-            .map_err(NativeRuntimeConfigError::from)
+        ProductContext::new_with_execution(
+            config.product_id,
+            config.artifact_identity,
+            config.execution_kind,
+        )
+        .map_err(NativeRuntimeConfigError::from)
     }
 }
 
@@ -349,6 +373,15 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             }
             RuntimeConfigValidationError::InvalidProductId { product_id } => {
                 Self::InvalidProductId { product_id }
+            }
+            RuntimeConfigValidationError::InvalidArtifactIdentity { artifact_identity } => {
+                Self::InvalidArtifactIdentity { artifact_identity }
+            }
+            RuntimeConfigValidationError::ArtifactIdentityTooLong { actual, maximum } => {
+                Self::ArtifactIdentityTooLong {
+                    actual: actual as u64,
+                    maximum: maximum as u64,
+                }
             }
         }
     }
@@ -1821,6 +1854,7 @@ mod tests {
     fn native_runtime_config(product_id: &str) -> NativeRuntimeConfig {
         NativeRuntimeConfig {
             product_id: product_id.to_string(),
+            artifact_identity: "sha256:native-test-artifact".to_string(),
             execution_kind: ProductExecutionKind::Spa,
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
@@ -1855,6 +1889,7 @@ mod tests {
     ) -> NativeProductExecutionConfig {
         NativeProductExecutionConfig {
             product_id: product_id.to_string(),
+            artifact_identity: "sha256:native-test-artifact".to_string(),
             execution_kind,
         }
     }
@@ -2051,9 +2086,12 @@ mod tests {
             chat: callbacks,
             events: events.clone(),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            "sha256:native-chat-test-artifact".to_string(),
+            ProductExecutionKind::Chat,
+        )
+        .unwrap();
         let mut stream = truapi_platform::ChatPlatform::subscribe_rooms(&platform, &product);
 
         let first = futures::executor::block_on(stream.next()).unwrap();
@@ -2079,9 +2117,12 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            "sha256:native-chat-test-artifact".to_string(),
+            ProductExecutionKind::Chat,
+        )
+        .unwrap();
         let request = v01::HostChatCreateRoomRequest {
             room_id: "support".to_string(),
             name: "Support".to_string(),

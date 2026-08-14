@@ -106,29 +106,36 @@ fn pairing_config_validation_cases() {
 
 #[test]
 fn product_context_validation_cases() {
-    let dotli = ProductContext::new("Dotli.DOT".to_string()).expect("dot product id is valid");
+    let dotli = ProductContext::new("Dotli.DOT".to_string(), "CIDv1:BaFyArtifact".to_string())
+        .expect("product context is valid");
     assert_eq!(dotli.product_id, "dotli.dot");
+    assert_eq!(dotli.artifact_identity, "CIDv1:BaFyArtifact");
 
     let localhost =
-        ProductContext::new(" localhost:3000 ".to_string()).expect("localhost product id is valid");
+        ProductContext::new(" localhost:3000 ".to_string(), "sha256:012345".to_string())
+            .expect("localhost product context is valid");
     assert_eq!(localhost.product_id, "localhost:3000");
 
     assert_eq!(
-        ProductContext::new("localhost".to_string()).map(|context| context.product_id),
+        ProductContext::new("localhost".to_string(), "artifact-a".to_string())
+            .map(|context| context.product_id),
         Ok("localhost".to_string())
     );
     assert_eq!(
-        ProductContext::new("dotli.dot".to_string()).map(|_| ()),
+        ProductContext::new("dotli.dot".to_string(), "artifact-a".to_string()).map(|_| ()),
         Ok(())
     );
     assert_eq!(
-        ProductContext::new("Host-Playground44.PASEO".to_string())
-            .map(|context| context.product_id),
+        ProductContext::new(
+            "Host-Playground44.PASEO".to_string(),
+            "artifact-a".to_string(),
+        )
+        .map(|context| context.product_id),
         Ok("host-playground44.paseo".to_string())
     );
     for domain in ["example.com", "example.org", "dotli.dotty"] {
         assert_eq!(
-            ProductContext::new(domain.to_string()).map(|_| ()),
+            ProductContext::new(domain.to_string(), "artifact-a".to_string()).map(|_| ()),
             Err(RuntimeConfigValidationError::InvalidProductId {
                 product_id: domain.to_string(),
             }),
@@ -136,9 +143,37 @@ fn product_context_validation_cases() {
         );
     }
     assert_eq!(
-        ProductContext::new(" ".to_string()).map(|_| ()),
+        ProductContext::new(" ".to_string(), "artifact-a".to_string()).map(|_| ()),
         Err(RuntimeConfigValidationError::EmptyField {
             field: "product_id",
+        })
+    );
+
+    assert_eq!(
+        ProductContext::new("dotli.dot".to_string(), " ".to_string()).map(|_| ()),
+        Err(RuntimeConfigValidationError::EmptyField {
+            field: "artifact_identity",
+        })
+    );
+    for malformed in [
+        " artifact",
+        "artifact ",
+        "artifact\nidentity",
+        "artifact\u{0}identity",
+    ] {
+        assert_eq!(
+            ProductContext::new("dotli.dot".to_string(), malformed.to_string()).map(|_| ()),
+            Err(RuntimeConfigValidationError::InvalidArtifactIdentity {
+                artifact_identity: malformed.to_string(),
+            })
+        );
+    }
+    let oversized = "a".repeat(truapi_platform::MAX_ARTIFACT_IDENTITY_LEN + 1);
+    assert_eq!(
+        ProductContext::new("dotli.dot".to_string(), oversized.clone()).map(|_| ()),
+        Err(RuntimeConfigValidationError::ArtifactIdentityTooLong {
+            actual: oversized.len(),
+            maximum: truapi_platform::MAX_ARTIFACT_IDENTITY_LEN,
         })
     );
 }

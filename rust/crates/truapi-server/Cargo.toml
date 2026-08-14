@@ -65,6 +65,9 @@ tracing = "0.1"
 # not `env-filter` (which drags in `regex`, heavy on wasm).
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b03deb89b8dea484b143afc8bbe048a74bc1ff" }
+web-time = "1"
+frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
+scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 truapi = { path = "../truapi", features = ["uniffi"] }
@@ -76,8 +79,6 @@ tokio-tungstenite = { version = "0.21", default-features = false, features = ["h
 uniffi.workspace = true
 subxt = { version = "0.50.3", default-features = false, features = ["native"] }
 subxt-rpcs = { version = "0.50.3", default-features = false, features = ["jsonrpsee", "native"] }
-frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
-scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
@@ -88,7 +89,6 @@ wasm-bindgen = "0.2.118"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
 send_wrapper = { version = "0.6", features = ["futures"] }
-web-time = "1"
 web-sys = { version = "0.3", features = ["console"] }
 
 [dev-dependencies]

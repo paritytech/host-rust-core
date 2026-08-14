@@ -13,9 +13,7 @@ import type {
 // SCALE bytes. The web worker pairing-host runtime adapts this typed surface
 // into the byte-oriented callback bridge consumed by the WASM core.
 export * from "./generated/host-callbacks.js";
-export type {
-  JsonRpcConnection as PlatformJsonRpcConnection,
-} from "./generated/host-callbacks.js";
+export type { JsonRpcConnection as PlatformJsonRpcConnection } from "./generated/host-callbacks.js";
 
 /** Encode a typed core-storage slot for hosts that need an opaque backing key. */
 export function encodeCoreStorageKey(key: CoreStorageKey): Uint8Array {
@@ -59,6 +57,8 @@ export type LogLevel = string;
 export interface ProductRuntimeConfig {
   /** Stable identifier used to scope product accounts, permissions, and storage. */
   productId: string;
+  /** Host-verified SHA-256 digest of the exact loaded executable artifact. */
+  artifactSha256: Uint8Array;
   /** Trusted executable kind selected by the host; defaults to `Spa`. */
   executionKind?: ProductExecutionKind;
   /** Metadata describing the host application. */

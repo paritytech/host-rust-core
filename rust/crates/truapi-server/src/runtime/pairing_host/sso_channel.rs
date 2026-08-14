@@ -344,10 +344,11 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         calling_product_id: String,
+        artifact_identity: String,
         request: v01::HostAccountSignVrfRequest,
     ) -> Result<v01::VrfSignature, AuthorityError> {
         let message_id = sso_message_id();
-        let message = sign_vrf_message(message_id, calling_product_id, request);
+        let message = sign_vrf_message(message_id, artifact_identity, calling_product_id, request);
         let response = self
             .submit_remote_message(cx, session, RemoteAction::SignVrf, message)
             .await
@@ -491,11 +492,13 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &SessionInfo,
+        artifact_identity: String,
         request: AccountAliasAuthorityRequest,
     ) -> Result<latest::HostAccountGetAliasResponse, RingVrfError> {
         let message_id = sso_message_id();
         let message = alias_request_message(
             message_id,
+            artifact_identity,
             request.calling_product_id,
             request.key_handle,
             request.context,
@@ -578,11 +581,13 @@ impl PairingHost {
         &self,
         cx: &CallContext,
         session: &SessionInfo,
+        artifact_identity: String,
         request: ListRingVrfKeysAuthorityRequest,
     ) -> Result<Vec<latest::RegisteredRingVrfKey>, RingVrfError> {
         let message_id = sso_message_id();
         let message = list_ring_vrf_keys_message(
             message_id,
+            artifact_identity,
             request.calling_product_id,
             request.owner,
             request.disclosure,
@@ -640,6 +645,7 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         product_id: String,
+        artifact_identity: String,
         request: latest::HostRequestResourceAllocationRequest,
     ) -> Result<latest::HostRequestResourceAllocationResponse, AuthorityError> {
         let lifecycle_epoch = self.current_session_lifecycle_epoch();
@@ -647,6 +653,7 @@ impl PairingHost {
         let message = resource_allocation_message(
             message_id,
             product_id.clone(),
+            artifact_identity.clone(),
             request.resources,
             OnExistingAllowancePolicy::Increase,
         );
@@ -664,8 +671,15 @@ impl PairingHost {
             });
         };
         let outcomes = response.payload.map_err(remote_authority_error)?;
-        self.cache_allowance_outcomes(cx, session, lifecycle_epoch, &product_id, &outcomes)
-            .await?;
+        self.cache_allowance_outcomes(
+            cx,
+            session,
+            lifecycle_epoch,
+            &product_id,
+            &artifact_identity,
+            &outcomes,
+        )
+        .await?;
         Ok(latest::HostRequestResourceAllocationResponse {
             outcomes: outcomes.into_iter().map(Into::into).collect(),
         })
@@ -678,10 +692,16 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         product_id: String,
+        artifact_identity: String,
     ) -> Result<StatementStoreAllowanceKey, AuthorityError> {
         let lifecycle_epoch = self.current_session_lifecycle_epoch();
         if let Some(cached) = self
-            .cached_statement_store_allowance_key(session, lifecycle_epoch, &product_id)
+            .cached_statement_store_allowance_key(
+                session,
+                lifecycle_epoch,
+                &product_id,
+                &artifact_identity,
+            )
             .await?
         {
             return Ok(cached);
@@ -691,6 +711,7 @@ impl PairingHost {
         let message = resource_allocation_message(
             message_id,
             product_id.clone(),
+            artifact_identity.clone(),
             vec![latest::AllocatableResource::StatementStoreAllowance],
             OnExistingAllowancePolicy::Ignore,
         );
@@ -722,6 +743,7 @@ impl PairingHost {
                     session,
                     lifecycle_epoch,
                     &product_id,
+                    &artifact_identity,
                     slot_account_key,
                 )
                 .await
@@ -746,10 +768,16 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         product_id: String,
+        artifact_identity: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         let lifecycle_epoch = self.current_session_lifecycle_epoch();
         if let Some(cached) = self
-            .cached_bulletin_allowance_key(session, lifecycle_epoch, &product_id)
+            .cached_bulletin_allowance_key(
+                session,
+                lifecycle_epoch,
+                &product_id,
+                &artifact_identity,
+            )
             .await?
         {
             return Ok(cached);
@@ -759,6 +787,7 @@ impl PairingHost {
         let message = resource_allocation_message(
             message_id,
             product_id.clone(),
+            artifact_identity.clone(),
             vec![latest::AllocatableResource::BulletinAllowance],
             OnExistingAllowancePolicy::Ignore,
         );
@@ -790,6 +819,7 @@ impl PairingHost {
                     session,
                     lifecycle_epoch,
                     &product_id,
+                    &artifact_identity,
                     slot_account_key,
                 )
                 .await
@@ -814,18 +844,25 @@ impl PairingHost {
         cx: &CallContext,
         session: &SessionInfo,
         product_id: String,
+        artifact_identity: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         let lifecycle_epoch = self.current_session_lifecycle_epoch();
         // Drop the cached (and persisted) key so a stale/exhausted slot is not
         // reused, then request a fresh allocation with `Increase` so the
         // wallet grants a new allowance rather than echoing the old slot.
-        self.evict_bulletin_allowance_key(session, lifecycle_epoch, &product_id)
-            .await?;
+        self.evict_bulletin_allowance_key(
+            session,
+            lifecycle_epoch,
+            &product_id,
+            &artifact_identity,
+        )
+        .await?;
 
         let message_id = sso_message_id();
         let message = resource_allocation_message(
             message_id,
             product_id.clone(),
+            artifact_identity.clone(),
             vec![latest::AllocatableResource::BulletinAllowance],
             OnExistingAllowancePolicy::Increase,
         );
@@ -857,6 +894,7 @@ impl PairingHost {
                     session,
                     lifecycle_epoch,
                     &product_id,
+                    &artifact_identity,
                     slot_account_key,
                 )
                 .await
@@ -880,6 +918,7 @@ impl PairingHost {
         session: &SessionInfo,
         lifecycle_epoch: u64,
         product_id: &str,
+        artifact_identity: &str,
         outcomes: &[SsoAllocationOutcome],
     ) -> Result<(), AuthorityError> {
         for outcome in outcomes {
@@ -890,6 +929,7 @@ impl PairingHost {
                             session,
                             lifecycle_epoch,
                             product_id,
+                            artifact_identity,
                             slot_account_key.clone(),
                         )
                         .await?;
@@ -899,6 +939,7 @@ impl PairingHost {
                             session,
                             lifecycle_epoch,
                             product_id,
+                            artifact_identity,
                             slot_account_key.clone(),
                         )
                         .await?;
@@ -914,7 +955,7 @@ impl PairingHost {
                         self.remember_auto_signing_key(
                             session,
                             lifecycle_epoch,
-                            product_id,
+                            (product_id, artifact_identity),
                             expected_product_subtree_public_key,
                             *product_root_private_key,
                             *ring_vrf_domain_entropy,

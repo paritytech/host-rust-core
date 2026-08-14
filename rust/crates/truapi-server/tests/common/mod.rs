@@ -61,7 +61,11 @@ pub fn test_runtime_config() -> (PairingHostConfig, ProductContext) {
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),
-        ProductContext::new("dotli.dot".to_string()).expect("test product context is valid"),
+        ProductContext::new(
+            "dotli.dot".to_string(),
+            "sha256:integration-test-artifact".to_string(),
+        )
+        .expect("test product context is valid"),
     )
 }
 

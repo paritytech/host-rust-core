@@ -81,6 +81,9 @@ enum class ProductExecutionKind {
  * Static product and pairing config supplied before the Rust core handles
  * product calls. One core instance represents one product identity.
  *
+ * [artifactIdentity] must come from the trusted host loader's verification of
+ * the exact executable bundle, never from product-controlled data.
+ *
  * [hostName], [hostIcon], [hostVersion], [platformType], and [platformVersion]
  * describe the host to the wallet during SSO pairing.
  * [peopleChainGenesisHash] and [bulletinChainGenesisHash] must each be exactly
@@ -89,6 +92,7 @@ enum class ProductExecutionKind {
  */
 data class RuntimeConfig(
     val productId: String,
+    val artifactIdentity: String,
     val executionKind: ProductExecutionKind = ProductExecutionKind.SPA,
     val hostName: String,
     val hostIcon: String? = null,
@@ -104,6 +108,7 @@ data class RuntimeConfig(
     internal fun toNative(): UniFfiNativeRuntimeConfig =
         UniFfiNativeRuntimeConfig(
             productId = productId,
+            artifactIdentity = artifactIdentity,
             executionKind = executionKind.toNative(),
             hostName = hostName,
             hostIcon = hostIcon,
@@ -121,6 +126,7 @@ data class RuntimeConfig(
         if (this === other) return true
         if (other !is RuntimeConfig) return false
         return productId == other.productId &&
+            artifactIdentity == other.artifactIdentity &&
             executionKind == other.executionKind &&
             hostName == other.hostName &&
             hostIcon == other.hostIcon &&
@@ -139,6 +145,7 @@ data class RuntimeConfig(
 
     override fun hashCode(): Int {
         var result = productId.hashCode()
+        result = 31 * result + artifactIdentity.hashCode()
         result = 31 * result + executionKind.hashCode()
         result = 31 * result + hostName.hashCode()
         result = 31 * result + (hostIcon?.hashCode() ?: 0)

@@ -9,8 +9,8 @@
 //! Implemented: local session lifecycle, raw-bytes signing, extrinsic-payload
 //! signing, v4 transaction construction (payload fields and extensions arrive
 //! pre-encoded, so no chain metadata is needed), RFC-0007 product entropy,
-//! bandersnatch ring-VRF aliases and membership proofs, and product-scoped
-//! Statement Store and Bulletin allowance keys (native only).
+//! bandersnatch ring-VRF aliases and membership proofs, and portable
+//! product-scoped Statement Store and Bulletin allowance keys.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod allowance_renewal;
@@ -44,7 +44,6 @@ use crate::host_logic::extrinsic::{
     Sr25519Signer, build_signed_extrinsic_v4, build_signed_extrinsic_v4_with_signature,
     build_signed_extrinsic_v5,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
@@ -74,7 +73,7 @@ const BYTES_WRAP_SUFFIX: &[u8] = b"</Bytes>";
 #[derive(Default)]
 struct LocalGrantState {
     activation_generation: u64,
-    auto_signing_grants: HashSet<([u8; 32], String)>,
+    auto_signing_grants: HashSet<([u8; 32], String, String)>,
 }
 
 impl LocalGrantState {
@@ -92,7 +91,7 @@ impl LocalGrantState {
             .checked_add(1)
             .expect("local activation generation exhausted");
         self.auto_signing_grants
-            .retain(|(_, granted_product_id)| granted_product_id != product_id);
+            .retain(|(_, granted_product_id, _)| granted_product_id != product_id);
     }
 }
 
@@ -111,6 +110,9 @@ pub(crate) struct SigningHost {
     local_grants: Mutex<LocalGrantState>,
     /// Durable RFC-0024 registry, scoped by the active wallet root.
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
+    /// Serializes on-demand statement-store registrations on every target and,
+    /// on native targets, coordinates them with the renewal scheduler.
+    allowance_registration_lock: futures::lock::Mutex<()>,
     #[cfg(not(target_arch = "wasm32"))]
     renewal: allowance_renewal::RenewalState,
 }
@@ -129,6 +131,7 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
+            allowance_registration_lock: futures::lock::Mutex::new(()),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
@@ -154,6 +157,7 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
+            allowance_registration_lock: futures::lock::Mutex::new(()),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
@@ -191,6 +195,7 @@ impl SigningHost {
         &self,
         session: &AuthoritySession,
         product_id: &str,
+        artifact_identity: &str,
     ) -> Result<(), AuthorityError> {
         let (_, activation_generation) = self.require_current_session(session)?;
         let entropy = self.root_entropy()?;
@@ -213,7 +218,9 @@ impl SigningHost {
         if state.activation_generation != activation_generation {
             return Err(AuthorityError::Disconnected);
         }
-        state.auto_signing_grants.insert((owner, product_id));
+        state
+            .auto_signing_grants
+            .insert((owner, product_id, artifact_identity.to_string()));
         Ok(())
     }
 
@@ -222,6 +229,7 @@ impl SigningHost {
         activation_generation: u64,
         owner: [u8; 32],
         calling_product_id: &str,
+        calling_artifact_identity: &str,
         account_product_id: &str,
     ) -> bool {
         let (Ok(calling_product_id), Ok(account_product_id)) = (
@@ -239,9 +247,13 @@ impl SigningHost {
             .lock()
             .expect("local AutoSigning grant mutex poisoned");
         state.activation_generation == activation_generation
-            && state
-                .auto_signing_grants
-                .contains(&(owner, calling_product_id))
+            && state.auto_signing_grants.iter().any(
+                |(granted_owner, granted_product_id, granted_artifact_identity)| {
+                    granted_owner == &owner
+                        && granted_product_id == &calling_product_id
+                        && granted_artifact_identity == calling_artifact_identity
+                },
+            )
     }
 
     /// Fence in-flight grant work and revoke this product's grants from the
@@ -373,7 +385,6 @@ impl SigningHost {
 
     /// Wallet-internal allowance proofs retain Android's reserved `peopl.dot/1` key.
     /// Product-facing RFC-0024 operations resolve only explicitly registered handles.
-    #[cfg(not(target_arch = "wasm32"))]
     fn reserved_lite_person_entropy(
         &self,
         session: &AuthoritySession,
@@ -582,6 +593,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         calling_product_id: String,
+        artifact_identity: String,
         request: v01::HostAccountSignVrfRequest,
     ) -> Result<v01::VrfSignature, AuthorityError> {
         let (_, activation_generation) = self.require_current_session(session)?;
@@ -591,6 +603,7 @@ impl ProductAuthority for SigningHost {
             activation_generation,
             owner,
             &calling_product_id,
+            &artifact_identity,
             &request.account.dot_ns_identifier,
         ) {
             let confirmed = self
@@ -745,11 +758,18 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: AccountAliasAuthorityRequest,
+        artifact_identity: String,
     ) -> Result<v01::ContextualAlias, RingVrfError> {
         self.require_current_session(session)?;
+        if artifact_identity.is_empty()
+            && request.calling_product_id != request.key_handle.dot_ns_identifier
+        {
+            return Err(RingVrfError::Rejected);
+        }
         match super::account_access_authorization(
             self.services.platform.as_ref(),
             &request.calling_product_id,
+            &artifact_identity,
             &request.key_handle.dot_ns_identifier,
         )
         .await
@@ -782,6 +802,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: CreateProofAuthorityRequest,
+        _artifact_identity: String,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
         Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)?;
@@ -814,6 +835,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: RegisterRingVrfKeyAuthorityRequest,
+        _artifact_identity: String,
     ) -> Result<v01::RingVrfPublicKey, RingVrfError> {
         self.require_current_session(session)?;
         self.ring_resolver.validate(&request.ring).await?;
@@ -839,16 +861,21 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: ListRingVrfKeysAuthorityRequest,
+        artifact_identity: String,
     ) -> Result<Vec<v01::RegisteredRingVrfKey>, RingVrfError> {
         self.require_current_session(session)?;
         let owner =
             normalize_product_identifier(&request.owner).map_err(|err| RingVrfError::Unknown {
                 reason: err.to_string(),
             })?;
+        if artifact_identity.is_empty() && request.calling_product_id != owner {
+            return Err(RingVrfError::Rejected);
+        }
         if request.calling_product_id != owner {
             match super::account_access_authorization(
                 self.services.platform.as_ref(),
                 &request.calling_product_id,
+                &artifact_identity,
                 &owner,
             )
             .await
@@ -883,6 +910,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         request: RingVrfSignAuthorityRequest,
+        _artifact_identity: String,
     ) -> Result<Vec<u8>, RingVrfError> {
         self.require_current_session(session)?;
         Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)?;
@@ -897,6 +925,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        artifact_identity: String,
         request: v01::HostRequestResourceAllocationRequest,
     ) -> Result<v01::HostRequestResourceAllocationResponse, AuthorityError> {
         self.require_current_session(session)?;
@@ -927,7 +956,7 @@ impl ProductAuthority for SigningHost {
                     Ok(v01::AllocationOutcome::NotAvailable)
                 }
                 v01::AllocatableResource::AutoSigning => self
-                    .grant_auto_signing(session, &product_id)
+                    .grant_auto_signing(session, &product_id, &artifact_identity)
                     .map(|_| v01::AllocationOutcome::Allocated)
                     .map_err(sso_responder::AllowanceAllocationError::Authority),
             };
@@ -947,6 +976,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        _artifact_identity: String,
     ) -> Result<StatementStoreAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
         let secret = sso_responder::allocate_statement_store_allowance(
@@ -965,6 +995,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        _artifact_identity: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
         let secret = sso_responder::allocate_bulletin_allowance(
@@ -983,6 +1014,7 @@ impl ProductAuthority for SigningHost {
         _cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        _artifact_identity: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError> {
         self.require_current_session(session)?;
         let secret = sso_responder::allocate_bulletin_allowance(
@@ -1271,7 +1303,11 @@ mod tests {
             services.clone(),
             crate::host_core::ConnectionAdapters::from_services(&services),
             authority,
-            ProductContext::new("myapp.dot".to_string()).expect("valid product id"),
+            ProductContext::new(
+                "myapp.dot".to_string(),
+                "sha256:signing-host-test-artifact".to_string(),
+            )
+            .expect("valid product context"),
         )
     }
 
@@ -1284,7 +1320,11 @@ mod tests {
             services.clone(),
             crate::host_core::ConnectionAdapters::from_services(&services),
             authority,
-            ProductContext::new(product_id.to_string()).expect("valid product id"),
+            ProductContext::new(
+                product_id.to_string(),
+                "sha256:signing-host-test-artifact".to_string(),
+            )
+            .expect("valid product context"),
         )
     }
 
@@ -1353,6 +1393,7 @@ mod tests {
                 index: v01::DerivationIndex::Index(0),
                 ring: ring.clone(),
             },
+            "sha256:test-artifact".to_string(),
         ))
         .expect("full person key registration succeeds");
     }
@@ -1398,6 +1439,7 @@ mod tests {
                 context: context.clone(),
                 ring_location: ring_location.clone(),
             },
+            "sha256:test-artifact".to_string(),
         ))
         .expect("alias succeeds");
         let proof = futures::executor::block_on(authority.create_proof(
@@ -1410,6 +1452,7 @@ mod tests {
                 ring_location,
                 message: b"prove me".to_vec(),
             },
+            "sha256:test-artifact".to_string(),
         ))
         .expect("proof succeeds");
 
@@ -1445,6 +1488,7 @@ mod tests {
                     junctions: vec![],
                 },
             },
+            "sha256:test-artifact".to_string(),
         ))
         .unwrap_err();
 
@@ -1479,6 +1523,7 @@ mod tests {
                 key_handle: handle,
                 message: b"reject mismatched registry state".to_vec(),
             },
+            "sha256:test-artifact".to_string(),
         ))
         .unwrap_err();
 
@@ -1513,6 +1558,7 @@ mod tests {
                 context: context.clone(),
                 ring_location: ring_location.clone(),
             },
+            "sha256:test-artifact".to_string(),
         ));
         assert_eq!(alias, Err(RingVrfError::Rejected));
 
@@ -1526,6 +1572,7 @@ mod tests {
                 ring_location,
                 message: b"prove me".to_vec(),
             },
+            "sha256:test-artifact".to_string(),
         ));
         assert_eq!(proof, Err(RingVrfError::NotAllowlisted));
         assert_eq!(
@@ -1561,10 +1608,20 @@ mod tests {
         };
         register_full_person_key(&authority, &session, &request.ring_location);
 
-        futures::executor::block_on(authority.account_alias(&cx, &session, request.clone()))
-            .expect("first alias succeeds");
-        futures::executor::block_on(authority.account_alias(&cx, &session, request))
-            .expect("second alias succeeds from cached grant");
+        futures::executor::block_on(authority.account_alias(
+            &cx,
+            &session,
+            request.clone(),
+            "sha256:test-artifact".to_string(),
+        ))
+        .expect("first alias succeeds");
+        futures::executor::block_on(authority.account_alias(
+            &cx,
+            &session,
+            request,
+            "sha256:test-artifact".to_string(),
+        ))
+        .expect("second alias succeeds from cached grant");
 
         assert_eq!(
             platform
@@ -1649,6 +1706,7 @@ mod tests {
             &CallContext::default(),
             &session,
             "myapp.dot".to_string(),
+            "sha256:test-artifact".to_string(),
             request,
         ))
         .expect("VRF signing succeeds");
@@ -1701,6 +1759,7 @@ mod tests {
             &CallContext::default(),
             &session,
             "myapp.dot".to_string(),
+            "sha256:signing-host-test-artifact".to_string(),
             vrf_request("myapp.dot"),
         ))
         .expect("granted product signs without another confirmation");
@@ -1717,6 +1776,7 @@ mod tests {
             &CallContext::default(),
             &session,
             "other.dot".to_string(),
+            "sha256:other-artifact".to_string(),
             vrf_request("myapp.dot"),
         ))
         .expect_err("different calling product remains confirmation-bound");
@@ -1737,10 +1797,10 @@ mod tests {
             .expect("activation succeeds");
         let stale_session = authority.current_session().expect("active session");
         authority
-            .grant_auto_signing(&stale_session, "myapp.dot")
+            .grant_auto_signing(&stale_session, "myapp.dot", "sha256:artifact-a")
             .expect("first product grant succeeds");
         authority
-            .grant_auto_signing(&stale_session, "other.dot")
+            .grant_auto_signing(&stale_session, "other.dot", "sha256:artifact-b")
             .expect("other product grant succeeds");
 
         authority
@@ -1755,16 +1815,25 @@ mod tests {
             current_generation,
             current_session.public_key,
             "myapp.dot",
+            "sha256:artifact-a",
+            "myapp.dot",
+        ));
+        assert!(!authority.has_auto_signing_grant(
+            current_generation,
+            current_session.public_key,
+            "myapp.dot",
+            "sha256:artifact-b",
             "myapp.dot",
         ));
         assert!(authority.has_auto_signing_grant(
             current_generation,
             current_session.public_key,
             "other.dot",
+            "sha256:artifact-b",
             "other.dot",
         ));
         assert!(matches!(
-            authority.grant_auto_signing(&stale_session, "myapp.dot"),
+            authority.grant_auto_signing(&stale_session, "myapp.dot", "sha256:artifact-a",),
             Err(AuthorityError::Disconnected)
         ));
     }
@@ -1796,6 +1865,7 @@ mod tests {
             &CallContext::default(),
             &replacement,
             "myapp.dot".to_string(),
+            "sha256:signing-host-test-artifact".to_string(),
             vrf_request("myapp.dot"),
         ))
         .expect_err("replacement root must receive its own confirmation");
@@ -1838,6 +1908,7 @@ mod tests {
             &CallContext::default(),
             &reactivated,
             "myapp.dot".to_string(),
+            "sha256:signing-host-test-artifact".to_string(),
             vrf_request("myapp.dot"),
         ))
         .expect_err("reactivated wallet must receive its own confirmation");
@@ -1872,6 +1943,7 @@ mod tests {
             &CallContext::default(),
             &stale,
             "myapp.dot".to_string(),
+            "sha256:test-artifact".to_string(),
             v01::HostRequestResourceAllocationRequest {
                 resources: vec![v01::AllocatableResource::AutoSigning],
             },
@@ -1883,6 +1955,7 @@ mod tests {
             &CallContext::default(),
             &current,
             "myapp.dot".to_string(),
+            "sha256:test-artifact".to_string(),
             vrf_request("myapp.dot"),
         ))
         .expect_err("stale allocation must not grant the replacement activation");
@@ -1925,6 +1998,7 @@ mod tests {
             &CallContext::default(),
             &session,
             "myapp.dot".to_string(),
+            "sha256:signing-host-test-artifact".to_string(),
             vrf_request("myapp.dot"),
         ))
         .expect_err("a separate runtime must receive its own confirmation");
@@ -2472,6 +2546,7 @@ mod tests {
             &cx,
             &session,
             "myapp.dot".to_string(),
+            "sha256:test-artifact".to_string(),
             v01::HostRequestResourceAllocationRequest { resources: vec![] },
         ))
         .expect("empty allocation succeeds");
@@ -2481,6 +2556,7 @@ mod tests {
             &cx,
             &session,
             "myapp.dot".to_string(),
+            "sha256:test-artifact".to_string(),
             v01::HostRequestResourceAllocationRequest {
                 resources: vec![
                     v01::AllocatableResource::SmartContractAllowance(v01::DerivationIndex::Index(

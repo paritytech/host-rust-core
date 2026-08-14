@@ -8,12 +8,13 @@
 use parity_scale_codec::{Decode, Encode};
 
 use super::{
-    CreateTransactionLegacyRequest, CreateTransactionRequest, CreateTransactionResponse,
-    ListRingVrfKeysRequest, ListRingVrfKeysResponse, ProductSubtreeRequest, ProductSubtreeResponse,
-    RegisterRingVrfKeyRequest, RegisterRingVrfKeyResponse, ResourceAllocationRequest,
-    ResourceAllocationResponse, RingVrfAliasRequest, RingVrfAliasResponse, RingVrfProofRequest,
-    RingVrfProofResponse, RingVrfSignRequest, RingVrfSignResponse, SignRawLegacyRequest,
-    SignRawLegacyResponse, SignVrfRequest, SignVrfResponse, SigningRequest, SigningResponse,
+    ArtifactBoundRequest, CreateTransactionLegacyRequest, CreateTransactionRequest,
+    CreateTransactionResponse, ListRingVrfKeysRequest, ListRingVrfKeysResponse,
+    ProductSubtreeRequest, ProductSubtreeResponse, RegisterRingVrfKeyRequest,
+    RegisterRingVrfKeyResponse, ResourceAllocationRequest, ResourceAllocationResponse,
+    RingVrfAliasRequest, RingVrfAliasResponse, RingVrfProofRequest, RingVrfProofResponse,
+    RingVrfSignRequest, RingVrfSignResponse, SignRawLegacyRequest, SignRawLegacyResponse,
+    SignVrfRequest, SignVrfResponse, SigningRequest, SigningResponse,
 };
 
 /// v1 messages exchanged with the paired signing host over the encrypted SSO channel.
@@ -104,4 +105,20 @@ pub enum RemoteMessage {
     #[codec(index = 23)]
     #[display("ring_vrf_sign_response")]
     RingVrfSignResponse(RingVrfSignResponse),
+    /// Artifact-bound RFC-0023 VRF-signing request.
+    #[codec(index = 24)]
+    #[display("artifact_bound_sign_vrf")]
+    ArtifactBoundSignVrfRequest(ArtifactBoundRequest<SignVrfRequest>),
+    /// Artifact-bound contextual alias request.
+    #[codec(index = 25)]
+    #[display("artifact_bound_get_account_alias")]
+    ArtifactBoundRingVrfAliasRequest(ArtifactBoundRequest<RingVrfAliasRequest>),
+    /// Artifact-bound registry-listing request.
+    #[codec(index = 26)]
+    #[display("artifact_bound_list_ring_vrf_keys")]
+    ArtifactBoundListRingVrfKeysRequest(ArtifactBoundRequest<ListRingVrfKeysRequest>),
+    /// Artifact-bound resource-allocation request.
+    #[codec(index = 27)]
+    #[display("artifact_bound_resource_allocation")]
+    ArtifactBoundResourceAllocationRequest(ArtifactBoundRequest<ResourceAllocationRequest>),
 }

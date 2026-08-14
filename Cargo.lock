@@ -4988,6 +4988,7 @@ dependencies = [
  "futures-util",
  "hex",
  "parity-scale-codec",
+ "rand 0.8.7",
  "ratatui",
  "reqwest",
  "rustls",

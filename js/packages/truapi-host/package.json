@@ -36,7 +36,8 @@
     "./wasm/web": {
       "types": "./dist/wasm/web/truapi_server.d.ts",
       "import": "./dist/wasm/web/truapi_server.js"
-    }
+    },
+    "./wasm/web/artifact-manifest.json": "./dist/wasm/web/artifact-manifest.json"
   },
   "files": [
     "dist",

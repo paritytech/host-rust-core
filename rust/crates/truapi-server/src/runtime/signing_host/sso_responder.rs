@@ -13,21 +13,19 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parity_scale_codec::Encode;
 use tracing::{debug, instrument, warn};
 use truapi::{CallContext, latest as api, v01};
 use truapi_platform::{
-    CreateTransactionReview, ResourceAllocationReview, SignPayloadReview, SignRawReview,
-    UserConfirmationReview,
+    CreateTransactionReview, ProductContext, ResourceAllocationReview, SignPayloadReview,
+    SignRawReview, UserConfirmationReview,
 };
 
 use super::SigningHost;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::derive_sr25519_hard_path;
 use crate::host_logic::product_account::{
     ProductAccountError, derive_identity_keypair, derive_ring_vrf_domain_entropy,
@@ -56,10 +54,8 @@ use crate::runtime::authority::{
 };
 use crate::runtime::services::RuntimeServices;
 use crate::runtime::sso_remote::fresh_statement_expiry;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::StatementAllowanceError;
 use crate::runtime::statement_store_rpc;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
 /// RFC-0022 domain for the responder's persistent SSO X25519 key.
@@ -68,8 +64,7 @@ const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
 const CHAT_ENCRYPTION_DOMAIN: &[u8] = b"chat";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
-#[cfg(not(target_arch = "wasm32"))]
-const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
+const BULLETIN_AUTHORIZATION_WAIT: Duration = Duration::from_secs(240);
 
 /// Upper bound on remembered request ids for replay dedup within a serve loop.
 /// A peer that holds the session open cannot grow this without bound; requests
@@ -144,19 +139,15 @@ pub(super) enum AllowanceAllocationError {
     #[error("{0}")]
     Authority(AuthorityError),
     /// Product-account key derivation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     ProductAccount(ProductAccountError),
     /// Chain state, metadata, ring, slot, proof, or extrinsic allocation failed.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementAllowance(#[from] StatementAllowanceError),
     /// Runtime service could not open the required Statement Store RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
     StatementStoreRpcClient(#[from] StatementStoreRpcClientError),
     /// Runtime service could not open the required Bulletin RPC client.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("{context}: {source}")]
     BulletinRpcClient {
         /// Client context.
@@ -165,19 +156,10 @@ pub(super) enum AllowanceAllocationError {
         #[source]
         source: RuntimeFailure,
     },
-    /// Allocation helper is unavailable for this target.
-    #[cfg(target_arch = "wasm32")]
-    #[error("signing host: {resource} allowance allocation is native-only")]
-    NativeOnly {
-        /// Resource name.
-        resource: &'static str,
-    },
     /// System time cannot be converted into a UNIX timestamp.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("system clock before UNIX epoch")]
     SystemClockBeforeUnixEpoch,
     /// The signing account is not in the required LitePeople ring.
-    #[cfg(not(target_arch = "wasm32"))]
     #[error("signing account is not a LitePeople ring member; cannot grant {resource} allowance")]
     MissingLitePeopleMembership {
         /// Resource name.
@@ -191,7 +173,6 @@ impl From<AuthorityError> for AllowanceAllocationError {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl From<ProductAccountError> for AllowanceAllocationError {
     fn from(err: ProductAccountError) -> Self {
         Self::ProductAccount(err)
@@ -653,7 +634,7 @@ async fn answer_remote_message(
             sign_response(services, signing_host, &message_id, *request).await,
         ),
         v1::RemoteMessage::RingVrfAliasRequest(request) => {
-            let payload = account_alias_response(signing_host, request).await;
+            let payload = account_alias_response(signing_host, request, String::new()).await;
             v1::RemoteMessage::RingVrfAliasResponse(RingVrfAliasResponse {
                 responding_to: message_id,
                 payload,
@@ -674,7 +655,7 @@ async fn answer_remote_message(
             })
         }
         v1::RemoteMessage::ListRingVrfKeysRequest(request) => {
-            let payload = list_ring_vrf_keys_response(signing_host, request).await;
+            let payload = list_ring_vrf_keys_response(signing_host, request, String::new()).await;
             v1::RemoteMessage::ListRingVrfKeysResponse(messages::ListRingVrfKeysResponse {
                 responding_to: message_id,
                 payload,
@@ -687,18 +668,15 @@ async fn answer_remote_message(
                 payload,
             })
         }
-        v1::RemoteMessage::ResourceAllocationRequest(request) => {
-            let answer = resource_allocation_response(services, signing_host, request).await;
-            if let Err(reason) = &answer.payload {
-                warn!(%reason, "resource allocation request failed");
-            }
-            response_result = Some(resource_allocation_payload_result(
-                &answer.payload,
-                &answer.item_failures,
-            ));
+        v1::RemoteMessage::ResourceAllocationRequest(_) => {
+            let payload = Err(
+                "legacy resource-allocation request has no authenticated artifact identity"
+                    .to_string(),
+            );
+            response_result = Some(resource_allocation_payload_result(&payload, &[]));
             v1::RemoteMessage::ResourceAllocationResponse(ResourceAllocationResponse {
                 responding_to: message_id,
-                payload: answer.payload,
+                payload,
             })
         }
         v1::RemoteMessage::CreateTransactionRequest(request) => {
@@ -737,7 +715,8 @@ async fn answer_remote_message(
             })
         }
         v1::RemoteMessage::SignVrfRequest(request) => {
-            let payload = sign_vrf_response(signing_host, message_id.clone(), request).await;
+            let payload =
+                sign_vrf_response(signing_host, message_id.clone(), request, String::new()).await;
             v1::RemoteMessage::SignVrfResponse(SignVrfResponse {
                 responding_to: message_id,
                 payload,
@@ -758,6 +737,60 @@ async fn answer_remote_message(
             v1::RemoteMessage::ProductSubtreeResponse(messages::ProductSubtreeResponse {
                 responding_to: message_id,
                 product_public_key,
+            })
+        }
+        v1::RemoteMessage::ArtifactBoundSignVrfRequest(request) => {
+            let payload = sign_vrf_response(
+                signing_host,
+                message_id.clone(),
+                request.request,
+                request.artifact_identity,
+            )
+            .await;
+            v1::RemoteMessage::SignVrfResponse(SignVrfResponse {
+                responding_to: message_id,
+                payload,
+            })
+        }
+        v1::RemoteMessage::ArtifactBoundRingVrfAliasRequest(request) => {
+            let payload =
+                account_alias_response(signing_host, request.request, request.artifact_identity)
+                    .await;
+            v1::RemoteMessage::RingVrfAliasResponse(RingVrfAliasResponse {
+                responding_to: message_id,
+                payload,
+            })
+        }
+        v1::RemoteMessage::ArtifactBoundListRingVrfKeysRequest(request) => {
+            let payload = list_ring_vrf_keys_response(
+                signing_host,
+                request.request,
+                request.artifact_identity,
+            )
+            .await;
+            v1::RemoteMessage::ListRingVrfKeysResponse(messages::ListRingVrfKeysResponse {
+                responding_to: message_id,
+                payload,
+            })
+        }
+        v1::RemoteMessage::ArtifactBoundResourceAllocationRequest(request) => {
+            let answer = resource_allocation_response(
+                services,
+                signing_host,
+                request.request,
+                request.artifact_identity,
+            )
+            .await;
+            if let Err(reason) = &answer.payload {
+                warn!(%reason, "resource allocation request failed");
+            }
+            response_result = Some(resource_allocation_payload_result(
+                &answer.payload,
+                &answer.item_failures,
+            ));
+            v1::RemoteMessage::ResourceAllocationResponse(ResourceAllocationResponse {
+                responding_to: message_id,
+                payload: answer.payload,
             })
         }
         v1::RemoteMessage::Disconnected
@@ -785,8 +818,19 @@ async fn answer_remote_message(
 async fn resource_allocation_response(
     services: &Arc<RuntimeServices>,
     signing_host: &Arc<SigningHost>,
-    request: messages::ResourceAllocationRequest,
+    mut request: messages::ResourceAllocationRequest,
+    artifact_identity: String,
 ) -> ResourceAllocationAnswer {
+    let product = match ProductContext::new(request.calling_product_id.clone(), artifact_identity) {
+        Ok(product) => product,
+        Err(error) => {
+            return ResourceAllocationAnswer {
+                payload: Err(format!("invalid resource-allocation principal: {error}")),
+                item_failures: Vec::new(),
+            };
+        }
+    };
+    request.calling_product_id = product.product_id;
     let review = UserConfirmationReview::ResourceAllocation(ResourceAllocationReview {
         calling_product_id: request.calling_product_id.clone(),
         resources: request
@@ -891,13 +935,13 @@ fn public_allocatable_resource(resource: &SsoAllocatableResource) -> api::Alloca
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_statement_store_allowance(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    #[cfg(not(target_arch = "wasm32"))]
     use super::allowance_renewal::{self, StatementRenewalTarget};
     use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
@@ -925,7 +969,7 @@ pub(super) async fn allocate_statement_store_allowance(
     // the scan is what picks the free slot, so a renewal pass scanning in the gap
     // would choose the same one. Released on the early return below, which
     // submits nothing.
-    let _registration = signing_host.renewal.registration_lock().lock().await;
+    let _registration = signing_host.allowance_registration_lock.lock().await;
 
     // One scan answers both questions: whether an allowance is already recorded
     // on chain — in which case neither a ring proof nor a submission is needed —
@@ -1009,20 +1053,22 @@ pub(super) async fn allocate_statement_store_allowance(
             );
         }
     }
-    if let Err(reason) = allowance_renewal::track(
-        signing_host,
-        vec![StatementRenewalTarget::ProductStatementAllowance {
-            product_id: product_id.to_string(),
-        }],
-    )
-    .await
+    #[cfg(not(target_arch = "wasm32"))]
     {
-        warn!(%product_id, %reason, "failed to record statement-store renewal target");
+        if let Err(reason) = allowance_renewal::track(
+            signing_host,
+            vec![StatementRenewalTarget::ProductStatementAllowance {
+                product_id: product_id.to_string(),
+            }],
+        )
+        .await
+        {
+            warn!(%product_id, %reason, "failed to record statement-store renewal target");
+        }
     }
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn allocate_bulletin_allowance(
     services: &Arc<RuntimeServices>,
     signing_host: &SigningHost,
@@ -1116,34 +1162,9 @@ pub(super) async fn allocate_bulletin_allowance(
     Ok(allowance.secret.to_bytes().to_vec())
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_statement_store_allowance(
-    _services: &Arc<RuntimeServices>,
-    _signing_host: &SigningHost,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "statement-store",
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(super) async fn allocate_bulletin_allowance(
-    _services: &Arc<RuntimeServices>,
-    _signing_host: &SigningHost,
-    _product_id: &str,
-    _policy: OnExistingAllowancePolicy,
-) -> Result<Vec<u8>, AllowanceAllocationError> {
-    Err(AllowanceAllocationError::NativeOnly {
-        resource: "Bulletin",
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn current_unix_secs() -> Result<u64, AllowanceAllocationError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|_| AllowanceAllocationError::SystemClockBeforeUnixEpoch)
 }
@@ -1248,6 +1269,7 @@ async fn sign_vrf_response(
     signing_host: &Arc<SigningHost>,
     message_id: String,
     request: messages::SignVrfRequest,
+    artifact_identity: String,
 ) -> Result<v01::VrfSignature, v01::HostAccountSignVrfError> {
     let session = signing_host
         .current_session()
@@ -1257,6 +1279,7 @@ async fn sign_vrf_response(
             &CallContext::with_request_id(message_id),
             &session,
             request.calling_product_id,
+            artifact_identity,
             request.payload,
         )
         .await
@@ -1296,6 +1319,7 @@ async fn create_transaction_response(
 async fn account_alias_response(
     signing_host: &Arc<SigningHost>,
     request: messages::RingVrfAliasRequest,
+    artifact_identity: String,
 ) -> Result<api::HostAccountGetAliasResponse, RingVrfError> {
     let session = signing_host
         .current_session()
@@ -1311,6 +1335,7 @@ async fn account_alias_response(
                 context: request.context,
                 ring_location: request.ring_location,
             },
+            artifact_identity,
         )
         .await
 }
@@ -1334,6 +1359,7 @@ async fn create_proof_response(
                 ring_location: request.ring_location,
                 message: request.message,
             },
+            String::new(),
         )
         .await
 }
@@ -1354,6 +1380,7 @@ async fn register_ring_vrf_key_response(
                 index: request.index,
                 ring: request.ring,
             },
+            String::new(),
         )
         .await
 }
@@ -1361,6 +1388,7 @@ async fn register_ring_vrf_key_response(
 async fn list_ring_vrf_keys_response(
     signing_host: &Arc<SigningHost>,
     request: messages::ListRingVrfKeysRequest,
+    artifact_identity: String,
 ) -> Result<Vec<api::RegisteredRingVrfKey>, RingVrfError> {
     let session = signing_host
         .current_session()
@@ -1374,6 +1402,7 @@ async fn list_ring_vrf_keys_response(
                 owner: request.owner,
                 disclosure: request.disclosure,
             },
+            artifact_identity,
         )
         .await
 }
@@ -1394,6 +1423,7 @@ async fn ring_vrf_sign_response(
                 key_handle: request.key_handle,
                 message: request.message,
             },
+            String::new(),
         )
         .await
 }
@@ -1460,13 +1490,13 @@ mod tests {
     const PEOPLE_METADATA: &[u8] =
         include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
 
-    /// An existing statement-store allowance must be served without resolving a
-    /// ring or submitting anything. The cache and the scan are covered on their
-    /// own; this pins the composition, so removing the early return fails here
-    /// rather than passing quietly.
+    /// An existing statement-store allowance must be served by the canonical
+    /// chain allocator without resolving a ring or submitting anything. The
+    /// cache and scan are covered on their own; this pins the allocator
+    /// composition rather than only its component helpers.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn an_existing_allowance_is_served_without_touching_the_ring() {
+    fn an_existing_statement_store_allowance_uses_the_canonical_chain_allocator() {
         use futures::FutureExt;
 
         use crate::host_logic::product_account::derive_sr25519_hard_path;
@@ -1563,6 +1593,74 @@ mod tests {
                 .count(),
             1,
             "expected a single slot read: {methods:?}"
+        );
+    }
+
+    /// An available Bulletin authorization must be served by the canonical
+    /// chain allocator without touching the People-chain claim path.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_existing_bulletin_allowance_uses_the_canonical_chain_allocator() {
+        use futures::FutureExt;
+
+        use crate::host_logic::product_account::derive_sr25519_hard_path;
+
+        let product_id = "myapp.dot";
+        let allowance = derive_sr25519_hard_path(&ENTROPY, &["allowance", "bulletin", product_id])
+            .expect("allowance derivation succeeds");
+        let authorization = (
+            1u32,    // transactions used
+            5u32,    // transaction allowance
+            10u64,   // bytes used
+            0u64,    // permanent bytes
+            4096u64, // byte allowance
+            100u32,  // expiration block
+        )
+            .encode();
+        let platform = Arc::new(StubPlatform {
+            rpc_method_responses: vec![
+                (
+                    "state_getStorage",
+                    format!(r#""0x{}""#, hex::encode(authorization)),
+                ),
+                ("chain_getHeader", r#"{"number":"0x1"}"#.to_string()),
+            ],
+            ..Default::default()
+        });
+        let (services, signing_host) = signing_fixture(platform.clone());
+
+        let secret = futures::executor::block_on(async {
+            futures::select! {
+                result = allocate_bulletin_allowance(
+                    &services,
+                    &signing_host,
+                    product_id,
+                    OnExistingAllowancePolicy::Ignore,
+                )
+                .fuse() => result,
+                _ = futures_timer::Delay::new(Duration::from_secs(30)).fuse() => {
+                    panic!("allocation blocked after reading an available Bulletin allowance")
+                }
+            }
+        })
+        .expect("an existing Bulletin allowance is returned");
+
+        assert_eq!(secret, allowance.secret.to_bytes().to_vec());
+
+        let sent = platform.sent_rpc.lock().expect("rpc list mutex poisoned");
+        let methods: Vec<String> = sent
+            .iter()
+            .filter_map(|request| {
+                let value: serde_json::Value = serde_json::from_str(request).ok()?;
+                value.get("method")?.as_str().map(ToString::to_string)
+            })
+            .collect();
+        assert_eq!(
+            methods,
+            vec![
+                "state_getStorage".to_string(),
+                "chain_getHeader".to_string()
+            ]
         );
     }
 
@@ -1736,11 +1834,16 @@ mod tests {
             &services,
             &signing_host,
             "alloc-1".to_string(),
-            v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
-                calling_product_id: "myapp.dot".to_string(),
-                resources: vec![SsoAllocatableResource::StatementStoreAllowance],
-                on_existing: messages::OnExistingAllowancePolicy::Ignore,
-            }),
+            v1::RemoteMessage::ArtifactBoundResourceAllocationRequest(
+                messages::ArtifactBoundRequest {
+                    artifact_identity: "sha256:artifact-a".to_string(),
+                    request: messages::ResourceAllocationRequest {
+                        calling_product_id: "myapp.dot".to_string(),
+                        resources: vec![SsoAllocatableResource::StatementStoreAllowance],
+                        on_existing: messages::OnExistingAllowancePolicy::Ignore,
+                    },
+                },
+            ),
         ))
         .expect("response is emitted");
 
@@ -1781,11 +1884,16 @@ mod tests {
             &services,
             &signing_host,
             "alloc-auto-signing".to_string(),
-            v1::RemoteMessage::ResourceAllocationRequest(messages::ResourceAllocationRequest {
-                calling_product_id: "myapp.dot".to_string(),
-                resources: vec![SsoAllocatableResource::AutoSigning],
-                on_existing: messages::OnExistingAllowancePolicy::Ignore,
-            }),
+            v1::RemoteMessage::ArtifactBoundResourceAllocationRequest(
+                messages::ArtifactBoundRequest {
+                    artifact_identity: "sha256:artifact-a".to_string(),
+                    request: messages::ResourceAllocationRequest {
+                        calling_product_id: "myapp.dot".to_string(),
+                        resources: vec![SsoAllocatableResource::AutoSigning],
+                        on_existing: messages::OnExistingAllowancePolicy::Ignore,
+                    },
+                },
+            ),
         ))
         .expect("response is emitted");
 

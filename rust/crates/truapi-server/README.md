@@ -88,6 +88,17 @@ the wallet-authority tail (`sign_*`, `create_transaction`, `account_alias`,
 `Arc<dyn ProductAuthority>` handle with an `AuthoritySession` snapshot the
 role revalidates before touching key material.
 
+### Product artifact trust boundary
+
+`ProductContext` contains both the normalized product id and an immutable
+artifact identity (`sha256:<hex>`). The trusted host loader must compute that
+identity from the exact verified executable bundle before it creates a
+`ProductRuntime`; product-controlled frames never supply or override it.
+Durable allowance keys, automatic-signing grants, and wallet-to-wallet
+authorization messages use the exact `(wallet session, product id, artifact
+identity)` scope. Replacing a product bundle therefore fails closed until the
+new artifact receives its own grant.
+
 ### Permission flow
 
 Permission grants are scoped by product id and typed request, so a grant for
@@ -198,10 +209,10 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
   exponent, and revision reads to one finalized block before creating a proof.
   Extrinsic-payload signing and v4 transaction construction work from
   pre-encoded payload fields, so no chain metadata is needed;
-  statement-store and Bulletin allowance allocation are native-only (wasm
-  builds report them as unavailable) and do need metadata, which they take from
-  the `RuntimeServices`-owned per-chain cache rather than re-reading it per
-  call.
+  statement-store and Bulletin allowance allocation work on native and WASM
+  through the host-provided chain transport. Both need metadata, which they
+  take from the `RuntimeServices`-owned per-chain cache rather than re-reading
+  it per call.
 
 `host_logic` stays pure: the orchestrators above call into it for codecs,
 session/SSO crypto, key derivation, and permission policy, while all I/O

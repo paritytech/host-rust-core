@@ -37,22 +37,30 @@ pub(crate) struct BulletinAllowanceKey {
 impl BulletinAllowanceKey {
     /// Wrap a 64-byte sr25519 secret; other lengths are `Unavailable`.
     pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
-        let secret: [u8; 64] =
-            secret
-                .try_into()
-                .map_err(|secret: Vec<u8>| AuthorityError::Unavailable {
-                    reason: format!(
-                        "bulletin allowance key must be 64 bytes, got {}",
-                        secret.len()
-                    ),
-                })?;
-        Ok(Self { secret })
+        Ok(Self {
+            secret: fixed_allowance_secret(secret, "bulletin")?,
+        })
     }
 
     /// Raw secret for the in-core Bulletin signer.
     pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
         &self.secret
     }
+}
+
+fn fixed_allowance_secret(secret: Vec<u8>, resource: &str) -> Result<[u8; 64], AuthorityError> {
+    let secret = zeroize::Zeroizing::new(secret);
+    if secret.len() != 64 {
+        return Err(AuthorityError::Unavailable {
+            reason: format!(
+                "{resource} allowance key must be 64 bytes, got {}",
+                secret.len()
+            ),
+        });
+    }
+    let mut fixed = [0; 64];
+    fixed.copy_from_slice(&secret);
+    Ok(fixed)
 }
 
 /// Persisted AutoSigning capability for one hard product subtree.
@@ -286,9 +294,10 @@ pub(crate) struct RingVrfSignAuthorityRequest {
 }
 
 /// Statement-store allowance signing material held by the authority layer.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
 pub(crate) struct StatementStoreAllowanceKey {
     /// sr25519 secret used to sign allowance statements.
+    #[debug("\"<redacted>\"")]
     pub(crate) secret: [u8; 64],
     /// Public key derived from `secret`.
     pub(crate) public_key: [u8; 32],
@@ -298,15 +307,7 @@ impl StatementStoreAllowanceKey {
     /// Wrap a 64-byte sr25519 secret and derive its public key; other lengths
     /// are `Unavailable`.
     pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
-        let secret: [u8; 64] =
-            secret
-                .try_into()
-                .map_err(|secret: Vec<u8>| AuthorityError::Unavailable {
-                    reason: format!(
-                        "statement-store allowance key must be 64 bytes, got {}",
-                        secret.len()
-                    ),
-                })?;
+        let secret = fixed_allowance_secret(secret, "statement-store")?;
         let public_key = statement_public_key_from_secret(secret)
             .map_err(|reason| AuthorityError::Unavailable { reason })?;
         Ok(Self { secret, public_key })
@@ -371,6 +372,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         calling_product_id: String,
+        artifact_identity: String,
         request: HostAccountSignVrfRequest,
     ) -> Result<VrfSignature, AuthorityError>;
 
@@ -407,6 +409,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         request: AccountAliasAuthorityRequest,
+        artifact_identity: String,
     ) -> Result<HostAccountGetAliasResponse, RingVrfError>;
 
     /// Create a ring-VRF proof bound to a context and message.
@@ -418,6 +421,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         request: CreateProofAuthorityRequest,
+        artifact_identity: String,
     ) -> Result<HostAccountCreateProofResponse, RingVrfError>;
 
     /// Register a ring-VRF key owned by the calling product.
@@ -426,6 +430,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         request: RegisterRingVrfKeyAuthorityRequest,
+        artifact_identity: String,
     ) -> Result<HostAccountRegisterRingVrfKeyResponse, RingVrfError>;
 
     /// List registered ring-VRF keys.
@@ -434,6 +439,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         request: ListRingVrfKeysAuthorityRequest,
+        artifact_identity: String,
     ) -> Result<HostAccountListRingVrfKeysResponse, RingVrfError>;
 
     /// Sign bytes directly with a registered ring-VRF key.
@@ -442,6 +448,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         request: RingVrfSignAuthorityRequest,
+        artifact_identity: String,
     ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
 
     /// Ask the account authority to allocate product-scoped resources.
@@ -450,6 +457,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        artifact_identity: String,
         request: HostRequestResourceAllocationRequest,
     ) -> Result<HostRequestResourceAllocationResponse, AuthorityError>;
 
@@ -459,6 +467,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        artifact_identity: String,
     ) -> Result<StatementStoreAllowanceKey, AuthorityError>;
 
     /// Return Bulletin allowance key material for the calling product.
@@ -467,6 +476,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        artifact_identity: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError>;
 
     /// Evict any cached Bulletin allowance key for the product and allocate a
@@ -479,6 +489,7 @@ pub(crate) trait ProductAuthority: Send + Sync {
         cx: &CallContext,
         session: &AuthoritySession,
         product_id: String,
+        artifact_identity: String,
     ) -> Result<BulletinAllowanceKey, AuthorityError>;
 
     /// Sign exact statement-store proof bytes with a product-derived account.

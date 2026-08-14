@@ -520,6 +520,11 @@ async fn run_pairing_host(
     let network = args.network.config();
     let base_path = args.base_path.unwrap_or_else(default_base_path);
     let product = frame_server::ProductSelection::new(args.product_id)?;
+    let prepared_script = if let Some(script) = args.script.as_deref() {
+        Some(prepare_product_execution(&product, script).await?)
+    } else {
+        None
+    };
     let product_id = product.current();
     let storage_paths = CliStoragePaths::pairing(base_path.join(network.id));
     let (terminal_ui, ui_handle) = if interactive {
@@ -556,10 +561,11 @@ async fn run_pairing_host(
     });
     let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> = pairing_runtime.clone();
 
-    if let Some(script) = args.script {
+    if let Some((script, execution)) = prepared_script {
         let script_product_id = product_id.clone();
-        let script_frame_url = frame_url.clone();
+        let script_frame_url = execution.frame_url(&frame_url);
         let status = with_frame_server(runtime_for_frames, product, frame_server, async move {
+            let _execution = execution;
             script_runner::run(
                 &script_frame_url,
                 &script_product_id,
@@ -616,6 +622,11 @@ async fn run_signing_host(
         .as_deref()
         .map(|input| parse_command(input).unwrap_or_else(|error| invalid_invocation(error)));
     let product = frame_server::ProductSelection::new(args.product_id.clone())?;
+    let prepared_script = if let Some(script) = args.script.as_deref() {
+        Some(prepare_product_execution(&product, script).await?)
+    } else {
+        None
+    };
     let product_id = product.current();
     let network = args.network.config();
     let base_path = args.base_path.clone().unwrap_or_else(default_base_path);
@@ -653,12 +664,13 @@ async fn run_signing_host(
     let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> =
         session.runtime_factory.clone();
 
-    if let Some(script) = args.script {
+    if let Some((script, execution)) = prepared_script {
         let product_id = product.current();
         let script_product_id = product_id.clone();
-        let script_frame_url = frame_url.clone();
+        let script_frame_url = execution.frame_url(&frame_url);
         let initial_deeplink = args.deeplink.clone();
         let status = with_frame_server(runtime_for_frames, product, frame_server, async move {
+            let _execution = execution;
             let mut responder = None;
             if let Some(deeplink) = initial_deeplink {
                 prepare_pairing_response(&mut session, &deeplink).await?;
@@ -1588,8 +1600,26 @@ async fn pairing_interactive_loop(
                 Err(error) => ui.error(format!("failed to copy transcript: {error}")),
             },
             ShellCommand::Login => {
-                let product_id = product.current();
-                run_pairing_login(&runtime, &product_id, input, &mut ui).await?;
+                let Some(script) = last_script.as_ref() else {
+                    ui.error("no product script is selected; run /script first");
+                    continue;
+                };
+                match prepare_product_execution(&product, script).await {
+                    Ok((_prepared, _execution)) => match product.context() {
+                        Ok(product_context) => {
+                            run_pairing_login(
+                                &runtime,
+                                &product_context.product_id,
+                                &product_context.artifact_identity,
+                                input,
+                                &mut ui,
+                            )
+                            .await?;
+                        }
+                        Err(error) => ui.error(error.to_string()),
+                    },
+                    Err(error) => ui.error(error.to_string()),
+                }
             }
             ShellCommand::Logout => match runtime.logout().await {
                 Ok(()) => ui.success(
@@ -1655,9 +1685,19 @@ async fn pairing_interactive_loop(
                 };
                 match script {
                     Ok(script) => {
+                        let (prepared, execution) =
+                            prepare_product_execution(&product, &script).await?;
                         let product_id = product.current();
-                        run_pairing_script(&frame_url, &product_id, &script, input, &mut ui)
-                            .await?;
+                        let frame_url = execution.frame_url(&frame_url);
+                        run_pairing_script(
+                            &frame_url,
+                            &product_id,
+                            &prepared,
+                            execution,
+                            input,
+                            &mut ui,
+                        )
+                        .await?;
                     }
                     Err(error) => ui.error(error.to_string()),
                 }
@@ -1672,12 +1712,13 @@ async fn pairing_interactive_loop(
 async fn run_pairing_login(
     runtime: &PairingHostRuntime,
     product_id: &str,
+    artifact_identity: &str,
     label: String,
     ui: &mut ActiveTerminalUi,
 ) -> Result<()> {
     let checkpoint = ui.activity_checkpoint();
     match ui
-        .drive_pairing_login(label, runtime.login(product_id))
+        .drive_pairing_login(label, runtime.login(product_id, artifact_identity))
         .await?
     {
         DriveResult::Complete(Ok(truapi::v01::HostRequestLoginResponse::Success)) => {}
@@ -1705,16 +1746,30 @@ async fn run_pairing_login(
     Ok(())
 }
 
+async fn prepare_product_execution(
+    product: &frame_server::ProductSelection,
+    script: &std::path::Path,
+) -> Result<(
+    script_runner::PreparedScript,
+    frame_server::ProductExecution,
+)> {
+    let script = script_runner::prepare(script).await?;
+    let execution = product.issue_execution(script.artifact_identity().to_string())?;
+    Ok((script, execution))
+}
+
 async fn run_pairing_script(
     frame_url: &str,
     product_id: &str,
-    script: &std::path::Path,
+    script: &script_runner::PreparedScript,
+    execution: frame_server::ProductExecution,
     label: String,
     ui: &mut ActiveTerminalUi,
 ) -> Result<()> {
     let activity_checkpoint = ui.activity_checkpoint();
     let handle = ui.handle();
-    let operation = async {
+    let operation = async move {
+        let _execution = execution;
         let status = script_runner::run_captured(
             frame_url,
             product_id,
@@ -1757,11 +1812,10 @@ async fn signing_interactive_loop(
     if let Some(deeplink) = initial_deeplink {
         let input = format!("/pair {deeplink}");
         ui.command(input.clone());
-        let product_id = product.current();
         run_interactive_operation(
             session,
             &frame_url,
-            &product_id,
+            &product,
             ShellCommand::Pair(deeplink),
             input,
             &mut ui,
@@ -1824,11 +1878,10 @@ async fn signing_interactive_loop(
             ShellCommand::Quit => return Ok(()),
             ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
                 Ok(script) => {
-                    let product_id = product.current();
                     run_interactive_operation(
                         session,
                         &frame_url,
-                        &product_id,
+                        &product,
                         ShellCommand::Script(Some(script)),
                         input,
                         &mut ui,
@@ -1838,16 +1891,8 @@ async fn signing_interactive_loop(
                 Err(error) => ui.error(error.to_string()),
             },
             command => {
-                let product_id = product.current();
-                run_interactive_operation(
-                    session,
-                    &frame_url,
-                    &product_id,
-                    command,
-                    input,
-                    &mut ui,
-                )
-                .await?;
+                run_interactive_operation(session, &frame_url, &product, command, input, &mut ui)
+                    .await?;
             }
         }
     }
@@ -1856,14 +1901,14 @@ async fn signing_interactive_loop(
 async fn run_interactive_operation(
     session: &mut SigningHostSession,
     frame_url: &str,
-    product_id: &str,
+    product: &frame_server::ProductSelection,
     command: ShellCommand,
     label: String,
     ui: &mut ActiveTerminalUi,
 ) -> Result<()> {
     let activity_checkpoint = ui.activity_checkpoint();
     let handle = ui.handle();
-    let operation = execute_interactive_operation(session, frame_url, product_id, command, handle);
+    let operation = execute_interactive_operation(session, frame_url, product, command, handle);
     match ui.drive(label, operation).await? {
         DriveResult::Complete(Ok(())) => {}
         DriveResult::Complete(Err(error)) => {
@@ -1885,7 +1930,7 @@ async fn run_interactive_operation(
 async fn execute_interactive_operation(
     session: &mut SigningHostSession,
     frame_url: &str,
-    product_id: &str,
+    product: &frame_server::ProductSelection,
     command: ShellCommand,
     ui: UiHandle,
 ) -> Result<()> {
@@ -1895,11 +1940,14 @@ async fn execute_interactive_operation(
             let session_path = session.profile.as_ref().map(|profile| profile.path.clone());
             let script =
                 remember_script(session_path.as_deref(), &mut session.last_script, script)?;
+            let (prepared, execution) = prepare_product_execution(product, &script).await?;
+            let product_id = product.current();
+            let frame_url = execution.frame_url(frame_url);
             ensure_signer(session).await?;
             let status = script_runner::run_captured(
-                frame_url,
-                product_id,
-                &script,
+                &frame_url,
+                &product_id,
+                &prepared,
                 ui,
                 script_runner::ScriptHostRole::SigningHost,
             )
@@ -1945,12 +1993,14 @@ async fn execute_non_interactive_command(
                 }
                 None => edit_session_script_plain(session).await?,
             };
+            let (prepared, execution) = prepare_product_execution(product, &script).await?;
             ensure_signer(session).await?;
             let product_id = product.current();
+            let frame_url = execution.frame_url(frame_url);
             let status = script_runner::run(
-                frame_url,
+                &frame_url,
                 &product_id,
-                &script,
+                &prepared,
                 script_runner::ScriptHostRole::SigningHost,
             )
             .await?;

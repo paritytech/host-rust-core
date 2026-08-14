@@ -56,7 +56,6 @@ pub use host_logic::session::{
 pub use runtime::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::StatementRenewalTarget;
-#[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;
 pub use truapi_platform::{
     CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,

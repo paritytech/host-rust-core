@@ -42,12 +42,16 @@ public enum PairingDeeplinkScheme: Sendable {
 /// Static product and pairing config supplied before the Rust core handles
 /// product calls. One core instance represents one product identity.
 ///
+/// `artifactIdentity` must come from the trusted host loader's verification of
+/// the exact executable bundle, never from product-controlled data.
+///
 /// `hostName`, `hostIcon`, `hostVersion`, `platformType`, and
 /// `platformVersion` describe the host to the wallet during SSO pairing.
 /// `peopleChainGenesisHash` and `bulletinChainGenesisHash` must each be
 /// exactly 32 bytes.
 public struct RuntimeConfig: Sendable {
     public let productId: String
+    public let artifactIdentity: String
     public let executionKind: ProductExecutionKind
     public let hostName: String
     public let hostIcon: String?
@@ -62,6 +66,7 @@ public struct RuntimeConfig: Sendable {
 
     public init(
         productId: String,
+        artifactIdentity: String,
         executionKind: ProductExecutionKind = .spa,
         hostName: String,
         hostIcon: String? = nil,
@@ -75,6 +80,7 @@ public struct RuntimeConfig: Sendable {
         pairingDeeplinkScheme: PairingDeeplinkScheme = .polkadotApp
     ) {
         self.productId = productId
+        self.artifactIdentity = artifactIdentity
         self.executionKind = executionKind
         self.hostName = hostName
         self.hostIcon = hostIcon
@@ -91,6 +97,7 @@ public struct RuntimeConfig: Sendable {
     fileprivate var native: NativeRuntimeConfig {
         NativeRuntimeConfig(
             productId: productId,
+            artifactIdentity: artifactIdentity,
             executionKind: executionKind,
             hostName: hostName,
             hostIcon: hostIcon,
@@ -156,18 +163,26 @@ public struct HostRuntimeConfig: Sendable, Equatable {
 }
 
 /// Host-selected identity and trusted kind for one executable connection.
+/// `artifactIdentity` must identify the exact bundle verified by the host.
 public struct ProductExecutionConfig: Sendable, Equatable {
     public let productId: String
+    public let artifactIdentity: String
     public let executionKind: ProductExecutionKind
 
-    public init(productId: String, executionKind: ProductExecutionKind) {
+    public init(
+        productId: String,
+        artifactIdentity: String,
+        executionKind: ProductExecutionKind
+    ) {
         self.productId = productId
+        self.artifactIdentity = artifactIdentity
         self.executionKind = executionKind
     }
 
     fileprivate var native: NativeProductExecutionConfig {
         NativeProductExecutionConfig(
             productId: productId,
+            artifactIdentity: artifactIdentity,
             executionKind: executionKind
         )
     }

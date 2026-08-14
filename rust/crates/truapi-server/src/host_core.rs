@@ -71,9 +71,14 @@ pub enum ProductRuntimeError {
     BufferFull,
 }
 
-fn product_context(product_id: &str) -> Result<ProductContext, v01::GenericError> {
-    ProductContext::new(product_id.to_string()).map_err(|err| v01::GenericError {
-        reason: err.to_string(),
+fn product_context(
+    product_id: &str,
+    artifact_identity: &str,
+) -> Result<ProductContext, v01::GenericError> {
+    ProductContext::new(product_id.to_string(), artifact_identity.to_string()).map_err(|err| {
+        v01::GenericError {
+            reason: err.to_string(),
+        }
     })
 }
 
@@ -210,8 +215,9 @@ impl PairingHostRuntime {
     pub async fn login(
         &self,
         product_id: &str,
+        artifact_identity: &str,
     ) -> Result<v01::HostRequestLoginResponse, v01::GenericError> {
-        let product = product_context(product_id)?;
+        let product = product_context(product_id, artifact_identity)?;
         match self.pairing_host.request_login(&product).await {
             Ok(truapi::versioned::account::HostRequestLoginResponse::V1(response)) => Ok(response),
             Err(error) => Err(v01::GenericError {
@@ -265,9 +271,10 @@ impl PairingHostRuntime {
     pub async fn permission_authorization_status(
         &self,
         product_id: &str,
+        artifact_identity: &str,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
-        self.product_admin(product_context(product_id)?)
+        self.product_admin(product_context(product_id, artifact_identity)?)
             .permission_authorization_status(request)
             .await
     }
@@ -277,9 +284,10 @@ impl PairingHostRuntime {
     pub async fn permission_authorization_statuses(
         &self,
         product_id: &str,
+        artifact_identity: &str,
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
-        self.product_admin(product_context(product_id)?)
+        self.product_admin(product_context(product_id, artifact_identity)?)
             .permission_authorization_statuses(requests)
             .await
     }
@@ -289,10 +297,11 @@ impl PairingHostRuntime {
     pub async fn set_permission_authorization_status(
         &self,
         product_id: &str,
+        artifact_identity: &str,
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
-        self.product_admin(product_context(product_id)?)
+        self.product_admin(product_context(product_id, artifact_identity)?)
             .set_permission_authorization_status(request, status)
             .await
     }
@@ -374,7 +383,7 @@ impl SigningHostRuntime {
 
     /// Build one product connection with adapters scoped to one native
     /// executable while sharing this runtime's authentication and services.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
     pub(crate) fn product_runtime_with(
         &self,
         product: ProductContext,

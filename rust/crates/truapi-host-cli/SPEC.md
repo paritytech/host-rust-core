@@ -228,7 +228,7 @@ truapi-host pairing-host [options]
 | --- | --- | --- |
 | `--script <path>` | none | Run one JS/TS product script and exit with its status. |
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
-| `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
+| `--frame-listen <socket>` | none | Use TCP for the CLI-launched product child. This does not create an external browser attachment point. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
 | `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
@@ -269,7 +269,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
 | `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
-| `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
+| `--frame-listen <socket>` | none | Use TCP for the CLI-launched product child. This does not create an external browser attachment point. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
 `HOST_CLI_SIGNER_MNEMONIC` supplies `--mnemonic` when the option is omitted.
@@ -591,9 +591,8 @@ The Rust parent sets:
 
 | Variable | Meaning |
 | --- | --- |
-| `TRUAPI_FRAME_URL` | Bound product-frame endpoint: `ws+unix:/path` by default or `ws://address` in TCP mode. |
+| `TRUAPI_FRAME_URL` | Bound product-frame endpoint. Unix mode uses `ws+unix:/path?auth=<capability>`; TCP mode uses `ws://address/<capability>`. |
 | `TRUAPI_PRODUCT_ID` | Normalized active product id. |
-| `TRUAPI_SCRIPT` | Canonical absolute script path. |
 | `TRUAPI_CLI_HOST_ROLE` | `pairing-host` or `signing-host`. |
 
 These variables are runner internals, not CLI configuration inputs.
@@ -1121,22 +1120,33 @@ connections.
 
 ### 14.2 Product-frame WebSocket
 
-The listener uses plain `ws://`. Defaults are loopback, but any
-`SocketAddr` accepted by the OS can be supplied. v0.1 has no authentication,
-TLS, origin check, or non-loopback warning.
+The listener uses plain WebSockets over either a private Unix-domain socket or
+an explicitly requested TCP address. The base endpoint alone is not a
+credential. After the trusted launcher measures an executable, the host issues
+a fresh, unguessable path capability bound to that execution's immutable
+`ProductContext`. The HTTP upgrade is accepted only while its request path
+matches the active execution; other paths receive `401 Unauthorized`. Dropping
+or replacing the execution revokes the path. The listener does not provide TLS,
+origin checks, or a non-loopback warning.
 
 Each accepted WebSocket:
 
-- snapshots the current normalized product;
+- resolves the authenticated path to the exact product/artifact context;
 - creates one `ProductRuntime`;
 - forwards each incoming binary message as one protocol frame;
 - also forwards a text message's UTF-8 bytes as a protocol frame;
 - sends each emitted runtime frame as one binary message;
 - disposes the runtime on close/error/reset; and
-- closes on product selection or signing-runtime replacement.
+- closes when its execution is revoked, the product selection changes, or the
+  signing runtime is replaced.
 
-Product WebSocket connections do not survive `/product` or signing-session
-switches.
+The CLI refuses to issue a product capability until it has bundled the selected
+script and all statically reachable product modules, rejected unresolved
+executable imports, and computed `sha256:<hex>` over the exact bytes that it
+then streams to Bun. Artifact identity is never accepted from
+product-controlled frames. Allowances and automatic-signing grants use the
+resulting `(wallet, product, artifact)` scope. The product child runs with the
+current user's OS privileges; this CLI boundary is not a production sandbox.
 
 The frame writer uses an unbounded channel. The accept loop retries listener
 accept errors. Each connection runs independently on the Tokio worker pool;
@@ -1530,7 +1540,7 @@ These are part of the as-built specification:
 - onboarding can wait for the fixed identity/ring polling windows;
 - session/core/product state has no inter-process mutation lock;
 - corrupt core storage is treated as empty after a warning;
-- non-loopback product listeners have no authentication or warning;
+- non-loopback product listeners use the same bearer capability as local listeners, but have no TLS or warning;
 - product text WebSocket frames are accepted as protocol bytes;
 - product-frame and chain outbound queues are unbounded;
 - unknown chain genesis hashes fall back to People;

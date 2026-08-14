@@ -1,10 +1,10 @@
 //! On-chain statement-store allowance registration (`set_statement_store_account`).
 //!
-//! Mirrors how an iOS/web client obtains statement-store allowance from the real
-//! People chain: build the `Resources.set_statement_store_account` call, prove
-//! LitePeople membership with the caller's registry-selected ring-VRF key,
-//! and submit the resulting unsigned General (v5) extrinsic. Native only
-//! (needs the `verifiable` prover and live chain reads).
+//! Mirrors how native and web clients obtain statement-store allowance from the
+//! real People chain: build the `Resources.set_statement_store_account` call,
+//! prove LitePeople membership with the caller's registry-selected ring-VRF key,
+//! and submit the resulting unsigned General (v5) extrinsic through the
+//! host-provided chain transport.
 
 pub mod extension;
 pub mod extrinsic;
@@ -14,9 +14,10 @@ pub mod ring;
 pub mod rpc;
 pub mod slot;
 
+use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use web_time::Instant;
 
 use futures::FutureExt;
 use parity_scale_codec::{Decode, Encode};

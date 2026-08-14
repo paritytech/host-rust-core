@@ -72,12 +72,14 @@ class FakeWorker {
 function asWorker(worker: FakeWorker): Worker {
   return worker as unknown as Worker;
 }
+const ARTIFACT_SHA256 = new Uint8Array(32).fill(0x42);
 
 function runtimeConfig(
   overrides: Partial<ProductRuntimeConfig> = {},
 ): ProductRuntimeConfig {
   return {
     productId: "dotli.dot",
+    artifactSha256: ARTIFACT_SHA256,
     host: {
       name: "Polkadot Web",
       icon: "https://dot.li/dotli.png",
@@ -107,6 +109,7 @@ function hostConfigFromRuntimeConfig(
 ): CreateWebWorkerPairingHostRuntimeOptions["hostConfig"] {
   const {
     productId: _productId,
+    artifactSha256: _artifactSha256,
     executionKind: _executionKind,
     ...hostConfig
   } = config;
@@ -151,11 +154,13 @@ async function createProviderFromRuntime(
     ...runtimeOptions,
     hostConfig: hostConfigFromRuntimeConfig(cfg),
   });
-  const provider = await runtime.createProvider(
-    cfg.executionKind === undefined
-      ? { productId: cfg.productId }
-      : { productId: cfg.productId, executionKind: cfg.executionKind },
-  );
+  const provider = await runtime.createProvider({
+    productId: cfg.productId,
+    artifactSha256: cfg.artifactSha256,
+    ...(cfg.executionKind === undefined
+      ? {}
+      : { executionKind: cfg.executionKind }),
+  });
   return {
     ...provider,
     dispose(): void {
@@ -212,7 +217,10 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(createCore).toEqual({
       kind: "createCore",
       coreId: 1,
-      product: { productId: "dotli.dot" },
+      product: {
+        productId: "dotli.dot",
+        artifactSha256: ARTIFACT_SHA256,
+      },
     });
     worker.emit({ kind: "coreReady", coreId: 1 });
     const provider = await providerPromise;
@@ -235,18 +243,30 @@ describe("createWebWorkerPairingHostRuntime", () => {
     worker.emit({ kind: "ready" });
     const runtime = await runtimePromise;
 
-    const firstPromise = runtime.createProvider({ productId: "first.dot" });
-    const secondPromise = runtime.createProvider({ productId: "second.dot" });
+    const firstPromise = runtime.createProvider({
+      productId: "first.dot",
+      artifactSha256: ARTIFACT_SHA256,
+    });
+    const secondPromise = runtime.createProvider({
+      productId: "second.dot",
+      artifactSha256: ARTIFACT_SHA256,
+    });
 
     expect(worker.messages.at(-2)).toEqual({
       kind: "createCore",
       coreId: 1,
-      product: { productId: "first.dot" },
+      product: {
+        productId: "first.dot",
+        artifactSha256: ARTIFACT_SHA256,
+      },
     });
     expect(worker.messages.at(-1)).toEqual({
       kind: "createCore",
       coreId: 2,
-      product: { productId: "second.dot" },
+      product: {
+        productId: "second.dot",
+        artifactSha256: ARTIFACT_SHA256,
+      },
     });
 
     worker.emit({ kind: "coreReady", coreId: 1 });
@@ -299,7 +319,11 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(createCore).toEqual({
       kind: "createCore",
       coreId: 1,
-      product: { productId: "dotli.dot", executionKind: "Chat" },
+      product: {
+        productId: "dotli.dot",
+        artifactSha256: ARTIFACT_SHA256,
+        executionKind: "Chat",
+      },
     });
     worker.emit({ kind: "coreReady", coreId: 1 });
     (await providerPromise).dispose();

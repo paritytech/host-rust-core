@@ -524,8 +524,11 @@ mod tests {
         )
         .expect("test signing host config is valid");
         let runtime = Arc::new(SigningHostRuntime::new(platform, config, test_spawner()));
-        let product =
-            ProductContext::new("dotli.dot".to_string()).expect("test product context is valid");
+        let product = ProductContext::new(
+            "dotli.dot".to_string(),
+            "sha256:ws-bridge-test-artifact".to_string(),
+        )
+        .expect("test product context is valid");
         Arc::new(move |sink| runtime.product_runtime(product.clone(), sink))
     }
 

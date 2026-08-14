@@ -98,9 +98,6 @@ fn owner_key(entropy: &[u8]) -> Result<[u8; 32], String> {
 /// Renewal coordination state owned by [`SigningHost`].
 #[derive(Default)]
 pub(super) struct RenewalState {
-    /// Serializes slot registrations between the renewal pass and on-demand
-    /// allocation so both cannot race for the same free slot.
-    registration_lock: Mutex<()>,
     /// Serializes read-modify-write cycles on the ledger so a concurrent
     /// allocation cannot drop another's entry.
     ledger_lock: Mutex<()>,
@@ -108,10 +105,6 @@ pub(super) struct RenewalState {
 }
 
 impl RenewalState {
-    pub(super) fn registration_lock(&self) -> &Mutex<()> {
-        &self.registration_lock
-    }
-
     fn ledger_lock(&self) -> &Mutex<()> {
         &self.ledger_lock
     }
@@ -343,7 +336,7 @@ pub(super) async fn renew_now(
         bandersnatch,
         period,
         &resolved,
-        signing_host.renewal.registration_lock(),
+        &signing_host.allowance_registration_lock,
     )
     .await)
 }

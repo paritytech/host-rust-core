@@ -205,7 +205,11 @@ pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductCon
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),
-        ProductContext::new(product_id.to_string()).expect("test product context is valid"),
+        ProductContext::new(
+            product_id.to_string(),
+            "sha256:shared-test-artifact".to_string(),
+        )
+        .expect("test product context is valid"),
     )
 }
 

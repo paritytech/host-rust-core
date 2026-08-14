@@ -29,7 +29,11 @@
 // views into WASM memory) and frames are small, so the copy is the simpler
 // safe choice.
 
-import type { LogLevel, PermissionAuthorizationStatus } from "./runtime.js";
+import type {
+  LogLevel,
+  PermissionAuthorizationStatus,
+  ProductExecutionKind,
+} from "./runtime.js";
 import type {
   CallbackName,
   SubscriptionName,
@@ -48,6 +52,12 @@ export type {
  * at a fixed arity; a uniform `unknown[]` keeps the wire protocol simple.
  */
 export type CallbackArgs = readonly unknown[];
+/** Host-attested executable identity sent only by the trusted main thread. */
+export interface WorkerProductContext {
+  productId: string;
+  artifactSha256: Uint8Array;
+  executionKind?: ProductExecutionKind;
+}
 
 /**
  * Messages posted by the main window to the WASM worker. These either control
@@ -56,7 +66,7 @@ export type CallbackArgs = readonly unknown[];
  */
 export type MainToWorker =
   | { kind: "init"; logLevel: LogLevel; hostConfig: unknown }
-  | { kind: "createCore"; coreId: number; product: unknown }
+  | { kind: "createCore"; coreId: number; product: WorkerProductContext }
   | { kind: "disposeCore"; coreId: number }
   | { kind: "setLogLevel"; level: LogLevel }
   | { kind: "frame"; coreId: number; bytes: Uint8Array }
@@ -66,18 +76,21 @@ export type MainToWorker =
   | {
       kind: "getPermissionAuthorizationStatus";
       productId: string;
+      artifactSha256: Uint8Array;
       requestId: number;
       request: Uint8Array;
     }
   | {
       kind: "getPermissionAuthorizationStatuses";
       productId: string;
+      artifactSha256: Uint8Array;
       requestId: number;
       requests: Uint8Array[];
     }
   | {
       kind: "setPermissionAuthorizationStatus";
       productId: string;
+      artifactSha256: Uint8Array;
       requestId: number;
       request: Uint8Array;
       status: PermissionAuthorizationStatus;

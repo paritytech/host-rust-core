@@ -14,11 +14,11 @@ use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-
 use crate::terminal_ui::{self, SystemEvent, UiHandle};
+use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 
 /// Host topology serving the product script.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +33,20 @@ impl ScriptHostRole {
             Self::PairingHost => "pairing-host",
             Self::SigningHost => "signing-host",
         }
+    }
+}
+
+/// Host-owned executable bundle measured before a product runtime is created.
+pub struct PreparedScript {
+    bundle: Vec<u8>,
+    artifact_identity: String,
+    working_directory: PathBuf,
+}
+
+impl PreparedScript {
+    /// Stable identity of the exact bytes supplied to Bun.
+    pub fn artifact_identity(&self) -> &str {
+        &self.artifact_identity
     }
 }
 
@@ -60,6 +74,10 @@ fn runner_path() -> PathBuf {
         return PathBuf::from(path);
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("js/runner.ts")
+}
+
+fn bundle_auditor_path(runner: &Path) -> PathBuf {
+    runner.with_file_name("audit-bundle.ts")
 }
 
 /// Create a durable, uniquely-named TypeScript scratch file seeded with the
@@ -139,40 +157,121 @@ fn parse_editor(specification: &str) -> Result<(String, Vec<String>)> {
     Ok((program, parts.collect()))
 }
 
-/// Run `script` against the host serving frames at `frame_url`, as product
-/// `product_id`. Inherits stdio so the script's output and any CLI confirmation
-/// prompts share the terminal. Returns the child's exit status.
+/// Bundle the full statically reachable product executable, reject unresolved
+/// executable imports, and measure the exact resulting bytes.
+pub async fn prepare(script: &Path) -> Result<PreparedScript> {
+    let runner = runner_path();
+    if !runner.exists() {
+        anyhow::bail!(
+            "host-script runner not found at {}; set TRUAPI_HOST_RUNNER",
+            runner.display()
+        );
+    }
+    let auditor = bundle_auditor_path(&runner);
+    if !auditor.exists() {
+        anyhow::bail!(
+            "host-script bundle auditor not found at {}",
+            auditor.display()
+        );
+    }
+    let script = script
+        .canonicalize()
+        .with_context(|| format!("script not found: {}", script.display()))?;
+    let runner = runner
+        .canonicalize()
+        .with_context(|| format!("resolve host-script runner {}", runner.display()))?;
+    let script_specifier = serde_json::to_string(
+        script
+            .to_str()
+            .context("product script path is not valid UTF-8")?,
+    )?;
+    let runner_specifier = serde_json::to_string(
+        runner
+            .to_str()
+            .context("host-script runner path is not valid UTF-8")?,
+    )?;
+    let temporary = tempfile::tempdir().context("create product bundle directory")?;
+    let entry_path = temporary.path().join("entry.ts");
+    let bundle_path = temporary.path().join("product.mjs");
+    fs::write(
+        &entry_path,
+        format!(
+            "import {{ runProductScript }} from {runner_specifier};\n\
+             runProductScript(() => import({script_specifier}));\n"
+        ),
+    )
+    .context("write product bundle entry")?;
+
+    let output = Command::new("bun")
+        .arg("build")
+        .arg(&entry_path)
+        .arg("--target=bun")
+        .arg("--format=esm")
+        .arg("--minify")
+        .arg("--packages=bundle")
+        .arg("--outfile")
+        .arg(&bundle_path)
+        .output()
+        .await
+        .context("failed to spawn `bun build` for the host script (is bun installed?)")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "failed to bundle product script: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let audit = Command::new("bun")
+        .arg("run")
+        .arg(&auditor)
+        .arg(&bundle_path)
+        .output()
+        .await
+        .context("failed to audit the product bundle")?;
+    if !audit.status.success() {
+        anyhow::bail!(
+            "product bundle is not self-contained: {}",
+            String::from_utf8_lossy(&audit.stderr).trim()
+        );
+    }
+
+    let bundle = fs::read(&bundle_path).context("read product executable bundle")?;
+    let artifact_identity = format!("sha256:{}", hex::encode(Sha256::digest(&bundle)));
+    let working_directory = script
+        .parent()
+        .context("product script has no parent directory")?
+        .to_path_buf();
+    Ok(PreparedScript {
+        bundle,
+        artifact_identity,
+        working_directory,
+    })
+}
+
+/// Run a prepared product bundle against the host serving `frame_url`.
 pub async fn run(
     frame_url: &str,
     product_id: &str,
-    script: &Path,
+    script: &PreparedScript,
     host_role: ScriptHostRole,
 ) -> Result<ExitStatus> {
-    let mut command = command(frame_url, product_id, script, host_role)?;
     terminal_ui::output_event(SystemEvent::ScriptStarted);
-    command
-        .status()
-        .await
-        .context("failed to spawn `bun` for the host script (is bun installed?)")
+    let mut child = spawn(command(frame_url, product_id, script, host_role), script).await?;
+    child.wait().await.context("wait for host script")
 }
 
-/// Run a product script with stdout and stderr streamed into the terminal UI.
+/// Run a prepared product bundle with output streamed into the terminal UI.
 pub async fn run_captured(
     frame_url: &str,
     product_id: &str,
-    script: &Path,
+    script: &PreparedScript,
     ui: UiHandle,
     host_role: ScriptHostRole,
 ) -> Result<ExitStatus> {
-    let mut command = command(frame_url, product_id, script, host_role)?;
+    let mut command = command(frame_url, product_id, script, host_role);
     terminal_ui::output_event(SystemEvent::ScriptStarted);
-    command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .context("failed to spawn `bun` for the host script (is bun installed?)")?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn(command, script).await?;
     let stdout = child.stdout.take().context("capture script stdout")?;
     let stderr = child.stderr.take().context("capture script stderr")?;
     let stdout_ui = ui.clone();
@@ -199,29 +298,36 @@ pub async fn run_captured(
 fn command(
     frame_url: &str,
     product_id: &str,
-    script: &Path,
+    script: &PreparedScript,
     host_role: ScriptHostRole,
-) -> Result<Command> {
-    let runner = runner_path();
-    if !runner.exists() {
-        anyhow::bail!(
-            "host-script runner not found at {}; set TRUAPI_HOST_RUNNER",
-            runner.display()
-        );
-    }
-    let script = script
-        .canonicalize()
-        .with_context(|| format!("script not found: {}", script.display()))?;
-
+) -> Command {
     let mut command = Command::new("bun");
     command
         .arg("run")
-        .arg(&runner)
+        .arg("-")
+        .current_dir(&script.working_directory)
+        .stdin(Stdio::piped())
         .env("TRUAPI_FRAME_URL", frame_url)
         .env("TRUAPI_PRODUCT_ID", product_id)
-        .env("TRUAPI_SCRIPT", &script)
         .env("TRUAPI_CLI_HOST_ROLE", host_role.as_env_value());
-    Ok(command)
+    command
+}
+
+async fn spawn(mut command: Command, script: &PreparedScript) -> Result<Child> {
+    command.kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .context("failed to spawn `bun` for the host script (is bun installed?)")?;
+    let mut stdin = child.stdin.take().context("open host script stdin")?;
+    stdin
+        .write_all(&script.bundle)
+        .await
+        .context("stream product executable bundle to Bun")?;
+    stdin
+        .shutdown()
+        .await
+        .context("finish product executable bundle")?;
+    Ok(child)
 }
 
 #[cfg(test)]
@@ -243,28 +349,74 @@ mod tests {
     }
 
     #[test]
-    fn host_scripts_are_run_by_bun() -> Result<()> {
+    fn prepared_host_scripts_are_streamed_to_bun_stdin() -> Result<()> {
         let temporary = tempfile::tempdir()?;
-        let script = temporary.path().join("script.ts");
-        fs::write(&script, "console.log('hello');\n")?;
-
+        let script = PreparedScript {
+            bundle: b"console.log('hello');".to_vec(),
+            artifact_identity: "sha256:test".to_string(),
+            working_directory: temporary.path().to_path_buf(),
+        };
         let command = command(
-            "ws://127.0.0.1:1234",
+            "ws://127.0.0.1:1234/capability",
             "example.dot",
             &script,
             ScriptHostRole::SigningHost,
-        )?;
+        );
         let command = command.as_std();
         let arguments = command.get_args().collect::<Vec<_>>();
 
         assert_eq!(command.get_program(), std::ffi::OsStr::new("bun"));
         assert_eq!(arguments[0], std::ffi::OsStr::new("run"));
-        assert_eq!(arguments[1], runner_path());
+        assert_eq!(arguments[1], std::ffi::OsStr::new("-"));
         assert_eq!(
             command
                 .get_envs()
                 .find_map(|(key, value)| { (key == "TRUAPI_CLI_HOST_ROLE").then_some(value) }),
             Some(Some(std::ffi::OsStr::new("signing-host")))
+        );
+        assert!(command.get_envs().all(|(key, _)| key != "TRUAPI_SCRIPT"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn artifact_identity_changes_with_transitive_module_bytes() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let dependency = temporary.path().join("dependency.ts");
+        let script = temporary.path().join("script.ts");
+        fs::write(&dependency, "export const message = 'first';\n")?;
+        fs::write(
+            &script,
+            "import { message } from './dependency.ts'; console.log(message);\n",
+        )?;
+
+        let first = prepare(&script).await?;
+        let first_again = prepare(&script).await?;
+        assert_eq!(first.artifact_identity(), first_again.artifact_identity());
+        assert_eq!(first.bundle, first_again.bundle);
+        fs::write(&dependency, "export const message = 'second';\n")?;
+        let second = prepare(&script).await?;
+
+        assert_ne!(first.artifact_identity(), second.artifact_identity());
+        assert_ne!(first.bundle, second.bundle);
+        Ok(())
+    }
+    #[tokio::test]
+    async fn executable_bundle_rejects_runtime_resolved_imports() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let script = temporary.path().join("script.ts");
+        fs::write(
+            &script,
+            "const moduleName = process.argv[2]; await import(moduleName);\n",
+        )?;
+
+        let error = match prepare(&script).await {
+            Ok(_) => anyhow::bail!("runtime-resolved import was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("product bundle retains executable imports")
         );
         Ok(())
     }

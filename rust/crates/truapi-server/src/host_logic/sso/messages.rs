@@ -300,6 +300,17 @@ pub struct SignRawLegacyResponse {
     /// Signature bytes, or an error description from the signing host.
     pub signature: Result<Vec<u8>, String>,
 }
+/// Host-attested executable identity paired with an existing request payload.
+///
+/// Artifact-bound requests use new wire variants instead of changing deployed
+/// V1 payload layouts.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ArtifactBoundRequest<T> {
+    /// Canonical identity of the exact executable artifact selected by the host.
+    pub artifact_identity: String,
+    /// Existing request payload whose SCALE layout remains unchanged.
+    pub request: T,
+}
 
 /// RFC-0023 VRF-signing request forwarded to the Account Holder.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
@@ -454,12 +465,13 @@ pub struct RingVrfProofResponse {
     pub payload: Result<HostAccountCreateProofResponse, RingVrfError>,
 }
 
-/// Request sent when a product asks the signing host to allocate SSO-backed
-/// resources.
+/// Legacy request sent when a product asks the signing host to allocate
+/// SSO-backed resources.
 ///
-/// Used by `ResourceAllocation::request` for capabilities from
-/// `docs/rfcs/0010-allowance.md`, such as statement-store allowance and
-/// auto-signing material.
+/// This deployed SCALE layout is retained for mixed-version decoding. New
+/// senders use [`v1::RemoteMessage::ArtifactBoundResourceAllocationRequest`];
+/// signing hosts reject this unbound form because durable grants require an
+/// authenticated artifact identity.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct ResourceAllocationRequest {
     /// Product id the allocation is requested for.
@@ -840,17 +852,21 @@ pub fn register_ring_vrf_key_message(
 /// Build an RFC-0024 ring-VRF key listing request for the Account Holder.
 pub fn list_ring_vrf_keys_message(
     message_id: String,
+    artifact_identity: String,
     calling_product_id: String,
     owner: String,
     disclosure: truapi::v01::RingVrfKeyDisclosure,
 ) -> RemoteMessage {
     RemoteMessage {
         message_id,
-        data: RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysRequest(
-            ListRingVrfKeysRequest {
-                calling_product_id,
-                owner,
-                disclosure,
+        data: RemoteMessageData::V1(v1::RemoteMessage::ArtifactBoundListRingVrfKeysRequest(
+            ArtifactBoundRequest {
+                artifact_identity,
+                request: ListRingVrfKeysRequest {
+                    calling_product_id,
+                    owner,
+                    disclosure,
+                },
             },
         )),
     }
@@ -873,18 +889,24 @@ pub fn ring_vrf_sign_message(
     }
 }
 
-/// Build an RFC-0023 VRF-signing request for the Account Holder.
+/// Build an artifact-bound RFC-0023 VRF-signing request for the Account Holder.
 pub fn sign_vrf_message(
     message_id: String,
+    artifact_identity: String,
     calling_product_id: String,
     payload: HostAccountSignVrfRequest,
 ) -> RemoteMessage {
     RemoteMessage {
         message_id,
-        data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfRequest(SignVrfRequest {
-            calling_product_id,
-            payload,
-        })),
+        data: RemoteMessageData::V1(v1::RemoteMessage::ArtifactBoundSignVrfRequest(
+            ArtifactBoundRequest {
+                artifact_identity,
+                request: SignVrfRequest {
+                    calling_product_id,
+                    payload,
+                },
+            },
+        )),
     }
 }
 
@@ -931,9 +953,10 @@ pub fn sign_raw_legacy_message(
     }
 }
 
-/// Build an Account Holder contextual-alias request message.
+/// Build an artifact-bound Account Holder contextual-alias request message.
 pub fn alias_request_message(
     message_id: String,
+    artifact_identity: String,
     calling_product_id: String,
     key_handle: ProductAccountId,
     context: ProductProofContext,
@@ -941,12 +964,15 @@ pub fn alias_request_message(
 ) -> RemoteMessage {
     RemoteMessage {
         message_id,
-        data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasRequest(
-            RingVrfAliasRequest {
-                calling_product_id,
-                key_handle,
-                context,
-                ring_location,
+        data: RemoteMessageData::V1(v1::RemoteMessage::ArtifactBoundRingVrfAliasRequest(
+            ArtifactBoundRequest {
+                artifact_identity,
+                request: RingVrfAliasRequest {
+                    calling_product_id,
+                    key_handle,
+                    context,
+                    ring_location,
+                },
             },
         )),
     }
@@ -985,20 +1011,24 @@ pub fn product_subtree_request_message(message_id: String, product_id: String) -
     }
 }
 
-/// Build a signing-host resource-allocation request message.
+/// Build an artifact-bound signing-host resource-allocation request message.
 pub fn resource_allocation_message(
     message_id: String,
     calling_product_id: String,
+    artifact_identity: String,
     resources: Vec<AllocatableResource>,
     on_existing: OnExistingAllowancePolicy,
 ) -> RemoteMessage {
     RemoteMessage {
         message_id,
-        data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationRequest(
-            ResourceAllocationRequest {
-                calling_product_id,
-                resources: resources.into_iter().map(Into::into).collect(),
-                on_existing,
+        data: RemoteMessageData::V1(v1::RemoteMessage::ArtifactBoundResourceAllocationRequest(
+            ArtifactBoundRequest {
+                artifact_identity,
+                request: ResourceAllocationRequest {
+                    calling_product_id,
+                    resources: resources.into_iter().map(Into::into).collect(),
+                    on_existing,
+                },
             },
         )),
     }
@@ -1321,12 +1351,16 @@ mod tests {
             )),
         }
         .encode();
-        let list = list_ring_vrf_keys_message(
-            String::new(),
-            "caller.dot".to_string(),
-            "peopl.dot".to_string(),
-            truapi::v01::RingVrfKeyDisclosure::Anonymized,
-        )
+        let list = RemoteMessage {
+            message_id: String::new(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysRequest(
+                ListRingVrfKeysRequest {
+                    calling_product_id: "caller.dot".to_string(),
+                    owner: "peopl.dot".to_string(),
+                    disclosure: truapi::v01::RingVrfKeyDisclosure::Anonymized,
+                },
+            )),
+        }
         .encode();
         let list_response = RemoteMessage {
             message_id: String::new(),
@@ -1433,13 +1467,17 @@ mod tests {
             derivation_index: DerivationIndex::Index(0),
         };
 
-        let alias = alias_request_message(
-            "m-alias".to_string(),
-            "caller.dot".to_string(),
-            key_handle.clone(),
-            context.clone(),
-            ring_location.clone(),
-        );
+        let alias = RemoteMessage {
+            message_id: "m-alias".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasRequest(
+                RingVrfAliasRequest {
+                    calling_product_id: "caller.dot".to_string(),
+                    key_handle: key_handle.clone(),
+                    context: context.clone(),
+                    ring_location: ring_location.clone(),
+                },
+            )),
+        };
         let proof = proof_request_message(
             "m-proof".to_string(),
             "caller.dot".to_string(),
@@ -1557,7 +1595,13 @@ mod tests {
                 value: vec![1, 2],
             }],
         };
-        let request = sign_vrf_message("req".to_string(), "browse.dot".to_string(), payload);
+        let request = RemoteMessage {
+            message_id: "req".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignVrfRequest(SignVrfRequest {
+                calling_product_id: "browse.dot".to_string(),
+                payload,
+            })),
+        };
         assert_eq!(
             hex::encode(request.encode()),
             "0c726571000e2862726f7773652e646f742862726f7773652e646f7400070000000c6374780418646f6d61696e080102"
@@ -1695,10 +1739,11 @@ mod tests {
     }
 
     #[test]
-    fn resource_allocation_message_wire_shape_pin() {
+    fn artifact_bound_resource_allocation_message_wire_shape_pin() {
         let message = resource_allocation_message(
             "m-resource".to_string(),
             "truapi-playground.dot".to_string(),
+            "sha256:artifact-a".to_string(),
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
@@ -1707,6 +1752,30 @@ mod tests {
             ],
             OnExistingAllowancePolicy::Increase,
         );
+
+        assert_eq!(
+            hex::encode(message.encode()),
+            "286d2d7265736f75726365001b447368613235363a61727469666163742d61547472756170692d706c617967726f756e642e646f741000010200090000000301"
+        );
+    }
+
+    #[test]
+    fn legacy_resource_allocation_message_wire_shape_stays_deployed() {
+        let message = RemoteMessage {
+            message_id: "m-resource".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationRequest(
+                ResourceAllocationRequest {
+                    calling_product_id: "truapi-playground.dot".to_string(),
+                    resources: vec![
+                        SsoAllocatableResource::StatementStoreAllowance,
+                        SsoAllocatableResource::BulletinAllowance,
+                        SsoAllocatableResource::SmartContractAllowance(DerivationIndex::Index(9)),
+                        SsoAllocatableResource::AutoSigning,
+                    ],
+                    on_existing: OnExistingAllowancePolicy::Increase,
+                },
+            )),
+        };
 
         assert_host_papp_0_8_11_fixture(
             message,
@@ -1851,6 +1920,7 @@ mod tests {
         let message = resource_allocation_message(
             "alloc".to_string(),
             "myapp.dot".to_string(),
+            "sha256:artifact-a".to_string(),
             vec![
                 AllocatableResource::StatementStoreAllowance,
                 AllocatableResource::BulletinAllowance,
@@ -1859,12 +1929,15 @@ mod tests {
             ],
             OnExistingAllowancePolicy::Increase,
         );
-        let RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationRequest(request)) =
-            message.data
+        let RemoteMessageData::V1(v1::RemoteMessage::ArtifactBoundResourceAllocationRequest(
+            request,
+        )) = message.data
         else {
-            panic!("expected resource allocation request");
+            panic!("expected artifact-bound resource allocation request");
         };
 
+        assert_eq!(request.artifact_identity, "sha256:artifact-a");
+        let request = request.request;
         assert_eq!(
             request.resources,
             vec![

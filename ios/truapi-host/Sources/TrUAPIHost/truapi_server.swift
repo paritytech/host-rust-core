@@ -3546,6 +3546,10 @@ public struct NativeProductExecutionConfig: Equatable, Hashable {
      */
     public var productId: String
     /**
+     * Host-attested canonical identity of the verified executable artifact.
+     */
+    public var artifactIdentity: String
+    /**
      * Trusted executable kind selected before product code starts.
      */
     public var executionKind: ProductExecutionKind
@@ -3557,9 +3561,13 @@ public struct NativeProductExecutionConfig: Equatable, Hashable {
          * Canonical product identifier used for policy, storage, and derivation.
          */productId: String,
         /**
+         * Host-attested canonical identity of the verified executable artifact.
+         */artifactIdentity: String,
+        /**
          * Trusted executable kind selected before product code starts.
          */executionKind: ProductExecutionKind) {
         self.productId = productId
+        self.artifactIdentity = artifactIdentity
         self.executionKind = executionKind
     }
 
@@ -3580,12 +3588,14 @@ public struct FfiConverterTypeNativeProductExecutionConfig: FfiConverterRustBuff
         return
             try NativeProductExecutionConfig(
                 productId: FfiConverterString.read(from: &buf),
+                artifactIdentity: FfiConverterString.read(from: &buf),
                 executionKind: FfiConverterTypeProductExecutionKind.read(from: &buf)
         )
     }
 
     public static func write(_ value: NativeProductExecutionConfig, into buf: inout [UInt8]) {
         FfiConverterString.write(value.productId, into: &buf)
+        FfiConverterString.write(value.artifactIdentity, into: &buf)
         FfiConverterTypeProductExecutionKind.write(value.executionKind, into: &buf)
     }
 }
@@ -3614,6 +3624,10 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
      * Canonical product identifier used for account derivation.
      */
     public var productId: String
+    /**
+     * Host-attested canonical identity of the verified executable artifact.
+     */
+    public var artifactIdentity: String
     /**
      * Trusted executable kind derived by the native host before loading it.
      */
@@ -3666,6 +3680,9 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          * Canonical product identifier used for account derivation.
          */productId: String,
         /**
+         * Host-attested canonical identity of the verified executable artifact.
+         */artifactIdentity: String,
+        /**
          * Trusted executable kind derived by the native host before loading it.
          */executionKind: ProductExecutionKind,
         /**
@@ -3699,6 +3716,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          * Deeplink scheme used in pairing QR payloads.
          */pairingDeeplinkScheme: NativePairingDeeplinkScheme) {
         self.productId = productId
+        self.artifactIdentity = artifactIdentity
         self.executionKind = executionKind
         self.hostName = hostName
         self.hostIcon = hostIcon
@@ -3729,6 +3747,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
         return
             try NativeRuntimeConfig(
                 productId: FfiConverterString.read(from: &buf),
+                artifactIdentity: FfiConverterString.read(from: &buf),
                 executionKind: FfiConverterTypeProductExecutionKind.read(from: &buf),
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
@@ -3745,6 +3764,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
 
     public static func write(_ value: NativeRuntimeConfig, into buf: inout [UInt8]) {
         FfiConverterString.write(value.productId, into: &buf)
+        FfiConverterString.write(value.artifactIdentity, into: &buf)
         FfiConverterTypeProductExecutionKind.write(value.executionKind, into: &buf)
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
@@ -4258,6 +4278,25 @@ enum NativeRuntimeConfigError: Swift.Error, Equatable, Hashable, Foundation.Loca
          */productId: String
     )
     /**
+     * Artifact identity contained surrounding whitespace or a control character.
+     */
+    case InvalidArtifactIdentity(
+        /**
+         * Actual artifact identity value.
+         */artifactIdentity: String
+    )
+    /**
+     * Artifact identity exceeded the conservative trust-boundary limit.
+     */
+    case ArtifactIdentityTooLong(
+        /**
+         * Supplied UTF-8 byte length.
+         */actual: UInt64,
+        /**
+         * Maximum accepted UTF-8 byte length.
+         */maximum: UInt64
+    )
+    /**
      * Local signing-host session activation failed.
      */
     case LocalSessionActivation(
@@ -4315,7 +4354,14 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
         case 7: return .InvalidProductId(
             productId: try FfiConverterString.read(from: &buf)
             )
-        case 8: return .LocalSessionActivation(
+        case 8: return .InvalidArtifactIdentity(
+            artifactIdentity: try FfiConverterString.read(from: &buf)
+            )
+        case 9: return .ArtifactIdentityTooLong(
+            actual: try FfiConverterUInt64.read(from: &buf),
+            maximum: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 10: return .LocalSessionActivation(
             reason: try FfiConverterString.read(from: &buf)
             )
 
@@ -4365,8 +4411,19 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
             FfiConverterString.write(productId, into: &buf)
 
 
-        case let .LocalSessionActivation(reason):
+        case let .InvalidArtifactIdentity(artifactIdentity):
             writeInt(&buf, Int32(8))
+            FfiConverterString.write(artifactIdentity, into: &buf)
+
+
+        case let .ArtifactIdentityTooLong(actual,maximum):
+            writeInt(&buf, Int32(9))
+            FfiConverterUInt64.write(actual, into: &buf)
+            FfiConverterUInt64.write(maximum, into: &buf)
+
+
+        case let .LocalSessionActivation(reason):
+            writeInt(&buf, Int32(10))
             FfiConverterString.write(reason, into: &buf)
 
         }

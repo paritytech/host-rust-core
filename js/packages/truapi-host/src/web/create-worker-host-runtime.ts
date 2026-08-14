@@ -4,7 +4,6 @@ import type {
   LogLevel,
   PermissionAuthorizationRequest,
   PermissionAuthorizationStatus,
-  ProductExecutionKind,
   RequiredHostCallbacks,
   TrUApiProductProvider,
 } from "../index.js";
@@ -24,27 +23,32 @@ import { errorMessage } from "../error.js";
 
 export type WebWorkerHostConfig = Omit<
   ProductRuntimeConfig,
-  "productId" | "executionKind"
+  "productId" | "artifactSha256" | "executionKind"
 >;
 
 export interface WorkerPairingHostRuntime {
-  createProvider(product: {
-    productId: string;
-    executionKind?: ProductExecutionKind;
-  }): Promise<TrUApiProductProvider>;
+  createProvider(
+    product: Pick<
+      ProductRuntimeConfig,
+      "productId" | "artifactSha256" | "executionKind"
+    >,
+  ): Promise<TrUApiProductProvider>;
   disconnectSession(): Promise<void>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
   getPermissionAuthorizationStatus(
     productId: string,
+    artifactSha256: Uint8Array,
     request: PermissionAuthorizationRequest,
   ): Promise<PermissionAuthorizationStatus>;
   getPermissionAuthorizationStatuses(
     productId: string,
+    artifactSha256: Uint8Array,
     requests: PermissionAuthorizationRequest[],
   ): Promise<PermissionAuthorizationStatus[]>;
   setPermissionAuthorizationStatus(
     productId: string,
+    artifactSha256: Uint8Array,
     request: PermissionAuthorizationRequest,
     status: PermissionAuthorizationStatus,
   ): Promise<void>;
@@ -55,6 +59,7 @@ export interface WorkerPairingHostRuntime {
 interface CoreState {
   coreId: number;
   productId: string;
+  artifactSha256: Uint8Array;
   listeners: Set<(message: Uint8Array) => void>;
   closeListeners: Set<(error: Error) => void>;
   closedError: Error | null;
@@ -69,6 +74,7 @@ interface RuntimeState {
     number,
     {
       productId: string;
+      artifactSha256: Uint8Array;
       resolve: (provider: TrUApiProductProvider) => void;
       reject: (error: Error) => void;
     }
@@ -655,6 +661,7 @@ function handleCoreReady(
   const core: CoreState = {
     coreId,
     productId: pending.productId,
+    artifactSha256: pending.artifactSha256,
     listeners: new Set(),
     closeListeners: new Set(),
     closedError: null,
@@ -703,10 +710,15 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
           state.closedError ?? new Error("runtime disposed"),
         );
       }
+      const verifiedProduct = {
+        ...product,
+        artifactSha256: product.artifactSha256.slice(),
+      };
       return new Promise((resolve, reject) => {
         const coreId = ++state.nextCoreId;
         state.pendingCores.set(coreId, {
-          productId: product.productId,
+          productId: verifiedProduct.productId,
+          artifactSha256: verifiedProduct.artifactSha256,
           resolve,
           reject,
         });
@@ -714,7 +726,7 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
           state.worker.postMessage({
             kind: "createCore",
             coreId,
-            product,
+            product: verifiedProduct,
           } satisfies MainToWorker);
         } catch (err) {
           state.pendingCores.delete(coreId);
@@ -743,7 +755,7 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         kind: "notifySessionStoreChanged",
       } satisfies MainToWorker);
     },
-    getPermissionAuthorizationStatus(productId, request) {
+    getPermissionAuthorizationStatus(productId, artifactSha256, request) {
       return sendWorkerRequest<PermissionAuthorizationStatus>(
         state,
         state.pendingPermissionAuthorizationStatuses,
@@ -752,12 +764,13 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         (requestId) => ({
           kind: "getPermissionAuthorizationStatus",
           productId,
+          artifactSha256,
           requestId,
           request: encodePermissionAuthorizationRequest(request),
         }),
       );
     },
-    getPermissionAuthorizationStatuses(productId, requests) {
+    getPermissionAuthorizationStatuses(productId, artifactSha256, requests) {
       return sendWorkerRequest<PermissionAuthorizationStatus[]>(
         state,
         state.pendingPermissionAuthorizationStatusBatches,
@@ -766,12 +779,18 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         (requestId) => ({
           kind: "getPermissionAuthorizationStatuses",
           productId,
+          artifactSha256,
           requestId,
           requests: requests.map(encodePermissionAuthorizationRequest),
         }),
       );
     },
-    setPermissionAuthorizationStatus(productId, request, status) {
+    setPermissionAuthorizationStatus(
+      productId,
+      artifactSha256,
+      request,
+      status,
+    ) {
       return sendWorkerRequest<void>(
         state,
         state.pendingSetPermissionAuthorizationStatuses,
@@ -780,6 +799,7 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         (requestId) => ({
           kind: "setPermissionAuthorizationStatus",
           productId,
+          artifactSha256,
           requestId,
           request: encodePermissionAuthorizationRequest(request),
           status,
@@ -842,7 +862,11 @@ function buildProvider(
     },
     getPermissionAuthorizationStatus(request) {
       if (core.disposed) return Promise.resolve("NotDetermined");
-      return runtime.getPermissionAuthorizationStatus(core.productId, request);
+      return runtime.getPermissionAuthorizationStatus(
+        core.productId,
+        core.artifactSha256,
+        request,
+      );
     },
     getPermissionAuthorizationStatuses(requests) {
       if (core.disposed) {
@@ -850,6 +874,7 @@ function buildProvider(
       }
       return runtime.getPermissionAuthorizationStatuses(
         core.productId,
+        core.artifactSha256,
         requests,
       );
     },
@@ -857,6 +882,7 @@ function buildProvider(
       if (core.disposed) return Promise.resolve();
       return runtime.setPermissionAuthorizationStatus(
         core.productId,
+        core.artifactSha256,
         request,
         status,
       );

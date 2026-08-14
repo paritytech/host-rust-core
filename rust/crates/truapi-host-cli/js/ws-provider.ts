@@ -14,7 +14,8 @@ const MAX_HANDSHAKE_BYTES = 16 * 1024;
 
 export function wsProvider(url: string): FrameProvider {
   if (url.startsWith(UNIX_WS_PREFIX)) {
-    return unixWsProvider(parseUnixSocketPath(url));
+    const { socketPath, authorizationPath } = parseUnixEndpoint(url);
+    return unixWsProvider(socketPath, authorizationPath);
   }
   return nativeWsProvider(url);
 }
@@ -73,15 +74,25 @@ function nativeWsProvider(url: string): FrameProvider {
   };
 }
 
-function parseUnixSocketPath(url: string): string {
-  const path = url.slice(UNIX_WS_PREFIX.length);
-  if (!path.startsWith("/")) {
+function parseUnixEndpoint(url: string): {
+  socketPath: string;
+  authorizationPath: string;
+} {
+  const endpoint = url.slice(UNIX_WS_PREFIX.length);
+  const separator = endpoint.lastIndexOf("?auth=/");
+  const socketPath = separator < 0 ? endpoint : endpoint.slice(0, separator);
+  const authorizationPath =
+    separator < 0 ? "/" : endpoint.slice(separator + "?auth=".length);
+  if (!socketPath.startsWith("/") || !authorizationPath.startsWith("/")) {
     throw new Error(`invalid Unix WebSocket endpoint: ${url}`);
   }
-  return path;
+  return { socketPath, authorizationPath };
 }
 
-function unixWsProvider(socketPath: string): FrameProvider {
+function unixWsProvider(
+  socketPath: string,
+  authorizationPath: string,
+): FrameProvider {
   const listeners = new Set<(message: Uint8Array) => void>();
   const closeListeners = new Set<(error: Error) => void>();
   const pending: Uint8Array[] = [];
@@ -330,7 +341,7 @@ function unixWsProvider(socketPath: string): FrameProvider {
   socket.on("connect", () => {
     socket.write(
       [
-        "GET / HTTP/1.1",
+        `GET ${authorizationPath} HTTP/1.1`,
         "Host: localhost",
         "Upgrade: websocket",
         "Connection: Upgrade",

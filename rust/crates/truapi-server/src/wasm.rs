@@ -524,6 +524,9 @@ fn product_context_from_js(value: &JsValue) -> Result<ProductContext, JsValue> {
         return Err(JsValue::from_str("product is required"));
     }
     let product_id = get_required_string_at(value, "productId", "runtimeConfig.productId")?;
+    let artifact_sha256 =
+        get_required_bytes32_at(value, "artifactSha256", "runtimeConfig.artifactSha256")?;
+    let artifact_identity = artifact_identity_from_sha256(&artifact_sha256);
     let execution_kind =
         match get_optional_string_at(value, "executionKind", "runtimeConfig.executionKind")?
             .as_deref()
@@ -536,13 +539,30 @@ fn product_context_from_js(value: &JsValue) -> Result<ProductContext, JsValue> {
                 )));
             }
         };
-    ProductContext::new_with_execution(product_id, execution_kind)
+    ProductContext::new_with_execution(product_id, artifact_identity, execution_kind)
         .map_err(runtime_config_validation_to_js)
+}
+
+fn artifact_identity_from_sha256(artifact_sha256: &[u8; 32]) -> String {
+    format!("sha256:{}", hex::encode(artifact_sha256))
+}
+fn artifact_identity_from_sha256_bytes(
+    artifact_sha256: &[u8],
+    path: &str,
+) -> Result<String, JsValue> {
+    let artifact_sha256: &[u8; 32] = artifact_sha256.try_into().map_err(|_| {
+        JsValue::from_str(&format!(
+            "{path} must be exactly 32 bytes, got {}",
+            artifact_sha256.len()
+        ))
+    })?;
+    Ok(artifact_identity_from_sha256(artifact_sha256))
 }
 
 fn runtime_config_field_to_js(field: &str) -> &str {
     match field {
         "product_id" => "productId",
+        "artifact_identity" => "artifactSha256",
         "host_info.name" => "host.name",
         "pairing_deeplink_scheme" => "pairing.deeplinkScheme",
         "people_chain_genesis_hash" => "people.genesisHash",
@@ -569,6 +589,16 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
         RuntimeConfigValidationError::InvalidProductId { product_id } => {
             JsValue::from_str(&format!(
                 "runtimeConfig.productId must be a dotNS or localhost product identifier, got {product_id:?}"
+            ))
+        }
+        RuntimeConfigValidationError::InvalidArtifactIdentity { artifact_identity } => {
+            JsValue::from_str(&format!(
+                "runtimeConfig.artifactSha256 produced invalid artifact identity {artifact_identity:?}"
+            ))
+        }
+        RuntimeConfigValidationError::ArtifactIdentityTooLong { actual, maximum } => {
+            JsValue::from_str(&format!(
+                "runtimeConfig.artifactSha256 produced an artifact identity longer than {maximum} bytes: {actual}"
             ))
         }
     }
@@ -801,33 +831,39 @@ impl WasmPairingHostRuntime {
         self.runtime.notify_session_store_changed();
     }
 
-    /// Read a stored permission authorization status for a product.
+    /// Read a stored permission authorization status for a product artifact.
     #[wasm_bindgen(js_name = permissionAuthorizationStatus)]
     pub async fn permission_authorization_status(
         &self,
         product_id: String,
+        artifact_sha256: Vec<u8>,
         payload: Vec<u8>,
     ) -> Result<JsValue, JsValue> {
+        let artifact_identity =
+            artifact_identity_from_sha256_bytes(&artifact_sha256, "artifactSha256")?;
         let request = decode_permission_authorization_request(&payload)?;
         let status = self
             .runtime
-            .permission_authorization_status(&product_id, request)
+            .permission_authorization_status(&product_id, &artifact_identity, request)
             .await
             .map_err(generic_error_to_js)?;
         Ok(permission_authorization_status_to_js(status))
     }
 
-    /// Read stored permission authorization statuses for a product.
+    /// Read stored permission authorization statuses for a product artifact.
     #[wasm_bindgen(js_name = permissionAuthorizationStatuses)]
     pub async fn permission_authorization_statuses(
         &self,
         product_id: String,
+        artifact_sha256: Vec<u8>,
         payloads: Array,
     ) -> Result<Array, JsValue> {
+        let artifact_identity =
+            artifact_identity_from_sha256_bytes(&artifact_sha256, "artifactSha256")?;
         let requests = decode_permission_authorization_requests(&payloads)?;
         let statuses = self
             .runtime
-            .permission_authorization_statuses(&product_id, requests)
+            .permission_authorization_statuses(&product_id, &artifact_identity, requests)
             .await
             .map_err(generic_error_to_js)?;
         let values = Array::new();
@@ -837,18 +873,21 @@ impl WasmPairingHostRuntime {
         Ok(values)
     }
 
-    /// Update a stored permission authorization status for a product.
+    /// Update a stored permission authorization status for a product artifact.
     #[wasm_bindgen(js_name = setPermissionAuthorizationStatus)]
     pub async fn set_permission_authorization_status(
         &self,
         product_id: String,
+        artifact_sha256: Vec<u8>,
         payload: Vec<u8>,
         status: String,
     ) -> Result<(), JsValue> {
+        let artifact_identity =
+            artifact_identity_from_sha256_bytes(&artifact_sha256, "artifactSha256")?;
         let request = decode_permission_authorization_request(&payload)?;
         let status = permission_authorization_status_from_js(&status)?;
         self.runtime
-            .set_permission_authorization_status(&product_id, request, status)
+            .set_permission_authorization_status(&product_id, &artifact_identity, request, status)
             .await
             .map_err(generic_error_to_js)
     }
@@ -885,6 +924,13 @@ pub fn describe_core_storage_key_for_wasm(encoded: Vec<u8>) -> Result<JsValue, J
             &value,
             &JsValue::from_str("productId"),
             &JsValue::from_str(&product_id),
+        )?;
+    }
+    if let Some(artifact_identity) = description.artifact_identity {
+        Reflect::set(
+            &value,
+            &JsValue::from_str("artifactIdentity"),
+            &JsValue::from_str(&artifact_identity),
         )?;
     }
     Ok(value.into())

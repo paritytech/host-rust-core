@@ -24,8 +24,7 @@ mod signing_host;
 pub(crate) mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
 pub(crate) mod sso_remote;
-/// Native Statement Store and Bulletin allowance allocation.
-#[cfg(not(target_arch = "wasm32"))]
+/// Portable Statement Store and Bulletin allowance allocation.
 pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
 pub(crate) mod statement_store;
@@ -34,9 +33,6 @@ mod statement_store_rpc;
 use core::future::Future;
 use core::time::Duration;
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
 use web_time::Instant;
 
 use crate::chain_runtime::RuntimeFailure;
@@ -388,8 +384,11 @@ impl ProductRuntimeHost {
         Self::new_pairing_for_tests(
             platform,
             Self::compat_host_config(),
-            ProductContext::new("unknown.dot".to_string())
-                .expect("compat product context is valid"),
+            ProductContext::new(
+                "unknown.dot".to_string(),
+                "sha256:runtime-test-artifact".to_string(),
+            )
+            .expect("compat product context is valid"),
             spawner,
         )
         .0
@@ -404,8 +403,11 @@ impl ProductRuntimeHost {
         Self::new_pairing_for_tests(
             platform,
             host_config,
-            ProductContext::new("unknown.dot".to_string())
-                .expect("compat product context is valid"),
+            ProductContext::new(
+                "unknown.dot".to_string(),
+                "sha256:runtime-test-artifact".to_string(),
+            )
+            .expect("compat product context is valid"),
             spawner,
         )
     }
@@ -550,9 +552,12 @@ impl ProductRuntimeHost {
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
-        let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product.product_id,
+            &self.product.artifact_identity,
+        );
         service.authorization_status(&request).await
     }
 
@@ -562,9 +567,12 @@ impl ProductRuntimeHost {
         &self,
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
-        let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product.product_id,
+            &self.product.artifact_identity,
+        );
         service.authorization_statuses(&requests).await
     }
 
@@ -576,9 +584,12 @@ impl ProductRuntimeHost {
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
-        let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product.product_id,
+            &self.product.artifact_identity,
+        );
         service.set_authorization_status(&request, status).await
     }
 
@@ -587,9 +598,12 @@ impl ProductRuntimeHost {
         &self,
         permission: v01::RemotePermission,
     ) -> Result<PermissionAuthorizationStatus, String> {
-        let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product.product_id,
+            &self.product.artifact_identity,
+        );
         service
             .check_or_prompt_remote(v01::RemotePermissionRequest { permission })
             .await
@@ -624,8 +638,12 @@ impl ProductRuntimeHost {
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product.product_id,
+            &self.product.artifact_identity,
+        );
         let cached = service
             .authorization_status(&request)
             .await
@@ -697,6 +715,7 @@ impl ProductRuntimeHost {
 async fn account_access_authorization(
     platform: &dyn Platform,
     requesting_product_id: &str,
+    requesting_artifact_identity: &str,
     target_product_id: &str,
 ) -> Result<PermissionAuthorizationStatus, AccountAccessAuthorizationError> {
     if requesting_product_id == target_product_id {
@@ -706,7 +725,12 @@ async fn account_access_authorization(
     let request = PermissionAuthorizationRequest::AccountAccess {
         target_product_id: target_product_id.to_string(),
     };
-    let service = PermissionsService::new(platform, platform, requesting_product_id);
+    let service = PermissionsService::new(
+        platform,
+        platform,
+        requesting_product_id,
+        requesting_artifact_identity,
+    );
     let cached = service
         .authorization_status(&request)
         .await
@@ -816,9 +840,12 @@ impl Permissions for ProductRuntimeHost {
         request: HostDevicePermissionRequest,
     ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
         let HostDevicePermissionRequest::V1(inner) = request;
-        let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product.product_id,
+            &self.product.artifact_identity,
+        );
         match service.check_or_prompt_device(inner).await {
             Ok(decision) => Ok(HostDevicePermissionResponse::V1(
                 v01::HostDevicePermissionResponse {
@@ -838,9 +865,12 @@ impl Permissions for ProductRuntimeHost {
         request: RemotePermissionRequest,
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
         let RemotePermissionRequest::V1(inner) = request;
-        let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = PermissionsService::new(
+            self.platform.as_ref(),
+            self.platform.as_ref(),
+            &self.product.product_id,
+            &self.product.artifact_identity,
+        );
         match service.check_or_prompt_remote(inner).await {
             Ok(decision) => Ok(RemotePermissionResponse::V1(
                 v01::RemotePermissionResponse {
@@ -939,6 +969,7 @@ impl Account for ProductRuntimeHost {
             match account_access_authorization(
                 self.platform.as_ref(),
                 &product_id,
+                &self.product.artifact_identity,
                 &product_account_id.dot_ns_identifier,
             )
             .await
@@ -1009,6 +1040,7 @@ impl Account for ProductRuntimeHost {
                     context,
                     ring_location,
                 },
+                self.product.artifact_identity.clone(),
             ),
         )
         .await
@@ -1061,6 +1093,7 @@ impl Account for ProductRuntimeHost {
                     ring_location,
                     message,
                 },
+                self.product.artifact_identity.clone(),
             ),
         )
         .await
@@ -1098,6 +1131,7 @@ impl Account for ProductRuntimeHost {
                     index,
                     ring,
                 },
+                self.product.artifact_identity.clone(),
             ),
         )
         .await
@@ -1144,6 +1178,7 @@ impl Account for ProductRuntimeHost {
                     owner,
                     disclosure,
                 },
+                self.product.artifact_identity.clone(),
             ),
         )
         .await
@@ -1192,6 +1227,7 @@ impl Account for ProductRuntimeHost {
                     key_handle: request.key_handle,
                     message: request.message,
                 },
+                self.product.artifact_identity.clone(),
             ),
         )
         .await
@@ -1226,8 +1262,13 @@ impl Account for ProductRuntimeHost {
         let cx = remote_authority_context(cx);
         remote_authority_call(
             &cx,
-            self.authority
-                .sign_vrf(&cx, &session, self.product_id(), request),
+            self.authority.sign_vrf(
+                &cx,
+                &session,
+                self.product_id(),
+                self.product.artifact_identity.clone(),
+                request,
+            ),
         )
         .await
         .map(HostAccountSignVrfResponse::V1)
@@ -2294,8 +2335,13 @@ impl ResourceAllocation for ProductRuntimeHost {
         );
         remote_authority_call(
             &cx,
-            self.authority
-                .allocate_resources(&cx, &session, self.product_id(), inner),
+            self.authority.allocate_resources(
+                &cx,
+                &session,
+                self.product_id(),
+                self.product.artifact_identity.clone(),
+                inner,
+            ),
         )
         .await
         .map(HostRequestResourceAllocationResponse::V1)
@@ -2456,8 +2502,12 @@ impl Preimage for ProductRuntimeHost {
         );
         let allowance = remote_authority_call(
             &authority_cx,
-            self.authority
-                .bulletin_allowance_key(&authority_cx, &session, self.product_id()),
+            self.authority.bulletin_allowance_key(
+                &authority_cx,
+                &session,
+                self.product_id(),
+                self.product.artifact_identity.clone(),
+            ),
         )
         .await
         .map_err(|err| preimage_submit_error(bulletin_allowance_error_reason(err)))?;
@@ -2482,6 +2532,7 @@ impl Preimage for ProductRuntimeHost {
                         &authority_cx,
                         &session,
                         self.product_id(),
+                        self.product.artifact_identity.clone(),
                     ),
                 )
                 .await
@@ -3120,10 +3171,13 @@ mod tests {
         assert_eq!(inner.context, [9; 32]);
         assert_eq!(inner.alias, vec![1, 2, 3]);
         let message = submitted_remote_message(&platform, &session);
-        let RemoteMessageData::V1(v1::RemoteMessage::RingVrfAliasRequest(request)) = message.data
+        let RemoteMessageData::V1(v1::RemoteMessage::ArtifactBoundRingVrfAliasRequest(bound)) =
+            message.data
         else {
-            panic!("expected ring VRF alias request");
+            panic!("expected artifact-bound ring VRF alias request");
         };
+        assert_eq!(bound.artifact_identity, "sha256:shared-test-artifact");
+        let request = bound.request;
         assert_eq!(request.calling_product_id, "myapp.dot");
         assert_eq!(request.context.product_id, "myapp.dot");
         assert_eq!(request.ring_location.chain_id, [1; 32]);
@@ -3290,11 +3344,13 @@ mod tests {
             }]
         );
         let message = submitted_remote_message(&platform, &session);
-        let RemoteMessageData::V1(v1::RemoteMessage::SignVrfRequest(request_message)) =
+        let RemoteMessageData::V1(v1::RemoteMessage::ArtifactBoundSignVrfRequest(bound)) =
             message.data
         else {
-            panic!("expected VRF signing request");
+            panic!("expected artifact-bound VRF signing request");
         };
+        assert_eq!(bound.artifact_identity, "sha256:shared-test-artifact");
+        let request_message = bound.request;
         assert_eq!(request_message.calling_product_id, "myapp.dot");
         assert_eq!(request_message.payload, request);
     }
@@ -4848,12 +4904,15 @@ mod tests {
             ]
         );
         let message = submitted_remote_message(&platform, &session);
-        assert!(matches!(
-            message.data,
-            crate::host_logic::sso::messages::RemoteMessageData::V1(
-                crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationRequest(_)
-            )
-        ));
+        let crate::host_logic::sso::messages::RemoteMessageData::V1(
+            crate::host_logic::sso::messages::v1::RemoteMessage::ArtifactBoundResourceAllocationRequest(
+                request,
+            ),
+        ) = message.data
+        else {
+            panic!("expected artifact-bound resource allocation request");
+        };
+        assert_eq!(request.artifact_identity, "sha256:runtime-test-artifact");
     }
 
     fn auto_signing_test_platform(session: &SessionInfo, request_id: &str) -> Arc<StubPlatform> {
@@ -5048,7 +5107,11 @@ mod tests {
         let (host, pairing_host) = ProductRuntimeHost::new_pairing_for_tests(
             platform.clone(),
             ProductRuntimeHost::compat_host_config(),
-            ProductContext::new("myapp.dot".to_string()).unwrap(),
+            ProductContext::new(
+                "myapp.dot".to_string(),
+                "sha256:runtime-test-artifact".to_string(),
+            )
+            .unwrap(),
             test_spawner(),
         );
         install_pairing_session(&host, session.clone());
@@ -5067,7 +5130,7 @@ mod tests {
         futures::executor::block_on(pairing_host.remember_auto_signing_key_for_tests(
             &session,
             pairing_host.current_session_lifecycle_epoch(),
-            "myapp.dot",
+            ("myapp.dot", "sha256:runtime-test-artifact"),
             subtree.public.to_bytes(),
             subtree.secret.to_bytes(),
             domain,
@@ -5231,6 +5294,24 @@ mod tests {
                 .contains_key(&core_storage_test_key(CoreStorageKey::AutoSigningKeys))
         );
 
+        assert!(
+            futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &session,
+                "myapp.dot",
+                "sha256:shared-test-artifact",
+            ))
+            .expect("matching artifact scope remains readable")
+        );
+        assert!(
+            !futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &session,
+                "myapp.dot",
+                "sha256:different-artifact",
+            ))
+            .expect("different artifact scope remains readable"),
+            "AutoSigning capability must not cross artifact identity",
+        );
+
         futures::executor::block_on(pairing_host.logout_and_reset_pairing()).unwrap();
 
         assert!(
@@ -5241,9 +5322,11 @@ mod tests {
                 .contains_key(&core_storage_test_key(CoreStorageKey::AutoSigningKeys))
         );
         assert!(
-            !futures::executor::block_on(
-                pairing_host.has_auto_signing_key_for_tests(&session, "myapp.dot")
-            )
+            !futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &session,
+                "myapp.dot",
+                "sha256:shared-test-artifact",
+            ))
             .expect("AutoSigning storage remains readable"),
             "logout must evict the in-memory AutoSigning capability"
         );
@@ -5275,7 +5358,7 @@ mod tests {
             futures::executor::block_on(pairing_host.remember_auto_signing_key_for_tests(
                 &session,
                 stale_epoch,
-                "myapp.dot",
+                ("myapp.dot", "sha256:runtime-test-artifact"),
                 subtree.public.to_bytes(),
                 subtree.secret.to_bytes(),
                 [0x42; 32],
@@ -5286,6 +5369,7 @@ mod tests {
                 &session,
                 stale_epoch,
                 "myapp.dot",
+                "sha256:runtime-test-artifact",
                 subtree.secret.to_bytes().to_vec(),
             ));
         let Err(statement_store_error) = statement_store_result else {
@@ -5296,6 +5380,7 @@ mod tests {
                 &session,
                 stale_epoch,
                 "myapp.dot",
+                "sha256:runtime-test-artifact",
                 subtree.secret.to_bytes().to_vec(),
             ));
         let Err(bulletin_error) = bulletin_result else {
@@ -5325,9 +5410,11 @@ mod tests {
             "stale allowance completions must not restore durable slot secrets"
         );
         assert!(
-            !futures::executor::block_on(
-                pairing_host.has_auto_signing_key_for_tests(&session, "myapp.dot")
-            )
+            !futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &session,
+                "myapp.dot",
+                "sha256:runtime-test-artifact",
+            ))
             .expect("AutoSigning storage remains readable"),
             "the stale allocation must not restore cached AutoSigning authority"
         );
@@ -5361,7 +5448,7 @@ mod tests {
             futures::executor::block_on(pairing_host.remember_auto_signing_key_for_tests(
                 &session,
                 stale_epoch,
-                product_id,
+                (product_id, "sha256:runtime-test-artifact"),
                 subtree.public.to_bytes(),
                 subtree.secret.to_bytes(),
                 [0x42; 32],
@@ -5371,6 +5458,7 @@ mod tests {
                 &session,
                 stale_epoch,
                 product_id,
+                "sha256:runtime-test-artifact",
                 subtree.secret.to_bytes().to_vec(),
             ))
             .unwrap();
@@ -5378,6 +5466,7 @@ mod tests {
                 &session,
                 stale_epoch,
                 product_id,
+                "sha256:runtime-test-artifact",
                 subtree.secret.to_bytes().to_vec(),
             ))
             .unwrap();
@@ -5391,15 +5480,19 @@ mod tests {
             (1, 1, 1, 1)
         );
         assert!(
-            !futures::executor::block_on(
-                pairing_host.has_auto_signing_key_for_tests(&session, "myapp.dot")
-            )
+            !futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &session,
+                "myapp.dot",
+                "sha256:runtime-test-artifact",
+            ))
             .unwrap()
         );
         assert!(
-            futures::executor::block_on(
-                pairing_host.has_auto_signing_key_for_tests(&session, "other.dot")
-            )
+            futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &session,
+                "other.dot",
+                "sha256:runtime-test-artifact",
+            ))
             .unwrap()
         );
         assert!(
@@ -5407,6 +5500,7 @@ mod tests {
                 &session,
                 current_epoch,
                 "myapp.dot",
+                "sha256:runtime-test-artifact",
             ))
             .unwrap()
             .is_none()
@@ -5416,6 +5510,7 @@ mod tests {
                 &session,
                 current_epoch,
                 "other.dot",
+                "sha256:runtime-test-artifact",
             ))
             .unwrap()
             .is_some()
@@ -5425,6 +5520,7 @@ mod tests {
                 &session,
                 current_epoch,
                 "myapp.dot",
+                "sha256:runtime-test-artifact",
             ))
             .unwrap()
             .is_none()
@@ -5434,6 +5530,7 @@ mod tests {
                 &session,
                 current_epoch,
                 "other.dot",
+                "sha256:runtime-test-artifact",
             ))
             .unwrap()
             .is_some()
@@ -5443,7 +5540,7 @@ mod tests {
             futures::executor::block_on(pairing_host.remember_auto_signing_key_for_tests(
                 &session,
                 stale_epoch,
-                "myapp.dot",
+                ("myapp.dot", "sha256:runtime-test-artifact"),
                 first.public.to_bytes(),
                 first.secret.to_bytes(),
                 [0x42; 32],
@@ -5455,6 +5552,7 @@ mod tests {
                 &session,
                 stale_epoch,
                 "myapp.dot",
+                "sha256:runtime-test-artifact",
                 first.secret.to_bytes().to_vec(),
             )),
             Err(AuthorityError::Disconnected)
@@ -5496,7 +5594,7 @@ mod tests {
         futures::executor::block_on(pairing_host.remember_auto_signing_key_for_tests(
             &session,
             lifecycle_epoch,
-            "myapp.dot",
+            ("myapp.dot", "sha256:runtime-test-artifact"),
             subtree.public.to_bytes(),
             subtree.secret.to_bytes(),
             [0x42; 32],
@@ -5506,6 +5604,7 @@ mod tests {
             &session,
             lifecycle_epoch,
             "myapp.dot",
+            "sha256:runtime-test-artifact",
             subtree.secret.to_bytes().to_vec(),
         ))
         .unwrap();
@@ -5513,6 +5612,7 @@ mod tests {
             &session,
             lifecycle_epoch,
             "myapp.dot",
+            "sha256:runtime-test-artifact",
             subtree.secret.to_bytes().to_vec(),
         ))
         .unwrap();
@@ -5569,6 +5669,7 @@ mod tests {
             &session,
             lifecycle_epoch,
             "myapp.dot",
+            "sha256:runtime-test-artifact",
             subtree.secret.to_bytes().to_vec(),
         ))
         .unwrap();
@@ -5576,6 +5677,7 @@ mod tests {
             &session,
             lifecycle_epoch,
             "myapp.dot",
+            "sha256:runtime-test-artifact",
             subtree.secret.to_bytes().to_vec(),
         ))
         .unwrap();
@@ -5611,9 +5713,11 @@ mod tests {
             "a replacement wallet must not leave the prior session's durable allowance secrets"
         );
         assert!(
-            !futures::executor::block_on(
-                pairing_host.has_auto_signing_key_for_tests(&replacement, "myapp.dot")
-            )
+            !futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &replacement,
+                "myapp.dot",
+                "sha256:runtime-test-artifact",
+            ))
             .expect("AutoSigning storage remains readable"),
             "a newly paired wallet must not reuse the previous wallet's cached capability"
         );
@@ -5648,9 +5752,11 @@ mod tests {
         install_pairing_session(&restored, replacement.clone());
 
         assert!(
-            !futures::executor::block_on(
-                pairing_host.has_auto_signing_key_for_tests(&replacement, "myapp.dot")
-            )
+            !futures::executor::block_on(pairing_host.has_auto_signing_key_for_tests(
+                &replacement,
+                "myapp.dot",
+                "sha256:runtime-test-artifact",
+            ))
             .expect("AutoSigning storage remains readable"),
             "a different restored wallet must not use a prior wallet's capability"
         );

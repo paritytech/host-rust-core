@@ -5,11 +5,10 @@
 //! permissions (domain access, chain submit, ...), so this module exposes two
 //! `check_or_prompt` entrypoints that route to the matching platform callback.
 //! The cache layer is shared but keys are typed so a device grant cannot
-//! authorize a remote operation by accident. Keys are also scoped by product id
-//! so one product's authorization never grants another product's request.
-//! Identity disclosure is also represented as a product-scoped authorization,
-//! but the prompt itself is handled by the account runtime because it uses the
-//! richer user-confirmation surface rather than the device/remote callbacks.
+//! authorize a remote operation by accident. Keys are scoped by product id and
+//! verified artifact identity so replacing an artifact cannot inherit the
+//! predecessor's authorization. Identity disclosure uses the same durable
+//! scope, while its prompt is handled by the richer user-confirmation surface.
 
 use parity_scale_codec::{Decode, Encode};
 
@@ -59,15 +58,22 @@ pub struct PermissionsService<'a, S: CoreStorage + ?Sized, P: Permissions + ?Siz
     storage: &'a S,
     prompt: &'a P,
     product_id: &'a str,
+    artifact_identity: &'a str,
 }
 
 impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a, S, P> {
     /// Construct a service backed by the given storage + prompt callbacks.
-    pub fn new(storage: &'a S, prompt: &'a P, product_id: &'a str) -> Self {
+    pub fn new(
+        storage: &'a S,
+        prompt: &'a P,
+        product_id: &'a str,
+        artifact_identity: &'a str,
+    ) -> Self {
         Self {
             storage,
             prompt,
             product_id,
+            artifact_identity,
         }
     }
 
@@ -78,7 +84,11 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         authorization_status(
             self.storage,
-            CoreStorageKey::device_permission_authorization(self.product_id, permission),
+            CoreStorageKey::device_permission_authorization(
+                self.product_id,
+                self.artifact_identity,
+                permission,
+            ),
         )
         .await
     }
@@ -91,7 +101,11 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         authorization_status(
             self.storage,
-            CoreStorageKey::remote_permission_authorization(self.product_id, request),
+            CoreStorageKey::remote_permission_authorization(
+                self.product_id,
+                self.artifact_identity,
+                request,
+            ),
         )
         .await
     }
@@ -110,7 +124,10 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             PermissionAuthorizationRequest::IdentityDisclosure => {
                 authorization_status(
                     self.storage,
-                    CoreStorageKey::identity_disclosure_authorization(self.product_id),
+                    CoreStorageKey::identity_disclosure_authorization(
+                        self.product_id,
+                        self.artifact_identity,
+                    ),
                 )
                 .await
             }
@@ -119,6 +136,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                     self.storage,
                     CoreStorageKey::account_access_authorization(
                         self.product_id,
+                        self.artifact_identity,
                         target_product_id,
                     ),
                 )
@@ -151,16 +169,31 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     ) -> Result<(), GenericError> {
         let key = match request {
             PermissionAuthorizationRequest::Device(permission) => {
-                CoreStorageKey::device_permission_authorization(self.product_id, permission)
+                CoreStorageKey::device_permission_authorization(
+                    self.product_id,
+                    self.artifact_identity,
+                    permission,
+                )
             }
             PermissionAuthorizationRequest::Remote(request) => {
-                CoreStorageKey::remote_permission_authorization(self.product_id, request)
+                CoreStorageKey::remote_permission_authorization(
+                    self.product_id,
+                    self.artifact_identity,
+                    request,
+                )
             }
             PermissionAuthorizationRequest::IdentityDisclosure => {
-                CoreStorageKey::identity_disclosure_authorization(self.product_id)
+                CoreStorageKey::identity_disclosure_authorization(
+                    self.product_id,
+                    self.artifact_identity,
+                )
             }
             PermissionAuthorizationRequest::AccountAccess { target_product_id } => {
-                CoreStorageKey::account_access_authorization(self.product_id, target_product_id)
+                CoreStorageKey::account_access_authorization(
+                    self.product_id,
+                    self.artifact_identity,
+                    target_product_id,
+                )
             }
         };
         set_authorization_status(self.storage, key, status).await
@@ -172,7 +205,11 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         &self,
         permission: HostDevicePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        let key = CoreStorageKey::device_permission_authorization(self.product_id, &permission);
+        let key = CoreStorageKey::device_permission_authorization(
+            self.product_id,
+            self.artifact_identity,
+            &permission,
+        );
         if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
             return Ok(cached.into());
         }
@@ -192,7 +229,11 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         &self,
         request: RemotePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        let key = CoreStorageKey::remote_permission_authorization(self.product_id, &request);
+        let key = CoreStorageKey::remote_permission_authorization(
+            self.product_id,
+            self.artifact_identity,
+            &request,
+        );
         if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
             return Ok(cached.into());
         }
@@ -351,7 +392,8 @@ mod tests {
     fn check_or_prompt_device_caches_grant() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let first = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -371,7 +413,8 @@ mod tests {
     fn check_or_prompt_remote_caches_denial() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![false]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let request = RemotePermissionRequest {
             permission: RemotePermission::ChainSubmit,
@@ -391,7 +434,8 @@ mod tests {
         // Device denies, remote grants. If the caches collided we'd see the
         // same answer on the second call.
         let prompt = ScriptedPrompt::new(vec![false], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let device = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -413,7 +457,8 @@ mod tests {
     fn device_prompt_does_not_invoke_remote_callback() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let _ = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -427,7 +472,8 @@ mod tests {
     fn remote_prompt_does_not_invoke_device_callback() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![true]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let _ =
             futures::executor::block_on(service.check_or_prompt_remote(RemotePermissionRequest {
@@ -442,7 +488,8 @@ mod tests {
     fn peek_returns_not_determined_until_authorized() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let before =
             futures::executor::block_on(service.peek_device(&HostDevicePermissionRequest::Camera))
@@ -464,7 +511,8 @@ mod tests {
     fn set_authorization_status_writes_and_clears() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
         let request = PermissionAuthorizationRequest::Device(HostDevicePermissionRequest::Camera);
 
         futures::executor::block_on(
@@ -491,7 +539,8 @@ mod tests {
     fn identity_disclosure_authorization_round_trips() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
 
         assert_eq!(
@@ -507,8 +556,30 @@ mod tests {
             futures::executor::block_on(service.authorization_status(&request)).unwrap(),
             PermissionAuthorizationStatus::Authorized
         );
+        let same_artifact_service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
+        assert_eq!(
+            futures::executor::block_on(same_artifact_service.authorization_status(&request))
+                .unwrap(),
+            PermissionAuthorizationStatus::Authorized
+        );
 
-        let other_product_service = PermissionsService::new(&storage, &prompt, "other.dot");
+        let replacement_artifact_service = PermissionsService::new(
+            &storage,
+            &prompt,
+            "product.dot",
+            "sha256:replacement-artifact",
+        );
+        assert_eq!(
+            futures::executor::block_on(
+                replacement_artifact_service.authorization_status(&request)
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::NotDetermined
+        );
+
+        let other_product_service =
+            PermissionsService::new(&storage, &prompt, "other.dot", "sha256:test-artifact");
         assert_eq!(
             futures::executor::block_on(other_product_service.authorization_status(&request))
                 .unwrap(),
@@ -520,7 +591,8 @@ mod tests {
     fn account_access_authorization_is_scoped_by_requester_and_target() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
         let request = PermissionAuthorizationRequest::AccountAccess {
             target_product_id: "target.dot".to_string(),
         };
@@ -543,7 +615,8 @@ mod tests {
             PermissionAuthorizationStatus::NotDetermined
         );
 
-        let other_product_service = PermissionsService::new(&storage, &prompt, "other.dot");
+        let other_product_service =
+            PermissionsService::new(&storage, &prompt, "other.dot", "sha256:test-artifact");
         assert_eq!(
             futures::executor::block_on(other_product_service.authorization_status(&request))
                 .unwrap(),
@@ -580,7 +653,8 @@ mod tests {
     fn prompt_failure_stays_not_determined_without_persisting() {
         let storage = MemStorage::default();
         let prompt = FailingPrompt;
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let device_decision = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -631,6 +705,7 @@ mod tests {
         futures::executor::block_on(storage.write_core_storage(
             CoreStorageKey::device_permission_authorization(
                 "product.dot",
+                "sha256:test-artifact",
                 &HostDevicePermissionRequest::Camera,
             ),
             vec![0xff, 0xfe, 0xfd],
@@ -638,7 +713,8 @@ mod tests {
         .unwrap();
 
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let peeked =
             futures::executor::block_on(service.peek_device(&HostDevicePermissionRequest::Camera))
@@ -685,7 +761,8 @@ mod tests {
     fn storage_read_error_propagates() {
         let storage = FailingStorage;
         let prompt = ScriptedPrompt::new(vec![], vec![]);
-        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot", "sha256:test-artifact");
 
         let err = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),

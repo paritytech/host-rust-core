@@ -5,14 +5,17 @@ import { errorMessage } from "./error.js";
 export interface PermissionAuthorizationRuntime {
   permissionAuthorizationStatus(
     productId: string,
+    artifactSha256: Uint8Array,
     request: Uint8Array,
   ): Promise<PermissionAuthorizationStatus>;
   permissionAuthorizationStatuses(
     productId: string,
+    artifactSha256: Uint8Array,
     requests: Uint8Array[],
   ): Promise<PermissionAuthorizationStatus[]>;
   setPermissionAuthorizationStatus(
     productId: string,
+    artifactSha256: Uint8Array,
     request: Uint8Array,
     status: PermissionAuthorizationStatus,
   ): Promise<void>;
@@ -24,6 +27,7 @@ export async function handleGetPermissionAuthorizationStatus(
   runtime: PermissionAuthorizationRuntime | null,
   postToMain: PostToMain,
   productId: string,
+  artifactSha256: Uint8Array,
   requestId: number,
   request: Uint8Array,
 ): Promise<void> {
@@ -39,6 +43,7 @@ export async function handleGetPermissionAuthorizationStatus(
   try {
     const status = await runtime.permissionAuthorizationStatus(
       productId,
+      artifactSha256,
       request,
     );
     postToMain({
@@ -61,6 +66,7 @@ export async function handleGetPermissionAuthorizationStatuses(
   runtime: PermissionAuthorizationRuntime | null,
   postToMain: PostToMain,
   productId: string,
+  artifactSha256: Uint8Array,
   requestId: number,
   requests: Uint8Array[],
 ): Promise<void> {
@@ -76,6 +82,7 @@ export async function handleGetPermissionAuthorizationStatuses(
   try {
     const statuses = await runtime.permissionAuthorizationStatuses(
       productId,
+      artifactSha256,
       requests,
     );
     postToMain({
@@ -98,6 +105,7 @@ export async function handleSetPermissionAuthorizationStatus(
   runtime: PermissionAuthorizationRuntime | null,
   postToMain: PostToMain,
   productId: string,
+  artifactSha256: Uint8Array,
   requestId: number,
   request: Uint8Array,
   status: PermissionAuthorizationStatus,
@@ -107,12 +115,18 @@ export async function handleSetPermissionAuthorizationStatus(
       kind: "setPermissionAuthorizationStatusResponse",
       requestId,
       ok: false,
-      error: "setPermissionAuthorizationStatus received before runtime is ready",
+      error:
+        "setPermissionAuthorizationStatus received before runtime is ready",
     });
     return;
   }
   try {
-    await runtime.setPermissionAuthorizationStatus(productId, request, status);
+    await runtime.setPermissionAuthorizationStatus(
+      productId,
+      artifactSha256,
+      request,
+      status,
+    );
     postToMain({
       kind: "setPermissionAuthorizationStatusResponse",
       requestId,

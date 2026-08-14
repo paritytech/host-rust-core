@@ -37,9 +37,11 @@ truapi-host signing-host
 ```
 
 Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
-default, so starting either host does not reserve a TCP port. Pass
-`--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
-this is required for browser clients, which cannot open filesystem sockets.
+default. After measuring a product executable, the trusted script runner issues
+that execution an unguessable path capability and includes it in the WebSocket
+handshake. Pass `--frame-listen 127.0.0.1:0` when the CLI-launched child needs
+an ordinary loopback WebSocket instead; the same per-execution capability check
+applies. This is a transport override, not a public browser attachment point.
 
 The signing host opens an interactive terminal where you can paste a pairing
 link, type `/pair <link>`, run `/script`, or use `/help` to discover the
@@ -197,6 +199,19 @@ project. The runner injects three globals before running it:
   `console.log` and `throw` for everything else.
 - **`assert`** — throw when its condition is false, using any following values
   as the error message.
+
+Before each run, the trusted CLI bundles the script and every statically
+reachable local/package module into one executable, rejects unresolved
+executable imports, hashes the exact bundle bytes with SHA-256, and streams
+those same bytes to Bun over stdin. Durable allowances and automatic-signing
+grants therefore belong to the product id and measured executable artifact;
+changing any bundled module requires a fresh grant. Node/Bun built-ins remain
+provided by the installed runtime.
+
+This developer CLI isolates the product protocol connection and authorization,
+not the child process's operating-system privileges. Product scripts still run
+as the current user under Bun and must be trusted accordingly; production hosts
+need a platform sandbox around their product process or webview.
 
 Write it top-level and `throw` (or reject) to fail the run:
 
@@ -401,11 +416,15 @@ truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 Both hosts take `--network` (default `paseo-next-v2`). The network preset owns
 the identity backend URL, People RPC, Bulletin RPC, and genesis hashes; there is
 no public `--statement-store` flag. Both also accept `--frame-listen <address>`
-to opt into a TCP product-frame WebSocket; without it, the CLI creates and
-cleans up a unique temporary Unix socket.
+to use TCP for the CLI-launched product child; without it, the CLI creates and
+cleans up a unique temporary Unix socket. The base endpoint is not a credential.
 
 ## Scope / gaps
 
+- **External browser attachment is not supported.** The CLI only issues frame
+  credentials to product executables it has bundled and measured. A production
+  browser host needs a trusted artifact loader that supplies equivalent
+  host-attested identity and per-execution capability delivery.
 - **Chain methods** route to real `wss://` nodes from the selected `--network`
   when `E2E_LIVE_CHAIN=1`; off by default. A rustls crypto provider is
   installed at startup for the TLS connections.

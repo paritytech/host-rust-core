@@ -129,7 +129,11 @@ export type CoreStorageKey =
    */
   | {
       tag: "PermissionAuthorization";
-      value: { productId: string; request: PermissionAuthorizationRequest };
+      value: {
+        productId: string;
+        artifactIdentity: string;
+        request: PermissionAuthorizationRequest;
+      };
     }
   /**
    * Persisted allowance-slot keys for one paired SSO session.
@@ -280,20 +284,30 @@ export interface PreimageSubmitReview {
 }
 
 /**
- * Product identity attached to one product-facing TrUAPI connection.
+ * Product and executable identity attached to one product-facing TrUAPI
+ * connection.
  *
  * A host may create multiple product runtimes from the same long-lived host
- * runtime, each with its own product context.
+ * runtime, each with its own product context. `artifact_identity` is supplied
+ * by the trusted host loader, never by product code.
  */
 export interface ProductContext {
   /**
    * Product identifier used for account derivation and product-scoped
-   * storage/permission namespaces.
+   * storage namespaces.
    *
    * Host-spec C.7 defines accepted product id forms:
    * <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L109-L128>
    */
   productId: string;
+
+  /**
+   * Opaque canonical identity of the verified executable artifact.
+   *
+   * The host defines the identity scheme. TrUAPI preserves the exact
+   * bytes/case and uses it only to bind durable grants to this artifact.
+   */
+  artifactIdentity: string;
 
   /**
    * Trusted kind of executable attached to this connection by the host.
@@ -510,9 +524,11 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
       PairingDeviceIdentity: S._void,
       PermissionAuthorization: S.Struct({
         productId: S.str,
+        artifactIdentity: S.str,
         request: PermissionAuthorizationRequest,
       }) as S.Codec<{
         productId: string;
+        artifactIdentity: string;
         request: PermissionAuthorizationRequest;
       }>,
       AllowanceKeys: S.Struct({ sessionId: S.str }) as S.Codec<{
@@ -624,15 +640,18 @@ export const PreimageSubmitReview: S.Codec<PreimageSubmitReview> = S.lazy(
 );
 
 /**
- * Product identity attached to one product-facing TrUAPI connection.
+ * Product and executable identity attached to one product-facing TrUAPI
+ * connection.
  *
  * A host may create multiple product runtimes from the same long-lived host
- * runtime, each with its own product context.
+ * runtime, each with its own product context. `artifact_identity` is supplied
+ * by the trusted host loader, never by product code.
  */
 export const ProductContext: S.Codec<ProductContext> = S.lazy(
   (): S.Codec<ProductContext> =>
     S.Struct({
       productId: S.str,
+      artifactIdentity: S.str,
       executionKind: ProductExecutionKind,
     }) as S.Codec<ProductContext>,
 );
@@ -839,6 +858,11 @@ export interface CoreAdmin {
 
 /**
  * Host-private persistence for core-owned state.
+ *
+ * Values can contain capability and signing material. Implementations take
+ * ownership of write buffers, must avoid unnecessary plaintext copies, and
+ * must erase replaced or cleared values according to the platform storage
+ * guarantees. Callers zeroize transient read and decode buffers.
  */
 export interface CoreStorage {
   /**

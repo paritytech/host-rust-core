@@ -1616,18 +1616,16 @@ impl App {
             (false, KeyCode::Tab) => {
                 self.editor.accept_completion();
             }
-            (false, KeyCode::Enter) if busy => {
-                if !self.editor.text().trim().is_empty() {
-                    self.notice(
-                        NoticeTone::Warning,
-                        "A command is already running".to_string(),
-                        Some(
-                            "Press Ctrl-C to cancel it before submitting another command."
-                                .to_string(),
-                        ),
-                    );
-                }
+            (false, KeyCode::Enter) if busy && !self.editor.text().trim().is_empty() => {
+                self.notice(
+                    NoticeTone::Warning,
+                    "A command is already running".to_string(),
+                    Some(
+                        "Press Ctrl-C to cancel it before submitting another command.".to_string(),
+                    ),
+                );
             }
+            (false, KeyCode::Enter) if busy => {}
             (false, KeyCode::Enter) => {
                 let text = self.editor.text();
                 let completions = self.editor.completions();

@@ -34,6 +34,7 @@ private extension TrUAPIWsBridgeTests {
     static func makeRuntimeConfig() -> RuntimeConfig {
         RuntimeConfig(
             productId: "test.dot",
+            artifactIdentity: "sha256:truapi-host-test-artifact",
             hostName: "truapi-host-tests",
             peopleChainGenesisHash: Data(repeating: 0, count: 32),
             bulletinChainGenesisHash: Data(repeating: 0, count: 32)

@@ -195,6 +195,7 @@ fn session_crypto_and_statement_proof_vectors_work_on_wasm() {
 fn wasm_core_storage_descriptors_are_strict_and_stable() {
     let encoded = CoreStorageKey::device_permission_authorization(
         "product.dot",
+        "sha256:wasm-test-artifact",
         &HostDevicePermissionRequest::Camera,
     )
     .encode();
@@ -213,6 +214,16 @@ fn wasm_core_storage_descriptors_are_strict_and_stable() {
             .as_string()
             .as_deref(),
         Some("product.dot")
+    );
+    assert_eq!(
+        js_sys::Reflect::get(
+            &described,
+            &wasm_bindgen::JsValue::from_str("artifactIdentity"),
+        )
+        .expect("artifactIdentity property")
+        .as_string()
+        .as_deref(),
+        Some("sha256:wasm-test-artifact")
     );
 
     assert!(truapi_server::wasm::describe_core_storage_key_for_wasm(Vec::new()).is_err());

@@ -191,8 +191,11 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
 }
 
 let callbacks = MyCallbacks()
+// Derive this immutable identity in the trusted host loader after verifying
+// the exact executable bundle. Never accept it from product code.
 let runtimeConfig = RuntimeConfig(
     productId: "my-product.dot",
+    artifactIdentity: "sha256:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     hostName: "My Host",
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),

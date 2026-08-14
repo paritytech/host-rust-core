@@ -285,6 +285,7 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         runtime,
         postToMain,
         msg.productId,
+        msg.artifactSha256,
         msg.requestId,
         msg.request,
       );
@@ -294,6 +295,7 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         runtime,
         postToMain,
         msg.productId,
+        msg.artifactSha256,
         msg.requestId,
         msg.requests,
       );
@@ -303,6 +305,7 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
         runtime,
         postToMain,
         msg.productId,
+        msg.artifactSha256,
         msg.requestId,
         msg.request,
         msg.status,

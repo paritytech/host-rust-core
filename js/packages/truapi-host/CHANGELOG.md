@@ -1,5 +1,19 @@
 # @parity/truapi-host
 
+## Unreleased
+
+### Minor Changes
+
+- Require trusted executable artifact identity for every product runtime and
+  bind durable allowances, automatic signing, and wallet-to-wallet
+  authorization to the exact wallet, product, and artifact scope.
+
+### Patch Changes
+
+- Build the raw web WASM package with both pairing and signing host runtimes,
+  reject generated bindings that omit either role, and publish a deterministic
+  SHA-256/size manifest for the JavaScript glue and executable WASM.
+
 ## 0.6.0
 
 ### Minor Changes

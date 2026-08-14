@@ -11,8 +11,7 @@
 // Env (set by the Rust CLI):
 //   TRUAPI_FRAME_URL   ws+unix: or ws:// endpoint of the host frame server
 //   TRUAPI_PRODUCT_ID  product id the host serves (scopes storage etc.)
-//   TRUAPI_SCRIPT      absolute path to the user script
-import { pathToFileURL } from "node:url";
+//   TRUAPI_CLI_HOST_ROLE pairing-host or signing-host
 import { inspect } from "node:util";
 import {
   createClient,
@@ -52,11 +51,9 @@ function requireEnv(name: string): string {
   return value;
 }
 
-async function main() {
+async function main(loadProduct: () => Promise<Record<string, unknown>>) {
   const frameUrl = requireEnv("TRUAPI_FRAME_URL");
   const productId = requireEnv("TRUAPI_PRODUCT_ID");
-  const scriptPath = requireEnv("TRUAPI_SCRIPT");
-
   const provider = wsProvider(frameUrl);
   const client = createClient(createTransport(provider));
 
@@ -89,7 +86,7 @@ async function main() {
   clearTimeout(timer);
 
   try {
-    const module = await import(pathToFileURL(scriptPath).href);
+    const module = await loadProduct();
     if (typeof module.default === "function") {
       await module.default(context);
     }
@@ -98,12 +95,16 @@ async function main() {
   }
 }
 
-main().then(
-  () => process.exit(0),
-  (error) => {
-    console.error(
-      `[script error] ${error instanceof Error ? error.stack : String(error)}`,
-    );
-    process.exit(1);
-  },
-);
+export function runProductScript(
+  loadProduct: () => Promise<Record<string, unknown>>,
+) {
+  main(loadProduct).then(
+    () => process.exit(0),
+    (error) => {
+      console.error(
+        `[script error] ${error instanceof Error ? error.stack : String(error)}`,
+      );
+      process.exit(1);
+    },
+  );
+}

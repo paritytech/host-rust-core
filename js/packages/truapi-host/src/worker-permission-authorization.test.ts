@@ -10,6 +10,7 @@ import {
 } from "./worker-permission-authorization.js";
 
 const PRODUCT_ID = "playground.dot";
+const ARTIFACT_SHA256 = new Uint8Array(32).fill(0x42);
 
 function recordMessages() {
   const messages: WorkerToMain[] = [];
@@ -26,8 +27,13 @@ function makeRuntime(
 ): PermissionAuthorizationRuntime {
   return {
     permissionAuthorizationStatus: async () => "NotDetermined",
-    permissionAuthorizationStatuses: async (productId, requests) => {
+    permissionAuthorizationStatuses: async (
+      productId,
+      artifactSha256,
+      requests,
+    ) => {
       void productId;
+      void artifactSha256;
       return requests.map(() => "NotDetermined");
     },
     setPermissionAuthorizationStatus: async () => {},
@@ -39,10 +45,18 @@ describe("worker permission authorization handlers", () => {
   it("responds with a single permission authorization status", async () => {
     const { messages, postToMain } = recordMessages();
     const request = new Uint8Array([1, 2, 3]);
-    const calls: { productId: string; request: Uint8Array }[] = [];
+    const calls: {
+      productId: string;
+      artifactSha256: Uint8Array;
+      request: Uint8Array;
+    }[] = [];
     const runtime = makeRuntime({
-      permissionAuthorizationStatus: async (productId, receivedRequest) => {
-        calls.push({ productId, request: receivedRequest });
+      permissionAuthorizationStatus: async (
+        productId,
+        artifactSha256,
+        receivedRequest,
+      ) => {
+        calls.push({ productId, artifactSha256, request: receivedRequest });
         return "Authorized";
       },
     });
@@ -51,11 +65,18 @@ describe("worker permission authorization handlers", () => {
       runtime,
       postToMain,
       PRODUCT_ID,
+      ARTIFACT_SHA256,
       7,
       request,
     );
 
-    expect(calls).toEqual([{ productId: PRODUCT_ID, request }]);
+    expect(calls).toEqual([
+      {
+        productId: PRODUCT_ID,
+        artifactSha256: ARTIFACT_SHA256,
+        request,
+      },
+    ]);
     expect(messages).toEqual([
       {
         kind: "permissionAuthorizationStatusResponse",
@@ -70,10 +91,22 @@ describe("worker permission authorization handlers", () => {
     const { messages, postToMain } = recordMessages();
     const requests = [new Uint8Array([1]), new Uint8Array([2])];
     const statuses: PermissionAuthorizationStatus[] = ["Denied", "Authorized"];
-    const calls: { productId: string; requests: Uint8Array[] }[] = [];
+    const calls: {
+      productId: string;
+      artifactSha256: Uint8Array;
+      requests: Uint8Array[];
+    }[] = [];
     const runtime = makeRuntime({
-      permissionAuthorizationStatuses: async (productId, receivedRequests) => {
-        calls.push({ productId, requests: receivedRequests });
+      permissionAuthorizationStatuses: async (
+        productId,
+        artifactSha256,
+        receivedRequests,
+      ) => {
+        calls.push({
+          productId,
+          artifactSha256,
+          requests: receivedRequests,
+        });
         return statuses;
       },
     });
@@ -82,11 +115,18 @@ describe("worker permission authorization handlers", () => {
       runtime,
       postToMain,
       PRODUCT_ID,
+      ARTIFACT_SHA256,
       8,
       requests,
     );
 
-    expect(calls).toEqual([{ productId: PRODUCT_ID, requests }]);
+    expect(calls).toEqual([
+      {
+        productId: PRODUCT_ID,
+        artifactSha256: ARTIFACT_SHA256,
+        requests,
+      },
+    ]);
     expect(messages).toEqual([
       {
         kind: "permissionAuthorizationStatusesResponse",
@@ -102,16 +142,23 @@ describe("worker permission authorization handlers", () => {
     const request = new Uint8Array([9, 10]);
     const calls: {
       productId: string;
+      artifactSha256: Uint8Array;
       request: Uint8Array;
       status: PermissionAuthorizationStatus;
     }[] = [];
     const runtime = makeRuntime({
       setPermissionAuthorizationStatus: async (
         productId,
+        artifactSha256,
         receivedRequest,
         status,
       ) => {
-        calls.push({ productId, request: receivedRequest, status });
+        calls.push({
+          productId,
+          artifactSha256,
+          request: receivedRequest,
+          status,
+        });
       },
     });
 
@@ -119,13 +166,19 @@ describe("worker permission authorization handlers", () => {
       runtime,
       postToMain,
       PRODUCT_ID,
+      ARTIFACT_SHA256,
       9,
       request,
       "Denied",
     );
 
     expect(calls).toEqual([
-      { productId: PRODUCT_ID, request, status: "Denied" },
+      {
+        productId: PRODUCT_ID,
+        artifactSha256: ARTIFACT_SHA256,
+        request,
+        status: "Denied",
+      },
     ]);
     expect(messages).toEqual([
       {
@@ -144,6 +197,7 @@ describe("worker permission authorization handlers", () => {
       null,
       postToMain,
       PRODUCT_ID,
+      ARTIFACT_SHA256,
       1,
       request,
     );
@@ -151,6 +205,7 @@ describe("worker permission authorization handlers", () => {
       null,
       postToMain,
       PRODUCT_ID,
+      ARTIFACT_SHA256,
       2,
       [request],
     );
@@ -158,6 +213,7 @@ describe("worker permission authorization handlers", () => {
       null,
       postToMain,
       PRODUCT_ID,
+      ARTIFACT_SHA256,
       3,
       request,
       "Authorized",

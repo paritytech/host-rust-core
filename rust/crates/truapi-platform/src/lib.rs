@@ -87,19 +87,26 @@ pub struct SigningHostConfig {
     pub bulletin_chain_genesis_hash: [u8; 32],
 }
 
-/// Product identity attached to one product-facing TrUAPI connection.
+/// Product and executable identity attached to one product-facing TrUAPI
+/// connection.
 ///
 /// A host may create multiple product runtimes from the same long-lived host
-/// runtime, each with its own product context.
+/// runtime, each with its own product context. `artifact_identity` is supplied
+/// by the trusted host loader, never by product code.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductContext {
     /// Product identifier used for account derivation and product-scoped
-    /// storage/permission namespaces.
+    /// storage namespaces.
     ///
     /// Host-spec C.7 defines accepted product id forms:
     /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L109-L128>
     pub product_id: String,
+    /// Opaque canonical identity of the verified executable artifact.
+    ///
+    /// The host defines the identity scheme. TrUAPI preserves the exact
+    /// bytes/case and uses it only to bind durable grants to this artifact.
+    pub artifact_identity: String,
     /// Trusted kind of executable attached to this connection by the host.
     pub execution_kind: ProductExecutionKind,
 }
@@ -205,17 +212,22 @@ impl SigningHostConfig {
 impl ProductContext {
     /// Build a product context, validating fields whose representation cannot
     /// be made invalid by Rust types alone.
-    pub fn new(product_id: String) -> Result<Self, RuntimeConfigValidationError> {
-        Self::new_with_execution(product_id, ProductExecutionKind::Spa)
+    pub fn new(
+        product_id: String,
+        artifact_identity: String,
+    ) -> Result<Self, RuntimeConfigValidationError> {
+        Self::new_with_execution(product_id, artifact_identity, ProductExecutionKind::Spa)
     }
 
     /// Build a product context for a host-selected executable kind.
     pub fn new_with_execution(
         product_id: String,
+        artifact_identity: String,
         execution_kind: ProductExecutionKind,
     ) -> Result<Self, RuntimeConfigValidationError> {
         Ok(Self {
             product_id: normalize_product_identifier(&product_id)?,
+            artifact_identity: validate_artifact_identity(artifact_identity)?,
             execution_kind,
         })
     }
@@ -254,6 +266,26 @@ pub fn normalize_product_identifier(
             product_id: product_id.to_string(),
         })
     }
+}
+/// Largest accepted host-defined artifact identity, measured in UTF-8 bytes.
+pub const MAX_ARTIFACT_IDENTITY_LEN: usize = 512;
+
+fn validate_artifact_identity(
+    artifact_identity: String,
+) -> Result<String, RuntimeConfigValidationError> {
+    require_non_empty("artifact_identity", &artifact_identity)?;
+    if artifact_identity.len() > MAX_ARTIFACT_IDENTITY_LEN {
+        return Err(RuntimeConfigValidationError::ArtifactIdentityTooLong {
+            actual: artifact_identity.len(),
+            maximum: MAX_ARTIFACT_IDENTITY_LEN,
+        });
+    }
+    if artifact_identity.trim() != artifact_identity
+        || artifact_identity.chars().any(char::is_control)
+    {
+        return Err(RuntimeConfigValidationError::InvalidArtifactIdentity { artifact_identity });
+    }
+    Ok(artifact_identity)
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), RuntimeConfigValidationError> {
@@ -295,6 +327,22 @@ pub enum RuntimeConfigValidationError {
     InvalidProductId {
         /// Actual product id value.
         product_id: String,
+    },
+    /// Artifact identity contained surrounding whitespace or a control character.
+    #[display(
+        "artifact_identity must not contain leading, trailing, or control whitespace, got {artifact_identity:?}"
+    )]
+    InvalidArtifactIdentity {
+        /// Actual artifact identity value.
+        artifact_identity: String,
+    },
+    /// Artifact identity exceeded the conservative trust-boundary limit.
+    #[display("artifact_identity must be at most {maximum} bytes, got {actual}")]
+    ArtifactIdentityTooLong {
+        /// Supplied UTF-8 byte length.
+        actual: usize,
+        /// Maximum accepted UTF-8 byte length.
+        maximum: usize,
     },
 }
 
@@ -598,6 +646,8 @@ pub enum CoreStorageKey {
     PermissionAuthorization {
         /// Product whose permission decision is being stored.
         product_id: String,
+        /// Verified executable artifact receiving the permission decision.
+        artifact_identity: String,
         /// Permission request whose authorization is being stored.
         request: PermissionAuthorizationRequest,
     },
@@ -630,14 +680,16 @@ pub enum CoreStorageKey {
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
 ///
 /// `kind` is the Rust variant name and is part of the host embedding contract.
-/// `product_id` is present only for keys whose storage slot is directly
-/// product-indexed.
+/// Product and artifact identities are present only for keys indexed by those
+/// principals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreStorageKeyDescription {
     /// Stable storage-key variant name.
     pub kind: &'static str,
     /// Product that owns this exact slot, when the key is product-indexed.
     pub product_id: Option<String>,
+    /// Verified artifact that owns this exact slot, when artifact-indexed.
+    pub artifact_identity: Option<String>,
 }
 
 /// Failure to decode exactly one [`CoreStorageKey`].
@@ -662,58 +714,80 @@ pub fn describe_core_storage_key(
     if !input.is_empty() {
         return Err(CoreStorageKeyDescriptionError::TrailingBytes);
     }
-    let (kind, product_id) = match key {
-        CoreStorageKey::AuthSession => ("AuthSession", None),
-        CoreStorageKey::PairingDeviceIdentity => ("PairingDeviceIdentity", None),
-        CoreStorageKey::PermissionAuthorization { product_id, .. } => {
-            ("PermissionAuthorization", Some(product_id))
+    let (kind, product_id, artifact_identity) = match key {
+        CoreStorageKey::AuthSession => ("AuthSession", None, None),
+        CoreStorageKey::PairingDeviceIdentity => ("PairingDeviceIdentity", None, None),
+        CoreStorageKey::PermissionAuthorization {
+            product_id,
+            artifact_identity,
+            ..
+        } => (
+            "PermissionAuthorization",
+            Some(product_id),
+            Some(artifact_identity),
+        ),
+        CoreStorageKey::AllowanceKeys { .. } => ("AllowanceKeys", None, None),
+        CoreStorageKey::LastProcessedPairingStatement => {
+            ("LastProcessedPairingStatement", None, None)
         }
-        CoreStorageKey::AllowanceKeys { .. } => ("AllowanceKeys", None),
-        CoreStorageKey::LastProcessedPairingStatement => ("LastProcessedPairingStatement", None),
-        CoreStorageKey::AutoSigningKey { product_id } => ("AutoSigningKey", Some(product_id)),
-        CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None),
-        CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None),
-        CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
+        CoreStorageKey::AutoSigningKey { product_id } => ("AutoSigningKey", Some(product_id), None),
+        CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None, None),
+        CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None, None),
+        CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None, None),
     };
-    Ok(CoreStorageKeyDescription { kind, product_id })
+    Ok(CoreStorageKeyDescription {
+        kind,
+        product_id,
+        artifact_identity,
+    })
 }
 
 impl CoreStorageKey {
-    /// Persisted authorization key for one product-scoped device permission.
+    /// Persisted authorization key for one product/artifact-scoped device permission.
     pub fn device_permission_authorization(
         product_id: &str,
+        artifact_identity: &str,
         permission: &HostDevicePermissionRequest,
     ) -> Self {
         Self::PermissionAuthorization {
             product_id: product_id.to_string(),
+            artifact_identity: artifact_identity.to_string(),
             request: PermissionAuthorizationRequest::Device(*permission),
         }
     }
 
-    /// Persisted authorization key for one product-scoped remote permission.
+    /// Persisted authorization key for one product/artifact-scoped remote permission.
     pub fn remote_permission_authorization(
         product_id: &str,
+        artifact_identity: &str,
         request: &RemotePermissionRequest,
     ) -> Self {
         Self::PermissionAuthorization {
             product_id: product_id.to_string(),
+            artifact_identity: artifact_identity.to_string(),
             request: PermissionAuthorizationRequest::Remote(canonical_remote_request(request)),
         }
     }
 
-    /// Persisted authorization key for product-scoped identity disclosure.
-    pub fn identity_disclosure_authorization(product_id: &str) -> Self {
+    /// Persisted authorization key for product/artifact-scoped identity disclosure.
+    pub fn identity_disclosure_authorization(product_id: &str, artifact_identity: &str) -> Self {
         Self::PermissionAuthorization {
             product_id: product_id.to_string(),
+            artifact_identity: artifact_identity.to_string(),
             request: PermissionAuthorizationRequest::IdentityDisclosure,
         }
     }
 
-    /// Persisted authorization key for one product accessing another product's
-    /// account context.
-    pub fn account_access_authorization(product_id: &str, target_product_id: &str) -> Self {
+    /// Persisted authorization key for one product artifact accessing another
+    /// product's account context.
+    pub fn account_access_authorization(
+        product_id: &str,
+        artifact_identity: &str,
+        target_product_id: &str,
+    ) -> Self {
         Self::PermissionAuthorization {
             product_id: product_id.to_string(),
+            artifact_identity: artifact_identity.to_string(),
             request: PermissionAuthorizationRequest::AccountAccess {
                 target_product_id: target_product_id.to_string(),
             },
@@ -753,6 +827,7 @@ mod tests {
     fn core_storage_key_description_is_strict_and_product_scoped() {
         let permission = CoreStorageKey::device_permission_authorization(
             "product.dot",
+            "sha256:artifact-a",
             &HostDevicePermissionRequest::Camera,
         )
         .encode();
@@ -761,6 +836,7 @@ mod tests {
             Ok(CoreStorageKeyDescription {
                 kind: "PermissionAuthorization",
                 product_id: Some("product.dot".to_string()),
+                artifact_identity: Some("sha256:artifact-a".to_string()),
             })
         );
         for (key, kind, product_id) in [
@@ -806,6 +882,7 @@ mod tests {
             let description = describe_core_storage_key(&key.encode()).expect("valid key");
             assert_eq!(description.kind, kind);
             assert_eq!(description.product_id.as_deref(), product_id);
+            assert_eq!(description.artifact_identity, None);
         }
 
         assert_eq!(
@@ -825,28 +902,46 @@ mod tests {
     }
 
     #[test]
-    fn permission_authorization_keys_separate_product_and_request_variants() {
+    fn permission_authorization_keys_separate_product_artifact_and_request_variants() {
         let camera = CoreStorageKey::device_permission_authorization(
             "product.dot",
+            "sha256:artifact-a",
             &HostDevicePermissionRequest::Camera,
         );
         let other_product = CoreStorageKey::device_permission_authorization(
             "other.dot",
+            "sha256:artifact-a",
+            &HostDevicePermissionRequest::Camera,
+        );
+        let other_artifact = CoreStorageKey::device_permission_authorization(
+            "product.dot",
+            "sha256:artifact-b",
             &HostDevicePermissionRequest::Camera,
         );
         let remote = CoreStorageKey::remote_permission_authorization(
             "product.dot",
+            "sha256:artifact-a",
             &RemotePermissionRequest {
                 permission: RemotePermission::ChainSubmit,
             },
         );
-        let identity = CoreStorageKey::identity_disclosure_authorization("product.dot");
-        let other_product_identity = CoreStorageKey::identity_disclosure_authorization("other.dot");
-        let account_access =
-            CoreStorageKey::account_access_authorization("product.dot", "target.dot");
-        let other_target = CoreStorageKey::account_access_authorization("product.dot", "other.dot");
+        let identity =
+            CoreStorageKey::identity_disclosure_authorization("product.dot", "sha256:artifact-a");
+        let other_product_identity =
+            CoreStorageKey::identity_disclosure_authorization("other.dot", "sha256:artifact-a");
+        let account_access = CoreStorageKey::account_access_authorization(
+            "product.dot",
+            "sha256:artifact-a",
+            "target.dot",
+        );
+        let other_target = CoreStorageKey::account_access_authorization(
+            "product.dot",
+            "sha256:artifact-a",
+            "other.dot",
+        );
 
         assert_ne!(camera, other_product);
+        assert_ne!(camera, other_artifact);
         assert_ne!(camera, remote);
         assert_ne!(camera, identity);
         assert_ne!(remote, identity);
@@ -868,8 +963,16 @@ mod tests {
             },
         };
         assert_eq!(
-            CoreStorageKey::remote_permission_authorization("product.dot", &unsorted),
-            CoreStorageKey::remote_permission_authorization("product.dot", &sorted)
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                "sha256:artifact-a",
+                &unsorted,
+            ),
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                "sha256:artifact-a",
+                &sorted,
+            )
         );
 
         let mixed = RemotePermissionRequest {
@@ -883,8 +986,16 @@ mod tests {
             },
         };
         assert_eq!(
-            CoreStorageKey::remote_permission_authorization("product.dot", &mixed),
-            CoreStorageKey::remote_permission_authorization("product.dot", &canonical)
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                "sha256:artifact-a",
+                &mixed,
+            ),
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                "sha256:artifact-a",
+                &canonical,
+            )
         );
     }
 
@@ -900,10 +1011,16 @@ mod tests {
                 domains: vec!["x".into(), "y".into(), "z".into()],
             },
         };
-        let injecting_key =
-            CoreStorageKey::remote_permission_authorization("product.dot", &injecting);
-        let benign_key =
-            CoreStorageKey::remote_permission_authorization("product.dot", &benign_same_set);
+        let injecting_key = CoreStorageKey::remote_permission_authorization(
+            "product.dot",
+            "sha256:artifact-a",
+            &injecting,
+        );
+        let benign_key = CoreStorageKey::remote_permission_authorization(
+            "product.dot",
+            "sha256:artifact-a",
+            &benign_same_set,
+        );
         assert_ne!(injecting_key, benign_key);
 
         let webrtc = RemotePermissionRequest {
@@ -911,7 +1028,11 @@ mod tests {
         };
         assert_ne!(
             injecting_key,
-            CoreStorageKey::remote_permission_authorization("product.dot", &webrtc)
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                "sha256:artifact-a",
+                &webrtc,
+            )
         );
 
         let injecting_reordered = RemotePermissionRequest {
@@ -921,12 +1042,21 @@ mod tests {
         };
         assert_eq!(
             injecting_key,
-            CoreStorageKey::remote_permission_authorization("product.dot", &injecting_reordered)
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                "sha256:artifact-a",
+                &injecting_reordered,
+            )
         );
     }
 }
 
 /// Host-private persistence for core-owned state.
+///
+/// Values can contain capability and signing material. Implementations take
+/// ownership of write buffers, must avoid unnecessary plaintext copies, and
+/// must erase replaced or cleared values according to the platform storage
+/// guarantees. Callers zeroize transient read and decode buffers.
 #[async_trait]
 pub trait CoreStorage: Send + Sync {
     /// Read a core-owned value by typed slot.

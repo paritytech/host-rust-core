@@ -343,8 +343,12 @@ impl ProductRuntimeHost {
         let cx = remote_authority_context(cx);
         let allowance = remote_authority_call(
             &cx,
-            self.authority
-                .statement_store_allowance_key(&cx, &session, self.product_id()),
+            self.authority.statement_store_allowance_key(
+                &cx,
+                &session,
+                self.product_id(),
+                self.product.artifact_identity.clone(),
+            ),
         )
         .await
         .map_err(statement_authority_failure)?;
@@ -465,7 +469,11 @@ mod tests {
             services.clone(),
             crate::host_core::ConnectionAdapters::from_services(&services),
             signing_host.clone(),
-            ProductContext::new(product_id.to_string()).expect("valid product id"),
+            ProductContext::new(
+                product_id.to_string(),
+                "sha256:statement-store-test-artifact".to_string(),
+            )
+            .expect("valid product context"),
         );
         (host, signing_host)
     }
@@ -599,11 +607,15 @@ mod tests {
 
         let message = submitted_remote_message(&platform, &session);
         let crate::host_logic::sso::messages::RemoteMessageData::V1(
-            crate::host_logic::sso::messages::v1::RemoteMessage::ResourceAllocationRequest(request),
+            crate::host_logic::sso::messages::v1::RemoteMessage::ArtifactBoundResourceAllocationRequest(
+                bound,
+            ),
         ) = message.data
         else {
-            panic!("expected resource allocation request");
+            panic!("expected artifact-bound resource allocation request");
         };
+        assert_eq!(bound.artifact_identity, "sha256:shared-test-artifact");
+        let request = bound.request;
         assert_eq!(request.calling_product_id, "myapp.dot");
         assert_eq!(
             request.on_existing,
