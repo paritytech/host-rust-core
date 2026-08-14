@@ -12,9 +12,9 @@ import {
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   RemotePermissionRequest,
   RemotePermissionResponse,
-  ThemeVariant,
 } from "@parity/truapi";
 import type { GenericError, NotificationId } from "@parity/truapi";
 import {
@@ -115,7 +115,7 @@ export function createWasmRawCallbacks(
     subscribeTheme: (sendItem, sendError) =>
       driveResultStream(
         callbacks.theme.subscribeTheme(),
-        (item) => sendItem(ThemeVariant.enc(item)),
+        (item) => sendItem(HostThemeSubscribeItem.enc(item)),
         sendError,
       ),
     confirmUserAction: async (review) =>

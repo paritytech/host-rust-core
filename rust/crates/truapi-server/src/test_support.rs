@@ -163,7 +163,7 @@ impl Drop for PendingThemeStream {
 }
 
 impl Stream for PendingThemeStream {
-    type Item = Result<v01::ThemeVariant, v01::GenericError>;
+    type Item = Result<v01::HostThemeSubscribeItem, v01::GenericError>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -1459,13 +1459,20 @@ impl UserConfirmation for StubPlatform {
 }
 
 impl ThemeHost for StubPlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         if self.theme_stream_pending {
             return Box::pin(PendingThemeStream {
                 dropped: self.theme_stream_dropped.clone(),
             });
         }
-        Box::pin(stream::once(async { Ok(v01::ThemeVariant::Dark) }))
+        Box::pin(stream::once(async {
+            Ok(v01::HostThemeSubscribeItem {
+                name: v01::ThemeName::Default,
+                variant: v01::ThemeVariant::Dark,
+            })
+        }))
     }
 }
 
