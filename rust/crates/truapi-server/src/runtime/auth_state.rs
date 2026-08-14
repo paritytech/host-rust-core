@@ -9,10 +9,15 @@ use truapi_platform::{AuthPresenter, AuthState, Platform, SessionUiInfo};
 
 /// Serialized auth-state machine bound to the platform's `auth_state_changed`
 /// sink. Each transition mutates under the lock, releases it, then emits the
-/// new state (when it actually changed), so `auth_state_changed` handlers may
-/// safely re-enter the runtime (e.g. a host cancelling the login it just
-/// observed). The cancel channel for an in-flight login lives inside the
-/// in-flight login states, making its registration atomic with the transition.
+/// new state, so `auth_state_changed` handlers may safely re-enter the runtime
+/// (e.g. a host cancelling the login it just observed). The cancel channel for
+/// an in-flight login lives inside the in-flight login states, making its
+/// registration atomic with the transition.
+///
+/// The first transition attempt always emits, whether or not it changed the
+/// state: a host that boots signed out drives one reconciliation whose outcome
+/// is the default `Disconnected`, and it must be able to tell that answer apart
+/// from "no answer yet". Later attempts emit only on a real change.
 #[derive(Clone)]
 pub(crate) struct AuthStateMachine {
     platform: Arc<dyn Platform>,
@@ -28,6 +33,8 @@ struct AuthStateInner {
     /// Resolves the in-flight login's cancel receiver. Present while the state
     /// is `Pairing` or `Authenticating`.
     cancel_tx: Option<oneshot::Sender<()>>,
+    /// Whether the host has observed any state yet.
+    announced: bool,
 }
 
 impl AuthStateMachine {
@@ -171,15 +178,21 @@ impl AuthStateMachine {
         });
     }
 
-    /// Run `apply` under the lock; when it changed the state (returned
-    /// `Some`), emit the new state to the host after releasing the lock.
+    /// Run `apply` under the lock, then emit the resulting state to the host
+    /// after releasing the lock. Emits when `apply` changed the state (returned
+    /// `Some`), and on the first attempt regardless, so the host's opening
+    /// reconciliation always produces exactly one emission.
     fn transition<T>(&self, apply: impl FnOnce(&mut AuthStateInner) -> Option<T>) -> Option<T> {
         let mut inner = self.inner.lock().expect("auth state mutex poisoned");
-        let applied = apply(&mut inner)?;
+        let applied = apply(&mut inner);
+        let emit = applied.is_some() || !inner.announced;
+        inner.announced = true;
         let state = inner.state.clone();
         drop(inner);
-        AuthPresenter::auth_state_changed(self.platform.as_ref(), state);
-        Some(applied)
+        if emit {
+            AuthPresenter::auth_state_changed(self.platform.as_ref(), state);
+        }
+        applied
     }
 }
 
@@ -187,6 +200,52 @@ impl AuthStateMachine {
 mod tests {
     use super::*;
     use crate::test_support::stub_platform;
+
+    #[test]
+    fn a_signed_out_boot_reconciliation_emits_disconnected() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+
+        machine.store_disconnected();
+
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected],
+            "a host that boots signed out must be told so, not left in silence"
+        );
+
+        machine.store_disconnected();
+
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected],
+            "a later reconciliation with an unchanged outcome stays silent"
+        );
+    }
+
+    #[test]
+    fn a_boot_reconciliation_that_restores_a_session_emits_only_connected() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+        let session = SessionUiInfo::default();
+
+        machine.connected(&session);
+
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(session)],
+            "the opening emission is the reconciliation's outcome, not a placeholder"
+        );
+    }
 
     #[test]
     fn pairing_started_refuses_a_second_login_while_authenticating() {

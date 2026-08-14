@@ -35,6 +35,19 @@ export interface WorkerPairingHostRuntime {
   disconnectSession(): Promise<void>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
+  /**
+   * Restore the session persisted in the core's `AuthSession` slot. Resolves
+   * once product frames may use it, so a host can await this at boot before
+   * routing.
+   */
+  activateStoredSession(): Promise<void>;
+  /**
+   * Install an already-paired session the host holds itself, without copying
+   * it into core storage.
+   */
+  activateExternalSession(blob: Uint8Array): Promise<void>;
+  /** Drop the active paired session without notifying the peer. */
+  resetSessionState(): Promise<void>;
   getPermissionAuthorizationStatus(
     productId: string,
     request: PermissionAuthorizationRequest,
@@ -79,6 +92,10 @@ interface RuntimeState {
     number,
     { resolve: () => void; reject: (error: Error) => void }
   >;
+  pendingSessionActivations: Map<
+    number,
+    { resolve: () => void; reject: (error: Error) => void }
+  >;
   pendingPermissionAuthorizationStatuses: Map<
     number,
     {
@@ -109,6 +126,7 @@ function debugLoggingEnabled(state: RuntimeState): boolean {
 
 let nextDisconnectRequestId = 0;
 let nextPermissionAuthorizationRequestId = 0;
+let nextSessionActivationRequestId = 0;
 function encodePermissionAuthorizationRequest(
   request: PermissionAuthorizationRequest,
 ): Uint8Array {
@@ -339,6 +357,19 @@ function handleDisconnectResponse(
   );
 }
 
+function handleSessionActivationResponse(
+  state: RuntimeState,
+  msg:
+    | { requestId: number; ok: true }
+    | { requestId: number; ok: false; error: string },
+): void {
+  settlePending(
+    state.pendingSessionActivations,
+    msg.requestId,
+    msg.ok ? { ok: true, value: undefined } : { ok: false, error: msg.error },
+  );
+}
+
 function handlePermissionAuthorizationStatusResponse(
   state: RuntimeState,
   msg:
@@ -390,6 +421,7 @@ function handleSetPermissionAuthorizationStatusResponse(
 
 function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingDisconnects, error);
+  rejectAll(state.pendingSessionActivations, error);
   rejectAll(state.pendingPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingPermissionAuthorizationStatusBatches, error);
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
@@ -489,6 +521,7 @@ export function createWebWorkerPairingHostRuntime(
       subscriptionDisposers: new Map(),
       chainConnections: new Map(),
       pendingDisconnects: new Map(),
+      pendingSessionActivations: new Map(),
       pendingPermissionAuthorizationStatuses: new Map(),
       pendingPermissionAuthorizationStatusBatches: new Map(),
       pendingSetPermissionAuthorizationStatuses: new Map(),
@@ -537,6 +570,9 @@ export function createWebWorkerPairingHostRuntime(
         }
         case "disconnectSessionResponse":
           handleDisconnectResponse(state, msg);
+          break;
+        case "sessionActivationResponse":
+          handleSessionActivationResponse(state, msg);
           break;
         case "permissionAuthorizationStatusResponse":
           handlePermissionAuthorizationStatusResponse(state, msg);
@@ -742,6 +778,33 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
       state.worker.postMessage({
         kind: "notifySessionStoreChanged",
       } satisfies MainToWorker);
+    },
+    activateStoredSession(): Promise<void> {
+      return sendWorkerRequest<void>(
+        state,
+        state.pendingSessionActivations,
+        () => ++nextSessionActivationRequestId,
+        undefined,
+        (requestId) => ({ kind: "activateStoredSession", requestId }),
+      );
+    },
+    activateExternalSession(blob: Uint8Array): Promise<void> {
+      return sendWorkerRequest<void>(
+        state,
+        state.pendingSessionActivations,
+        () => ++nextSessionActivationRequestId,
+        undefined,
+        (requestId) => ({ kind: "activateExternalSession", requestId, blob }),
+      );
+    },
+    resetSessionState(): Promise<void> {
+      return sendWorkerRequest<void>(
+        state,
+        state.pendingSessionActivations,
+        () => ++nextSessionActivationRequestId,
+        undefined,
+        (requestId) => ({ kind: "resetSessionState", requestId }),
+      );
     },
     getPermissionAuthorizationStatus(productId, request) {
       return sendWorkerRequest<PermissionAuthorizationStatus>(

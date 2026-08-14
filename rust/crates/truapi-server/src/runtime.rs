@@ -5994,14 +5994,15 @@ mod tests {
         );
 
         assert!(host.test_session_state().current().is_none());
-        // `set_session` bypasses the auth state cell, so the cell never left
-        // `Disconnected` and clearing the invalid blob emits nothing.
-        assert!(
-            platform
+        // `set_session` bypasses the auth state cell, so the cell is still
+        // `Disconnected`; clearing the invalid blob is the opening
+        // reconciliation, which reports its outcome even when unchanged.
+        assert_eq!(
+            *platform
                 .auth_states
                 .lock()
-                .expect("auth state list mutex poisoned")
-                .is_empty()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected]
         );
     }
 
@@ -6165,14 +6166,15 @@ mod tests {
                 v01::HostAccountConnectionStatusSubscribeItem::Disconnected
             )
         );
-        // `set_session` bypasses the auth state cell, so the cell never left
-        // `Disconnected` and the logout emits nothing new.
-        assert!(
-            platform
+        // `set_session` bypasses the auth state cell, so the cell is still
+        // `Disconnected`; the logout is the opening reconciliation, which
+        // reports its outcome even when unchanged.
+        assert_eq!(
+            *platform
                 .auth_states
                 .lock()
-                .expect("auth state list mutex poisoned")
-                .is_empty()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected]
         );
     }
 
