@@ -5749,6 +5749,28 @@ mod tests {
     }
 
     #[test]
+    fn external_session_activation_reports_its_outcome_when_the_blob_is_corrupt() {
+        let platform = Arc::new(StubPlatform::default());
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        futures::executor::block_on(pairing_host.activate_external_session(&[0xff]))
+            .expect_err("invalid bytes are rejected");
+
+        // The decode fails before any transition can run, so without an
+        // explicit announcement a host that holds its own session and boots on
+        // a corrupt blob would hear nothing at all.
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected],
+            "an activation that failed must still tell the host where it stands"
+        );
+    }
+
+    #[test]
     fn external_session_activation_replaces_and_fences_the_previous_session() {
         let (host, pairing_host) = ProductRuntimeHost::new_compat_with_pairing(
             Arc::new(StubPlatform::default()),
@@ -5994,15 +6016,16 @@ mod tests {
         );
 
         assert!(host.test_session_state().current().is_none());
-        // `set_session` bypasses the auth state cell, so the cell is still
-        // `Disconnected`; clearing the invalid blob is the opening
-        // reconciliation, which reports its outcome even when unchanged.
-        assert_eq!(
-            *platform
+        // `set_session` bypasses the auth state cell, so the cell never left
+        // `Disconnected` and clearing the invalid blob emits nothing. Only a
+        // session activation announces an unchanged state; a store-sync tick
+        // that finds nothing must not flash signed out at a signed-in host.
+        assert!(
+            platform
                 .auth_states
                 .lock()
-                .expect("auth state list mutex poisoned"),
-            vec![AuthState::Disconnected]
+                .expect("auth state list mutex poisoned")
+                .is_empty()
         );
     }
 
@@ -6166,15 +6189,15 @@ mod tests {
                 v01::HostAccountConnectionStatusSubscribeItem::Disconnected
             )
         );
-        // `set_session` bypasses the auth state cell, so the cell is still
-        // `Disconnected`; the logout is the opening reconciliation, which
-        // reports its outcome even when unchanged.
-        assert_eq!(
-            *platform
+        // `set_session` bypasses the auth state cell, so the cell never left
+        // `Disconnected` and the logout emits nothing new. Only a session
+        // activation announces an unchanged state.
+        assert!(
+            platform
                 .auth_states
                 .lock()
-                .expect("auth state list mutex poisoned"),
-            vec![AuthState::Disconnected]
+                .expect("auth state list mutex poisoned")
+                .is_empty()
         );
     }
 

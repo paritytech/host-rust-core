@@ -499,6 +499,22 @@ describe("createWebWorkerPairingHostRuntime", () => {
     await expect(pending).rejects.toThrow(/boom/);
   });
 
+  it("rejects session activation calls made after the runtime is gone", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const blob = new Uint8Array([1, 2, 3]);
+    worker.emitError("boom");
+
+    // Resolving here would tell a host at boot that the activation ran and
+    // found no session, when nothing was ever sent to the worker.
+    await expect(runtime.activateStoredSession()).rejects.toThrow(/boom/);
+    await expect(runtime.activateExternalSession(blob)).rejects.toThrow(/boom/);
+    await expect(runtime.resetSessionState()).rejects.toThrow(/boom/);
+
+    runtime.dispose();
+    await expect(runtime.activateStoredSession()).rejects.toThrow();
+  });
+
   it("dispatches callback requests to host hooks", async () => {
     const worker = new FakeWorker();
     let clears = 0;

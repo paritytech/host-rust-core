@@ -38,15 +38,21 @@ export interface WorkerPairingHostRuntime {
   /**
    * Restore the session persisted in the core's `AuthSession` slot. Resolves
    * once product frames may use it, so a host can await this at boot before
-   * routing.
+   * routing. Rejects when the runtime has been disposed or the worker faulted,
+   * so a host never routes on an activation that did not run.
    */
   activateStoredSession(): Promise<void>;
   /**
    * Install an already-paired session the host holds itself, without copying
-   * it into core storage.
+   * it into core storage. Rejects on a disposed runtime, as
+   * {@link WorkerPairingHostRuntime.activateStoredSession} does.
    */
   activateExternalSession(blob: Uint8Array): Promise<void>;
-  /** Drop the active paired session without notifying the peer. */
+  /**
+   * Drop the active paired session without notifying the peer. Rejects on a
+   * disposed runtime, as
+   * {@link WorkerPairingHostRuntime.activateStoredSession} does.
+   */
   resetSessionState(): Promise<void>;
   getPermissionAuthorizationStatus(
     productId: string,
@@ -451,6 +457,28 @@ function sendWorkerRequest<T>(
   });
 }
 
+/**
+ * Send a session activation request, rejecting rather than resolving when the
+ * runtime is already gone. A host awaits these to learn whether it is signed
+ * in, so a silent success after a worker fault would route it as if the
+ * activation had run.
+ */
+function sendSessionActivationRequest(
+  state: RuntimeState,
+  buildMessage: (requestId: number) => MainToWorker,
+): Promise<void> {
+  if (state.disposed) {
+    return Promise.reject(state.closedError ?? new Error("runtime disposed"));
+  }
+  return sendWorkerRequest<void>(
+    state,
+    state.pendingSessionActivations,
+    () => ++nextSessionActivationRequestId,
+    undefined,
+    buildMessage,
+  );
+}
+
 function closeCoreState(core: CoreState, error: Error): void {
   if (core.disposed) return;
   core.disposed = true;
@@ -780,31 +808,23 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
       } satisfies MainToWorker);
     },
     activateStoredSession(): Promise<void> {
-      return sendWorkerRequest<void>(
-        state,
-        state.pendingSessionActivations,
-        () => ++nextSessionActivationRequestId,
-        undefined,
-        (requestId) => ({ kind: "activateStoredSession", requestId }),
-      );
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "activateStoredSession",
+        requestId,
+      }));
     },
     activateExternalSession(blob: Uint8Array): Promise<void> {
-      return sendWorkerRequest<void>(
-        state,
-        state.pendingSessionActivations,
-        () => ++nextSessionActivationRequestId,
-        undefined,
-        (requestId) => ({ kind: "activateExternalSession", requestId, blob }),
-      );
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "activateExternalSession",
+        requestId,
+        blob,
+      }));
     },
     resetSessionState(): Promise<void> {
-      return sendWorkerRequest<void>(
-        state,
-        state.pendingSessionActivations,
-        () => ++nextSessionActivationRequestId,
-        undefined,
-        (requestId) => ({ kind: "resetSessionState", requestId }),
-      );
+      return sendSessionActivationRequest(state, (requestId) => ({
+        kind: "resetSessionState",
+        requestId,
+      }));
     },
     getPermissionAuthorizationStatus(productId, request) {
       return sendWorkerRequest<PermissionAuthorizationStatus>(
