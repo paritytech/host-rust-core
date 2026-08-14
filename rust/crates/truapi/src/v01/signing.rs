@@ -126,13 +126,15 @@ pub struct HostSignPayloadWithLegacyAccountRequest {
 /// Response containing a created transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCreateTransactionResponse {
-    /// SCALE-encoded signed transaction.
+    /// SCALE-encoded transaction, signed unless the request supplied its own
+    /// V5 `VerifyMultiSignature` extension.
     pub transaction: Vec<u8>,
 }
 
 /// Response containing a transaction created with a non-product account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCreateTransactionWithLegacyAccountResponse {
-    /// SCALE-encoded signed transaction.
+    /// SCALE-encoded transaction, signed unless the request supplied its own
+    /// V5 `VerifyMultiSignature` extension.
     pub transaction: Vec<u8>,
 }
