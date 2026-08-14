@@ -1,0 +1,39 @@
+// Shape of the web-targeted truapi-server WASM bundle. `make wasm` writes the
+// wasm-pack glue and its `.wasm` payload to `dist/wasm/web/`; the ambient
+// declaration in `src/wasm/web/truapi_server.d.ts` types that module against
+// these interfaces so the worker can name it in a statically analysable import.
+
+import type { PermissionAuthorizationRuntime } from "./worker-permission-authorization.js";
+
+/** One product-scoped core inside the worker. */
+export interface WorkerProductRuntime {
+  receiveFrame(frame: Uint8Array): Promise<void>;
+  dispose(): void;
+  free(): void;
+}
+
+/** The long-lived pairing-host runtime product cores are created from. */
+export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime {
+  productRuntime(
+    product: unknown,
+    coreCallbacks: unknown,
+  ): WorkerProductRuntime;
+  disconnectSession(): Promise<void>;
+  cancelPairing(): void;
+  notifySessionStoreChanged(): void;
+  free(): void;
+}
+
+/** Module surface the wasm-pack glue exports. */
+export interface WasmModuleShape {
+  default: (input?: unknown) => Promise<unknown>;
+  WasmPairingHostRuntime: new (
+    callbacks: unknown,
+    hostConfig: unknown,
+  ) => WorkerPairingHostRuntime;
+  WasmProductRuntime: new (
+    callbacks: unknown,
+    runtimeConfig: unknown,
+  ) => WorkerProductRuntime;
+  setLogLevel?: (level: string) => void;
+}
