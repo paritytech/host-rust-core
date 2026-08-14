@@ -62,6 +62,58 @@ const sub: Subscription = truapi.chainInteraction
 sub.unsubscribe();
 ```
 
+## Request timeouts
+
+Every request carries a time bound so a silent host never hangs the product. `createTransport`
+accepts a transport-wide bound in `requestTimeoutMs` — an integer between `1` and `2147483647`,
+defaulting to `30_000` — and a per-call `timeoutMs` on `request` overrides it. A request that
+outlives its bound rejects with `RequestTimeoutError`, which carries the bound it outlived on
+`timeoutMs`.
+
+```ts
+import {
+  createClient,
+  createMessagePortProvider,
+  createTransport,
+  RequestTimeoutError,
+  type Client,
+} from "@parity/truapi";
+
+const provider = createMessagePortProvider(port);
+const transport = createTransport(provider, { requestTimeoutMs: 10_000 });
+const truapi: Client = createClient(transport);
+
+try {
+  const result = await truapi.accountManagement.accountGet({
+    productAccountId: { dotNsIdentifier: "my-product.dot", derivationIndex: { tag: "Index", value: 0 } },
+  });
+  // …
+} catch (error) {
+  if (error instanceof RequestTimeoutError) {
+    // The peer accepted the frame but never replied; surface or retry.
+  } else {
+    // The transport or provider closed; re-establish the channel.
+  }
+}
+```
+
+A timeout surfaces as a **promise rejection**, not an `Err` in the `ResultAsync`: `request` builds
+its result with `ResultAsync.fromSafePromise`, so a `.match(onOk, onErr)` runs neither callback and
+the error is thrown instead — await the call inside `try`/`catch`, and discriminate with
+`instanceof`, never on message text.
+
+The effective bound is the larger of the configured `requestTimeoutMs` and the method's floor;
+`timeoutMs` overrides both. Floors sit above the host deadlines they clear, so a bound never aborts
+an answer the host is still allowed to send:
+
+| Floor | Methods | Host deadline cleared |
+| ----- | ------- | --------------------- |
+| `190_000` ms | account get, alias, and proof; request login; every signing method | 180s remote-authority deadline |
+| `420_000` ms | resource allocation; preimage submit; statement-store submit and create-proof-authorized | 300s allocation / 360s preimage caps |
+
+`@parity/truapi/sandbox`'s `getClientSync()` takes no options, so it uses the default `30_000` ms
+bound and the floors.
+
 ## What's in the package
 
 - **Transport providers** for `MessagePort` pipes (used by both webview hosts and iframe hosts).
