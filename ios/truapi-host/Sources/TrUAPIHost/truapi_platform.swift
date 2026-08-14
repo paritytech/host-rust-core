@@ -859,7 +859,7 @@ public struct HostChainSet: Equatable, Hashable {
      */
     public var network: String
     /**
-     * Complete set of chains available through this host.
+     * Chains this host serves, keyed by protocol role.
      */
     public var chains: [HostChainEntry]
 
@@ -870,7 +870,7 @@ public struct HostChainSet: Equatable, Hashable {
          * Ecosystem the host is configured for, e.g. "polkadot", "paseo".
          */network: String,
         /**
-         * Complete set of chains available through this host.
+         * Chains this host serves, keyed by protocol role.
          */chains: [HostChainEntry]) {
         self.network = network
         self.chains = chains

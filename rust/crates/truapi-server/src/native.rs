@@ -467,9 +467,8 @@ pub trait HostCallbacks: Send + Sync {
     ) -> Result<bool, HostRejection>;
 
     /// Enumerate the chains this host serves (RFC 0026): its environment plus
-    /// one entry per chain role. The returned set must match exactly what
-    /// `chain_connect` will accept. Invoked on the dispatcher thread; must
-    /// return promptly.
+    /// one entry per chain role. Invoked on the dispatcher thread; must return
+    /// promptly.
     fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection>;
 
     /// Read a value from the host's scoped key-value store.
