@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 
 import {
   encodeWireMessage,
+  TRUAPI_CODEC_VERSION,
   TRUAPI_WIRE_SCHEMA_HASH,
   VersionedHostSignRawRequest,
 } from "@parity/truapi";
 import * as W from "@parity/truapi/wire-table";
 
+import { WIRE_ENVELOPE_VERSION } from "./ingest.js";
 import {
   decodeValuesFromEnv,
   hostHeaderAllowed,
@@ -1170,5 +1172,64 @@ test("TRUAPI_DEBUGGER_PORT is validated, not silently clamped or coerced", () =>
   // else is indistinguishable from a host that never dialed.
   for (const bad of ["99999", "65536", "1.5", "0", "-1", "1e4", "0x10", "abc", "9231x"]) {
     expect(portFromEnv(bad)).toBeNull();
+  }
+});
+
+test("a replayed backlog keeps the producer's clock through the real socket", async () => {
+  // The seam that hid the original bug: the producer stamped `observedAt` and
+  // ingest honoured it, but the server built its envelope without the field, so
+  // the fix was invisible through the only mount a host actually dials. Drive it
+  // end to end rather than unit-testing either half.
+  const server = startDebugServer({ port: 0 });
+  const base = `http://localhost:${server.port}`;
+  try {
+    const send = (
+      requestId: string,
+      id: number,
+      dir: "in" | "out",
+      observedAt: number,
+    ): string => {
+      const encoded = encodeWireMessage({
+        requestId,
+        payload: { id, value: new Uint8Array([0]) },
+      });
+      if (encoded.isErr()) throw encoded.error;
+      return JSON.stringify({
+        channelId: "myapp.dot",
+        dir,
+        frame: Buffer.from(encoded.value).toString("base64"),
+        schema: TRUAPI_WIRE_SCHEMA_HASH,
+        codec: TRUAPI_CODEC_VERSION,
+        v: WIRE_ENVELOPE_VERSION,
+        observedAt,
+        buffered: true,
+      });
+    };
+
+    const ws = new WebSocket(`ws://localhost:${server.port}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.onopen = () => resolve();
+      ws.onerror = () => reject(new Error("ws failed to open"));
+    });
+    // A 900ms round trip, replayed long after the fact in one burst.
+    const origin = 1_700_000_000_000;
+    ws.send(send("p:1", W.ACCOUNT_GET_ACCOUNT.request, "out", origin));
+    ws.send(send("p:1", W.ACCOUNT_GET_ACCOUNT.response, "in", origin + 900));
+
+    let traces: { requestId: string; startedAt: number; lastAt: number }[] = [];
+    for (let i = 0; i < 50 && traces.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      traces = (await (await fetch(`${base}/traces`)).json()) as typeof traces;
+    }
+    ws.close();
+
+    const op = traces.find((t) => t.requestId === "p:1");
+    expect(op).toBeDefined();
+    // The producer's own span, not the 0ms a flush-instant clock would report.
+    expect((op?.lastAt ?? 0) - (op?.startedAt ?? 0)).toBe(900);
+    // And the op is anchored to when it really happened, not to now.
+    expect(op?.startedAt).toBe(origin);
+  } finally {
+    server.stop();
   }
 });

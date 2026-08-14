@@ -65,6 +65,16 @@ export function detectRetryStorms(
 
   const groups = new Map<string, WireTrace[]>();
   for (const trace of traces) {
+    // A replayed backlog arrives in one burst. When the producer stamped its own
+    // observation time the spacing is real and a genuine storm still shows, so
+    // only the case with no producer clock is excluded: those ops all carry the
+    // flush instant, and six calls a genuine ten seconds apart would otherwise
+    // land inside the window and every one be badged "the product is hammering
+    // this method" on a completely calm session.
+    const opener = trace.frames[0];
+    if (opener?.buffered === true && opener.timestampFromProducer !== true) {
+      continue;
+    }
     const sig = signature(trace);
     if (sig === undefined) continue;
     const group = groups.get(sig);

@@ -46,7 +46,7 @@ import {
   type TraceStats,
 } from "./session.js";
 import type { DebugSession, DebugSessionOptions } from "./session.js";
-import { DEFAULT_MAX_ID_CHARS, WIRE_ENVELOPE_VERSION } from "./ingest.js";
+import { normalizeId, WIRE_ENVELOPE_VERSION } from "./ingest.js";
 import { wireTraceToView, type TraceView } from "./trace-view.js";
 import { renderOperationRow, renderTraceDetail } from "./trace-render.js";
 import { detectRetryStorms } from "./retry-storm.js";
@@ -251,10 +251,6 @@ export function createInAppDebugger(
     maxBytesPerTrace: options.maxBytesPerTrace ?? EMBED_MAX_BYTES_PER_TRACE,
   });
 
-  // Clamp to the same bound ingest uses so this registry's key matches the
-  // trace-engine key the panel filters by.
-  const clampChannelId = (id: string): string =>
-    id.length > DEFAULT_MAX_ID_CHARS ? id.slice(0, DEFAULT_MAX_ID_CHARS) : id;
   const channels = new Map<string, ChannelIdentity>();
   // Sticky: some frame arrived unattested (or mismatched) this session. The
   // no-channel decode query keys on this rather than scanning the registry, whose
@@ -276,11 +272,17 @@ export function createInAppDebugger(
     // "omit the identity and decode anyway" is the hole this closes.
     const confirmed = identity?.schema === TRUAPI_WIRE_SCHEMA_HASH;
     if (!confirmed || mismatch) sawUnconfirmed = true;
+    // Same validation the standalone applies: a non-finite or fractional count
+    // would otherwise render as "Infinity" or a rounded lie in the strip, and the
+    // two mounts would disagree about the same feeder.
+    const droppedRaw = identity?.dropped;
     const dropped =
-      typeof identity?.dropped === "number" && identity.dropped > 0
-        ? identity.dropped
+      typeof droppedRaw === "number" &&
+      Number.isSafeInteger(droppedRaw) &&
+      droppedRaw > 0
+        ? droppedRaw
         : 0;
-    const key = clampChannelId(channelId);
+    const key = normalizeId(channelId);
     const existing = channels.get(key);
     if (existing) {
       if (mismatch) existing.codecOk = false;
@@ -303,7 +305,7 @@ export function createInAppDebugger(
     // Payload-blind mode never decodes, so the gate has nothing to guard.
     if (!session.decodeValues) return true;
     if (channelId !== undefined) {
-      const c = channels.get(clampChannelId(channelId));
+      const c = channels.get(normalizeId(channelId));
       return c !== undefined && c.codecOk && c.schemaOk;
     }
     // No channel to key on: refuse once anything unattested has been seen.

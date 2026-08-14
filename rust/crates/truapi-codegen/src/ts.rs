@@ -696,8 +696,14 @@ fn wire_id_rows(api: &ApiDefinition, target_version: u32) -> Result<Vec<WireIdRo
 /// Index the API's user-defined types by their emitted name, so a signature walk
 /// can resolve a [`TypeRef::Named`] to its actual shape.
 fn types_by_name(api: &ApiDefinition) -> HashMap<&str, &TypeDef> {
+    // Framework types are included even though they are never emitted: their
+    // shape is still on the wire. `CallError` is the one that matters - it wraps
+    // every error leg, so its variant list is the discriminant of every error
+    // response, and leaving it out let a variant be inserted (renumbering every
+    // discriminant on every error) without moving the fingerprint at all.
     api.types
         .iter()
+        .chain(api.framework_types.iter())
         .map(|def| (def.name.as_str(), def))
         .collect()
 }
@@ -783,7 +789,13 @@ fn type_signature(
                 return format!("rec:{name}{suffix}");
             }
             let Some(def) = types.get(name.as_str()) else {
-                return format!("{name}{suffix}");
+                // Degrading silently to the bare name is what let a payload's
+                // shape change without moving the fingerprint - the type's own
+                // fields or variants simply stop being hashed. Marking it keeps
+                // the blind spot visible in the canonical string, and
+                // `every_wire_reachable_type_resolves` fails the build if a new
+                // one ever appears.
+                return format!("UNRESOLVED<{name}>{suffix}");
             };
             seen.push(name.clone());
             let body = match &def.kind {
@@ -2969,6 +2981,7 @@ mod tests {
             }],
             public_trait_order: vec!["Thing".to_string()],
             types: vec![payload],
+            framework_types: Vec::new(),
         }
     }
 
@@ -3100,12 +3113,53 @@ mod tests {
                 }],
                 public_trait_order: vec!["Thing".to_string()],
                 types: vec![enum_def],
+                framework_types: Vec::new(),
             }
         };
 
         assert_ne!(
             wire_schema_hash(&build(["Allow", "Deny"]), 1, 1).unwrap(),
             wire_schema_hash(&build(["Deny", "Allow"]), 1, 1).unwrap(),
+        );
+    }
+
+    #[test]
+    fn every_wire_reachable_type_resolves_in_the_signature() {
+        // A type that does not resolve contributes only its NAME to the wire
+        // schema hash, so its own fields or variants can change with no signal.
+        // `CallError` was exactly that: skipped at extraction, yet sitting on
+        // every error leg (62 of 168 rows), so inserting a variant renumbered
+        // every error discriminant and left the fingerprint - and the whole
+        // generated tree - byte-identical.
+        //
+        // This walks the real API surface and fails if ANY payload-reachable
+        // name degrades, so a future addition to the extractor's skip list
+        // cannot silently re-open the hole.
+        let Ok(json) = std::env::var("TRUAPI_RUSTDOC_JSON").map(std::fs::read_to_string) else {
+            // Not wired in this run; the golden test covers the same ground.
+            return;
+        };
+        let Ok(json) = json else { return };
+        let krate = crate::rustdoc::parse(&json).unwrap();
+        let api = crate::rustdoc::extract_api(&krate).unwrap();
+        let types = types_by_name(&api);
+
+        let mut unresolved: std::collections::BTreeSet<String> = Default::default();
+        for trait_def in &api.traits {
+            for method in &trait_def.methods {
+                for part in method_payload_signature(method, &types)
+                    .split("UNRESOLVED<")
+                    .skip(1)
+                {
+                    unresolved.insert(part.chars().take_while(|c| *c != '>').collect());
+                }
+            }
+        }
+
+        assert!(
+            unresolved.is_empty(),
+            "these types are on the wire but contribute only their name to the \
+             schema hash, so their shape can change undetected: {unresolved:?}"
         );
     }
 
@@ -3163,6 +3217,7 @@ mod tests {
             }],
             public_trait_order: Vec::new(),
             types: Vec::new(),
+            framework_types: Vec::new(),
         }
     }
 
@@ -3356,6 +3411,7 @@ mod tests {
             traits: Vec::new(),
             public_trait_order: Vec::new(),
             types: Vec::new(),
+            framework_types: Vec::new(),
         };
         assert_eq!(latest_wire_version(&api), 1);
     }
@@ -3370,6 +3426,7 @@ mod tests {
                 versioned_tuple_wrapper_variants("TwoWrapper", &[(1, "Legacy"), (3, "Latest")]),
                 versioned_tuple_wrapper_variants("ThreeWrapper", &[(2, "Middle")]),
             ],
+            framework_types: Vec::new(),
         };
         assert_eq!(latest_wire_version(&api), 3);
     }
@@ -3414,6 +3471,7 @@ mod tests {
             }],
             public_trait_order: vec!["Example".to_string()],
             types: Vec::new(),
+            framework_types: Vec::new(),
         };
 
         let source = generate_decode_table(&api, 2).expect("generate decode table");
@@ -3534,6 +3592,7 @@ mod tests {
                 versioned_tuple_wrapper_variants("FutureError", &[(2, "FutureErrorV2")]),
                 versioned_tuple_wrapper_variants("FutureItem", &[(2, "FutureItemV2")]),
             ],
+            framework_types: Vec::new(),
         };
 
         let source = generate_wire_table(&api, 1).expect("generate wire table");
@@ -3582,6 +3641,7 @@ mod tests {
                 versioned_tuple_wrapper_variants("FutureResponse", &[(2, "FutureResponseV2")]),
                 versioned_tuple_wrapper_variants("FutureError", &[(2, "FutureErrorV2")]),
             ],
+            framework_types: Vec::new(),
         };
 
         let source = generate_client(&api, 1, 1).expect("generate client");
@@ -3627,6 +3687,7 @@ mod tests {
                 versioned_tuple_wrapper("ExampleRequest", "LegacyRequest", "LatestRequest"),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
             ],
+            framework_types: Vec::new(),
         };
 
         let client_source = generate_client(&api, 2, 1).expect("generate client");
@@ -3694,6 +3755,7 @@ mod tests {
                 single_field_struct("V01ExampleError", "legacy_code", "u8"),
                 single_field_struct("V02ExampleError", "latest_code", "u32"),
             ],
+            framework_types: Vec::new(),
         };
 
         let source = generate_types(&api, 2).expect("generate types");
@@ -3743,6 +3805,7 @@ mod tests {
                 versioned_tuple_wrapper_variants("ExampleRequest", &[(1, "LegacyRequest")]),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
             ],
+            framework_types: Vec::new(),
         };
 
         let client_source = generate_client(&api, 2, 1).expect("generate client");
@@ -3789,6 +3852,7 @@ mod tests {
                 named_field_versioned_wrapper("ExampleRequest"),
                 versioned_tuple_wrapper("ExampleResponse", "LegacyResponse", "LatestResponse"),
             ],
+            framework_types: Vec::new(),
         };
 
         let err = generate_client(&api, 2, 1).expect_err("named field wrapper rejected");

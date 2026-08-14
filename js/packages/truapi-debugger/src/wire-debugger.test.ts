@@ -297,3 +297,29 @@ describe("createWireDebugger grouping", () => {
     expect(traces.map((t) => t.generation)).toEqual([0, 1]);
   });
 });
+
+test("a cap below 1 falls back instead of counting phantom drops", () => {
+  // `maxFramesPerTrace: 0` is reachable: the embed forwards caller caps straight
+  // through. At 0 each push makes length 1, excess 1, and `splice(1, 1)` removes
+  // nothing — so the drop counter climbed once per frame while the trace still
+  // held exactly its opener, and the badge claimed thousands dropped.
+  const wd = createWireDebugger({ sink: () => {}, maxFramesPerTrace: 0 });
+  // One subscription: a `start` opener then 49 `receive`s, so this is a single
+  // trace rather than 50 generation-rotated ones.
+  for (let i = 0; i < 50; i++) {
+    wd.observe({
+      channelId: "app.dot",
+      direction: i === 0 ? "out" : "in",
+      requestId: "p:1",
+      frameId: i === 0 ? 40 : 41,
+      role: i === 0 ? "start" : "receive",
+      byteLength: 1,
+      timestamp: 1000 + i,
+    });
+  }
+  const trace = wd.traces()[0];
+  expect(trace).toBeDefined();
+  expect(trace?.dropped.framesByCount).toBe(0);
+  expect(trace?.truncated).toBe(false);
+  expect(trace?.frames.length).toBe(50);
+});

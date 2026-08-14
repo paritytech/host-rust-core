@@ -53,15 +53,41 @@ pub trait FrameSink: Send + Sync {
 pub trait DebugSink: Send + Sync {
     /// Hand one event to the sink.
     ///
-    /// Must not block, and must not panic. This is a contract on the
-    /// implementor, not something the core can enforce: `emit` is called from
-    /// inside the inbound and outbound frame paths, and every profile that
-    /// ships a host aborts on panic (`panic = "abort"` for `release`, which
-    /// `codegen` inherits, and `wasm32` cannot unwind at all), so a panic here
-    /// takes the whole host process down rather than losing one trace. Serialize
-    /// and enqueue only; never do fallible work that can `unwrap`/panic on the
-    /// caller's thread.
+    /// Must not block, and must not panic: `emit` is called from inside the
+    /// inbound and outbound frame paths, so a panic here would otherwise unwind
+    /// into a live dispatch. The core contains a panic at both tap sites
+    /// ([`emit_debug`]) rather than trusting the contract, because the trait is
+    /// public and implementable out-of-repo, and because the profiles that can
+    /// unwind are exactly the ones a developer runs: the workspace defines no
+    /// `[profile.dev]`, so `dev` keeps Cargo's default `panic = "unwind"`, and
+    /// `truapi-host-cli` - the host that installs a `WsDebugSink` - is built
+    /// without `--release`. Serialize and enqueue only; never do fallible work
+    /// that can `unwrap`/panic on the caller's thread.
     fn emit(&self, event: DebugEvent);
+}
+
+/// Hand one event to a sink, containing a panic rather than letting it unwind
+/// into the frame path that called it.
+///
+/// `catch_unwind` is a no-op under `panic = "abort"` (the shipping `release`
+/// profile, which `codegen` inherits, and `wasm32`, which cannot unwind at all).
+/// It is not dead code, because the profiles that *do* unwind are the ones the
+/// debugger is used from: the workspace defines no `[profile.dev]`, so `dev`
+/// keeps the default `panic = "unwind"`, and the Makefile builds
+/// `truapi-host-cli` without `--release`. It also protects any downstream crate
+/// that compiles this one under its own unwinding profile.
+///
+/// No in-process test can prove the protection - Cargo ignores the `panic`
+/// setting for test profiles, so a test asserting "the guard saved the dispatch"
+/// would pass even with the guard removed. The guard is kept because it costs
+/// nothing when nothing panics, not because a test can demonstrate it.
+fn emit_debug(sink: &dyn DebugSink, event: DebugEvent) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        sink.emit(event);
+    }));
+    if result.is_err() {
+        tracing::warn!("debug sink panicked; frame dropped, dispatch unaffected");
+    }
 }
 
 /// Identifies which product channel on a host a debug event belongs to, so one
@@ -949,11 +975,14 @@ impl ProductRuntime {
 
         // Tap inbound before decode, so a corrupt frame is still observed.
         if let Some((channel_id, debug)) = self.transport.debug() {
-            debug.emit(DebugEvent::Frame {
-                channel_id,
-                dir: FrameDirection::In,
-                bytes: frame.clone(),
-            });
+            emit_debug(
+                debug.as_ref(),
+                DebugEvent::Frame {
+                    channel_id,
+                    dir: FrameDirection::In,
+                    bytes: frame.clone(),
+                },
+            );
         }
 
         let message = ProtocolMessage::decode(&mut frame.as_slice()).map_err(|err| {
@@ -1106,11 +1135,14 @@ impl Transport for SinkTransport {
         match self.debug() {
             Some((channel_id, debug)) => {
                 self.sink.emit_frame(encoded.clone());
-                debug.emit(DebugEvent::Frame {
-                    channel_id,
-                    dir: FrameDirection::Out,
-                    bytes: encoded,
-                });
+                emit_debug(
+                    debug.as_ref(),
+                    DebugEvent::Frame {
+                        channel_id,
+                        dir: FrameDirection::Out,
+                        bytes: encoded,
+                    },
+                );
             }
             None => self.sink.emit_frame(encoded),
         }

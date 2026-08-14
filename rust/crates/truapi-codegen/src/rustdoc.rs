@@ -58,6 +58,12 @@ pub struct ApiDefinition {
     pub public_trait_order: Vec<String>,
     /// Data types referenced by the trait surface.
     pub types: Vec<TypeDef>,
+    /// Framework types that are deliberately not emitted, but whose own shape is
+    /// still on the wire - `CallError`'s variants are the discriminant of every
+    /// error response. Kept so the wire schema hash can see them: excluding them
+    /// from the fingerprint let a variant be inserted, renumbering every error
+    /// discriminant, with no signal anywhere.
+    pub framework_types: Vec<TypeDef>,
 }
 
 /// Trait extracted from the rustdoc index: name, methods, and rustdoc.
@@ -340,9 +346,35 @@ pub fn extract_api(krate: &Crate) -> Result<ApiDefinition> {
     }
 
     let mut types = Vec::new();
+    let mut framework_types = Vec::new();
     let mut generated_names = BTreeMap::new();
     for (name, candidates) in type_candidates {
         if should_skip_type_name(&name) {
+            // Not emitted, but still fingerprinted: a shape change here changes
+            // the wire. Parse failures are ignored - several skipped names are
+            // markers or lifetimes with no data shape to record.
+            for candidate in &candidates {
+                let Some(item) = krate.index.get(&candidate.item_id) else {
+                    continue;
+                };
+                let module_path: Vec<String> = candidate
+                    .path
+                    .iter()
+                    .take(candidate.path.len().saturating_sub(1))
+                    .cloned()
+                    .collect();
+                let extracted = if candidate.kind == "struct" {
+                    extract_struct(&candidate.item_id, item, krate, &names, module_path)
+                } else if candidate.kind == "enum" {
+                    extract_enum(&candidate.item_id, item, krate, &names, module_path)
+                } else {
+                    continue;
+                };
+                if let Ok(def) = extracted {
+                    framework_types.push(def);
+                    break;
+                }
+            }
             continue;
         }
 
@@ -392,10 +424,13 @@ pub fn extract_api(krate: &Crate) -> Result<ApiDefinition> {
     traits.sort_by(|a, b| a.name.cmp(&b.name));
     types.sort_by(|a, b| a.name.cmp(&b.name));
 
+    framework_types.sort_by(|a, b| a.name.cmp(&b.name));
+
     Ok(ApiDefinition {
         traits,
         public_trait_order,
         types,
+        framework_types,
     })
 }
 

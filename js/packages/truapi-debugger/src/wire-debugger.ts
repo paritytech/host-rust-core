@@ -261,9 +261,17 @@ export function createWireDebugger(
 ): WireDebugger {
   const sink: WireDebugSink = options.sink ?? ((line) => console.debug(line));
   const forward = options.forward;
-  const maxTraces = options.maxTraces ?? 256;
-  const maxFramesPerTrace = options.maxFramesPerTrace ?? 1024;
-  const maxBytesPerTrace = options.maxBytesPerTrace ?? 1024 * 1024;
+  // Floor every cap at 1. A cap of 0 (or negative) evicts nothing - `splice(1, n)`
+  // has no index 1 to remove - while still counting a drop per frame, so the
+  // badge climbs forever against a trace that never lost anything. The embed
+  // forwards caller-supplied caps straight through, so this is reachable.
+  const atLeastOne = (value: number | undefined, fallback: number): number =>
+    value === undefined || !Number.isFinite(value) || value < 1
+      ? fallback
+      : Math.floor(value);
+  const maxTraces = atLeastOne(options.maxTraces, 256);
+  const maxFramesPerTrace = atLeastOne(options.maxFramesPerTrace, 1024);
+  const maxBytesPerTrace = atLeastOne(options.maxBytesPerTrace, 1024 * 1024);
   const methodNames = options.methodNames;
   // Insertion-ordered; re-inserting on activity keeps the map LRU-ordered.
   // Keyed by `(channelId, requestId)` since requestId is per-channel only.

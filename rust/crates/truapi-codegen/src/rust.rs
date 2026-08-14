@@ -277,6 +277,7 @@ mod tests {
             }],
             public_trait_order: vec!["Account".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
 
         let src = generate_wire_table(&api, "testhash").expect("generate_wire_table");
@@ -315,6 +316,7 @@ mod tests {
             ],
             public_trait_order: vec!["StatementStore".to_string(), "Preimage".to_string()],
             types: versioned_request_test_types(),
+            framework_types: Vec::new(),
         };
 
         let dispatcher = generate_dispatcher(&api).expect("dispatcher");
@@ -367,6 +369,7 @@ mod tests {
             ],
             public_trait_order: vec!["Foo".to_string(), "FooBar".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_wire_table(&api, "testhash")
             .expect_err("duplicate wire method name must error");
@@ -397,6 +400,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: versioned_request_test_types(),
+            framework_types: Vec::new(),
         };
 
         let dispatcher_a = generate_dispatcher(&api).expect("dispatcher a");
@@ -426,6 +430,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_wire_table(&api, "testhash").expect_err("duplicate ids must error");
         let msg = format!("{err}");
@@ -481,6 +486,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err =
             generate_wire_table(&api, "testhash").expect_err("request kind + start_id must error");
@@ -505,6 +511,7 @@ mod tests {
             }],
             public_trait_order: vec!["Account".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_wire_table(&api, "testhash")
             .expect_err("subscription kind + request_id must error");
@@ -530,6 +537,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_wire_table(&api, "testhash")
             .expect_err("missing request_id annotation must error");
@@ -554,6 +562,7 @@ mod tests {
             }],
             public_trait_order: vec!["Account".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_wire_table(&api, "testhash")
             .expect_err("missing start_id annotation must error");
@@ -586,6 +595,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_dispatcher(&api).expect_err("two-param method must error");
         let msg = format!("{err}");
@@ -619,6 +629,7 @@ mod tests {
             }],
             public_trait_order: vec!["Permissions".to_string()],
             types: vec![],
+            framework_types: Vec::new(),
         };
         let err = generate_dispatcher(&api).expect_err("primitive response must error");
         let msg = format!("{err}");
@@ -656,6 +667,7 @@ mod tests {
                 versioned_test_type("ReqWrapper"),
                 versioned_test_type("RespWrapper"),
             ],
+            framework_types: Vec::new(),
         };
 
         let err = generate_dispatcher(&api).expect_err("raw error wrapper must error");
@@ -685,6 +697,7 @@ mod tests {
                 versioned_test_type("RespWrapper"),
                 versioned_test_type("ErrWrapper"),
             ],
+            framework_types: Vec::new(),
         };
 
         let err = generate_dispatcher(&api).expect_err("missing target version must error");
@@ -721,6 +734,7 @@ mod tests {
             }],
             public_trait_order: vec!["Account".to_string()],
             types: vec![versioned_test_type("ItemWrapper")],
+            framework_types: Vec::new(),
         };
 
         let err = generate_dispatcher(&api).expect_err("raw result subscription error must error");

@@ -22,7 +22,7 @@
 import { TRUAPI_CODEC_VERSION, TRUAPI_WIRE_SCHEMA_HASH } from "@parity/truapi";
 import { createDebugSession, decodeTraceFrames } from "./session.js";
 import {
-  DEFAULT_MAX_ID_CHARS,
+  normalizeId,
   WIRE_ENVELOPE_VERSION,
   type DebugFrameEnvelope,
 } from "./ingest.js";
@@ -73,6 +73,15 @@ interface WireMessage {
   channelId: string;
   dir: "in" | "out";
   frame: string;
+  /**
+   * When the producer *observed* the frame, as opposed to when this server
+   * received it. A host that buffered a backlog replays it in one burst, so
+   * without this every op in the flush collapses to a 0 ms span and ops that
+   * were seconds apart land inside the retry-storm window.
+   */
+  observedAt?: number;
+  /** `true` when the producer replayed this frame out of its backlog. */
+  buffered?: boolean;
   /** Envelope version; see {@link WIRE_ENVELOPE_VERSION}. */
   v?: number;
   /** The host's wire codec version (`TRUAPI_CODEC_VERSION`). */
@@ -288,8 +297,11 @@ function parseWireMessage(raw: string): WireParseResult {
   const droppedRaw = m.dropped;
   const droppedValid =
     droppedRaw === undefined ||
+    // `isSafeInteger`, not `isInteger`: 1e308 is an integer, so it passed, and
+    // two channels summing to Infinity serialize as JSON `null` - the UI then
+    // renders "0 dropped" for the whole session with nothing counted as invalid.
     (typeof droppedRaw === "number" &&
-      Number.isInteger(droppedRaw) &&
+      Number.isSafeInteger(droppedRaw) &&
       droppedRaw >= 0);
   return {
     ok: true,
@@ -298,6 +310,12 @@ function parseWireMessage(raw: string): WireParseResult {
         channelId: m.channelId,
         dir: m.dir,
         frame: new Uint8Array(Buffer.from(m.frame, "base64")),
+        // Provenance travels with the frame: ingest decides whether to trust
+        // `observedAt` as the timestamp, and the trace engine suppresses
+        // retry-storm detection for a replayed backlog. Dropping these here made
+        // the fix invisible through the only mount a host actually dials.
+        ...(typeof m.observedAt === "number" ? { observedAt: m.observedAt } : {}),
+        ...(m.buffered === true ? { buffered: true as const } : {}),
       },
       identityMismatch,
       identityConfirmed: schema === TRUAPI_WIRE_SCHEMA_HASH,
@@ -512,11 +530,6 @@ export function startDebugServer(
   // frames under many distinct channelIds can't grow it without bound; when
   // full, evict the least-recently-seen channel.
   const MAX_CHANNELS = 256;
-  // Clamp channelId to the same bound ingest uses so this registry's key matches
-  // the trace-engine key the UI filters by, and an over-long attacker-chosen id
-  // can't bloat the map (256 entries * an unbounded key would otherwise grow it).
-  const clampChannelId = (id: string): string =>
-    id.length > DEFAULT_MAX_ID_CHARS ? id.slice(0, DEFAULT_MAX_ID_CHARS) : id;
   const channels = new Map<
     string,
     {
@@ -573,7 +586,7 @@ export function startDebugServer(
     if (!parsed.identityConfirmed || parsed.identityMismatch) sawUntrusted = true;
     if (parsed.droppedFieldInvalid) invalidDroppedFields += 1;
     const now = Date.now();
-    const key = clampChannelId(channelId);
+    const key = normalizeId(channelId);
     const existing = channels.get(key);
     if (existing) {
       existing.lastSeen = now;
@@ -621,7 +634,7 @@ export function startDebugServer(
   function decodeTrusted(channel: string | undefined): boolean {
     if (!decodeValues) return true;
     if (channel !== undefined) {
-      const c = channels.get(clampChannelId(channel));
+      const c = channels.get(normalizeId(channel));
       return c !== undefined && c.codecOk && c.schemaOk;
     }
     // No channel disambiguator: refuse once any host has been untrusted this
@@ -698,7 +711,7 @@ export function startDebugServer(
     const traces =
       channel === null
         ? session.traceEngine.traces()
-        : session.traceEngine.tracesForChannel(clampChannelId(channel));
+        : session.traceEngine.tracesForChannel(normalizeId(channel));
     let frames = 0;
     let bytes = 0;
     let subscriptions = 0;
@@ -751,7 +764,7 @@ export function startDebugServer(
       channel === null
         ? [...channels.values()]
         : [...channels.values()].filter(
-            (c) => c.channelId === clampChannelId(channel),
+            (c) => c.channelId === normalizeId(channel),
           );
     const droppedByHost = chanList.reduce((n, c) => n + c.dropped, 0);
     const codecMismatch = chanList.some((c) => !c.codecOk);
@@ -833,7 +846,7 @@ export function startDebugServer(
     const base =
       channel === null
         ? session.traceEngine.traces()
-        : session.traceEngine.tracesForChannel(clampChannelId(channel));
+        : session.traceEngine.tracesForChannel(normalizeId(channel));
     // Retry-storm is per-channel (a burst of like ops from one host), so it is
     // detected over exactly the traces being listed - before any reorder, since
     // the storm map is keyed by the trace object, not its position.
@@ -855,7 +868,7 @@ export function startDebugServer(
     );
     const notice =
       mismatched.size > 0 &&
-      rows.some((t) => mismatched.has(clampChannelId(t.channelId)))
+      rows.some((t) => mismatched.has(normalizeId(t.channelId)))
         ? `<div style="padding:4px 10px;color:#fca5a5;font-size:11px;border-bottom:1px solid rgba(255,255,255,.08)">⚠ a connected host's wire contract differs from this debugger's — method names below may be wrong</div>`
         : "";
     return (
