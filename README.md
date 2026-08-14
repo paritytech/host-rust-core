@@ -64,9 +64,10 @@ js/packages/
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
-js/container/              TS lockdown container for the iOS host web view; bundles into
-                           ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
-                           (WebRTC permission gate + bridge contract: js/container/README.md)
+js/container/              TS lockdown container for the iOS/Android host web views;
+                           per-platform entry points (index-ios / index-android) bundle to
+                           ios/truapi-host/.../Resources/ and android/truapi-host/.../assets/
+                           (isolation policy + WebRTC gate + bridge contract: js/container/README.md)
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 playground/                Interactive Next.js playground (truapi-playground dotNS label)

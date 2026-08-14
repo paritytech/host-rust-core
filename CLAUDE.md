@@ -19,8 +19,11 @@ js/packages/
                           `.` (shared host types), `/web` (iframe + Web
                           Worker), `/worker-runtime` (Worker entry).
                           WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
-js/container/              TS lockdown container for the iOS host web view; `npm run build`
-                           bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
+js/container/              TS lockdown container for the iOS/Android host web views;
+                           per-platform entry points (index-ios/index-android) define
+                           isolation policy (iOS gates network in JS; Android leaves it to a
+                           native interceptor). `npm run build` bundles both: iOS →
+                           ios/truapi-host/.../Resources/, Android → android/truapi-host/.../assets/
 ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh

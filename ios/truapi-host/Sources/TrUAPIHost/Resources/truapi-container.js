@@ -83,28 +83,12 @@
     return transport;
   }
 
-  // src/android-bridge.ts
-  function getAndroid() {
-    const android = window.Android;
-    return typeof android?.call === "function" ? android : void 0;
-  }
-  function createAndroidNativeBridge() {
-    const android = getAndroid();
-    if (android === void 0) {
-      return void 0;
-    }
-    const call = android.call.bind(android);
-    return installNativeBridge((message) => {
-      call(HANDLER_NAME, message);
-    });
-  }
-
   // src/ios-bridge.ts
   function getMessageHandler() {
     const webkit = window.webkit;
     return webkit?.messageHandlers?.[HANDLER_NAME];
   }
-  function createIOSNativeBridge() {
+  function createIOSBridge() {
     const handler = getMessageHandler();
     if (handler === void 0) {
       return void 0;
@@ -113,11 +97,6 @@
     return installNativeBridge((message) => {
       postMessage(message);
     });
-  }
-
-  // src/native-bridge.ts
-  function createNativeBridge() {
-    return createIOSNativeBridge() ?? createAndroidNativeBridge();
   }
 
   // src/webrtc-manager.ts
@@ -166,83 +145,119 @@
     }
   };
 
-  // src/index.ts
-  var _nativeFetch = window.fetch.bind(window);
-  var _NativeWebSocket = window.WebSocket;
-  var _bridgeUrl = window.__truapi_localhost?.url;
-  var _GatedWebSocket = new Proxy(window.WebSocket, {
-    construct(target, args) {
-      if (_bridgeUrl !== void 0 && args[0] === _bridgeUrl) {
-        return new _NativeWebSocket(args[0]);
+  // src/lockdown.ts
+  function gateWebSocketToBridge() {
+    const NativeWebSocket = window.WebSocket;
+    const bridgeUrl = window.__truapi_localhost?.url;
+    const gated = new Proxy(NativeWebSocket, {
+      construct(_target, args) {
+        if (bridgeUrl !== void 0 && args[0] === bridgeUrl) {
+          return new NativeWebSocket(args[0]);
+        }
+        throw new TypeError("Network access is not allowed");
       }
-      throw new TypeError("Network access is not allowed");
-    }
-  });
-  freezeValue(window, "WebSocket", _GatedWebSocket);
-  try {
-    Object.defineProperty(_NativeWebSocket.prototype, "constructor", {
-      value: _GatedWebSocket,
-      writable: false,
-      configurable: false
     });
-  } catch {
-  }
-  freezeValue(window, "fetch", (input, init) => {
+    freezeValue(window, "WebSocket", gated);
     try {
-      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const url = new URL(raw, window.location.href);
-      if (url.origin === window.location.origin) {
-        return _nativeFetch(input, init);
-      }
-    } catch {
-    }
-    return Promise.reject(new TypeError("Network access is not allowed"));
-  });
-  freezeAndDelete(window, "XMLHttpRequest");
-  freezeAndDelete(window, "EventSource");
-  freezeValue(navigator, "sendBeacon", () => false);
-  freezeAndDelete(window, "indexedDB");
-  freezeAndDelete(window, "caches");
-  try {
-    Object.defineProperty(document, "cookie", {
-      get: () => "",
-      set: () => {
-      },
-      configurable: false
-    });
-  } catch {
-  }
-  freezeAndDelete(window, "SharedWorker");
-  if (navigator.serviceWorker) {
-    try {
-      Object.defineProperty(navigator, "serviceWorker", {
-        value: Object.freeze({
-          register: () => {
-            throw new Error("ServiceWorker is not available");
-          }
-        }),
+      Object.defineProperty(NativeWebSocket.prototype, "constructor", {
+        value: gated,
         writable: false,
         configurable: false
       });
     } catch {
     }
   }
-  var _createElement = document.createElement.bind(document);
-  freezeValue(document, "createElement", (tagName, options) => {
-    if (tagName.toLowerCase() === "iframe") {
-      throw new Error("iframe creation is not allowed");
-    }
-    return _createElement(tagName, options);
-  });
-  var _nativeBridge = createNativeBridge();
-  var _NativeRTC = window.RTCPeerConnection;
-  if (_NativeRTC && _nativeBridge) {
+  function gateFetchSameOrigin() {
+    const nativeFetch = window.fetch.bind(window);
     freezeValue(
       window,
-      "RTCPeerConnection",
-      new WebRtcManager(_NativeRTC, createWebRtcAccessRequester(_nativeBridge)).connectionClass
+      "fetch",
+      (input, init) => {
+        try {
+          const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          const url = new URL(raw, window.location.href);
+          if (url.origin === window.location.origin) {
+            return nativeFetch(input, init);
+          }
+        } catch {
+        }
+        return Promise.reject(new TypeError("Network access is not allowed"));
+      }
     );
-  } else {
-    freezeAndDelete(window, "RTCPeerConnection");
   }
+  function deleteLegacyNetwork() {
+    freezeAndDelete(window, "XMLHttpRequest");
+    freezeAndDelete(window, "EventSource");
+  }
+  function disableSendBeacon() {
+    freezeValue(navigator, "sendBeacon", () => false);
+  }
+  function gateStorage() {
+    freezeAndDelete(window, "indexedDB");
+    freezeAndDelete(window, "caches");
+  }
+  function disableCookies() {
+    try {
+      Object.defineProperty(document, "cookie", {
+        get: () => "",
+        set: () => {
+        },
+        configurable: false
+      });
+    } catch {
+    }
+  }
+  function gateWorkers() {
+    freezeAndDelete(window, "SharedWorker");
+    if (navigator.serviceWorker) {
+      try {
+        Object.defineProperty(navigator, "serviceWorker", {
+          value: Object.freeze({
+            register: () => {
+              throw new Error("ServiceWorker is not available");
+            }
+          }),
+          writable: false,
+          configurable: false
+        });
+      } catch {
+      }
+    }
+  }
+  function blockIframeCreation() {
+    const createElement = document.createElement.bind(document);
+    freezeValue(
+      document,
+      "createElement",
+      (tagName, options) => {
+        if (tagName.toLowerCase() === "iframe") {
+          throw new Error("iframe creation is not allowed");
+        }
+        return createElement(tagName, options);
+      }
+    );
+  }
+  function installWebRtcGate(bridge) {
+    const NativeRTC = window.RTCPeerConnection;
+    if (NativeRTC && bridge) {
+      freezeValue(
+        window,
+        "RTCPeerConnection",
+        new WebRtcManager(NativeRTC, createWebRtcAccessRequester(bridge)).connectionClass
+      );
+    } else {
+      freezeAndDelete(window, "RTCPeerConnection");
+    }
+  }
+
+  // src/index-ios.ts
+  gateWebSocketToBridge();
+  gateFetchSameOrigin();
+  deleteLegacyNetwork();
+  disableSendBeacon();
+  gateStorage();
+  disableCookies();
+  gateWorkers();
+  blockIframeCreation();
+  installWebRtcGate(createIOSBridge());
 })();

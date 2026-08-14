@@ -24,7 +24,7 @@ function getAndroid(): AndroidBridge | undefined {
  * JavascriptInterface, or `undefined` when it is absent. Captures `Android.call`
  * before any product script can wrap it.
  */
-export function createAndroidNativeBridge(): NativeTransport | undefined {
+export function createAndroidBridge(): NativeTransport | undefined {
   const android = getAndroid();
   if (android === undefined) {
     return undefined;

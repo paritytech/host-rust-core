@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 
 import { HANDLER_NAME } from './bridge-contract.js';
-import { createIOSNativeBridge } from './ios-bridge.js';
+import { createIOSBridge } from './ios-bridge.js';
 import type { NativeTransport } from './native-transport.js';
 
 type Posted = string[];
@@ -52,21 +52,21 @@ function dispatcher(): (id: string, payload: string) => void {
   }).__container_callback__;
 }
 
-describe('createIOSNativeBridge', () => {
+describe('createIOSBridge', () => {
   it('returns a transport when the handler is present, undefined otherwise', () => {
     const { win } = fresh();
-    expect(createIOSNativeBridge()).toBeDefined();
+    expect(createIOSBridge()).toBeDefined();
 
     win.webkit = { messageHandlers: {} };
-    expect(createIOSNativeBridge()).toBeUndefined();
+    expect(createIOSBridge()).toBeUndefined();
 
     delete win.webkit;
-    expect(createIOSNativeBridge()).toBeUndefined();
+    expect(createIOSBridge()).toBeUndefined();
   });
 
   it('exposes a reusable transport for arbitrary native methods', async () => {
     const { posted } = fresh();
-    const transport = createIOSNativeBridge() as NativeTransport;
+    const transport = createIOSBridge() as NativeTransport;
 
     const call = transport.callNative('someOtherNativeApi', { a: 1 });
     const sent = JSON.parse(posted[0]);
@@ -79,7 +79,7 @@ describe('createIOSNativeBridge', () => {
 
   it('emits unguessable, unique, non-sequential ids', () => {
     const { posted } = fresh();
-    const transport = createIOSNativeBridge() as NativeTransport;
+    const transport = createIOSBridge() as NativeTransport;
 
     void transport.callNative('m', {});
     void transport.callNative('m', {});
@@ -96,7 +96,7 @@ describe('createIOSNativeBridge', () => {
 
   it('uses the captured postMessage even after messageHandlers is replaced', () => {
     const { win, posted } = fresh();
-    const transport = createIOSNativeBridge() as NativeTransport;
+    const transport = createIOSBridge() as NativeTransport;
 
     // Product swaps in a spy after init.
     const spied: string[] = [];
@@ -114,7 +114,7 @@ describe('createIOSNativeBridge', () => {
 
   it('freezes the reply callback against reassignment and deletion', () => {
     const { win } = fresh();
-    createIOSNativeBridge();
+    createIOSBridge();
 
     const original = win.__container_callback__;
     expect(typeof original).toBe('function');

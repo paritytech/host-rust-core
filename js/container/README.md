@@ -1,16 +1,31 @@
 # TrUAPI lockdown container
 
-TypeScript lockdown injected as a `documentStart` main-world `WKUserScript` into
-the iOS host web view. It runs after the native `LocalhostBridgeBootstrap` and
-locks down platform globals so product scripts cannot reach network, storage,
-worker, or DOM-embedding APIs. `npm run build` bundles `src/index.ts` into an
-IIFE at `../../ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js`.
+TypeScript lockdown injected as a `documentStart` main-world script into the
+host web view. It locks down platform globals so product scripts cannot reach
+storage, worker, DOM-embedding, or (on iOS) network APIs.
+
+The isolation policy differs per platform, so there is one entry point per host:
+
+- **iOS** (`index-ios.ts`) — gates network in JS (WebSocket to the bridge URL
+  only, fetch to same-origin, `XMLHttpRequest`/`EventSource` removed), runs after
+  `LocalhostBridgeBootstrap`.
+- **Android** (`index-android.ts`) — leaves network to a native WebView request
+  interceptor, so it does **not** touch WebSocket/fetch/XHR.
+
+Both share storage/cookie/worker/iframe gating and the WebRTC permission gate.
+`npm run build` produces both bundles: `build:ios` →
+`../../ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js`,
+`build:android` → `../../android/truapi-host/src/main/assets/truapi-container.js`.
 
 ## Modules
 
 - `freeze.ts` — `freezeValue` / `freezeAndDelete`: make a property
   non-configurable (getter + swallowed setter) so product code cannot replace it.
-- `index.ts` — the lockdown sequence.
+- `lockdown.ts` — each isolation step as a composable function
+  (`gateWebSocketToBridge`, `gateFetchSameOrigin`, `gateStorage`, `gateWorkers`,
+  `blockIframeCreation`, `installWebRtcGate`, …). The per-platform entry points
+  compose the subset their host needs.
+- `index-ios.ts` / `index-android.ts` — the per-platform lockdown sequences.
 - `webrtc-manager.ts` — permission-gated `RTCPeerConnection` plus
   `createWebRtcAccessRequester(transport)`, which adapts any `NativeTransport`
   into the manager's requester via the `allowWebRtcAccess` contract method.
@@ -21,11 +36,9 @@ IIFE at `../../ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js`
   the frozen reply callback. The per-platform bridges differ only in how they
   capture their outbound channel; everything downstream is shared.
 - `ios-bridge.ts` — the only module touching `window.webkit`.
-  `createIOSNativeBridge()` captures `WKScriptMessageHandler.postMessage`.
+  `createIOSBridge()` captures `WKScriptMessageHandler.postMessage`.
 - `android-bridge.ts` — the only module touching `window.Android` (the
-  `@JavascriptInterface`). `createAndroidNativeBridge()` captures `Android.call`.
-- `native-bridge.ts` — `createNativeBridge()`: the shared transport for the
-  first available bridge (iOS, then Android). Reused by every gated native API.
+  `@JavascriptInterface`). `createAndroidBridge()` captures `Android.call`.
 
 ## WebRTC gating
 
@@ -97,5 +110,5 @@ sender live in a closure the product cannot reflect into.
 npm install
 npm run typecheck
 npm test        # bun test (src/**/*.test.ts)
-npm run build   # esbuild IIFE bundle into the iOS host resources
+npm run build   # both bundles (build:ios + build:android)
 ```

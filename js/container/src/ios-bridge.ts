@@ -33,7 +33,7 @@ function getMessageHandler(): WebKitMessageHandler | undefined {
  * `undefined` when the handler is absent. Captures postMessage before any
  * product script can wrap it.
  */
-export function createIOSNativeBridge(): NativeTransport | undefined {
+export function createIOSBridge(): NativeTransport | undefined {
   const handler = getMessageHandler();
   if (handler === undefined) {
     return undefined;

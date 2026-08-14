@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 
-import { createAndroidNativeBridge } from './android-bridge.js';
+import { createAndroidBridge } from './android-bridge.js';
 import { HANDLER_NAME } from './bridge-contract.js';
 import type { NativeTransport } from './native-transport.js';
 
@@ -46,21 +46,21 @@ function dispatcher(): (id: string, payload: string) => void {
   }).__container_callback__;
 }
 
-describe('createAndroidNativeBridge', () => {
+describe('createAndroidBridge', () => {
   it('returns a transport when Android.call is present, undefined otherwise', () => {
     const { win } = fresh();
-    expect(createAndroidNativeBridge()).toBeDefined();
+    expect(createAndroidBridge()).toBeDefined();
 
     win.Android = { call: undefined as unknown as () => string };
-    expect(createAndroidNativeBridge()).toBeUndefined();
+    expect(createAndroidBridge()).toBeUndefined();
 
     delete win.Android;
-    expect(createAndroidNativeBridge()).toBeUndefined();
+    expect(createAndroidBridge()).toBeUndefined();
   });
 
   it('routes calls through Android.call(HANDLER_NAME, json) and resolves replies', async () => {
     const { calls } = fresh();
-    const transport = createAndroidNativeBridge() as NativeTransport;
+    const transport = createAndroidBridge() as NativeTransport;
 
     const call = transport.callNative('someOtherNativeApi', { a: 1 });
     expect(calls[0].functionName).toBe(HANDLER_NAME);
@@ -74,7 +74,7 @@ describe('createAndroidNativeBridge', () => {
 
   it('uses the captured Android.call even after window.Android is replaced', () => {
     const { win, calls } = fresh();
-    const transport = createAndroidNativeBridge() as NativeTransport;
+    const transport = createAndroidBridge() as NativeTransport;
 
     // Product swaps in a spy after init.
     const spied: Call[] = [];
@@ -93,7 +93,7 @@ describe('createAndroidNativeBridge', () => {
 
   it('freezes the reply callback against reassignment and deletion', () => {
     const { win } = fresh();
-    createAndroidNativeBridge();
+    createAndroidBridge();
 
     const original = win.__container_callback__;
     expect(typeof original).toBe('function');

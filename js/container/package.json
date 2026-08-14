@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=../../ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js --format=iife --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\"",
+    "build": "npm run build:ios && npm run build:android",
+    "build:ios": "esbuild src/index-ios.ts --bundle --outfile=../../ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js --format=iife --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\"",
+    "build:android": "esbuild src/index-android.ts --bundle --outfile=../../android/truapi-host/src/main/assets/truapi-container.js --format=iife --target=es2020 --define:process.env.NODE_ENV=\\\"production\\\"",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
