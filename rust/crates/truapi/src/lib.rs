@@ -58,7 +58,8 @@ pub mod latest {
         RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
         RemoteStatementStoreSubscribeRequest, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey,
         RuntimeApi, RuntimeSpec, RuntimeType, SignedStatement, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeVariant, TxPayloadExtension,
+        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeName, ThemeVariant,
+        TxPayloadExtension,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -151,6 +152,8 @@ pub mod latest {
     /// Raw-bytes signing request for a legacy account.
     pub type HostSignRawWithLegacyAccountRequest =
         LatestOf<versioned::signing::HostSignRawWithLegacyAccountRequest>;
+    /// Current host theme pushed to subscribers.
+    pub type HostThemeSubscribeItem = LatestOf<versioned::theme::HostThemeSubscribeItem>;
     /// Transaction creation payload for a legacy account.
     pub type LegacyAccountTxPayload =
         LatestOf<versioned::signing::HostCreateTransactionWithLegacyAccountRequest>;
