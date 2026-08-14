@@ -45,7 +45,7 @@ const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
             "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
         ),
         ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-        required_for_host: false,
+        required_for_host: true,
     },
     ChainEndpoint {
         genesis: hex_literal_genesis(
@@ -75,9 +75,9 @@ pub struct NetworkConfig {
     pub asset_hub_ws: &'static str,
     pub people_genesis: [u8; 32],
     pub bulletin_genesis: [u8; 32],
-    /// Asset Hub genesis hash. Routing metadata only: the chain it connects to is
-    /// authoritative for `CheckGenesis`.
-    #[allow(dead_code)]
+    /// Asset Hub genesis hash, both the role's identity in
+    /// [`NetworkConfig::host_chain_set`] and its routing key. The chain it connects
+    /// to is authoritative for `CheckGenesis`.
     pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
 }
@@ -111,6 +111,10 @@ impl NetworkConfig {
                 HostChainEntry {
                     identifier: ChainIdentifier::Bulletin,
                     genesis_hash: self.bulletin_genesis,
+                },
+                HostChainEntry {
+                    identifier: ChainIdentifier::AssetHub,
+                    genesis_hash: self.asset_hub_genesis,
                 },
             ],
         }
@@ -161,6 +165,7 @@ mod tests {
                 let expected_ws = match entry.identifier {
                     ChainIdentifier::People => config.people_ws,
                     ChainIdentifier::Bulletin => config.bulletin_ws,
+                    ChainIdentifier::AssetHub => config.asset_hub_ws,
                     other => panic!("{} serves {other:?} with no preset URL", config.id),
                 };
                 let endpoint = config

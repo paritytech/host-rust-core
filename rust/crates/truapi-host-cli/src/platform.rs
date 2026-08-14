@@ -1188,26 +1188,17 @@ mod tests {
     /// hardcoded `PASEO_NEXT_V2_INDIVIDUALITY.genesis` and passed even while
     /// this returned an error.
     ///
-    /// Serving the preset's two roles unblocks the preflight in the four
-    /// examples that ask for `People`: account-alias, account-proof, and both
-    /// create-transaction variants. The other seventeen ask for `AssetHub`,
-    /// which no role in this set covers.
-    /// `feature_supported` answers from the same set `supported_chains` serves,
-    /// so the two cannot disagree. AssetHub is the interesting negative: the
-    /// provider routes it under `E2E_LIVE_CHAIN=1`, but no role in the set
-    /// names it, so the host reports it unsupported.
+    /// Serving the preset's three roles unblocks the preflight in every example
+    /// that asks for one: `People` for account-alias, account-proof and both
+    /// create-transaction variants, and `AssetHub` for the other seventeen.
+    ///
+    /// `feature_supported` answers from the same set `supported_chains` serves, so
+    /// the two cannot disagree. The interesting negatives are now the malformed
+    /// inputs and a genesis the preset routes nowhere.
     #[test]
     fn feature_supported_resolves_against_the_served_chain_set() {
         let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::AutoAccept, None);
         let config = crate::network::Network::default().config();
-        let asset_hub = config
-            .live_chain_endpoints
-            .iter()
-            .map(|endpoint| endpoint.genesis)
-            .find(|genesis| {
-                *genesis != config.people_genesis && *genesis != config.bulletin_genesis
-            })
-            .expect("the preset routes a chain it does not serve as a role");
 
         let supported = |genesis: Vec<u8>| {
             futures::executor::block_on(platform.feature_supported(
@@ -1219,9 +1210,14 @@ mod tests {
             .supported
         };
 
-        assert!(supported(config.people_genesis.to_vec()));
-        assert!(supported(config.bulletin_genesis.to_vec()));
-        assert!(!supported(asset_hub.to_vec()));
+        // Every role the host serves answers supported, and only those.
+        for entry in config.host_chain_set().chains {
+            assert!(
+                supported(entry.genesis_hash.to_vec()),
+                "{:?} is served but reported unsupported",
+                entry.identifier
+            );
+        }
 
         // A malformed genesis is unsupported, never a panic or a truncated match.
         assert!(!supported(Vec::new()));
@@ -1254,6 +1250,10 @@ mod tests {
             (
                 api::ChainIdentifier::Bulletin,
                 hex::encode(config.bulletin_genesis),
+            ),
+            (
+                api::ChainIdentifier::AssetHub,
+                hex::encode(config.asset_hub_genesis),
             ),
         ];
         expected.sort_by_key(|(identifier, _)| format!("{identifier:?}"));

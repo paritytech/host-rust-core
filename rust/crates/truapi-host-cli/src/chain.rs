@@ -180,6 +180,9 @@ impl JsonRpcConnection for WsJsonRpcConnection {
 
 #[cfg(test)]
 mod tests {
+    use clap::ValueEnum;
+    use truapi::latest::ChainIdentifier;
+
     use super::*;
     use crate::network::Network;
 
@@ -203,38 +206,61 @@ mod tests {
         assert_eq!(frame, r#"{"jsonrpc":"2.0","id":1,"result":"ready"}"#);
     }
 
+    /// Every role the host says it serves has to route to that role's own chain
+    /// without the test switch. `url_for` answers an unmapped genesis with the
+    /// fallback URL, so a served role that the routing filter drops would connect
+    /// to the People chain while the host claimed to serve something else — and
+    /// `ChainContextCache` only warns when the reported genesis diverges.
     #[test]
-    fn required_bulletin_route_is_enabled_without_optional_live_chains() {
-        let network = Network::PaseoNextV2.config();
-        let provider = WsChainProvider::with_live_chain_routing(
-            network.people_ws,
-            network.live_chain_endpoints,
-            false,
-        );
-
-        assert_eq!(
-            provider.url_for(&network.bulletin_genesis),
-            network.bulletin_ws
-        );
-        assert_eq!(provider.url_for(&network.people_genesis), network.people_ws);
-        assert_eq!(
-            provider.url_for(&network.live_chain_endpoints[0].genesis),
-            network.people_ws
-        );
+    fn every_served_role_routes_to_its_own_chain() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let provider = WsChainProvider::with_live_chain_routing(
+                config.people_ws,
+                config.live_chain_endpoints,
+                false,
+            );
+            for entry in config.host_chain_set().chains {
+                let expected = match entry.identifier {
+                    ChainIdentifier::People => config.people_ws,
+                    ChainIdentifier::Bulletin => config.bulletin_ws,
+                    ChainIdentifier::AssetHub => config.asset_hub_ws,
+                    other => panic!("{} serves {other:?} with no preset URL", config.id),
+                };
+                assert_eq!(
+                    provider.url_for(&entry.genesis_hash),
+                    expected,
+                    "{} serves {:?} but routes it elsewhere",
+                    config.id,
+                    entry.identifier
+                );
+            }
+        }
     }
 
+    /// The test switch widens routing to endpoints the host does not serve as a
+    /// role; it must not be needed for the ones it does.
     #[test]
-    fn optional_live_chain_routes_are_enabled_by_the_test_switch() {
-        let network = Network::PaseoNextV2.config();
-        let provider = WsChainProvider::with_live_chain_routing(
-            network.people_ws,
-            network.live_chain_endpoints,
+    fn the_test_switch_is_not_required_for_served_roles() {
+        let config = Network::PaseoNextV2.config();
+        let gated = WsChainProvider::with_live_chain_routing(
+            config.people_ws,
+            config.live_chain_endpoints,
+            false,
+        );
+        let widened = WsChainProvider::with_live_chain_routing(
+            config.people_ws,
+            config.live_chain_endpoints,
             true,
         );
 
-        assert_eq!(
-            provider.url_for(&network.live_chain_endpoints[0].genesis),
-            network.live_chain_endpoints[0].ws
-        );
+        for entry in config.host_chain_set().chains {
+            assert_eq!(
+                gated.url_for(&entry.genesis_hash),
+                widened.url_for(&entry.genesis_hash),
+                "{:?} routes differently with the switch",
+                entry.identifier
+            );
+        }
     }
 }
