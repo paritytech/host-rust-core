@@ -15,8 +15,10 @@
 //! - `smoldot` feature — [`ChainSource::LightClient`], an embedded
 //!   [smoldot](https://github.com/paritytech/smoldot) light client. On native
 //!   targets it runs on smoldot's default platform (OS threads, TCP + plain
-//!   WebSocket dialing); on `wasm32` it runs on a vendored browser platform
-//!   (JS event loop, browser `WebSocket` — including `wss` bootnodes).
+//!   WebSocket dialing), which declines `wss`, so those bootnodes are reached
+//!   through the loopback TLS tunnels in `wss_tunnel`; on `wasm32` it runs on a
+//!   vendored browser platform (JS event loop, browser `WebSocket`, which
+//!   speaks TLS itself).
 //! - `networks` feature — a bundled catalog so `connect(genesis_hash)`
 //!   resolves the whole network (relay wiring + statement placement included)
 //!   from the genesis hash alone, with no prior registration.
@@ -56,6 +58,8 @@ mod ws;
 #[cfg(all(feature = "ws", target_arch = "wasm32"))]
 #[path = "ws_web.rs"]
 mod ws;
+#[cfg(all(feature = "smoldot", not(target_arch = "wasm32")))]
+mod wss_tunnel;
 
 pub use config::ChainSource;
 #[cfg(feature = "smoldot")]

@@ -47,6 +47,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// A chain spec whose bootnodes this target can actually dial.
+///
+/// Native smoldot declines `/wss`, so those bootnodes are rewritten to loopback
+/// `/ws` tunnels (see [`crate::wss_tunnel`]). On wasm the browser's `WebSocket`
+/// already speaks TLS, so the spec is used verbatim — which is why the same spec
+/// works unmodified in a page.
+fn dialable_spec(specification: &str) -> std::borrow::Cow<'_, str> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::borrow::Cow::Owned(crate::wss_tunnel::tunnel_wss_bootnodes(specification))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::borrow::Cow::Borrowed(specification)
+    }
+}
+
 /// The smoldot platform backing this target.
 #[cfg(not(target_arch = "wasm32"))]
 type Platform = Arc<smoldot_light::platform::DefaultPlatform>;
@@ -139,6 +156,9 @@ impl LightState {
 
     /// Add `source` to the shared client as a [`JsonRpcConnection`]. For a
     /// parachain, `relay` carries its relay's genesis hash and resolved source.
+    ///
+    /// Specs pass through [`dialable_spec`] first, so a `/wss`-only bootnode set
+    /// is reachable on native targets.
     pub(crate) async fn connect(
         &self,
         source: &ChainSource,
@@ -158,6 +178,10 @@ impl LightState {
             });
         };
 
+        // Before the lock: this parses the whole spec and needs no shared state,
+        // so holding the client mutex across it would stall every other connect.
+        let specification = dialable_spec(specification);
+
         let inner = Arc::clone(self.inner());
         let mut guard = lock(&inner);
 
@@ -171,7 +195,7 @@ impl LightState {
             .client
             .add_chain(AddChainConfig {
                 user_data: (),
-                specification,
+                specification: specification.as_ref(),
                 database_content: database_content.as_deref().unwrap_or(""),
                 potential_relay_chains: relay_id.into_iter(),
                 json_rpc: AddChainConfigJsonRpc::Enabled {
@@ -250,11 +274,12 @@ fn add_relay(
         });
     };
 
+    let specification = dialable_spec(specification);
     let success = guard
         .client
         .add_chain(AddChainConfig {
             user_data: (),
-            specification,
+            specification: specification.as_ref(),
             database_content: database_content.as_deref().unwrap_or(""),
             potential_relay_chains: core::iter::empty(),
             json_rpc: AddChainConfigJsonRpc::Disabled,
