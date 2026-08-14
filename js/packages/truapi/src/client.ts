@@ -47,9 +47,9 @@ export interface CreateTransportOptions {
   /**
    * Bound applied to every request issued through this transport, in
    * milliseconds. Must be an integer between 1 and 2147483647; there is no
-   * value that disables the bound. Defaults to
-   * {@link DEFAULT_REQUEST_TIMEOUT_MS}. Methods the host answers more slowly
-   * take the larger of this bound and their own floor.
+   * value that disables the bound. Defaults to `DEFAULT_REQUEST_TIMEOUT_MS`.
+   * Methods the host answers more slowly take the larger of this bound and
+   * their own floor.
    */
   requestTimeoutMs?: number;
 }
@@ -84,7 +84,7 @@ const LIVE_ALLOCATION_REQUEST_TIMEOUT_MS = 420_000;
 
 /**
  * Requests whose host-side answer deadline exceeds
- * {@link DEFAULT_REQUEST_TIMEOUT_MS}, keyed by request frame id. The effective
+ * `DEFAULT_REQUEST_TIMEOUT_MS`, keyed by request frame id. The effective
  * bound is the larger of the configured bound and the floor, so bounding a
  * request never aborts an answer the host is still allowed to send. A method
  * absent from this table takes the configured bound; a per-request `timeoutMs`
@@ -315,8 +315,9 @@ export function createTransport(
 
     closedError = nextError;
 
-    for (const requestId of [...pending.keys()]) {
-      takePending(requestId)?.reject(nextError);
+    for (const [requestId, entry] of pending) {
+      takePending(requestId);
+      entry.reject(nextError);
     }
 
     for (const [requestId, subscription] of subscriptions) {

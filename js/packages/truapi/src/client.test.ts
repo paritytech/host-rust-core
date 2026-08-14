@@ -7,10 +7,26 @@ import type { Codec } from "./scale.js";
 import { createClient, SubscriptionError } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
-import { createMessagePortProvider, encodeWireMessage, RequestTimeoutError } from "./transport.js";
+import {
+    createMessagePortProvider,
+    decodeWireMessage,
+    encodeWireMessage,
+    RequestTimeoutError,
+} from "./transport.js";
 
 /** Wrap a codec in the `{ V1: [0, codec] }` indexed-tagged-union envelope. */
 const versionedV1 = <T>(codec: Codec<T>) => indexedTaggedUnion({ V1: [0, codec] });
+
+/**
+ * Await a promise-like and return its outcome, so a rejection can be asserted
+ * on instead of escaping the test.
+ */
+function settled<T>(promise: PromiseLike<T>): Promise<unknown> {
+    return Promise.resolve(promise).then(
+        (value: unknown) => value,
+        (error: unknown) => error,
+    );
+}
 
 function toHex(u: Uint8Array): string {
     return Array.from(u)
@@ -678,10 +694,7 @@ describe("request timeouts", () => {
         const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
         const client = createClient(transport);
 
-        const outcome = await client.system.handshake().then<unknown, unknown>(
-            (result) => result,
-            (error: unknown) => error,
-        );
+        const outcome = await settled(client.system.handshake());
 
         expect(fixture.sent).toHaveLength(1);
         expect(outcome).toBeInstanceOf(RequestTimeoutError);
@@ -693,8 +706,8 @@ describe("request timeouts", () => {
         const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
         let decodeCalls = 0;
 
-        const outcome = await transport
-            .request<undefined, never>({
+        const outcome = await settled(
+            transport.request<undefined, never>({
                 ids: W.SYSTEM_HANDSHAKE,
                 payload: T.VersionedHostHandshakeRequest.enc({
                     tag: "V1",
@@ -704,16 +717,18 @@ describe("request timeouts", () => {
                     decodeCalls += 1;
                     return { success: true, value: undefined };
                 },
-            })
-            .then<unknown, unknown>(
-                (result) => result,
-                (error: unknown) => error,
-            );
+            }),
+        );
         expect(outcome).toBeInstanceOf(RequestTimeoutError);
+
+        const sentRequestId = unwrap(
+            decodeWireMessage(fixture.sent[0]),
+            "decode the sent request frame",
+        ).requestId;
 
         const lateReply = unwrap(
             encodeWireMessage({
-                requestId: "p:1",
+                requestId: sentRequestId,
                 payload: {
                     id: W.SYSTEM_HANDSHAKE.response,
                     value: handshakeResponsePayload({ success: true, value: undefined }),
@@ -731,10 +746,7 @@ describe("request timeouts", () => {
         const transport = createTransport(provider, { requestTimeoutMs: 5 });
         const client = createClient(transport);
 
-        const outcome = await client.system.handshake().then<unknown, unknown>(
-            (result) => result,
-            (error: unknown) => error,
-        );
+        const outcome = await settled(client.system.handshake());
 
         expect(outcome).toBeInstanceOf(RequestTimeoutError);
     });
@@ -743,7 +755,7 @@ describe("request timeouts", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
 
-        // Ordering, not wall-clock: the floored request carries a 190s bound, so
+        // Ordering, not wall-clock: the floored request carries a 420s bound, so
         // the 5ms control request must settle first. Racing the two keeps the
         // assertion deterministic without a guessed sleep.
         const floored = transport
@@ -784,10 +796,7 @@ describe("request timeouts", () => {
         const response = client.system.handshake();
         transport.dispose();
 
-        const outcome = await response.then<unknown, unknown>(
-            (result) => result,
-            (error: unknown) => error,
-        );
+        const outcome = await settled(response);
         expect(outcome).toBeInstanceOf(Error);
         expect(outcome).not.toBeInstanceOf(RequestTimeoutError);
         expect((outcome as Error).message).toBe("transport disposed");
@@ -800,20 +809,16 @@ describe("request timeouts", () => {
         let okCalls = 0;
         let errCalls = 0;
 
-        const outcome = await client.system
-            .handshake()
-            .match(
+        const outcome = await settled(
+            client.system.handshake().match(
                 () => {
                     okCalls += 1;
                 },
                 () => {
                     errCalls += 1;
                 },
-            )
-            .then<unknown, unknown>(
-                (value) => value,
-                (error: unknown) => error,
-            );
+            ),
+        );
 
         expect(outcome).toBeInstanceOf(RequestTimeoutError);
         expect(okCalls).toBe(0);
