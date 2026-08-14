@@ -156,7 +156,7 @@ pub async fn holds_a_full_claim(
     Ok(balance >= claim_amount)
 }
 
-/// Claim one PGAS allowance for `target`, proving membership in the/// Claim one PGAS allowance for `target`, proving membership in the
+/// Claim one PGAS allowance for `target`, proving membership in the
 /// already-located People `ring`.
 ///
 /// A duplicate submission retries against a different slot, as the statement-store
@@ -297,12 +297,15 @@ pub async fn await_ring_revision(
             if records.iter().any(|record| record.revision == revision) {
                 return Ok(());
             }
-            // Every root Asset Hub holds is newer than ours, so ours is gone.
+            // Asset Hub has moved past ours, so it will never verify it. The
+            // newest held root is the test, not the oldest: the window drops
+            // revisions off the front but can also skip one entirely, and a
+            // skipped revision is just as unreachable as an evicted one.
             if records
                 .iter()
                 .map(|record| record.revision)
-                .min()
-                .is_some_and(|oldest| oldest > revision)
+                .max()
+                .is_some_and(|newest| newest > revision)
             {
                 return Err(PgasError::RingRevisionPruned {
                     ring_index,

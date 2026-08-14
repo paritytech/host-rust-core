@@ -877,7 +877,7 @@ mod tests {
         );
     }
 
-    /// The PGAS context is little-endian where the other two are big-endian, and    /// The PGAS context is little-endian where the other two are big-endian, and    /// The PGAS context is little-endian where the other two are big-endian, and
+    /// The PGAS context is little-endian where the other two are big-endian, and
     /// the runtime verifies the proof against these exact bytes.
     #[test]
     fn pgas_context_layout_is_little_endian() {

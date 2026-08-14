@@ -503,7 +503,7 @@ impl Metadata {
         Ok(u128::from_le_bytes(buf))
     }
 
-    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
+    /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
     ///
     /// The encoded payload has to match it exactly: a short payload is accepted
     /// locally and then panics the runtime inside `validate_transaction`, so this

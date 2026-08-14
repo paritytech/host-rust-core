@@ -133,3 +133,24 @@ async fn live_asset_hub_reports_whether_an_account_holds_a_full_claim() {
         "an account that never claimed holds nothing"
     );
 }
+
+/// A revision the window skipped is as unreachable as one that fell off the front,
+/// and has to report as pruned rather than waiting out the timeout.
+///
+/// paseo Asset Hub holds `[105, 106, 108]` for lite-people ring 5 — every other
+/// ring is contiguous — so revision 107 is the live case that distinguishes
+/// testing the newest held root from testing the oldest.
+#[tokio::test]
+#[ignore = "needs network access to a live Asset Hub"]
+async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
+    let (rpc, metadata) = asset_hub().await;
+
+    let err = pgas::await_ring_revision(&rpc, &metadata, 5, 107)
+        .await
+        .expect_err("revision 107 was skipped for ring 5");
+
+    assert!(
+        err.to_string().contains("pruned"),
+        "a skipped revision should not be waited out: {err}"
+    );
+}
