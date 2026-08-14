@@ -1,7 +1,7 @@
 import type { Result } from "neverthrow";
 import { describe, expect, it } from "bun:test";
 
-import { createTransport } from "./client.js";
+import { createTransport, REQUEST_TIMEOUT_FLOOR_MS, resolveRequestTimeoutMs } from "./client.js";
 import { CallError, indexedTaggedUnion, Result as ScaleResult, str, _void } from "./scale.js";
 import type { Codec } from "./scale.js";
 import { createClient, SubscriptionError } from "./generated/client.js";
@@ -16,6 +16,46 @@ import {
 
 /** Wrap a codec in the `{ V1: [0, codec] }` indexed-tagged-union envelope. */
 const versionedV1 = <T>(codec: Codec<T>) => indexedTaggedUnion({ V1: [0, codec] });
+
+/**
+ * Request methods the host answers without waiting on a person or a chain: RPC
+ * reads, local storage, chat and notification writes, and the payment surfaces
+ * hosts answer as unsupported. Adding a generated request method to neither
+ * this set nor `REQUEST_TIMEOUT_FLOOR_MS` fails the classification test below.
+ */
+const PROMPT_FREE_REQUESTS = new Set([
+    "SYSTEM_HANDSHAKE",
+    "SYSTEM_FEATURE_SUPPORTED",
+    "SYSTEM_NAVIGATE_TO",
+    "NOTIFICATIONS_SEND_PUSH_NOTIFICATION",
+    "NOTIFICATIONS_CANCEL_PUSH_NOTIFICATION",
+    "LOCAL_STORAGE_READ",
+    "LOCAL_STORAGE_WRITE",
+    "LOCAL_STORAGE_CLEAR",
+    "ACCOUNT_GET_LEGACY_ACCOUNTS",
+    "ACCOUNT_GET_USER_ID",
+    "CHAT_CREATE_ROOM",
+    "CHAT_REGISTER_BOT",
+    "CHAT_POST_MESSAGE",
+    "CHAIN_GET_HEAD_HEADER",
+    "CHAIN_GET_HEAD_BODY",
+    "CHAIN_GET_HEAD_STORAGE",
+    "CHAIN_CALL_HEAD",
+    "CHAIN_UNPIN_HEAD",
+    "CHAIN_CONTINUE_HEAD",
+    "CHAIN_STOP_HEAD_OPERATION",
+    "CHAIN_GET_SPEC_GENESIS_HASH",
+    "CHAIN_GET_SPEC_CHAIN_NAME",
+    "CHAIN_GET_SPEC_PROPERTIES",
+    "CHAIN_GET_CHAIN_INFO",
+    "CHAIN_BROADCAST_TRANSACTION",
+    "CHAIN_STOP_TRANSACTION",
+    "ENTROPY_DERIVE",
+    "COIN_PAYMENT_CREATE_PURSE",
+    "COIN_PAYMENT_QUERY_PURSE",
+    "COIN_PAYMENT_CREATE_RECEIVABLE",
+    "COIN_PAYMENT_CREATE_CHEQUE",
+]);
 
 /**
  * Await a promise-like and return its outcome, so a rejection can be asserted
@@ -837,5 +877,52 @@ describe("request timeouts", () => {
         expect(() =>
             createTransport(fixture.provider, { requestTimeoutMs: 2_147_483_648 }),
         ).toThrow(/Invalid TrUAPI request timeout/);
+    });
+
+    it("keeps a configured bound that is longer than the method's floor", () => {
+        expect(resolveRequestTimeoutMs(W.SIGNING_SIGN_PAYLOAD.request, 500_000, undefined)).toBe(
+            500_000,
+        );
+        expect(resolveRequestTimeoutMs(W.SIGNING_SIGN_PAYLOAD.request, 5, undefined)).toBe(190_000);
+        expect(resolveRequestTimeoutMs(W.SYSTEM_HANDSHAKE.request, 5, undefined)).toBe(5);
+    });
+
+    it("lets a per-request bound override both the configured bound and the floor", () => {
+        expect(resolveRequestTimeoutMs(W.SIGNING_SIGN_PAYLOAD.request, 500_000, 5)).toBe(5);
+        expect(resolveRequestTimeoutMs(W.SYSTEM_HANDSHAKE.request, 5, 90_000)).toBe(90_000);
+        expect(() => resolveRequestTimeoutMs(W.SYSTEM_HANDSHAKE.request, 5, 0)).toThrow(
+            /Invalid TrUAPI request timeout/,
+        );
+    });
+
+    it("rejects an invalid per-request bound at the call site, not through the promise", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+
+        expect(() =>
+            transport.request<undefined, never>({
+                ids: W.SYSTEM_HANDSHAKE,
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true, value: undefined }),
+                timeoutMs: -1,
+            }),
+        ).toThrow(/Invalid TrUAPI request timeout/);
+        expect(fixture.sent).toHaveLength(0);
+    });
+
+    it("classifies every generated request method as floored or prompt-free", () => {
+        const unclassified = Object.entries(W)
+            .filter(([name, ids]) => {
+                if (!(ids && typeof ids === "object" && "request" in ids)) return false;
+                const requestId = ids.request;
+                return (
+                    typeof requestId === "number" &&
+                    !REQUEST_TIMEOUT_FLOOR_MS.has(requestId) &&
+                    !PROMPT_FREE_REQUESTS.has(name)
+                );
+            })
+            .map(([name]) => name);
+
+        expect(unclassified).toEqual([]);
     });
 });

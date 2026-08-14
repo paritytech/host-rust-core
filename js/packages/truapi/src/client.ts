@@ -72,9 +72,21 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * Floor for a request the host answers behind a remote authority, above the
- * runtime's 180s remote-authority response deadline.
+ * runtime's 180s remote-authority response deadline
+ * (`rust/crates/truapi-server/src/runtime.rs`,
+ * `DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT`).
  */
 const REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS = 190_000;
+
+/**
+ * Floor for a request whose answer waits on a person and carries no host-side
+ * deadline at all: a pairing login, a device or remote consent dialog, a
+ * payment confirmation. The host keeps such a call pending for as long as the
+ * person takes, so this is the client's own ceiling rather than a cleared host
+ * deadline, and it matches the longest client-side budget this repo already
+ * uses for a prompt-backed call.
+ */
+const USER_APPROVAL_REQUEST_TIMEOUT_MS = 420_000;
 
 /**
  * Floor for a request that waits on a live resource allocation or an on-chain
@@ -83,18 +95,28 @@ const REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS = 190_000;
 const LIVE_ALLOCATION_REQUEST_TIMEOUT_MS = 420_000;
 
 /**
- * Requests whose host-side answer deadline exceeds
- * `DEFAULT_REQUEST_TIMEOUT_MS`, keyed by request frame id. The effective
- * bound is the larger of the configured bound and the floor, so bounding a
- * request never aborts an answer the host is still allowed to send. A method
- * absent from this table takes the configured bound; a per-request `timeoutMs`
- * overrides both.
+ * Requests whose answer either outlives `DEFAULT_REQUEST_TIMEOUT_MS` under a
+ * host deadline or waits on a person with no host deadline at all, keyed by
+ * request frame id. The effective bound is the larger of the configured bound
+ * and the floor, so bounding a request never aborts an answer the host is
+ * still allowed to send. A method absent from this table takes the configured
+ * bound; a per-request `timeoutMs` overrides both.
+ *
+ * Every request frame id is classified here or as prompt-free in
+ * `client.test.ts`, so a generated method added without a floor fails that
+ * test rather than silently inheriting the default.
  */
-const REQUEST_TIMEOUT_FLOOR_MS: ReadonlyMap<number, number> = new Map([
+export const REQUEST_TIMEOUT_FLOOR_MS: ReadonlyMap<number, number> = new Map([
   [W.ACCOUNT_GET_ACCOUNT.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
   [W.ACCOUNT_GET_ACCOUNT_ALIAS.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
   [W.ACCOUNT_CREATE_ACCOUNT_PROOF.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
-  [W.ACCOUNT_REQUEST_LOGIN.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.ACCOUNT_SIGN_VRF.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [
+    W.ACCOUNT_REGISTER_RING_VRF_KEY.request,
+    REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
+  ],
+  [W.ACCOUNT_LIST_RING_VRF_KEYS.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.ACCOUNT_RING_VRF_SIGN.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
   [W.SIGNING_SIGN_PAYLOAD.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
   [W.SIGNING_SIGN_RAW.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
   [
@@ -110,13 +132,25 @@ const REQUEST_TIMEOUT_FLOOR_MS: ReadonlyMap<number, number> = new Map([
     W.SIGNING_CREATE_TRANSACTION_WITH_LEGACY_ACCOUNT.request,
     REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
   ],
+  [W.STATEMENT_STORE_CREATE_PROOF.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [
+    W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED.request,
+    REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
+  ],
+  [W.ACCOUNT_REQUEST_LOGIN.request, USER_APPROVAL_REQUEST_TIMEOUT_MS],
+  [
+    W.PERMISSIONS_REQUEST_DEVICE_PERMISSION.request,
+    USER_APPROVAL_REQUEST_TIMEOUT_MS,
+  ],
+  [
+    W.PERMISSIONS_REQUEST_REMOTE_PERMISSION.request,
+    USER_APPROVAL_REQUEST_TIMEOUT_MS,
+  ],
+  [W.PAYMENT_REQUEST.request, USER_APPROVAL_REQUEST_TIMEOUT_MS],
+  [W.PAYMENT_TOP_UP.request, USER_APPROVAL_REQUEST_TIMEOUT_MS],
   [W.RESOURCE_ALLOCATION_REQUEST.request, LIVE_ALLOCATION_REQUEST_TIMEOUT_MS],
   [W.PREIMAGE_SUBMIT.request, LIVE_ALLOCATION_REQUEST_TIMEOUT_MS],
   [W.STATEMENT_STORE_SUBMIT.request, LIVE_ALLOCATION_REQUEST_TIMEOUT_MS],
-  [
-    W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED.request,
-    LIVE_ALLOCATION_REQUEST_TIMEOUT_MS,
-  ],
 ]);
 
 /**
@@ -134,6 +168,27 @@ function checkRequestTimeoutMs(value: number): number {
     );
   }
   return value;
+}
+
+/**
+ * Resolve the bound one request is armed with: a per-request `timeoutMs` wins
+ * outright, otherwise the larger of the transport's bound and the method's
+ * floor, so a product that deliberately configures a long bound keeps it and
+ * one that configures a short bound still cannot abort an answer the host is
+ * allowed to send.
+ */
+export function resolveRequestTimeoutMs(
+  requestFrameId: number,
+  transportTimeoutMs: number,
+  perRequestTimeoutMs: number | undefined,
+): number {
+  if (perRequestTimeoutMs !== undefined) {
+    return checkRequestTimeoutMs(perRequestTimeoutMs);
+  }
+  return Math.max(
+    transportTimeoutMs,
+    REQUEST_TIMEOUT_FLOOR_MS.get(requestFrameId) ?? 0,
+  );
 }
 
 /**
@@ -559,19 +614,17 @@ export function createTransport(
       decodeResponse,
       timeoutMs,
     }: RequestParams<Ok, Err>): ResultAsync<Ok, Err> {
+      const bound = resolveRequestTimeoutMs(
+        ids.request,
+        requestTimeoutMs,
+        timeoutMs,
+      );
       const promise = new Promise<ResultPayload<Ok, Err>>((resolve, reject) => {
         if (closedError) {
           reject(closedError);
           return;
         }
 
-        const bound =
-          timeoutMs === undefined
-            ? Math.max(
-                requestTimeoutMs,
-                REQUEST_TIMEOUT_FLOOR_MS.get(ids.request) ?? 0,
-              )
-            : checkRequestTimeoutMs(timeoutMs);
         const requestId = `p:${++idCounter}`;
         const timer = setTimeout(() => {
           takePending(requestId);
@@ -666,7 +719,9 @@ export function createTransport(
       bufferCapacity,
     }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
       if (hostRoutes.has(ids.start)) {
-        throw new Error(`host-initiated subscription ${ids.start} is already registered`);
+        throw new Error(
+          `host-initiated subscription ${ids.start} is already registered`,
+        );
       }
       const route: HostRoute = {
         ids,
