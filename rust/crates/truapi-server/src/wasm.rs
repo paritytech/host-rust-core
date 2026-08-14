@@ -25,8 +25,8 @@ use truapi::v01;
 #[cfg(feature = "wasm-signing-host")]
 use truapi_platform::SigningHostConfig;
 use truapi_platform::{
-    ChainProvider, HostInfo, JsonRpcConnection, PairingHostConfig, PlatformInfo, ProductContext,
-    ProductExecutionKind, RuntimeConfigValidationError,
+    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig, PlatformInfo,
+    ProductContext, ProductExecutionKind, RuntimeConfigValidationError,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -430,6 +430,16 @@ fn noop_function() -> Function {
     Function::new_no_args("")
 }
 
+/// Stand-in for a callback of an optional capability the host left out. The
+/// core only holds an adapter for a capability the bridge reports as present,
+/// so this is never invoked; it throws rather than returning a value the
+/// decoder would misread.
+fn missing_callback(name: &str) -> Function {
+    Function::new_no_args(&format!(
+        "throw new Error('host callback {name} is not implemented')"
+    ))
+}
+
 fn runtime_config_from_js(value: &JsValue) -> Result<(PairingHostConfig, ProductContext), JsValue> {
     let host_config = pairing_host_config_from_js(value)?;
     let product = product_context_from_js(value)?;
@@ -738,13 +748,20 @@ impl WasmPairingHostRuntime {
         console_error_panic_hook::set_once();
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
+        let has_chat = bridge.has_chat();
         let platform = Arc::new(WasmPlatform::new(bridge));
+        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = pairing_host_config_from_js(&host_config)?;
         Ok(Self {
-            runtime: Rc::new(PairingHostRuntime::new(platform, host_config, spawner)),
+            runtime: Rc::new(PairingHostRuntime::with_chat_platform(
+                platform,
+                host_config,
+                spawner,
+                chat_platform,
+            )),
         })
     }
 
@@ -1019,17 +1036,20 @@ impl WasmProductRuntime {
         let frame_sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
+        let has_chat = bridge.has_chat();
         let platform = Arc::new(WasmPlatform::new(bridge));
+        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let (host_config, product) = runtime_config_from_js(&runtime_config)?;
-        let core = ProductRuntime::from_platform_with_config(
+        let core = ProductRuntime::from_platform_with_chat_platform(
             platform,
             host_config,
             product,
             spawner,
             frame_sink,
+            chat_platform,
         );
         Ok(Self::from_parts(core, channel.dispose))
     }

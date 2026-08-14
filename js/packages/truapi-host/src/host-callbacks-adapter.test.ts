@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
+  HostChatCreateRoomRequest,
+  HostChatCreateRoomResponse,
   HostDevicePermissionRequest,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
@@ -369,6 +371,40 @@ describe("createWasmRawCallbacks", () => {
     ]);
 
     disposePreimages?.();
+  });
+
+  it("omits the chat callbacks when the host does not serve chat", () => {
+    const raw = createWasmRawCallbacks(makeHostCallbacks());
+
+    expect(raw.createChatRoom).toBeUndefined();
+    expect(raw.postChatMessage).toBeUndefined();
+    expect(raw.subscribeChatRooms).toBeUndefined();
+  });
+
+  it("adapts the chat callbacks when the host serves chat", async () => {
+    const seen: string[] = [];
+    const raw = createWasmRawCallbacks(
+      makeHostCallbacks({
+        chat: {
+          createChatRoom: async (product, request) => {
+            seen.push(`${product.productId}:${request.roomId}`);
+            return { status: "Exists" };
+          },
+        },
+      }),
+    );
+
+    const product = ProductContext.enc({
+      productId: "chat.dot",
+      executionKind: "Chat",
+    });
+    const request = HostChatCreateRoomRequest.enc({ roomId: "room" });
+    const response = await raw.createChatRoom!(product, request);
+
+    expect(seen).toEqual(["chat.dot:room"]);
+    expect(HostChatCreateRoomResponse.dec(response)).toEqual({
+      status: "Exists",
+    });
   });
 
   it("adapts typed result subscriptions", async () => {

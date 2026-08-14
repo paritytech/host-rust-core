@@ -28,6 +28,9 @@ const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
 pub(crate) struct RuntimeServices {
     /// Host platform backing all syscalls.
     pub(crate) platform: Arc<dyn Platform>,
+    /// Host chat adapter, when the host serves the Chat capability. `None`
+    /// makes every product chat call resolve as `Unsupported`.
+    pub(crate) chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -68,6 +71,7 @@ impl RuntimeServices {
         let bulletin = BulletinRpc::new(chain.clone(), bulletin_chain_genesis_hash);
         Arc::new(Self {
             platform,
+            chat_platform: None,
             chain,
             statement_store,
             bulletin,
@@ -78,6 +82,29 @@ impl RuntimeServices {
             spawner,
             next_core_instance: AtomicU64::new(1),
         })
+    }
+
+    /// Same as [`Self::new`], with the host's chat adapter installed.
+    pub(crate) fn with_chat_platform(
+        platform: Arc<dyn Platform>,
+        people_chain_genesis_hash: [u8; 32],
+        bulletin_chain_genesis_hash: [u8; 32],
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    ) -> Arc<Self> {
+        let services = Self::new(
+            platform,
+            people_chain_genesis_hash,
+            bulletin_chain_genesis_hash,
+            spawner,
+        );
+        let Some(chat_platform) = chat_platform else {
+            return services;
+        };
+        let mut services = Arc::try_unwrap(services)
+            .unwrap_or_else(|_| unreachable!("services are not shared before this point"));
+        services.chat_platform = Some(chat_platform);
+        Arc::new(services)
     }
 
     /// Allocate the next per-product-runtime id, used to scope chain follow

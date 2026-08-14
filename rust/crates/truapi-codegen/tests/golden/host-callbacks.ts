@@ -777,7 +777,7 @@ export interface ChatPlatform {
   /**
    * Create or resolve a product-scoped native chat room.
    */
-  createRoom(
+  createChatRoom(
     product: ProductContext,
     request: HostChatCreateRoomRequest,
   ): Promise<HostChatCreateRoomResponse>;
@@ -785,7 +785,7 @@ export interface ChatPlatform {
   /**
    * Persist a product-authored message in a native chat room.
    */
-  postMessage(
+  postChatMessage(
     product: ProductContext,
     request: HostChatPostMessageRequest,
   ): Promise<HostChatPostMessageResponse>;
@@ -793,9 +793,9 @@ export interface ChatPlatform {
   /**
    * Emit the current product-scoped room list and later replacements.
    */
-  subscribeRooms(
+  subscribeChatRooms(
     product: ProductContext,
-  ): AsyncIterable<HostChatListSubscribeItem>;
+  ): AsyncIterable<Result<HostChatListSubscribeItem, GenericError>>;
 }
 
 /**
@@ -1043,6 +1043,7 @@ export interface HostCallbacks {
   userConfirmation: UserConfirmation;
   theme: ThemeHost;
   preimage: PreimageHost;
+  chat?: ChatPlatform;
 }
 
 export interface RequiredHostCallbacks {
@@ -1057,4 +1058,5 @@ export interface RequiredHostCallbacks {
   userConfirmation: Required<UserConfirmation>;
   theme: Required<ThemeHost>;
   preimage: Required<PreimageHost>;
+  chat?: Required<ChatPlatform>;
 }

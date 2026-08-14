@@ -94,12 +94,29 @@ impl PairingHostRuntime {
     where
         P: Platform + 'static,
     {
+        Self::with_chat_platform(platform, config, spawner, None)
+    }
+
+    /// Same as [`Self::new`], with the host's chat adapter installed. Passing
+    /// `None` leaves the host without the Chat capability, so its products'
+    /// chat calls resolve as `Unsupported`.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.with_chat_platform"))]
+    pub fn with_chat_platform<P>(
+        platform: Arc<P>,
+        config: PairingHostConfig,
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn ChatPlatform>>,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
         let platform: Arc<dyn Platform> = platform;
-        let services = RuntimeServices::new(
+        let services = RuntimeServices::with_chat_platform(
             platform,
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            chat_platform,
         );
         let pairing_host = PairingHostRole::new(services.clone(), config);
         pairing_host.clone().start_session_store_sync(spawner);
@@ -576,7 +593,7 @@ impl ConnectionAdapters {
     pub(crate) fn from_services(services: &RuntimeServices) -> Self {
         Self {
             platform: services.platform.clone(),
-            chat_platform: None,
+            chat_platform: services.chat_platform.clone(),
             chat: Arc::new(ChatConnection::new()),
         }
     }
@@ -770,7 +787,24 @@ impl ProductRuntime {
     where
         P: Platform + 'static,
     {
-        let pairing = PairingHostRuntime::new(platform, host_config, spawner);
+        Self::from_platform_with_chat_platform(platform, host_config, product, spawner, sink, None)
+    }
+
+    /// Same as [`Self::from_platform_with_config`], with the host's chat
+    /// adapter installed.
+    pub fn from_platform_with_chat_platform<P>(
+        platform: Arc<P>,
+        host_config: PairingHostConfig,
+        product: ProductContext,
+        spawner: Spawner,
+        sink: Arc<dyn FrameSink>,
+        chat_platform: Option<Arc<dyn ChatPlatform>>,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
+        let pairing =
+            PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
         pairing.product_runtime(product, sink)
     }
 

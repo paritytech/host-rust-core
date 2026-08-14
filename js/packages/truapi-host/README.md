@@ -15,6 +15,26 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
 
+## Optional capabilities
+
+`HostCallbacks` groups are required except those listed on the Rust
+`OptionalPlatform` super-trait, which are emitted as optional members. Omit one
+and the core answers its product calls with `Unsupported`; supply it and the
+whole group must be implemented:
+
+```ts
+const callbacks: HostCallbacks = {
+  navigation,
+  notifications,
+  // ...required groups...
+  chat, // optional: leave it out and chat products get `Unsupported`
+};
+```
+
+Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
+reported to the worker in its `init` message, so the core sees the same
+capability set on both sides of the boundary.
+
 ## Generated WASM artefacts
 
 The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.

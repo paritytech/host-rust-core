@@ -1250,24 +1250,24 @@ pub trait PreimageHost: Send + Sync {
 #[async_trait]
 pub trait ChatPlatform: Send + Sync {
     /// Create or resolve a product-scoped native chat room.
-    async fn create_room(
+    async fn create_chat_room(
         &self,
         product: &ProductContext,
         request: HostChatCreateRoomRequest,
     ) -> Result<HostChatCreateRoomResponse, HostChatCreateRoomError>;
 
     /// Persist a product-authored message in a native chat room.
-    async fn post_message(
+    async fn post_chat_message(
         &self,
         product: &ProductContext,
         request: HostChatPostMessageRequest,
     ) -> Result<HostChatPostMessageResponse, HostChatPostMessageError>;
 
     /// Emit the current product-scoped room list and later replacements.
-    fn subscribe_rooms(
+    fn subscribe_chat_rooms(
         &self,
         product: &ProductContext,
-    ) -> BoxStream<'static, HostChatListSubscribeItem>;
+    ) -> BoxStream<'static, Result<HostChatListSubscribeItem, GenericError>>;
 }
 
 /// Combined platform interface. A host must provide all capability traits.
@@ -1300,3 +1300,11 @@ impl<T> Platform for T where
         + PreimageHost
 {
 }
+
+/// Capability traits a host may serve but is not required to. A host that
+/// omits one is not broken: the core answers the corresponding product calls
+/// with `Unsupported`. Codegen reads this list to emit each capability as an
+/// optional group on the host-callback surface.
+pub trait OptionalPlatform: ChatPlatform {}
+
+impl<T> OptionalPlatform for T where T: ChatPlatform {}

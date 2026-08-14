@@ -2146,7 +2146,7 @@ impl Chat for ProductRuntimeHost {
         let platform = self.chat_platform()?;
         let HostChatCreateRoomRequest::V1(request) = request;
         platform
-            .create_room(&self.product, request)
+            .create_chat_room(&self.product, request)
             .await
             .map(HostChatCreateRoomResponse::V1)
             .map_err(|error| CallError::Domain(HostChatCreateRoomError::V1(error)))
@@ -2159,8 +2159,8 @@ impl Chat for ProductRuntimeHost {
         };
         Subscription::new(Box::pin(
             platform
-                .subscribe_rooms(&self.product)
-                .map(HostChatListSubscribeItem::V1),
+                .subscribe_chat_rooms(&self.product)
+                .filter_map(|item| async { item.ok().map(HostChatListSubscribeItem::V1) }),
         ))
     }
 
@@ -2173,7 +2173,7 @@ impl Chat for ProductRuntimeHost {
         let platform = self.chat_platform()?;
         let HostChatPostMessageRequest::V1(request) = request;
         platform
-            .post_message(&self.product, request)
+            .post_chat_message(&self.product, request)
             .await
             .map(HostChatPostMessageResponse::V1)
             .map_err(|error| CallError::Domain(HostChatPostMessageError::V1(error)))

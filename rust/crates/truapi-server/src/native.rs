@@ -1538,7 +1538,7 @@ struct ChatCallbackPlatform {
 
 #[async_trait]
 impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
-    async fn create_room(
+    async fn create_chat_room(
         &self,
         _product: &ProductContext,
         request: v01::HostChatCreateRoomRequest,
@@ -1559,7 +1559,7 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         Ok(v01::HostChatCreateRoomResponse { status })
     }
 
-    async fn post_message(
+    async fn post_chat_message(
         &self,
         _product: &ProductContext,
         request: v01::HostChatPostMessageRequest,
@@ -1584,14 +1584,14 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         Ok(v01::HostChatPostMessageResponse { message_id })
     }
 
-    fn subscribe_rooms(
+    fn subscribe_chat_rooms(
         &self,
         _product: &ProductContext,
-    ) -> BoxStream<'static, v01::HostChatListSubscribeItem> {
+    ) -> BoxStream<'static, Result<v01::HostChatListSubscribeItem, v01::GenericError>> {
         let current = v01::HostChatListSubscribeItem {
             rooms: self.chat.list_rooms().unwrap_or_default(),
         };
-        self.events.subscribe_chat_rooms(current)
+        Box::pin(self.events.subscribe_chat_rooms(current).map(Ok))
     }
 }
 
@@ -2054,14 +2054,18 @@ mod tests {
         let product =
             ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
                 .unwrap();
-        let mut stream = truapi_platform::ChatPlatform::subscribe_rooms(&platform, &product);
+        let mut stream = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
 
-        let first = futures::executor::block_on(stream.next()).unwrap();
+        let first = futures::executor::block_on(stream.next())
+            .unwrap()
+            .expect("initial room list");
         events.notify_chat_rooms_changed(vec![v01::ChatRoom {
             room_id: "support".to_string(),
             participating_as: v01::ChatRoomParticipation::Bot,
         }]);
-        let second = futures::executor::block_on(stream.next()).unwrap();
+        let second = futures::executor::block_on(stream.next())
+            .unwrap()
+            .expect("replacement room list");
 
         assert!(first.rooms.is_empty());
         assert_eq!(second.rooms.len(), 1);
@@ -2087,31 +2091,33 @@ mod tests {
             name: "Support".to_string(),
             icon: String::new(),
         };
-        let mut rooms = truapi_platform::ChatPlatform::subscribe_rooms(&platform, &product);
+        let mut rooms = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
         assert!(
             futures::executor::block_on(rooms.next())
                 .expect("initial room list")
+                .expect("room list is not an error")
                 .rooms
                 .is_empty()
         );
 
-        let created = futures::executor::block_on(truapi_platform::ChatPlatform::create_room(
+        let created = futures::executor::block_on(truapi_platform::ChatPlatform::create_chat_room(
             &platform,
             &product,
             request.clone(),
         ))
         .unwrap();
-        let updated_rooms =
-            futures::executor::block_on(rooms.next()).expect("created room replacement");
+        let updated_rooms = futures::executor::block_on(rooms.next())
+            .expect("created room replacement")
+            .expect("room list is not an error");
         *callbacks
             .chat_room_status
             .lock()
             .expect("room status mutex poisoned") = v01::ChatRoomRegistrationStatus::Exists;
-        let existing = futures::executor::block_on(truapi_platform::ChatPlatform::create_room(
-            &platform, &product, request,
-        ))
+        let existing = futures::executor::block_on(
+            truapi_platform::ChatPlatform::create_chat_room(&platform, &product, request),
+        )
         .unwrap();
-        let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_message(
+        let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
             &platform,
             &product,
             v01::HostChatPostMessageRequest {

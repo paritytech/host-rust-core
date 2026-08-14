@@ -29,6 +29,7 @@
 // views into WASM memory) and frames are small, so the copy is the simpler
 // safe choice.
 
+import type { OptionalCapabilities } from "./generated/worker-callbacks.js";
 import type { LogLevel, PermissionAuthorizationStatus } from "./runtime.js";
 import type {
   CallbackName,
@@ -55,7 +56,17 @@ export type CallbackArgs = readonly unknown[];
  * host callback/subscription/chain responses requested by the worker.
  */
 export type MainToWorker =
-  | { kind: "init"; logLevel: LogLevel; hostConfig: unknown }
+  | {
+      kind: "init";
+      logLevel: LogLevel;
+      hostConfig: unknown;
+      /**
+       * Optional capabilities the main-thread host serves. The worker proxies
+       * only these, so the core sees the same capability set on both sides of
+       * the boundary.
+       */
+      capabilities: OptionalCapabilities;
+    }
   | { kind: "createCore"; coreId: number; product: unknown }
   | { kind: "disposeCore"; coreId: number }
   | { kind: "setLogLevel"; level: LogLevel }
