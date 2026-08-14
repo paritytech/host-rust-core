@@ -1,6 +1,7 @@
 # Releasing npm packages
 
-The `@parity/truapi` and `@parity/truapi-host` npm packages are published by
+The `@parity/truapi`, `@parity/truapi-host`, and
+`@parity/truapi-provider` npm packages are published by
 [`paritytech/npm_publish_automation`](https://github.com/paritytech/npm_publish_automation).
 We never run `npm publish` locally or from a personal account; the
 `Release` workflow in `.github/workflows/release.yml` packs the packages
@@ -38,8 +39,9 @@ consumes it, bumps the selected package `package.json`, appends the package
 dependency aligned with `js/packages/truapi/package.json`; the command then
 refreshes `package-lock.json`. A protocol release should therefore include the
 `@parity/truapi` package, its changelog, the Cargo version, the host dependency,
-and the lockfile. A host-runtime-only release can bump
-`@parity/truapi-host` without changing the Rust crate version.
+and the lockfile. Host-runtime-only and provider-only releases can bump
+`@parity/truapi-host` or `@parity/truapi-provider`, respectively, without
+changing the Rust crate version.
 
 ### 3. Open a release PR
 
@@ -54,7 +56,8 @@ The PR title must start with `release:`. Convention:
 ```
 release: @parity/truapi 0.1.1
 release: @parity/truapi-host 0.1.1
-release: @parity/truapi 0.5.0, @parity/truapi-host 0.2.0
+release: @parity/truapi-provider 0.1.0
+release: @parity/truapi 0.5.0, @parity/truapi-host 0.2.0, @parity/truapi-provider 0.1.0
 ```
 
 Separate multiple package/version targets with commas. The workflow validates
@@ -78,12 +81,14 @@ On merge, CI runs as usual. When CI passes, the `Release` workflow:
 1. Confirms the commit subject starts with `release:`.
 2. Reads each package/version target from the comma-separated release subject
    and validates it against the corresponding package manifest.
-3. Checks for `@parity/truapi@<version>` and
-   `@parity/truapi-host@<version>` tags. Packages whose tag already exists
-   are skipped, so re-runs are idempotent.
-4. Builds generated sources and the host WASM bundle, creates and pushes tags
-   for unpublished packages, packs their tarballs, and dispatches to
-   `npm_publish_automation`.
+3. Checks the npm tag for each requested package, including
+   `@parity/truapi-provider@<version>`. Packages whose tag already exists are
+   skipped, so re-runs are idempotent.
+4. Builds generated sources and each selected WASM package, creates and pushes
+   tags for unpublished packages, packs their public tarballs, and dispatches
+   to `npm_publish_automation`. Provider releases always rebuild
+   `truapi_provider.js`, `truapi_provider_bg.wasm`, and their artifact manifest
+   before packing.
 
 You can watch the dispatched run under
 [`paritytech/npm_publish_automation` Actions](https://github.com/paritytech/npm_publish_automation/actions).

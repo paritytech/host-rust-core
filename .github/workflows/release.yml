@@ -68,7 +68,7 @@ jobs:
             # Trim whitespace around comma-separated targets.
             target="${target#"${target%%[![:space:]]*}"}"
             target="${target%"${target##*[![:space:]]}"}"
-            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/ios-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/truapi-provider|@parity/ios-host)[[:space:]]+([^[:space:]]+)$ ]]; then
               echo "::error::Unsupported release target '${target}' in subject: ${subject}"
               exit 1
             fi
@@ -84,6 +84,7 @@ jobs:
             case "${name}" in
               @parity/truapi) path="js/packages/truapi" ;;
               @parity/truapi-host) path="js/packages/truapi-host" ;;
+              @parity/truapi-provider) path="js/packages/truapi-provider" ;;
               @parity/ios-host)
                 if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
                   echo "::error::Invalid iOS host version '${declared_version}'."
@@ -157,7 +158,7 @@ jobs:
         run: npm ci
 
       - name: Install wasm-pack
-        if: steps.version.outputs.proceed == 'true' && contains(steps.version.outputs.packages, '@parity/truapi-host|')
+        if: steps.version.outputs.proceed == 'true' && (contains(steps.version.outputs.packages, '@parity/truapi-host|') || contains(steps.version.outputs.packages, '@parity/truapi-provider|'))
         run: cargo install wasm-pack --version 0.14.0 --locked
 
       - name: Build packages
@@ -169,8 +170,43 @@ jobs:
             npm run build --prefix js/packages/truapi-host
             npm run build:wasm --prefix js/packages/truapi-host
           fi
+          if grep -q '^@parity/truapi-provider|' <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"; then
+            provider_path="js/packages/truapi-provider"
+            if [ "$(jq -r '.publishConfig.access' "${provider_path}/package.json")" != "public" ]; then
+              echo "::error::Provider releases must set publishConfig.access to public."
+              exit 1
+            fi
+            npm run build:wasm --prefix "${provider_path}"
+            for file in truapi_provider.js truapi_provider_bg.wasm artifact-manifest.json; do
+              if [ ! -s "${provider_path}/dist/${file}" ]; then
+                echo "::error::Provider release build did not produce dist/${file}."
+                exit 1
+              fi
+            done
+            provider_manifest="${provider_path}/dist/artifact-manifest.json"
+            provider_version="$(jq -r '.version' "${provider_path}/package.json")"
+            jq -e --arg version "${provider_version}" '
+              .schemaVersion == 1 and
+              .packageName == "@parity/truapi-provider" and
+              .packageVersion == $version and
+              .buildProfile == "release" and
+              (.files | keys == ["truapi_provider.js", "truapi_provider_bg.wasm"]) and
+              all(.files[]; (.sha256 | test("^[0-9a-f]{64}$")) and (.size | type == "number" and . > 0))
+            ' "${provider_manifest}" >/dev/null
+            for file in truapi_provider.js truapi_provider_bg.wasm; do
+              artifact="${provider_path}/dist/${file}"
+              expected_sha="$(jq -r --arg file "${file}" '.files[$file].sha256' "${provider_manifest}")"
+              expected_size="$(jq -r --arg file "${file}" '.files[$file].size' "${provider_manifest}")"
+              if [ "$(sha256sum "${artifact}" | cut -d ' ' -f 1)" != "${expected_sha}" ] ||
+                 [ "$(stat -c %s "${artifact}")" != "${expected_size}" ]; then
+                echo "::error::Provider artifact manifest does not match dist/${file}."
+                exit 1
+              fi
+            done
+          fi
         env:
           STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
+          TRUAPI_WASM_PROFILE: release
 
       - name: Pack package
         if: steps.version.outputs.proceed == 'true'

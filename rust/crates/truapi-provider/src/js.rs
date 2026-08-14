@@ -68,6 +68,21 @@ impl ChainProviderBuilder {
         self.inner = Some(builder.chain(genesis, ChainSource::rpc_node(url)));
         Ok(())
     }
+    /// Configure the remote node used only for `author_submit*` and matching
+    /// `author_unwatchExtrinsic` traffic on this chain. Ordinary requests stay
+    /// on the registered embedded light-client backend.
+    #[wasm_bindgen(js_name = setSubmitRpc)]
+    pub fn set_submit_rpc(&mut self, genesis_hash: &str, url: &str) -> Result<(), JsError> {
+        let genesis = parse_genesis(genesis_hash)?;
+        let url =
+            url::Url::parse(url).map_err(|err| JsError::new(&format!("invalid URL: {err}")))?;
+        let builder = self
+            .inner
+            .take()
+            .ok_or_else(|| JsError::new("builder was already consumed by build()"))?;
+        self.inner = Some(builder.submit_rpc(genesis, url));
+        Ok(())
+    }
 
     /// Register an embedded light-client chain identified by the
     /// `0x`-prefixed genesis hash. Use this for a relay or standalone chain;

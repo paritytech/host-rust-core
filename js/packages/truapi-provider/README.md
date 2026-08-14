@@ -65,6 +65,12 @@ The `dist/` bundle is generated and gitignored. Rebuild it from the Rust crate:
 npm run build:wasm      # wasm-pack --target web, features "js networks"
 ```
 
+The build also writes `dist/artifact-manifest.json`, exported as
+`@parity/truapi-provider/artifact-manifest.json`. It identifies the package
+name, version, and active build profile (`release` for published artifacts), and
+records the exact SHA-256 digest and byte size of `truapi_provider.js` and
+`truapi_provider_bg.wasm`.
+
 `wasm-pack` is required (`cargo install wasm-pack`). Set `TRUAPI_WASM_PROFILE=dev`
 for a fast unoptimized build. The repo's `make wasm` target rebuilds this bundle
 alongside the host runtime.

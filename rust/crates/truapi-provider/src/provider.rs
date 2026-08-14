@@ -4,6 +4,15 @@
 //! [`ChainSource`]; the light backend brings the relay up behind the parachain.
 
 use std::collections::HashMap;
+#[cfg(feature = "ws")]
+use std::pin::Pin;
+#[cfg(feature = "ws")]
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "ws")]
+use std::task::{Context, Poll};
+
+#[cfg(feature = "ws")]
+use futures::stream::{BoxStream, Stream, StreamExt};
 
 use truapi::latest::GenericError;
 use truapi_platform::{ChainProvider, JsonRpcConnection};
@@ -15,6 +24,10 @@ use crate::error::ProviderError;
 #[derive(Debug, Default)]
 pub struct EmbeddedChainProviderBuilder {
     chains: HashMap<[u8; 32], ChainSource>,
+    /// Optional remote node used only for extrinsic submission traffic, keyed
+    /// by chain genesis hash.
+    #[cfg(feature = "ws")]
+    submit_nodes: HashMap<[u8; 32], url::Url>,
     /// The relay each parachain syncs through, keyed by parachain genesis hash
     /// (exactly one per parachain).
     #[cfg(feature = "smoldot")]
@@ -36,6 +49,15 @@ impl EmbeddedChainProviderBuilder {
     /// earlier one.
     pub fn chain(mut self, genesis_hash: [u8; 32], source: ChainSource) -> Self {
         self.chains.insert(genesis_hash, source);
+        self
+    }
+    /// Route extrinsic submission and matching unwatch requests for
+    /// `genesis_hash` through `url`, while all other JSON-RPC remains on the
+    /// chain's registered backend. A later registration for the same hash
+    /// replaces the earlier one.
+    #[cfg(feature = "ws")]
+    pub fn submit_rpc(mut self, genesis_hash: [u8; 32], url: url::Url) -> Self {
+        self.submit_nodes.insert(genesis_hash, url);
         self
     }
 
@@ -69,6 +91,8 @@ impl EmbeddedChainProviderBuilder {
     pub fn build(self) -> EmbeddedChainProvider {
         EmbeddedChainProvider {
             chains: self.chains,
+            #[cfg(feature = "ws")]
+            submit_nodes: self.submit_nodes,
             #[cfg(feature = "smoldot")]
             relays: self.relays,
             #[cfg(feature = "smoldot")]
@@ -93,6 +117,8 @@ impl EmbeddedChainProviderBuilder {
 /// call yields the live stream, later calls yield an ended stream.
 pub struct EmbeddedChainProvider {
     chains: HashMap<[u8; 32], ChainSource>,
+    #[cfg(feature = "ws")]
+    submit_nodes: HashMap<[u8; 32], url::Url>,
     /// The relay each explicitly-registered parachain syncs through; catalog
     /// parachains carry theirs in the catalog entry.
     #[cfg(feature = "smoldot")]
@@ -174,6 +200,163 @@ impl EmbeddedChainProvider {
     fn with_seeded_database(&self, _genesis_hash: [u8; 32], source: ChainSource) -> ChainSource {
         source
     }
+    #[cfg(feature = "ws")]
+    async fn with_submit_node(
+        &self,
+        genesis_hash: [u8; 32],
+        primary: Box<dyn JsonRpcConnection>,
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
+        let Some(url) = self.submit_nodes.get(&genesis_hash) else {
+            return Ok(primary);
+        };
+        let submit = crate::ws::connect(url.clone()).await?;
+        Ok(Box::new(HybridConnection::new(primary, submit)))
+    }
+
+    #[cfg(not(feature = "ws"))]
+    async fn with_submit_node(
+        &self,
+        _genesis_hash: [u8; 32],
+        primary: Box<dyn JsonRpcConnection>,
+    ) -> Result<Box<dyn JsonRpcConnection>, ProviderError> {
+        Ok(primary)
+    }
+}
+
+/// One logical connection whose ordinary traffic remains on the primary
+/// backend while author submission traffic uses a configured remote node.
+///
+/// Both transports share one response stream and one lifecycle. If either
+/// transport dies, the logical stream ends and both transports close, so a
+/// caller can never wait forever for a response on the dead half.
+#[cfg(feature = "ws")]
+struct HybridConnection {
+    primary: Arc<dyn JsonRpcConnection>,
+    submit: Arc<dyn JsonRpcConnection>,
+    responses: Mutex<Option<BoxStream<'static, String>>>,
+}
+
+#[cfg(feature = "ws")]
+impl HybridConnection {
+    fn new(primary: Box<dyn JsonRpcConnection>, submit: Box<dyn JsonRpcConnection>) -> Self {
+        let primary: Arc<dyn JsonRpcConnection> = Arc::from(primary);
+        let submit: Arc<dyn JsonRpcConnection> = Arc::from(submit);
+        let responses = HybridResponses {
+            primary: primary.responses(),
+            submit: submit.responses(),
+            primary_connection: Arc::clone(&primary),
+            submit_connection: Arc::clone(&submit),
+            poll_submit_first: false,
+            closed: false,
+        }
+        .boxed();
+        Self {
+            primary,
+            submit,
+            responses: Mutex::new(Some(responses)),
+        }
+    }
+
+    fn uses_submit_node(request: &str) -> bool {
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(request) else {
+            return false;
+        };
+        request
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|method| {
+                method.starts_with("author_submit") || method == "author_unwatchExtrinsic"
+            })
+    }
+}
+
+#[cfg(feature = "ws")]
+impl JsonRpcConnection for HybridConnection {
+    fn send(&self, request: String) {
+        if Self::uses_submit_node(&request) {
+            self.submit.send(request);
+        } else {
+            self.primary.send(request);
+        }
+    }
+
+    fn responses(&self) -> BoxStream<'static, String> {
+        self.responses
+            .lock()
+            .expect("responses mutex poisoned")
+            .take()
+            .unwrap_or_else(|| futures::stream::empty().boxed())
+    }
+
+    fn close(&self) {
+        self.primary.close();
+        self.submit.close();
+        self.responses
+            .lock()
+            .expect("responses mutex poisoned")
+            .take();
+    }
+}
+
+#[cfg(feature = "ws")]
+impl Drop for HybridConnection {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+#[cfg(feature = "ws")]
+struct HybridResponses {
+    primary: BoxStream<'static, String>,
+    submit: BoxStream<'static, String>,
+    primary_connection: Arc<dyn JsonRpcConnection>,
+    submit_connection: Arc<dyn JsonRpcConnection>,
+    poll_submit_first: bool,
+    closed: bool,
+}
+
+#[cfg(feature = "ws")]
+impl HybridResponses {
+    fn finish(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.closed = true;
+        self.primary_connection.close();
+        self.submit_connection.close();
+    }
+}
+
+#[cfg(feature = "ws")]
+impl Stream for HybridResponses {
+    type Item = String;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.closed {
+            return Poll::Ready(None);
+        }
+        let first_submit = this.poll_submit_first;
+        for poll_submit in [first_submit, !first_submit] {
+            let result = if poll_submit {
+                this.submit.as_mut().poll_next(cx)
+            } else {
+                this.primary.as_mut().poll_next(cx)
+            };
+            match result {
+                Poll::Ready(Some(response)) => {
+                    this.poll_submit_first = !poll_submit;
+                    return Poll::Ready(Some(response));
+                }
+                Poll::Ready(None) => {
+                    this.finish();
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => {}
+            }
+        }
+        Poll::Pending
+    }
 }
 
 /// Max size for a [`snapshot`](EmbeddedChainProvider::snapshot) database blob.
@@ -254,7 +437,8 @@ impl ChainProvider for EmbeddedChainProvider {
             let relay = self.relays.get(&genesis_hash).copied();
             #[cfg(not(feature = "smoldot"))]
             let relay = None;
-            return Ok(self.connect_source(&source, &self.chains, relay).await?);
+            let primary = self.connect_source(&source, &self.chains, relay).await?;
+            return Ok(self.with_submit_node(genesis_hash, primary).await?);
         }
         #[cfg(feature = "networks")]
         if let Some((catalog, relay)) = crate::networks::catalog_network_chains(genesis_hash) {
@@ -266,7 +450,8 @@ impl ChainProvider for EmbeddedChainProvider {
                 .expect("catalog_network_chains includes the queried genesis")
                 .clone();
             let source = self.with_seeded_database(genesis_hash, source);
-            return Ok(self.connect_source(&source, &catalog, relay).await?);
+            let primary = self.connect_source(&source, &catalog, relay).await?;
+            return Ok(self.with_submit_node(genesis_hash, primary).await?);
         }
         Err(ProviderError::UnknownGenesis {
             genesis: genesis_hash,
@@ -289,6 +474,33 @@ mod tests {
             .err()
             .expect("connect must fail for an unregistered genesis");
         assert!(error.reason.contains(&"ab".repeat(32)));
+    }
+
+    #[cfg(feature = "ws")]
+    #[test]
+    fn hybrid_routing_is_limited_to_submission_and_matching_unwatch() {
+        use super::HybridConnection;
+
+        for method in [
+            "author_submitExtrinsic",
+            "author_submitAndWatchExtrinsic",
+            "author_unwatchExtrinsic",
+        ] {
+            assert!(HybridConnection::uses_submit_node(&format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":[]}}"#
+            )));
+        }
+        for method in [
+            "chain_getHeader",
+            "chainHead_v1_follow",
+            "statement_submit",
+            "author_pendingExtrinsics",
+        ] {
+            assert!(!HybridConnection::uses_submit_node(&format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":[]}}"#
+            )));
+        }
+        assert!(!HybridConnection::uses_submit_node("not json"));
     }
 
     /// A blob registered for a relay reaches it even when the relay is never

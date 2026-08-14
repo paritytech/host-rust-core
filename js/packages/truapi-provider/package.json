@@ -24,7 +24,8 @@
       "types": "./dist/truapi_provider.d.ts",
       "import": "./dist/truapi_provider.js"
     },
-    "./truapi_provider_bg.wasm": "./dist/truapi_provider_bg.wasm"
+    "./truapi_provider_bg.wasm": "./dist/truapi_provider_bg.wasm",
+    "./artifact-manifest.json": "./dist/artifact-manifest.json"
   },
   "files": [
     "dist",
