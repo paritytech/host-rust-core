@@ -3821,7 +3821,7 @@ mod tests {
         assert_eq!(
             item,
             HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
-                name: v01::ThemeName::Default,
+                name: v01::ThemeName::Custom("midnight".to_string()),
                 variant: v01::ThemeVariant::Dark,
             })
         );

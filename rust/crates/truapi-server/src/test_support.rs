@@ -1467,9 +1467,11 @@ impl ThemeHost for StubPlatform {
                 dropped: self.theme_stream_dropped.clone(),
             });
         }
+        // A custom name, not `Default`: the core must forward whatever the host
+        // reports instead of substituting a name of its own.
         Box::pin(stream::once(async {
             Ok(v01::HostThemeSubscribeItem {
-                name: v01::ThemeName::Default,
+                name: v01::ThemeName::Custom("midnight".to_string()),
                 variant: v01::ThemeVariant::Dark,
             })
         }))
