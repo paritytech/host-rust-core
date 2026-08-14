@@ -78,6 +78,9 @@ pub struct NetworkConfig {
     /// Asset Hub genesis hash, both the role's identity in
     /// [`NetworkConfig::host_chain_set`] and its routing key. The chain it connects
     /// to is authoritative for `CheckGenesis`.
+    ///
+    /// Wrong here is worse than stale elsewhere: routing matches on it, so a value
+    /// the chain does not report sends Asset Hub traffic to the fallback chain.
     pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
 }
@@ -94,12 +97,15 @@ pub struct ChainEndpoint {
 impl NetworkConfig {
     /// The chain set this preset serves, for `Features::supported_chains`.
     ///
-    /// Only `People` and `Bulletin` are listed, because they are the two roles
-    /// this struct names a genesis hash for. `live_chain_endpoints` cannot fill
-    /// the rest even where it holds the data: [`ChainEndpoint`] carries no
-    /// role, so an endpoint's identifier is not recoverable from it. AssetHub
-    /// is the case in point, routed at a pinned genesis that nothing can label.
-    /// Serving it needs a role on [`ChainEndpoint`], not more genesis hashes.
+    /// One entry per role this struct names a genesis hash for. `ChainEndpoint`
+    /// carries no role, so `live_chain_endpoints` cannot supply one — an endpoint's
+    /// identifier is not recoverable from it, which is why a served role needs its
+    /// own field here rather than a lookup into that list.
+    ///
+    /// Every role listed must also be routable: `WsChainProvider` answers an
+    /// unmapped genesis with its fallback URL, so a role the routing filter drops
+    /// would connect to the wrong chain while the host claimed to serve it.
+    /// `chain::tests::every_served_role_routes_to_its_own_chain` holds that.
     pub fn host_chain_set(&self) -> HostChainSet {
         HostChainSet {
             network: self.id.to_string(),
@@ -157,6 +163,33 @@ mod tests {
     /// This catches the two copies disagreeing, which is what an edit to one of
     /// them causes. It cannot catch both being wrong in the same way; only a
     /// live connection distinguishes that.
+    /// Anchors the served set itself. Every other test that reads it iterates, so
+    /// all of them pass on an empty set; this is what notices a dropped role, and it
+    /// covers each preset rather than only the default.
+    #[test]
+    fn every_preset_serves_exactly_the_expected_roles() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let served: Vec<ChainIdentifier> = config
+                .host_chain_set()
+                .chains
+                .iter()
+                .map(|entry| entry.identifier)
+                .collect();
+
+            assert_eq!(
+                served,
+                vec![
+                    ChainIdentifier::People,
+                    ChainIdentifier::Bulletin,
+                    ChainIdentifier::AssetHub,
+                ],
+                "{} serves an unexpected role set",
+                config.id
+            );
+        }
+    }
+
     #[test]
     fn served_chain_genesis_hashes_match_the_endpoint_routes() {
         for network in Network::value_variants() {

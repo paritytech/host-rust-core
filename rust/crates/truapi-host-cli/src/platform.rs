@@ -1193,8 +1193,9 @@ mod tests {
     /// create-transaction variants, and `AssetHub` for the other seventeen.
     ///
     /// `feature_supported` answers from the same set `supported_chains` serves, so
-    /// the two cannot disagree. The interesting negatives are now the malformed
-    /// inputs and a genesis the preset routes nowhere.
+    /// the two cannot disagree. The negatives are the malformed inputs, a well-formed
+    /// hash the host serves no role for, and the all-zero SSO sentinel — which the
+    /// provider does route, to the People fallback, yet is still not a served role.
     #[test]
     fn feature_supported_resolves_against_the_served_chain_set() {
         let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::AutoAccept, None);
@@ -1210,7 +1211,8 @@ mod tests {
             .supported
         };
 
-        // Every role the host serves answers supported, and only those.
+        // Every role the host serves answers supported. The reverse direction is the
+        // `unserved` assertion below, since every served role is now a real chain.
         for entry in config.host_chain_set().chains {
             assert!(
                 supported(entry.genesis_hash.to_vec()),
@@ -1218,6 +1220,20 @@ mod tests {
                 entry.identifier
             );
         }
+
+        // A well-formed hash the host does not serve is unsupported. Asset Hub used
+        // to be this case; without a stand-in, "supported" could degrade to "is 32
+        // bytes" and only the all-zero sentinel would notice.
+        let unserved = [0xab; 32];
+        assert!(
+            !config
+                .host_chain_set()
+                .chains
+                .iter()
+                .any(|entry| entry.genesis_hash == unserved),
+            "the stand-in must not be a served role"
+        );
+        assert!(!supported(unserved.to_vec()));
 
         // A malformed genesis is unsupported, never a panic or a truncated match.
         assert!(!supported(Vec::new()));

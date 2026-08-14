@@ -2,8 +2,19 @@
 export {};
 
 // A PGAS allowance credits the product account the derivation index names, so this
-// asks for index 0 and then reads that account's balance back through the host.
+// asks for index 0.
 const index = { tag: "Index" as const, value: 0 };
+
+// Whether the host serves Asset Hub decides which outcome is correct, so ask it
+// rather than accepting either. Without this the check passes on any failure: the
+// host maps every claim error to `NotAvailable`.
+const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+const servesAssetHub = assetHub.isOk();
+console.log(
+  servesAssetHub
+    ? `host serves Asset Hub at ${assetHub.value.genesisHash}`
+    : "host serves no Asset Hub role",
+);
 
 const result = await truapi.resourceAllocation.request({
   resources: [{ tag: "SmartContractAllowance", value: index }],
@@ -18,18 +29,21 @@ assert(
 const [outcome] = result.value.outcomes;
 console.log("smart-contract allowance outcome:", outcome);
 
-// `NotAvailable` is the honest answer on a host that serves no Asset Hub, so this
-// distinguishes "the host cannot" from "the host tried and failed".
-assert(
-  outcome !== "Rejected",
-  "an optional allocation should never be rejected:",
-  result.value,
-);
-if (outcome === "NotAvailable") {
-  console.log(
-    "host reports no PGAS support; it serves no Asset Hub role or the claim could not run",
+if (servesAssetHub) {
+  // The claim has to succeed. Accepting `NotAvailable` here would make every
+  // failure — an unreachable chain, a rejected proof, a spent day of slots — look
+  // the same as a host that simply does not offer PGAS.
+  assert(
+    outcome === "Allocated",
+    "host serves Asset Hub, so the PGAS claim should have been allocated:",
+    result.value,
   );
-} else {
-  assert(outcome === "Allocated", "unexpected outcome:", outcome);
   console.log("PGAS allowance allocated for derivation index 0");
+} else {
+  assert(
+    outcome === "NotAvailable",
+    "host serves no Asset Hub role, so PGAS should be unavailable:",
+    result.value,
+  );
+  console.log("PGAS reported unavailable, which matches the served chain set");
 }

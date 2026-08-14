@@ -28,8 +28,9 @@ const INBOUND_CHANNEL_CAPACITY: usize = 1024;
 /// Chain provider that maps a requested genesis hash to a WebSocket endpoint.
 ///
 /// The all-zero genesis (the headless SSO sentinel) and any unmapped genesis
-/// fall back to the People-chain statement store. Host-required routes such as
-/// Bulletin are always enabled; optional product Chain routes remain opt-in.
+/// fall back to the People-chain statement store. Every role the preset serves —
+/// People, Bulletin and Asset Hub — is always routed; the test switch only widens
+/// routing to endpoints the preset carries without serving them as a role.
 pub struct WsChainProvider {
     fallback_url: String,
     by_genesis: HashMap<[u8; 32], String>,
@@ -46,9 +47,9 @@ impl WsChainProvider {
         live_chain_endpoints: &[ChainEndpoint],
         live_chain_routing: bool,
     ) -> Self {
-        // People remains the fallback for the SSO sentinel. Bulletin is a
-        // required host dependency for preimage submission and must never be
-        // gated by the product-facing Chain/* test switch.
+        // People remains the fallback for the SSO sentinel. Bulletin backs preimage
+        // submission and Asset Hub backs PGAS claims, so all three are host
+        // dependencies and must never be gated by the product-facing Chain/* switch.
         let by_genesis = live_chain_endpoints
             .iter()
             .filter(|endpoint| endpoint.required_for_host || live_chain_routing)
@@ -238,29 +239,31 @@ mod tests {
         }
     }
 
-    /// The test switch widens routing to endpoints the host does not serve as a
-    /// role; it must not be needed for the ones it does.
+    /// The switch exists to widen routing to endpoints the preset carries without
+    /// serving them as a role. No preset has one now that Asset Hub is served, so
+    /// this uses a synthetic endpoint: without a case the preset cannot express,
+    /// `required_for_host` and the switch could both be deleted with a green suite.
     #[test]
-    fn the_test_switch_is_not_required_for_served_roles() {
-        let config = Network::PaseoNextV2.config();
-        let gated = WsChainProvider::with_live_chain_routing(
-            config.people_ws,
-            config.live_chain_endpoints,
-            false,
-        );
-        let widened = WsChainProvider::with_live_chain_routing(
-            config.people_ws,
-            config.live_chain_endpoints,
-            true,
-        );
+    fn the_test_switch_widens_routing_to_endpoints_that_are_not_roles() {
+        const FALLBACK: &str = "wss://fallback.invalid";
+        let optional = [ChainEndpoint {
+            genesis: [0x5a; 32],
+            ws: "wss://optional.invalid",
+            required_for_host: false,
+        }];
 
-        for entry in config.host_chain_set().chains {
-            assert_eq!(
-                gated.url_for(&entry.genesis_hash),
-                widened.url_for(&entry.genesis_hash),
-                "{:?} routes differently with the switch",
-                entry.identifier
-            );
-        }
+        let gated = WsChainProvider::with_live_chain_routing(FALLBACK, &optional, false);
+        let widened = WsChainProvider::with_live_chain_routing(FALLBACK, &optional, true);
+
+        assert_eq!(
+            gated.url_for(&optional[0].genesis),
+            FALLBACK,
+            "an endpoint that is not a role is excluded without the switch"
+        );
+        assert_eq!(
+            widened.url_for(&optional[0].genesis),
+            optional[0].ws,
+            "and included with it"
+        );
     }
 }

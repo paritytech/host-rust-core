@@ -39,9 +39,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-ut
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = { version = "0.24", features = ["connect", "rustls-tls-webpki-roots"] }
 tempfile = "3"
-# TLS is compiled in for required People/Bulletin host traffic and optional
-# `Chain/*` playground methods. Product live-chain routing is opt-in
-# (`E2E_LIVE_CHAIN=1`); required host routes remain enabled. See src/chain.rs.
+# TLS is compiled in for the People, Bulletin and Asset Hub host traffic the preset
+# serves as roles, plus `Chain/*` playground methods. See src/chain.rs.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 unicode-width = "0.2"
