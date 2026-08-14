@@ -309,7 +309,7 @@ interface HostBridge {
 
     /**
      * Enumerate the chains this host serves: its environment plus one entry
-     * per chain role. Must match exactly what [chainConnect] accepts.
+     * per chain role.
      */
     @Throws(HostRejection::class)
     fun supportedChains(): HostChainSet = HostChainSet(network = "", chains = emptyList())

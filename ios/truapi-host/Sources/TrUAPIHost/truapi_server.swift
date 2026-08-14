@@ -729,9 +729,8 @@ public protocol HostCallbacks: AnyObject, Sendable {
 
     /**
      * Enumerate the chains this host serves (RFC 0026): its environment plus
-     * one entry per chain role. The returned set must match exactly what
-     * `chain_connect` will accept. Invoked on the dispatcher thread; must
-     * return promptly.
+     * one entry per chain role. Invoked on the dispatcher thread; must return
+     * promptly.
      */
     func supportedChains() throws  -> HostChainSet
 
@@ -1097,9 +1096,8 @@ open func featureSupported(request: HostFeatureSupportedRequest)async throws  ->
 
     /**
      * Enumerate the chains this host serves (RFC 0026): its environment plus
-     * one entry per chain role. The returned set must match exactly what
-     * `chain_connect` will accept. Invoked on the dispatcher thread; must
-     * return promptly.
+     * one entry per chain role. Invoked on the dispatcher thread; must return
+     * promptly.
      */
 open func supportedChains()throws  -> HostChainSet  {
     return try  FfiConverterTypeHostChainSet_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
@@ -5334,7 +5332,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 23356) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 54534) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {

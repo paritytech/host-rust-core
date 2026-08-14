@@ -15,6 +15,70 @@ The package exposes tree-shakeable subpath exports — import only what your env
 | `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
 | `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
 
+## Bundler requirements
+
+The worker imports the WASM glue by a literal specifier, so every bundler
+resolves it statically and emits `truapi_server.js` as a chunk. Whether the
+`truapi_server_bg.wasm` payload comes with it depends on the bundler: emitting
+it requires treating `new URL("truapi_server_bg.wasm", import.meta.url)` inside
+the glue as an asset reference, and not all of them do.
+
+| Bundler             | Emits the `.wasm`? | Host action                                                    |
+| ------------------- | ------------------ | -------------------------------------------------------------- |
+| Vite                | Yes                | None — no copy step, and don't reach into `dist/wasm/web/`.    |
+| webpack 5           | Yes                | None.                                                          |
+| Rollup (standalone) | No                 | Add `@web/rollup-plugin-import-meta-assets`, or copy manually. |
+| esbuild             | No                 | Copy manually (see below).                                     |
+| Bun (`bun build`)   | No                 | Copy manually (see below).                                     |
+
+esbuild and Bun pass `new URL(..., import.meta.url)` through verbatim: the build
+succeeds and the glue chunk is emitted, but no `.wasm` is written and the worker
+404s at runtime. No flag changes this — `--loader:.wasm=file` only fires on
+`import` statements, never on `new URL`. Hosts on those bundlers must copy
+`truapi_server_bg.wasm` out of `@parity/truapi-host/dist/wasm/web/` into the same
+output directory as the emitted `truapi_server-*.js` chunk, since the glue
+resolves the payload relative to its own URL.
+
+Running Vite under Bun (`bunx --bun vite build`) uses Vite's bundler and is
+unaffected; only `bun build` is.
+
+The literal import makes the worker a code-split chunk, so a Vite host must ask
+for ES workers; the default `iife` format cannot code-split and fails the build:
+
+```ts
+export default defineConfig({ worker: { format: "es" } });
+```
+
+Only the `.wasm` the glue references is emitted, and bundlers content-hash it —
+Vite writes `assets/truapi_server_bg-<hash>.wasm`, webpack writes a bare
+`<hash>.wasm`. The `.wasm.gz` / `.wasm.br` sidecars under `dist/wasm/web/`
+therefore cannot be copied into a host's output: `gzip_static` /
+`brotli_static` serve `<request-path>.gz` / `.br`, and the request path now
+carries the bundler's hash. Hosts that serve precompressed assets should
+generate them from their own build output, after hashing — either a post-build
+pass over `dist` (gzip level 9 and brotli max quality reproduce the sidecars
+byte for byte) or a bundler plugin:
+
+```ts
+import { compression } from "vite-plugin-compression2";
+
+export default defineConfig({
+  worker: { format: "es" },
+  plugins: [
+    compression({ include: [/\.(js|css|html|wasm)$/], algorithms: ["gzip"] }),
+    compression({
+      include: [/\.(js|css|html|wasm)$/],
+      algorithms: ["brotliCompress"],
+    }),
+  ],
+});
+```
+
+webpack hosts get the same result from `compression-webpack-plugin`. Skipping
+this ships the full 1.4 MB `.wasm` where about 600 kB (gzip) or 470 kB (brotli)
+would do — and a server configured with `gzip_static` but no dynamic `gzip on`
+has no fallback.
+
 ## Generated WASM artefacts
 
 The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.

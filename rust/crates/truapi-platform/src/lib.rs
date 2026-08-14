@@ -550,7 +550,7 @@ pub struct HostChainEntry {
 pub struct HostChainSet {
     /// Ecosystem the host is configured for, e.g. "polkadot", "paseo".
     pub network: String,
-    /// Complete set of chains available through this host.
+    /// Chains this host serves, keyed by protocol role.
     pub chains: Vec<HostChainEntry>,
 }
 
@@ -564,9 +564,8 @@ pub trait Features: Send + Sync {
         request: HostFeatureSupportedRequest,
     ) -> Result<HostFeatureSupportedResponse, GenericError>;
 
-    /// Enumerate the chains this host serves (RFC 0026). The returned set must
-    /// match exactly what [`ChainProvider::connect`] will accept; the core
-    /// resolves `get_chain_info` requests against it.
+    /// Enumerate the chains this host serves (RFC 0026). The core resolves
+    /// `get_chain_info` requests against the returned set.
     async fn supported_chains(&self) -> Result<HostChainSet, GenericError>;
 }
 

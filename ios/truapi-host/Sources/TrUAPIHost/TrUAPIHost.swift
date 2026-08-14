@@ -406,8 +406,7 @@ public protocol HostBridge: AnyObject, Sendable {
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool
 
     /// Enumerate the chains this host serves: its environment plus one entry
-    /// per chain role. Must match exactly what ``chainConnect(genesisHash:)``
-    /// accepts. Invoked on the dispatcher thread; must return promptly.
+    /// per chain role. Invoked on the dispatcher thread; must return promptly.
     func supportedChains() throws -> HostChainSet
 
     /// Scoped key-value storage for the Rust core.
