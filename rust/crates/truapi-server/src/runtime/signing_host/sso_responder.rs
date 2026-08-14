@@ -952,7 +952,13 @@ pub(super) async fn allocate_statement_store_allowance(
             return Ok(allowance.secret.to_bytes().to_vec());
         }
         SlotSelection::Free(seq) => seq,
-        SlotSelection::Full { max } => {
+        SlotSelection::FreeSlotsExcluded => {
+            return Err(
+                StatementAllowanceError::Slot(SlotError::FreeSlotsAwaitingSubmission { period })
+                    .into(),
+            );
+        }
+        SlotSelection::Full { max, .. } => {
             return Err(
                 StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
                     .into(),
@@ -977,6 +983,7 @@ pub(super) async fn allocate_statement_store_allowance(
             ring: &ring,
             reuse_existing,
             preselected: Some(preselected),
+            protected: &[],
         },
     )
     .await?;
@@ -1485,6 +1492,9 @@ mod tests {
                     "chain_getBlockHash",
                     format!(r#""0x{}""#, hex::encode([0u8; 32])),
                 ),
+                // `Metadata_metadata_at_version(16)` answering absent, so the
+                // legacy fetch below is what serves the metadata.
+                ("state_call", r#""0x00""#.to_string()),
                 (
                     "state_getMetadata",
                     format!(r#""0x{}""#, hex::encode(PEOPLE_METADATA)),

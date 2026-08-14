@@ -1,5 +1,26 @@
 # @parity/truapi-host
 
+## 0.6.0
+
+### Minor Changes
+
+- The host runtime backs the ring-VRF registry with a product-scoped key store, so
+  registration, listing, and direct signing resolve against registered member
+  keys, and a foreign key is refused unless its owner allowlisted the caller.
+
+  Statement-store allowances renew themselves as they approach expiry and replace
+  the oldest slot once a period is full, so long-lived products keep a usable slot
+  without a manual top-up. Allowance operations reuse cached chain metadata, rings,
+  and a single shared extension-info resolver instead of re-reading them per call.
+
+  Product identifiers accept per-network dotNS TLDs, so a product name resolves
+  against the host's configured network rather than a single hard-coded suffix.
+
+### Patch Changes
+
+- Updated dependencies
+  - @parity/truapi@0.9.0
+
 ## 0.5.0
 
 ### Minor Changes

@@ -6,7 +6,7 @@ struct TrUAPIWsBridgeTests {
     @Test(.timeLimit(.minutes(1)))
     func testFeatureSupportedRoundTripOverWsBridge() async throws {
         let core = try TrUAPIHostCore(
-            callbacks: StubHostCallbacks(),
+            bridge: StubHostBridge(),
             runtimeConfig: Self.makeRuntimeConfig()
         )
 
@@ -54,28 +54,32 @@ private extension TrUAPIWsBridgeTests {
     }
 }
 
-final class StubHostCallbacks: HostCallbacks, @unchecked Sendable {
-    private var localStore: [String: Data] = [:]
-    private var coreStore: [Data: Data] = [:]
+final class StubStorage: HostStorageBackend, @unchecked Sendable {
+    private var store: [String: Data] = [:]
 
-    func onCoreLog(marker _: String, detail _: String) {}
+    func read(key: String) throws -> Data? { store[key] }
+    func write(key: String, value: Data) throws { store[key] = value }
+    func clear(key: String) throws { store[key] = nil }
+}
+
+final class StubCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
+    private var store: [Data: Data] = [:]
+
+    func read(key: Data) throws -> Data? { store[key] }
+    func write(key: Data, value: Data) throws { store[key] = value }
+    func clear(key: Data) throws { store[key] = nil }
+}
+
+// Conforms to HostBridge rather than the generated HostCallbacks, so the
+// protocol extension supplies every optional callback and a new one cannot
+// leave this file behind. Only the six requirements without a default are
+// written out.
+final class StubHostBridge: HostBridge {
+    let storage: HostStorageBackend = StubStorage()
+    let coreStorage: HostCoreStorageBackend = StubCoreStorage()
+
     func navigateTo(url _: String) async throws {}
-    func pushNotification(request _: HostPushNotificationRequest) async throws -> UInt32 { 0 }
-    func cancelNotification(id _: UInt32) throws {}
     func devicePermission(request _: HostDevicePermissionRequest) async throws -> Bool { false }
     func remotePermission(request _: RemotePermission) async throws -> Bool { false }
-    func authStateChanged(state _: AuthState) {}
-    func coreStorageRead(key: Data) throws -> Data? { coreStore[key] }
-    func coreStorageWrite(key: Data, value: Data) throws { coreStore[key] = value }
-    func coreStorageClear(key: Data) throws { coreStore[key] = nil }
-    func chainConnect(genesisHash _: Data) throws -> UInt32? { nil }
-    func chainSend(connectionId _: UInt32, request _: String) throws {}
-    func chainClose(connectionId _: UInt32) throws {}
-    func confirmUserAction(review _: UserConfirmationReview) async throws -> Bool { false }
-    func lookupPreimage(key _: Data) async throws -> Data? { nil }
-    func currentTheme() throws -> ThemeVariant { .dark }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
-    func localStorageRead(key: String) throws -> Data? { localStore[key] }
-    func localStorageWrite(key: String, value: Data) throws { localStore[key] = value }
-    func localStorageClear(key: String) throws { localStore[key] = nil }
 }

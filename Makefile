@@ -297,21 +297,27 @@ IOS_SIM_TARGET := aarch64-apple-ios-sim
 IOS_DEPLOYMENT_TARGET := 17.0
 XCFRAMEWORK_OUT := target/truapi_server.xcframework
 XCFRAMEWORK_HEADERS := target/xcframework-headers
+# Slices and cargo profile the xcframework is assembled from. The defaults are
+# what a release needs; a compile-only consumer overrides both for speed. The
+# profile name doubles as cargo's output directory.
+XCFRAMEWORK_TARGETS ?= $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
+XCFRAMEWORK_PROFILE ?= release
+XCFRAMEWORK_CARGO_FLAGS := $(if $(filter release,$(XCFRAMEWORK_PROFILE)),--release,)
 
 xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulator.
-	rustup target add $(IOS_DEVICE_TARGET) $(IOS_SIM_TARGET)
-	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
-		--features ws-bridge --target $(IOS_DEVICE_TARGET)
-	IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server --release \
-		--features ws-bridge --target $(IOS_SIM_TARGET)
+	rustup target add $(XCFRAMEWORK_TARGETS)
+	for target in $(XCFRAMEWORK_TARGETS); do \
+		IPHONEOS_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET) $(CARGO) build -p truapi-server \
+			$(XCFRAMEWORK_CARGO_FLAGS) --features ws-bridge --target $$target || exit 1; \
+	done
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
 	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(UNIFFI_SWIFT_TMP)/truapi_platformFFI.h \
 		$(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
 	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
-	xcodebuild -create-xcframework \
-		-library target/$(IOS_DEVICE_TARGET)/release/libtruapi_server.a \
-		-headers $(XCFRAMEWORK_HEADERS) \
-		-library target/$(IOS_SIM_TARGET)/release/libtruapi_server.a \
-		-headers $(XCFRAMEWORK_HEADERS) \
-		-output $(XCFRAMEWORK_OUT)
+	slices=""; \
+	for target in $(XCFRAMEWORK_TARGETS); do \
+		slices="$$slices -library target/$$target/$(XCFRAMEWORK_PROFILE)/libtruapi_server.a \
+			-headers $(XCFRAMEWORK_HEADERS)"; \
+	done; \
+	xcodebuild -create-xcframework $$slices -output $(XCFRAMEWORK_OUT)
