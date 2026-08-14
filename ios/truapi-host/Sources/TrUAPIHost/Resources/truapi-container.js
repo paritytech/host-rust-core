@@ -29,12 +29,18 @@
   }
 
   // src/native-transport.ts
+  var getRandomValues = crypto.getRandomValues.bind(crypto);
+  var TypedArray = Uint8Array;
+  var stringify = JSON.stringify;
+  var parse = JSON.parse;
+  var HEX = "0123456789abcdef";
   function randomId() {
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
+    const bytes = new TypedArray(16);
+    getRandomValues(bytes);
     let hex = "";
-    for (const byte of bytes) {
-      hex += byte.toString(16).padStart(2, "0");
+    for (let i = 0; i < 16; i++) {
+      const b = bytes[i];
+      hex += HEX[b >> 4] + HEX[b & 15];
     }
     return hex;
   }
@@ -44,7 +50,7 @@
       const id = randomId();
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        sendToNative(JSON.stringify({ type: "request", id, method, params }));
+        sendToNative(stringify({ type: "request", id, method, params }));
       });
     }
     function dispatch(id, payload) {
@@ -55,7 +61,7 @@
       pending.delete(id);
       let reply;
       try {
-        reply = typeof payload === "string" ? JSON.parse(payload) : payload;
+        reply = typeof payload === "string" ? parse(payload) : payload;
       } catch {
         entry.reject(new Error("Malformed native reply"));
         return;

@@ -93,4 +93,75 @@ describe('createNativeTransport', () => {
     // Stale id: the entry is gone; a second dispatch is a no-op.
     expect(() => transport.dispatch(id, JSON.stringify({ value: 'again' }))).not.toThrow();
   });
+
+  // The RNG and serializer on the id's path are captured at module init, so a
+  // product overriding the globals afterward cannot make ids predictable or
+  // observe an outbound id.
+  it('generates ids from a captured RNG even if crypto.getRandomValues is poisoned', () => {
+    const sender = makeSender();
+    const transport = createNativeTransport(sender.send);
+
+    const proto = Object.getPrototypeOf(crypto) as {
+      getRandomValues: <T extends ArrayBufferView | null>(a: T) => T;
+    };
+    const real = proto.getRandomValues;
+    proto.getRandomValues = (<T extends ArrayBufferView | null>(a: T): T => {
+      if (a instanceof Uint8Array) a.fill(0);
+      return a;
+    });
+    try {
+      void transport.callNative('m', {});
+    } finally {
+      proto.getRandomValues = real;
+    }
+
+    const id = sender.sent[0].id;
+    expect(id).not.toBe('0'.repeat(32)); // not the poisoned deterministic value
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('serializes with a captured JSON.stringify even if the global is poisoned', () => {
+    const sender = makeSender();
+    const transport = createNativeTransport(sender.send);
+
+    const realStringify = JSON.stringify;
+    const seen: unknown[] = [];
+    JSON.stringify = ((value: unknown, ...rest: unknown[]) => {
+      seen.push(value);
+      return (realStringify as (...a: unknown[]) => string)(value, ...rest);
+    }) as typeof JSON.stringify;
+    try {
+      void transport.callNative('m', {});
+    } finally {
+      JSON.stringify = realStringify;
+    }
+
+    // The transport used the captured serializer, so the poison never saw the id.
+    expect(seen).toHaveLength(0);
+    expect(sender.sent[0].id).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('encodes ids without poisonable intrinsics (toString/padStart override)', () => {
+    const sender = makeSender();
+    const transport = createNativeTransport(sender.send);
+
+    const realToString = Number.prototype.toString;
+    const realPadStart = String.prototype.padStart;
+    // With the old `byte.toString(16).padStart(2,'0')` encoding these would make
+    // every id `ff…ff`.
+    Number.prototype.toString = () => 'ff';
+    String.prototype.padStart = function () {
+      return 'ff';
+    };
+    try {
+      void transport.callNative('m', {});
+    } finally {
+      Number.prototype.toString = realToString;
+      String.prototype.padStart = realPadStart;
+    }
+
+    const id = sender.sent[0].id;
+    expect(id).not.toBe('ff'.repeat(16));
+    expect(id).toMatch(/^[0-9a-f]{32}$/);
+  });
 });

@@ -113,12 +113,20 @@ channels are each closed:
 
 | How a product could learn a valid id | Closed by |
 |---|---|
-| Guess a sequential id | 128-bit `crypto.getRandomValues` hex ids |
-| Read the outbound request via a channel spy | the native sender (`webkit…postMessage` / `Android.call`) captured into the module closure at init |
+| Guess / make the id predictable | 128-bit ids from a `crypto.getRandomValues` (and `Uint8Array`) **captured at init**, encoded with a hex lookup — no `Number.prototype.toString` / `padStart` / iterator on the path, so no global override can make ids deterministic |
+| Read the outbound request | the id is serialized with a `JSON.stringify` **captured at init** and sent via the **captured** native sender (`webkit…postMessage` / `Android.call`) — neither the serializer nor the sender on the id's path is a global the product can override |
 | Read the inbound reply by wrapping the dispatcher | frozen (non-configurable) `window.__container_callback__` |
 
-The bundle is an IIFE, so `pending`, the id source, and the captured native
-sender live in a closure the product cannot reflect into.
+The bundle is an IIFE, so `pending`, the captured RNG/serializer, and the
+captured native sender live in a closure the product cannot reflect into. The
+capture happens at `documentStart`, before any product script runs — so the fix
+is init-capture, never deletion of the (legitimate) globals themselves.
+
+**Residual limitation.** This resists overriding the globals on the id's path,
+but not wholesale replacement of shared intrinsics the runtime uses internally
+(e.g. `Map.prototype.get`, used by the pending-request table). That is the
+inherent ceiling of a same-realm lockdown; the proper boundary is a
+cross-realm/worker isolation the product cannot reach.
 
 ### Bootstrap guide (host integration)
 
