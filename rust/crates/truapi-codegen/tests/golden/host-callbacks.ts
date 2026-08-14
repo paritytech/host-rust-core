@@ -221,7 +221,7 @@ export interface HostChainSet {
   network: string;
 
   /**
-   * Complete set of chains available through this host.
+   * Chains this host serves, keyed by protocol role.
    */
   chains: Array<HostChainEntry>;
 }
@@ -870,9 +870,8 @@ export interface Features {
   ): Promise<HostFeatureSupportedResponse>;
 
   /**
-   * Enumerate the chains this host serves (RFC 0026). The returned set must
-   * match exactly what `ChainProvider::connect` will accept; the core
-   * resolves `get_chain_info` requests against it.
+   * Enumerate the chains this host serves (RFC 0026). The core resolves
+   * `get_chain_info` requests against the returned set.
    */
   supportedChains(): Promise<HostChainSet>;
 }

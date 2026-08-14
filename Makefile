@@ -237,7 +237,7 @@ provider-android-publish-local: provider-kotlin provider-android-jni ## Publish 
 test: ## Run Rust + TypeScript client tests.
 	cargo test --workspace
 	cd $(TRUAPI_PKG) && npm test
-	cd $(JS_PACKAGES)/truapi-host && npm test
+	cd $(HOST_WASM_PKG) && npm run build && npm test
 
 check: ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
 	cargo build --workspace
@@ -246,7 +246,7 @@ check: ## Full verification suite (build, fmt, clippy, test, TS tests, playgroun
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 	cargo test --workspace --all-features --all-targets
 	cd $(TRUAPI_PKG) && npm run build && npm test
-	cd $(JS_PACKAGES)/truapi-host && npm install --no-fund --no-audit && npm test
+	cd $(HOST_WASM_PKG) && npm install --no-fund --no-audit && npm run build && npm test
 	cd $(PLAYGROUND) && yarn build && yarn lint
 
 clean: ## Remove local build/test artifacts without deleting dependencies.
