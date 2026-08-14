@@ -92,7 +92,7 @@ pub struct SigningHostConfig {
 /// A host may create multiple product runtimes from the same long-lived host
 /// runtime, each with its own product context.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct ProductContext {
     /// Product identifier used for account derivation and product-scoped
     /// storage/permission namespaces.
@@ -105,7 +105,7 @@ pub struct ProductContext {
 }
 
 /// Trusted kind of product executable attached to a TrUAPI connection.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ProductExecutionKind {
     /// Visible single-page application entrypoint such as `app/index.html`.
@@ -747,6 +747,28 @@ mod tests {
     #[test]
     fn auth_session_storage_key_has_stable_encoding() {
         assert_eq!(CoreStorageKey::AuthSession.encode(), [0]);
+    }
+
+    #[test]
+    fn product_context_encoding_matches_the_generated_host_codec() {
+        // The generated TS host codec is
+        // `S.Struct({productId: S.str, executionKind: S.Status("Spa", "Chat")})`,
+        // so the field order and the variant indices below are the wire
+        // contract every JS host decodes against.
+        assert_eq!(ProductExecutionKind::Spa.encode(), [0]);
+        assert_eq!(ProductExecutionKind::Chat.encode(), [1]);
+
+        let context =
+            ProductContext::new_with_execution("app.dot".to_string(), ProductExecutionKind::Chat)
+                .expect("product id is valid");
+        assert_eq!(
+            context.encode(),
+            [28, b'a', b'p', b'p', b'.', b'd', b'o', b't', 1]
+        );
+        assert_eq!(
+            ProductContext::decode(&mut context.encode().as_slice()),
+            Ok(context)
+        );
     }
 
     #[test]
