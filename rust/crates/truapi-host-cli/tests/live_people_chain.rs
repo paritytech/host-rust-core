@@ -147,6 +147,21 @@ async fn live_metadata_still_exposes_the_allowance_extension_shape() {
     let period_duration = alloc::slot::long_term_storage_period_duration(&chain.metadata)
         .expect("live runtime exposes Resources.LongTermStoragePeriodDuration");
 
+    // Preferring V16 has to actually reach V16: the legacy RPC answers V14, which
+    // declares no pipeline map at all, so a silent fallback would leave the
+    // version unresolvable while looking fine.
+    assert_eq!(
+        chain.metadata.metadata_version(),
+        16,
+        "the runtime API should have served V16; a fallback to the legacy RPC would \
+         resolve pipeline 0 by default and look identical"
+    );
+    println!(
+        "live metadata V{} pipeline version {}",
+        chain.metadata.metadata_version(),
+        chain.metadata.extension_version()
+    );
+
     // Indices alone are not enough. A runtime upgrade added a `revision` field to
     // `RegisterStatementStoreAllowance` while its index stayed at 2, so the
     // encoded payload went one field short and the runtime panicked in
