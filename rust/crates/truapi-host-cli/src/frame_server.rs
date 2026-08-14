@@ -430,6 +430,7 @@ where
 
     loop {
         let message = tokio::select! {
+            biased;
             _ = connection_reset(&mut reset) => break,
             _ = product_updates.changed() => break,
             message = read.next() => message,
