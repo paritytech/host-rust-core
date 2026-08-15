@@ -52,6 +52,11 @@ smoldot = [
     "dep:wasm-bindgen-futures",
     "dep:web-sys",
     "dep:web-time",
+    # The loopback TLS tunnel that makes `/wss` bootnodes dialable on native
+    # targets; see `wss_tunnel`. Unused on wasm, where the browser does the TLS.
+    "dep:tokio",
+    "dep:tokio-rustls",
+    "dep:webpki-roots",
 ]
 js = ["ws", "dep:wasm-bindgen-futures", "dep:tracing-subscriber"]
 networks = ["smoldot"]
@@ -74,7 +79,13 @@ url = "2"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 jsonrpsee-client-transport = { version = "0.24", features = ["ws", "tls-rustls-platform-verifier"], optional = true }
 jsonrpsee-core = { version = "0.24", features = ["client"], optional = true }
-tokio = { version = "1", features = ["rt", "sync", "time"], optional = true }
+tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"], optional = true }
+# Portable timer: `snapshot` deadlines the same way on native and on wasm.
+futures-timer = { version = "3", optional = true }
+# `ring` rather than the default `aws-lc-rs`, matching the backend the rest of
+# the tree already resolves, so the wss tunnel adds no new crypto dependency.
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"], optional = true }
+webpki-roots = { version = "0.26", optional = true }
 # Cargo.lock also pins smoldot-light 1.3 for subxt's optional subxt-lightclient, which this
 # workspace never enables, so only this version is ever compiled.
 smoldot-light = { version = "2.0", default-features = false, features = ["std"], optional = true }

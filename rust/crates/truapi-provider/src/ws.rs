@@ -38,7 +38,7 @@ pub(crate) async fn connect(url: Url) -> Result<Box<dyn JsonRpcConnection>, Prov
         .build(url.clone())
         .await
         .map_err(|err| ProviderError::Handshake {
-            url: url.to_string(),
+            url: crate::error::redacted(&url),
             reason: err.to_string(),
         })?;
 

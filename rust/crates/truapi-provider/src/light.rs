@@ -47,6 +47,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// A chain spec whose bootnodes this target can actually dial.
+///
+/// Native smoldot declines `/wss`, so those bootnodes are rewritten to loopback
+/// `/ws` tunnels (see [`crate::wss_tunnel`]). On wasm the browser's `WebSocket`
+/// already speaks TLS, so the spec is used verbatim — which is why the same spec
+/// works unmodified in a page.
+fn dialable_spec(specification: &str) -> std::borrow::Cow<'_, str> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::borrow::Cow::Owned(crate::wss_tunnel::tunnel_wss_bootnodes(specification))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::borrow::Cow::Borrowed(specification)
+    }
+}
+
 /// The smoldot platform backing this target.
 #[cfg(not(target_arch = "wasm32"))]
 type Platform = Arc<smoldot_light::platform::DefaultPlatform>;
@@ -139,6 +156,9 @@ impl LightState {
 
     /// Add `source` to the shared client as a [`JsonRpcConnection`]. For a
     /// parachain, `relay` carries its relay's genesis hash and resolved source.
+    ///
+    /// Specs pass through [`dialable_spec`] first, so a `/wss`-only bootnode set
+    /// is reachable on native targets.
     pub(crate) async fn connect(
         &self,
         source: &ChainSource,
@@ -158,6 +178,10 @@ impl LightState {
             });
         };
 
+        // Before the lock: this parses the whole spec and needs no shared state,
+        // so holding the client mutex across it would stall every other connect.
+        let specification = dialable_spec(specification);
+
         let inner = Arc::clone(self.inner());
         let mut guard = lock(&inner);
 
@@ -171,7 +195,7 @@ impl LightState {
             .client
             .add_chain(AddChainConfig {
                 user_data: (),
-                specification,
+                specification: specification.as_ref(),
                 database_content: database_content.as_deref().unwrap_or(""),
                 potential_relay_chains: relay_id.into_iter(),
                 json_rpc: AddChainConfigJsonRpc::Enabled {
@@ -203,15 +227,17 @@ impl LightState {
             .expect("JSON-RPC was enabled for this chain");
         drop(guard);
 
-        // `send` synthesizes an error onto this channel when smoldot rejects a
-        // request, so a full queue fails the caller fast instead of hanging.
-        let (errors_tx, errors_rx) = mpsc::unbounded();
+        // `send` synthesizes an error onto this channel when a request is refused,
+        // so a full queue fails the caller fast instead of hanging. Bounded by the
+        // same budget as the responses it stands in for: an unbounded one would
+        // just move the growth it exists to prevent into the refusal path.
+        let (errors_tx, errors_rx) = mpsc::channel(MAX_UNDELIVERED_FRAMES);
 
         Ok(Box::new(LightConnection {
             inner,
             chain_id: success.chain_id,
             relay: relay_genesis,
-            errors_tx,
+            errors_tx: Mutex::new(errors_tx),
             responses: Mutex::new(Some((responses, errors_rx))),
             undelivered: Arc::new(AtomicUsize::new(0)),
             closed: AtomicBool::new(false),
@@ -250,11 +276,12 @@ fn add_relay(
         });
     };
 
+    let specification = dialable_spec(specification);
     let success = guard
         .client
         .add_chain(AddChainConfig {
             user_data: (),
-            specification,
+            specification: specification.as_ref(),
             database_content: database_content.as_deref().unwrap_or(""),
             potential_relay_chains: core::iter::empty(),
             json_rpc: AddChainConfigJsonRpc::Disabled,
@@ -325,10 +352,10 @@ struct LightConnection {
     relay: Option<[u8; 32]>,
     /// Synthetic JSON-RPC error frames for requests smoldot rejected, merged
     /// into [`responses`](Self::responses) so the caller fails fast.
-    errors_tx: mpsc::UnboundedSender<String>,
+    errors_tx: Mutex<mpsc::Sender<String>>,
     /// Taken once by `responses()`: smoldot's response stream paired with the
     /// receiver for `errors_tx`.
-    responses: Mutex<Option<(JsonRpcResponses<Platform>, mpsc::UnboundedReceiver<String>)>>,
+    responses: Mutex<Option<(JsonRpcResponses<Platform>, mpsc::Receiver<String>)>>,
     /// Frames owed to the consumer, bounded by [`MAX_UNDELIVERED_FRAMES`].
     undelivered: Arc<AtomicUsize>,
     closed: AtomicBool,
@@ -361,9 +388,13 @@ impl LightConnection {
     /// frame for its id would leave it waiting forever.
     fn refuse(&self, request: &str, reason: &str) {
         tracing::warn!(reason, "refusing a light-client request");
-        if let Some(frame) = synthetic_error_frame(request, reason) {
+        let Some(frame) = synthetic_error_frame(request, reason) else {
+            return;
+        };
+        // A full error channel means the consumer is not draining even the
+        // refusals, so the frame is dropped rather than queued behind them.
+        if lock(&self.errors_tx).try_send(frame).is_ok() {
             self.undelivered.fetch_add(1, Ordering::AcqRel);
-            let _ = self.errors_tx.unbounded_send(frame);
         }
     }
 }
@@ -428,7 +459,7 @@ impl JsonRpcConnection for LightConnection {
             release_relay(&mut guard, relay_genesis);
         }
 
-        self.errors_tx.close_channel();
+        lock(&self.errors_tx).close_channel();
     }
 }
 

@@ -180,6 +180,13 @@ impl EmbeddedChainProvider {
 #[cfg(feature = "smoldot")]
 const SNAPSHOT_MAX_BYTES: usize = 8_000_000;
 
+/// How long [`EmbeddedChainProvider::snapshot`] waits for the light client to
+/// answer. A chain that is still warp syncing has no finalized database to hand
+/// over, and the response stream stays open either way, so the call has to end
+/// on its own rather than wait on a stream that never yields.
+#[cfg(feature = "smoldot")]
+const SNAPSHOT_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(60);
+
 #[cfg(feature = "smoldot")]
 impl EmbeddedChainProvider {
     /// Produce a warm-start database blob for `genesis_hash` by asking the
@@ -193,6 +200,7 @@ impl EmbeddedChainProvider {
     /// database to snapshot and answers the request with a JSON-RPC error,
     /// which surfaces here as an error rather than a wait.
     pub async fn snapshot(&self, genesis_hash: [u8; 32]) -> Result<String, GenericError> {
+        use futures::future::{self, Either};
         use futures::stream::StreamExt;
 
         use crate::error::FrameForId;
@@ -207,27 +215,45 @@ impl EmbeddedChainProvider {
             ),
             id, SNAPSHOT_MAX_BYTES,
         ));
-        while let Some(frame) = responses.next().await {
-            match crate::error::frame_for_id(&frame, id) {
-                Some(FrameForId::Result(result)) => {
-                    connection.close();
-                    return Ok(result);
-                }
-                Some(FrameForId::Failure(reason)) => {
+        let deadline = futures_timer::Delay::new(SNAPSHOT_TIMEOUT);
+        futures::pin_mut!(deadline);
+
+        loop {
+            match future::select(responses.next(), deadline.as_mut()).await {
+                Either::Left((Some(frame), _)) => match crate::error::frame_for_id(&frame, id) {
+                    Some(FrameForId::Result(result)) => {
+                        connection.close();
+                        return Ok(result);
+                    }
+                    Some(FrameForId::Failure(reason)) => {
+                        connection.close();
+                        return Err(ProviderError::Transport {
+                            reason: format!("finalized-database snapshot failed: {reason}"),
+                        }
+                        .into());
+                    }
+                    None => {}
+                },
+                Either::Left((None, _)) => {
                     connection.close();
                     return Err(ProviderError::Transport {
-                        reason: format!("finalized-database snapshot failed: {reason}"),
+                        reason: "connection ended before the finalized-database snapshot"
+                            .to_owned(),
                     }
                     .into());
                 }
-                None => {}
+                Either::Right(((), _)) => {
+                    connection.close();
+                    return Err(ProviderError::Transport {
+                        reason: format!(
+                            "no finalized-database snapshot within {}s",
+                            SNAPSHOT_TIMEOUT.as_secs()
+                        ),
+                    }
+                    .into());
+                }
             }
         }
-        connection.close();
-        Err(ProviderError::Transport {
-            reason: "connection ended before the finalized-database snapshot".to_owned(),
-        }
-        .into())
     }
 }
 

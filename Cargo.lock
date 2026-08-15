@@ -5176,6 +5176,7 @@ dependencies = [
  "smoldot-light 2.0.1",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite 0.24.0",
  "tracing",
  "tracing-subscriber",
@@ -5188,6 +5189,7 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "web-time",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

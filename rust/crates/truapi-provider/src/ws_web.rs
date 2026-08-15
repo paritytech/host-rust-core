@@ -43,13 +43,13 @@ pub(crate) async fn connect(url: Url) -> Result<Box<dyn JsonRpcConnection>, Prov
         Ok(Ok(())) => {}
         Ok(Err(reason)) => {
             return Err(ProviderError::Handshake {
-                url: url.to_string(),
+                url: crate::error::redacted(&url),
                 reason,
             });
         }
         Err(_) => {
             return Err(ProviderError::Handshake {
-                url: url.to_string(),
+                url: crate::error::redacted(&url),
                 reason: "handshake abandoned".to_owned(),
             });
         }

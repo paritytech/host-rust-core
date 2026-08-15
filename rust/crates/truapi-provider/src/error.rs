@@ -58,6 +58,22 @@ pub(crate) enum ProviderError {
     },
 }
 
+/// `url` without its userinfo, for an error that will be logged.
+///
+/// [`ProviderError::Handshake`] prints the URL in its `Display`, so a node
+/// address carrying `user:pass@` would otherwise leak the credentials into
+/// every log line and error report that touches it.
+#[cfg(feature = "ws")]
+pub(crate) fn redacted(url: &url::Url) -> String {
+    let mut url = url.clone();
+    if url.username().is_empty() && url.password().is_none() {
+        return url.to_string();
+    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.to_string()
+}
+
 impl std::error::Error for ProviderError {}
 
 impl From<ProviderError> for GenericError {
