@@ -123,7 +123,7 @@ if report.slotsExhausted {
 }
 ```
 
-Allowances lapse only at a period boundary, so one scheduled pass per period is enough. `nextStatementRenewalDelay()` reports the in-process loop's cadence, which is capped at an hour; a `BGTaskScheduler` host should read a value under an hour as the boundary approaching rather than requesting a wake-up every hour for a pass that will almost always report `alreadyAllocated`.
+One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed wake-up is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a `BGTaskScheduler` host should read a value under an hour as the boundary approaching rather than requesting a wake-up every hour for a pass that will almost always report `alreadyAllocated`.
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call. A pass has no cancellation, so several targets can outlast a short background budget; targets registered before the process is killed are not lost, and read back as already allocated next time.
 

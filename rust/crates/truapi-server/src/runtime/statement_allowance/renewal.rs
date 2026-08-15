@@ -20,8 +20,13 @@ use super::{
     RegistrationOutcome, RegistrationParams, StatementAllowanceError, register_statement_account,
 };
 
-/// Cap between renewal ticks, mirroring the on-chain grace period after a
-/// period boundary.
+/// Cap between renewal ticks for the in-process loop.
+///
+/// A retry rhythm, not a deadline. An allowance stays usable for
+/// `Resources.StmtStoreGraceWindow` past its period boundary, which is 48 hours
+/// on `paseo-next-v2`, so a pass has ample slack and this only decides how
+/// promptly a transient failure is retried. A host scheduling its own wake-ups
+/// does not need this cadence; one pass per period is enough.
 const MAX_TICK_INTERVAL: Duration = Duration::from_secs(3_600);
 /// Margin after a period boundary before the boundary tick fires, so the
 /// chain has rotated to the new period by the time we scan slots.

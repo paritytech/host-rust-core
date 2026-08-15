@@ -746,9 +746,10 @@ impl NativeTrUApiHostRuntime {
     /// just after the next period boundary.
     ///
     /// The hourly cap is a retry rhythm, not a statement about when work is
-    /// due; allowances only lapse at the boundary. A host scheduling one OS
-    /// wake-up per period should treat any value under an hour as the boundary
-    /// approaching and ignore the rest, rather than requesting a wake every
+    /// due. An allowance stays usable for `Resources.StmtStoreGraceWindow` past
+    /// its boundary, 48 hours on `paseo-next-v2`, so a host scheduling one OS
+    /// wake-up per period has ample slack and should treat any value under an
+    /// hour as the boundary approaching, rather than requesting a wake every
     /// hour for a pass that will almost always report `AlreadyAllocated`.
     pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
         self.runtime.next_statement_renewal_delay()

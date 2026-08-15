@@ -3295,9 +3295,10 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
      * just after the next period boundary.
      *
      * The hourly cap is a retry rhythm, not a statement about when work is
-     * due; allowances only lapse at the boundary. A host scheduling one OS
-     * wake-up per period should treat any value under an hour as the boundary
-     * approaching and ignore the rest, rather than requesting a wake every
+     * due. An allowance stays usable for `Resources.StmtStoreGraceWindow` past
+     * its boundary, 48 hours on `paseo-next-v2`, so a host scheduling one OS
+     * wake-up per period has ample slack and should treat any value under an
+     * hour as the boundary approaching, rather than requesting a wake every
      * hour for a pass that will almost always report `AlreadyAllocated`.
      */
     func nextStatementRenewalDelay()  -> TimeInterval
@@ -3444,9 +3445,10 @@ open func disconnect()  {try! rustCall() {
      * just after the next period boundary.
      *
      * The hourly cap is a retry rhythm, not a statement about when work is
-     * due; allowances only lapse at the boundary. A host scheduling one OS
-     * wake-up per period should treat any value under an hour as the boundary
-     * approaching and ignore the rest, rather than requesting a wake every
+     * due. An allowance stays usable for `Resources.StmtStoreGraceWindow` past
+     * its boundary, 48 hours on `paseo-next-v2`, so a host scheduling one OS
+     * wake-up per period has ample slack and should treat any value under an
+     * hour as the boundary approaching, rather than requesting a wake every
      * hour for a pass that will almost always report `AlreadyAllocated`.
      */
 open func nextStatementRenewalDelay() -> TimeInterval  {
@@ -6165,7 +6167,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 2618) {
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 33452) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_closed() != 55360) {

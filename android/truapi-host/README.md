@@ -101,7 +101,7 @@ if (report.slotsExhausted) {
 }
 ```
 
-Allowances lapse only at a period boundary, so one scheduled pass per period is enough. `nextStatementRenewalDelay()` reports the in-process loop's cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
+One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed run is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
 
