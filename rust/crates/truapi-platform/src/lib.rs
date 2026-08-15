@@ -35,9 +35,9 @@ use truapi::latest::{
     HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
     HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
     HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RemotePermissionResponse, RingLocation, ThemeVariant,
+    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
+    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
+    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
@@ -1228,8 +1228,9 @@ pub trait UserConfirmation: Send + Sync {
 
 /// Host theme source.
 pub trait ThemeHost: Send + Sync {
-    /// Emits current theme immediately, then future changes.
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<ThemeVariant, GenericError>>;
+    /// Emits current theme immediately, then future changes. Hosts with no
+    /// named themes report `ThemeName::Default`.
+    fn subscribe_theme(&self) -> BoxStream<'static, Result<HostThemeSubscribeItem, GenericError>>;
 }
 
 /// Host preimage backend. The core builds, signs, and submits the Bulletin
