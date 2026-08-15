@@ -200,6 +200,7 @@ Commands:
 | `signing-host` | Run the wallet-local signing host. |
 | `identity-check` | Probe People-chain identity records for a mnemonic. |
 | `alloc-check` | Inspect or submit Statement Store allowance registration. |
+| `pgas-check` | Inspect or submit an Asset Hub PGAS allowance claim. |
 
 ### 4.1 Global logging option
 
@@ -666,6 +667,7 @@ The top-level `--script` option does not update remembered `/script` state.
 | `signing-smoke.ts` | Focused product-account signing test. |
 | `ring-vrf-smoke.ts` | Verify RFC-0024 registration, listing, alias, non-membership proof, and direct signing behavior. |
 | `preimage-smoke.ts` | Exercise Bulletin preimage submission and lookup. |
+| `smart-contract-allowance-smoke.ts` | Requests a PGAS allowance for product account index 0 and reports the outcome. |
 
 `battery.ts` writes to `explorer/diagnosis-reports/spa/<role>-cli.md` unless
 `TRUAPI_BATTERY_REPORT_PATH` overrides the destination. `scripts/battery.sh` in
@@ -1106,12 +1108,16 @@ v0.1 supports only `paseo-next-v2`.
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
-| Asset Hub genesis | `0xbf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f` |
+| Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
 
 There are no public endpoint override flags.
 
-People and Bulletin routes are always enabled because host internals require
-them. Asset Hub routing is enabled only when `E2E_LIVE_CHAIN=1`.
+Every role the preset serves — People, Bulletin and Asset Hub — is always routed,
+because host internals require all three: statement-store traffic addressed to the
+People genesis, preimage submission, and PGAS claims respectively. The SSO sentinel is
+a separate case — it is an unmapped genesis and reaches People through the fallback
+below, not through People's own route. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
+preset carries without serving them as a role, of which `paseo-next-v2` has none.
 
 The all-zero SSO sentinel and every genesis hash not present in the active
 route map fall back to the People RPC.
@@ -1161,13 +1167,13 @@ surface.
 | Service | Implemented behavior |
 | --- | --- |
 | Account | Connection status, product accounts, aliases, proofs, empty legacy-account list, user id, and login. |
-| Chain | chainHead-v1 follow/header/body/storage/call/unpin/continue/stop, chain spec queries, transaction broadcast/stop. Asset Hub needs `E2E_LIVE_CHAIN=1`. |
+| Chain | chainHead-v1 follow/header/body/storage/call/unpin/continue/stop, chain spec queries, transaction broadcast/stop. |
 | Entropy | Product-scoped deterministic entropy from the active account/session. |
 | Local Storage | Persistent product-scoped read, write, and clear. |
 | Notifications | In-process immediate/scheduled delivery and cancellation with transcript events. |
 | Permissions | Device and remote permission approval through the CLI policy. |
 | Preimage | Real Bulletin submission/lookup path plus bounded in-core read-after-write cache. |
-| Resource Allocation | Real host-managed allocation, including Bulletin long-term storage over SSO. |
+| Resource Allocation | Real host-managed allocation: Bulletin long-term storage over SSO, and an Asset Hub PGAS claim for `SmartContractAllowance`. |
 | Signing | Product and legacy transaction construction, raw signing, and payload signing. |
 | Statement Store | Real subscribe, proof, authorized proof, and submit over People. |
 | System | Handshake, feature query, and no-op navigation. |
@@ -1236,9 +1242,9 @@ Deliberately unavailable methods:
 
 A successful `System/feature_supported` call resolves the queried chain against
 the host's chain set, the same set `Chain/get_chain_info` answers from, so it
-returns `true` for the preset's People and Bulletin genesis hashes and `false`
-for anything else, AssetHub included. Success means the method is wired, not
-that every feature is present.
+returns `true` for the preset's People, Bulletin and Asset Hub genesis hashes and
+`false` for anything else. Success means the method is wired, not that every feature
+is present.
 
 ### 15.2 Platform-specific semantics
 
@@ -1511,7 +1517,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `VISUAL` | Preferred script editor. |
 | `EDITOR` | Fallback script editor. |
 | `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
-| `E2E_LIVE_CHAIN` | Value `1` enables optional Asset Hub routing. |
+| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on `paseo-next-v2`. |
 | `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
 | `COLORFGBG` | Infer TUI background color. |
 | `COLORTERM` | Select true-color TUI rendering. |

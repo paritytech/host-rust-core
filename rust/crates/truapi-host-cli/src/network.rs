@@ -45,7 +45,7 @@ const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
             "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
         ),
         ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-        required_for_host: false,
+        required_for_host: true,
     },
     ChainEndpoint {
         genesis: hex_literal_genesis(
@@ -75,9 +75,12 @@ pub struct NetworkConfig {
     pub asset_hub_ws: &'static str,
     pub people_genesis: [u8; 32],
     pub bulletin_genesis: [u8; 32],
-    /// Asset Hub genesis hash. Routing metadata only: the chain it connects to is
-    /// authoritative for `CheckGenesis`.
-    #[allow(dead_code)]
+    /// Asset Hub genesis hash, both the role's identity in
+    /// [`NetworkConfig::host_chain_set`] and its routing key. The chain it connects
+    /// to is authoritative for `CheckGenesis`.
+    ///
+    /// Wrong here is worse than stale elsewhere: routing matches on it, so a value
+    /// the chain does not report sends Asset Hub traffic to the fallback chain.
     pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
 }
@@ -94,12 +97,15 @@ pub struct ChainEndpoint {
 impl NetworkConfig {
     /// The chain set this preset serves, for `Features::supported_chains`.
     ///
-    /// Only `People` and `Bulletin` are listed, because they are the two roles
-    /// this struct names a genesis hash for. `live_chain_endpoints` cannot fill
-    /// the rest even where it holds the data: [`ChainEndpoint`] carries no
-    /// role, so an endpoint's identifier is not recoverable from it. AssetHub
-    /// is the case in point, routed at a pinned genesis that nothing can label.
-    /// Serving it needs a role on [`ChainEndpoint`], not more genesis hashes.
+    /// One entry per role this struct names a genesis hash for. `ChainEndpoint`
+    /// carries no role, so `live_chain_endpoints` cannot supply one — an endpoint's
+    /// identifier is not recoverable from it, which is why a served role needs its
+    /// own field here rather than a lookup into that list.
+    ///
+    /// Every role listed must also be routable: `WsChainProvider` answers an
+    /// unmapped genesis with its fallback URL, so a role the routing filter drops
+    /// would connect to the wrong chain while the host claimed to serve it.
+    /// `chain::tests::every_served_role_routes_to_its_own_chain` holds that.
     pub fn host_chain_set(&self) -> HostChainSet {
         HostChainSet {
             network: self.id.to_string(),
@@ -111,6 +117,10 @@ impl NetworkConfig {
                 HostChainEntry {
                     identifier: ChainIdentifier::Bulletin,
                     genesis_hash: self.bulletin_genesis,
+                },
+                HostChainEntry {
+                    identifier: ChainIdentifier::AssetHub,
+                    genesis_hash: self.asset_hub_genesis,
                 },
             ],
         }
@@ -161,6 +171,7 @@ mod tests {
                 let expected_ws = match entry.identifier {
                     ChainIdentifier::People => config.people_ws,
                     ChainIdentifier::Bulletin => config.bulletin_ws,
+                    ChainIdentifier::AssetHub => config.asset_hub_ws,
                     other => panic!("{} serves {other:?} with no preset URL", config.id),
                 };
                 let endpoint = config
@@ -186,6 +197,33 @@ mod tests {
                     expected_ws
                 );
             }
+        }
+    }
+
+    /// Anchors the served set itself. Every other test that reads it iterates, so
+    /// all of them pass on an empty set; this is what notices a dropped role, and it
+    /// covers each preset rather than only the default.
+    #[test]
+    fn every_preset_serves_exactly_the_expected_roles() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let served: Vec<ChainIdentifier> = config
+                .host_chain_set()
+                .chains
+                .iter()
+                .map(|entry| entry.identifier)
+                .collect();
+
+            assert_eq!(
+                served,
+                vec![
+                    ChainIdentifier::People,
+                    ChainIdentifier::Bulletin,
+                    ChainIdentifier::AssetHub,
+                ],
+                "{} serves an unexpected role set",
+                config.id
+            );
         }
     }
 

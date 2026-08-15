@@ -456,9 +456,9 @@ pub trait HostCallbacks: Send + Sync {
     /// current item in its subscription stream.
     async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
 
-    /// Current host theme. The native shim emits this as the current item in
-    /// its subscription stream.
-    fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection>;
+    /// Current host theme, named variant included. The native shim emits this
+    /// as the current item in its subscription stream.
+    fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection>;
 
     /// Answer a feature-support query.
     async fn feature_supported(
@@ -780,7 +780,7 @@ impl NativeProductExecution {
     }
 
     /// Push a host theme replacement to this execution's subscriptions.
-    pub fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+    pub fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.events.notify_theme_changed(theme);
     }
 
@@ -1044,7 +1044,7 @@ impl NativeTrUApiCore {
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    pub fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+    pub fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.execution.notify_theme_changed(theme);
     }
 
@@ -1144,7 +1144,8 @@ struct CallbackPlatform {
 
 #[derive(Default)]
 struct NativeEventBus {
-    theme_changes: Mutex<Vec<mpsc::UnboundedSender<Result<v01::ThemeVariant, v01::GenericError>>>>,
+    theme_changes:
+        Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostThemeSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
     chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
@@ -1158,8 +1159,8 @@ struct PreimageSubscription {
 impl NativeEventBus {
     fn subscribe_theme(
         &self,
-        current: Result<v01::ThemeVariant, v01::GenericError>,
-    ) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+        current: Result<v01::HostThemeSubscribeItem, v01::GenericError>,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         let (tx, rx) = mpsc::unbounded();
         self.theme_changes
             .lock()
@@ -1168,11 +1169,11 @@ impl NativeEventBus {
         stream::once(async move { current }).chain(rx).boxed()
     }
 
-    fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+    fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.theme_changes
             .lock()
             .expect("native theme subscribers mutex poisoned")
-            .retain(|tx| tx.unbounded_send(Ok(theme)).is_ok());
+            .retain(|tx| tx.unbounded_send(Ok(theme.clone())).is_ok());
     }
 
     fn subscribe_preimage_changes(
@@ -1516,7 +1517,9 @@ impl UserConfirmation for CallbackPlatform {
 }
 
 impl ThemeHost for CallbackPlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         let current = self
             .callbacks
             .current_theme()
@@ -1633,7 +1636,7 @@ mod tests {
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<String>>,
         chat_posted_text: Mutex<Vec<(String, String)>>,
-        theme: Mutex<v01::ThemeVariant>,
+        theme: Mutex<v01::HostThemeSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
@@ -1648,7 +1651,10 @@ mod tests {
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
                 chat_posted_text: Mutex::new(Vec::new()),
-                theme: Mutex::new(v01::ThemeVariant::Light),
+                theme: Mutex::new(v01::HostThemeSubscribeItem {
+                    name: v01::ThemeName::Default,
+                    variant: v01::ThemeVariant::Light,
+                }),
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
@@ -1737,8 +1743,8 @@ mod tests {
                 .find(|(stored_key, _)| stored_key == &key)
                 .and_then(|(_, value)| value.clone()))
         }
-        fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
-            Ok(*self.theme.lock().expect("theme mutex poisoned"))
+        fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
+            Ok(self.theme.lock().expect("theme mutex poisoned").clone())
         }
         async fn feature_supported(
             &self,
@@ -2036,14 +2042,24 @@ mod tests {
     fn native_theme_subscription_emits_current_then_notified_changes() {
         let (callbacks, events, platform) = event_platform();
         let mut stream = platform.subscribe_theme();
+        let named = v01::HostThemeSubscribeItem {
+            name: v01::ThemeName::Custom("midnight".to_string()),
+            variant: v01::ThemeVariant::Dark,
+        };
 
         let first = futures::executor::block_on(stream.next()).unwrap();
-        *callbacks.theme.lock().expect("theme mutex poisoned") = v01::ThemeVariant::Dark;
-        events.notify_theme_changed(v01::ThemeVariant::Dark);
+        *callbacks.theme.lock().expect("theme mutex poisoned") = named.clone();
+        events.notify_theme_changed(named.clone());
         let second = futures::executor::block_on(stream.next()).unwrap();
 
-        assert_eq!(first.unwrap(), v01::ThemeVariant::Light);
-        assert_eq!(second.unwrap(), v01::ThemeVariant::Dark);
+        assert_eq!(
+            first.unwrap(),
+            v01::HostThemeSubscribeItem {
+                name: v01::ThemeName::Default,
+                variant: v01::ThemeVariant::Light,
+            }
+        );
+        assert_eq!(second.unwrap(), named);
     }
 
     #[test]
@@ -2373,8 +2389,11 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
-                Ok(v01::ThemeVariant::Light)
+            fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
+                Ok(v01::HostThemeSubscribeItem {
+                    name: v01::ThemeName::Default,
+                    variant: v01::ThemeVariant::Light,
+                })
             }
             async fn feature_supported(
                 &self,
@@ -2518,8 +2537,11 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
-                Ok(v01::ThemeVariant::Light)
+            fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
+                Ok(v01::HostThemeSubscribeItem {
+                    name: v01::ThemeName::Default,
+                    variant: v01::ThemeVariant::Light,
+                })
             }
             async fn feature_supported(
                 &self,

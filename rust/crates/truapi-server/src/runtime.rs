@@ -2550,12 +2550,7 @@ impl Theme for ProductRuntimeHost {
             // TODO: preserve platform stream errors as terminal
             // subscription interrupts once subscription items can carry
             // in-stream failures.
-            item.ok().map(|variant| {
-                HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
-                    name: v01::ThemeName::Default,
-                    variant,
-                })
-            })
+            item.ok().map(HostThemeSubscribeItem::V1)
         });
         Subscription::new(Box::pin(stream))
     }
@@ -3835,7 +3830,7 @@ mod tests {
         assert_eq!(
             item,
             HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
-                name: v01::ThemeName::Default,
+                name: v01::ThemeName::Custom("midnight".to_string()),
                 variant: v01::ThemeVariant::Dark,
             })
         );

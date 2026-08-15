@@ -6,9 +6,9 @@
 //! cargo +nightly test -p truapi-host-cli --test live_asset_hub -- --ignored --nocapture
 //! ```
 //!
-//! Connects directly rather than through the host's `ChainProvider`: the CLI
-//! provider filters Asset Hub out unless `E2E_LIVE_CHAIN=1` and then silently
-//! falls back to the People chain, which would quietly test the wrong chain.
+//! Connects directly rather than through the host's `ChainProvider`, so the checks
+//! are about the chain rather than about host wiring. The provider routes Asset Hub
+//! now that the preset serves it as a role.
 
 use truapi_server::statement_allowance::{self as alloc, extension::AS_PGAS, pgas};
 

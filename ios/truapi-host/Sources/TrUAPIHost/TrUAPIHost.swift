@@ -297,7 +297,7 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
     ) throws
-    func notifyThemeChanged(theme: ThemeVariant)
+    func notifyThemeChanged(theme: HostThemeSubscribeItem)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -395,8 +395,9 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Return the current preimage value for `key`, or nil for a miss.
     func lookupPreimage(key: Data) async throws -> Data?
 
-    /// Return the current host theme.
-    func currentTheme() throws -> ThemeVariant
+    /// Return the current host theme. Hosts with no named themes report
+    /// `ThemeName.default`.
+    func currentTheme() throws -> HostThemeSubscribeItem
 
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
@@ -448,7 +449,9 @@ public extension HostBridge {
     func chainClose(connectionId: UInt32) throws {}
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key: Data) async throws -> Data? { nil }
-    func currentTheme() throws -> ThemeVariant { .dark }
+    func currentTheme() throws -> HostThemeSubscribeItem {
+        HostThemeSubscribeItem(name: .default, variant: .dark)
+    }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
 }
 
@@ -602,7 +605,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func currentTheme() throws -> ThemeVariant {
+    func currentTheme() throws -> HostThemeSubscribeItem {
         try withHostRejection {
             try bridge.currentTheme()
         }
@@ -761,7 +764,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
     ) throws
-    func notifyThemeChanged(theme: ThemeVariant)
+    func notifyThemeChanged(theme: HostThemeSubscribeItem)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -832,7 +835,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
-    public func notifyThemeChanged(theme: ThemeVariant) {
+    public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme: theme)
     }
 
@@ -945,7 +948,7 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    public func notifyThemeChanged(theme: ThemeVariant) {
+    public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme: theme)
     }
 
