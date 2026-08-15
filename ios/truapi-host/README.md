@@ -96,6 +96,36 @@ The core's `Permissions` platform trait has two methods, and so does `HostCallba
 
 Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
+## Statement-store allowance renewal
+
+Statement-store allowances are granted per period and lapse when the period rolls over, so a host has to re-register the accounts it wants to keep writing. The runtime owns the ledger and the registration; the app owns only the schedule.
+
+Record the accounts once. The ledger persists, so this is needed when the set changes, not on every launch:
+
+```swift
+try runtime.trackStatementRenewalTargets(targets: [
+    .walletSso,
+    .account(accountId: deviceStatementKey, label: "device"),
+])
+```
+
+Then run a pass from a background task. `renewStatementAllowances()` submits extrinsics and blocks until they are included, so keep it off the main thread, and use `nextStatementRenewalDelay()` to schedule the next wake-up:
+
+```swift
+let report = try runtime.renewStatementAllowances()
+for outcome in report.outcomes {
+    log("\(outcome.label): \(outcome.status)")
+}
+if report.slotsExhausted {
+    // Every slot for this period is taken and none was replaceable.
+}
+scheduleNextRun(after: runtime.nextStatementRenewalDelay())
+```
+
+`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call.
+
+An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.invalidAccountId`.
+
 ## Example
 
 > **Threading:** the Rust core invokes every `HostCallbacks` method on a

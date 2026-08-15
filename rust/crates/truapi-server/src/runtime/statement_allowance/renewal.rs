@@ -60,6 +60,7 @@ pub struct ResolvedRenewalTarget {
 
 /// Outcome of renewing one target.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum TargetRenewalStatus {
     /// The extrinsic reached a block; the target holds `seq` this period.
     Registered {
@@ -82,13 +83,25 @@ pub enum TargetRenewalStatus {
     SkippedExhausted,
 }
 
+/// What one target's renewal produced, paired with the label that identifies it
+/// in the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct StatementRenewalOutcome {
+    /// Ledger label for the renewed target.
+    pub label: String,
+    /// What the pass did for this target.
+    pub status: TargetRenewalStatus,
+}
+
 /// Summary of one renewal pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct StatementRenewalReport {
     /// Period the pass registered for.
     pub period: u32,
-    /// Per-target `(label, status)` in ledger order.
-    pub outcomes: Vec<(String, TargetRenewalStatus)>,
+    /// Per-target outcomes in ledger order.
+    pub outcomes: Vec<StatementRenewalOutcome>,
     /// Whether the pass hit slot exhaustion for this period.
     pub slots_exhausted: bool,
 }
@@ -229,7 +242,10 @@ fn fold_outcomes(
                 }
                 None => TargetRenewalStatus::SkippedExhausted,
             };
-            (target.label.clone(), status)
+            StatementRenewalOutcome {
+                label: target.label.clone(),
+                status,
+            }
         })
         .collect();
     StatementRenewalReport {
@@ -325,9 +341,9 @@ mod tests {
         let seqs: Vec<u32> = report
             .outcomes
             .iter()
-            .filter_map(|(_, status)| match status {
+            .filter_map(|outcome| match outcome.status {
                 TargetRenewalStatus::Registered { seq, .. }
-                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(*seq),
+                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(seq),
                 _ => None,
             })
             .collect();
@@ -358,6 +374,13 @@ mod tests {
         ResolvedRenewalTarget {
             label: label.to_string(),
             account_id: [0u8; 32],
+        }
+    }
+
+    fn outcome(label: &str, status: TargetRenewalStatus) -> StatementRenewalOutcome {
+        StatementRenewalOutcome {
+            label: label.to_string(),
+            status,
         }
     }
 
@@ -429,18 +452,15 @@ mod tests {
             StatementRenewalReport {
                 period: 7,
                 outcomes: vec![
-                    (
-                        "a".to_string(),
-                        TargetRenewalStatus::AlreadyAllocated { seq: 1 }
-                    ),
-                    (
-                        "b".to_string(),
+                    outcome("a", TargetRenewalStatus::AlreadyAllocated { seq: 1 }),
+                    outcome(
+                        "b",
                         TargetRenewalStatus::Failed {
                             reason: "rpc timeout".to_string()
                         }
                     ),
-                    (
-                        "c".to_string(),
+                    outcome(
+                        "c",
                         TargetRenewalStatus::Registered {
                             seq: 2,
                             block_hash: "0xabc".to_string()
@@ -468,17 +488,14 @@ mod tests {
             StatementRenewalReport {
                 period: 7,
                 outcomes: vec![
-                    (
-                        "a".to_string(),
-                        TargetRenewalStatus::AlreadyAllocated { seq: 0 }
-                    ),
-                    (
-                        "b".to_string(),
+                    outcome("a", TargetRenewalStatus::AlreadyAllocated { seq: 0 }),
+                    outcome(
+                        "b",
                         TargetRenewalStatus::Failed {
                             reason: exhausted_failure().reason
                         }
                     ),
-                    ("c".to_string(), TargetRenewalStatus::SkippedExhausted),
+                    outcome("c", TargetRenewalStatus::SkippedExhausted),
                 ],
                 slots_exhausted: true,
             }
