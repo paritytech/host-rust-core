@@ -74,6 +74,39 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 
 Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
+## Statement-store allowance renewal
+
+Statement-store allowances are granted per period and lapse when the period rolls over, so a host has to re-register the accounts it wants to keep writing. The core owns the ledger and the registration; the app owns only the schedule.
+
+Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
+
+```kotlin
+core.trackStatementRenewalTargets(
+    listOf(
+        NativeStatementRenewalTarget.WalletSso,
+        NativeStatementRenewalTarget.Account(deviceStatementKey, "device"),
+    ),
+)
+```
+
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not, so re-track raw accounts whenever the active identity changes. A pruned target is absent from the report rather than reported as failed.
+
+Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread:
+
+```kotlin
+val report = core.renewStatementAllowances()
+report.outcomes.forEach { Log.i(TAG, "${it.label}: ${it.status}") }
+if (report.slotsExhausted) {
+    // Every slot for this period is taken and none was replaceable.
+}
+```
+
+Allowances lapse only at a period boundary, so one scheduled pass per period is enough. `nextStatementRenewalDelay()` reports the in-process loop's cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
+
+`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
+
+An account id must be exactly 32 bytes. Anything else throws `NativeRenewalTargetException.InvalidAccountId` before any chain work happens.
+
 ## Example
 
 > **Threading:** the Rust core invokes every `HostBridge` callback on a

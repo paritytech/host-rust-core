@@ -742,7 +742,14 @@ impl NativeTrUApiHostRuntime {
         self.runtime.start_statement_allowance_renewal();
     }
 
-    /// How long until the next pass is due, for scheduling an OS wake-up.
+    /// The in-process loop's own cadence: at most an hour, tightening to land
+    /// just after the next period boundary.
+    ///
+    /// The hourly cap is a retry rhythm, not a statement about when work is
+    /// due; allowances only lapse at the boundary. A host scheduling one OS
+    /// wake-up per period should treat any value under an hour as the boundary
+    /// approaching and ignore the rest, rather than requesting a wake every
+    /// hour for a pass that will almost always report `AlreadyAllocated`.
     pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
         self.runtime.next_statement_renewal_delay()
     }
@@ -1096,6 +1103,31 @@ impl NativeTrUApiCore {
         lite_username: Option<String>,
     ) -> Result<(), HostRejection> {
         self.host.activate_local_session(secret, lite_username)
+    }
+
+    /// See [`NativeTrUApiHostRuntime::track_statement_renewal_targets`].
+    pub fn track_statement_renewal_targets(
+        &self,
+        targets: Vec<NativeStatementRenewalTarget>,
+    ) -> Result<(), NativeRenewalTargetError> {
+        self.host.track_statement_renewal_targets(targets)
+    }
+
+    /// See [`NativeTrUApiHostRuntime::renew_statement_allowances`].
+    pub fn renew_statement_allowances(
+        &self,
+    ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
+        self.host.renew_statement_allowances()
+    }
+
+    /// See [`NativeTrUApiHostRuntime::start_statement_allowance_renewal`].
+    pub fn start_statement_allowance_renewal(&self) {
+        self.host.start_statement_allowance_renewal();
+    }
+
+    /// See [`NativeTrUApiHostRuntime::next_statement_renewal_delay`].
+    pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
+        self.host.next_statement_renewal_delay()
     }
 
     /// List registered providers for a ring so host UI can present the RFC-0024

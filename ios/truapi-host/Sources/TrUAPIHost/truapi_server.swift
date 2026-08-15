@@ -2784,6 +2784,11 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
+     * See [`NativeTrUApiHostRuntime::next_statement_renewal_delay`].
+     */
+    func nextStatementRenewalDelay()  -> TimeInterval
+
+    /**
      * Notify the core that a native chain connection closed externally.
      */
     func notifyChainClosed(connectionId: UInt32)
@@ -2825,6 +2830,11 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
+     * See [`NativeTrUApiHostRuntime::renew_statement_allowances`].
+     */
+    func renewStatementAllowances() throws  -> StatementRenewalReport
+
+    /**
      * List registered providers for a ring so host UI can present the RFC-0024
      * personhood-provider setting.
      */
@@ -2852,6 +2862,11 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws
 
     /**
+     * See [`NativeTrUApiHostRuntime::start_statement_allowance_renewal`].
+     */
+    func startStatementAllowanceRenewal()
+
+    /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
      * host hands to the product so it can dial back in.
      */
@@ -2861,6 +2876,11 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Stop the localhost WebSocket bridge (if running).
      */
     func stopWsBridge()
+
+    /**
+     * See [`NativeTrUApiHostRuntime::track_statement_renewal_targets`].
+     */
+    func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget]) throws
 
 }
 /**
@@ -2990,6 +3010,18 @@ open func disconnect()  {try! rustCall() {
 }
 
     /**
+     * See [`NativeTrUApiHostRuntime::next_statement_renewal_delay`].
+     */
+open func nextStatementRenewalDelay() -> TimeInterval  {
+    return try!  FfiConverterDuration.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_next_statement_renewal_delay(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * Notify the core that a native chain connection closed externally.
      */
 open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
@@ -3075,6 +3107,18 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
 }
 
     /**
+     * See [`NativeTrUApiHostRuntime::renew_statement_allowances`].
+     */
+open func renewStatementAllowances()throws  -> StatementRenewalReport  {
+    return try  FfiConverterTypeStatementRenewalReport_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_renew_statement_allowances(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * List registered providers for a ring so host UI can present the RFC-0024
      * personhood-provider setting.
      */
@@ -3134,6 +3178,17 @@ open func setPermissionAuthorizationStatus(request: PermissionAuthorizationReque
 }
 
     /**
+     * See [`NativeTrUApiHostRuntime::start_statement_allowance_renewal`].
+     */
+open func startStatementAllowanceRenewal()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_start_statement_allowance_renewal(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+    /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
      * host hands to the product so it can dial back in.
      */
@@ -3154,6 +3209,18 @@ open func stopWsBridge()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * See [`NativeTrUApiHostRuntime::track_statement_renewal_targets`].
+     */
+open func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget])throws   {try rustCallWithError(FfiConverterTypeNativeRenewalTargetError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_track_statement_renewal_targets(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeNativeStatementRenewalTarget.lower(targets),uniffiCallStatus
     )
 }
 }
@@ -3224,7 +3291,14 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
-     * How long until the next pass is due, for scheduling an OS wake-up.
+     * The in-process loop's own cadence: at most an hour, tightening to land
+     * just after the next period boundary.
+     *
+     * The hourly cap is a retry rhythm, not a statement about when work is
+     * due; allowances only lapse at the boundary. A host scheduling one OS
+     * wake-up per period should treat any value under an hour as the boundary
+     * approaching and ignore the rest, rather than requesting a wake every
+     * hour for a pass that will almost always report `AlreadyAllocated`.
      */
     func nextStatementRenewalDelay()  -> TimeInterval
 
@@ -3366,7 +3440,14 @@ open func disconnect()  {try! rustCall() {
 }
 
     /**
-     * How long until the next pass is due, for scheduling an OS wake-up.
+     * The in-process loop's own cadence: at most an hour, tightening to land
+     * just after the next period boundary.
+     *
+     * The hourly cap is a retry rhythm, not a statement about when work is
+     * due; allowances only lapse at the boundary. A host scheduling one OS
+     * wake-up per period should treat any value under an hour as the boundary
+     * approaching and ignore the rest, rather than requesting a wake every
+     * hour for a pass that will almost always report `AlreadyAllocated`.
      */
 open func nextStatementRenewalDelay() -> TimeInterval  {
     return try!  FfiConverterDuration.lift(try! rustCall() {
@@ -6030,6 +6111,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 22349) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_closed() != 25320) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6048,6 +6132,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 16355) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_ring_vrf_providers() != 44875) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6060,10 +6147,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 37317) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_statement_allowance_renewal() != 42790) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 34234) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_stop_ws_bridge() != 13438) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_track_statement_renewal_targets() != 61871) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_activate_local_session() != 40075) {
@@ -6072,7 +6165,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 17292) {
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 2618) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_closed() != 55360) {

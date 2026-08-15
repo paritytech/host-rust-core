@@ -100,16 +100,18 @@ Both return a `Bool` granted flag; the host renders the typed request in its own
 
 Statement-store allowances are granted per period and lapse when the period rolls over, so a host has to re-register the accounts it wants to keep writing. The runtime owns the ledger and the registration; the app owns only the schedule.
 
-Record the accounts once. The ledger persists, so this is needed when the set changes, not on every launch:
+Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
 
 ```swift
-try runtime.trackStatementRenewalTargets(targets: [
+try runtime.trackStatementRenewalTargets([
     .walletSso,
     .account(accountId: deviceStatementKey, label: "device"),
 ])
 ```
 
-Then run a pass from a background task. `renewStatementAllowances()` submits extrinsics and blocks until they are included, so keep it off the main thread, and use `nextStatementRenewalDelay()` to schedule the next wake-up:
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. Re-track raw accounts whenever the active identity changes, or renewal quietly stops covering them — a pruned target is absent from the report rather than reported as failed.
+
+Then run a pass from a background task, off the main thread:
 
 ```swift
 let report = try runtime.renewStatementAllowances()
@@ -119,12 +121,15 @@ for outcome in report.outcomes {
 if report.slotsExhausted {
     // Every slot for this period is taken and none was replaceable.
 }
-scheduleNextRun(after: runtime.nextStatementRenewalDelay())
 ```
 
-`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call.
+Allowances lapse only at a period boundary, so one scheduled pass per period is enough. `nextStatementRenewalDelay()` reports the in-process loop's cadence, which is capped at an hour; a `BGTaskScheduler` host should read a value under an hour as the boundary approaching rather than requesting a wake-up every hour for a pass that will almost always report `alreadyAllocated`.
 
-An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.invalidAccountId`.
+`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call. A pass has no cancellation, so several targets can outlast a short background budget; targets registered before the process is killed are not lost, and read back as already allocated next time.
+
+An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.InvalidAccountId` before any chain work happens.
+
+`TrUAPIHostCore` exposes the same four calls for hosts that use it instead of `TrUAPIHostRuntime`.
 
 ## Example
 
