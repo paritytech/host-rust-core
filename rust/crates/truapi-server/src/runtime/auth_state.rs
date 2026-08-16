@@ -201,6 +201,55 @@ mod tests {
     use crate::test_support::stub_platform;
 
     #[test]
+    fn a_wallet_reported_exhausted_period_reaches_the_host_as_a_typed_kind() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+        let (_cancel_rx, epoch) = machine
+            .pairing_started("polkadotapp://pair".to_string())
+            .expect("login should start");
+        machine.authentication_started(epoch);
+
+        machine.login_failed("no free StatementStore slot in period 7 (max 8)".to_string());
+
+        assert_eq!(
+            platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned")
+                .last(),
+            Some(&AuthState::LoginFailed {
+                kind: LoginFailureKind::NoFreeAllowanceSlots,
+                reason: "no free StatementStore slot in period 7 (max 8)".to_string(),
+            }),
+            "a host must be able to branch on the kind without reading the reason"
+        );
+    }
+
+    #[test]
+    fn a_pre_pairing_failure_is_never_reported_as_an_exhausted_period() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+
+        // Allowance exhaustion is only ever wallet-reported, so this path does
+        // not classify even when the text would otherwise match.
+        machine.login_failed_before_pairing(
+            "no free StatementStore slot in period 7 (max 8)".to_string(),
+        );
+
+        assert_eq!(
+            platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned")
+                .last(),
+            Some(&AuthState::LoginFailed {
+                kind: LoginFailureKind::Other,
+                reason: "no free StatementStore slot in period 7 (max 8)".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn pairing_started_refuses_a_second_login_while_authenticating() {
         let platform = stub_platform();
         let machine = AuthStateMachine::new(platform.clone());

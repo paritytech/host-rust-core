@@ -374,7 +374,9 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Observe an auth state change. The core emits states only when they
     /// actually change, in transition order: render `.pairing` as the pairing
     /// QR UI, `.connected`/`.disconnected` as the account badge, and
-    /// `.loginFailed` as a retryable error. Report a user dismissal of the
+    /// `.loginFailed` as a retryable error, unless its `kind` is
+    /// `.noFreeAllowanceSlots`, which cannot succeed again until the period
+    /// rolls over. Report a user dismissal of the
     /// pairing UI through ``TrUAPIHostCore/cancelLogin()``. Invoked on the
     /// dispatcher thread; hand the state to the main thread and return
     /// promptly.

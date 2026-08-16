@@ -147,7 +147,9 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
     }
 
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
-    // account badge and `.loginFailed` as a retryable error. This core is a
+    // account badge and `.loginFailed` as a retryable error, unless its
+    // `kind` is `.noFreeAllowanceSlots`, which cannot succeed again until the
+    // period rolls over. This core is a
     // signing host — it owns the signer and never pairs — so `.pairing` and
     // `.authenticating` are not emitted and `core.cancelLogin()` is inert.
     // Activate the session with `core.activateLocalSession(secret:...)`.

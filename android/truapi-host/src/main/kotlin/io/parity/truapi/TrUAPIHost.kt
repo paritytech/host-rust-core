@@ -260,7 +260,9 @@ interface HostBridge {
      * Observe an auth state change. The core emits states only when they
      * actually change, in transition order: render [AuthState.Pairing] as the
      * pairing QR UI, connected/disconnected as the account badge, and
-     * login-failed as a retryable error. Report a user dismissal of the pairing
+     * login-failed as a retryable error, unless its kind is
+     * [LoginFailureKind.NoFreeAllowanceSlots], which cannot succeed again until
+     * the period rolls over. Report a user dismissal of the pairing
      * UI through [TrUAPIHostCore.cancelLogin]. Invoked on the dispatcher thread;
      * marshal the state to the main thread and return promptly.
      */

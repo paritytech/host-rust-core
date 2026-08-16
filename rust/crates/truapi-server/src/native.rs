@@ -420,7 +420,9 @@ pub trait HostCallbacks: Send + Sync {
     /// Observe an auth state change. Emitted only when the state actually
     /// changes, in transition order: render `Pairing` as the pairing QR UI,
     /// `Connected`/`Disconnected` as the account badge, `LoginFailed` as a
-    /// retryable error. User cancellation is reported through
+    /// retryable error unless its `kind` is `NoFreeAllowanceSlots`, which
+    /// cannot succeed again until the period rolls over. User cancellation is
+    /// reported through
     /// `NativeTrUApiCore.cancel_login()`.
     fn auth_state_changed(&self, state: AuthState);
 
