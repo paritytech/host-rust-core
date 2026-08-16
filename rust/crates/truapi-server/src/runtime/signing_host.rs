@@ -923,8 +923,16 @@ impl ProductAuthority for SigningHost {
                     .await
                     .map(|_| v01::AllocationOutcome::Allocated)
                 }
-                v01::AllocatableResource::SmartContractAllowance(_) => {
-                    Ok(v01::AllocationOutcome::NotAvailable)
+                v01::AllocatableResource::SmartContractAllowance(index) => {
+                    sso_responder::allocate_smart_contract_allowance(
+                        &self.services,
+                        self,
+                        &product_id,
+                        index,
+                        OnExistingAllowancePolicy::Increase,
+                    )
+                    .await
+                    .map(|()| v01::AllocationOutcome::Allocated)
                 }
                 v01::AllocatableResource::AutoSigning => self
                     .grant_auto_signing(session, &product_id)
@@ -2470,9 +2478,56 @@ mod tests {
         assert_eq!(err, AuthorityError::Disconnected);
     }
 
+    /// A PGAS request has to actually reach Asset Hub. Asserting the outcome alone
+    /// cannot show that: the stub this replaced answered `NotAvailable` with no
+    /// chain access at all, which looks identical from outside. Pin instead that
+    /// the request is left waiting on the connection.
+    #[test]
+    fn a_pgas_request_waits_on_the_asset_hub_connection() {
+        use std::future::Future;
+        use std::task::{Context, Poll};
+
+        let platform = Arc::new(StubPlatform {
+            chain_connect_pending: true,
+            ..StubPlatform::default()
+        });
+        let (_services, authority) = signing_runtime_with_platform(platform);
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let session = authority.current_session().expect("connected");
+        let cx = CallContext::default();
+
+        let mut allocation = Box::pin(authority.allocate_resources(
+            &cx,
+            &session,
+            "myapp.dot".to_string(),
+            v01::HostRequestResourceAllocationRequest {
+                resources: vec![v01::AllocatableResource::SmartContractAllowance(
+                    v01::DerivationIndex::Index(0),
+                )],
+            },
+        ));
+        let waker = futures::task::noop_waker();
+        let mut task_cx = Context::from_waker(&waker);
+
+        match allocation.as_mut().poll(&mut task_cx) {
+            Poll::Pending => {}
+            Poll::Ready(outcome) => {
+                panic!("a PGAS claim should be waiting on Asset Hub, got {outcome:?}")
+            }
+        }
+    }
+
     #[test]
     fn direct_allocation_handles_empty_and_optional_resource_batches() {
-        let (_services, authority) = signing_runtime();
+        // A PGAS request now reaches Asset Hub, so the stub has to fail the
+        // connect for this to be deterministic. What the batch pins is that one
+        // resource failing does not poison the others.
+        let platform = Arc::new(StubPlatform {
+            chain_connect_error: Some("asset hub unavailable"),
+            ..StubPlatform::default()
+        });
+        let (_services, authority) = signing_runtime_with_platform(platform);
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation");
         let session = authority.current_session().expect("connected");
@@ -2504,7 +2559,10 @@ mod tests {
         assert_eq!(
             optional.outcomes,
             vec![
+                // The chain is unreachable, so the claim degrades rather than
+                // failing the request.
                 v01::AllocationOutcome::NotAvailable,
+                // And the resource that needs no chain still allocates.
                 v01::AllocationOutcome::Allocated,
             ]
         );

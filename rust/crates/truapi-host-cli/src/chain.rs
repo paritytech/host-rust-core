@@ -28,8 +28,9 @@ const INBOUND_CHANNEL_CAPACITY: usize = 1024;
 /// Chain provider that maps a requested genesis hash to a WebSocket endpoint.
 ///
 /// The all-zero genesis (the headless SSO sentinel) and any unmapped genesis
-/// fall back to the People-chain statement store. Host-required routes such as
-/// Bulletin are always enabled; optional product Chain routes remain opt-in.
+/// fall back to the People-chain statement store. Every role the preset serves —
+/// People, Bulletin and Asset Hub — is always routed; the test switch only widens
+/// routing to endpoints the preset carries without serving them as a role.
 pub struct WsChainProvider {
     fallback_url: String,
     by_genesis: HashMap<[u8; 32], String>,
@@ -46,9 +47,9 @@ impl WsChainProvider {
         live_chain_endpoints: &[ChainEndpoint],
         live_chain_routing: bool,
     ) -> Self {
-        // People remains the fallback for the SSO sentinel. Bulletin is a
-        // required host dependency for preimage submission and must never be
-        // gated by the product-facing Chain/* test switch.
+        // People remains the fallback for the SSO sentinel. Bulletin backs preimage
+        // submission and Asset Hub backs PGAS claims, so all three are host
+        // dependencies and must never be gated by the product-facing Chain/* switch.
         let by_genesis = live_chain_endpoints
             .iter()
             .filter(|endpoint| endpoint.required_for_host || live_chain_routing)
@@ -58,6 +59,16 @@ impl WsChainProvider {
             fallback_url: fallback_url.into(),
             by_genesis,
         }
+    }
+
+    /// Whether a genesis is mapped rather than answered by the fallback.
+    ///
+    /// Test-only because production has no reason to care: `url_for` resolves either
+    /// way. A test does, since the fallback is the People URL, so asserting on the
+    /// resolved URL cannot tell a routed People from a dropped one.
+    #[cfg(test)]
+    fn routes(&self, genesis_hash: &[u8; 32]) -> bool {
+        self.by_genesis.contains_key(genesis_hash)
     }
 
     fn url_for(&self, genesis_hash: &[u8; 32]) -> &str {
@@ -180,6 +191,9 @@ impl JsonRpcConnection for WsJsonRpcConnection {
 
 #[cfg(test)]
 mod tests {
+    use clap::ValueEnum;
+    use truapi::latest::ChainIdentifier;
+
     use super::*;
     use crate::network::Network;
 
@@ -203,38 +217,69 @@ mod tests {
         assert_eq!(frame, r#"{"jsonrpc":"2.0","id":1,"result":"ready"}"#);
     }
 
+    /// Every role the host says it serves has to route to that role's own chain
+    /// without the test switch. `url_for` answers an unmapped genesis with the
+    /// fallback URL, so a served role that the routing filter drops would connect
+    /// to the People chain while the host claimed to serve something else — and
+    /// `ChainContextCache` only warns when the reported genesis diverges.
     #[test]
-    fn required_bulletin_route_is_enabled_without_optional_live_chains() {
-        let network = Network::PaseoNextV2.config();
-        let provider = WsChainProvider::with_live_chain_routing(
-            network.people_ws,
-            network.live_chain_endpoints,
-            false,
-        );
-
-        assert_eq!(
-            provider.url_for(&network.bulletin_genesis),
-            network.bulletin_ws
-        );
-        assert_eq!(provider.url_for(&network.people_genesis), network.people_ws);
-        assert_eq!(
-            provider.url_for(&network.live_chain_endpoints[0].genesis),
-            network.people_ws
-        );
+    fn every_served_role_routes_to_its_own_chain() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let provider = WsChainProvider::with_live_chain_routing(
+                config.people_ws,
+                config.live_chain_endpoints,
+                false,
+            );
+            for entry in config.host_chain_set().chains {
+                let expected = match entry.identifier {
+                    ChainIdentifier::People => config.people_ws,
+                    ChainIdentifier::Bulletin => config.bulletin_ws,
+                    ChainIdentifier::AssetHub => config.asset_hub_ws,
+                    other => panic!("{} serves {other:?} with no preset URL", config.id),
+                };
+                assert!(
+                    provider.routes(&entry.genesis_hash),
+                    "{} serves {:?} but does not route it; the fallback would hide this",
+                    config.id,
+                    entry.identifier
+                );
+                assert_eq!(
+                    provider.url_for(&entry.genesis_hash),
+                    expected,
+                    "{} serves {:?} but routes it elsewhere",
+                    config.id,
+                    entry.identifier
+                );
+            }
+        }
     }
 
+    /// The switch exists to widen routing to endpoints the preset carries without
+    /// serving them as a role. No preset has one now that Asset Hub is served, so
+    /// this uses a synthetic endpoint: without a case the preset cannot express,
+    /// `required_for_host` and the switch could both be deleted with a green suite.
     #[test]
-    fn optional_live_chain_routes_are_enabled_by_the_test_switch() {
-        let network = Network::PaseoNextV2.config();
-        let provider = WsChainProvider::with_live_chain_routing(
-            network.people_ws,
-            network.live_chain_endpoints,
-            true,
-        );
+    fn the_test_switch_widens_routing_to_endpoints_that_are_not_roles() {
+        const FALLBACK: &str = "wss://fallback.invalid";
+        let optional = [ChainEndpoint {
+            genesis: [0x5a; 32],
+            ws: "wss://optional.invalid",
+            required_for_host: false,
+        }];
+
+        let gated = WsChainProvider::with_live_chain_routing(FALLBACK, &optional, false);
+        let widened = WsChainProvider::with_live_chain_routing(FALLBACK, &optional, true);
 
         assert_eq!(
-            provider.url_for(&network.live_chain_endpoints[0].genesis),
-            network.live_chain_endpoints[0].ws
+            gated.url_for(&optional[0].genesis),
+            FALLBACK,
+            "an endpoint that is not a role is excluded without the switch"
+        );
+        assert_eq!(
+            widened.url_for(&optional[0].genesis),
+            optional[0].ws,
+            "and included with it"
         );
     }
 }

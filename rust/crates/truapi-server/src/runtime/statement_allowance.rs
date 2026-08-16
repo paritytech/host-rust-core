@@ -8,6 +8,7 @@
 
 pub mod extension;
 pub mod extrinsic;
+pub mod pgas;
 pub mod proof;
 pub mod renewal;
 pub mod ring;
@@ -53,6 +54,9 @@ pub enum StatementAllowanceError {
     /// Ring-VRF proof construction failed.
     #[error(transparent)]
     Proof(#[from] proof::ProofError),
+    /// Asset Hub PGAS claim failed.
+    #[error(transparent)]
+    Pgas(#[from] pgas::PgasError),
     /// Bulletin allowance polling timed out.
     #[error("timed out waiting for Bulletin authorization")]
     BulletinAuthorizationTimeout,
