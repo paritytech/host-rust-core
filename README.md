@@ -7,8 +7,8 @@
 _The protocol that lets product webviews talk to their Polkadot host._
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/paritytech/truapi/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/truapi/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/truapi)
+[![CI](https://img.shields.io/github/actions/workflow/status/paritytech/host-rust-core/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/host-rust-core/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/host-rust-core)
 [![Playground](https://img.shields.io/badge/playground-live-success?style=flat-square)](https://truapi-playground.paseo.li/)
 
 </div>
@@ -19,7 +19,7 @@ TrUAPI (Triangle User-Agent Programming Interface) is the API surface that hosts
 
 ## Try it
 
-Browse the published Rust API docs at [paritytech.github.io/truapi](https://paritytech.github.io/truapi).
+Browse the published Rust API docs at [paritytech.github.io/host-rust-core](https://paritytech.github.io/host-rust-core).
 
 The interactive playground lets you browse every method, edit request payloads, and call or subscribe to them live against a connected host. It also drives an end-to-end **Diagnosis** that produces a per-host pass/fail report ([playground/README.md → Diagnosis](playground/README.md#diagnosis)). The explorer aggregates those reports into a cross-host **Compatibility** matrix ([explorer/README.md → Host compatibility matrix](explorer/README.md#host-compatibility-matrix)).
 
@@ -236,7 +236,7 @@ use a different state directory while debugging.
 Pushes to `main` build and deploy:
 
 - The playground to the dotNS label [`truapi-playground`](https://truapi-playground.paseo.li/), live as `truapi-playground.paseo`, via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml).
-- The Rust API docs to [https://paritytech.github.io/truapi](https://paritytech.github.io/truapi) via [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
+- The Rust API docs to [https://paritytech.github.io/host-rust-core](https://paritytech.github.io/host-rust-core) via [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
 
 ## Release
 
