@@ -417,12 +417,16 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::RemotePermission,
     ) -> Result<bool, HostRejection>;
 
-    /// Observe an auth state change. Emitted only when the state actually
-    /// changes, in transition order: render `Pairing` as the pairing QR UI,
-    /// `Connected`/`Disconnected` as the account badge, `LoginFailed` as a
-    /// retryable error unless its `kind` is `NoFreeAllowanceSlots`, which
-    /// cannot succeed again until the period rolls over. User cancellation is
-    /// reported through
+    /// Observe an auth state change, in transition order: render `Pairing` as
+    /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
+    /// `LoginFailed` as a retryable error unless its `kind` is
+    /// `NoFreeAllowanceSlots`, which cannot succeed again until the period
+    /// rolls over. A pairing host's session activation reports its outcome even
+    /// when it is the default `Disconnected`, so a host that awaits activation
+    /// before routing never has to read silence as "signed out". Every other
+    /// emission, and every emission on a host role that has no session
+    /// activation, happens only when the state actually changes. User
+    /// cancellation is reported through
     /// `NativeTrUApiCore.cancel_login()`.
     fn auth_state_changed(&self, state: AuthState);
 
