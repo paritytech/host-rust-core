@@ -500,9 +500,11 @@ fn emit_worker_callbacks(
         writedoc!(
             out,
             r#"
-            /// Optional capabilities the main-thread host actually serves. A
-            /// capability left out here is not proxied into the worker, so the
-            /// core answers its product calls with `Unsupported`.
+            /**
+             * Optional capabilities the main-thread host actually serves. A
+             * capability left out here is not proxied into the worker, so the
+             * core answers its product calls with `Unsupported`.
+             */
             export interface OptionalCapabilities {{
             {members}
             }}
@@ -777,9 +779,11 @@ fn emit_raw_callbacks(
     writedoc!(
         out,
         r#"
-        /// Byte-oriented callback surface the WASM core invokes. Members of an
-        /// optional capability are absent when the host omits the capability;
-        /// the core then answers the matching product calls with `Unsupported`.
+        /**
+         * Byte-oriented callback surface the WASM core invokes. Members of an
+         * optional capability are absent when the host omits the capability;
+         * the core then answers the matching product calls with `Unsupported`.
+         */
         "#,
     )
     .unwrap();

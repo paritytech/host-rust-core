@@ -19,8 +19,12 @@ import {
   handleGetPermissionAuthorizationStatus,
   handleGetPermissionAuthorizationStatuses,
   handleSetPermissionAuthorizationStatus,
-  type PermissionAuthorizationRuntime,
 } from "./worker-permission-authorization.js";
+import type {
+  WasmModuleShape,
+  WorkerPairingHostRuntime,
+  WorkerProductRuntime,
+} from "./wasm-module.js";
 import { errorMessage } from "./error.js";
 import {
   dispatchChainResponse,
@@ -29,44 +33,12 @@ import {
   type SubscriptionListeners,
 } from "./worker-dispatch.js";
 
-interface WorkerProductRuntime {
-  receiveFrame(frame: Uint8Array): Promise<void>;
-  dispose(): void;
-  free(): void;
-}
-
-interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime {
-  productRuntime(
-    product: unknown,
-    coreCallbacks: unknown,
-  ): WorkerProductRuntime;
-  disconnectSession(): Promise<void>;
-  cancelPairing(): void;
-  notifySessionStoreChanged(): void;
-  free(): void;
-}
-
-interface WasmModuleShape {
-  default: (input?: unknown) => Promise<unknown>;
-  WasmPairingHostRuntime: new (
-    callbacks: unknown,
-    hostConfig: unknown,
-  ) => WorkerPairingHostRuntime;
-  WasmProductRuntime: new (
-    callbacks: unknown,
-    runtimeConfig: unknown,
-  ) => WorkerProductRuntime;
-  setLogLevel?: (level: string) => void;
-}
-
-// Resolved at runtime, the wasm-pack artifact lives outside `src/` so a
-// static import would leak into the TS rootDir. The relative path is
-// resolved against `dist/worker-runtime.js` once compiled. Indirected
-// through a variable so TS skips the static module-existence check.
-const WASM_WEB_PATH = "./wasm/web/truapi_server.js";
-const wasmModulePromise = import(
-  /* @vite-ignore */ WASM_WEB_PATH
-) as Promise<WasmModuleShape>;
+// A literal specifier so bundlers resolve the glue statically and emit it
+// alongside `truapi_server_bg.wasm`. It is typed by the ambient declaration in
+// `src/wasm/web/`, and resolves against `dist/worker-runtime.js` at runtime,
+// where `make wasm` puts the artifact.
+const wasmModulePromise: Promise<WasmModuleShape> =
+  import("./wasm/web/truapi_server.js");
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope;
 

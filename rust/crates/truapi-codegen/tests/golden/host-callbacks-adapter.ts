@@ -17,9 +17,9 @@ import {
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   RemotePermissionRequest,
   RemotePermissionResponse,
-  ThemeVariant,
 } from "@parity/truapi";
 import type { GenericError, NotificationId } from "@parity/truapi";
 import {
@@ -34,9 +34,11 @@ import type { RequiredHostCallbacks } from "./host-callbacks.js";
 import type { ChainConnect } from "../runtime.js";
 import { chainConnectAdapter, driveResultStream } from "../adapter-support.js";
 
-/// Byte-oriented callback surface the WASM core invokes. Members of an
-/// optional capability are absent when the host omits the capability;
-/// the core then answers the matching product calls with `Unsupported`.
+/**
+ * Byte-oriented callback surface the WASM core invokes. Members of an
+ * optional capability are absent when the host omits the capability;
+ * the core then answers the matching product calls with `Unsupported`.
+ */
 export interface RawCallbacks {
   authStateChanged(state: Uint8Array): void;
   chainConnect: ChainConnect;
@@ -162,7 +164,7 @@ export function createWasmRawCallbacks(
     subscribeTheme: (sendItem, sendError) =>
       driveResultStream(
         callbacks.theme.subscribeTheme(),
-        (item) => sendItem(ThemeVariant.enc(item)),
+        (item) => sendItem(HostThemeSubscribeItem.enc(item)),
         sendError,
       ),
     confirmUserAction: async (review) =>

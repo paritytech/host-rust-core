@@ -426,8 +426,16 @@ fn get_optional_function(callbacks: &JsValue, name: &str) -> Result<Option<Funct
         .map_err(|_| JsValue::from_str(&format!("callbacks.{name} must be a function")))
 }
 
+/// Both stubs below are built from Rust closures rather than from source text:
+/// `Function::new_no_args` compiles a string the way `eval` does, which a
+/// Content-Security-Policy without `unsafe-eval` blocks even where it still
+/// allows WebAssembly. They run at startup for every host, so a source-string
+/// stub would keep the whole runtime from starting, not just the capability it
+/// stands in for.
 fn noop_function() -> Function {
-    Function::new_no_args("")
+    Closure::<dyn Fn()>::new(|| {})
+        .into_js_value()
+        .unchecked_into()
 }
 
 /// Stand-in for a callback of an optional capability the host left out. The
@@ -435,9 +443,10 @@ fn noop_function() -> Function {
 /// so this is never invoked; it throws rather than returning a value the
 /// decoder would misread.
 fn missing_callback(name: &str) -> Function {
-    Function::new_no_args(&format!(
-        "throw new Error('host callback {name} is not implemented')"
-    ))
+    let message = format!("host callback {name} is not implemented");
+    Closure::<dyn Fn() -> Result<(), JsValue>>::new(move || Err(JsValue::from_str(&message)))
+        .into_js_value()
+        .unchecked_into()
 }
 
 fn runtime_config_from_js(value: &JsValue) -> Result<(PairingHostConfig, ProductContext), JsValue> {

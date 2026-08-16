@@ -2160,7 +2160,22 @@ impl Chat for ProductRuntimeHost {
         Subscription::new(Box::pin(
             platform
                 .subscribe_chat_rooms(&self.product)
-                .filter_map(|item| async { item.ok().map(HostChatListSubscribeItem::V1) }),
+                .filter_map(|item| async {
+                    // TODO: preserve platform stream errors as terminal
+                    // subscription interrupts once subscription items can carry
+                    // in-stream failures. Until then a dropped error freezes the
+                    // product's room list on its last value, so record why.
+                    match item {
+                        Ok(item) => Some(HostChatListSubscribeItem::V1(item)),
+                        Err(error) => {
+                            warn!(
+                                reason = %error.reason,
+                                "chat room list platform stream failed"
+                            );
+                            None
+                        }
+                    }
+                }),
         ))
     }
 
@@ -2540,13 +2555,15 @@ impl Theme for ProductRuntimeHost {
         let stream = self.platform.subscribe_theme().filter_map(|item| async {
             // TODO: preserve platform stream errors as terminal
             // subscription interrupts once subscription items can carry
-            // in-stream failures.
-            item.ok().map(|variant| {
-                HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
-                    name: v01::ThemeName::Default,
-                    variant,
-                })
-            })
+            // in-stream failures. Until then a dropped error freezes the
+            // product's theme on its last value, so record why.
+            match item {
+                Ok(item) => Some(HostThemeSubscribeItem::V1(item)),
+                Err(error) => {
+                    warn!(reason = %error.reason, "theme platform stream failed");
+                    None
+                }
+            }
         });
         Subscription::new(Box::pin(stream))
     }
@@ -3826,7 +3843,7 @@ mod tests {
         assert_eq!(
             item,
             HostThemeSubscribeItem::V1(v01::HostThemeSubscribeItem {
-                name: v01::ThemeName::Default,
+                name: v01::ThemeName::Custom("midnight".to_string()),
                 variant: v01::ThemeVariant::Dark,
             })
         );

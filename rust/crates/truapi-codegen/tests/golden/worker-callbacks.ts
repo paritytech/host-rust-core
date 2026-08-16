@@ -176,9 +176,11 @@ function chatRawCallbacks(
   };
 }
 
-/// Optional capabilities the main-thread host actually serves. A
-/// capability left out here is not proxied into the worker, so the
-/// core answers its product calls with `Unsupported`.
+/**
+ * Optional capabilities the main-thread host actually serves. A
+ * capability left out here is not proxied into the worker, so the
+ * core answers its product calls with `Unsupported`.
+ */
 export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   chat?: boolean;
