@@ -244,6 +244,43 @@ mod tests {
         }
     }
 
+    /// The TypeScript constants products import must agree with the preset the
+    /// host advertises.
+    ///
+    /// This is the drift that actually reaches products: a product signs
+    /// `CheckGenesis` over what `@parity/truapi` exports, not over anything in
+    /// this crate, and the live test only covers the Rust side. The two are
+    /// maintained by hand in different languages, so nothing else would notice
+    /// them parting company.
+    ///
+    /// Compiled in with `include_str!`, so a moved or renamed constant breaks the
+    /// build here rather than drifting silently.
+    #[test]
+    fn the_typescript_chain_constants_match_the_preset() {
+        const WELL_KNOWN_CHAINS: &str =
+            include_str!("../../../../js/packages/truapi/src/well-known-chains.ts");
+
+        let config = Network::PaseoNextV2.config();
+        for (export, expected) in [
+            ("PASEO_NEXT_V2_INDIVIDUALITY", config.people_genesis),
+            ("PASEO_NEXT_V2_ASSET_HUB", config.asset_hub_genesis),
+        ] {
+            let declaration = WELL_KNOWN_CHAINS
+                .split_once(&format!("export const {export} ="))
+                .unwrap_or_else(|| panic!("{export} is no longer exported"))
+                .1;
+            let hex = format!("0x{}", hex::encode(expected));
+            assert!(
+                declaration
+                    .split_once("} as const")
+                    .map(|(body, _)| body.contains(&hex))
+                    .unwrap_or(false),
+                "{export} does not carry {hex}; the TS constant and the preset \
+                 have drifted, and products sign over the TS one"
+            );
+        }
+    }
+
     /// Guards the invariant documented on [`Network`]: the plaintext mnemonic
     /// store is only safe for disposable identities, so no preset may point at a
     /// production network. If this fails because a real network was added,
@@ -283,11 +320,18 @@ mod tests {
     /// some working URL, and products read the advertised hash back out of
     /// `get_chain_info` and sign `CheckGenesis` over it.
     ///
-    /// Every mismatch is collected before failing, because a wipe drifts more
-    /// than one role at a time and an early return would report only the first.
-    /// The checked count is asserted at the end: `--ignored` runs this test
-    /// *without* [`every_preset_serves_exactly_the_expected_roles`], so nothing
-    /// else is holding the served set non-empty in that invocation.
+    /// A genesis alone does not prove the role is right: pointing People at the
+    /// Bulletin endpoint and its genesis satisfies every constant-versus-constant
+    /// assertion, and the endpoint then truthfully reports the hash it was given.
+    /// The chain's own name is what ties the role to the chain behind it.
+    ///
+    /// Unreachable endpoints and mismatches are both collected before failing,
+    /// because a wipe drifts more than one role at a time and takes endpoints
+    /// down with it; returning early would report only the first, and a
+    /// connection error would be indistinguishable from drift. The checked count
+    /// is asserted at the end: `--ignored` runs this test *without*
+    /// [`every_preset_serves_exactly_the_expected_roles`], so nothing else is
+    /// holding the served set non-empty in that invocation.
     ///
     /// Ignored by default; needs network access to the preset's chains.
     ///
@@ -302,6 +346,7 @@ mod tests {
 
         let mut checked = 0usize;
         let mut drifted = Vec::new();
+        let mut unreachable = Vec::new();
 
         for network in Network::value_variants() {
             let config = network.config();
@@ -309,17 +354,44 @@ mod tests {
                 let ws = config
                     .url_for_role(entry.identifier)
                     .expect("every served role names a preset URL");
-                let rpc = alloc::rpc::RpcClient::connect(ws)
-                    .await
-                    .unwrap_or_else(|err| panic!("connect to {ws}: {err}"));
-                let reported = alloc::fetch_genesis_hash(&rpc)
-                    .await
-                    .unwrap_or_else(|err| panic!("genesis hash from {ws}: {err}"));
+                let probe = async {
+                    let rpc = alloc::rpc::RpcClient::connect(ws)
+                        .await
+                        .map_err(|err| format!("connect: {err}"))?;
+                    let reported = alloc::fetch_genesis_hash(&rpc)
+                        .await
+                        .map_err(|err| format!("genesis hash: {err}"))?;
+                    let name = rpc
+                        .call("system_chain", serde_json::json!([]))
+                        .await
+                        .map_err(|err| format!("system_chain: {err}"))?;
+                    Ok::<_, String>((reported, name.as_str().unwrap_or_default().to_string()))
+                };
+                let (reported, chain_name) = match probe.await {
+                    Ok(values) => values,
+                    Err(err) => {
+                        unreachable.push(format!("{:?} at {ws}: {err}", entry.identifier));
+                        continue;
+                    }
+                };
 
                 checked += 1;
-                if entry.genesis_hash == reported {
+                // The chain's own name has to name the role, or a role pointed at
+                // the wrong preset chain passes every other assertion here.
+                let expected_in_name = match entry.identifier {
+                    ChainIdentifier::People => "People",
+                    ChainIdentifier::Bulletin => "Bulletin",
+                    ChainIdentifier::AssetHub => "Asset Hub",
+                    ChainIdentifier::Relay => "Relay",
+                };
+                if !chain_name.contains(expected_in_name) {
+                    drifted.push(format!(
+                        "{} serves {:?} from {ws}, which calls itself {chain_name:?}",
+                        config.id, entry.identifier
+                    ));
+                } else if entry.genesis_hash == reported {
                     println!(
-                        "{} {:?} {} matches {ws}",
+                        "{} {:?} {} matches {ws} ({chain_name})",
                         config.id,
                         entry.identifier,
                         hex::encode(entry.genesis_hash)
@@ -337,15 +409,31 @@ mod tests {
         }
 
         assert!(
+            unreachable.is_empty(),
+            "could not reach every served chain, so drift is unproven either way:\n{}",
+            unreachable.join("\n")
+        );
+        assert!(
             drifted.is_empty(),
             "refresh the preset, `well-known-chains.ts` and SPEC.md together:\n{}",
             drifted.join("\n")
         );
+        let expected_checks: usize = Network::value_variants()
+            .iter()
+            .map(|network| network.config().host_chain_set().chains.len())
+            .sum();
+        // Derived rather than hardcoded, so adding a role widens this instead of
+        // failing it. Non-emptiness is asserted separately: `--ignored` runs this
+        // without the anchor test, and an empty served set would otherwise make
+        // both the loop and its count trivially agree on zero.
+        assert!(
+            expected_checks > 0,
+            "no preset serves any chain, so this test proved nothing"
+        );
         assert_eq!(
-            checked,
-            Network::value_variants().len() * 3,
-            "every preset serves three roles, so anything else means the served \
-             set shrank and this test stopped covering it"
+            checked, expected_checks,
+            "every served role must be probed; anything else means the loop \
+             skipped one and this test stopped covering it"
         );
     }
 }
