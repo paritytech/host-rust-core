@@ -209,10 +209,16 @@ jobs:
       # generated-file diff cannot see live there and in TrUAPIHost.swift.
       - name: Compile the package and its tests
         run: |
+          # A generic destination, because this only compiles: naming a concrete
+          # simulator ties the gate to whichever devices the runner image ships,
+          # and it broke when the image stopped carrying an iPhone 16 runtime.
+          # ARCHS pins the arm64 slice the xcframework step above builds; the
+          # generic destination would otherwise also link x86_64 and fail.
           xcodebuild build-for-testing \
             -scheme TrUAPIHost \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
+            ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO
 
   ts-client:
