@@ -390,7 +390,8 @@ pub(crate) trait ProductAuthority: Send + Sync {
         request: SignRawAuthorityRequest,
     ) -> Result<HostSignPayloadResponse, AuthorityError>;
 
-    /// Build and sign a transaction for a product account.
+    /// Build a transaction for a product account, signed unless the request
+    /// supplies its own V5 `VerifyMultiSignature` extension.
     async fn create_transaction(
         &self,
         cx: &CallContext,

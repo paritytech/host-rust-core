@@ -896,6 +896,17 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
         )
     }
 
+    /// Boot the Rust core against a ``HostBridge``, mirroring
+    /// ``TrUAPIHostRuntime/init(bridge:runtimeConfig:)``. Prefer this over
+    /// ``init(callbacks:runtimeConfig:)``, which takes the generated protocol
+    /// and so carries none of the ``HostBridge`` defaults.
+    public convenience init(bridge: HostBridge, runtimeConfig: RuntimeConfig) throws {
+        try self.init(
+            callbacks: HostCallbackAdapter(bridge: bridge),
+            runtimeConfig: runtimeConfig
+        )
+    }
+
     /// Start the localhost WebSocket bridge. Requires the `ws-bridge`
     /// feature in the cdylib. Pair the returned `WsBridgeEndpoint` with
     /// `LocalhostBridgeBootstrap.script(...)` to hand the URL to the

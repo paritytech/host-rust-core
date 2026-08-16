@@ -599,11 +599,11 @@ pub struct ProductSubtreeResponse {
     pub product_public_key: Result<[u8; 32], String>,
 }
 
-/// Request sent when a product asks the signing host to create a signed transaction
+/// Request sent when a product asks the signing host to create a transaction
 /// for a product-derived account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct CreateTransactionRequest {
-    /// Transaction payload to build and sign.
+    /// Transaction payload to build.
     pub payload: CreateTransactionPayload,
 }
 
@@ -614,11 +614,11 @@ pub enum CreateTransactionPayload {
     V1(ProductAccountTxPayload),
 }
 
-/// Request sent when a product asks the signing host to create a signed transaction
+/// Request sent when a product asks the signing host to create a transaction
 /// for a user-imported legacy account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct CreateTransactionLegacyRequest {
-    /// Transaction payload to build and sign.
+    /// Transaction payload to build.
     pub payload: CreateTransactionLegacyPayload,
 }
 
@@ -635,7 +635,8 @@ pub enum CreateTransactionLegacyPayload {
 pub struct CreateTransactionResponse {
     /// `message_id` of the transaction-creation request being answered.
     pub responding_to: String,
-    /// SCALE-encoded signed transaction, or an error description.
+    /// SCALE-encoded transaction, or an error description. Signed unless the
+    /// request supplied its own V5 `VerifyMultiSignature` extension.
     pub signed_transaction: Result<Vec<u8>, String>,
 }
 

@@ -1,5 +1,21 @@
 # @parity/truapi
 
+## 0.9.0
+
+### Minor Changes
+
+- Add the RFC-0024 ring-VRF key management surface. `account.registerRingVrfKey`
+  registers a product-owned member key for a ring and returns its public key,
+  `account.listRingVrfKeys` reports an owner product's registry entries at either
+  `Anonymized` or `PublicKey` disclosure, and `account.ringVrfSign` signs bytes
+  directly with a registered key.
+
+  `account.getAccountAlias` and `account.createAccountProof` take a `keyHandle`
+  naming the registered member key the host must use, and ring locations address
+  the collection directly without a pallet-instance junction. Their error unions
+  carry `KeyNotRegistered` and `KeyNotInRing`; proof creation also reports
+  `NotAllowlisted` when a foreign key's owner has not allowlisted the caller.
+
 ## 0.8.0
 
 ### Minor Changes

@@ -63,15 +63,23 @@ pub enum MetadataError {
         /// Call name.
         call: String,
     },
-    /// `AsResources` extension is absent from metadata.
-    #[error("{AS_RESOURCES} extension not found in metadata")]
-    MissingAsResourcesExtension,
-    /// `AsResources` extra type did not contain the expected `Option`.
-    #[error("{AS_RESOURCES} extra is not an Option")]
-    AsResourcesExtraNotOption,
-    /// Named `AsResourcesInfo` variant was not found.
-    #[error("AsResourcesInfo::{variant} not found in metadata")]
-    MissingAsResourcesInfoVariant {
+    /// Named transaction extension is absent from metadata.
+    #[error("{identifier} extension not found in metadata")]
+    MissingExtension {
+        /// Extension identifier.
+        identifier: String,
+    },
+    /// Extension's extra type did not contain the expected `Option`.
+    #[error("{identifier} extra is not an Option")]
+    ExtensionExtraNotOption {
+        /// Extension whose extra was inspected.
+        identifier: String,
+    },
+    /// Named authorization variant was not found on the extension's info enum.
+    #[error("{identifier} info variant {variant} not found in metadata")]
+    MissingExtensionVariant {
+        /// Extension whose info enum was inspected.
+        identifier: String,
         /// Variant name.
         variant: String,
     },
@@ -162,10 +170,46 @@ pub struct EncodedExtension {
 /// constants, and each pallet's `(index, call enum type id)`.
 pub struct Metadata {
     extensions: Vec<ExtensionDef>,
+    metadata_version: u32,
+    extension_version: u8,
     registry: PortableRegistry,
     storage_values: HashMap<(String, String), u32>,
     constants: HashMap<(String, String), Vec<u8>>,
     calls: HashMap<String, (u8, u32)>,
+}
+
+/// The transaction-extension version to encode with: the highest the runtime
+/// declares.
+///
+/// This mirrors Subxt's `transaction_extension_version_to_use_for_encoding`, so
+/// the two extrinsic builders in this crate agree on which pipeline they are
+/// encoding for. Metadata versions before V16 carry no version map at all; there
+/// the only pipeline is version 0.
+fn encoding_extension_version<'a>(versions: impl Iterator<Item = &'a u8>) -> u8 {
+    versions.copied().max().unwrap_or(0)
+}
+
+/// The extension indices to encode for `version`, in the order the runtime lists
+/// them for that pipeline.
+///
+/// A pipeline is not required to be a prefix of the declared extensions, nor to
+/// list them in declaration order, so the map's order is the encoding order.
+/// Metadata that declares no entry for `version` has one implicit pipeline: every
+/// declared extension, in declaration order.
+fn encoding_extension_indexes(
+    by_version: &std::collections::BTreeMap<u8, Vec<Compact<u32>>>,
+    version: u8,
+    declared: usize,
+) -> Vec<usize> {
+    by_version.get(&version).map_or_else(
+        || (0..declared).collect(),
+        |indexes| {
+            indexes
+                .iter()
+                .map(|Compact(index)| *index as usize)
+                .collect()
+        },
+    )
 }
 
 /// Collect extensions, type registry, storage value types, and pallet constants
@@ -207,23 +251,22 @@ macro_rules! collect_metadata {
                 storage_values.insert((pallet.name.clone(), entry.name.clone()), value_type);
             }
         }
-        (extensions, $m.types, storage_values, constants, calls)
+        (extensions, 0u8, $m.types, storage_values, constants, calls)
     }};
 }
 
 macro_rules! collect_metadata_v16 {
     ($m:expr) => {{
-        let extension_indexes = $m
-            .extrinsic
-            .transaction_extensions_by_version
-            .get(&5)
-            .map(|indexes| {
-                indexes
-                    .iter()
-                    .map(|Compact(index)| *index as usize)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| (0..$m.extrinsic.transaction_extensions.len()).collect());
+        // The extension-pipeline version, not the extrinsic format version: a
+        // runtime may declare several pipelines, and the encoded transaction has
+        // to name the one it was built for.
+        let extension_version =
+            encoding_extension_version($m.extrinsic.transaction_extensions_by_version.keys());
+        let extension_indexes = encoding_extension_indexes(
+            &$m.extrinsic.transaction_extensions_by_version,
+            extension_version,
+            $m.extrinsic.transaction_extensions.len(),
+        );
         let extensions = extension_indexes
             .into_iter()
             .filter_map(|index| $m.extrinsic.transaction_extensions.get(index))
@@ -258,7 +301,14 @@ macro_rules! collect_metadata_v16 {
                 storage_values.insert((pallet.name.clone(), entry.name.clone()), value_type);
             }
         }
-        (extensions, $m.types, storage_values, constants, calls)
+        (
+            extensions,
+            extension_version,
+            $m.types,
+            storage_values,
+            constants,
+            calls,
+        )
     }};
 }
 
@@ -269,24 +319,50 @@ impl Metadata {
     pub fn decode(bytes: &[u8]) -> Result<Self, StatementAllowanceError> {
         let prefixed =
             RuntimeMetadataPrefixed::decode(&mut &bytes[..]).map_err(MetadataError::Decode)?;
-        let (extensions, registry, storage_values, constants, calls) = match prefixed.1 {
-            RuntimeMetadata::V14(m) => collect_metadata!(m, frame_metadata::v14::StorageEntryType),
-            RuntimeMetadata::V15(m) => collect_metadata!(m, frame_metadata::v15::StorageEntryType),
-            RuntimeMetadata::V16(m) => collect_metadata_v16!(m),
-            other => {
-                return Err(MetadataError::UnsupportedVersion {
-                    version: other.version(),
+        let metadata_version = prefixed.1.version();
+        let (extensions, extension_version, registry, storage_values, constants, calls) =
+            match prefixed.1 {
+                RuntimeMetadata::V14(m) => {
+                    collect_metadata!(m, frame_metadata::v14::StorageEntryType)
                 }
-                .into());
-            }
-        };
+                RuntimeMetadata::V15(m) => {
+                    collect_metadata!(m, frame_metadata::v15::StorageEntryType)
+                }
+                RuntimeMetadata::V16(m) => collect_metadata_v16!(m),
+                other => {
+                    return Err(MetadataError::UnsupportedVersion {
+                        version: other.version(),
+                    }
+                    .into());
+                }
+            };
         Ok(Self {
             extensions,
+            metadata_version,
+            extension_version,
             registry,
             storage_values,
             constants,
             calls,
         })
+    }
+
+    /// The `RuntimeMetadata` version this was decoded from (14, 15 or 16).
+    ///
+    /// Only V16 declares a transaction-extension pipeline map, so this is how a
+    /// caller tells a real V16 fetch from a fallback that resolved the same
+    /// pipeline version by default.
+    pub fn metadata_version(&self) -> u32 {
+        self.metadata_version
+    }
+
+    /// The transaction-extension pipeline version this metadata encodes for.
+    ///
+    /// Written as the General-transaction extension-version byte, and prefixed to
+    /// the ring-VRF proof message, which the runtime rebuilds to verify the proof.
+    /// Both must carry the same value.
+    pub fn extension_version(&self) -> u8 {
+        self.extension_version
     }
 
     /// The type registry, for dynamic decoding of storage values.
@@ -341,35 +417,7 @@ impl Metadata {
         &self,
         info_variant: &str,
     ) -> Result<(u8, u8), StatementAllowanceError> {
-        let ext = self
-            .extensions
-            .iter()
-            .find(|e| e.identifier == AS_RESOURCES)
-            .ok_or(MetadataError::MissingAsResourcesExtension)?;
-        // extra = `AsResources(Option<AsResourcesInfo>)`, with or without the
-        // struct wrapper.
-        let option_type = match &self.resolve_type(ext.extra_type)?.type_def {
-            TypeDef::Composite(_) => self.single_field_type(ext.extra_type)?,
-            _ => ext.extra_type,
-        };
-        let info_type = self
-            .resolve_variant(option_type)?
-            .variants
-            .iter()
-            .find(|v| v.name == "Some")
-            .and_then(|some| match some.fields.as_slice() {
-                [field] => Some(field.ty.id),
-                _ => None,
-            })
-            .ok_or(MetadataError::AsResourcesExtraNotOption)?;
-        let variant = self
-            .resolve_variant(info_type)?
-            .variants
-            .iter()
-            .find(|v| v.name == info_variant)
-            .ok_or_else(|| MetadataError::MissingAsResourcesInfoVariant {
-                variant: info_variant.to_string(),
-            })?;
+        let variant = self.extension_info_variant(AS_RESOURCES, info_variant)?;
         let collection_type = variant
             .fields
             .iter()
@@ -401,35 +449,71 @@ impl Metadata {
         &self,
         info_variant: &str,
     ) -> Result<usize, StatementAllowanceError> {
-        let ext = self
+        Ok(self
+            .extension_info_variant(AS_RESOURCES, info_variant)?
+            .fields
+            .len())
+    }
+
+    /// Position of a transaction extension in the runtime's implication
+    /// pipeline.
+    pub fn extension_index(&self, identifier: &str) -> Option<usize> {
+        self.extensions
+            .iter()
+            .position(|extension| extension.identifier == identifier)
+    }
+
+    /// Enum index of a named authorization carried by an extension shaped as
+    /// `Wrapper(Option<Info>)`.
+    pub fn extension_info_variant_index(
+        &self,
+        identifier: &str,
+        variant: &str,
+    ) -> Result<u8, StatementAllowanceError> {
+        Ok(self.extension_info_variant(identifier, variant)?.index)
+    }
+
+    /// Resolve one named authorization variant on an extension shaped as
+    /// `Wrapper(Option<Info>)`, with or without the struct wrapper.
+    fn extension_info_variant(
+        &self,
+        identifier: &str,
+        variant: &str,
+    ) -> Result<&scale_info::Variant<PortableForm>, StatementAllowanceError> {
+        let extension = self
             .extensions
             .iter()
-            .find(|e| e.identifier == AS_RESOURCES)
-            .ok_or(MetadataError::MissingAsResourcesExtension)?;
-        let option_type = match &self.resolve_type(ext.extra_type)?.type_def {
-            TypeDef::Composite(_) => self.single_field_type(ext.extra_type)?,
-            _ => ext.extra_type,
+            .find(|extension| extension.identifier == identifier)
+            .ok_or_else(|| MetadataError::MissingExtension {
+                identifier: identifier.to_string(),
+            })?;
+        let option_type = match &self.resolve_type(extension.extra_type)?.type_def {
+            TypeDef::Composite(_) => self.single_field_type(extension.extra_type)?,
+            _ => extension.extra_type,
         };
         let info_type = self
             .resolve_variant(option_type)?
             .variants
             .iter()
-            .find(|v| v.name == "Some")
+            .find(|candidate| candidate.name == "Some")
             .and_then(|some| match some.fields.as_slice() {
                 [field] => Some(field.ty.id),
                 _ => None,
             })
-            .ok_or(MetadataError::AsResourcesExtraNotOption)?;
-        Ok(self
-            .resolve_variant(info_type)?
+            .ok_or_else(|| MetadataError::ExtensionExtraNotOption {
+                identifier: identifier.to_string(),
+            })?;
+        self.resolve_variant(info_type)?
             .variants
             .iter()
-            .find(|v| v.name == info_variant)
-            .ok_or_else(|| MetadataError::MissingAsResourcesInfoVariant {
-                variant: info_variant.to_string(),
-            })?
-            .fields
-            .len())
+            .find(|candidate| candidate.name == variant)
+            .ok_or_else(|| {
+                MetadataError::MissingExtensionVariant {
+                    identifier: identifier.to_string(),
+                    variant: variant.to_string(),
+                }
+                .into()
+            })
     }
 
     /// Resolve a type id in the registry.
@@ -573,16 +657,15 @@ impl Metadata {
 
     /// Index of `AsResources` in the extension list, if present.
     pub fn as_resources_index(&self) -> Option<usize> {
-        self.extensions
-            .iter()
-            .position(|e| e.identifier == AS_RESOURCES)
+        self.extension_index(AS_RESOURCES)
     }
 }
 
 /// Build the ring-VRF proof message for an `AsResources`-authorized call:
 /// `blake2b256(0x00 ‖ call ‖ Σ tail.extra ‖ Σ tail.additional_signed)`, where
 /// the tail is the extensions ordered strictly after `AsResources`. The leading
-/// `0x00` is the General-transaction extension-version byte.
+/// byte is the General-transaction extension-version, taken from metadata so it
+/// matches the byte the extrinsic declares.
 pub fn build_proof_message(
     metadata: &Metadata,
     call_data: &[u8],
@@ -592,11 +675,13 @@ pub fn build_proof_message(
     let tail_start = metadata
         .as_resources_index()
         .map(|i| i + 1)
-        .ok_or(MetadataError::MissingAsResourcesExtension)?;
+        .ok_or_else(|| MetadataError::MissingExtension {
+            identifier: AS_RESOURCES.to_string(),
+        })?;
     let tail = &all[tail_start..];
 
     let mut payload = Vec::with_capacity(1 + call_data.len());
-    payload.push(0x00);
+    payload.push(metadata.extension_version());
     payload.extend_from_slice(call_data);
     for ext in tail {
         payload.extend_from_slice(&ext.extra);
@@ -641,6 +726,117 @@ mod tests {
         call.extend_from_slice(&0u32.to_le_bytes());
         call.extend_from_slice(&[0u8; 32]);
         call
+    }
+
+    /// V16 metadata captured from paseo-next-v2 (spec 1000032), the version the
+    /// runtime API serves. Distinct from `FIXTURE`, which is the V14 the legacy
+    /// RPC answers with and predates the `revision` field.
+    const FIXTURE_V16: &[u8] =
+        include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata-v16.scale");
+
+    /// Preferring V16 makes this decode path load-bearing, so cover it: it has to
+    /// yield a usable `Metadata`, not merely decode.
+    #[test]
+    fn v16_metadata_decodes_into_a_usable_metadata() {
+        let metadata = Metadata::decode(FIXTURE_V16).unwrap();
+
+        assert_eq!(metadata.metadata_version(), 16);
+        // Resolved from the version map rather than assumed.
+        assert_eq!(metadata.extension_version(), 0);
+        // The extension pipeline is populated and carries the one we authorize with.
+        assert!(metadata.extension_index(AS_RESOURCES).is_some());
+        assert_eq!(
+            (
+                metadata
+                    .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                    .unwrap(),
+                metadata
+                    .as_resources_variant_indices("ClaimLongTermStorage")
+                    .unwrap(),
+            ),
+            ((0x02, 0x01), (0x03, 0x01)),
+        );
+        assert!(
+            metadata
+                .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
+                .is_some()
+        );
+    }
+
+    /// The V16 fixture is current, so it declares the four fields the live runtime
+    /// wants. The V14 fixture still declares three, which is what hid the missing
+    /// `revision` until a live submission failed.
+    #[test]
+    fn the_two_fixtures_disagree_about_the_allowance_arity() {
+        let v14 = Metadata::decode(FIXTURE).unwrap();
+        let v16 = Metadata::decode(FIXTURE_V16).unwrap();
+
+        assert_eq!(
+            v16.as_resources_info_field_count("RegisterStatementStoreAllowance")
+                .unwrap(),
+            4,
+        );
+        assert_eq!(
+            v14.as_resources_info_field_count("RegisterStatementStoreAllowance")
+                .unwrap(),
+            3,
+        );
+    }
+
+    /// Mainnet keeps more than one transaction-extension pipeline, and a
+    /// transaction has to declare the one it was encoded for. Encoding for the
+    /// newest matches Subxt, so both builders in this crate agree.
+    #[test]
+    fn the_encoding_version_is_the_highest_the_runtime_declares() {
+        assert_eq!(
+            encoding_extension_version([].iter()),
+            0,
+            "metadata with no version map has only pipeline 0"
+        );
+        assert_eq!(encoding_extension_version([0u8].iter()), 0);
+        assert_eq!(
+            encoding_extension_version([0u8, 1].iter()),
+            1,
+            "two pipelines: encode for the newer"
+        );
+        assert_eq!(encoding_extension_version([2u8, 0, 1].iter()), 2);
+    }
+
+    /// A pipeline may list a subset, in its own order, so the map decides both
+    /// which extensions are encoded and in what order. Declaration order is only
+    /// the fallback for metadata that declares no pipeline at all.
+    #[test]
+    fn a_pipeline_selects_its_own_extensions_in_its_own_order() {
+        let mut by_version = std::collections::BTreeMap::new();
+        by_version.insert(0u8, vec![Compact(0u32), Compact(1), Compact(2)]);
+        by_version.insert(1u8, vec![Compact(2u32), Compact(0)]);
+
+        assert_eq!(
+            encoding_extension_indexes(&by_version, 1, 3),
+            vec![2, 0],
+            "the newer pipeline's own list, in its own order"
+        );
+        assert_eq!(encoding_extension_indexes(&by_version, 0, 3), vec![0, 1, 2]);
+        assert_eq!(
+            encoding_extension_indexes(&std::collections::BTreeMap::new(), 0, 3),
+            vec![0, 1, 2],
+            "no map declared: every extension, in declaration order"
+        );
+        assert_eq!(
+            encoding_extension_indexes(&by_version, 7, 3),
+            vec![0, 1, 2],
+            "an undeclared pipeline falls back rather than encoding nothing"
+        );
+    }
+
+    /// The fixture is V14, which carries no version map, so it must resolve to 0.
+    /// The frozen proof-message answer below depends on this.
+    #[test]
+    fn pre_v16_metadata_resolves_to_pipeline_zero() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(metadata.extension_version(), 0);
+        assert_eq!(metadata.metadata_version(), 14);
     }
 
     #[test]
@@ -698,6 +894,44 @@ mod tests {
                     .unwrap(),
             ),
             ([0x3f, 0x0a], [0x3f, 0x0c], (0x02, 0x01), (0x03, 0x01)),
+        );
+    }
+
+    /// The `AsResources` helpers are thin wrappers over the generic extension
+    /// lookups, so the two must not drift apart.
+    #[test]
+    fn the_generic_lookups_agree_with_the_as_resources_wrappers() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(
+            metadata.extension_index(AS_RESOURCES),
+            metadata.as_resources_index(),
+        );
+        for variant in ["RegisterStatementStoreAllowance", "ClaimLongTermStorage"] {
+            assert_eq!(
+                metadata
+                    .extension_info_variant_index(AS_RESOURCES, variant)
+                    .unwrap(),
+                metadata.as_resources_variant_indices(variant).unwrap().0,
+                "{variant}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_generic_lookups_reject_unknown_extensions_and_variants() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(metadata.extension_index("NoSuchExtension"), None);
+        assert!(
+            metadata
+                .extension_info_variant_index("NoSuchExtension", "RegisterStatementStoreAllowance")
+                .is_err()
+        );
+        assert!(
+            metadata
+                .extension_info_variant_index(AS_RESOURCES, "NoSuchVariant")
+                .is_err()
         );
     }
 

@@ -37,14 +37,20 @@ make uniffi && ./ios/truapi-host/scripts/sync-bindings.sh
 CI's `iOS bindings (uniffi)` job runs the same two commands with
 `sync-bindings.sh --check`, which diffs the committed bindings against freshly
 generated ones and writes nothing. It runs on Linux, so it verifies the
-generated files only; the hand-written conformers in `TrUAPIHost.swift` and
-`Tests/` are not compiled by any CI job.
+generated files only.
+
+The hand-written conformers in `TrUAPIHost.swift` and `Tests/` are covered by
+the `iOS package (swift compile)` job instead, which builds a simulator-only
+debug XCFramework from the pull request source and runs `xcodebuild
+build-for-testing`. It is path-filtered to pull requests touching `ios/`,
+`Package.swift`, the `Makefile` or `rust/crates/truapi-server/src/native*`.
+Nothing compiles `TrUAPIHost.kt` or the embedding apps.
 
 Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, and makes the `Package.swift` follow-up commit only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
 For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
 
-The embedding app implements the UniFFI-generated `HostCallbacks` protocol directly (defined in `truapi_server.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, and feature support. UI-decision callbacks are `async` and awaited by the Rust core.
+The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, feature support, and the served chain set. UI-decision callbacks are `async` and awaited by the Rust core. `HostCallbackAdapter` translates it to the UniFFI-generated `HostCallbacks` protocol, and both `TrUAPIHostRuntime` and `TrUAPIHostCore` take a `HostBridge`. Conform to `HostBridge` rather than to the generated protocol: its extension defaults the optional callbacks, so a newly added one does not break the build. Storage arrives as the `storage` and `coreStorage` sub-objects, which the adapter flattens.
 
 ## Integrating in an iOS app
 

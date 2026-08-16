@@ -109,6 +109,12 @@ pub struct RenewalChainContext<'a> {
 /// and stopping early once the host's slots for the period are exhausted
 /// (remaining targets are reported as skipped).
 ///
+/// Slots claimed earlier in the pass are protected from replacement by later
+/// targets. Without that, a pass with more targets than the period has slots
+/// takes each slot back off the target before it: the run would undo its own
+/// work and never settle. Protecting them turns that into an exhaustion report,
+/// which is the honest answer when the ledger wants more slots than exist.
+///
 /// `registration_lock` is held per target, not for the whole pass, so an
 /// on-demand allocation sharing the lock waits at most one registration.
 pub async fn renew_targets(
@@ -119,6 +125,7 @@ pub async fn renew_targets(
     registration_lock: &Mutex<()>,
 ) -> StatementRenewalReport {
     let mut results = Vec::with_capacity(targets.len());
+    let mut claimed = Vec::new();
     for target in targets {
         let result = {
             let _guard = registration_lock.lock().await;
@@ -134,12 +141,19 @@ pub async fn renew_targets(
                     reuse_existing: true,
                     // The pass has no scan of its own, so registration scans.
                     preselected: None,
+                    protected: &claimed,
                 },
             )
             .await
             .map_err(RenewalFailure::from)
         };
         log_target_result(period, &target.label, &result);
+        if let Ok(outcome) = &result {
+            match outcome {
+                RegistrationOutcome::Registered { seq, .. }
+                | RegistrationOutcome::AlreadyAllocated { seq } => claimed.push(*seq),
+            }
+        }
         let exhausted = matches!(&result, Err(failure) if failure.slots_exhausted);
         results.push(result);
         if exhausted {
@@ -233,6 +247,103 @@ mod tests {
     fn exhausted_failure() -> RenewalFailure {
         StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period: 7, max: 8 })
             .into()
+    }
+
+    /// A two-target pass against a full period must place the second target in a
+    /// different slot from the first. If claimed slots were not protected, the
+    /// second target would take the slot the first just got, and a pass with more
+    /// targets than slots would never settle.
+    #[test]
+    fn a_pass_does_not_take_back_the_slot_it_just_claimed() {
+        use parity_scale_codec::Encode;
+        use subxt_rpcs::RpcClient as HostRpcClient;
+
+        use crate::runtime::statement_allowance::extension::{ChainState, Metadata};
+        use crate::runtime::statement_allowance::proof;
+        use crate::runtime::statement_allowance::ring::RingParams;
+        use crate::runtime::statement_allowance::rpc::RpcClient;
+        use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
+
+        const FIXTURE: &[u8] =
+            include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+        const NOW: u64 = 10_000_000;
+
+        /// One occupied slot entry, oldest first by `seq`.
+        fn entry(account: [u8; 32], since: u64) -> String {
+            format!(r#""0x{}""#, hex::encode((account, 0u32, since).encode()))
+        }
+        fn clock() -> String {
+            format!(r#""0x{}""#, hex::encode((NOW * 1_000).encode()))
+        }
+
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let entropy = [0x11; 32];
+        let ring = RingParams {
+            members: vec![proof::member_key(entropy)],
+            exponent: 9,
+            ring_index: 0,
+            block_hash: "0xfinal".to_string(),
+        };
+        let targets = [
+            target_with("first", [0xa1; 32]),
+            target_with("second", [0xa2; 32]),
+        ];
+
+        // Per target: revision, ten occupied slots (seq 0 oldest), the chain
+        // clock, then the post-submit verification read. The scripted chain does
+        // not mutate, so both passes see the same table; only the protection of
+        // slot 0 can push the second target elsewhere.
+        let mut owned = Vec::new();
+        for target in &targets {
+            owned.push("null".to_string());
+            owned.extend((0..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
+            owned.push(clock());
+            owned.push(entry(target.account_id, NOW));
+        }
+        let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let scripted = ScriptedRpc::new(responses);
+        scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
+        scripted.script_subscription([r#"{"inBlock":"0xb10d"}"#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let context = RenewalChainContext {
+            rpc: &rpc,
+            metadata: &metadata,
+            chain_state: &chain_state,
+            ring: &ring,
+        };
+        let lock = Mutex::new(());
+        let report =
+            futures::executor::block_on(renew_targets(&context, entropy, 7, &targets, &lock));
+
+        let seqs: Vec<u32> = report
+            .outcomes
+            .iter()
+            .filter_map(|(_, status)| match status {
+                TargetRenewalStatus::Registered { seq, .. }
+                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(*seq),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seqs,
+            vec![0, 1],
+            "the second target must not reclaim the first target's slot: {:?}",
+            report.outcomes
+        );
+    }
+
+    fn target_with(label: &str, account_id: [u8; 32]) -> ResolvedRenewalTarget {
+        ResolvedRenewalTarget {
+            label: label.to_string(),
+            account_id,
+        }
     }
 
     #[test]
