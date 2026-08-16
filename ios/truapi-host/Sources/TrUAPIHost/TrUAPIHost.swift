@@ -301,6 +301,10 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
+    func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws
+    func renewStatementAllowances() throws -> StatementRenewalReport
+    func startStatementAllowanceRenewal()
+    func nextStatementRenewalDelay() -> TimeInterval
 }
 
 /// Product-scoped key-value storage provided by the embedding host.
@@ -747,6 +751,10 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
 
     /// Record the accounts renewal should keep allowed on the Statement Store.
     ///
+    /// Needs an active session, so call it after
+    /// ``activateLocalSession(secret:liteUsername:)`` or after pairing, not at
+    /// construction.
+    ///
     /// Recipe-shaped targets survive a change of root entropy; a raw
     /// ``StatementRenewalTarget/account(accountId:label:)`` does not, and is
     /// dropped by the next pass after ``activateLocalSession(secret:liteUsername:)``
@@ -773,7 +781,8 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     }
 
     /// The in-process loop's own cadence, capped at an hour. Allowances only
-    /// lapse at a period boundary, so a host scheduling one wake-up per period
+    /// stop being renewed at a period boundary and survive it by the chain's
+    /// grace window, so a host scheduling one wake-up per period
     /// should read a value under an hour as the boundary approaching rather
     /// than waking hourly.
     public func nextStatementRenewalDelay() -> TimeInterval {

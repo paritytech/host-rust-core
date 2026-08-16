@@ -630,7 +630,8 @@ class TrUAPIHostCore private constructor(
 
     /**
      * The in-process loop's own cadence, capped at an hour. Allowances only
-     * lapse at a period boundary, so a host scheduling one wake-up per period
+     * stop being renewed at a period boundary and survive it by the chain's
+     * grace window, so a host scheduling one wake-up per period
      * should read a value under an hour as the boundary approaching rather than
      * waking hourly.
      */

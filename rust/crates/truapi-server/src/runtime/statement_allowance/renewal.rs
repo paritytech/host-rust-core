@@ -1,8 +1,11 @@
 //! Proactive renewal of statement-store allowances across period boundaries.
 //!
-//! Allowances are claimed per UTC-day period and die at the boundary, so a
-//! long-lived host must re-register every account it promised to keep allowed
-//! (RFC-0010 assigns renewal to the Account Holder). This module is the
+//! Allowances are claimed per UTC-day period and stop being renewed at the
+//! boundary, so a long-lived host must re-register every account it promised to
+//! keep allowed (RFC-0010 assigns renewal to the Account Holder). They are not
+//! revoked the instant the period ends: `Resources.StmtStoreGraceWindow` keeps
+//! an ended period's allowances active until cleanup catches up, 172800 seconds
+//! on `paseo-next-v2` as of 2026-08-15. This module is the
 //! chain-pure pass: given already-resolved targets, register each for the
 //! requested period. Scheduling and target persistence live in
 //! `signing_host::allowance_renewal`.
@@ -182,7 +185,8 @@ pub async fn renew_targets(
 }
 
 /// Delay until the next renewal tick: hourly, but always shortly after each
-/// period boundary so expired allowances are refreshed within the grace window.
+/// period boundary rather than before it. The margin is about the chain's clock,
+/// not urgency; see the inline note below.
 pub fn next_tick_delay(now_seconds: u64) -> Duration {
     let next_boundary =
         (now_seconds / STATEMENT_STORE_PERIOD_SECONDS + 1) * STATEMENT_STORE_PERIOD_SECONDS;

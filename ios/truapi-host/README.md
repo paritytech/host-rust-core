@@ -98,7 +98,7 @@ Both return a `Bool` granted flag; the host renders the typed request in its own
 
 ## Statement-store allowance renewal
 
-Statement-store allowances are granted per period and lapse when the period rolls over, so a host has to re-register the accounts it wants to keep writing. The runtime owns the ledger and the registration; the app owns only the schedule.
+Statement-store allowances are granted per period, so a host has to re-register the accounts it wants to keep writing. They are not revoked the moment the period ends: `Resources.StmtStoreGraceWindow` keeps an ended period's allowances active until cleanup catches up, 48 hours on `paseo-next-v2`. The runtime owns the ledger and the registration; the app owns only the schedule.
 
 Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
 
