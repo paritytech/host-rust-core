@@ -244,6 +244,32 @@ mod tests {
         }
     }
 
+    /// SPEC.md §14.1 is the fourth hand-maintained copy of these hashes, and the
+    /// only one that covers Bulletin: `well-known-chains.ts` exports People and
+    /// Asset Hub but no Bulletin constant, so without this row nothing outside
+    /// `network.rs` pins it at build time.
+    ///
+    /// Compiled in with `include_str!` for the same reason as the TypeScript
+    /// guard: a moved table breaks the build rather than drifting quietly.
+    #[test]
+    fn the_spec_genesis_table_matches_the_preset() {
+        const SPEC: &str = include_str!("../SPEC.md");
+
+        let config = Network::PaseoNextV2.config();
+        for (row, expected) in [
+            ("People genesis", config.people_genesis),
+            ("Bulletin genesis", config.bulletin_genesis),
+            ("Asset Hub genesis", config.asset_hub_genesis),
+        ] {
+            let expected_row = format!("| {row} | `0x{}` |", hex::encode(expected));
+            assert!(
+                SPEC.contains(&expected_row),
+                "SPEC.md is missing the row `{expected_row}`; the table and the \
+                 preset have drifted"
+            );
+        }
+    }
+
     /// The TypeScript constants products import must agree with the preset the
     /// host advertises.
     ///
@@ -408,16 +434,24 @@ mod tests {
             }
         }
 
-        assert!(
-            unreachable.is_empty(),
-            "could not reach every served chain, so drift is unproven either way:\n{}",
-            unreachable.join("\n")
-        );
-        assert!(
-            drifted.is_empty(),
-            "refresh the preset, `well-known-chains.ts` and SPEC.md together:\n{}",
-            drifted.join("\n")
-        );
+        // Reported together, drift first. Asserting them separately meant one
+        // unreachable endpoint discarded every drift the answering endpoints had
+        // already proven, and claimed drift was unproven when it was not.
+        let mut failures = Vec::new();
+        if !drifted.is_empty() {
+            failures.push(format!(
+                "drifted, so refresh the preset, `well-known-chains.ts` and SPEC.md \
+                 together:\n{}",
+                drifted.join("\n")
+            ));
+        }
+        if !unreachable.is_empty() {
+            failures.push(format!(
+                "unreachable, so drift is unproven for these roles only:\n{}",
+                unreachable.join("\n")
+            ));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
         let expected_checks: usize = Network::value_variants()
             .iter()
             .map(|network| network.config().host_chain_set().chains.len())
