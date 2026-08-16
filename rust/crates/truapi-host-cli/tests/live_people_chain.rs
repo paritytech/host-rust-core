@@ -187,3 +187,28 @@ async fn live_metadata_still_exposes_the_allowance_extension_shape() {
         chain.state.spec_version,
     );
 }
+
+/// The renewal docs tell hosts one scheduled pass per period is enough because
+/// an ended period's allowances stay active for `Resources.StmtStoreGraceWindow`.
+/// That number is quoted in four places and read by no code, so this is what
+/// notices if the runtime shrinks it and the guidance stops being true.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn live_grace_window_still_leaves_a_full_period_of_slack() {
+    let rpc = connect().await;
+    let metadata = alloc::fetch_metadata(&rpc)
+        .await
+        .expect("live People metadata");
+    let grace = metadata
+        .constant_u32("Resources", "StmtStoreGraceWindow")
+        .expect("the runtime declares a statement-store grace window");
+    let period = alloc::slot::STATEMENT_STORE_PERIOD_SECONDS;
+
+    assert!(
+        u64::from(grace) >= period,
+        "grace window is {grace}s, under one {period}s period: a host waking once \
+         per period can now miss it, so the scheduling guidance in the host \
+         READMEs and on next_statement_renewal_delay needs revisiting"
+    );
+    println!("live StmtStoreGraceWindow={grace}s");
+}

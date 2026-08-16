@@ -43,8 +43,11 @@ import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
+import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
+import uniffi.truapi_server.NativeStatementRenewalTarget
 import uniffi.truapi_server.NativeTrUApiCore
+import uniffi.truapi_server.StatementRenewalReport
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
 import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDeeplinkScheme
@@ -592,6 +595,51 @@ class TrUAPIHostCore private constructor(
     fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
         inner.activateLocalSession(secret, liteUsername)
     }
+
+    /**
+     * Record the accounts renewal should keep allowed on the Statement Store.
+     * Needs an active session, so call it after [activateLocalSession] or after
+     * pairing, not at construction.
+     *
+     * The ledger is append-only: there is no untrack, and a target is only
+     * dropped when the identity that promised it changes. Recipe-shaped targets
+     * survive that; a raw [NativeStatementRenewalTarget.Account] does not, so
+     * re-track those whenever the active identity changes.
+     */
+    @Throws(NativeRenewalTargetException::class)
+    fun trackStatementRenewalTargets(targets: List<NativeStatementRenewalTarget>) {
+        inner.trackStatementRenewalTargets(targets)
+    }
+
+    /**
+     * Run one renewal pass now, reporting what each tracked target got.
+     *
+     * Submits extrinsics and blocks until they are included, so call it from a
+     * WorkManager worker rather than the main thread. There is no cancellation:
+     * a pass with several targets can outlast a short background budget, though
+     * a target registered before the process is killed is not lost and reads
+     * back as already allocated.
+     */
+    @Throws(HostRejection::class)
+    fun renewStatementAllowances(): StatementRenewalReport = inner.renewStatementAllowances()
+
+    /**
+     * Start the in-process renewal loop, for a host that stays resident. A
+     * suspended app stops ticking, so prefer scheduling
+     * [renewStatementAllowances].
+     */
+    fun startStatementAllowanceRenewal() {
+        inner.startStatementAllowanceRenewal()
+    }
+
+    /**
+     * The in-process loop's own cadence, capped at an hour. Allowances only
+     * stop being renewed at a period boundary and survive it by the chain's
+     * grace window, so a host scheduling one wake-up per period
+     * should read a value under an hour as the boundary approaching rather than
+     * waking hourly.
+     */
+    fun nextStatementRenewalDelay(): java.time.Duration = inner.nextStatementRenewalDelay()
 
     /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)

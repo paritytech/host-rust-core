@@ -1383,8 +1383,9 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("allowance renewal failed: {}", err.reason))?;
 
     let (mut renewed, mut fresh, mut failed, mut skipped) = (0usize, 0usize, 0usize, 0usize);
-    for (target, status) in &report.outcomes {
-        match status {
+    for outcome in &report.outcomes {
+        let target = &outcome.label;
+        match &outcome.status {
             TargetRenewalStatus::Registered { seq, block_hash } => {
                 renewed += 1;
                 terminal_ui::output_event(SystemEvent::AllowanceReady {

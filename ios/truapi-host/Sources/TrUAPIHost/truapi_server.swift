@@ -604,6 +604,34 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDuration: FfiConverterRustBuffer {
+    typealias SwiftType = TimeInterval
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TimeInterval {
+        let seconds: UInt64 = try readInt(&buf)
+        let nanoseconds: UInt32 = try readInt(&buf)
+        return Double(seconds) + (Double(nanoseconds) / 1.0e9)
+    }
+
+    public static func write(_ value: TimeInterval, into buf: inout [UInt8]) {
+        if value.rounded(.down) > Double(Int64.max) {
+            fatalError("Duration overflow, exceeds max bounds supported by Uniffi")
+        }
+
+        if value < 0 {
+            fatalError("Invalid duration, must be non-negative")
+        }
+
+        let seconds = UInt64(value)
+        let nanoseconds = UInt32((value - Double(seconds)) * 1.0e9)
+        writeInt(&buf, seconds)
+        writeInt(&buf, nanoseconds)
+    }
+}
+
 
 
 
@@ -2764,6 +2792,14 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
+     * The in-process loop's own cadence, capped at an hour. An allowance stays
+     * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
+     * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
+     * slack and should read a value under an hour as the boundary approaching.
+     */
+    func nextStatementRenewalDelay()  -> TimeInterval
+
+    /**
      * Notify the core that a native chain connection closed externally.
      */
     func notifyChainClosed(connectionId: UInt32)
@@ -2805,6 +2841,22 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
+     * Run one renewal pass now and report what each tracked target got.
+     *
+     * For hosts whose process cannot stay alive between periods: drive it from
+     * WorkManager or BGTaskScheduler rather than
+     * [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
+     * blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure.
+     */
+    func renewStatementAllowances() throws  -> StatementRenewalReport
+
+    /**
      * List registered providers for a ring so host UI can present the RFC-0024
      * personhood-provider setting.
      */
@@ -2832,6 +2884,15 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws
 
     /**
+     * Start the in-process renewal loop, for a host that stays resident. A
+     * suspended app stops ticking, so prefer scheduling
+     * [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
+     * call it tolerates having no session: a tick without one is skipped and
+     * retried.
+     */
+    func startStatementAllowanceRenewal()
+
+    /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
      * host hands to the product so it can dial back in.
      */
@@ -2841,6 +2902,21 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * Stop the localhost WebSocket bridge (if running).
      */
     func stopWsBridge()
+
+    /**
+     * Record the accounts renewal should keep allowed. The ledger persists, so
+     * this only has to be called when the set changes, not on every launch.
+     * Renewal has nothing to do until at least one target is tracked.
+     *
+     * Needs an active session, so call it after
+     * [`Self::activate_local_session`] or after pairing, not at construction.
+     *
+     * The ledger is append-only. There is no untrack, and an entry is dropped
+     * only when the identity that promised it changes, which keeps derivation
+     * recipes and discards raw account ids. Re-tracking is idempotent, so
+     * re-track the full set after an identity change.
+     */
+    func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget]) throws
 
 }
 /**
@@ -2970,6 +3046,21 @@ open func disconnect()  {try! rustCall() {
 }
 
     /**
+     * The in-process loop's own cadence, capped at an hour. An allowance stays
+     * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
+     * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
+     * slack and should read a value under an hour as the boundary approaching.
+     */
+open func nextStatementRenewalDelay() -> TimeInterval  {
+    return try!  FfiConverterDuration.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_next_statement_renewal_delay(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * Notify the core that a native chain connection closed externally.
      */
 open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
@@ -3055,6 +3146,29 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
 }
 
     /**
+     * Run one renewal pass now and report what each tracked target got.
+     *
+     * For hosts whose process cannot stay alive between periods: drive it from
+     * WorkManager or BGTaskScheduler rather than
+     * [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
+     * blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure.
+     */
+open func renewStatementAllowances()throws  -> StatementRenewalReport  {
+    return try  FfiConverterTypeStatementRenewalReport_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_renew_statement_allowances(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * List registered providers for a ring so host UI can present the RFC-0024
      * personhood-provider setting.
      */
@@ -3114,6 +3228,21 @@ open func setPermissionAuthorizationStatus(request: PermissionAuthorizationReque
 }
 
     /**
+     * Start the in-process renewal loop, for a host that stays resident. A
+     * suspended app stops ticking, so prefer scheduling
+     * [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
+     * call it tolerates having no session: a tick without one is skipped and
+     * retried.
+     */
+open func startStatementAllowanceRenewal()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_start_statement_allowance_renewal(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+    /**
      * Start the localhost WebSocket bridge. Returns the descriptor the
      * host hands to the product so it can dial back in.
      */
@@ -3134,6 +3263,28 @@ open func stopWsBridge()  {try! rustCall() {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativetruapicore_stop_ws_bridge(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Record the accounts renewal should keep allowed. The ledger persists, so
+     * this only has to be called when the set changes, not on every launch.
+     * Renewal has nothing to do until at least one target is tracked.
+     *
+     * Needs an active session, so call it after
+     * [`Self::activate_local_session`] or after pairing, not at construction.
+     *
+     * The ledger is append-only. There is no untrack, and an entry is dropped
+     * only when the identity that promised it changes, which keeps derivation
+     * recipes and discards raw account ids. Re-tracking is idempotent, so
+     * re-track the full set after an identity change.
+     */
+open func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget])throws   {try rustCallWithError(FfiConverterTypeNativeRenewalTargetError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_track_statement_renewal_targets(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeNativeStatementRenewalTarget.lower(targets),uniffiCallStatus
     )
 }
 }
@@ -3204,6 +3355,19 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
+     * The in-process loop's own cadence: at most an hour, tightening to land
+     * just after the next period boundary.
+     *
+     * The hourly cap is a retry rhythm, not a statement about when work is
+     * due. An allowance stays usable for `Resources.StmtStoreGraceWindow` past
+     * its boundary, 48 hours on `paseo-next-v2`, so a host scheduling one OS
+     * wake-up per period has ample slack and should treat any value under an
+     * hour as the boundary approaching, rather than requesting a wake every
+     * hour for a pass that will almost always report `AlreadyAllocated`.
+     */
+    func nextStatementRenewalDelay()  -> TimeInterval
+
+    /**
      * Notify the shared chain adapter that a connection closed.
      */
     func notifyChainClosed(connectionId: UInt32)
@@ -3219,6 +3383,39 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
      * Chat modality pass `None`.
      */
     func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeChatCallbacks?, executionConfig: NativeProductExecutionConfig) throws  -> NativeProductExecution
+
+    /**
+     * Run one renewal pass now and report what each tracked target got.
+     *
+     * This is the entry point for hosts whose process cannot stay alive
+     * between periods: drive it from WorkManager or BGTaskScheduler rather
+     * than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
+     * and blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure. [`Self::start_statement_allowance_renewal`] does
+     * not need this care; its loop skips a tick with no session and retries.
+     */
+    func renewStatementAllowances() throws  -> StatementRenewalReport
+
+    /**
+     * Start the in-process renewal loop, for hosts that stay resident. Mobile
+     * hosts should schedule [`Self::renew_statement_allowances`] instead,
+     * because a suspended process stops ticking. Idempotent; the loop ends
+     * when this runtime is dropped.
+     */
+    func startStatementAllowanceRenewal()
+
+    /**
+     * Record the accounts a renewal pass should keep allowed. The ledger
+     * persists, so this only has to be called when the set changes, not on
+     * every launch. Renewal has nothing to do until at least one target is
+     * tracked.
+     */
+    func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget]) throws
 
 }
 /**
@@ -3315,6 +3512,26 @@ open func disconnect()  {try! rustCall() {
 }
 
     /**
+     * The in-process loop's own cadence: at most an hour, tightening to land
+     * just after the next period boundary.
+     *
+     * The hourly cap is a retry rhythm, not a statement about when work is
+     * due. An allowance stays usable for `Resources.StmtStoreGraceWindow` past
+     * its boundary, 48 hours on `paseo-next-v2`, so a host scheduling one OS
+     * wake-up per period has ample slack and should treat any value under an
+     * hour as the boundary approaching, rather than requesting a wake every
+     * hour for a pass that will almost always report `AlreadyAllocated`.
+     */
+open func nextStatementRenewalDelay() -> TimeInterval  {
+    return try!  FfiConverterDuration.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_next_statement_renewal_delay(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * Notify the shared chain adapter that a connection closed.
      */
 open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
@@ -3354,6 +3571,59 @@ open func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeCh
         FfiConverterTypeNativeProductExecutionConfig_lower(executionConfig),uniffiCallStatus
     )
 })
+}
+
+    /**
+     * Run one renewal pass now and report what each tracked target got.
+     *
+     * This is the entry point for hosts whose process cannot stay alive
+     * between periods: drive it from WorkManager or BGTaskScheduler rather
+     * than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
+     * and blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure. [`Self::start_statement_allowance_renewal`] does
+     * not need this care; its loop skips a tick with no session and retries.
+     */
+open func renewStatementAllowances()throws  -> StatementRenewalReport  {
+    return try  FfiConverterTypeStatementRenewalReport_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_renew_statement_allowances(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Start the in-process renewal loop, for hosts that stay resident. Mobile
+     * hosts should schedule [`Self::renew_statement_allowances`] instead,
+     * because a suspended process stops ticking. Idempotent; the loop ends
+     * when this runtime is dropped.
+     */
+open func startStatementAllowanceRenewal()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_start_statement_allowance_renewal(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+
+    /**
+     * Record the accounts a renewal pass should keep allowed. The ledger
+     * persists, so this only has to be called when the set changes, not on
+     * every launch. Renewal has nothing to do until at least one target is
+     * tracked.
+     */
+open func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget])throws   {try rustCallWithError(FfiConverterTypeNativeRenewalTargetError_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_track_statement_renewal_targets(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeNativeStatementRenewalTarget.lower(targets),uniffiCallStatus
+    )
+}
 }
 
 
@@ -3782,6 +4052,155 @@ public func FfiConverterTypeNativeRuntimeConfig_lower(_ value: NativeRuntimeConf
 
 
 /**
+ * What one target's renewal produced, paired with the label that identifies it
+ * in the ledger.
+ */
+public struct StatementRenewalOutcome: Equatable, Hashable {
+    /**
+     * Ledger label for the renewed target.
+     */
+    public var label: String
+    /**
+     * What the pass did for this target.
+     */
+    public var status: TargetRenewalStatus
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Ledger label for the renewed target.
+         */label: String,
+        /**
+         * What the pass did for this target.
+         */status: TargetRenewalStatus) {
+        self.label = label
+        self.status = status
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension StatementRenewalOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStatementRenewalOutcome: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StatementRenewalOutcome {
+        return
+            try StatementRenewalOutcome(
+                label: FfiConverterString.read(from: &buf),
+                status: FfiConverterTypeTargetRenewalStatus.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: StatementRenewalOutcome, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterTypeTargetRenewalStatus.write(value.status, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStatementRenewalOutcome_lift(_ buf: RustBuffer) throws -> StatementRenewalOutcome {
+    return try FfiConverterTypeStatementRenewalOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStatementRenewalOutcome_lower(_ value: StatementRenewalOutcome) -> RustBuffer {
+    return FfiConverterTypeStatementRenewalOutcome.lower(value)
+}
+
+
+/**
+ * Summary of one renewal pass.
+ */
+public struct StatementRenewalReport: Equatable, Hashable {
+    /**
+     * Period the pass registered for.
+     */
+    public var period: UInt32
+    /**
+     * Per-target outcomes in ledger order.
+     */
+    public var outcomes: [StatementRenewalOutcome]
+    /**
+     * Whether the pass hit slot exhaustion for this period.
+     */
+    public var slotsExhausted: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Period the pass registered for.
+         */period: UInt32,
+        /**
+         * Per-target outcomes in ledger order.
+         */outcomes: [StatementRenewalOutcome],
+        /**
+         * Whether the pass hit slot exhaustion for this period.
+         */slotsExhausted: Bool) {
+        self.period = period
+        self.outcomes = outcomes
+        self.slotsExhausted = slotsExhausted
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension StatementRenewalReport: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStatementRenewalReport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StatementRenewalReport {
+        return
+            try StatementRenewalReport(
+                period: FfiConverterUInt32.read(from: &buf),
+                outcomes: FfiConverterSequenceTypeStatementRenewalOutcome.read(from: &buf),
+                slotsExhausted: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: StatementRenewalReport, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.period, into: &buf)
+        FfiConverterSequenceTypeStatementRenewalOutcome.write(value.outcomes, into: &buf)
+        FfiConverterBool.write(value.slotsExhausted, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStatementRenewalReport_lift(_ buf: RustBuffer) throws -> StatementRenewalReport {
+    return try FfiConverterTypeStatementRenewalReport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStatementRenewalReport_lower(_ value: StatementRenewalReport) -> RustBuffer {
+    return FfiConverterTypeStatementRenewalReport.lower(value)
+}
+
+
+/**
  * Per-session descriptor returned to the host: product uses `port + token`
  * to build its WebSocket URL (e.g. `ws://127.0.0.1:<port>/?t=<token>`).
  */
@@ -4200,6 +4619,122 @@ public func FfiConverterTypeNativePairingDeeplinkScheme_lower(_ value: NativePai
 
 
 /**
+ * Rejected renewal-target registration.
+ */
+public
+enum NativeRenewalTargetError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+
+
+    /**
+     * `account_id` was not exactly 32 bytes.
+     */
+    case InvalidAccountId(
+        /**
+         * Supplied byte length.
+         */actual: UInt64
+    )
+    /**
+     * `product_id` is not a usable product identifier.
+     */
+    case InvalidProductId(
+        /**
+         * The identifier as supplied.
+         */productId: String
+    )
+    /**
+     * The core refused to record the targets.
+     */
+    case Rejected(
+        /**
+         * Human-readable rejection reason.
+         */reason: String
+    )
+
+
+
+
+
+
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+
+}
+
+#if compiler(>=6)
+extension NativeRenewalTargetError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeRenewalTargetError: FfiConverterRustBuffer {
+    typealias SwiftType = NativeRenewalTargetError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeRenewalTargetError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+
+
+
+        case 1: return .InvalidAccountId(
+            actual: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 2: return .InvalidProductId(
+            productId: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .Rejected(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NativeRenewalTargetError, into buf: inout [UInt8]) {
+        switch value {
+
+
+
+
+
+        case let .InvalidAccountId(actual):
+            writeInt(&buf, Int32(1))
+            FfiConverterUInt64.write(actual, into: &buf)
+
+
+        case let .InvalidProductId(productId):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(productId, into: &buf)
+
+
+        case let .Rejected(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(reason, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRenewalTargetError_lift(_ buf: RustBuffer) throws -> NativeRenewalTargetError {
+    return try FfiConverterTypeNativeRenewalTargetError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeRenewalTargetError_lower(_ value: NativeRenewalTargetError) -> RustBuffer {
+    return FfiConverterTypeNativeRenewalTargetError.lower(value)
+}
+
+
+/**
  * Native runtime config validation error.
  */
 public
@@ -4393,6 +4928,110 @@ public func FfiConverterTypeNativeRuntimeConfigError_lift(_ buf: RustBuffer) thr
 public func FfiConverterTypeNativeRuntimeConfigError_lower(_ value: NativeRuntimeConfigError) -> RustBuffer {
     return FfiConverterTypeNativeRuntimeConfigError.lower(value)
 }
+
+
+/**
+ * An account the host wants kept allowed on the Statement Store across
+ * periods. Mirrors [`crate::runtime::StatementRenewalTarget`] with a
+ * length-checked `account_id`, because UniFFI carries byte arrays as `Vec<u8>`
+ * rather than a fixed width.
+ */
+
+public enum NativeStatementRenewalTarget: Equatable, Hashable {
+
+    /**
+     * The statement-store allowance account derived for one product.
+     */
+    case productStatementAllowance(
+        /**
+         * Product the allowance account belongs to.
+         */productId: String
+    )
+    /**
+     * The wallet's own SSO account.
+     */
+    case walletSso
+    /**
+     * A fixed account, such as a pairing peer's device statement key.
+     */
+    case account(
+        /**
+         * Account to keep allowed; exactly 32 bytes.
+         */accountId: Data,
+        /**
+         * Human-readable name used in logs and reports.
+         */label: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativeStatementRenewalTarget: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeStatementRenewalTarget: FfiConverterRustBuffer {
+    typealias SwiftType = NativeStatementRenewalTarget
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeStatementRenewalTarget {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .productStatementAllowance(productId: try FfiConverterString.read(from: &buf)
+        )
+
+        case 2: return .walletSso
+
+        case 3: return .account(accountId: try FfiConverterData.read(from: &buf), label: try FfiConverterString.read(from: &buf)
+        )
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NativeStatementRenewalTarget, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .productStatementAllowance(productId):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(productId, into: &buf)
+
+
+        case .walletSso:
+            writeInt(&buf, Int32(2))
+
+
+        case let .account(accountId,label):
+            writeInt(&buf, Int32(3))
+            FfiConverterData.write(accountId, into: &buf)
+            FfiConverterString.write(label, into: &buf)
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeStatementRenewalTarget_lift(_ buf: RustBuffer) throws -> NativeStatementRenewalTarget {
+    return try FfiConverterTypeNativeStatementRenewalTarget.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeStatementRenewalTarget_lower(_ value: NativeStatementRenewalTarget) -> RustBuffer {
+    return FfiConverterTypeNativeStatementRenewalTarget.lower(value)
+}
+
 
 
 /**
@@ -4664,6 +5303,123 @@ public func FfiConverterTypeProductRuntimeError_lift(_ buf: RustBuffer) throws -
 public func FfiConverterTypeProductRuntimeError_lower(_ value: ProductRuntimeError) -> RustBuffer {
     return FfiConverterTypeProductRuntimeError.lower(value)
 }
+
+
+/**
+ * Outcome of renewing one target.
+ */
+
+public enum TargetRenewalStatus: Equatable, Hashable {
+
+    /**
+     * The extrinsic reached a block; the target holds `seq` this period.
+     */
+    case registered(
+        /**
+         * Claimed slot sequence.
+         */seq: UInt32,
+        /**
+         * Block hash the extrinsic landed in.
+         */blockHash: String
+    )
+    /**
+     * The target already held a slot this period; nothing submitted.
+     */
+    case alreadyAllocated(
+        /**
+         * Existing slot sequence.
+         */seq: UInt32
+    )
+    /**
+     * Registration failed; the target is retried on the next tick.
+     */
+    case failed(
+        /**
+         * Failure detail.
+         */reason: String
+    )
+    /**
+     * Not attempted: the host ran out of slots earlier in the pass.
+     */
+    case skippedExhausted
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TargetRenewalStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTargetRenewalStatus: FfiConverterRustBuffer {
+    typealias SwiftType = TargetRenewalStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TargetRenewalStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .registered(seq: try FfiConverterUInt32.read(from: &buf), blockHash: try FfiConverterString.read(from: &buf)
+        )
+
+        case 2: return .alreadyAllocated(seq: try FfiConverterUInt32.read(from: &buf)
+        )
+
+        case 3: return .failed(reason: try FfiConverterString.read(from: &buf)
+        )
+
+        case 4: return .skippedExhausted
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: TargetRenewalStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .registered(seq,blockHash):
+            writeInt(&buf, Int32(1))
+            FfiConverterUInt32.write(seq, into: &buf)
+            FfiConverterString.write(blockHash, into: &buf)
+
+
+        case let .alreadyAllocated(seq):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt32.write(seq, into: &buf)
+
+
+        case let .failed(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(reason, into: &buf)
+
+
+        case .skippedExhausted:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTargetRenewalStatus_lift(_ buf: RustBuffer) throws -> TargetRenewalStatus {
+    return try FfiConverterTypeTargetRenewalStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTargetRenewalStatus_lower(_ value: TargetRenewalStatus) -> RustBuffer {
+    return FfiConverterTypeTargetRenewalStatus.lower(value)
+}
+
 
 
 /**
@@ -5094,6 +5850,56 @@ fileprivate struct FfiConverterSequenceTypeProductAccountId: FfiConverterRustBuf
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeStatementRenewalOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = [StatementRenewalOutcome]
+
+    public static func write(_ value: [StatementRenewalOutcome], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeStatementRenewalOutcome.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [StatementRenewalOutcome] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [StatementRenewalOutcome]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeStatementRenewalOutcome.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeNativeStatementRenewalTarget: FfiConverterRustBuffer {
+    typealias SwiftType = [NativeStatementRenewalTarget]
+
+    public static func write(_ value: [NativeStatementRenewalTarget], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNativeStatementRenewalTarget.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NativeStatementRenewalTarget] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [NativeStatementRenewalTarget]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNativeStatementRenewalTarget.read(from: &buf))
+        }
+        return seq
+    }
+}
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
@@ -5401,6 +6207,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 13069) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_closed() != 25320) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5419,6 +6228,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 57273) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_ring_vrf_providers() != 44875) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5431,16 +6243,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 37317) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_statement_allowance_renewal() != 20540) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 34234) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_stop_ws_bridge() != 13438) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_track_statement_renewal_targets() != 64109) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_activate_local_session() != 40075) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 33452) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_closed() != 55360) {
@@ -5450,6 +6271,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 49537) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_renew_statement_allowances() != 11225) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_start_statement_allowance_renewal() != 18621) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_track_statement_renewal_targets() != 53330) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativecustomrenderersubscription_cancel() != 26593) {
