@@ -36,6 +36,8 @@ pub struct WireEntry {
     pub method: &'static str,
     /// What kind of slot this entry describes.
     pub kind: WireKind,
+    /// Whether this is a host-initiated subscription.
+    pub host_initiated: bool,
 }
 
 /// Wire-slot shape: request/response pair or subscription quartet.
@@ -496,277 +498,346 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "system_handshake",
         kind: WireKind::Request(SYSTEM_HANDSHAKE),
+        host_initiated: false,
     },
     WireEntry {
         method: "system_feature_supported",
         kind: WireKind::Request(SYSTEM_FEATURE_SUPPORTED),
+        host_initiated: false,
     },
     WireEntry {
         method: "notifications_send_push_notification",
         kind: WireKind::Request(NOTIFICATIONS_SEND_PUSH_NOTIFICATION),
+        host_initiated: false,
     },
     WireEntry {
         method: "system_navigate_to",
         kind: WireKind::Request(SYSTEM_NAVIGATE_TO),
+        host_initiated: false,
     },
     WireEntry {
         method: "permissions_request_device_permission",
         kind: WireKind::Request(PERMISSIONS_REQUEST_DEVICE_PERMISSION),
+        host_initiated: false,
     },
     WireEntry {
         method: "permissions_request_remote_permission",
         kind: WireKind::Request(PERMISSIONS_REQUEST_REMOTE_PERMISSION),
+        host_initiated: false,
     },
     WireEntry {
         method: "local_storage_read",
         kind: WireKind::Request(LOCAL_STORAGE_READ),
+        host_initiated: false,
     },
     WireEntry {
         method: "local_storage_write",
         kind: WireKind::Request(LOCAL_STORAGE_WRITE),
+        host_initiated: false,
     },
     WireEntry {
         method: "local_storage_clear",
         kind: WireKind::Request(LOCAL_STORAGE_CLEAR),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_connection_status_subscribe",
         kind: WireKind::Subscription(ACCOUNT_CONNECTION_STATUS_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_get_account",
         kind: WireKind::Request(ACCOUNT_GET_ACCOUNT),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_get_account_alias",
         kind: WireKind::Request(ACCOUNT_GET_ACCOUNT_ALIAS),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_create_account_proof",
         kind: WireKind::Request(ACCOUNT_CREATE_ACCOUNT_PROOF),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_get_legacy_accounts",
         kind: WireKind::Request(ACCOUNT_GET_LEGACY_ACCOUNTS),
+        host_initiated: false,
     },
     WireEntry {
         method: "signing_create_transaction",
         kind: WireKind::Request(SIGNING_CREATE_TRANSACTION),
+        host_initiated: false,
     },
     WireEntry {
         method: "signing_create_transaction_with_legacy_account",
         kind: WireKind::Request(SIGNING_CREATE_TRANSACTION_WITH_LEGACY_ACCOUNT),
+        host_initiated: false,
     },
     WireEntry {
         method: "signing_sign_raw_with_legacy_account",
         kind: WireKind::Request(SIGNING_SIGN_RAW_WITH_LEGACY_ACCOUNT),
+        host_initiated: false,
     },
     WireEntry {
         method: "signing_sign_payload_with_legacy_account",
         kind: WireKind::Request(SIGNING_SIGN_PAYLOAD_WITH_LEGACY_ACCOUNT),
+        host_initiated: false,
     },
     WireEntry {
         method: "chat_create_room",
         kind: WireKind::Request(CHAT_CREATE_ROOM),
+        host_initiated: false,
     },
     WireEntry {
         method: "chat_register_bot",
         kind: WireKind::Request(CHAT_REGISTER_BOT),
+        host_initiated: false,
     },
     WireEntry {
         method: "chat_list_subscribe",
         kind: WireKind::Subscription(CHAT_LIST_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "chat_post_message",
         kind: WireKind::Request(CHAT_POST_MESSAGE),
+        host_initiated: false,
     },
     WireEntry {
         method: "chat_action_subscribe",
         kind: WireKind::Subscription(CHAT_ACTION_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "chat_custom_message_render",
         kind: WireKind::Subscription(CHAT_CUSTOM_MESSAGE_RENDER),
+        host_initiated: true,
     },
     WireEntry {
         method: "statement_store_subscribe",
         kind: WireKind::Subscription(STATEMENT_STORE_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "statement_store_create_proof",
         kind: WireKind::Request(STATEMENT_STORE_CREATE_PROOF),
+        host_initiated: false,
     },
     WireEntry {
         method: "statement_store_submit",
         kind: WireKind::Request(STATEMENT_STORE_SUBMIT),
+        host_initiated: false,
     },
     WireEntry {
         method: "preimage_lookup_subscribe",
         kind: WireKind::Subscription(PREIMAGE_LOOKUP_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "preimage_submit",
         kind: WireKind::Request(PREIMAGE_SUBMIT),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_follow_head_subscribe",
         kind: WireKind::Subscription(CHAIN_FOLLOW_HEAD_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_get_head_header",
         kind: WireKind::Request(CHAIN_GET_HEAD_HEADER),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_get_head_body",
         kind: WireKind::Request(CHAIN_GET_HEAD_BODY),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_get_head_storage",
         kind: WireKind::Request(CHAIN_GET_HEAD_STORAGE),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_call_head",
         kind: WireKind::Request(CHAIN_CALL_HEAD),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_unpin_head",
         kind: WireKind::Request(CHAIN_UNPIN_HEAD),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_continue_head",
         kind: WireKind::Request(CHAIN_CONTINUE_HEAD),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_stop_head_operation",
         kind: WireKind::Request(CHAIN_STOP_HEAD_OPERATION),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_get_spec_genesis_hash",
         kind: WireKind::Request(CHAIN_GET_SPEC_GENESIS_HASH),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_get_spec_chain_name",
         kind: WireKind::Request(CHAIN_GET_SPEC_CHAIN_NAME),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_get_spec_properties",
         kind: WireKind::Request(CHAIN_GET_SPEC_PROPERTIES),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_broadcast_transaction",
         kind: WireKind::Request(CHAIN_BROADCAST_TRANSACTION),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_stop_transaction",
         kind: WireKind::Request(CHAIN_STOP_TRANSACTION),
+        host_initiated: false,
     },
     WireEntry {
         method: "theme_subscribe",
         kind: WireKind::Subscription(THEME_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "entropy_derive",
         kind: WireKind::Request(ENTROPY_DERIVE),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_get_user_id",
         kind: WireKind::Request(ACCOUNT_GET_USER_ID),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_request_login",
         kind: WireKind::Request(ACCOUNT_REQUEST_LOGIN),
+        host_initiated: false,
     },
     WireEntry {
         method: "signing_sign_raw",
         kind: WireKind::Request(SIGNING_SIGN_RAW),
+        host_initiated: false,
     },
     WireEntry {
         method: "signing_sign_payload",
         kind: WireKind::Request(SIGNING_SIGN_PAYLOAD),
+        host_initiated: false,
     },
     WireEntry {
         method: "payment_balance_subscribe",
         kind: WireKind::Subscription(PAYMENT_BALANCE_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "payment_top_up",
         kind: WireKind::Request(PAYMENT_TOP_UP),
+        host_initiated: false,
     },
     WireEntry {
         method: "payment_request",
         kind: WireKind::Request(PAYMENT_REQUEST),
+        host_initiated: false,
     },
     WireEntry {
         method: "payment_status_subscribe",
         kind: WireKind::Subscription(PAYMENT_STATUS_SUBSCRIBE),
+        host_initiated: false,
     },
     WireEntry {
         method: "resource_allocation_request",
         kind: WireKind::Request(RESOURCE_ALLOCATION_REQUEST),
+        host_initiated: false,
     },
     WireEntry {
         method: "statement_store_create_proof_authorized",
         kind: WireKind::Request(STATEMENT_STORE_CREATE_PROOF_AUTHORIZED),
+        host_initiated: false,
     },
     WireEntry {
         method: "notifications_cancel_push_notification",
         kind: WireKind::Request(NOTIFICATIONS_CANCEL_PUSH_NOTIFICATION),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_create_purse",
         kind: WireKind::Request(COIN_PAYMENT_CREATE_PURSE),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_query_purse",
         kind: WireKind::Request(COIN_PAYMENT_QUERY_PURSE),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_rebalance_purse",
         kind: WireKind::Subscription(COIN_PAYMENT_REBALANCE_PURSE),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_delete_purse",
         kind: WireKind::Subscription(COIN_PAYMENT_DELETE_PURSE),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_create_receivable",
         kind: WireKind::Request(COIN_PAYMENT_CREATE_RECEIVABLE),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_create_cheque",
         kind: WireKind::Request(COIN_PAYMENT_CREATE_CHEQUE),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_deposit",
         kind: WireKind::Subscription(COIN_PAYMENT_DEPOSIT),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_refund",
         kind: WireKind::Subscription(COIN_PAYMENT_REFUND),
+        host_initiated: false,
     },
     WireEntry {
         method: "coin_payment_listen_for_payment",
         kind: WireKind::Subscription(COIN_PAYMENT_LISTEN_FOR_PAYMENT),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_sign_vrf",
         kind: WireKind::Request(ACCOUNT_SIGN_VRF),
+        host_initiated: false,
     },
     WireEntry {
         method: "chain_get_chain_info",
         kind: WireKind::Request(CHAIN_GET_CHAIN_INFO),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_register_ring_vrf_key",
         kind: WireKind::Request(ACCOUNT_REGISTER_RING_VRF_KEY),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_list_ring_vrf_keys",
         kind: WireKind::Request(ACCOUNT_LIST_RING_VRF_KEYS),
+        host_initiated: false,
     },
     WireEntry {
         method: "account_ring_vrf_sign",
         kind: WireKind::Request(ACCOUNT_RING_VRF_SIGN),
+        host_initiated: false,
     },
 ];
