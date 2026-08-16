@@ -146,6 +146,37 @@ const secondProvider = await runtime.createProvider({
 protocol-iframe MessageChannel handshake. Host code creates one worker runtime
 and then opens one provider per product id.
 
+## Session lifecycle
+
+The core owns the session; the host owns persistence and drives the transitions
+below. Every one of them reports the resulting `AuthState` through the `auth`
+callback, including when nothing changed — so a host may await an answer at boot
+rather than treating silence as "signed out".
+
+| Runtime method                  | Use it to                                                                    |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| `activateStoredSession()`       | Restore the session in the core's `AuthSession` slot. Await before routing.  |
+| `activateExternalSession(blob)` | Install a session the host holds itself, without writing it to core storage. |
+| `notifySessionStoreChanged()`   | Tell the core the persisted blob may have changed; it re-reads it.           |
+| `disconnectSession()`           | Log out: clears the session and notifies the peer.                           |
+| `resetSessionState()`           | Drop the local session without notifying the peer.                           |
+
+The boot order is create the runtime, restore, then open providers:
+
+```ts
+const runtime = await createWebWorkerPairingHostRuntime(
+  new HostWorker(),
+  callbacks,
+  { hostConfig },
+);
+
+// Resolves once product frames may use the restored session; rejects when
+// there was nothing to restore.
+await runtime.activateStoredSession().catch(() => {});
+
+const provider = await runtime.createProvider({ productId: "first.dot" });
+```
+
 ## Publishing
 
 This package is published by the root `Release` workflow through

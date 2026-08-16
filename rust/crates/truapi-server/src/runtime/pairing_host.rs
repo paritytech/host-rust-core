@@ -439,8 +439,16 @@ impl PairingHost {
     }
 
     /// Validate, resolve, and install an externally persisted canonical
-    /// session blob without copying it into core storage.
+    /// session blob without copying it into core storage. Reports the resulting
+    /// auth state to the host, including when the blob failed to decode and the
+    /// active session was therefore left alone.
     pub(crate) async fn activate_external_session(&self, blob: &[u8]) -> Result<(), String> {
+        let installed = self.install_external_session(blob).await;
+        self.auth_state.announce_current();
+        installed
+    }
+
+    async fn install_external_session(&self, blob: &[u8]) -> Result<(), String> {
         let _activation = self.session_store_activation.lock().await;
         let session = crate::host_logic::session::decode_persisted_session(blob)?;
         let activation_epoch = self.advance_session_lifecycle();
@@ -459,11 +467,15 @@ impl PairingHost {
 
     /// Read, validate, resolve, and install the persisted auth session before
     /// returning. Product frames may use the connected session once this
-    /// future resolves.
+    /// future resolves. Reports the resulting auth state to the host, including
+    /// when there was no session to restore.
     pub(crate) async fn activate_stored_session(&self) -> Result<(), String> {
-        self.reconcile_stored_session(true, false)
+        let restored = self
+            .reconcile_stored_session(true, false)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        self.auth_state.announce_current();
+        restored
     }
 
     async fn reconcile_stored_session(
@@ -764,7 +776,8 @@ impl PairingHost {
     }
 
     /// Clear the canonical local session and all session capabilities without
-    /// sending a peer-disconnect statement.
+    /// sending a peer-disconnect statement. Reports the resulting auth state to
+    /// the host, including when there was no session to clear.
     pub(crate) async fn reset_session_state(&self) {
         self.cancel_login();
         self.clear_disconnected_session(true).await;
@@ -772,6 +785,7 @@ impl PairingHost {
         self.clear_statement_store_allowance_keys(None);
         self.clear_bulletin_allowance_keys(None);
         self.clear_product_subtrees(None);
+        self.auth_state.announce_current();
     }
 
     /// Invalidate in-flight login attempts and emit the cancelled auth state.
