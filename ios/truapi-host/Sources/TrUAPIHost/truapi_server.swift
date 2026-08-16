@@ -3335,6 +3335,13 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
      * between periods: drive it from WorkManager or BGTaskScheduler rather
      * than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
      * and blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure. [`Self::start_statement_allowance_renewal`] does
+     * not need this care; its loop skips a tick with no session and retries.
      */
     func renewStatementAllowances() throws  -> StatementRenewalReport
 
@@ -3517,6 +3524,13 @@ open func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeCh
      * between periods: drive it from WorkManager or BGTaskScheduler rather
      * than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
      * and blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure. [`Self::start_statement_allowance_renewal`] does
+     * not need this care; its loop skips a tick with no session and retries.
      */
 open func renewStatementAllowances()throws  -> StatementRenewalReport  {
     return try  FfiConverterTypeStatementRenewalReport_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
@@ -4565,6 +4579,14 @@ enum NativeRenewalTargetError: Swift.Error, Equatable, Hashable, Foundation.Loca
          */actual: UInt64
     )
     /**
+     * `product_id` is not a usable product identifier.
+     */
+    case InvalidProductId(
+        /**
+         * The identifier as supplied.
+         */productId: String
+    )
+    /**
      * The core refused to record the targets.
      */
     case Rejected(
@@ -4604,7 +4626,10 @@ public struct FfiConverterTypeNativeRenewalTargetError: FfiConverterRustBuffer {
         case 1: return .InvalidAccountId(
             actual: try FfiConverterUInt64.read(from: &buf)
             )
-        case 2: return .Rejected(
+        case 2: return .InvalidProductId(
+            productId: try FfiConverterString.read(from: &buf)
+            )
+        case 3: return .Rejected(
             reason: try FfiConverterString.read(from: &buf)
             )
 
@@ -4624,8 +4649,13 @@ public struct FfiConverterTypeNativeRenewalTargetError: FfiConverterRustBuffer {
             FfiConverterUInt64.write(actual, into: &buf)
 
 
-        case let .Rejected(reason):
+        case let .InvalidProductId(productId):
             writeInt(&buf, Int32(2))
+            FfiConverterString.write(productId, into: &buf)
+
+
+        case let .Rejected(reason):
+            writeInt(&buf, Int32(3))
             FfiConverterString.write(reason, into: &buf)
 
         }
@@ -6187,7 +6217,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 49537) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_renew_statement_allowances() != 29034) {
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_renew_statement_allowances() != 11225) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_start_statement_allowance_renewal() != 18621) {

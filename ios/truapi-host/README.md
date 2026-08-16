@@ -109,9 +109,9 @@ try runtime.trackStatementRenewalTargets([
 ])
 ```
 
-The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. Re-track raw accounts whenever the active identity changes, or renewal quietly stops covering them — a pruned target is absent from the report rather than reported as failed.
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. Re-track raw accounts whenever the active identity changes, or renewal quietly stops covering them — a pruned target is absent from the report rather than reported as failed. There is no reader and no untrack on this surface: a host cannot list what is tracked, cannot remove a wrong entry, and cannot detect a pruned one except by noticing it missing from a report. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
 
-Then run a pass from a background task, off the main thread:
+Then run a pass from a background task, off the main thread. It needs an active session too, which is the whole difficulty here: a `BGTaskScheduler` wake on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
 ```swift
 let report = try runtime.renewStatementAllowances()

@@ -645,6 +645,12 @@ pub enum NativeRenewalTargetError {
         /// Supplied byte length.
         actual: u64,
     },
+    /// `product_id` is not a usable product identifier.
+    #[error("product_id {product_id} is not a valid product identifier")]
+    InvalidProductId {
+        /// The identifier as supplied.
+        product_id: String,
+    },
     /// The core refused to record the targets.
     #[error("{reason}")]
     Rejected {
@@ -659,7 +665,14 @@ impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalT
     fn try_from(target: NativeStatementRenewalTarget) -> Result<Self, Self::Error> {
         Ok(match target {
             NativeStatementRenewalTarget::ProductStatementAllowance { product_id } => {
-                Self::ProductStatementAllowance { product_id }
+                // The renewal account is derived from this string, and a product
+                // connection derives its own from the normalized form. Skipping
+                // the normalization here renews an account no product uses, and
+                // the real one lapses at the next boundary.
+                Self::ProductStatementAllowance {
+                    product_id: normalize_product_identifier(&product_id)
+                        .map_err(|_| NativeRenewalTargetError::InvalidProductId { product_id })?,
+                }
             }
             NativeStatementRenewalTarget::WalletSso => Self::WalletSso,
             NativeStatementRenewalTarget::Account { account_id, label } => {
@@ -731,6 +744,13 @@ impl NativeTrUApiHostRuntime {
     /// between periods: drive it from WorkManager or BGTaskScheduler rather
     /// than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
     /// and blocks until they are included, so call it from a background thread.
+    ///
+    /// Needs an active session, which is the whole difficulty of the scheduled
+    /// case: an OS-woken cold start has none until the host restores one, and
+    /// the pass then fails with the bare reason `Disconnected`. Restore the
+    /// session before calling, and treat that reason as "not ready" rather than
+    /// as a renewal failure. [`Self::start_statement_allowance_renewal`] does
+    /// not need this care; its loop skips a tick with no session and retries.
     pub fn renew_statement_allowances(
         &self,
     ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
@@ -1769,6 +1789,42 @@ mod tests {
                 "a {len}-byte account id must be rejected, and report its length"
             );
         }
+    }
+
+    /// The renewal account is derived from `product_id`, and a product
+    /// connection derives its own from the normalized form, so an unnormalized
+    /// id here renews an account no product uses while the real one lapses.
+    #[test]
+    fn a_product_target_normalizes_its_identifier() {
+        for supplied in [
+            "  truapi-playground.dot  ",
+            "TruAPI-Playground.dot",
+            "TRUAPI-PLAYGROUND.DOT",
+        ] {
+            let converted = crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: supplied.to_string(),
+                },
+            );
+            assert!(
+                matches!(
+                    converted,
+                    Ok(crate::runtime::StatementRenewalTarget::ProductStatementAllowance {
+                        ref product_id
+                    }) if product_id == "truapi-playground.dot"
+                ),
+                "{supplied:?} did not normalize: {converted:?}"
+            );
+        }
+
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: "not a product".to_string(),
+                }
+            ),
+            Err(NativeRenewalTargetError::InvalidProductId { .. })
+        ));
     }
 
     /// The other two variants carry no bytes to validate, so they must convert
