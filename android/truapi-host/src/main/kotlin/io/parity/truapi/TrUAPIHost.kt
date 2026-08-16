@@ -30,6 +30,8 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
+import uniffi.truapi.HostThemeSubscribeItem
+import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi_platform.AuthState
 import uniffi.truapi_platform.HostChainSet
@@ -295,9 +297,10 @@ interface HostBridge {
     @Throws(HostRejection::class)
     suspend fun lookupPreimage(key: ByteArray): ByteArray? = null
 
-    /** Return the current host theme. */
+    /** Return the current host theme. Hosts with no named themes report [ThemeName.Default]. */
     @Throws(HostRejection::class)
-    fun currentTheme(): ThemeVariant = ThemeVariant.DARK
+    fun currentTheme(): HostThemeSubscribeItem =
+        HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK)
 
     /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
@@ -371,7 +374,7 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         bridge.lookupPreimage(key)
 
-    override fun currentTheme(): ThemeVariant =
+    override fun currentTheme(): HostThemeSubscribeItem =
         bridge.currentTheme()
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
@@ -653,7 +656,7 @@ class TrUAPIHostCore private constructor(
     }
 
     /** Push a host theme update to active TrUAPI theme subscriptions. */
-    fun notifyThemeChanged(theme: ThemeVariant) {
+    fun notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme)
     }
 
