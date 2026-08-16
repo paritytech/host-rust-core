@@ -106,6 +106,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uniffi.truapi_platform.AuthState
 import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.HostThemeSubscribeItem
+import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.RemotePermission
@@ -210,7 +212,7 @@ val endpoint = core.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates
 // after their immediate current item.
-core.notifyThemeChanged(ThemeVariant.DARK)
+core.notifyThemeChanged(HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK))
 core.notifyPreimageChanged(preimageKey, preimageBytesOrNull)
 core.notifyChainResponse(chainConnectionId, jsonRpcResponse)
 core.notifyChainClosed(chainConnectionId)

@@ -715,10 +715,10 @@ public protocol HostCallbacks: AnyObject, Sendable {
     func lookupPreimage(key: Data) async throws  -> Data?
 
     /**
-     * Current host theme. The native shim emits this as the current item in
-     * its subscription stream.
+     * Current host theme, named variant included. The native shim emits this
+     * as the current item in its subscription stream.
      */
-    func currentTheme() throws  -> ThemeVariant
+    func currentTheme() throws  -> HostThemeSubscribeItem
 
     /**
      * Answer a feature-support query.
@@ -727,9 +727,8 @@ public protocol HostCallbacks: AnyObject, Sendable {
 
     /**
      * Enumerate the chains this host serves (RFC 0026): its environment plus
-     * one entry per chain role. The returned set must match exactly what
-     * `chain_connect` will accept. Invoked on the dispatcher thread; must
-     * return promptly.
+     * one entry per chain role. Invoked on the dispatcher thread; must return
+     * promptly.
      */
     func supportedChains() throws  -> HostChainSet
 
@@ -1060,11 +1059,11 @@ open func lookupPreimage(key: Data)async throws  -> Data?  {
 }
 
     /**
-     * Current host theme. The native shim emits this as the current item in
-     * its subscription stream.
+     * Current host theme, named variant included. The native shim emits this
+     * as the current item in its subscription stream.
      */
-open func currentTheme()throws  -> ThemeVariant  {
-    return try  FfiConverterTypeThemeVariant_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func currentTheme()throws  -> HostThemeSubscribeItem  {
+    return try  FfiConverterTypeHostThemeSubscribeItem_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_hostcallbacks_current_theme(
             self.uniffiCloneHandle(),uniffiCallStatus
@@ -1093,9 +1092,8 @@ open func featureSupported(request: HostFeatureSupportedRequest)async throws  ->
 
     /**
      * Enumerate the chains this host serves (RFC 0026): its environment plus
-     * one entry per chain role. The returned set must match exactly what
-     * `chain_connect` will accept. Invoked on the dispatcher thread; must
-     * return promptly.
+     * one entry per chain role. Invoked on the dispatcher thread; must return
+     * promptly.
      */
 open func supportedChains()throws  -> HostChainSet  {
     return try  FfiConverterTypeHostChainSet_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
@@ -1663,7 +1661,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> ThemeVariant in
+                () throws -> HostThemeSubscribeItem in
                 guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -1672,7 +1670,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             }
 
 
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeThemeVariant_lower($0) }
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeHostThemeSubscribeItem_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -2419,7 +2417,7 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     /**
      * Push a host theme replacement to this execution's subscriptions.
      */
-    func notifyThemeChanged(theme: ThemeVariant)
+    func notifyThemeChanged(theme: HostThemeSubscribeItem)
 
     /**
      * Read a product-scoped permission authorization without prompting.
@@ -2571,11 +2569,11 @@ open func notifyPreimageChanged(key: Data, value: Data?)  {try! rustCall() {
     /**
      * Push a host theme replacement to this execution's subscriptions.
      */
-open func notifyThemeChanged(theme: ThemeVariant)  {try! rustCall() {
+open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativeproductexecution_notify_theme_changed(
             self.uniffiCloneHandle(),
-        FfiConverterTypeThemeVariant_lower(theme),uniffiCallStatus
+        FfiConverterTypeHostThemeSubscribeItem_lower(theme),uniffiCallStatus
     )
 }
 }
@@ -2792,7 +2790,7 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     /**
      * Push a host theme update to active TrUAPI theme subscriptions.
      */
-    func notifyThemeChanged(theme: ThemeVariant)
+    func notifyThemeChanged(theme: HostThemeSubscribeItem)
 
     /**
      * Read a stored permission authorization status without prompting.
@@ -3027,11 +3025,11 @@ open func notifySessionStoreChanged()  {try! rustCall() {
     /**
      * Push a host theme update to active TrUAPI theme subscriptions.
      */
-open func notifyThemeChanged(theme: ThemeVariant)  {try! rustCall() {
+open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
         uniffiCallStatus in
     uniffi_truapi_server_fn_method_nativetruapicore_notify_theme_changed(
             self.uniffiCloneHandle(),
-        FfiConverterTypeThemeVariant_lower(theme),uniffiCallStatus
+        FfiConverterTypeHostThemeSubscribeItem_lower(theme),uniffiCallStatus
     )
 }
 }
@@ -5324,13 +5322,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 33694) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 20227) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 64982) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 23356) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 54534) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {
@@ -5366,7 +5364,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_preimage_changed() != 21769) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_theme_changed() != 17358) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_theme_changed() != 3284) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
@@ -5411,7 +5409,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_session_store_changed() != 10667) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 42386) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 49601) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {

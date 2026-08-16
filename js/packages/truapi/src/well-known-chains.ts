@@ -13,7 +13,7 @@ export const PASEO_NEXT_V2_ASSET_HUB = {
   name: "Paseo Next v2 Hub",
   network: "Testnet",
   genesis:
-    "0xbf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f",
+    "0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
 } as const satisfies WellKnownChain;
 
 export const PASEO_NEXT_V2_INDIVIDUALITY = {

@@ -35,9 +35,9 @@ use truapi::latest::{
     HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
     HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
     HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RemotePermissionResponse, RingLocation, ThemeVariant,
+    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
+    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
+    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
@@ -550,7 +550,7 @@ pub struct HostChainEntry {
 pub struct HostChainSet {
     /// Ecosystem the host is configured for, e.g. "polkadot", "paseo".
     pub network: String,
-    /// Complete set of chains available through this host.
+    /// Chains this host serves, keyed by protocol role.
     pub chains: Vec<HostChainEntry>,
 }
 
@@ -564,9 +564,8 @@ pub trait Features: Send + Sync {
         request: HostFeatureSupportedRequest,
     ) -> Result<HostFeatureSupportedResponse, GenericError>;
 
-    /// Enumerate the chains this host serves (RFC 0026). The returned set must
-    /// match exactly what [`ChainProvider::connect`] will accept; the core
-    /// resolves `get_chain_info` requests against it.
+    /// Enumerate the chains this host serves (RFC 0026). The core resolves
+    /// `get_chain_info` requests against the returned set.
     async fn supported_chains(&self) -> Result<HostChainSet, GenericError>;
 }
 
@@ -1246,8 +1245,9 @@ pub trait UserConfirmation: Send + Sync {
 
 /// Host theme source.
 pub trait ThemeHost: Send + Sync {
-    /// Emits current theme immediately, then future changes.
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<ThemeVariant, GenericError>>;
+    /// Emits current theme immediately, then future changes. Hosts with no
+    /// named themes report `ThemeName::Default`.
+    fn subscribe_theme(&self) -> BoxStream<'static, Result<HostThemeSubscribeItem, GenericError>>;
 }
 
 /// Host preimage backend. The core builds, signs, and submits the Bulletin

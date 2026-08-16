@@ -276,8 +276,14 @@ impl truapi_platform::ProductStorage for WasmPlatform {
 }
 
 impl truapi_platform::ThemeHost for WasmPlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
-        invoke_js_subscription(&self.bridge.subscribe_theme, None, parse_theme_variant_item)
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
+        invoke_js_subscription(
+            &self.bridge.subscribe_theme,
+            None,
+            parse_host_theme_subscribe_item_item,
+        )
     }
 }
 
@@ -296,6 +302,8 @@ impl truapi_platform::UserConfirmation for WasmPlatform {
     }
 }
 
-fn parse_theme_variant_item(value: JsValue) -> Result<v01::ThemeVariant, String> {
-    decode_js_item::<v01::ThemeVariant>(value, "ThemeVariant")
+fn parse_host_theme_subscribe_item_item(
+    value: JsValue,
+) -> Result<v01::HostThemeSubscribeItem, String> {
+    decode_js_item::<v01::HostThemeSubscribeItem>(value, "HostThemeSubscribeItem")
 }

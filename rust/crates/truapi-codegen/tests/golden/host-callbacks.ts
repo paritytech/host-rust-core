@@ -36,10 +36,10 @@ import type {
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   NotificationId,
   RemotePermissionResponse,
   Result,
-  ThemeVariant,
 } from "@parity/truapi";
 
 /**
@@ -221,7 +221,7 @@ export interface HostChainSet {
   network: string;
 
   /**
-   * Complete set of chains available through this host.
+   * Chains this host serves, keyed by protocol role.
    */
   chains: Array<HostChainEntry>;
 }
@@ -887,9 +887,8 @@ export interface Features {
   ): Promise<HostFeatureSupportedResponse>;
 
   /**
-   * Enumerate the chains this host serves (RFC 0026). The returned set must
-   * match exactly what `ChainProvider::connect` will accept; the core
-   * resolves `get_chain_info` requests against it.
+   * Enumerate the chains this host serves (RFC 0026). The core resolves
+   * `get_chain_info` requests against the returned set.
    */
   supportedChains(): Promise<HostChainSet>;
 }
@@ -1030,9 +1029,10 @@ export interface ProductStorage {
  */
 export interface ThemeHost {
   /**
-   * Emits current theme immediately, then future changes.
+   * Emits current theme immediately, then future changes. Hosts with no
+   * named themes report `ThemeName::Default`.
    */
-  subscribeTheme(): AsyncIterable<Result<ThemeVariant, GenericError>>;
+  subscribeTheme(): AsyncIterable<Result<HostThemeSubscribeItem, GenericError>>;
 }
 
 /**
