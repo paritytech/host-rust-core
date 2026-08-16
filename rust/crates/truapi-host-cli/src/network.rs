@@ -1,4 +1,6 @@
 use clap::ValueEnum;
+use truapi::latest::ChainIdentifier;
+use truapi_platform::{HostChainEntry, HostChainSet};
 
 /// Supported live network presets for the headless hosts.
 ///
@@ -21,11 +23,15 @@ impl Network {
                 identity_backend_base: "https://identity-backend-next.parity-testnet.parity.io/api/v1",
                 people_ws: "wss://paseo-people-next-system-rpc.polkadot.io",
                 bulletin_ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
+                asset_hub_ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
                 people_genesis: hex_literal_genesis(
                     "c5af1826b31493f08b7e2a823842f98575b806a784126f28da9608c68665afa5",
                 ),
                 bulletin_genesis: hex_literal_genesis(
                     "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
+                ),
+                asset_hub_genesis: hex_literal_genesis(
+                    "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
                 ),
                 live_chain_endpoints: PASEO_NEXT_V2_CHAIN_ENDPOINTS,
             },
@@ -36,10 +42,10 @@ impl Network {
 const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
     ChainEndpoint {
         genesis: hex_literal_genesis(
-            "bf0488dbe9daa1de1c08c5f743e26fdc2a4ecd74cf87dd1b4b1eeb99ae4ef19f",
+            "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
         ),
         ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-        required_for_host: false,
+        required_for_host: true,
     },
     ChainEndpoint {
         genesis: hex_literal_genesis(
@@ -65,8 +71,17 @@ pub struct NetworkConfig {
     pub people_ws: &'static str,
     #[allow(dead_code)]
     pub bulletin_ws: &'static str,
+    /// Asset Hub RPC, where PGAS allowances are claimed.
+    pub asset_hub_ws: &'static str,
     pub people_genesis: [u8; 32],
     pub bulletin_genesis: [u8; 32],
+    /// Asset Hub genesis hash, both the role's identity in
+    /// [`NetworkConfig::host_chain_set`] and its routing key. The chain it connects
+    /// to is authoritative for `CheckGenesis`.
+    ///
+    /// Wrong here is worse than stale elsewhere: routing matches on it, so a value
+    /// the chain does not report sends Asset Hub traffic to the fallback chain.
+    pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
 }
 
@@ -77,6 +92,39 @@ pub struct ChainEndpoint {
     /// Whether host internals require this route even when optional product
     /// Chain calls are disabled.
     pub required_for_host: bool,
+}
+
+impl NetworkConfig {
+    /// The chain set this preset serves, for `Features::supported_chains`.
+    ///
+    /// One entry per role this struct names a genesis hash for. `ChainEndpoint`
+    /// carries no role, so `live_chain_endpoints` cannot supply one — an endpoint's
+    /// identifier is not recoverable from it, which is why a served role needs its
+    /// own field here rather than a lookup into that list.
+    ///
+    /// Every role listed must also be routable: `WsChainProvider` answers an
+    /// unmapped genesis with its fallback URL, so a role the routing filter drops
+    /// would connect to the wrong chain while the host claimed to serve it.
+    /// `chain::tests::every_served_role_routes_to_its_own_chain` holds that.
+    pub fn host_chain_set(&self) -> HostChainSet {
+        HostChainSet {
+            network: self.id.to_string(),
+            chains: vec![
+                HostChainEntry {
+                    identifier: ChainIdentifier::People,
+                    genesis_hash: self.people_genesis,
+                },
+                HostChainEntry {
+                    identifier: ChainIdentifier::Bulletin,
+                    genesis_hash: self.bulletin_genesis,
+                },
+                HostChainEntry {
+                    identifier: ChainIdentifier::AssetHub,
+                    genesis_hash: self.asset_hub_genesis,
+                },
+            ],
+        }
+    }
 }
 
 /// Decode a 64-char hex genesis at compile time.
@@ -102,6 +150,82 @@ const fn hex_nibble(c: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every served role must match an endpoint that actually routes it, at the
+    /// URL the preset names for that role.
+    ///
+    /// `WsChainProvider::url_for` falls back to `people_ws` for an unrecognised
+    /// genesis, so a drifted `people_genesis` still resolves to a working URL
+    /// and satisfies every routing assertion. Pinning against
+    /// `live_chain_endpoints` checks the constants themselves rather than the
+    /// plumbing that reads them.
+    ///
+    /// This catches the two copies disagreeing, which is what an edit to one of
+    /// them causes. It cannot catch both being wrong in the same way; only a
+    /// live connection distinguishes that.
+    #[test]
+    fn served_chain_genesis_hashes_match_the_endpoint_routes() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            for entry in config.host_chain_set().chains {
+                let expected_ws = match entry.identifier {
+                    ChainIdentifier::People => config.people_ws,
+                    ChainIdentifier::Bulletin => config.bulletin_ws,
+                    ChainIdentifier::AssetHub => config.asset_hub_ws,
+                    other => panic!("{} serves {other:?} with no preset URL", config.id),
+                };
+                let endpoint = config
+                    .live_chain_endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.genesis == entry.genesis_hash)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} serves {:?} at genesis {} which no endpoint routes",
+                            config.id,
+                            entry.identifier,
+                            hex::encode(entry.genesis_hash)
+                        )
+                    });
+                assert_eq!(
+                    endpoint.ws,
+                    expected_ws,
+                    "{} routes {:?} (genesis {}) to {}, but the preset names {}",
+                    config.id,
+                    entry.identifier,
+                    hex::encode(entry.genesis_hash),
+                    endpoint.ws,
+                    expected_ws
+                );
+            }
+        }
+    }
+
+    /// Anchors the served set itself. Every other test that reads it iterates, so
+    /// all of them pass on an empty set; this is what notices a dropped role, and it
+    /// covers each preset rather than only the default.
+    #[test]
+    fn every_preset_serves_exactly_the_expected_roles() {
+        for network in Network::value_variants() {
+            let config = network.config();
+            let served: Vec<ChainIdentifier> = config
+                .host_chain_set()
+                .chains
+                .iter()
+                .map(|entry| entry.identifier)
+                .collect();
+
+            assert_eq!(
+                served,
+                vec![
+                    ChainIdentifier::People,
+                    ChainIdentifier::Bulletin,
+                    ChainIdentifier::AssetHub,
+                ],
+                "{} serves an unexpected role set",
+                config.id
+            );
+        }
+    }
 
     /// Guards the invariant documented on [`Network`]: the plaintext mnemonic
     /// store is only safe for disposable identities, so no preset may point at a

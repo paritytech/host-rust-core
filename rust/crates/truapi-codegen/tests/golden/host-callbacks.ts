@@ -36,10 +36,10 @@ import type {
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   NotificationId,
   RemotePermissionResponse,
   Result,
-  ThemeVariant,
 } from "@parity/truapi";
 
 /**
@@ -1016,9 +1016,10 @@ export interface ProductStorage {
  */
 export interface ThemeHost {
   /**
-   * Emits current theme immediately, then future changes.
+   * Emits current theme immediately, then future changes. Hosts with no
+   * named themes report `ThemeName::Default`.
    */
-  subscribeTheme(): AsyncIterable<Result<ThemeVariant, GenericError>>;
+  subscribeTheme(): AsyncIterable<Result<HostThemeSubscribeItem, GenericError>>;
 }
 
 /**

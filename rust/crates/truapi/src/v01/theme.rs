@@ -2,6 +2,7 @@ use parity_scale_codec::{Decode, Encode};
 
 /// Identifies a named theme.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ThemeName {
     /// A custom named theme.
     Custom(String),
@@ -21,6 +22,7 @@ pub enum ThemeVariant {
 
 /// Current theme state pushed to subscribers.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HostThemeSubscribeItem {
     /// Theme name.
     pub name: ThemeName,
