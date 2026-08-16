@@ -2792,7 +2792,10 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
-     * See [`NativeTrUApiHostRuntime::next_statement_renewal_delay`].
+     * The in-process loop's own cadence, capped at an hour. An allowance stays
+     * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
+     * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
+     * slack and should read a value under an hour as the boundary approaching.
      */
     func nextStatementRenewalDelay()  -> TimeInterval
 
@@ -2838,7 +2841,18 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
-     * See [`NativeTrUApiHostRuntime::renew_statement_allowances`].
+     * Run one renewal pass now and report what each tracked target got.
+     *
+     * For hosts whose process cannot stay alive between periods: drive it from
+     * WorkManager or BGTaskScheduler rather than
+     * [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
+     * blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure.
      */
     func renewStatementAllowances() throws  -> StatementRenewalReport
 
@@ -2870,7 +2884,11 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func setPermissionAuthorizationStatus(request: PermissionAuthorizationRequest, status: PermissionAuthorizationStatus) throws
 
     /**
-     * See [`NativeTrUApiHostRuntime::start_statement_allowance_renewal`].
+     * Start the in-process renewal loop, for a host that stays resident. A
+     * suspended app stops ticking, so prefer scheduling
+     * [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
+     * call it tolerates having no session: a tick without one is skipped and
+     * retried.
      */
     func startStatementAllowanceRenewal()
 
@@ -2886,7 +2904,17 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func stopWsBridge()
 
     /**
-     * See [`NativeTrUApiHostRuntime::track_statement_renewal_targets`].
+     * Record the accounts renewal should keep allowed. The ledger persists, so
+     * this only has to be called when the set changes, not on every launch.
+     * Renewal has nothing to do until at least one target is tracked.
+     *
+     * Needs an active session, so call it after
+     * [`Self::activate_local_session`] or after pairing, not at construction.
+     *
+     * The ledger is append-only. There is no untrack, and an entry is dropped
+     * only when the identity that promised it changes, which keeps derivation
+     * recipes and discards raw account ids. Re-tracking is idempotent, so
+     * re-track the full set after an identity change.
      */
     func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget]) throws
 
@@ -3018,7 +3046,10 @@ open func disconnect()  {try! rustCall() {
 }
 
     /**
-     * See [`NativeTrUApiHostRuntime::next_statement_renewal_delay`].
+     * The in-process loop's own cadence, capped at an hour. An allowance stays
+     * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
+     * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
+     * slack and should read a value under an hour as the boundary approaching.
      */
 open func nextStatementRenewalDelay() -> TimeInterval  {
     return try!  FfiConverterDuration.lift(try! rustCall() {
@@ -3115,7 +3146,18 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
 }
 
     /**
-     * See [`NativeTrUApiHostRuntime::renew_statement_allowances`].
+     * Run one renewal pass now and report what each tracked target got.
+     *
+     * For hosts whose process cannot stay alive between periods: drive it from
+     * WorkManager or BGTaskScheduler rather than
+     * [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
+     * blocks until they are included, so call it from a background thread.
+     *
+     * Needs an active session, which is the whole difficulty of the scheduled
+     * case: an OS-woken cold start has none until the host restores one, and
+     * the pass then fails with the bare reason `Disconnected`. Restore the
+     * session before calling, and treat that reason as "not ready" rather than
+     * as a renewal failure.
      */
 open func renewStatementAllowances()throws  -> StatementRenewalReport  {
     return try  FfiConverterTypeStatementRenewalReport_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
@@ -3186,7 +3228,11 @@ open func setPermissionAuthorizationStatus(request: PermissionAuthorizationReque
 }
 
     /**
-     * See [`NativeTrUApiHostRuntime::start_statement_allowance_renewal`].
+     * Start the in-process renewal loop, for a host that stays resident. A
+     * suspended app stops ticking, so prefer scheduling
+     * [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
+     * call it tolerates having no session: a tick without one is skipped and
+     * retried.
      */
 open func startStatementAllowanceRenewal()  {try! rustCall() {
         uniffiCallStatus in
@@ -3222,7 +3268,17 @@ open func stopWsBridge()  {try! rustCall() {
 }
 
     /**
-     * See [`NativeTrUApiHostRuntime::track_statement_renewal_targets`].
+     * Record the accounts renewal should keep allowed. The ledger persists, so
+     * this only has to be called when the set changes, not on every launch.
+     * Renewal has nothing to do until at least one target is tracked.
+     *
+     * Needs an active session, so call it after
+     * [`Self::activate_local_session`] or after pairing, not at construction.
+     *
+     * The ledger is append-only. There is no untrack, and an entry is dropped
+     * only when the identity that promised it changes, which keeps derivation
+     * recipes and discards raw account ids. Re-tracking is idempotent, so
+     * re-track the full set after an identity change.
      */
 open func trackStatementRenewalTargets(targets: [NativeStatementRenewalTarget])throws   {try rustCallWithError(FfiConverterTypeNativeRenewalTargetError_lift) {
         uniffiCallStatus in
@@ -6151,7 +6207,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 22349) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 13069) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_chain_closed() != 25320) {
@@ -6172,7 +6228,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 16355) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 57273) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_ring_vrf_providers() != 44875) {
@@ -6187,7 +6243,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_set_permission_authorization_status() != 37317) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_statement_allowance_renewal() != 42790) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_start_statement_allowance_renewal() != 20540) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_start_ws_bridge() != 34234) {
@@ -6196,7 +6252,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_stop_ws_bridge() != 13438) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_track_statement_renewal_targets() != 61871) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_track_statement_renewal_targets() != 64109) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_activate_local_session() != 40075) {

@@ -1130,7 +1130,17 @@ impl NativeTrUApiCore {
         self.host.activate_local_session(secret, lite_username)
     }
 
-    /// See [`NativeTrUApiHostRuntime::track_statement_renewal_targets`].
+    /// Record the accounts renewal should keep allowed. The ledger persists, so
+    /// this only has to be called when the set changes, not on every launch.
+    /// Renewal has nothing to do until at least one target is tracked.
+    ///
+    /// Needs an active session, so call it after
+    /// [`Self::activate_local_session`] or after pairing, not at construction.
+    ///
+    /// The ledger is append-only. There is no untrack, and an entry is dropped
+    /// only when the identity that promised it changes, which keeps derivation
+    /// recipes and discards raw account ids. Re-tracking is idempotent, so
+    /// re-track the full set after an identity change.
     pub fn track_statement_renewal_targets(
         &self,
         targets: Vec<NativeStatementRenewalTarget>,
@@ -1138,19 +1148,37 @@ impl NativeTrUApiCore {
         self.host.track_statement_renewal_targets(targets)
     }
 
-    /// See [`NativeTrUApiHostRuntime::renew_statement_allowances`].
+    /// Run one renewal pass now and report what each tracked target got.
+    ///
+    /// For hosts whose process cannot stay alive between periods: drive it from
+    /// WorkManager or BGTaskScheduler rather than
+    /// [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
+    /// blocks until they are included, so call it from a background thread.
+    ///
+    /// Needs an active session, which is the whole difficulty of the scheduled
+    /// case: an OS-woken cold start has none until the host restores one, and
+    /// the pass then fails with the bare reason `Disconnected`. Restore the
+    /// session before calling, and treat that reason as "not ready" rather than
+    /// as a renewal failure.
     pub fn renew_statement_allowances(
         &self,
     ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
         self.host.renew_statement_allowances()
     }
 
-    /// See [`NativeTrUApiHostRuntime::start_statement_allowance_renewal`].
+    /// Start the in-process renewal loop, for a host that stays resident. A
+    /// suspended app stops ticking, so prefer scheduling
+    /// [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
+    /// call it tolerates having no session: a tick without one is skipped and
+    /// retried.
     pub fn start_statement_allowance_renewal(&self) {
         self.host.start_statement_allowance_renewal();
     }
 
-    /// See [`NativeTrUApiHostRuntime::next_statement_renewal_delay`].
+    /// The in-process loop's own cadence, capped at an hour. An allowance stays
+    /// usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
+    /// on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
+    /// slack and should read a value under an hour as the boundary approaching.
     pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
         self.host.next_statement_renewal_delay()
     }
