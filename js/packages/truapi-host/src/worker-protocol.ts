@@ -74,6 +74,9 @@ export type MainToWorker =
   | { kind: "disconnectSession"; requestId: number }
   | { kind: "cancelPairing" }
   | { kind: "notifySessionStoreChanged" }
+  | { kind: "activateStoredSession"; requestId: number }
+  | { kind: "activateExternalSession"; requestId: number; blob: Uint8Array }
+  | { kind: "resetSessionState"; requestId: number }
   | {
       kind: "getPermissionAuthorizationStatus";
       productId: string;
@@ -119,6 +122,18 @@ export type WorkerToMain =
   | { kind: "disconnectSessionResponse"; requestId: number; ok: true }
   | {
       kind: "disconnectSessionResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  /**
+   * Shared reply for `activateStoredSession`, `activateExternalSession` and
+   * `resetSessionState`: all three settle as a bare success or a failure
+   * reason.
+   */
+  | { kind: "sessionActivationResponse"; requestId: number; ok: true }
+  | {
+      kind: "sessionActivationResponse";
       requestId: number;
       ok: false;
       error: string;

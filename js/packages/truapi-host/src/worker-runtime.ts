@@ -256,6 +256,27 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     case "notifySessionStoreChanged":
       runtime?.notifySessionStoreChanged();
       break;
+    case "activateStoredSession":
+      void handleSessionActivation(
+        msg.requestId,
+        "activateStoredSession",
+        (rt) => rt.activateStoredSession(),
+      );
+      break;
+    case "activateExternalSession": {
+      const { blob } = msg;
+      void handleSessionActivation(
+        msg.requestId,
+        "activateExternalSession",
+        (rt) => rt.activateExternalSession(blob),
+      );
+      break;
+    }
+    case "resetSessionState":
+      void handleSessionActivation(msg.requestId, "resetSessionState", (rt) =>
+        rt.resetSessionState(),
+      );
+      break;
     case "getPermissionAuthorizationStatus":
       void handleGetPermissionAuthorizationStatus(
         runtime,
@@ -363,6 +384,33 @@ function disposeCore(coreId: number): void {
     core.free();
   } catch (err) {
     postToMain({ kind: "disposeError", error: errorMessage(err) });
+  }
+}
+
+async function handleSessionActivation(
+  requestId: number,
+  label: string,
+  activate: (runtime: WorkerPairingHostRuntime) => Promise<void>,
+): Promise<void> {
+  if (!runtime) {
+    postToMain({
+      kind: "sessionActivationResponse",
+      requestId,
+      ok: false,
+      error: `${label} received before runtime is ready`,
+    });
+    return;
+  }
+  try {
+    await activate(runtime);
+    postToMain({ kind: "sessionActivationResponse", requestId, ok: true });
+  } catch (err) {
+    postToMain({
+      kind: "sessionActivationResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
   }
 }
 
