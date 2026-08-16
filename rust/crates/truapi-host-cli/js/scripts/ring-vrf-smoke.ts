@@ -1,10 +1,9 @@
 /// <reference path="../runner.ts" />
-export {};
+import { PASEO_NEXT_V2_INDIVIDUALITY } from "../../../../../js/packages/truapi/src/index.ts";
 
 const PEOPLE_COLLECTION_ID =
   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465";
-const PEOPLE_GENESIS =
-  "0xc5af1826b31493f08b7e2a823842f98575b806a784126f28da9608c68665afa5";
+const PEOPLE_GENESIS = PASEO_NEXT_V2_INDIVIDUALITY.genesis;
 const index = { tag: "Index" as const, value: 0 };
 const keyHandle = {
   dotNsIdentifier: host.productId,
@@ -51,11 +50,13 @@ if (!listed.isOk()) {
 const entry = listed.value.find(
   (candidate) =>
     candidate.handle.dotNsIdentifier === host.productId &&
-    candidate.handle.derivationIndex.tag === "Left" &&
+    candidate.handle.derivationIndex.tag === index.tag &&
     candidate.handle.derivationIndex.value === index.value,
 );
 if (!entry || entry.publicKey !== registration.value) {
-  throw new Error("registered key was not returned by listRingVrfKeys");
+  throw new Error(
+    `registered key was not returned by listRingVrfKeys: ${JSON.stringify(listed.value)}`,
+  );
 }
 
 const aliasResult = await truapi.account.getAccountAlias({
