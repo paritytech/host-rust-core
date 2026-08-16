@@ -776,7 +776,8 @@ impl PairingHost {
     }
 
     /// Clear the canonical local session and all session capabilities without
-    /// sending a peer-disconnect statement.
+    /// sending a peer-disconnect statement. Reports the resulting auth state to
+    /// the host, including when there was no session to clear.
     pub(crate) async fn reset_session_state(&self) {
         self.cancel_login();
         self.clear_disconnected_session(true).await;
@@ -784,6 +785,7 @@ impl PairingHost {
         self.clear_statement_store_allowance_keys(None);
         self.clear_bulletin_allowance_keys(None);
         self.clear_product_subtrees(None);
+        self.auth_state.announce_current();
     }
 
     /// Invalidate in-flight login attempts and emit the cancelled auth state.

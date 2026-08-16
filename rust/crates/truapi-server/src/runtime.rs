@@ -5766,6 +5766,27 @@ mod tests {
     }
 
     #[test]
+    fn resetting_session_state_reports_its_outcome_when_nothing_was_active() {
+        let platform = Arc::new(StubPlatform::default());
+        let (_host, pairing_host) =
+            ProductRuntimeHost::new_compat_with_pairing(platform.clone(), test_spawner());
+
+        futures::executor::block_on(pairing_host.reset_session_state());
+
+        // Clearing an already-signed-out state changes nothing, so without an
+        // explicit announcement this is the silent case a host cannot tell
+        // apart from having had no answer yet.
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected],
+            "a reset must still tell the host where it stands"
+        );
+    }
+
+    #[test]
     fn external_session_activation_replaces_and_fences_the_previous_session() {
         let (host, pairing_host) = ProductRuntimeHost::new_compat_with_pairing(
             Arc::new(StubPlatform::default()),
