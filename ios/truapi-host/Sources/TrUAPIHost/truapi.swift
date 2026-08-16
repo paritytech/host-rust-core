@@ -5191,6 +5191,20 @@ public enum HostFeatureSupportedRequest: Equatable, Hashable {
          * Chain genesis hash.
          */genesisHash: Data
     )
+    /**
+     * Ask whether `id` opens a method on this host build (RFC 0027).
+     *
+     * `id` is a request discriminant or a product-facing
+     * subscription-start discriminant — the two frame kinds a product can
+     * begin a call with. Variant index 1; a host that cannot decode it
+     * answers `CallError::MalformedFrame`, which is RFC 0027's no-support
+     * signal. `Chain` stays variant index 0.
+     */
+    case method(
+        /**
+         * Request or subscription-start discriminant from the wire table.
+         */id: UInt8
+    )
 
 
 
@@ -5215,6 +5229,9 @@ public struct FfiConverterTypeHostFeatureSupportedRequest: FfiConverterRustBuffe
         case 1: return .chain(genesisHash: try FfiConverterData.read(from: &buf)
         )
 
+        case 2: return .method(id: try FfiConverterUInt8.read(from: &buf)
+        )
+
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -5226,6 +5243,11 @@ public struct FfiConverterTypeHostFeatureSupportedRequest: FfiConverterRustBuffe
         case let .chain(genesisHash):
             writeInt(&buf, Int32(1))
             FfiConverterData.write(genesisHash, into: &buf)
+
+
+        case let .method(id):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt8.write(id, into: &buf)
 
         }
     }

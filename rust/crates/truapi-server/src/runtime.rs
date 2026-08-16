@@ -5,7 +5,7 @@
 //! host-agnostic logic owned by the core (the chainHead-v1 runtime behind
 //! the Chain surface, `dotns` URL parsing for `navigate_to`, and the
 //! permission cache layer). Methods with no platform backing return
-//! `CallError::unavailable()`.
+//! `CallError::unsupported()`.
 
 mod allowances;
 /// Core-owned auth/session UI state machine.

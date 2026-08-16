@@ -49,6 +49,6 @@ pub trait Preimage: Send + Sync {
         _cx: &CallContext,
         _request: RemotePreimageSubmitRequest,
     ) -> Result<RemotePreimageSubmitResponse, CallError<RemotePreimageSubmitError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

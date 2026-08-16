@@ -24,6 +24,6 @@ pub trait Entropy: Send + Sync {
         _cx: &CallContext,
         _request: HostDeriveEntropyRequest,
     ) -> Result<HostDeriveEntropyResponse, CallError<HostDeriveEntropyError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

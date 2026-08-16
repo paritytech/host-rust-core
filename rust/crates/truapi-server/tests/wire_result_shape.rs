@@ -59,11 +59,147 @@ fn feature_supported_ok_response_uses_ok_discriminant() {
     assert_eq!(response.payload.id, ids.response_id);
 
     // Wire payload: [V1 disc=0x00][Ok disc=0x00][encoded response body].
-    let mut expected = vec![0x00u8, 0x00u8];
-    v01::HostFeatureSupportedResponse { supported: true }.encode_to(&mut expected);
-    assert_eq!(response.payload.value, expected);
+    assert_eq!(
+        response.payload.value,
+        versioned_result_ok_payload(v01::HostFeatureSupportedResponse { supported: true })
+    );
     assert_eq!(response.payload.value.first(), Some(&0x00));
     assert_eq!(response.payload.value.get(1), Some(&0x00));
+}
+
+#[test]
+fn method_query_is_answered_by_the_core_not_the_platform() {
+    let core = make_core();
+    let ids = request_ids("system_feature_supported").expect("known request method");
+
+    for (id, expected) in [(0xFAu8, false), (ids.request_id, true)] {
+        let request =
+            HostFeatureSupportedRequest::V1(v01::HostFeatureSupportedRequest::Method { id });
+        let response = dispatch(
+            &core,
+            ProtocolMessage {
+                request_id: "p:1".into(),
+                payload: Payload {
+                    id: ids.request_id,
+                    value: request.encode(),
+                },
+            },
+        );
+        assert_eq!(response.payload.id, ids.response_id);
+
+        assert_eq!(
+            response.payload.value,
+            versioned_result_ok_payload(v01::HostFeatureSupportedResponse {
+                supported: expected
+            }),
+            "probe of id {id}"
+        );
+    }
+}
+
+#[test]
+fn probe_answer_matches_what_the_dispatcher_accepts() {
+    let core = make_core();
+    let ids = request_ids("system_feature_supported").expect("known request method");
+
+    for id in [ids.request_id, 0xFAu8] {
+        let probe =
+            HostFeatureSupportedRequest::V1(v01::HostFeatureSupportedRequest::Method { id });
+        let probed = dispatch(
+            &core,
+            ProtocolMessage {
+                request_id: "p:1".into(),
+                payload: Payload {
+                    id: ids.request_id,
+                    value: probe.encode(),
+                },
+            },
+        );
+        let advertised = probed.payload.value
+            == versioned_result_ok_payload(v01::HostFeatureSupportedResponse { supported: true });
+
+        let routed = futures::executor::block_on(
+            core.receive_from_product(
+                &ProtocolMessage {
+                    request_id: "p:2".into(),
+                    payload: Payload {
+                        id,
+                        value: HostFeatureSupportedRequest::V1(
+                            v01::HostFeatureSupportedRequest::Chain {
+                                genesis_hash: vec![0u8; 32],
+                            },
+                        )
+                        .encode(),
+                    },
+                }
+                .encode(),
+            ),
+        )
+        .is_some();
+
+        assert_eq!(advertised, routed, "id {id}: advertised vs routed");
+    }
+}
+
+/// A probe payload the core cannot decode answers `CallError::MalformedFrame`
+/// on the wire — the signal RFC 0027 relies on from hosts that predate the
+/// `Method` variant — instead of hanging.
+#[test]
+fn undecodable_method_probe_answers_malformed_frame() {
+    let core = make_core();
+    let ids = request_ids("system_feature_supported").expect("known request method");
+
+    let response = dispatch(
+        &core,
+        ProtocolMessage {
+            request_id: "p:1".into(),
+            payload: Payload {
+                id: ids.request_id,
+                // V1 + variant index 1 (`Method`) with no `id` byte: the
+                // payload cannot decode on any host.
+                value: vec![0x00u8, 0x01u8],
+            },
+        },
+    );
+    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(
+        &response.payload.value[..3],
+        &[0x00, 0x01, 0x03],
+        "V1 + Err discriminant + CallError::MalformedFrame"
+    );
+    assert!(response.payload.value.len() > 3, "a reason string follows");
+}
+
+/// An unwired trait method answers `CallError::Unsupported` (variant index
+/// 2) on the wire, not the old `HostFailure { reason: "unavailable" }`
+/// string (RFC 0027). `CoinPayment` has no `ProductRuntimeHost` backing, so
+/// its default bodies run end-to-end.
+#[test]
+fn unwired_method_answers_unsupported_on_the_wire() {
+    let core = make_core();
+    let ids = request_ids("coin_payment_create_purse").expect("known request method");
+    let request = truapi::versioned::coin_payment::HostCoinPaymentCreatePurseRequest::V1(
+        v01::HostCoinPaymentCreatePurseRequest {
+            name: "probe".to_string(),
+        },
+    );
+
+    let response = dispatch(
+        &core,
+        ProtocolMessage {
+            request_id: "p:1".into(),
+            payload: Payload {
+                id: ids.request_id,
+                value: request.encode(),
+            },
+        },
+    );
+    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(
+        response.payload.value,
+        vec![0x00u8, 0x01u8, 0x02u8],
+        "V1 + Err discriminant + CallError::Unsupported"
+    );
 }
 
 #[test]
@@ -163,6 +299,14 @@ where
 {
     let mut expected = vec![version_index(error.version()), 0x01u8];
     CallError::Domain(error).encode_to(&mut expected);
+    expected
+}
+
+/// Wire layout for a successful V1 response: `[V1 disc=0x00][Ok disc=0x00]`
+/// followed by the encoded response body.
+fn versioned_result_ok_payload(body: impl Encode) -> Vec<u8> {
+    let mut expected = vec![0x00u8, 0x00u8];
+    body.encode_to(&mut expected);
     expected
 }
 

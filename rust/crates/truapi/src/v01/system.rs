@@ -12,6 +12,17 @@ pub enum HostFeatureSupportedRequest {
         /// Chain genesis hash.
         genesis_hash: Vec<u8>,
     },
+    /// Ask whether `id` opens a method on this host build (RFC 0027).
+    ///
+    /// `id` is a request discriminant or a product-facing
+    /// subscription-start discriminant — the two frame kinds a product can
+    /// begin a call with. Variant index 1; a host that cannot decode it
+    /// answers `CallError::MalformedFrame`, which is RFC 0027's no-support
+    /// signal. `Chain` stays variant index 0.
+    Method {
+        /// Request or subscription-start discriminant from the wire table.
+        id: u8,
+    },
 }
 
 /// Error from [`crate::api::System::navigate_to`].
@@ -55,6 +66,35 @@ pub struct HostHandshakeRequest {
 pub struct HostFeatureSupportedResponse {
     /// Whether the feature is supported.
     pub supported: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use parity_scale_codec::{Decode, Encode};
+
+    use super::HostFeatureSupportedRequest;
+
+    #[test]
+    fn chain_keeps_variant_index_zero() {
+        let encoded = HostFeatureSupportedRequest::Chain {
+            genesis_hash: vec![0u8; 32],
+        }
+        .encode();
+        assert_eq!(encoded.first(), Some(&0x00));
+    }
+
+    #[test]
+    fn every_method_id_round_trips_at_variant_index_one() {
+        for id in 0..=u8::MAX {
+            let value = HostFeatureSupportedRequest::Method { id };
+            let encoded = value.encode();
+            assert_eq!(encoded, vec![0x01, id]);
+            assert_eq!(
+                HostFeatureSupportedRequest::decode(&mut &encoded[..]).expect("decode"),
+                value
+            );
+        }
+    }
 }
 
 /// Request to navigate the host to an external URL.

@@ -40,7 +40,7 @@ pub trait CoinPayment: Send + Sync {
         _request: HostCoinPaymentCreatePurseRequest,
     ) -> Result<HostCoinPaymentCreatePurseResponse, CallError<HostCoinPaymentCreatePurseError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Query product-visible purse metadata and balance.
@@ -56,7 +56,7 @@ pub trait CoinPayment: Send + Sync {
         _cx: &CallContext,
         _request: HostCoinPaymentQueryPurseRequest,
     ) -> Result<HostCoinPaymentQueryPurseResponse, CallError<HostCoinPaymentQueryPurseError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Transfer balance between local purses.
@@ -82,7 +82,7 @@ pub trait CoinPayment: Send + Sync {
         Subscription<HostCoinPaymentRebalancePurseItem>,
         CallError<HostCoinPaymentRebalancePurseError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Delete a purse after draining its balance into another local purse.
@@ -108,7 +108,7 @@ pub trait CoinPayment: Send + Sync {
         Subscription<HostCoinPaymentDeletePurseItem>,
         CallError<HostCoinPaymentDeletePurseError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Create a receivable public key for depositing into a purse.
@@ -127,7 +127,7 @@ pub trait CoinPayment: Send + Sync {
         HostCoinPaymentCreateReceivableResponse,
         CallError<HostCoinPaymentCreateReceivableError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Create a cheque paying from a local purse to a receivable.
@@ -148,7 +148,7 @@ pub trait CoinPayment: Send + Sync {
         _request: HostCoinPaymentCreateChequeRequest,
     ) -> Result<HostCoinPaymentCreateChequeResponse, CallError<HostCoinPaymentCreateChequeError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Claim coins from a cheque into the receivable's purse.
@@ -175,7 +175,7 @@ pub trait CoinPayment: Send + Sync {
         _request: HostCoinPaymentDepositRequest,
     ) -> Result<Subscription<HostCoinPaymentDepositItem>, CallError<HostCoinPaymentDepositError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Attempt to return coins associated with a receivable.
@@ -202,7 +202,7 @@ pub trait CoinPayment: Send + Sync {
         _request: HostCoinPaymentRefundRequest,
     ) -> Result<Subscription<HostCoinPaymentRefundItem>, CallError<HostCoinPaymentRefundError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Listen for a cheque delivered through a standard transmission channel.
@@ -229,6 +229,6 @@ pub trait CoinPayment: Send + Sync {
         _request: HostCoinPaymentListenForRequest,
     ) -> Result<Subscription<HostCoinPaymentListenForItem>, CallError<HostCoinPaymentListenForError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

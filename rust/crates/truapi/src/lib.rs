@@ -212,10 +212,13 @@ pub enum CallError<D> {
 
 impl<D> CallError<D> {
     /// Convenience for default handlers whose implementation is not wired.
-    pub fn unavailable() -> Self {
-        Self::HostFailure {
-            reason: "unavailable".into(),
-        }
+    ///
+    /// Returns [`CallError::Unsupported`] (RFC 0027): the host will not serve
+    /// this method for the lifetime of the connection, so a caller must not
+    /// retry. `HostFailure` stays reserved for a host that attempted the
+    /// operation and failed, which a caller may retry.
+    pub fn unsupported() -> Self {
+        Self::Unsupported
     }
 }
 
@@ -440,7 +443,7 @@ impl<T> Subscription<T> {
     }
 
     /// Creates a subscription that yields no items. Useful as a placeholder for
-    /// default "unavailable" trait bodies where the dispatcher will discard the
+    /// default "unsupported" trait bodies where the dispatcher will discard the
     /// stream and emit an Interrupt frame.
     pub fn empty() -> Self
     where
@@ -479,5 +482,13 @@ mod tests {
         let reason = futures::executor::block_on(wait);
         assert_eq!(reason, CancellationReason::Cancelled);
         assert!(cloned.is_cancelled());
+    }
+
+    #[test]
+    fn unsupported_is_the_unwired_handler_answer() {
+        assert_eq!(
+            CallError::<std::convert::Infallible>::unsupported(),
+            CallError::Unsupported
+        );
     }
 }

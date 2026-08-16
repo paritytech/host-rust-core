@@ -22,7 +22,7 @@ When TrUAPI adds new methods, products have no mechanism to check whether their 
 This RFC introduces three coordinated fixes:
 1. **Backward-compatible probing:** Adds a `Method { id: u8 }` query variant to `system.feature_supported` (wire ID 2, registered by all hosts). Older hosts return a decode error (`MalformedFrame`) instead of dropping the frame, allowing products to reliably infer host capabilities even on pre-RFC deployments.
 2. **Explicit failure for unregistered discriminants:** Hosts reply to unregistered wire IDs with a reserved `UNSUPPORTED_METHOD` frame instead of dropping them, settling pending client requests immediately.
-3. **Typed error semantics:** Canonicalises `CallError::Unsupported` as the standard response for unwired trait methods, deprecating ambiguous `HostFailure { reason: "unavailable" }` strings.
+3. **Typed error semantics:** Canonicalises `CallError::Unsupported` as the standard response for unwired trait methods, replacing ambiguous `HostFailure { reason: "unavailable" }` strings.
 
 ## Motivation
 
@@ -47,7 +47,7 @@ Wire IDs are append-only to preserve backward compatibility (newer hosts support
 
 ### 4. Ambiguous "Unavailable" Errors
 
-Unimplemented default trait methods currently return `CallError::unavailable()`, which maps to `HostFailure { reason: "unavailable" }`. This conflates permanent lack of feature support with transient operational failures.
+Unimplemented default trait methods previously returned `CallError::unavailable()`, which mapped to `HostFailure { reason: "unavailable" }`. This conflated permanent lack of feature support with transient operational failures.
 
 ---
 
@@ -74,7 +74,7 @@ pub enum HostFeatureSupportedRequest {
 
 Because `system.feature_supported` (`#[wire(request_id = 2)]`) is registered by all hosts across all published surface versions (`0.2.0` to `0.9.0`):
 
-- **Modern Hosts:** Hosts implementing this RFC inspect their active dispatcher table and return `HostFeatureSupportedResponse { supported }`. The host MUST compute `supported` directly from its dispatcher registration map rather than a static list, and MUST NOT report `true` for unregistered discriminants.
+- **Modern Hosts:** Hosts implementing this RFC inspect the build's wire table — the same table the dispatcher registers its routing maps from — and return `HostFeatureSupportedResponse { supported }`. The host MUST compute `supported` from that table rather than a separate static list, and MUST NOT report `true` for unregistered discriminants. In this repository the equivalence between the wire table and the registered dispatch surface is gated by a test. `id` is a request discriminant or a product-facing subscription-start discriminant — the two frame kinds a product can begin a call with; response, stop, interrupt, receive and host-initiated-subscription ids are not product-callable ids the host MUST answer `false` for.
 - **Legacy Hosts:** Hosts predating this RFC attempt to decode payload bytes against the single-variant enum. The decoder rejects variant index 1, and the generated dispatcher wrapper returns `CallError::MalformedFrame`.
 
 #### Conclusive Probing Protocol
@@ -122,12 +122,17 @@ transport.send(ProtocolMessage {
 
 ### 3. Canonical `Unsupported` Error Variant
 
-The default implementation of `CallError::unavailable()` is updated across all API trait definitions:
+The default implementation of `CallError::unsupported()` is updated across all API trait definitions:
 
 ```rust
 impl<D> CallError<D> {
-    /// Standard error for unwired trait method implementations.
-    pub fn unavailable() -> Self {
+    /// Convenience for default handlers whose implementation is not wired.
+    ///
+    /// Returns [`CallError::Unsupported`] (RFC 0027): the host will not serve
+    /// this method for the lifetime of the connection, so a caller must not
+    /// retry. `HostFailure` stays reserved for a host that attempted the
+    /// operation and failed, which a caller may retry.
+    pub fn unsupported() -> Self {
         Self::Unsupported
     }
 }
@@ -135,6 +140,7 @@ impl<D> CallError<D> {
 
 - A host MUST NOT return `HostFailure` for an unimplemented method.
 - `Unsupported` signals that the operation is permanently unhandled on the current host session; callers MUST NOT retry.
+- `HostFailure` remains correct for a host that attempted the operation and failed transiently; callers MAY retry that.
 
 ---
 

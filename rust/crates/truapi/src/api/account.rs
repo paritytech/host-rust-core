@@ -65,7 +65,7 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostAccountGetRequest,
     ) -> Result<HostAccountGetResponse, CallError<HostAccountGetError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Retrieve the contextual alias for a context and ring.
@@ -106,7 +106,7 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostAccountGetAliasRequest,
     ) -> Result<HostAccountGetAliasResponse, CallError<HostAccountGetAliasError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Generate a ring VRF proof with an explicitly registered member key.
@@ -148,7 +148,7 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostAccountCreateProofRequest,
     ) -> Result<HostAccountCreateProofResponse, CallError<HostAccountCreateProofError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Produce an sr25519 (schnorrkel) VRF signature from a product account.
@@ -179,7 +179,7 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostAccountSignVrfRequest,
     ) -> Result<HostAccountSignVrfResponse, CallError<HostAccountSignVrfError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Register a ring-VRF key owned by the calling product.
@@ -209,7 +209,7 @@ pub trait Account: Send + Sync {
         _request: HostAccountRegisterRingVrfKeyRequest,
     ) -> Result<HostAccountRegisterRingVrfKeyResponse, CallError<HostAccountRegisterRingVrfKeyError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// List registered ring-VRF keys owned by a product.
@@ -229,7 +229,7 @@ pub trait Account: Send + Sync {
         _request: HostAccountListRingVrfKeysRequest,
     ) -> Result<HostAccountListRingVrfKeysResponse, CallError<HostAccountListRingVrfKeysError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Sign bytes directly with a registered ring-VRF member key.
@@ -251,7 +251,7 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostAccountRingVrfSignRequest,
     ) -> Result<HostAccountRingVrfSignResponse, CallError<HostAccountRingVrfSignError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// List non-product accounts the user owns.
@@ -270,7 +270,7 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostGetLegacyAccountsRequest,
     ) -> Result<HostGetLegacyAccountsResponse, CallError<HostGetLegacyAccountsError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Fetch the user's primary identity.
@@ -286,7 +286,7 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostGetUserIdRequest,
     ) -> Result<HostGetUserIdResponse, CallError<HostGetUserIdError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Request the host to present the login flow to the user.
@@ -307,6 +307,6 @@ pub trait Account: Send + Sync {
         _cx: &CallContext,
         _request: HostRequestLoginRequest,
     ) -> Result<HostRequestLoginResponse, CallError<HostRequestLoginError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

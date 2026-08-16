@@ -64,7 +64,7 @@ pub trait Signing: Send + Sync {
         _cx: &CallContext,
         _request: HostCreateTransactionRequest,
     ) -> Result<HostCreateTransactionResponse, CallError<HostCreateTransactionError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Construct a transaction for a non-product (legacy) account.
@@ -121,7 +121,7 @@ pub trait Signing: Send + Sync {
         HostCreateTransactionWithLegacyAccountResponse,
         CallError<HostCreateTransactionWithLegacyAccountError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Sign raw bytes with a non-product account.
@@ -151,7 +151,7 @@ pub trait Signing: Send + Sync {
         _request: HostSignRawWithLegacyAccountRequest,
     ) -> Result<HostSignRawWithLegacyAccountResponse, CallError<HostSignRawWithLegacyAccountError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Sign an extrinsic payload with a non-product account.
@@ -196,7 +196,7 @@ pub trait Signing: Send + Sync {
         HostSignPayloadWithLegacyAccountResponse,
         CallError<HostSignPayloadWithLegacyAccountError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Sign raw bytes or a message.
@@ -220,7 +220,7 @@ pub trait Signing: Send + Sync {
         _cx: &CallContext,
         _request: HostSignRawRequest,
     ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Sign an extrinsic payload.
@@ -254,6 +254,6 @@ pub trait Signing: Send + Sync {
         _cx: &CallContext,
         _request: HostSignPayloadRequest,
     ) -> Result<HostSignPayloadResponse, CallError<HostSignPayloadError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

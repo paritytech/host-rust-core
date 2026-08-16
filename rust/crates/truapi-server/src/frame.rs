@@ -143,6 +143,20 @@ pub fn subscription_ids(method: &str) -> Option<SubscriptionFrameIds> {
         })
 }
 
+/// Whether `id` opens a product call on this build (RFC 0027).
+///
+/// Walks the generated [`WIRE_TABLE`]; the gate test asserts this callable
+/// set exhaustively equals what the dispatcher routes.
+pub fn method_entry_registered(id: u8) -> bool {
+    WIRE_TABLE
+        .iter()
+        .any(|entry| match (&entry.kind, entry.host_initiated) {
+            (WireKind::Request(ids), _) => ids.request_id == id,
+            (WireKind::Subscription(ids), false) => ids.start_id == id,
+            (WireKind::Subscription(_), true) => false,
+        })
+}
+
 /// Unique ID generator with a prefix.
 pub struct IdFactory {
     prefix: String,

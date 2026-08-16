@@ -80,7 +80,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainHeadHeaderRequest,
     ) -> Result<RemoteChainHeadHeaderResponse, CallError<RemoteChainHeadHeaderError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Fetch a block body.
@@ -109,7 +109,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainHeadBodyRequest,
     ) -> Result<RemoteChainHeadBodyResponse, CallError<RemoteChainHeadBodyError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Query runtime storage at a specific block.
@@ -143,7 +143,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainHeadStorageRequest,
     ) -> Result<RemoteChainHeadStorageResponse, CallError<RemoteChainHeadStorageError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Invoke a runtime call at a specific block.
@@ -179,7 +179,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainHeadCallRequest,
     ) -> Result<RemoteChainHeadCallResponse, CallError<RemoteChainHeadCallError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Release pinned blocks.
@@ -212,7 +212,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainHeadUnpinRequest,
     ) -> Result<RemoteChainHeadUnpinResponse, CallError<RemoteChainHeadUnpinError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Continue a paused chain-head operation.
@@ -245,7 +245,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainHeadContinueRequest,
     ) -> Result<RemoteChainHeadContinueResponse, CallError<RemoteChainHeadContinueError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Stop a chain-head operation.
@@ -279,7 +279,7 @@ pub trait Chain: Send + Sync {
         _request: RemoteChainHeadStopOperationRequest,
     ) -> Result<RemoteChainHeadStopOperationResponse, CallError<RemoteChainHeadStopOperationError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Fetch the canonical genesis hash for a chain.
@@ -301,7 +301,7 @@ pub trait Chain: Send + Sync {
         _request: RemoteChainSpecGenesisHashRequest,
     ) -> Result<RemoteChainSpecGenesisHashResponse, CallError<RemoteChainSpecGenesisHashError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Fetch the display name of a chain.
@@ -322,7 +322,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainSpecChainNameRequest,
     ) -> Result<RemoteChainSpecChainNameResponse, CallError<RemoteChainSpecChainNameError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Fetch the JSON-encoded properties of a chain.
@@ -343,7 +343,7 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainSpecPropertiesRequest,
     ) -> Result<RemoteChainSpecPropertiesResponse, CallError<RemoteChainSpecPropertiesError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Broadcast a signed transaction.
@@ -368,7 +368,7 @@ pub trait Chain: Send + Sync {
         RemoteChainTransactionBroadcastResponse,
         CallError<RemoteChainTransactionBroadcastError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Stop a transaction broadcast.
@@ -401,7 +401,7 @@ pub trait Chain: Send + Sync {
         _request: RemoteChainTransactionStopRequest,
     ) -> Result<RemoteChainTransactionStopResponse, CallError<RemoteChainTransactionStopError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Resolve a chain identifier to its genesis hash against the host's
@@ -421,6 +421,6 @@ pub trait Chain: Send + Sync {
         _cx: &CallContext,
         _request: RemoteChainInfoRequest,
     ) -> Result<RemoteChainInfoResponse, CallError<RemoteChainInfoError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

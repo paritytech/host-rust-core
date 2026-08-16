@@ -32,7 +32,7 @@ pub trait Payment: Send + Sync {
         Subscription<HostPaymentBalanceSubscribeItem>,
         CallError<HostPaymentBalanceSubscribeError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Request a payment from the user.
@@ -59,7 +59,7 @@ pub trait Payment: Send + Sync {
         _cx: &CallContext,
         _request: HostPaymentRequest,
     ) -> Result<HostPaymentResponse, CallError<HostPaymentError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Subscribe to payment lifecycle updates for a specific payment.
@@ -99,7 +99,7 @@ pub trait Payment: Send + Sync {
         Subscription<HostPaymentStatusSubscribeItem>,
         CallError<HostPaymentStatusSubscribeError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Top up the user's payment balance.
@@ -118,6 +118,6 @@ pub trait Payment: Send + Sync {
         _cx: &CallContext,
         _request: HostPaymentTopUpRequest,
     ) -> Result<HostPaymentTopUpResponse, CallError<HostPaymentTopUpError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }
