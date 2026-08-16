@@ -252,8 +252,10 @@ dev-bootstrap: ## Prepare ignored generated/build artifacts needed by dotli prev
 	# Release profile, because dotli precaches the WASM in its service worker and
 	# vite-plugin-pwa fails the build outright on anything over its workbox limit.
 	# A dev-profile build is several times that limit; a release build is well
-	# under it. Set TRUAPI_WASM_PROFILE=dev to trade the dotli preview for a
-	# faster, debuggable WASM.
+	# under it. TRUAPI_WASM_PROFILE=dev is therefore not usable with `make dev`
+	# or `make e2e-dotli` at all: dev-link-check rejects the artifact rather than
+	# letting dotli fail deeper in. Build one directly with
+	# `TRUAPI_WASM_PROFILE=dev make wasm` if you need it for something else.
 	$(MAKE) wasm
 	cd $(PLAYGROUND) && yarn install --frozen-lockfile
 	cd $(DOTLI) && bun install --frozen-lockfile
@@ -266,12 +268,7 @@ dev-link-check: dotli-link ## Verify dotli can resolve the local @parity/truapi-
 	@test -f "$(HOST_WASM_PKG)/dist/index.js" || (echo "Missing @parity/truapi-host dist. Run: npm run build --prefix $(HOST_WASM_PKG)"; exit 1)
 	@test -f "$(HOST_WASM_WEB)" || (echo "Missing @parity/truapi-host web WASM glue. Run: make wasm"; exit 1)
 	@test -f "$(HOST_WASM_WEB_BINARY)" || (echo "Missing @parity/truapi-host web WASM binary. Run: make wasm"; exit 1)
-	@# dotli's service worker refuses to precache an oversized file and fails its
-	@# build, so an over-limit WASM cannot be previewed. Read the limit out of
-	@# dotli rather than restating it, so bumping the submodule cannot leave a
-	@# stale copy here. Only warns when the setting moves, since a dotli refactor
-	@# should not break this checkout's bootstrap.
-	@node -e 'const fs = require("node:fs"); const size = fs.statSync("$(HOST_WASM_WEB_BINARY)").size; const m = fs.readFileSync("$(DOTLI_HOST_VITE_CONFIG)", "utf8").match(/maximumFileSizeToCacheInBytes:\s*([\d*\s]+?),/); if (!m) { console.warn("could not read maximumFileSizeToCacheInBytes from $(DOTLI_HOST_VITE_CONFIG); skipping the WASM precache check"); process.exit(0); } const limit = m[1].split("*").reduce((a, b) => a * Number(b.trim()), 1); if (size > limit) { console.error("$(HOST_WASM_WEB_BINARY) is " + size + " bytes, over the " + limit + "-byte precache limit dotli sets; its build fails on this."); console.error("Rebuild with the release profile: make wasm"); process.exit(1); }'
+	@node scripts/check-dotli-wasm-precache.mjs "$(HOST_WASM_WEB_BINARY)" "$(DOTLI_HOST_VITE_CONFIG)"
 	@test -e "$(DOTLI_TRUAPI_LINK)/package.json" || (echo "dotli cannot resolve @parity/truapi. Run top-level: make dotli-link"; exit 1)
 	@test -e "$(DOTLI_HOST_WASM_LINK)/package.json" || (echo "dotli cannot resolve @parity/truapi-host. Run top-level: make dotli-link"; exit 1)
 	@test ! -e "$(DOTLI_UI_TRUAPI_SHADOW)/package.json" || (echo "$(DOTLI_UI_TRUAPI_SHADOW) shadows the local workspace link. Run top-level: make dotli-link"; exit 1)
