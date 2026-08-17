@@ -74,6 +74,39 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 
 Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
+## Statement-store allowance renewal
+
+Statement-store allowances are granted per period, so a host has to re-register the accounts it wants to keep writing. They are not revoked the moment the period ends: `Resources.StmtStoreGraceWindow` keeps an ended period's allowances active until cleanup catches up, 48 hours on `paseo-next-v2`. The core owns the ledger and the registration; the app owns only the schedule.
+
+Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
+
+```kotlin
+core.trackStatementRenewalTargets(
+    listOf(
+        NativeStatementRenewalTarget.WalletSso,
+        NativeStatementRenewalTarget.Account(deviceStatementKey, "device"),
+    ),
+)
+```
+
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not, so re-track raw accounts whenever the active identity changes. A pruned target is absent from the report rather than reported as failed. There is no reader and no untrack on this surface: a host cannot list what is tracked, cannot remove a wrong entry, and cannot detect a pruned one except by noticing it missing from a report. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+
+Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread. It needs an active session too, which is the whole difficulty here: a worker on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
+
+```kotlin
+val report = core.renewStatementAllowances()
+report.outcomes.forEach { Log.i(TAG, "${it.label}: ${it.status}") }
+if (report.slotsExhausted) {
+    // Every slot for this period is taken and none was replaceable.
+}
+```
+
+One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed run is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
+
+`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
+
+An account id must be exactly 32 bytes. Anything else throws `NativeRenewalTargetException.InvalidAccountId` before any chain work happens.
+
 ## Example
 
 > **Threading:** the Rust core invokes every `HostBridge` callback on a

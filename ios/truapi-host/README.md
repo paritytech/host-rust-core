@@ -96,6 +96,41 @@ The core's `Permissions` platform trait has two methods, and so does `HostCallba
 
 Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
+## Statement-store allowance renewal
+
+Statement-store allowances are granted per period, so a host has to re-register the accounts it wants to keep writing. They are not revoked the moment the period ends: `Resources.StmtStoreGraceWindow` keeps an ended period's allowances active until cleanup catches up, 48 hours on `paseo-next-v2`. The runtime owns the ledger and the registration; the app owns only the schedule.
+
+Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
+
+```swift
+try runtime.trackStatementRenewalTargets([
+    .walletSso,
+    .account(accountId: deviceStatementKey, label: "device"),
+])
+```
+
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. Re-track raw accounts whenever the active identity changes, or renewal quietly stops covering them — a pruned target is absent from the report rather than reported as failed. There is no reader and no untrack on this surface: a host cannot list what is tracked, cannot remove a wrong entry, and cannot detect a pruned one except by noticing it missing from a report. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+
+Then run a pass from a background task, off the main thread. It needs an active session too, which is the whole difficulty here: a `BGTaskScheduler` wake on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
+
+```swift
+let report = try runtime.renewStatementAllowances()
+for outcome in report.outcomes {
+    log("\(outcome.label): \(outcome.status)")
+}
+if report.slotsExhausted {
+    // Every slot for this period is taken and none was replaceable.
+}
+```
+
+One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed wake-up is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a `BGTaskScheduler` host should read a value under an hour as the boundary approaching rather than requesting a wake-up every hour for a pass that will almost always report `alreadyAllocated`.
+
+`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call. A pass has no cancellation, so several targets can outlast a short background budget; targets registered before the process is killed are not lost, and read back as already allocated next time.
+
+An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.InvalidAccountId` before any chain work happens.
+
+`TrUAPIHostCore` exposes the same four calls for hosts that use it instead of `TrUAPIHostRuntime`.
+
 ## Example
 
 > **Threading:** the Rust core invokes every `HostCallbacks` method on a
