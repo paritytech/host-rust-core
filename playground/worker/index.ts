@@ -21,6 +21,7 @@ const ROOM_NAME = "TrUAPI Playground";
 const DIAGNOSIS_COMMAND = "!diagnose";
 const ECHO_COMMAND = "!echo";
 const RENDER_MESSAGE_TYPE = "truapi-chat-diagnosis";
+const BOT_ID = "truapi-diagnosis-bot";
 const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const diagnosticRoomId = `${ROOM_ID}-diagnosis-${runId}`;
 const renderPayload = bytesToHex(
@@ -130,6 +131,40 @@ async function runStartupDiagnosis(): Promise<void> {
     throw new Error("postMessage did not return distinct message identifiers");
   }
   diagnosis.pass("Chat/post_message", "posted text and custom messages");
+
+  await runBotRegistrationProbe();
+}
+
+/**
+ * Isolated so a host without bot support reports only this row red. The id is
+ * stable: there is no unregister call, so a per-run id leaks a bot per boot.
+ */
+async function runBotRegistrationProbe(): Promise<void> {
+  const bot = { botId: BOT_ID, name: "TrUAPI Diagnosis Bot", icon: "" };
+  try {
+    const first = await chat.registerBot(bot);
+    if (first.isErr()) {
+      throw new Error(`registerBot failed: ${JSON.stringify(first.error)}`);
+    }
+
+    const second = await chat.registerBot(bot);
+    if (second.isErr()) {
+      throw new Error(
+        `second registerBot failed: ${JSON.stringify(second.error)}`,
+      );
+    }
+    if (second.value.status !== "Exists") {
+      throw new Error(
+        `second registerBot returned ${second.value.status}, expected Exists`,
+      );
+    }
+    diagnosis.pass(
+      "Chat/register_bot",
+      `first registration ${first.value.status}, repeat returned Exists`,
+    );
+  } catch (error) {
+    diagnosis.fail("Chat/register_bot", error);
+  }
 }
 
 async function ensureRoom(roomId: string, name: string): Promise<void> {

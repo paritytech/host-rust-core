@@ -151,22 +151,19 @@ function CompatibilitySection({
             {version.services
               .map((service) => ({
                 name: service.name,
-                // Only methods the matrix actually measured. Methods absent from
-                // the matrix (e.g. skipped services) are dropped, and a service
-                // left with none is not rendered at all.
-                methods: service.methods.flatMap((m) => {
+                // Every generated method, measured or not. A method with no
+                // matrix row renders as not-reported across all hosts rather
+                // than vanishing, so an unexercised method reads as a gap
+                // instead of shrinking the denominator.
+                methods: service.methods.map((m) => {
                   const id = `${service.name}/${m.name}`;
                   const row = byId.get(id);
-                  return row
-                    ? [
-                        {
-                          name: m.name,
-                          id,
-                          results: row.results,
-                          details: row.details,
-                        },
-                      ]
-                    : [];
+                  return {
+                    name: m.name,
+                    id,
+                    results: row?.results,
+                    details: row?.details,
+                  };
                 }),
               }))
               .filter((service) => service.methods.length > 0)
