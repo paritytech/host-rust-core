@@ -107,6 +107,20 @@ pub enum SlotError {
     },
 }
 
+/// Whether `text` reports an allowance period with no slot left.
+///
+/// Lives beside the [`SlotError`] `Display` strings it mirrors so a reworded
+/// variant is caught here rather than in whichever caller reads the text. The
+/// rule matches on "no free" and "slot" instead of a full rendering because the
+/// same fact also arrives as prose from an external wallet, whose wording this
+/// workspace does not control, and because a caller that misses the case
+/// retries something that cannot succeed until the period rolls over. Callers
+/// that need certainty must match [`SlotError`] itself.
+pub fn reports_exhausted_period(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("no free") && text.contains("slot")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 struct StatementStoreAllowanceEntry {
     account_id: [u8; 32],
@@ -954,5 +968,24 @@ mod tests {
     #[test]
     fn truncated_allowance_entry_has_no_account() {
         assert!(decode_entry(&[0x42; 32]).is_none());
+    }
+
+    /// The signing host rotates an exhausted auto-managed account off this
+    /// predicate, and the reason it reads is the registration error wrapped in
+    /// context, so the match has to survive both the wrapping and the casing.
+    #[test]
+    fn an_exhausted_period_is_reported_whatever_wraps_it() {
+        let error = SlotError::NoFreeStatementStoreSlot { period: 7, max: 10 };
+
+        assert!(reports_exhausted_period(&error.to_string()));
+        assert!(reports_exhausted_period(&format!(
+            "allowance registration for device failed: {error}"
+        )));
+        assert!(reports_exhausted_period(
+            &SlotError::NoFreeLongTermStorageSlot { period: 7, max: 4 }.to_string()
+        ));
+        assert!(!reports_exhausted_period(
+            &SlotError::FreeSlotsAwaitingSubmission { period: 7 }.to_string()
+        ));
     }
 }

@@ -8,17 +8,19 @@
 //! an external signing host and no producer in this repo emits it. The rule is
 //! therefore deliberately broad, and at least as broad as the host-side regexes
 //! it replaces — a host that drops its own matching for `kind` must not lose
-//! fast-fail. The tests cover both this workspace's `SlotError` renderings and
-//! wordings observed from real wallets.
+//! fast-fail. It lives in
+//! [`statement_allowance::slot`](crate::runtime::statement_allowance::slot),
+//! beside the `SlotError` `Display` strings it mirrors, so the signing host's
+//! own account rotation reads the same rule. The tests cover both this
+//! workspace's `SlotError` renderings and wordings observed from real wallets.
 
 use truapi_platform::LoginFailureKind;
 
+use crate::runtime::statement_allowance::slot::reports_exhausted_period;
+
 /// Recover the failure kind from a wallet-reported reason.
 pub(crate) fn classify_login_failure(reason: &str) -> LoginFailureKind {
-    let reason = reason.to_ascii_lowercase();
-    // Every phrasing seen for an exhausted allowance period names both, and no
-    // other failure this workspace can render names both.
-    if reason.contains("no free") && reason.contains("slot") {
+    if reports_exhausted_period(reason) {
         return LoginFailureKind::NoFreeAllowanceSlots;
     }
     LoginFailureKind::Other
