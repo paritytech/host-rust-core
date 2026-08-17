@@ -14,6 +14,8 @@ pub mod renewal;
 pub mod ring;
 pub mod rpc;
 pub mod slot;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
