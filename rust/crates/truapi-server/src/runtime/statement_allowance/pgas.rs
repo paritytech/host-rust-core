@@ -380,7 +380,10 @@ mod tests {
         let metadata = test_fixtures::asset_hub();
         let value_type = metadata
             .storage_value_type("MembersSubscriber", "RingRoots")
-            .expect("the fixture declares the subscriber storage");
+            .expect(
+                "the metadata fixture declares MembersSubscriber; \
+                 re-capture it and the roots blob together",
+            );
 
         let records = Vec::<RingCommitmentRecord>::decode_as_type(
             &mut &test_fixtures::ASSET_HUB_RING_5_ROOTS[..],
