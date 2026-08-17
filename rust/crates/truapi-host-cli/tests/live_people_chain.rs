@@ -219,3 +219,64 @@ async fn live_grace_window_still_leaves_a_full_period_of_slack() {
     );
     println!("live StmtStoreGraceWindow={grace}s");
 }
+
+/// Both personhood collections have to be real on the live chain: the identifier
+/// must address an existing `Members.Collections` entry, the slot budget must be
+/// declared, and the extension must name the collection.
+///
+/// This is the only part of the full-personhood path a device without full
+/// personhood can prove. Registering into the `People` ring still needs a
+/// full-personhood account, which needs attestation this test cannot perform.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn both_personhood_collections_resolve_on_the_live_chain() {
+    let rpc = connect().await;
+    let cache = ChainContextCache::default();
+    let chain = cache
+        .get(&stale_scoped_client().await)
+        .await
+        .expect("read the live chain context");
+    let at = rpc.finalized_head().await.expect("read the finalized head");
+
+    for collection in PersonhoodCollection::ALL {
+        // `Collections[identifier].ring_size` only decodes if the identifier
+        // addresses a real collection, so this is what catches a wrong
+        // identifier or wrong padding.
+        let exponent = alloc::ring::read_ring_exponent(&rpc, &chain.metadata, collection, &at)
+            .await
+            .unwrap_or_else(|err| panic!("{collection} collection is absent on chain: {err}"));
+        let slots = collection
+            .slots_per_period(&chain.metadata)
+            .unwrap_or_else(|err| panic!("{collection} declares no slot budget: {err}"));
+        let ring_index = alloc::ring::read_current_ring_index(&rpc, collection)
+            .await
+            .unwrap_or_else(|err| panic!("{collection} has no current ring: {err}"));
+        let (_, variant) = chain
+            .metadata
+            .as_resources_variant_indices("RegisterStatementStoreAllowance", collection)
+            .unwrap_or_else(|err| panic!("{collection} has no extension variant: {err}"));
+
+        println!(
+            "live {collection}: slots={slots} ring_exponent={exponent} \
+             current_ring_index={ring_index} extension_variant={variant}"
+        );
+        assert!(slots > 0, "{collection} declares a zero slot budget");
+    }
+
+    // The pooled budget is what the fix delivers, so assert the two differ
+    // rather than silently reading the same constant twice.
+    let people = PersonhoodCollection::People
+        .slots_per_period(&chain.metadata)
+        .expect("People slot budget");
+    let lite = PersonhoodCollection::LitePeople
+        .slots_per_period(&chain.metadata)
+        .expect("LitePeople slot budget");
+    assert!(
+        people > lite,
+        "full personhood should carry the wider budget: People={people} LitePeople={lite}"
+    );
+    println!(
+        "live pooled budget={} (People {people} + LitePeople {lite})",
+        people + lite
+    );
+}
