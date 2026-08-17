@@ -318,6 +318,41 @@ mod tests {
         );
     }
 
+    /// The collection the extension declares is what the runtime verifies the
+    /// proof against, so each collection has to reach a distinct variant index
+    /// resolved from metadata rather than a hardcoded one.
+    ///
+    /// `AsPgas` lives on Asset Hub, which has no offline fixture, so its
+    /// collection variant is only exercised by the live Asset Hub test.
+    #[test]
+    fn each_collection_reaches_its_own_extension_variant() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let proof = vec![0xEE; 785];
+
+        let mut encoded = Vec::new();
+        for collection in PersonhoodCollection::ALL {
+            let resources = build_as_resources_extra(&metadata, &proof, 3, 9, collection).unwrap();
+            let long_term =
+                build_long_term_storage_extra(&metadata, &proof, 3, 9, collection).unwrap();
+            // The collection is the last byte of each `AsResources` payload.
+            encoded.push((
+                collection,
+                *resources.last().unwrap(),
+                *long_term.last().unwrap(),
+            ));
+        }
+
+        let [people, lite] = <[_; 2]>::try_from(encoded).unwrap();
+        assert_eq!(people.0, PersonhoodCollection::People);
+        assert_eq!(lite.0, PersonhoodCollection::LitePeople);
+        assert_eq!(
+            (people.1, lite.1),
+            (0x00, 0x01),
+            "MembershipCollection declares People before LitePeople in the fixture"
+        );
+        assert_eq!((people.2, lite.2), (0x00, 0x01));
+    }
+
     #[test]
     fn as_resources_extra_wraps_proof_as_bytes() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
