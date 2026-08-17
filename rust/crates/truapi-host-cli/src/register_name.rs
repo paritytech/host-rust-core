@@ -35,7 +35,8 @@ pub struct RegisterNameConfig {
     pub network: NetworkConfig,
     /// BIP-39 entropy of the signing host's root account.
     pub entropy: Vec<u8>,
-    /// Base label to register (no digits, 6+ characters).
+    /// Base label to register: lowercase ASCII letters only (`is_person_label`
+    /// in the gateway pallet), at most 32 bytes.
     pub label: String,
     /// Dotted lite username to link (`name.NN`). Without this and without
     /// `chat_key`, the account's own lite username is looked up and linked.
@@ -51,9 +52,8 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     // (as an invalid transaction or a revert), so check the cheap rules here.
     if !is_full_person_label(&config.label) {
         bail!(
-            "label {:?} is not a full-person base label: lowercase ASCII letters, digits and \
-             hyphens, not starting or ending with a hyphen, not ending with a digit, at most \
-             {MAX_BASE_LABEL_LEN} bytes",
+            "label {:?} is not a full-person base label: lowercase ASCII letters only, at \
+             most {MAX_BASE_LABEL_LEN} bytes",
             config.label
         );
     }

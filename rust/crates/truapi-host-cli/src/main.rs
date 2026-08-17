@@ -175,7 +175,7 @@ enum Command {
         /// Network preset to use.
         #[arg(long, value_enum, default_value = "paseo-next-v2")]
         network: Network,
-        /// Base label to register (no digits).
+        /// Base label to register (lowercase ASCII letters only).
         #[arg(long)]
         label: String,
         /// Dotted lite username to link (`name.NN`). Defaults to the
