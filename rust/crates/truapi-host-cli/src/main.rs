@@ -268,6 +268,14 @@ struct SigningHostArgs {
     /// Approve every confirmation without prompting on the CLI.
     #[arg(long)]
     auto_accept: bool,
+    /// Also serve products over the localhost WebSocket bridge the native
+    /// mobile hosts use, on this port (0 picks one). Prints the URL and token.
+    ///
+    /// The frame listener stays up alongside it; this is an additional
+    /// transport, not a replacement, so the same runtime can be driven either
+    /// way in one run.
+    #[arg(long = "ws-bridge")]
+    ws_bridge: Option<u16>,
     /// Execute one slash command without starting the terminal UI.
     #[command(subcommand)]
     action: Option<SigningHostAction>,
@@ -834,6 +842,16 @@ async fn run_signing_host(
     });
     let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> =
         session.runtime_factory.clone();
+
+    // Held for the run: dropping the handle stops the listener.
+    let _ws_bridge = match args.ws_bridge {
+        Some(port) => Some(start_ws_bridge(
+            port,
+            session.runtime_factory.clone(),
+            &args.product_id,
+        )?),
+        None => None,
+    };
 
     if let Some(script) = args.script {
         let product_id = product.current();
@@ -1426,6 +1444,36 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
         mark_current_account_exhausted(session)?;
     }
     Ok(())
+}
+
+/// Serve products over the localhost WebSocket bridge the native mobile hosts
+/// use, in addition to the frame listener.
+///
+/// The bridge is the one piece of the native path the CLI otherwise cannot
+/// exercise: allocation logic and chain access are shared with the frame
+/// transport, so a fault that reaches only one of them is a transport fault.
+fn start_ws_bridge(
+    bind_port: u16,
+    factory: Arc<dyn frame_server::ProductRuntimeFactory>,
+    product_id: &str,
+) -> Result<truapi_server::ws_bridge::WsBridge> {
+    use truapi_platform::ProductContext;
+    use truapi_server::ws_bridge::WsBridge;
+
+    let product = ProductContext::new(product_id.to_string())
+        .map_err(|err| anyhow::anyhow!("invalid product id for the ws bridge: {err:?}"))?;
+    let runtime_factory = Arc::new(move |sink| factory.product_runtime(product.clone(), sink));
+    let (bridge, endpoint) = WsBridge::start(
+        bind_port,
+        runtime_factory,
+        Arc::new(|marker: &str, detail: &str| {
+            tracing::debug!(marker, detail, "ws bridge");
+        }),
+    )?;
+    terminal_ui::output_event(SystemEvent::FramesListening {
+        url: format!("ws://127.0.0.1:{}/?t={}", endpoint.port, endpoint.token),
+    });
+    Ok(bridge)
 }
 
 fn mark_current_account_exhausted(session: &SigningHostSession) -> Result<()> {

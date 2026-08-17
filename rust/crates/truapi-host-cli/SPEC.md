@@ -272,6 +272,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
+| `--ws-bridge <port>` | off | Also serve products over the localhost WebSocket bridge the native mobile hosts use. `0` picks a port. Prints the URL and token; the frame listener stays up alongside it. |
 
 `HOST_CLI_SIGNER_MNEMONIC` supplies `--mnemonic` when the option is omitted.
 
@@ -668,6 +669,7 @@ The top-level `--script` option does not update remembered `/script` state.
 | `ring-vrf-smoke.ts` | Verify RFC-0024 registration, listing, alias, non-membership proof, and direct signing behavior. |
 | `preimage-smoke.ts` | Exercise Bulletin preimage submission and lookup. |
 | `smart-contract-allowance-smoke.ts` | Requests a PGAS allowance for product account index 0 and reports the outcome. |
+| `ws-bridge-alloc.ts` | Allocates every resource and prints the outcomes with a wall-clock time. Point `TRUAPI_FRAME_URL` at a `--ws-bridge` URL to exercise the transport the native mobile hosts use. |
 
 `battery.ts` writes to `explorer/diagnosis-reports/spa/<role>-cli.md` unless
 `TRUAPI_BATTERY_REPORT_PATH` overrides the destination. `scripts/battery.sh` in
