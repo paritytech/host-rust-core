@@ -19,7 +19,10 @@ use truapi_server::host_logic::dotns_gateway::{
 /// discovery.
 ///
 /// Needed on networks whose deployed dispatcher exposes no target getter. On
-/// paseo-next-v2 that address is `0x1c858C31497a7715C0D56A11208feB6b74FaB2aB`.
+/// paseo-next-v2 (post-reset) that address is
+/// `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b`; the authoritative value is the
+/// paseo-assethub entry in `DEPLOYMENTS.md` of paritytech/dotns, which changes
+/// on every chain reset.
 pub const DOTNS_POP_CONTROLLER_ENV: &str = "HOST_CLI_DOTNS_POP_CONTROLLER";
 
 /// One Asset Hub RPC connection for a batch of dotNS reads.

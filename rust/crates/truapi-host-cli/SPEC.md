@@ -1529,7 +1529,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
-| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery. Required on networks whose deployed dispatcher exposes no target getter. On paseo-next-v2 that address is `0x1c858C31497a7715C0D56A11208feB6b74FaB2aB`. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery. Required on networks whose deployed dispatcher exposes no target getter. On paseo-next-v2 (post-reset) that address is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b`; the authoritative value is the paseo-assethub entry in `DEPLOYMENTS.md` of paritytech/dotns, which changes on every chain reset. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |
