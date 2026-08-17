@@ -220,9 +220,11 @@ pub enum HostAccountCreateProofError {
     KeyNotRegistered,
     /// The key handle is not registered for the requested ring.
     KeyNotInRing,
-    /// The foreign key owner has not allowlisted the caller.
+    /// The foreign key owner's manifest allowlist refuses the caller. No manifest
+    /// carries that field yet, so a foreign key is put to the user instead and a
+    /// declined request is [`Self::Rejected`].
     NotAllowlisted,
-    /// User or host rejected.
+    /// User or host rejected. Covers a declined foreign-key confirmation.
     Rejected,
     /// Catch-all.
     Unknown {
@@ -334,9 +336,11 @@ pub enum HostAccountRingVrfSignError {
     NotConnected,
     /// The key handle is not registered.
     KeyNotRegistered,
-    /// The foreign key owner has not allowlisted the caller.
+    /// The foreign key owner's manifest allowlist refuses the caller. No manifest
+    /// carries that field yet, so a foreign key is put to the user instead and a
+    /// declined request is [`Self::Rejected`].
     NotAllowlisted,
-    /// User or host rejected.
+    /// User or host rejected. Covers a declined foreign-key confirmation.
     Rejected,
     /// Catch-all.
     Unknown {

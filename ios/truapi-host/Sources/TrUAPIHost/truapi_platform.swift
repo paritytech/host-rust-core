@@ -781,6 +781,101 @@ public func FfiConverterTypeCreateProofReview_lower(_ value: CreateProofReview) 
 
 
 /**
+ * Review shown before a product uses another product's registered ring-VRF key
+ * (RFC-0024).
+ *
+ * Both outputs are bearer tokens the caller can spend without the Host: a proof
+ * for its context's alias, a signature for the key itself. `message` is opaque,
+ * so nothing here establishes what the result will authorize — the decision is
+ * whether the calling product is trusted with the owner's key at all.
+ */
+public struct ForeignRingVrfKeyReview: Equatable, Hashable {
+    /**
+     * Product making the request.
+     */
+    public var callingProductId: String
+    /**
+     * Registered key the request would use, owned by another product.
+     */
+    public var keyHandle: ProductAccountId
+    /**
+     * What the key would produce.
+     */
+    public var keyUse: ForeignRingVrfUse
+    /**
+     * Opaque message bound into the proof or signature.
+     */
+    public var message: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Product making the request.
+         */callingProductId: String,
+        /**
+         * Registered key the request would use, owned by another product.
+         */keyHandle: ProductAccountId,
+        /**
+         * What the key would produce.
+         */keyUse: ForeignRingVrfUse,
+        /**
+         * Opaque message bound into the proof or signature.
+         */message: Data) {
+        self.callingProductId = callingProductId
+        self.keyHandle = keyHandle
+        self.keyUse = keyUse
+        self.message = message
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ForeignRingVrfKeyReview: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeForeignRingVrfKeyReview: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ForeignRingVrfKeyReview {
+        return
+            try ForeignRingVrfKeyReview(
+                callingProductId: FfiConverterString.read(from: &buf),
+                keyHandle: FfiConverterTypeProductAccountId.read(from: &buf),
+                keyUse: FfiConverterTypeForeignRingVrfUse.read(from: &buf),
+                message: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ForeignRingVrfKeyReview, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.callingProductId, into: &buf)
+        FfiConverterTypeProductAccountId.write(value.keyHandle, into: &buf)
+        FfiConverterTypeForeignRingVrfUse.write(value.keyUse, into: &buf)
+        FfiConverterData.write(value.message, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeForeignRingVrfKeyReview_lift(_ buf: RustBuffer) throws -> ForeignRingVrfKeyReview {
+    return try FfiConverterTypeForeignRingVrfKeyReview.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeForeignRingVrfKeyReview_lower(_ value: ForeignRingVrfKeyReview) -> RustBuffer {
+    return FfiConverterTypeForeignRingVrfKeyReview.lower(value)
+}
+
+
+/**
  * One chain a host serves: a protocol chain role mapped to the concrete
  * chain of the host's configured environment.
  */
@@ -1757,6 +1852,92 @@ public func FfiConverterTypeDevicePermissionStatus_lower(_ value: DevicePermissi
 
 
 /**
+ * What a foreign registered ring-VRF key would produce.
+ */
+
+public enum ForeignRingVrfUse: Equatable, Hashable {
+
+    /**
+     * A ring-VRF proof, scoped to a context and a ring.
+     */
+    case proof(
+        /**
+         * Product-scoped context the proof's alias is bound to.
+         */context: ProductProofContext,
+        /**
+         * Ring the proof is generated against.
+         */ringLocation: RingLocation
+    )
+    /**
+     * A member-key signature. Linkable to every other use of the key, with no
+     * context or ring bounding what it authorizes.
+     */
+    case signature
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ForeignRingVrfUse: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeForeignRingVrfUse: FfiConverterRustBuffer {
+    typealias SwiftType = ForeignRingVrfUse
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ForeignRingVrfUse {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .proof(context: try FfiConverterTypeProductProofContext.read(from: &buf), ringLocation: try FfiConverterTypeRingLocation.read(from: &buf)
+        )
+
+        case 2: return .signature
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ForeignRingVrfUse, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .proof(context,ringLocation):
+            writeInt(&buf, Int32(1))
+            FfiConverterTypeProductProofContext.write(context, into: &buf)
+            FfiConverterTypeRingLocation.write(ringLocation, into: &buf)
+
+
+        case .signature:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeForeignRingVrfUse_lift(_ buf: RustBuffer) throws -> ForeignRingVrfUse {
+    return try FfiConverterTypeForeignRingVrfUse.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeForeignRingVrfUse_lower(_ value: ForeignRingVrfUse) -> RustBuffer {
+    return FfiConverterTypeForeignRingVrfUse.lower(value)
+}
+
+
+
+/**
  * Why a login attempt failed, for hosts that need to act on the cause rather
  * than only display it.
  */
@@ -2344,6 +2525,11 @@ public enum UserConfirmationReview: Equatable, Hashable {
     case accountAccess(AccountAccessReview
     )
     /**
+     * Allow a product to use another product's registered ring-VRF key.
+     */
+    case foreignRingVrfKey(ForeignRingVrfKeyReview
+    )
+    /**
      * Sign an RFC-0023 VRF transcript with a product account.
      */
     case signVrf(SignVrfReview
@@ -2404,10 +2590,13 @@ public struct FfiConverterTypeUserConfirmationReview: FfiConverterRustBuffer {
         case 10: return .accountAccess(try FfiConverterTypeAccountAccessReview.read(from: &buf)
         )
 
-        case 11: return .signVrf(try FfiConverterTypeSignVrfReview.read(from: &buf)
+        case 11: return .foreignRingVrfKey(try FfiConverterTypeForeignRingVrfKeyReview.read(from: &buf)
         )
 
-        case 12: return .productSubtree(try FfiConverterTypeProductSubtreeReview.read(from: &buf)
+        case 12: return .signVrf(try FfiConverterTypeSignVrfReview.read(from: &buf)
+        )
+
+        case 13: return .productSubtree(try FfiConverterTypeProductSubtreeReview.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2468,13 +2657,18 @@ public struct FfiConverterTypeUserConfirmationReview: FfiConverterRustBuffer {
             FfiConverterTypeAccountAccessReview.write(v1, into: &buf)
 
 
-        case let .signVrf(v1):
+        case let .foreignRingVrfKey(v1):
             writeInt(&buf, Int32(11))
+            FfiConverterTypeForeignRingVrfKeyReview.write(v1, into: &buf)
+
+
+        case let .signVrf(v1):
+            writeInt(&buf, Int32(12))
             FfiConverterTypeSignVrfReview.write(v1, into: &buf)
 
 
         case let .productSubtree(v1):
-            writeInt(&buf, Int32(12))
+            writeInt(&buf, Int32(13))
             FfiConverterTypeProductSubtreeReview.write(v1, into: &buf)
 
         }

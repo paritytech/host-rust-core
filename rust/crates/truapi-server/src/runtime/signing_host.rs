@@ -73,8 +73,8 @@ use sso_replay::SsoReplayLocks;
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
 use truapi_platform::{
-    PermissionAuthorizationStatus, Platform, ProductContext, SignVrfReview, UserConfirmationReview,
-    normalize_product_identifier,
+    ForeignRingVrfUse, PermissionAuthorizationStatus, Platform, ProductContext, SignVrfReview,
+    UserConfirmationReview, normalize_product_identifier,
 };
 use zeroize::Zeroizing;
 
@@ -490,19 +490,24 @@ impl SigningHost {
         })
     }
 
-    fn require_owned_ring_vrf_key(
+    /// Authorize use of `handle`, prompting the user when it belongs to another
+    /// product. The prompt runs here rather than at the wire frontend so requests
+    /// arriving over a pairing session are gated on the device holding the key.
+    async fn authorize_ring_vrf_key_use(
+        &self,
         calling_product_id: &str,
         handle: &v01::ProductAccountId,
+        key_use: ForeignRingVrfUse,
+        message: &[u8],
     ) -> Result<(), RingVrfError> {
-        let caller = normalize_product_identifier(calling_product_id).map_err(|error| {
-            RingVrfError::Unknown {
-                reason: error.to_string(),
-            }
-        })?;
-        if caller != handle.dot_ns_identifier {
-            return Err(RingVrfError::NotAllowlisted);
-        }
-        Ok(())
+        super::foreign_ring_vrf_key_authorization(
+            self.services.platform.as_ref(),
+            calling_product_id,
+            handle,
+            key_use,
+            message,
+        )
+        .await
     }
 
     pub(crate) async fn ring_vrf_providers(
@@ -854,7 +859,16 @@ impl ProductAuthority for SigningHost {
         request: CreateProofAuthorityRequest,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)?;
+        self.authorize_ring_vrf_key_use(
+            &request.calling_product_id,
+            &request.key_handle,
+            ForeignRingVrfUse::Proof {
+                context: request.context.clone(),
+                ring_location: request.ring_location.clone(),
+            },
+            &request.message,
+        )
+        .await?;
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &request.key_handle, &request.ring_location)
             .await?;
@@ -955,7 +969,13 @@ impl ProductAuthority for SigningHost {
         request: RingVrfSignAuthorityRequest,
     ) -> Result<Vec<u8>, RingVrfError> {
         self.require_current_session(session)?;
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)?;
+        self.authorize_ring_vrf_key_use(
+            &request.calling_product_id,
+            &request.key_handle,
+            ForeignRingVrfUse::Signature,
+            &request.message,
+        )
+        .await?;
         let entropy = self
             .resolve_registered_ring_vrf_key(session, &request.key_handle)
             .await?;
@@ -1287,7 +1307,9 @@ mod tests {
     };
     use truapi::versioned::signing::{HostSignRawError, HostSignRawRequest, HostSignRawResponse};
     use truapi::{CallContext, CallError, v01};
-    use truapi_platform::{HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig};
+    use truapi_platform::{
+        ForeignRingVrfUse, HostInfo, Platform, PlatformInfo, ProductContext, SigningHostConfig,
+    };
     use verifiable::ring::RingDomainSize;
 
     const ENTROPY: [u8; 16] = [0xAB; 16];
@@ -1593,7 +1615,7 @@ mod tests {
     }
 
     #[test]
-    fn foreign_alias_prompts_but_foreign_proof_is_refused_without_a_prompt() {
+    fn a_denied_foreign_key_prompt_refuses_the_proof_and_the_signature() {
         let platform = Arc::new(StubPlatform::default());
         let authority =
             SigningHostRole::new_with_ring_resolver(platform.clone(), full_person_ring_resolver());
@@ -1608,18 +1630,6 @@ mod tests {
         let ring_location = full_person_ring_location();
         register_full_person_key(&authority, &session, &ring_location);
 
-        let alias = futures::executor::block_on(authority.account_alias(
-            &cx,
-            &session,
-            AccountAliasAuthorityRequest {
-                calling_product_id: "myapp.dot".to_string(),
-                key_handle: full_person_key_handle(),
-                context: context.clone(),
-                ring_location: ring_location.clone(),
-            },
-        ));
-        assert_eq!(alias, Err(RingVrfError::Rejected));
-
         let proof = futures::executor::block_on(authority.create_proof(
             &cx,
             &session,
@@ -1631,7 +1641,107 @@ mod tests {
                 message: b"prove me".to_vec(),
             },
         ));
-        assert_eq!(proof, Err(RingVrfError::NotAllowlisted));
+        assert_eq!(proof, Err(RingVrfError::Rejected));
+
+        let signature = futures::executor::block_on(authority.ring_vrf_sign(
+            &cx,
+            &session,
+            RingVrfSignAuthorityRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                key_handle: full_person_key_handle(),
+                message: b"sign me".to_vec(),
+            },
+        ));
+        assert_eq!(signature, Err(RingVrfError::Rejected));
+
+        // Both calls asked, and neither answer was cached: a second identical
+        // request must prompt again rather than reuse the refusal.
+        let reviews = platform
+            .foreign_ring_vrf_key_reviews
+            .lock()
+            .expect("foreign ring-VRF key review list mutex poisoned");
+        assert_eq!(reviews.len(), 2);
+        assert_eq!(reviews[0].calling_product_id, "myapp.dot");
+        assert_eq!(
+            reviews[0].key_handle.dot_ns_identifier,
+            full_person_key_handle().dot_ns_identifier
+        );
+        assert!(matches!(
+            reviews[0].key_use,
+            ForeignRingVrfUse::Proof { .. }
+        ));
+        assert_eq!(reviews[0].message, b"prove me".to_vec());
+        assert!(matches!(reviews[1].key_use, ForeignRingVrfUse::Signature));
+        assert_eq!(reviews[1].message, b"sign me".to_vec());
+    }
+
+    #[test]
+    fn an_approved_foreign_key_prompt_yields_the_owner_s_own_signature() {
+        let platform = Arc::new(StubPlatform {
+            foreign_ring_vrf_key_confirmed: true,
+            ..StubPlatform::default()
+        });
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let cx = CallContext::default();
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        let owner = full_person_key_handle().dot_ns_identifier;
+        let sign = |calling_product_id: &str| {
+            futures::executor::block_on(authority.ring_vrf_sign(
+                &cx,
+                &session,
+                RingVrfSignAuthorityRequest {
+                    calling_product_id: calling_product_id.to_string(),
+                    key_handle: full_person_key_handle(),
+                    message: b"sign me".to_vec(),
+                },
+            ))
+        };
+
+        let foreign = sign("myapp.dot").expect("approved foreign signature");
+        let own = sign(&owner).expect("own signature");
+        assert_eq!(foreign, own);
+
+        // Only the foreign caller was asked; the owner is authorized implicitly.
+        let reviews = platform
+            .foreign_ring_vrf_key_reviews
+            .lock()
+            .expect("foreign ring-VRF key review list mutex poisoned");
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(reviews[0].calling_product_id, "myapp.dot");
+    }
+
+    #[test]
+    fn foreign_alias_is_still_gated_by_the_account_access_grant() {
+        let platform = Arc::new(StubPlatform::default());
+        let authority =
+            SigningHostRole::new_with_ring_resolver(platform.clone(), full_person_ring_resolver());
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+        let session = authority.current_session().expect("active session");
+        let cx = CallContext::default();
+        let ring_location = full_person_ring_location();
+        register_full_person_key(&authority, &session, &ring_location);
+
+        let alias = futures::executor::block_on(authority.account_alias(
+            &cx,
+            &session,
+            AccountAliasAuthorityRequest {
+                calling_product_id: "myapp.dot".to_string(),
+                key_handle: full_person_key_handle(),
+                context: v01::ProductProofContext {
+                    product_id: "other.dot".to_string(),
+                    suffix: v01::DerivationIndex::Index(0),
+                },
+                ring_location,
+            },
+        ));
+        assert_eq!(alias, Err(RingVrfError::Rejected));
         assert_eq!(
             platform
                 .account_access_reviews
