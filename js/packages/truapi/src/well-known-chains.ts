@@ -20,5 +20,5 @@ export const PASEO_NEXT_V2_INDIVIDUALITY = {
   name: "Paseo Next v2 Individuality",
   network: "Testnet",
   genesis:
-    "0xc5af1826b31493f08b7e2a823842f98575b806a784126f28da9608c68665afa5",
+    "0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
 } as const satisfies WellKnownChain;
