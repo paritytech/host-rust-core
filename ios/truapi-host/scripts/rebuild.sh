@@ -26,6 +26,6 @@ sh "$PACKAGE_ROOT/scripts/sync-bindings.sh"
 sh "$PACKAGE_ROOT/scripts/stage-xcframework.sh"
 
 npm --prefix "$TRUAPI_ROOT/js/container" install --no-fund --no-audit
-npm --prefix "$TRUAPI_ROOT/js/container" run build
+npm --prefix "$TRUAPI_ROOT/js/container" run build:ios
 
 echo "TrUAPIHost package outputs rebuilt in $PACKAGE_ROOT"

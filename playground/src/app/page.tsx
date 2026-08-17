@@ -272,9 +272,14 @@ export default function PlaygroundPage() {
   const handleRetryDiagnosis = useCallback(
     async (serviceName: string, methodName: string) => {
       if (isTestRunning) return;
-      await runSingleTest(services, serviceName, methodName, (id, entry) => {
-        setTestResults((prev) => ({ ...prev, [id]: entry }));
-      });
+      await runSingleTest(
+        services,
+        serviceName,
+        methodName,
+        (id, entry) => {
+          setTestResults((prev) => ({ ...prev, [id]: entry }));
+        },
+      );
     },
     [isTestRunning],
   );
