@@ -52,7 +52,10 @@ pub enum RemotePermission {
         /// Domain patterns requested by the product.
         domains: Vec<String>,
     },
-    /// WebRTC media access.
+    /// WebRTC access. Advertised and persistable, but host enforcement is not
+    /// yet implemented: the lockdown container leaves `RTCPeerConnection`
+    /// available to products, and camera/microphone capture is gated by the OS
+    /// permission prompts rather than by this permission.
     #[display("WebRTC connections")]
     WebRtc,
     /// Submitting transactions on behalf of the user via `remote_chain_transaction_broadcast`.
