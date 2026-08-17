@@ -91,9 +91,9 @@ pub(crate) struct AuthoritySession {
     pub public_key: [u8; 32],
     /// Identity account resolved from the signing host, when available.
     pub identity_account_id: Option<[u8; 32]>,
-    /// Lightweight username resolved from People-chain identity, when available.
+    /// Lightweight username resolved from the dotNS contracts on Asset Hub, when available.
     pub lite_username: Option<String>,
-    /// Fully qualified username resolved from People-chain identity, when available.
+    /// Fully qualified username resolved from the dotNS contracts on Asset Hub, when available.
     pub full_username: Option<String>,
     /// Opaque session token used to reject stale pre-confirmation snapshots.
     pub validation_id: Vec<u8>,

@@ -334,17 +334,17 @@ export interface SessionUiInfo {
   publicKey: Bytes32;
 
   /**
-   * Wallet identity account id used for People-chain username lookup.
+   * Wallet identity account id used for the dotNS username lookup on Asset Hub.
    */
   identityAccountId?: Bytes32;
 
   /**
-   * Short username from the People-chain identity record.
+   * Short username from the dotNS identity record on Asset Hub.
    */
   liteUsername?: string;
 
   /**
-   * Fully qualified username from the People-chain identity record.
+   * Fully qualified username from the dotNS identity record on Asset Hub.
    */
   fullUsername?: string;
 }

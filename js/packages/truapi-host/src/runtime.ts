@@ -77,7 +77,7 @@ export interface ProductRuntimeConfig {
     /** Platform or operating-system version. */
     version?: string;
   };
-  /** People-chain configuration used for identity lookup. */
+  /** People-chain configuration used for statement-store SSO. */
   people: {
     /** People-chain genesis hash. */
     genesisHash: string | Uint8Array;

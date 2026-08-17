@@ -21,7 +21,8 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
-| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username. |
+| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
 | `pgas-check` | Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring membership on People, whether Asset Hub has imported that ring revision, the day's first unclaimed slot, and the `Pgas.claim_pgas` extrinsic. |
 
@@ -406,10 +407,15 @@ HOST_CLI_SIGNER_MNEMONIC="spin battle …" truapi-host signing-host --deeplink '
 truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 ```
 
-Both hosts take `--network` (default `paseo-next-v2`). The network preset owns
+Both hosts take `--network` (default `paseo-next-v2`; `previewnet` is the
+other preset). The network preset owns
 the identity backend URL, the People, Bulletin and Asset Hub RPCs, and their
 genesis hashes; there is
-no public `--statement-store` flag. Both also accept `--frame-listen <address>`
+no public `--statement-store` flag. `HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
+the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
+supplies its bearer token instead of the CLI minting one; and
+`HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
+discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
 

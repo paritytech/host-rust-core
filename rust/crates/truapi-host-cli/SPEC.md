@@ -1110,9 +1110,13 @@ selection files.
 
 ## 14. Network and transport
 
-### 14.1 Network preset
+### 14.1 Network presets
 
-v0.1 supports only `paseo-next-v2`.
+Two presets are selectable with `--network`: `paseo-next-v2` (default) and
+`previewnet`. Every preset is a test network; the account store keeps BIP-39
+entropy for disposable test identities only.
+
+`paseo-next-v2`:
 
 | Purpose | Value |
 | --- | --- |
@@ -1124,7 +1128,20 @@ v0.1 supports only `paseo-next-v2`.
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
 | Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
 
-There are no public endpoint override flags.
+`previewnet`:
+
+| Purpose | Value |
+| --- | --- |
+| Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
+| People RPC | `wss://previewnet.substrate.dev/people` |
+| People genesis | `0x3138c6d4ce58c760047a413c2a930e919b4673a841ab4890de59aac3bd037f3d` |
+| Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
+| Bulletin genesis | `0x2778b1c94c4362e49a54be57d3056bc714f3712e4486625312704ffb74eb973d` |
+| Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
+| Asset Hub genesis | `0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210` |
+
+There are no public endpoint override flags. `HOST_CLI_IDENTITY_BACKEND_BASE`
+replaces only the identity backend base URL (§21).
 
 Every role the preset serves — People, Bulletin and Asset Hub — is always routed,
 because host internals require all three: statement-store traffic addressed to the
@@ -1132,7 +1149,7 @@ People genesis, preimage submission, and PGAS claims plus dotNS username reads
 respectively. The SSO sentinel is
 a separate case — it is an unmapped genesis and reaches People through the fallback
 below, not through People's own route. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
-preset carries without serving them as a role, of which `paseo-next-v2` has none.
+preset carries without serving them as a role, of which neither preset has any.
 
 The all-zero SSO sentinel and every genesis hash not present in the active
 route map fall back to the People RPC.
@@ -1464,7 +1481,44 @@ IDENTITY_ERROR path=<path> account=<ss58> error=<reason>
 Per-path RPC errors are printed and do not make the command itself fail.
 Mnemonic parsing failures do fail the command. The mnemonic is not persisted.
 
-### 19.2 `alloc-check`
+### 19.2 `register-name`
+
+```text
+truapi-host register-name \
+  --mnemonic <BIP-39> \
+  --label <base-label> \
+  [--network paseo-next-v2] \
+  [--link-lite <name.NN> | --chat-key <65-byte-hex>]
+```
+
+Registers `label` as the full-person username of the mnemonic's RFC-0022
+`uid.dot` identity account, through `DotnsGateway.register_name` on Asset Hub.
+The account must be a recognized full person: its ring-VRF key must be built
+into a People-collection ring root on People, and Asset Hub's
+`members-subscriber` must already hold that root revision (the command waits for
+it). The People ring, its members and its root revision are read at one
+finalized People block.
+
+`--link-lite` links the new name to a dotted lite username, inheriting that
+name's chat key; without it and without `--chat-key`, the account's own lite
+username (from dotNS) is linked. `--chat-key` registers standalone with the
+given ECDH key. The two are mutually exclusive.
+
+The transaction is a General (v5) extrinsic authorized by the `AsDotnsGateway`
+extension: `RegisterFullName { proof, ring_index, revision, signature }`, where
+`signature` is the account's sr25519 signature over the inherited-implication
+digest and `proof` the ring-VRF membership proof, built for the `revision` read
+above. `RestrictOrigins` carries `true`. Success prints:
+
+```text
+REGISTER_SUBMITTED label=<label> block=<hash>
+```
+
+and the command then waits until `DotnsGateway.AccountAlias` records the
+account. Runtimes whose `RegisterFullName` shape differs are rejected before
+signing.
+
+### 19.3 `alloc-check`
 
 ```text
 truapi-host alloc-check \
@@ -1529,13 +1583,13 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
-| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery. Required on networks whose deployed dispatcher exposes no target getter. On paseo-next-v2 (post-reset) that address is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b`; the authoritative value is the paseo-assethub entry in `DEPLOYMENTS.md` of paritytech/dotns, which changes on every chain reset. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. On paseo-next-v2 (post-reset) that address is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b`; the authoritative value is the paseo-assethub entry in `DEPLOYMENTS.md` of paritytech/dotns, which changes on every chain reset. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |
 | `EDITOR` | Fallback script editor. |
 | `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
-| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on `paseo-next-v2`. |
+| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on either preset. |
 | `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
 | `COLORFGBG` | Infer TUI background color. |
 | `COLORTERM` | Select true-color TUI rendering. |
@@ -1547,7 +1601,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 
 These are part of the as-built specification:
 
-- only `paseo-next-v2` is selectable;
+- only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
 - product scripts require Bun and, by default, the source checkout;
 - there is no structured/JSON output mode;
 - there is no `--version`;

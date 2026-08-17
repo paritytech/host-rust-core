@@ -1118,15 +1118,15 @@ public struct SessionUiInfo: Equatable, Hashable {
      */
     public var publicKey: Bytes32
     /**
-     * Wallet identity account id used for People-chain username lookup.
+     * Wallet identity account id used for the dotNS username lookup on Asset Hub.
      */
     public var identityAccountId: Bytes32?
     /**
-     * Short username from the People-chain identity record.
+     * Short username from the dotNS identity record on Asset Hub.
      */
     public var liteUsername: String?
     /**
-     * Fully qualified username from the People-chain identity record.
+     * Fully qualified username from the dotNS identity record on Asset Hub.
      */
     public var fullUsername: String?
 
@@ -1137,13 +1137,13 @@ public struct SessionUiInfo: Equatable, Hashable {
          * 32-byte sr25519 root public key of the active session.
          */publicKey: Bytes32,
         /**
-         * Wallet identity account id used for People-chain username lookup.
+         * Wallet identity account id used for the dotNS username lookup on Asset Hub.
          */identityAccountId: Bytes32?,
         /**
-         * Short username from the People-chain identity record.
+         * Short username from the dotNS identity record on Asset Hub.
          */liteUsername: String?,
         /**
-         * Fully qualified username from the People-chain identity record.
+         * Fully qualified username from the dotNS identity record on Asset Hub.
          */fullUsername: String?) {
         self.publicKey = publicKey
         self.identityAccountId = identityAccountId

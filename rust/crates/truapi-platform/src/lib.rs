@@ -1031,11 +1031,11 @@ pub trait CoreStorage: Send + Sync {
 pub struct SessionUiInfo {
     /// 32-byte sr25519 root public key of the active session.
     pub public_key: Bytes32,
-    /// Wallet identity account id used for People-chain username lookup.
+    /// Wallet identity account id used for the dotNS username lookup on Asset Hub.
     pub identity_account_id: Option<Bytes32>,
-    /// Short username from the People-chain identity record.
+    /// Short username from the dotNS identity record on Asset Hub.
     pub lite_username: Option<String>,
-    /// Fully qualified username from the People-chain identity record.
+    /// Fully qualified username from the dotNS identity record on Asset Hub.
     pub full_username: Option<String>,
 }
 

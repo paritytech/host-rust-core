@@ -48,12 +48,10 @@ impl Network {
                 id: "previewnet",
                 identity_backend_base: "https://polkadot-app-stg.parity.io/api/v1",
                 people_ws: PREVIEWNET_PEOPLE.ws,
-                // Previewnet has no bulletin chain. Preimage submission keeps
-                // using the paseo testnet bulletin.
-                bulletin_ws: PASEO_BULLETIN.ws,
+                bulletin_ws: PREVIEWNET_BULLETIN.ws,
                 asset_hub_ws: PREVIEWNET_ASSET_HUB.ws,
                 people_genesis: PREVIEWNET_PEOPLE.genesis,
-                bulletin_genesis: PASEO_BULLETIN.genesis,
+                bulletin_genesis: PREVIEWNET_BULLETIN.genesis,
                 asset_hub_genesis: PREVIEWNET_ASSET_HUB.genesis,
                 live_chain_endpoints: PREVIEWNET_CHAIN_ENDPOINTS,
             },
@@ -120,11 +118,19 @@ const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
     required_for_host: true,
 };
 
+const PREVIEWNET_BULLETIN: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "2778b1c94c4362e49a54be57d3056bc714f3712e4486625312704ffb74eb973d",
+    ),
+    ws: "wss://previewnet.substrate.dev/bulletin",
+    required_for_host: true,
+};
+
 const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] =
     &[PASEO_ASSET_HUB, PASEO_PEOPLE, PASEO_BULLETIN];
 
 const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] =
-    &[PREVIEWNET_ASSET_HUB, PREVIEWNET_PEOPLE, PASEO_BULLETIN];
+    &[PREVIEWNET_ASSET_HUB, PREVIEWNET_PEOPLE, PREVIEWNET_BULLETIN];
 
 /// Resolved RPC/backend/genesis values for one network preset.
 #[derive(Debug, Clone, Copy)]
@@ -318,18 +324,21 @@ mod tests {
     fn the_spec_genesis_table_matches_the_preset() {
         const SPEC: &str = include_str!("../SPEC.md");
 
-        let config = Network::PaseoNextV2.config();
-        for (row, expected) in [
-            ("People genesis", config.people_genesis),
-            ("Bulletin genesis", config.bulletin_genesis),
-            ("Asset Hub genesis", config.asset_hub_genesis),
-        ] {
-            let expected_row = format!("| {row} | `0x{}` |", hex::encode(expected));
-            assert!(
-                SPEC.contains(&expected_row),
-                "SPEC.md is missing the row `{expected_row}`; the table and the \
-                 preset have drifted"
-            );
+        for network in Network::value_variants() {
+            let config = network.config();
+            for (row, expected) in [
+                ("People genesis", config.people_genesis),
+                ("Bulletin genesis", config.bulletin_genesis),
+                ("Asset Hub genesis", config.asset_hub_genesis),
+            ] {
+                let expected_row = format!("| {row} | `0x{}` |", hex::encode(expected));
+                assert!(
+                    SPEC.contains(&expected_row),
+                    "SPEC.md is missing the row `{expected_row}` for {}; the table and \
+                     the preset have drifted",
+                    config.id
+                );
+            }
         }
     }
 
@@ -471,13 +480,17 @@ mod tests {
                 checked += 1;
                 // The chain's own name has to name the role, or a role pointed at
                 // the wrong preset chain passes every other assertion here.
-                let expected_in_name = match entry.identifier {
-                    ChainIdentifier::People => "People",
-                    ChainIdentifier::Bulletin => "Bulletin",
-                    ChainIdentifier::AssetHub => "Asset Hub",
-                    ChainIdentifier::Relay => "Relay",
+                // Previewnet's People chain calls itself "Individuality Local".
+                let expected_in_name: &[&str] = match entry.identifier {
+                    ChainIdentifier::People => &["People", "Individuality"],
+                    ChainIdentifier::Bulletin => &["Bulletin"],
+                    ChainIdentifier::AssetHub => &["Asset Hub"],
+                    ChainIdentifier::Relay => &["Relay"],
                 };
-                if !chain_name.contains(expected_in_name) {
+                if !expected_in_name
+                    .iter()
+                    .any(|needle| chain_name.contains(needle))
+                {
                     drifted.push(format!(
                         "{} serves {:?} from {ws}, which calls itself {chain_name:?}",
                         config.id, entry.identifier

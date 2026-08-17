@@ -20,7 +20,7 @@ use truapi::versioned::account::HostAccountConnectionStatusSubscribeItem as Vers
 
 /// Session info for a pairing host's active signing-host session. The 32-byte
 /// sr25519 public key plus optional usernames are sourced from the signing host
-/// and People-chain identity record.
+/// and dotNS identity record (read from Asset Hub).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SessionInfo {
     /// 32-byte sr25519 root public key owned by the signing host.
@@ -30,7 +30,7 @@ pub struct SessionInfo {
     pub sso: Option<SsoSessionInfo>,
     /// Wallet-provided source for deterministic product entropy.
     pub root_entropy_source: Option<[u8; 32]>,
-    /// Wallet identity account id used for People-chain username lookup.
+    /// Wallet identity account id used for the dotNS username lookup on Asset Hub.
     pub identity_account_id: Option<[u8; 32]>,
     /// Short username (e.g. `alice`).
     pub lite_username: Option<String>,
@@ -100,7 +100,7 @@ pub struct ExternalPairedSession {
     pub sso: SsoSessionInfo,
     /// Wallet-provided source for deterministic product entropy.
     pub root_entropy_source: [u8; 32],
-    /// Wallet identity account id used for People-chain username lookup.
+    /// Wallet identity account id used for the dotNS username lookup on Asset Hub.
     pub identity_account_id: [u8; 32],
 }
 

@@ -1,6 +1,6 @@
 //! Lite-person username registration parameters (signing host, native only).
 //!
-//! Builds the client-side proofs the People-chain identity backend needs to
+//! Builds the client-side proofs the identity backend needs to
 //! attest a lite username for an account: an sr25519 proof-of-ownership, a
 //! bandersnatch ring-VRF member key + plain-VRF proof, and an sr25519
 //! consumer-registration signature. The backend submits the on-chain
@@ -8,7 +8,8 @@
 //!
 //! Byte layout mirrors signing-bot `src/core/attestation.ts` for backend
 //! parity. The registered account is the account whose secret signs here; the
-//! paired host resolves the username from `Resources.Consumers[that account]`.
+//! paired host resolves the username from the dotNS contracts on Asset Hub
+//! (`host_logic::dotns_gateway`), where the backend's `reserve_name` records it.
 
 use parity_scale_codec::{Decode, Encode};
 use thiserror::Error;
@@ -49,7 +50,7 @@ struct ConsumerRegistrationSigningPayload {
 pub struct LiteRegistration {
     /// SS58 (prefix 42) of the candidate account.
     pub candidate_account_id: String,
-    /// Raw 32-byte candidate public key (the future `Resources.Consumers` key).
+    /// Raw 32-byte candidate public key (the account the username is recorded for).
     pub candidate_public_key: [u8; 32],
     /// sr25519 signature over `prefix ‖ candidate_pub ‖ ring_vrf_key`.
     pub candidate_signature: [u8; 64],
