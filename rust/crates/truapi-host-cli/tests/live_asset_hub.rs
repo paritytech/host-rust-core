@@ -137,9 +137,11 @@ async fn live_asset_hub_reports_whether_an_account_holds_a_full_claim() {
 /// A revision the window skipped is as unreachable as one that fell off the front,
 /// and has to report as pruned rather than waiting out the timeout.
 ///
-/// paseo Asset Hub holds `[105, 106, 108]` for lite-people ring 5 — every other
-/// ring is contiguous — so revision 107 is the live case that distinguishes
-/// testing the newest held root from testing the oldest.
+/// The rule itself is covered offline, against a frozen copy of this window, by
+/// `revision_status` and `a_skipped_revision_reports_as_pruned_against_captured_roots`.
+/// What this adds is drift: it only passes while lite-people ring 5 still skips
+/// revision 107 on the live chain, so it fails once the window moves on. That is
+/// chain state changing, not the code breaking.
 #[tokio::test]
 #[ignore = "needs network access to a live Asset Hub"]
 async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
