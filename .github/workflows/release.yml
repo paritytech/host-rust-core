@@ -1,15 +1,16 @@
 name: Release
 
 # workflow_run is the intended gate for "release only after green CI". It is
-# safe here: it fires only for CI runs on main (post-merge, trusted code), is
+# safe here: it fires only for CI runs on main or release branches (post-merge,
+# trusted code), is
 # guarded by conclusion == success and a release: commit subject, and checks
 # out the pinned head_sha with persist-credentials: false. No untrusted PR code
 # ever runs in this privileged context.
-on:  # zizmor: ignore[dangerous-triggers]
+on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: ["CI"]
     types: [completed]
-    branches: [main]
+    branches: [main, release/v0.3.2]
 
 permissions:
   contents: read
@@ -28,32 +29,120 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+    outputs:
+      ios_version: ${{ steps.version.outputs.ios_version }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      - name: Resolve target version
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Resolve target packages
         id: version
+        env:
+          RELEASE_COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
         run: |
-          version=$(jq -r '.version' js/packages/truapi/package.json)
-          tag="@parity/truapi@${version}"
-          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
-            echo "Tag ${tag} already exists; nothing to publish."
+          set -euo pipefail
+          subject="${RELEASE_COMMIT_MESSAGE%%$'\n'*}"
+          # Squash merges append " (#<pr>)" to the pull request title.
+          subject="${subject% (#*)}"
+          release="${subject#release: }"
+          packages=""
+          ios_version=""
+          seen_names="|"
+
+          IFS=',' read -ra targets <<< "${release}"
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "::error::Release subject does not declare a package and version: ${subject}"
+            exit 1
+          fi
+          for target in "${targets[@]}"; do
+            # Trim whitespace around comma-separated targets.
+            target="${target#"${target%%[![:space:]]*}"}"
+            target="${target%"${target##*[![:space:]]}"}"
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/ios-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+              echo "::error::Unsupported release target '${target}' in subject: ${subject}"
+              exit 1
+            fi
+            name="${BASH_REMATCH[1]}"
+            declared_version="${BASH_REMATCH[2]}"
+
+            if [[ "${seen_names}" == *"|${name}|"* ]]; then
+              echo "::error::Release subject lists ${name} more than once."
+              exit 1
+            fi
+            seen_names+="${name}|"
+
+            case "${name}" in
+              @parity/truapi) path="js/packages/truapi" ;;
+              @parity/truapi-host) path="js/packages/truapi-host" ;;
+              @parity/ios-host)
+                if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+                  echo "::error::Invalid iOS host version '${declared_version}'."
+                  exit 1
+                fi
+                ios_version="${declared_version}"
+                continue
+                ;;
+            esac
+
+            version="$(jq -r '.version' "${path}/package.json")"
+            if [ "${declared_version}" != "${version}" ]; then
+              echo "::error::Release subject declares ${name} ${declared_version}, but ${path}/package.json is ${version}."
+              exit 1
+            fi
+
+            tag="${name}@${version}"
+            if npm_status="$(npm view "${tag}" version --registry=https://registry.npmjs.org 2>&1)"; then
+              echo "Package ${tag} already exists on npm; skipping."
+            elif grep -Eq 'E404|404 Not Found' <<< "${npm_status}"; then
+              echo "Publishing ${tag}."
+              packages+="${name}|${path}|${version}|${tag}"$'\n'
+            else
+              echo "${npm_status}" >&2
+              exit 1
+            fi
+          done
+
+          echo "ios_version=${ios_version}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${packages}" ]; then
+            echo "No requested npm packages need publishing."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Publishing ${tag}."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
-            echo "version=${version}" >> "$GITHUB_OUTPUT"
-            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            {
+              echo "packages<<EOF"
+              printf '%s' "${packages}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify release manifests
+        if: steps.version.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          npm run check-release-versions
+          remaining_changesets="$(find .changeset -maxdepth 1 -type f -name '*.md' -print)"
+          if [ -n "${remaining_changesets}" ]; then
+            echo "::error::Release commit still contains unconsumed changesets. Run npm run version-packages."
+            echo "${remaining_changesets}"
+            exit 1
           fi
 
       - if: steps.version.outputs.proceed == 'true'
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
           toolchain: nightly
+          components: rustfmt
 
       - if: steps.version.outputs.proceed == 'true'
         uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
@@ -61,35 +150,38 @@ jobs:
           toolchain: stable
 
       - if: steps.version.outputs.proceed == 'true'
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-
-      - if: steps.version.outputs.proceed == 'true'
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
 
       - name: Install dependencies
         if: steps.version.outputs.proceed == 'true'
         run: npm ci
 
-      - name: Build @parity/truapi
-        if: steps.version.outputs.proceed == 'true'
-        run: ./scripts/codegen.sh
+      - name: Install wasm-pack
+        if: steps.version.outputs.proceed == 'true' && contains(steps.version.outputs.packages, '@parity/truapi-host|')
+        run: cargo install wasm-pack --version 0.14.0 --locked
 
-      - name: Tag release
+      - name: Build packages
         if: steps.version.outputs.proceed == 'true'
         run: |
-          git tag "${STEPS_VERSION_OUTPUTS_TAG}"
-          git push origin "${STEPS_VERSION_OUTPUTS_TAG}"
+          set -euo pipefail
+          ./scripts/codegen.sh
+          if grep -q '^@parity/truapi-host|' <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"; then
+            npm run build --prefix js/packages/truapi-host
+            npm run build:wasm --prefix js/packages/truapi-host
+          fi
         env:
-          STEPS_VERSION_OUTPUTS_TAG: ${{ steps.version.outputs.tag }}
+          STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
 
       - name: Pack package
         if: steps.version.outputs.proceed == 'true'
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          (cd js/packages/truapi && npm pack --pack-destination "$GITHUB_WORKSPACE/artifacts/")
+          while IFS='|' read -r _name path _version _tag; do
+            (cd "${path}" && npm pack --pack-destination "$GITHUB_WORKSPACE/artifacts/")
+          done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
+        env:
+          STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
 
       - name: Upload package artifacts
         if: steps.version.outputs.proceed == 'true'
@@ -97,6 +189,12 @@ jobs:
         with:
           name: package
           path: artifacts/*.tgz
+
+      - name: Attest package artifacts
+        if: steps.version.outputs.proceed == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: artifacts/*.tgz
 
       - name: Publish via npm_publish_automation
         if: steps.version.outputs.proceed == 'true'
@@ -108,14 +206,169 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.NPM_PUBLISH_AUTOMATION_TOKEN }}
 
+      - name: Create release tags
+        if: steps.version.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
+        run: |
+          set -euo pipefail
+          while IFS='|' read -r _name _path _version tag; do
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "Tag ${tag} already exists; skipping create."
+              continue
+            fi
+            gh api --method POST "repos/${{ github.repository }}/git/refs" \
+              -f ref="refs/tags/${tag}" \
+              -f sha="${RELEASE_SHA}"
+          done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
+
       - name: Create GitHub Release
         if: steps.version.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          STEPS_VERSION_OUTPUTS_TAG: ${{ steps.version.outputs.tag }}
-          STEPS_VERSION_OUTPUTS_VERSION: ${{ steps.version.outputs.version }}
+          STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
         run: |
-          gh release create "${STEPS_VERSION_OUTPUTS_TAG}" \
-            --title "@parity/truapi ${STEPS_VERSION_OUTPUTS_VERSION}" \
-            --generate-notes \
-            artifacts/*.tgz
+          set -euo pipefail
+          while IFS='|' read -r name _path version tag; do
+            tarball_name="${name#@}"
+            tarball_name="${tarball_name//\//-}-${version}.tgz"
+            if gh release view "${tag}" >/dev/null 2>&1; then
+              gh release upload "${tag}" "artifacts/${tarball_name}" --clobber
+            else
+              gh release create "${tag}" \
+                --title "${name} ${version}" \
+                --generate-notes \
+                "artifacts/${tarball_name}"
+            fi
+          done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
+
+  publish-ios:
+    name: Publish iOS host
+    needs: release
+    if: needs.release.outputs.ios_version != ''
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+        with:
+          shared-key: ios-host-release
+
+      - name: Rebuild iOS host
+        run: |
+          set -euo pipefail
+          ./ios/truapi-host/scripts/rebuild.sh
+          if ! git diff --exit-code; then
+            echo "::error::The release commit has stale generated iOS host outputs. Run ios/truapi-host/scripts/rebuild.sh and commit them."
+            exit 1
+          fi
+
+      - name: Test local XCFramework in the simulator
+        env:
+          TRUAPI_USE_LOCAL_BINARY: "1"
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -scheme TrUAPIHost \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Publish XCFramework
+        id: ios_publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IOS_RELEASE_TARGET: ${{ github.event.workflow_run.head_sha }}
+          IOS_VERSION: ${{ needs.release.outputs.ios_version }}
+        run: |
+          set -euo pipefail
+
+          read_manifest_value() {
+            sed -n -E "s/^let $1 = \"([^\"]+)\"$/\1/p" Package.swift
+          }
+
+          base_url="$(read_manifest_value publishedBinaryURL)"
+          base_checksum="$(read_manifest_value publishedBinaryChecksum)"
+          ./ios/truapi-host/scripts/publish.sh "${IOS_VERSION}"
+          published_url="$(read_manifest_value publishedBinaryURL)"
+          published_checksum="$(read_manifest_value publishedBinaryChecksum)"
+
+          {
+            echo "base_url=${base_url}"
+            echo "base_checksum=${base_checksum}"
+            echo "published_url=${published_url}"
+            echo "published_checksum=${published_checksum}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit published manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IOS_VERSION: ${{ needs.release.outputs.ios_version }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          BASE_URL: ${{ steps.ios_publish.outputs.base_url }}
+          BASE_CHECKSUM: ${{ steps.ios_publish.outputs.base_checksum }}
+          PUBLISHED_URL: ${{ steps.ios_publish.outputs.published_url }}
+          PUBLISHED_CHECKSUM: ${{ steps.ios_publish.outputs.published_checksum }}
+        run: |
+          set -euo pipefail
+
+          read_manifest_value() {
+            sed -n -E "s/^let $1 = \"([^\"]+)\"$/\1/p" Package.swift
+          }
+
+          git restore Package.swift
+          git fetch origin "${RELEASE_BRANCH}"
+          git switch --force-create ios-manifest-update "origin/${RELEASE_BRANCH}"
+
+          current_url="$(read_manifest_value publishedBinaryURL)"
+          current_checksum="$(read_manifest_value publishedBinaryChecksum)"
+          if [ "${current_url}" = "${PUBLISHED_URL}" ] && [ "${current_checksum}" = "${PUBLISHED_CHECKSUM}" ]; then
+            echo "Package.swift already references @parity/ios-host@${IOS_VERSION}."
+            exit 0
+          fi
+          if [ "${current_url}" != "${BASE_URL}" ] || [ "${current_checksum}" != "${BASE_CHECKSUM}" ]; then
+            echo "::error::Package.swift changed after the release commit; refusing to overwrite the newer manifest."
+            exit 1
+          fi
+
+          sed -i '' -E "s|^let publishedBinaryURL = .*|let publishedBinaryURL = \"${PUBLISHED_URL}\"|" Package.swift
+          sed -i '' -E "s|^let publishedBinaryChecksum = .*|let publishedBinaryChecksum = \"${PUBLISHED_CHECKSUM}\"|" Package.swift
+          grep -q '^let useLocalBinary = false$' Package.swift
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "build(ios): publish host XCFramework ${IOS_VERSION}"
+
+          gh auth setup-git
+          attempt=1
+          until git push origin "HEAD:${RELEASE_BRANCH}"
+          do
+            if [ "${attempt}" -ge 3 ]; then
+              echo "::error::Could not push the Package.swift follow-up commit."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            git fetch origin "${RELEASE_BRANCH}"
+            if ! git rebase "origin/${RELEASE_BRANCH}"; then
+              git rebase --abort
+              echo "::error::Package.swift changed while publishing; resolve the manifest update manually."
+              exit 1
+            fi
+          done

@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, release/v0.3.2]
   merge_group:
   workflow_dispatch:
 
@@ -21,7 +21,7 @@ jobs:
     env:
       RUSTFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -33,11 +33,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           toolchain: stable
+          targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
 
       - name: cargo build
         run: cargo build --workspace --all-targets --all-features
+
+      - name: cargo check wasm32
+        run: cargo check --target wasm32-unknown-unknown -p truapi-server
 
       - name: cargo +nightly fmt --check
         run: cargo +nightly fmt --check
@@ -52,12 +56,12 @@ jobs:
     name: Dependency licenses
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: cargo deny check licenses
-        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check licenses
 
@@ -65,7 +69,7 @@ jobs:
     name: Codegen
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -76,10 +80,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
         with:
           toolchain: nightly
+          components: rustfmt
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -88,6 +93,15 @@ jobs:
 
       - name: Run codegen
         run: ./scripts/codegen.sh
+
+      - name: Check generated Rust output is committed
+        run: |
+          git diff --exit-code -- \
+            rust/crates/truapi-server/src/generated \
+            rust/crates/truapi-server/src/wasm/generated_bridge.rs
+
+      - name: Check Rust/TS wire table parity
+        run: TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity
 
       - name: Upload codegen output
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -103,18 +117,116 @@ jobs:
             js/packages/truapi-host/src/generated
             playground/test/generated
 
+  ios-bindings:
+    name: iOS bindings (uniffi)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+
+      # Swift bindgen is pure Rust codegen, so this needs neither Xcode nor the
+      # iOS targets, unlike rebuild.sh which also builds the xcframework.
+      - name: Generate Swift bindings
+        run: make uniffi
+
+      - name: Check committed iOS bindings are current
+        run: ./ios/truapi-host/scripts/sync-bindings.sh --check
+
+  ios-changes:
+    name: iOS change filter
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      # Actions has no per-job paths filter, so compute it once here and gate
+      # ios-swift on the output. On pull_request the checkout is the merge
+      # commit, so HEAD^1 is the base. Other events always run the gate.
+      #
+      # The list needs no broader rust/ entry: the generated bindings are
+      # committed under ios/, and ios-bindings runs unconditionally, so a Rust
+      # change that moves the UniFFI surface either carries an ios/ change or
+      # fails there first.
+      - name: Detect iOS-relevant changes
+        id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only HEAD^1 HEAD \
+            | grep -qE '^(ios/|Package\.swift$|Makefile$|rust/crates/truapi-server/src/native)'; then
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ios=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  ios-swift:
+    name: iOS package (swift compile)
+    needs: ios-changes
+    if: needs.ios-changes.outputs.ios == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TRUAPI_USE_LOCAL_BINARY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+        with:
+          shared-key: ios-swift-gate
+
+      # Simulator slice only, debug profile. This gate compiles Swift and ships
+      # no binary, so the device slice and release codegen are waste. The
+      # published binary is older than the current Rust surface, so
+      # TRUAPI_USE_LOCAL_BINARY points the manifest at this build instead.
+      - name: Build the simulator XCFramework
+        run: make xcframework XCFRAMEWORK_TARGETS=aarch64-apple-ios-sim XCFRAMEWORK_PROFILE=debug
+
+      - name: Stage it into the package
+        run: ./ios/truapi-host/scripts/stage-xcframework.sh
+
+      # Compiling the test target is the point: the hand-written conformers a
+      # generated-file diff cannot see live there and in TrUAPIHost.swift.
+      - name: Compile the package and its tests
+        run: |
+          xcodebuild build-for-testing \
+            -scheme TrUAPIHost \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+
   ts-client:
-    name: '@parity/truapi'
+    name: "@parity/truapi"
     runs-on: ubuntu-latest
     needs: codegen
     env:
       TRUAPI_REQUIRE_GENERATED: 1
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -136,6 +248,39 @@ jobs:
       - name: Test
         run: npm test --prefix js/packages/truapi
 
+  ts-host:
+    name: "@parity/truapi-host"
+    runs-on: ubuntu-latest
+    needs: codegen
+    env:
+      TRUAPI_REQUIRE_GENERATED: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Download codegen output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codegen-output
+
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build --prefix js/packages/truapi-host
+
+      - name: Test
+        run: npm test --prefix js/packages/truapi-host
+
   playground:
     name: Playground (build + lint)
     runs-on: ubuntu-latest
@@ -143,11 +288,11 @@ jobs:
     env:
       TRUAPI_REQUIRE_GENERATED: 1
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -166,7 +311,7 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Cache Next.js build
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: playground/.next/cache
           key: ${{ runner.os }}-nextjs-${{ hashFiles('playground/yarn.lock') }}-${{ hashFiles('playground/src/**', 'playground/scripts/**', 'playground/public/**', 'playground/next.config.js', 'playground/tsconfig.json', 'playground/package.json') }}
@@ -188,11 +333,11 @@ jobs:
     env:
       TRUAPI_REQUIRE_GENERATED: 1
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -228,12 +373,12 @@ jobs:
     env:
       TRUAPI_REQUIRE_GENERATED: 1
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -279,7 +424,20 @@ jobs:
     name: CI Status
     if: always()
     runs-on: ubuntu-latest
-    needs: [rust, licenses, codegen, ts-client, playground, explorer, e2e]
+    needs:
+      [
+        rust,
+        licenses,
+        codegen,
+        ios-bindings,
+        ios-changes,
+        ios-swift,
+        ts-client,
+        ts-host,
+        playground,
+        explorer,
+        e2e,
+      ]
     steps:
       - name: Check all jobs
         run: |
@@ -287,7 +445,13 @@ jobs:
             "${{ needs.rust.result }}"
             "${{ needs.licenses.result }}"
             "${{ needs.codegen.result }}"
+            "${{ needs.ios-bindings.result }}"
+            # ios-changes is listed because a failure there skips ios-swift,
+            # and skipped counts as a pass below.
+            "${{ needs.ios-changes.result }}"
+            "${{ needs.ios-swift.result }}"
             "${{ needs.ts-client.result }}"
+            "${{ needs.ts-host.result }}"
             "${{ needs.playground.result }}"
             "${{ needs.explorer.result }}"
             "${{ needs.e2e.result }}"

@@ -5,6 +5,7 @@ use super::ProductAccountId;
 /// Full Substrate extrinsic signing payload with all fields needed for signature
 /// generation.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HostSignPayloadData {
     /// Reference block hash.
     pub block_hash: Vec<u8>,
@@ -40,6 +41,7 @@ pub struct HostSignPayloadData {
 
 /// Request to sign an extrinsic payload with a product account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HostSignPayloadRequest {
     /// Product account that will sign this payload.
     pub account: ProductAccountId,
@@ -49,6 +51,7 @@ pub struct HostSignPayloadRequest {
 
 /// Raw data to sign -- either binary bytes or a string message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RawPayload {
     /// Raw binary data to sign.
     Bytes {
@@ -64,6 +67,7 @@ pub enum RawPayload {
 
 /// A raw signing request pairing an account with the payload to sign.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HostSignRawRequest {
     /// Product account that will sign this payload.
     pub account: ProductAccountId,
@@ -90,12 +94,16 @@ pub enum HostSignPayloadError {
     /// Not authenticated.
     PermissionDenied,
     /// Catch-all.
-    Unknown { reason: String },
+    Unknown {
+        /// Human-readable failure reason.
+        reason: String,
+    },
 }
 
 /// Sign raw bytes with a non-product (legacy) account. The signer field
 /// identifies which legacy account to use.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HostSignRawWithLegacyAccountRequest {
     /// Signer address (SS58 or hex) of the legacy account.
     pub signer: String,
@@ -107,6 +115,7 @@ pub struct HostSignRawWithLegacyAccountRequest {
 /// Contains the same fields as [`HostSignPayloadRequest`] minus `address`
 /// (replaced by `signer`).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HostSignPayloadWithLegacyAccountRequest {
     /// Signer address (SS58 or hex) of the legacy account.
     pub signer: String,
@@ -117,13 +126,15 @@ pub struct HostSignPayloadWithLegacyAccountRequest {
 /// Response containing a created transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCreateTransactionResponse {
-    /// SCALE-encoded signed transaction.
+    /// SCALE-encoded transaction, signed unless the request supplied its own
+    /// V5 `VerifyMultiSignature` extension.
     pub transaction: Vec<u8>,
 }
 
 /// Response containing a transaction created with a non-product account.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostCreateTransactionWithLegacyAccountResponse {
-    /// SCALE-encoded signed transaction.
+    /// SCALE-encoded transaction, signed unless the request supplied its own
+    /// V5 `VerifyMultiSignature` extension.
     pub transaction: Vec<u8>,
 }

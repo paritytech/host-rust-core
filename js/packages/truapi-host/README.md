@@ -1,125 +1,176 @@
 # @parity/truapi-host
 
-_Typed TypeScript dispatcher for hosts that serve TrUAPI methods._
+WASM-backed TrUAPI host runtime. It embeds the `truapi-server` Rust core (compiled to WASM)
+behind a Web Worker provider, plus per-environment integration entry points. It is the
+counterpart to the native Android/iOS host shells.
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](../../../LICENSE)
-[![Types](https://img.shields.io/badge/types-included-3178C6?style=flat-square&logo=typescript)](./package.json)
+## Entry points
 
-This package gives a Polkadot host (Desktop Browser, Triangle webview) a fully typed inbound dispatcher for every TrUAPI method. The dispatcher, generated handler interfaces, and versioned envelope wrap/unwrap are all bundled together. It is the host-side counterpart to [`@parity/truapi`](../truapi/), generated from the same rustdoc JSON so wire ids, codecs, and types match exactly.
+The package exposes tree-shakeable subpath exports — import only what your environment needs:
 
-## Install
+| Import                               | Provides                                                                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `@parity/truapi-host`                | Shared runtime types plus generated typed host callback contracts.                                                  |
+| `@parity/truapi-host/web`            | Browser pairing host: `createIframeHost` (iframe MessageChannel handshake) and `createWebWorkerPairingHostRuntime`. |
+| `@parity/truapi-host/worker-runtime` | Web Worker entrypoint (import with your bundler's `?worker` suffix) so the WASM core runs off the page main thread. |
+| `@parity/truapi-host/wasm/web`       | The raw browser `wasm-bindgen` glue, if you need to instantiate the core yourself.                                  |
+
+## Bundler requirements
+
+The worker imports the WASM glue by a literal specifier, so every bundler
+resolves it statically and emits `truapi_server.js` as a chunk. Whether the
+`truapi_server_bg.wasm` payload comes with it depends on the bundler: emitting
+it requires treating `new URL("truapi_server_bg.wasm", import.meta.url)` inside
+the glue as an asset reference, and not all of them do.
+
+| Bundler             | Emits the `.wasm`? | Host action                                                    |
+| ------------------- | ------------------ | -------------------------------------------------------------- |
+| Vite                | Yes                | None — no copy step, and don't reach into `dist/wasm/web/`.    |
+| webpack 5           | Yes                | None.                                                          |
+| Rollup (standalone) | No                 | Add `@web/rollup-plugin-import-meta-assets`, or copy manually. |
+| esbuild             | No                 | Copy manually (see below).                                     |
+| Bun (`bun build`)   | No                 | Copy manually (see below).                                     |
+
+esbuild and Bun pass `new URL(..., import.meta.url)` through verbatim: the build
+succeeds and the glue chunk is emitted, but no `.wasm` is written and the worker
+404s at runtime. No flag changes this — `--loader:.wasm=file` only fires on
+`import` statements, never on `new URL`. Hosts on those bundlers must copy
+`truapi_server_bg.wasm` out of `@parity/truapi-host/dist/wasm/web/` into the same
+output directory as the emitted `truapi_server-*.js` chunk, since the glue
+resolves the payload relative to its own URL.
+
+Running Vite under Bun (`bunx --bun vite build`) uses Vite's bundler and is
+unaffected; only `bun build` is.
+
+The literal import makes the worker a code-split chunk, so a Vite host must ask
+for ES workers; the default `iife` format cannot code-split and fails the build:
+
+```ts
+export default defineConfig({ worker: { format: "es" } });
+```
+
+Only the `.wasm` the glue references is emitted, and bundlers content-hash it —
+Vite writes `assets/truapi_server_bg-<hash>.wasm`, webpack writes a bare
+`<hash>.wasm`. The `.wasm.gz` / `.wasm.br` sidecars under `dist/wasm/web/`
+therefore cannot be copied into a host's output: `gzip_static` /
+`brotli_static` serve `<request-path>.gz` / `.br`, and the request path now
+carries the bundler's hash. Hosts that serve precompressed assets should
+generate them from their own build output, after hashing — either a post-build
+pass over `dist` (gzip level 9 and brotli max quality reproduce the sidecars
+byte for byte) or a bundler plugin:
+
+```ts
+import { compression } from "vite-plugin-compression2";
+
+export default defineConfig({
+  worker: { format: "es" },
+  plugins: [
+    compression({ include: [/\.(js|css|html|wasm)$/], algorithms: ["gzip"] }),
+    compression({
+      include: [/\.(js|css|html|wasm)$/],
+      algorithms: ["brotliCompress"],
+    }),
+  ],
+});
+```
+
+webpack hosts get the same result from `compression-webpack-plugin`. Skipping
+this ships the full 1.4 MB `.wasm` where about 600 kB (gzip) or 470 kB (brotli)
+would do — and a server configured with `gzip_static` but no dynamic `gzip on`
+has no fallback.
+
+## Generated WASM artefacts
+
+The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.
+Hosts wire their JSON-RPC provider through `chainConnect`; if they omit it,
+chain calls fail with the core's standard unavailable error. Release builds use
+the workspace size-optimized Rust profile plus `wasm-opt -Oz`, validate that
+debug/name/producers custom sections were stripped, and emit `.wasm.gz` and
+`.wasm.br` sidecars for hosts that serve precompressed assets.
+
+Build them after editing `rust/crates/truapi-server` and before packaging, publishing, or running
+tests that load the raw WASM bundle (requires `wasm-pack` on PATH):
 
 ```bash
-npm install @parity/truapi-host
+npm run build:wasm   # or `make wasm` from the repo root
 ```
 
-## Quick start
+## Example — browser (Web Worker)
 
 ```ts
-import { createMessagePortProvider } from "@parity/truapi";
-import { errAsync, okAsync } from "neverthrow";
-import {
-  createTrUApiServer,
-  type TrUApiHostHandlers,
-  type TrUApiHostServer,
-} from "@parity/truapi-host";
+import HostWorker from "@parity/truapi-host/worker-runtime?worker";
+import { createWebWorkerPairingHostRuntime } from "@parity/truapi-host/web";
 
-const provider = createMessagePortProvider(port);
-
-const handlers: TrUApiHostHandlers = {
-  account: {
-    getAccount(ctx, request) {
-      switch (request.tag) {
-        case "V1": {
-          const account = myStore.lookup(request.value.productAccountId);
-          return okAsync({ tag: "V1", value: { account } });
-        }
-      }
-    },
-    // …other AccountHostHandlers methods
+const runtime = await createWebWorkerPairingHostRuntime(
+  new HostWorker(),
+  callbacks,
+  {
+    hostConfig,
   },
-  // …other service handlers
-};
+);
 
-const server: TrUApiHostServer = createTrUApiServer(provider, handlers);
-
-// Tear down when the host shuts down:
-server.dispose();
+const firstProvider = await runtime.createProvider({ productId: "first.dot" });
+const secondProvider = await runtime.createProvider({
+  productId: "second.dot",
+});
 ```
 
-Each handler receives the full versioned wrapper (`{ tag: "V1", value: … }` for the current wire version, or a discriminated union over every wire version a method supports) and returns the matching versioned wrapper inside a `ResultAsync<Ok, Err>`. Narrow on `request.tag` and return the value tagged at the same version. TypeScript ensures the value shape matches the tag; future wire versions surface as a new arm in the union. Each handler receives a `CallContext` carrying the inbound `requestId` so it can correlate audit logs and per-call state.
+`@parity/truapi-host/web` also exports `createIframeHost` for the
+protocol-iframe MessageChannel handshake. Host code creates one worker runtime
+and then opens one provider per product id.
 
-### Handlers must not throw
+## Session lifecycle
 
-Every outcome a handler can produce, including permission denials, backend timeouts, and any other failure mode, must be expressed as a typed `ResultAsync<Ok, Err>` outcome (use `okAsync(...)` / `errAsync(...)` from `neverthrow`). For subscriptions, emit failures via `observer.error?.(new SubscriptionError("...", { reason }))` for `ResultSubscription` streams, or `observer.complete?.()` for plain `Subscription` streams.
+The core owns the session; the host owns persistence and drives the transitions
+below. Every one of them reports the resulting `AuthState` through the `auth`
+callback, including when nothing changed — so a host may await an answer at boot
+rather than treating silence as "signed out".
 
-The dispatcher does install `HostServerHooks.onRequestHandlerError` and `onSubscriptionStartError` for defensive purposes (e.g. a `TypeError` from an upstream bug), but if either fires the client sees a hung request or never-started stream, not a typed failure, so treat any invocation as a programming error to fix at the source, not a normal control-flow path.
+| Runtime method                  | Use it to                                                                    |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| `activateStoredSession()`       | Restore the session in the core's `AuthSession` slot. Await before routing.  |
+| `activateExternalSession(blob)` | Install a session the host holds itself, without writing it to core storage. |
+| `notifySessionStoreChanged()`   | Tell the core the persisted blob may have changed; it re-reads it.           |
+| `disconnectSession()`           | Log out: clears the session and notifies the peer.                           |
+| `resetSessionState()`           | Drop the local session without notifying the peer.                           |
 
-## Subscriptions
-
-Subscription handlers return an `ObservableLike<Item, Reason>` over the versioned `Item`/`Reason` types. Items emitted to `observer.next` carry the version tag (`{ tag: "V1", value: … }`); the dispatcher encodes them on the wire and unsubscribes when the client stops the stream (or the transport closes).
+The boot order is create the runtime, restore, then open providers:
 
 ```ts
-import type { ObservableLike } from "@parity/truapi-host";
+const runtime = await createWebWorkerPairingHostRuntime(
+  new HostWorker(),
+  callbacks,
+  { hostConfig },
+);
 
-const handlers: TrUApiHostHandlers = {
-  account: {
-    connectionStatusSubscribe(ctx, request) {
-      return {
-        subscribe(observer) {
-          const unsubscribe = myStore.onStatusChange((status) => {
-            observer.next?.({ tag: "V1", value: status });
-          });
-          return { unsubscribe, subscriptionId: "" };
-        },
-      };
-    },
-    // …
-  },
-};
+// Resolves once product frames may use the restored session; rejects when
+// there was nothing to restore.
+await runtime.activateStoredSession().catch(() => {});
+
+const provider = await runtime.createProvider({ productId: "first.dot" });
 ```
 
-For methods declared as `ResultSubscription` on the Rust side, the returned `ObservableLike<Item, Reason>` carries a typed `Reason`. Emit a typed interrupt by calling `observer.error?.(new SubscriptionError("...", { reason }))` (`SubscriptionError` is re-exported from `@parity/truapi`); the dispatcher pulls the typed reason out and encodes it as the interrupt frame. For plain `Subscription` methods, `observer.complete?.()` ends the stream and emits an untyped interrupt frame on the wire.
+## Publishing
 
-## What's in the package
+This package is published by the root `Release` workflow through
+`paritytech/npm_publish_automation`. Do not run `npm publish` locally. Cut a
+`release:` PR with a changeset for `@parity/truapi-host`; the workflow builds
+the generated host bindings, the browser WASM bundle, packs the tarball, and
+publishes it when the `@parity/truapi-host@<version>` tag does not already
+exist.
 
-- **`createTrUApiServer(provider, handlers)` factory** that attaches a typed dispatcher to a `Provider` from `@parity/truapi`.
-- **Generated handler interfaces**, one per service trait (`AccountHostHandlers`, `ChainHostHandlers`, `ChatHostHandlers`, …), composed into `TrUApiHostHandlers`.
-- **`CallContext` and `HostServerHooks` types** plus `ObservableLike` / `Observer` / `Subscription` re-exported from `@parity/truapi` for handler signatures, per-call state, and protocol-drift visibility.
-- **Hand-written `server-core`** that owns the dispatch table, active subscription state, and provider plumbing.
-
-## Out of scope
-
-The dispatcher exposes 1:1 wire primitives. Subscription multiplexing, deduplication, buffering, replay-to-late-subscribers, and connection-status policy are intentionally not in scope, products and hosts layer their own policy on top when needed.
-
-## Wire format
-
-Frames are SCALE encoded:
+## Architecture
 
 ```text
-[requestId: SCALE str][discriminant: u8][payload bytes...]
+JS host code
+  protocol handlers / typed callbacks
+  (types from @parity/truapi-host)
+       |
+       v
+createWebWorkerPairingHostRuntime
+  shared worker runtime: pairing session, chain runtime, WASM instance
+       |
+       +-- createProvider({ productId }) -> product core / WireProvider
+       |
+       +-- createProvider({ productId }) -> product core / WireProvider
 ```
-
-The discriminant table is generated from Rust `#[wire(request_id = N)]` and `#[wire(start_id = N)]` annotations and is re-exported from [`@parity/truapi/wire-table`](../truapi/) so the client and host always agree on ids.
-
-## Generated files
-
-`src/generated/` is produced by [`truapi-codegen`](../../../rust/crates/truapi-codegen/) from the Rust crate and is ignored by git. Do not edit generated files directly. Run from the repo root:
-
-```bash
-./scripts/codegen.sh
-```
-
-## Develop
-
-```bash
-npm install
-npm run build
-npm test
-```
-
-On a clean checkout, the first build or test run will generate the ignored TypeScript outputs from the Rust sources, so Rust stable + nightly must be installed locally. `npm test` runs the package's smoke tests under [bun](https://bun.sh/), so bun must also be installed (`curl -fsSL https://bun.sh/install | bash`). The tests load the source `.ts` files directly without a build step.
-
-## License
-
-[MIT](../../../LICENSE)

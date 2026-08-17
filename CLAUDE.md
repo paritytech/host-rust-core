@@ -8,16 +8,72 @@ This repo is the single source of truth for the TrUAPI protocol. It vendors `dot
 
 ```
 rust/crates/
-  truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2
+  truapi/                Rust trait + type definitions for protocol versions v0.1 and v0.2 (canonical)
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
   truapi-macros/         #[wire(id = N)] proc-macro
+  truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
+  truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
 js/packages/
-  truapi/         @parity/truapi TS package; generated TS lives under ignored paths
-playground/              Next.js interactive playground; deploys to truapi-playground.dot
-hosts/dotli/             dotli submodule
-docs/                    design docs, RFCs, feature proposals
-scripts/codegen.sh       regenerate the TS client from the Rust crate
+  truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
+  truapi-host/            @parity/truapi-host: WASM-backed host runtime. Subpath entries:
+                          `.` (shared host types), `/web` (iframe + Web
+                          Worker), `/worker-runtime` (Worker entry).
+                          WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
+js/container/              TS lockdown container for the iOS host web view; `npm run build`
+                           bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
+ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
+                           SPM manifest at the repo root (Package.swift), rebuild via
+                           ios/truapi-host/scripts/rebuild.sh
+playground/                Next.js interactive playground; deploys to the truapi-playground dotNS label
+hosts/dotli/               dotli submodule
+docs/                      design docs, RFCs, feature proposals
+scripts/codegen.sh         regenerate the TS client from the Rust crate
+scripts/battery.sh         run the generated battery against both headless CLI host roles
 ```
+
+### Crate + binding invariants
+
+- `truapi` is canonical; runtime crates re-export rather than redefine. New
+  syscall traits and host-side runtime types live in `truapi-platform` and
+  `truapi-server`, not in `truapi`. Any additions to `truapi` itself are limited
+  to additive `Display` impls.
+- Treat concrete modules such as `truapi::v01` as implementation details of
+  the canonical `truapi` crate and its version-conversion impls. Everywhere
+  else, import concrete protocol payload and error types from `truapi::latest`.
+  This includes structs reused by host-internal APIs that are not exposed to
+  products; if such a type is missing, re-export it through `truapi::latest`
+  rather than importing a concrete protocol version. Runtime crates may use
+  `truapi::versioned::*` for wire envelopes, but should unwrap them into latest
+  payloads immediately.
+- Native bindings expose canonical Rust domain and protocol types directly.
+  Add feature-gated UniFFI derives to those types and custom conversions for
+  unsupported leaf values instead of defining parallel `Native*` mirrors.
+  Boundary-specific native types are reserved for lifecycle or callback
+  behavior that has no canonical value-type equivalent.
+- `truapi-server` WASM artifacts live under
+  `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
+  Build them locally with `make wasm` (rerun whenever
+  `rust/crates/truapi-server/` changes). CI compiles the crate for
+  `wasm32-unknown-unknown` to guard the wasm bridge and its offline subxt
+  surface, but does not build or publish the packaged bundle; run `make wasm`
+  locally before relying on the browser host.
+- After changing UniFFI-exposed types or native bindings, run
+  `./ios/truapi-host/scripts/rebuild.sh` and commit the generated bindings and
+  container output. When only the bindings changed, `make uniffi &&
+  ./ios/truapi-host/scripts/sync-bindings.sh` does that part without Xcode. CI
+  enforces it: the `ios-bindings` job regenerates and diffs the committed
+  bindings, and the `ios-swift` job compiles the package and its test target on
+  pull requests touching `ios/`, `Package.swift`, the `Makefile` or `native*`,
+  which is what catches a hand-written conformer that missed a new protocol
+  requirement. `TrUAPIHost.kt` and the embedding apps are compiled by neither.
+  Hosts implement `HostBridge`, whose protocol extension defaults the optional
+  callbacks; `TrUAPIHostRuntime` and `TrUAPIHostCore` both accept one.
+  To publish the binary, include `@parity/ios-host <version>`
+  in the `release:` PR title. The release workflow rebuilds and simulator-tests
+  the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
+  only after the asset is live. `publish.sh <version>` is the manual fallback.
+  Keep `useLocalBinary = false` in committed manifests; `true` is for local
+  testing against the rebuilt XCFramework only.
 
 ## Code style
 
@@ -26,11 +82,27 @@ scripts/codegen.sh       regenerate the TS client from the Rust crate
 - Do not add code comments or doc comments that narrate migrations, compatibility shims, or historical changes. Comments should describe only the current code.
 - Remove legacy compatibility code by default. Keep or add it only when explicitly requested.
 - In Rust format strings, prefer inlined variables: `"log value: {value:?}"` over `"log value: {:?}", value`.
+- For Rust modules, prefer `foo.rs` plus an optional `foo/` directory for
+  child modules. Do not introduce new `foo/mod.rs` files unless preserving
+  generated output or an existing external convention.
+- In runtime Rust code, prefer `core::` over `std::` for types that are
+  available in `core` (`core::pin::Pin`, `core::task::Poll`, `core::fmt`, and
+  similar). Keep `std::` for std-only APIs, tests, and std-only programs such
+  as `truapi-codegen`.
 - **No `any` in TypeScript types**: If a type can't be expressed cleanly, stop and ask the user whether to (a) refactor or import the right type or (b) add a scoped `// eslint-disable-next-line @typescript-eslint/no-explicit-any` exception. Never silently leave `any`.
 - Don't introduce typealias chains that just rename a public type from another crate (e.g. `pub type StorageError = crate::v01::HostLocalStorageReadError`). Use the canonical name directly. A typealias is only worth its indirection when it captures a real abstraction.
-- After any code change, update `README.md` (and CLAUDE.md if the layout changed) so the top-level docs reflect what the repo actually contains. Stale docs are a regression.
+- After any code change, update `README.md` (and CLAUDE.md if the layout changed) so the top-level docs reflect what the repo actually contains. Stale docs are a regression. When moving or removing docs, `rg` for the old path and update or remove stale links in README files, agent notes, skills, comments, and design docs.
 - In codegen emitters, prefer `indoc::writedoc!` / `formatdoc!` over chains of `writeln!`. A single `writedoc!` with a multi-line raw string keeps the emitted shape visible in source instead of fragmenting it across one-line `writeln!` calls. Reserve `writeln!` for the genuinely-one-line case (a single import, a single statement inside a loop).
 - In PR descriptions, issue comments, and other artifacts that outlive the conversation: describe the resulting state, not the transition between commits. Avoid "previously X, now Y", "we removed", "the old shim is gone", "this PR replaces", those read as ephemeral history once the PR is squash-merged. Write what the system _does_ after the change, not what each commit _changed_ on the way there. (Commit messages are the place for transition narrative; they survive in `git log` even after the squash.)
+
+## Explanation style
+
+- For architecture, event-flow, and debugging explanations, start with a short
+  direct summary of the model before diving into long details. Prefer simple
+  statements like "the host sends a dirty signal; the core re-reads and derives
+  auth state" before listing each hop.
+- Use diagrams only when they clarify ownership or message flow. Keep them
+  layered and label what is per-tab, shared, host-owned, and core-owned.
 
 ## First-time setup
 
@@ -80,7 +152,7 @@ cargo test --workspace
 ```bash
 cd js/packages/truapi
 npm run build
-npm test                # wire-equality + wire-table-loop smoke tests
+npm test                # bun test suite (src/**/*.test.ts)
 ```
 
 ### Explorer
@@ -116,7 +188,90 @@ submodule init + `bun install` and the per-pane `cd` discipline).
 Alternatively, with a deployed Polkadot Desktop Host installed, navigate to
 `https://dot.li/localhost:3000` from within it.
 
+#### Local dotli + playground E2E notes
+
+Use `make dev DEBUG=1` from the repo root for the local host stack. It prepares
+the ignored WASM/build artifacts, verifies dotli can resolve
+`@parity/truapi-host`, then starts dotli on `:5173` and the playground on
+`:3000`. Open `http://localhost:5173/localhost:3000`.
+
+When automating with Playwright, block service workers for smoke tests unless
+the test is explicitly about SW behavior. Stale host/product bundles can mask
+runtime fixes. Use a fresh cache-busting query string on
+`http://localhost:5173/localhost:3000?...`, collect `pageerror` and
+`console` messages, and fail on unexpected page errors.
+
+For interactive SSO checks, prefer a persistent headed Chrome profile and reuse
+the same browser context across checks. SSO pairing needs a real phone QR scan,
+and signing/resource-allocation flows may need web or mobile confirmation; if
+the human or companion app is unavailable, skip those methods and record the
+skip instead of treating it as a protocol failure. Non-interactive checks should
+still verify that the playground renders, the TrUAPI debug panel receives
+host/product events, generated examples can call non-confirmation methods, and
+logout/relogin does not restore a stale session.
+
+The root `make e2e-dotli` target builds the local `truapi-host` binary and
+drives the dotli/playground diagnosis through a non-interactive signing-host
+CLI process. The CLI answers the QR-derived pairing deeplink, auto-approves
+remote requests, stays alive for the SSO session, and is launched again to
+verify same-account reconnect after host sign-out. It uses
+an explicitly exported `HOST_CLI_SIGNER_MNEMONIC` when present. Without one,
+it auto-manages a reusable isolated identity under `.e2e-dotli/`. Set
+`E2E_DOTLI_SIGNING_HOST_BASE_PATH` to preserve and reuse signing-host state
+while debugging. Use `E2E_DOTLI_SMOKE=1 make e2e-dotli` for the QR-only smoke
+path.
+
+For a fully automated local playground diagnosis run, use:
+
+```bash
+make e2e-dotli
+```
+
+`make e2e-dotli` starts dotli preview and the playground, signs out any
+restored host session, signs in through the local signing-host CLI by extracting
+the QR payload, runs the playground Diagnosis screen, auto-accepts host-side
+Allow/Sign modals, and writes
+`playground/test-results/e2e-dotli/diagnosis-report.md`.
+
+Any CI job running the same target needs `DOTLI_CHECKOUT_TOKEN` for private
+submodule checkout; without dotli access it should skip this integration gate
+rather than fail unrelated checks.
+
+A useful no-phone smoke assertion is:
+
+```bash
+E2E_DOTLI_SMOKE=1 make e2e-dotli
+```
+
+For manual debugging of that smoke path:
+
+1. Start `make dev DEBUG=1`.
+2. Open `http://localhost:5173/localhost:3000?debug=truapi&cachebust=<ts>` with
+   service workers blocked.
+3. Wait for `globalThis.__truapi?.setLogLevel`, call
+   `__truapi.setLogLevel("debug")`, and confirm the console logs
+   `[truapi worker] logLevel=debug providers=0`.
+4. Click `#auth-button`, wait for `#auth-modal-backdrop.open`, and confirm:
+   the modal shows `Login with Polkadot Mobile`, `__truapi.getProviderCount()`
+   is greater than zero, worker frame/callback logs appear, and there are no
+   page errors.
+
+If `make dev` reports `EADDRINUSE` on `:5173` or the playground moves from
+`:3000` to `:3001`, kill stale `preview-server.ts` / `next dev` processes and
+restart the tmux session. Port drift causes false-negative local e2e results.
+
+Useful debug signals:
+
+```js
+__truapi.setLogLevel("debug");
+sessionStorage.setItem("dotli:truapi-debug", "1");
+```
+
+Reload after setting the debug-panel flag. Watch for `Unknown wire discriminant`, missing
+`@parity/truapi-host` imports, worker WASM instantiation failures, and
+debug-panel traffic disappearing when the login popup opens.
+
 ## Deployment
 
-Pushes to `main` trigger `.github/workflows/deploy-playground.yml`, which builds `playground/` and publishes the static export to `truapi-playground.dot` via `bulletin-deploy`.
+Pushes to `main` trigger `.github/workflows/deploy-playground.yml`, which builds `playground/` and publishes the static export via `bulletin-deploy`. Pass the bare dotNS label `truapi-playground`, never a suffixed name: dotNS attaches the top-level domain its network declares, so the live name is `truapi-playground.paseo` on Paseo Next v2. The deploy steps stay in this repo because `bulletin-deploy` ships its shared reusable workflow from a private repo that this public one cannot call.
 Pushes to `main` also trigger `.github/workflows/deploy-docs.yml`, which publishes the explorer (at the Pages root), the playground (under `/playground/`), and the Rust API docs (under `/cargo_doc/`) to GitHub Pages.

@@ -3,23 +3,28 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
-  type Provider,
+  type HostInitiatedSubscriptionHandler,
+  type ObservableSource,
   type ProtocolMessage,
+  type RegisterHostInitiatedSubscriptionParams,
   type RequestFrameIds,
   type RequestParams,
   type SubscriptionFrameIds,
   type SubscribeRawParams,
   type Subscription,
   type TrUApiTransport,
+  type WireProvider,
 } from "./transport.js";
 import {
+  CallError,
   indexedTaggedUnion,
   Result,
   _void,
+  type CallErrorValue,
   type Codec,
   type ResultPayload,
 } from "./scale.js";
-import { TRUAPI_CODEC_VERSION, TRUAPI_VERSION } from "./generated/client.js";
+import { TRUAPI_CODEC_VERSION } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 
@@ -30,12 +35,11 @@ export type { Subscription, TrUApiTransport };
  */
 export interface CreateTransportOptions {
   /**
-   * Highest TrUAPI protocol version exposed by the transport.
-   */
-  truapiVersion?: number;
-
-  /**
    * SCALE codec version advertised during host handshake negotiation.
+   *
+   * @deprecated TODO(shared-core-wire): remove this override with
+   * `TrUApiTransport.codecVersion` once generated handshake requests use
+   * `TRUAPI_CODEC_VERSION` directly.
    */
   codecVersion?: number;
 }
@@ -51,7 +55,10 @@ function protocolVersionTag(version: number): `V${number}` {
   return `V${version}` as `V${number}`;
 }
 
-type HandshakeResponse = ResultPayload<undefined, T.HostHandshakeError>;
+type HandshakeResponse = ResultPayload<
+  undefined,
+  CallErrorValue<T.VersionedHostHandshakeError>
+>;
 const HANDSHAKE_WIRE_VERSION = 1;
 
 /**
@@ -63,7 +70,7 @@ function handshakeResponseCodec(
   return indexedTaggedUnion({
     [protocolVersionTag(version)]: [
       version - 1,
-      Result(_void, T.HostHandshakeError),
+      Result(_void, CallError(T.VersionedHostHandshakeError)),
     ] as const,
   }) as Codec<{ tag: `V${number}`; value: HandshakeResponse }>;
 }
@@ -90,8 +97,14 @@ function encodeUnsupportedHandshakeResponse(version: number): Uint8Array {
     value: {
       success: false,
       value: {
-        tag: "UnsupportedProtocolVersion",
-        value: undefined,
+        tag: "Domain",
+        value: {
+          tag: "V1",
+          value: {
+            tag: "UnsupportedProtocolVersion",
+            value: undefined,
+          },
+        },
       },
     },
   });
@@ -133,14 +146,13 @@ function unwrapVersionedWireValue(value: unknown): unknown {
 }
 
 /**
- * Build a `TrUApiTransport` on top of a `Provider`, adding request/response
+ * Build a `TrUApiTransport` on top of a `WireProvider`, adding request/response
  * correlation and subscription start/receive/stop lifecycle handling.
  */
 export function createTransport(
-  provider: Provider,
+  provider: WireProvider,
   options: CreateTransportOptions = {},
 ): TrUApiTransport {
-  const truapiVersion = options.truapiVersion ?? TRUAPI_VERSION;
   const codecVersion = options.codecVersion ?? TRUAPI_CODEC_VERSION;
   let idCounter = 0;
   let closedError: Error | null = null;
@@ -161,6 +173,18 @@ export function createTransport(
       onClose?: (error: Error) => void;
     }
   >();
+  type BufferedHostStart = { requestId: string; payload: Uint8Array };
+  type HostRoute = {
+    ids: SubscriptionFrameIds;
+    decodeRequest: (payload: Uint8Array) => unknown;
+    encodeItem: (item: unknown) => Uint8Array;
+    interruptPayload: Uint8Array;
+    bufferCapacity: number;
+    buffered: BufferedHostStart[];
+    handler?: (request: unknown) => ObservableSource<unknown>;
+    instances: Map<string, { unsubscribe(): void }>;
+  };
+  const hostRoutes = new Map<number, HostRoute>();
 
   /**
    * Normalize arbitrary thrown values into `Error` instances.
@@ -189,6 +213,12 @@ export function createTransport(
     for (const [requestId, subscription] of subscriptions) {
       subscriptions.delete(requestId);
       subscription.onClose?.(nextError);
+    }
+
+    for (const route of hostRoutes.values()) {
+      route.buffered.length = 0;
+      for (const instance of route.instances.values()) instance.unsubscribe();
+      route.instances.clear();
     }
   }
 
@@ -244,6 +274,25 @@ export function createTransport(
         });
       } catch {
         // provider already closed
+      }
+      return;
+    }
+
+    const hostRoute = hostRoutes.get(payload.id);
+    if (hostRoute) {
+      startHostSubscription(hostRoute, requestId, payload.value);
+      return;
+    }
+    for (const candidate of hostRoutes.values()) {
+      if (payload.id !== candidate.ids.stop) continue;
+      const bufferedIndex = candidate.buffered.findIndex(
+        (start) => start.requestId === requestId,
+      );
+      if (bufferedIndex >= 0) candidate.buffered.splice(bufferedIndex, 1);
+      const instance = candidate.instances.get(requestId);
+      if (instance) {
+        candidate.instances.delete(requestId);
+        instance.unsubscribe();
       }
       return;
     }
@@ -304,8 +353,91 @@ export function createTransport(
     }
   }
 
+  function interruptHostSubscription(route: HostRoute, requestId: string) {
+    const instance = route.instances.get(requestId);
+    if (instance) {
+      route.instances.delete(requestId);
+      instance.unsubscribe();
+    }
+    try {
+      send({
+        requestId,
+        payload: {
+          id: route.ids.interrupt,
+          value: route.interruptPayload,
+        },
+      });
+    } catch {
+      // provider already closed
+    }
+  }
+
+  function startHostSubscription(
+    route: HostRoute,
+    requestId: string,
+    payload: Uint8Array,
+  ) {
+    const previous = route.instances.get(requestId);
+    if (previous) {
+      route.instances.delete(requestId);
+      previous.unsubscribe();
+    }
+
+    const handler = route.handler;
+    if (!handler) {
+      if (route.buffered.length === route.bufferCapacity) {
+        const evicted = route.buffered.shift();
+        if (evicted) interruptHostSubscription(route, evicted.requestId);
+      }
+      route.buffered.push({ requestId, payload });
+      return;
+    }
+
+    let source: ObservableSource<unknown>;
+    try {
+      source = handler(route.decodeRequest(payload));
+    } catch {
+      interruptHostSubscription(route, requestId);
+      return;
+    }
+
+    let active = true;
+    let sourceSubscription: { unsubscribe(): void } | undefined;
+    const instance = {
+      unsubscribe() {
+        if (!active) return;
+        active = false;
+        sourceSubscription?.unsubscribe();
+      },
+    };
+    route.instances.set(requestId, instance);
+    try {
+      sourceSubscription = source.subscribe({
+        next(item) {
+          if (!active) return;
+          try {
+            send({
+              requestId,
+              payload: { id: route.ids.receive, value: route.encodeItem(item) },
+            });
+          } catch {
+            interruptHostSubscription(route, requestId);
+          }
+        },
+        error() {
+          if (active) interruptHostSubscription(route, requestId);
+        },
+        // Completion deliberately keeps the instance alive and its last tree
+        // on screen until the host sends `_stop`.
+        complete() {},
+      });
+      if (!active) sourceSubscription.unsubscribe();
+    } catch {
+      interruptHostSubscription(route, requestId);
+    }
+  }
+
   return {
-    truapiVersion,
     codecVersion,
     /**
      * Send one request frame and resolve with the typed Ok/Err outcome
@@ -400,6 +532,43 @@ export function createTransport(
           } catch {
             // provider already closed
           }
+        },
+      };
+    },
+    registerHostInitiatedSubscription<Request, Item>({
+      ids,
+      decodeRequest,
+      encodeItem,
+      interruptPayload,
+      bufferCapacity,
+    }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
+      if (hostRoutes.has(ids.start)) {
+        throw new Error(`host-initiated subscription ${ids.start} is already registered`);
+      }
+      const route: HostRoute = {
+        ids,
+        decodeRequest: decodeRequest as (payload: Uint8Array) => unknown,
+        encodeItem: encodeItem as (item: unknown) => Uint8Array,
+        interruptPayload,
+        bufferCapacity,
+        buffered: [],
+        instances: new Map(),
+      };
+      hostRoutes.set(ids.start, route);
+      return {
+        setHandler(handler: HostInitiatedSubscriptionHandler<Request, Item>) {
+          const installed = handler as (
+            request: unknown,
+          ) => ObservableSource<unknown>;
+          route.handler = installed;
+          for (const start of route.buffered.splice(0)) {
+            startHostSubscription(route, start.requestId, start.payload);
+          }
+          return {
+            unsubscribe() {
+              if (route.handler === installed) route.handler = undefined;
+            },
+          };
         },
       };
     },

@@ -10,6 +10,7 @@ use crate::{CallContext, CallError};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
 /// and navigation.
+#[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.
     ///
@@ -37,12 +38,13 @@ pub trait System: Send + Sync {
     /// Query whether the host supports a specific feature.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.system.featureSupported({
     ///   tag: "Chain",
     ///   value: {
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   },
     /// });
     /// assert(result.isOk(), "featureSupported failed:", result);

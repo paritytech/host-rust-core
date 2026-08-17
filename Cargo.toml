@@ -5,3 +5,26 @@ members = ["rust/crates/*"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
+
+[workspace.dependencies]
+uniffi = "0.32.0"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+
+# UniFFI binding generation scans the host cdylib's exported metadata symbols.
+# `release` strips them (`strip = "symbols"`), so uniffi-bindgen finds nothing
+# and emits no bindings. This profile inherits release but keeps symbols, and is
+# used by the `uniffi` / `uniffi-kotlin` make targets for the codegen build only.
+[profile.codegen]
+inherits = "release"
+strip = false

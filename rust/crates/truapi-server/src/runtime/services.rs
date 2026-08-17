@@ -1,0 +1,244 @@
+//! Role-neutral runtime services shared by product-facing runtimes.
+//!
+//! This module owns only infrastructure that is valid for both pairing hosts
+//! and signing hosts. Pairing state, signing state, active sessions, and role
+//! controls live on the concrete role objects.
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
+use crate::runtime::bulletin_rpc::BulletinRpc;
+use crate::runtime::statement_store_rpc::StatementStoreRpc;
+use crate::subscription::Spawner;
+use async_trait::async_trait;
+use truapi::latest;
+use truapi_platform::{JsonRpcConnection, Platform};
+
+/// Upper bound on the in-core preimage cache. The cache is a bridge until
+/// content propagates to the lookup backend, not a store, so it stays small.
+const PREIMAGE_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Upper bound on accepted statements retained while the remote Statement
+/// Store catches up.
+const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
+
+/// Infrastructure shared by all product runtimes created from one host role.
+pub(crate) struct RuntimeServices {
+    /// Host platform backing all syscalls.
+    pub(crate) platform: Arc<dyn Platform>,
+    /// Shared chainHead-v1 runtime behind the Chain surface.
+    pub(crate) chain: ChainRuntime,
+    /// People-chain statement store RPC client.
+    pub(crate) statement_store: StatementStoreRpc,
+    /// In-core Bulletin submission over the configured Bulletin chain.
+    pub(crate) bulletin: BulletinRpc,
+    /// Runtime metadata and chain state shared by the native allowance
+    /// paths, per chain.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) chain_context: crate::runtime::statement_allowance::ChainContextCache,
+    /// Values from confirmed in-core submissions, served to `lookup_subscribe`
+    /// until the host's content backend has them. Byte-bounded, oldest-first.
+    preimage_cache: Mutex<PreimageCache>,
+    /// Confirmed submissions served to new subscriptions until the remote
+    /// Statement Store reports them.
+    statement_cache: Mutex<StatementCache>,
+    /// Task spawner for background runtime work.
+    pub(crate) spawner: Spawner,
+    next_core_instance: AtomicU64,
+}
+
+impl RuntimeServices {
+    /// Build role-neutral runtime services from the platform, the People-chain
+    /// genesis hash used by statement-store backed protocols, and the
+    /// Bulletin-chain genesis hash used for in-core preimage submission.
+    pub(crate) fn new(
+        platform: Arc<dyn Platform>,
+        people_chain_genesis_hash: [u8; 32],
+        bulletin_chain_genesis_hash: [u8; 32],
+        spawner: Spawner,
+    ) -> Arc<Self> {
+        let chain_provider = Arc::new(HostChainProvider {
+            platform: platform.clone(),
+        });
+        let chain = ChainRuntime::new(chain_provider, spawner.clone());
+        let statement_store =
+            StatementStoreRpc::new(platform.clone(), people_chain_genesis_hash, spawner.clone());
+        let bulletin = BulletinRpc::new(chain.clone(), bulletin_chain_genesis_hash);
+        Arc::new(Self {
+            platform,
+            chain,
+            statement_store,
+            bulletin,
+            #[cfg(not(target_arch = "wasm32"))]
+            chain_context: crate::runtime::statement_allowance::ChainContextCache::default(),
+            preimage_cache: Mutex::new(PreimageCache::default()),
+            statement_cache: Mutex::new(StatementCache::default()),
+            spawner,
+            next_core_instance: AtomicU64::new(1),
+        })
+    }
+
+    /// Allocate the next per-product-runtime id, used to scope chain follow
+    /// operation ids within the shared host runtime.
+    pub(crate) fn next_core_instance(&self) -> u64 {
+        self.next_core_instance.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Store a preimage value under its key for later lookup hits.
+    pub(crate) fn cache_preimage(&self, key: [u8; 32], value: Vec<u8>) {
+        self.preimage_cache
+            .lock()
+            .expect("preimage cache mutex poisoned")
+            .insert(key, value);
+    }
+
+    /// Return a cached preimage value for `key`, if present.
+    pub(crate) fn cached_preimage(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
+        self.preimage_cache
+            .lock()
+            .expect("preimage cache mutex poisoned")
+            .get(key)
+    }
+
+    /// Retain a remotely accepted statement for read-after-write consistency.
+    pub(crate) fn cache_statement(&self, statement: latest::SignedStatement) {
+        self.statement_cache
+            .lock()
+            .expect("statement cache mutex poisoned")
+            .insert(statement);
+    }
+
+    /// Return accepted statements matching a Statement Store topic filter.
+    pub(crate) fn cached_statements(
+        &self,
+        kind: crate::host_logic::statement_store::TopicFilterKind,
+        topics: &[[u8; 32]],
+    ) -> Vec<latest::SignedStatement> {
+        self.statement_cache
+            .lock()
+            .expect("statement cache mutex poisoned")
+            .matching(kind, topics)
+    }
+
+    /// Drop bridge entries once a remote subscription reports them.
+    pub(crate) fn mark_statements_visible(&self, statements: &[latest::SignedStatement]) {
+        self.statement_cache
+            .lock()
+            .expect("statement cache mutex poisoned")
+            .remove_all(statements);
+    }
+}
+
+/// Byte-bounded, insertion-ordered preimage cache.
+#[derive(Default)]
+struct PreimageCache {
+    entries: VecDeque<([u8; 32], Vec<u8>)>,
+    total_bytes: usize,
+}
+
+impl PreimageCache {
+    fn insert(&mut self, key: [u8; 32], value: Vec<u8>) {
+        if value.len() > PREIMAGE_CACHE_MAX_BYTES {
+            return;
+        }
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|(existing, _)| *existing == key)
+        {
+            let (_, old) = self.entries.remove(index).expect("index in range");
+            self.total_bytes -= old.len();
+        }
+        self.total_bytes += value.len();
+        self.entries.push_back((key, value));
+        while self.total_bytes > PREIMAGE_CACHE_MAX_BYTES {
+            let Some((_, evicted)) = self.entries.pop_front() else {
+                break;
+            };
+            self.total_bytes -= evicted.len();
+        }
+    }
+
+    fn get(&self, key: &[u8; 32]) -> Option<Vec<u8>> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| existing == key)
+            .map(|(_, value)| value.clone())
+    }
+}
+
+/// Entry-bounded, insertion-ordered Statement Store propagation bridge.
+#[derive(Default)]
+struct StatementCache {
+    entries: VecDeque<latest::SignedStatement>,
+}
+
+impl StatementCache {
+    fn insert(&mut self, statement: latest::SignedStatement) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|existing| existing == &statement)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push_back(statement);
+        while self.entries.len() > STATEMENT_CACHE_MAX_ENTRIES {
+            self.entries.pop_front();
+        }
+    }
+
+    fn matching(
+        &self,
+        kind: crate::host_logic::statement_store::TopicFilterKind,
+        topics: &[[u8; 32]],
+    ) -> Vec<latest::SignedStatement> {
+        self.entries
+            .iter()
+            .filter(|statement| match kind {
+                crate::host_logic::statement_store::TopicFilterKind::MatchAll => {
+                    topics.iter().all(|topic| statement.topics.contains(topic))
+                }
+                crate::host_logic::statement_store::TopicFilterKind::MatchAny => {
+                    topics.iter().any(|topic| statement.topics.contains(topic))
+                }
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn remove_all(&mut self, statements: &[latest::SignedStatement]) {
+        self.entries
+            .retain(|cached| !statements.iter().any(|visible| visible == cached));
+    }
+}
+
+/// Adapter from `truapi_platform::ChainProvider` into the
+/// [`RuntimeChainProvider`] surface the chain runtime expects.
+struct HostChainProvider {
+    platform: Arc<dyn Platform>,
+}
+
+#[async_trait]
+impl RuntimeChainProvider for HostChainProvider {
+    async fn connect(
+        &self,
+        genesis_hash: Vec<u8>,
+    ) -> Result<Arc<dyn JsonRpcConnection>, RuntimeFailure> {
+        let genesis_hash: [u8; 32] = genesis_hash.try_into().map_err(|genesis_hash: Vec<u8>| {
+            RuntimeFailure::host_failure(
+                "remote_chain_connect",
+                format!("genesis_hash must be 32 bytes, got {}", genesis_hash.len()),
+            )
+        })?;
+        self.platform
+            .connect(genesis_hash)
+            .await
+            .map(Arc::from)
+            .map_err(|err| {
+                RuntimeFailure::unavailable_with_reason("remote_chain_connect", format!("{err:?}"))
+            })
+    }
+}

@@ -1,3 +1,4 @@
+import { concatBytes } from "@noble/hashes/utils.js";
 import { err, ok, type Result, type ResultAsync } from "neverthrow";
 
 import { str, u8, type ResultPayload } from "./scale.js";
@@ -105,6 +106,18 @@ export interface ObservableLike<Item, Reason = never> {
 }
 
 /**
+ * Observable source accepted by generated channel methods as the
+ * product-to-host request stream. Structurally satisfied by RxJS subjects and
+ * observables as well as generated `ObservableLike` values.
+ **/
+export interface ObservableSource<Item> {
+  /**
+   * Start consuming the source until the returned handle unsubscribes.
+   **/
+  subscribe(observer: Partial<Observer<Item>>): { unsubscribe(): void };
+}
+
+/**
  * Numeric frame ids for a one-shot request method.
  **/
 export interface RequestFrameIds {
@@ -196,16 +209,44 @@ export interface SubscribeRawParams {
 }
 
 /**
+ * Handler for a subscription initiated by the native host.
+ **/
+export type HostInitiatedSubscriptionHandler<Request, Item> = (
+  request: Request,
+) => ObservableSource<Item>;
+
+/** Product-side registration for one host-initiated subscription method. **/
+export interface HostInitiatedSubscriptionRegistration<Request, Item> {
+  /** Install or replace the handler used for future start frames. **/
+  setHandler(
+    handler: HostInitiatedSubscriptionHandler<Request, Item>,
+  ): { unsubscribe(): void };
+}
+
+/** Options used to register a host-initiated subscription method. **/
+export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
+  /** Wire discriminants for the host-initiated subscription. **/
+  ids: SubscriptionFrameIds;
+  /** Decode the host's start payload. **/
+  decodeRequest(payload: Uint8Array): Request;
+  /** Encode one product renderer emission. **/
+  encodeItem(item: Item): Uint8Array;
+  /** Exact payload used when the product declines a render instance. **/
+  interruptPayload: Uint8Array;
+  /** Number of starts retained before a handler is installed. **/
+  bufferCapacity: number;
+}
+
+/**
  * Byte-level transport used by generated client stubs.
  **/
 export interface TrUApiTransport {
   /**
-   * Highest TrUAPI protocol version supported by this generated client.
-   **/
-  readonly truapiVersion: number;
-
-  /**
-   * SCALE codec version negotiated through the handshake.
+   * SCALE codec version used by generated handshake calls.
+   *
+   * @deprecated TODO(shared-core-wire): remove this public transport field once
+   * generated handshake requests read `TRUAPI_CODEC_VERSION` directly instead
+   * of going through transport state.
    **/
   readonly codecVersion: number;
 
@@ -219,9 +260,14 @@ export interface TrUApiTransport {
    **/
   subscribeRaw(params: SubscribeRawParams): Subscription;
 
+  /** Register product-side handling for a host-initiated subscription. **/
+  registerHostInitiatedSubscription<Request, Item>(
+    params: RegisterHostInitiatedSubscriptionParams<Request, Item>,
+  ): HostInitiatedSubscriptionRegistration<Request, Item>;
+
   /**
    * Tear down the transport and release the listeners it registered on the
-   * underlying `Provider`. Pending requests reject and live subscriptions
+   * underlying `WireProvider`. Pending requests reject and live subscriptions
    * receive `onClose`. Idempotent.
    *
    * The provider itself is left alone; the caller decides whether to also
@@ -262,9 +308,11 @@ export interface ProtocolMessage {
 }
 
 /**
- * Raw message pipe abstraction used by the transport.
+ * Raw SCALE-wire-frame pipe abstraction used by the transport. A `WireProvider`
+ * is the low-level channel (a `MessagePort` or iframe `postMessage` link) that
+ * carries encoded frames between the product and the host.
  **/
-export interface Provider {
+export interface WireProvider {
   /**
    * Send a complete SCALE-encoded wire frame to the peer.
    **/
@@ -277,6 +325,10 @@ export interface Provider {
 
   /**
    * Register a callback for provider-level close or failure events.
+   *
+   * Providers keep a terminal close reason. The callback fires at most once
+   * for an active subscription, and fires immediately when registered after
+   * the provider has already closed.
    **/
   subscribeClose?(callback: (error: Error) => void): () => void;
 
@@ -284,21 +336,6 @@ export interface Provider {
    * Release provider resources and close the underlying pipe.
    **/
   dispose(): void;
-}
-
-/**
- * Concatenate byte arrays without mutating the source arrays.
- **/
-function concatBytes(parts: Uint8Array[]): Uint8Array {
-  let total = 0;
-  for (const p of parts) total += p.length;
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.length;
-  }
-  return out;
 }
 
 /**
@@ -312,11 +349,7 @@ export function encodeWireMessage(
     return err(new Error(`Invalid wire discriminant: ${id}`));
   }
   return ok(
-    concatBytes([
-      str.enc(message.requestId),
-      u8.enc(id),
-      message.payload.value,
-    ]),
+    concatBytes(str.enc(message.requestId), u8.enc(id), message.payload.value),
   );
 }
 
@@ -392,7 +425,7 @@ function scanStrEnd(bytes: Uint8Array): Result<number, Error> {
 
 /**
  * Internal listener bookkeeping and close-once state machine shared by the
- * built-in `Provider` implementations. Transport-specific code wires its
+ * built-in `WireProvider` implementations. Transport-specific code wires its
  * inbound source to `deliver`, registers cleanup via `onClose`, and exposes
  * `subscribe`/`subscribeClose` to callers.
  **/
@@ -480,7 +513,7 @@ function createBaseProvider() {
 export function createIframeProvider(options: {
   target: Window;
   hostOrigin: string;
-}): Provider {
+}): WireProvider {
   const base = createBaseProvider();
   const { target, hostOrigin } = options;
 
@@ -517,7 +550,7 @@ export function createIframeProvider(options: {
  **/
 export function createMessagePortProvider(
   port: MessagePort | Promise<MessagePort>,
-): Provider {
+): WireProvider {
   const base = createBaseProvider();
   let resolvedPort: MessagePort | null = null;
   const pending: Uint8Array[] = [];

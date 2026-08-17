@@ -8,23 +8,33 @@ use parity_scale_codec::{Decode, Encode};
 /// does not re-prompt on subsequent requests for the same capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Display)]
 #[allow(clippy::upper_case_acronyms)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostDevicePermissionRequest {
+    /// Showing system notifications.
     #[display("notifications")]
     Notifications,
+    /// Camera capture access.
     #[display("camera")]
     Camera,
+    /// Microphone capture access.
     #[display("microphone")]
     Microphone,
+    /// Bluetooth device access.
     #[display("bluetooth")]
     Bluetooth,
+    /// NFC reader access.
     #[display("NFC")]
     NFC,
+    /// Geolocation access.
     #[display("location")]
     Location,
+    /// Clipboard access.
     #[display("clipboard")]
     Clipboard,
+    /// Opening URLs outside the host.
     #[display("open URL")]
     OpenUrl,
+    /// Biometric authentication.
     #[display("biometrics")]
     Biometrics,
 }
@@ -34,6 +44,7 @@ pub enum HostDevicePermissionRequest {
 /// `ChainSubmit`, `PreimageSubmit`, and `StatementSubmit` are also triggered
 /// implicitly by the corresponding business calls when not yet granted.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RemotePermission {
     /// Outbound HTTP/WebSocket access to a set of domains.
     #[display("access to {}", domains.join(", "))]
@@ -58,6 +69,7 @@ pub enum RemotePermission {
 /// remote-permission request (RFC 0002).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[display("{permission}")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RemotePermissionRequest {
     /// Permission requested by the product.
     pub permission: RemotePermission,

@@ -16,24 +16,47 @@ use crate::wire;
 use crate::{CallContext, CallError};
 
 /// Signing operations.
+#[crate::async_trait]
 pub trait Signing: Send + Sync {
-    /// Construct a signed transaction for a product account.
+    /// Construct a transaction for a product account.
+    ///
+    /// Under Extrinsic V5, omitting `VerifyMultiSignature` from `extensions`
+    /// lets the host sign with the signer's key. Listing it — as `Disabled`,
+    /// with a proof in a later extension — encodes the given bytes verbatim and
+    /// returns an unsigned transaction.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
-    /// const result = await truapi.signing.createTransaction({
+    /// const payload = await buildCreateTransactionPayload({
     ///   signer: {
     ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: 0,
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
-    ///   callData: "0x0000",
-    ///   extensions: [],
-    ///   txExtVersion: 0,
+    ///   genesisHash: people.value.genesisHash,
+    ///   callData: "0x000000",
     /// });
-    /// assert(result.isOk(), "createTransaction failed:", result);
-    /// console.log("transaction created:", result.value);
+    /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
+    ///
+    /// for (const txExtVersion of [0, 5]) {
+    ///   const version = txExtVersion === 0 ? "V4" : "V5";
+    ///   // V5 leaves VerifyMultiSignature to the host, which signs. V4 keeps
+    ///   // it: that body is a plain concatenation, so dropping one shifts the rest.
+    ///   const extensions =
+    ///     txExtVersion === 5
+    ///       ? payload.value.extensions.filter(
+    ///           (ext) => ext.id !== "VerifyMultiSignature",
+    ///         )
+    ///       : payload.value.extensions;
+    ///   const result = await truapi.signing.createTransaction({
+    ///     ...payload.value,
+    ///     extensions,
+    ///     txExtVersion,
+    ///   });
+    ///   assert(result.isOk(), `${version} createTransaction failed:`, result);
+    ///   console.log(`${version} transaction created:`, result.value);
+    /// }
     /// ```
     #[wire(request_id = 30)]
     async fn create_transaction(
@@ -44,17 +67,47 @@ pub trait Signing: Send + Sync {
         Err(CallError::unavailable())
     }
 
-    /// Construct a signed transaction for a non-product (legacy) account.
+    /// Construct a transaction for a non-product (legacy) account.
+    ///
+    /// The V5 `VerifyMultiSignature` rule is the same as
+    /// [`Signing::create_transaction`]: omit it and the host signs, list it and
+    /// the given bytes are used with no host signature.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const people = await truapi.chain.getChainInfo({ chain: "People" });
+    /// assert(people.isOk(), "getChainInfo failed:", people);
+    ///
+    /// const accountResult = await truapi.account.getAccount({
+    ///   productAccountId: {
+    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     derivationIndex: { tag: "Index", value: 0 },
+    ///   },
+    /// });
+    /// assert(accountResult.isOk(), "getAccount failed:", accountResult);
+    ///
+    /// const payload = await buildCreateTransactionPayload({
+    ///   signer: {
+    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     derivationIndex: { tag: "Index", value: 0 },
+    ///   },
+    ///   genesisHash: people.value.genesisHash,
+    ///   callData: "0x000000",
+    /// });
+    /// assert(payload.isOk(), "buildCreateTransactionPayload failed:", payload);
+    ///
+    /// // Host-owned under V5 only: a V4 body is a plain concatenation, so
+    /// // dropping a declared extension there shifts every one after it.
+    /// const extensions =
+    ///   payload.value.txExtVersion === 5
+    ///     ? payload.value.extensions.filter(
+    ///         (ext) => ext.id !== "VerifyMultiSignature",
+    ///       )
+    ///     : payload.value.extensions;
     ///
     /// const result = await truapi.signing.createTransactionWithLegacyAccount({
-    ///   signer: "0x0000000000000000000000000000000000000000000000000000000000000000",
-    ///   genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
-    ///   callData: "0x0000",
-    ///   extensions: [],
-    ///   txExtVersion: 0,
+    ///   ...payload.value,
+    ///   extensions,
+    ///   signer: accountResult.value.account.publicKey,
     /// });
     /// assert(result.isOk(), "createTransactionWithLegacyAccount failed:", result);
     /// console.log("transaction created:", result.value);
@@ -74,8 +127,15 @@ pub trait Signing: Send + Sync {
     /// Sign raw bytes with a non-product account.
     ///
     /// ```ts
+    /// const accountsResult = await truapi.account.getLegacyAccounts();
+    /// assert(accountsResult.isOk(), "getLegacyAccounts failed:", accountsResult);
+    /// const identityAccount =
+    ///   accountsResult.value.accounts.find((account) => account.name === "Identity") ??
+    ///   accountsResult.value.accounts[0];
+    /// assert(identityAccount, "no legacy accounts available");
+    ///
     /// const result = await truapi.signing.signRawWithLegacyAccount({
-    ///   signer: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+    ///   signer: identityAccount.publicKey,
     ///   payload: {
     ///     tag: "Bytes",
     ///     value: { bytes: "0x48656c6c6f" },
@@ -97,16 +157,25 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload with a non-product account.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
+    ///
+    /// const accountResult = await truapi.account.getAccount({
+    ///   productAccountId: {
+    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     derivationIndex: { tag: "Index", value: 0 },
+    ///   },
+    /// });
+    /// assert(accountResult.isOk(), "getAccount failed:", accountResult);
     ///
     /// const result = await truapi.signing.signPayloadWithLegacyAccount({
-    ///   signer: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+    ///   signer: accountResult.value.account.publicKey,
     ///   payload: {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
     ///     era: "0x00",
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
-    ///     method: "0x0000",
+    ///     genesisHash: assetHub.value.genesisHash,
+    ///     method: "0x00003448656c6c6f2c20776f726c6421",
     ///     nonce: "0x00000000",
     ///     signedExtensions: [],
     ///     specVersion: "0x00000000",
@@ -134,7 +203,7 @@ pub trait Signing: Send + Sync {
     ///
     /// ```ts
     /// const result = await truapi.signing.signRaw({
-    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: 0 },
+    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Index", value: 0 } },
     ///   payload: {
     ///     tag: "Bytes",
     ///     value: {
@@ -157,15 +226,16 @@ pub trait Signing: Send + Sync {
     /// Sign an extrinsic payload.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.signing.signPayload({
-    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: 0 },
+    ///   account: { dotNsIdentifier: "truapi-playground.dot", derivationIndex: { tag: "Index", value: 0 } },
     ///   payload: {
     ///     blockHash: "0xd6eec26135305a8ad257a20d003357284c8aa03d0bdb2b357ab0a22371e11ef2",
     ///     blockNumber: "0x00000000",
     ///     era: "0x00",
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///     method: "0x00003448656c6c6f2c20776f726c6421",
     ///     nonce: "0x00000000",
     ///     signedExtensions: [],

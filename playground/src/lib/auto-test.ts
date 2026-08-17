@@ -1,14 +1,11 @@
-import {
-  runExample,
-  type LogEntry,
-  type RunResult,
-} from "./example-runner";
-import { getClient } from "./transport";
+import { runExample, type LogEntry, type RunResult } from "./example-runner";
+import { getClientSync } from "@parity/truapi/sandbox";
 import type { MethodInfo, ServiceInfo } from "./services";
+import type { DiagnosisStatus } from "@/shared/diagnosis";
 
 export const DIAGNOSIS_ID = "__diagnosis__";
 
-export type TestStatus = "idle" | "running" | "pass" | "fail" | "skipped";
+export type TestStatus = DiagnosisStatus;
 
 export interface TestEntry {
   status: TestStatus;
@@ -18,13 +15,17 @@ export interface TestEntry {
 
 const UNARY_TIMEOUT_MS = 10_000;
 const SIGNING_TIMEOUT_MS = 30_000;
+const SSO_TIMEOUT_MS = 60_000;
+// Exceeds the runtime's 300s remote-allocation cap and 360s end-to-end
+// preimage cap, leaving time for the result to cross the iframe boundary.
+const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
 
 // Services skipped wholesale in the diagnosis until hosts wire them up.
-const SKIPPED_SERVICES = new Set(["Coin Payment"]);
-// Methods whose first call implicitly triggers a host permission/signing
-// prompt, so they need the longer signing-class timeout to allow for the user
-// to respond. `get_account_alias` and `Preimage/submit` prompt on first use.
+const SKIPPED_SERVICES = new Set(["Coin Payment", "Payment"]);
+// Methods that trigger a host permission/signing prompt, so they need the
+// longer signing-class timeout to allow for the user to respond.
 const LONG_TIMEOUT_METHODS = new Set([
+  "Account/get_account",
   "Account/get_account_alias",
   "Resource Allocation/request",
   "Signing/sign_payload",
@@ -34,6 +35,18 @@ const LONG_TIMEOUT_METHODS = new Set([
   "Signing/create_transaction",
   "Signing/create_transaction_with_legacy_account",
   "Preimage/submit",
+]);
+
+const METHOD_TIMEOUT_MS = new Map<string, number>([
+  ["Account/get_account_alias", SSO_TIMEOUT_MS],
+  ["Account/create_account_proof", SSO_TIMEOUT_MS],
+  ["Resource Allocation/request", LIVE_ALLOCATION_TIMEOUT_MS],
+  ["Preimage/lookup_subscribe", LIVE_ALLOCATION_TIMEOUT_MS],
+  ["Preimage/submit", LIVE_ALLOCATION_TIMEOUT_MS],
+  ["Signing/create_transaction", SSO_TIMEOUT_MS],
+  ["Statement Store/create_proof_authorized", LIVE_ALLOCATION_TIMEOUT_MS],
+  ["Statement Store/submit", LIVE_ALLOCATION_TIMEOUT_MS],
+  ["Statement Store/subscribe", LIVE_ALLOCATION_TIMEOUT_MS],
 ]);
 
 type RunOneOpts = {
@@ -50,7 +63,10 @@ async function runOne({
   const id = `${serviceName}/${method.name}`;
 
   if (SKIPPED_SERVICES.has(serviceName)) {
-    onUpdate(id, { status: "skipped" });
+    onUpdate(id, {
+      status: "skipped",
+      output: `${serviceName} service not yet wired up by hosts`,
+    });
     return;
   }
   if (!method.exampleSource) {
@@ -63,25 +79,33 @@ async function runOne({
   const source = method.exampleSource;
   const logs: LogEntry[] = [];
   const onLog = (entry: LogEntry) => logs.push(entry);
-  const timeoutMs = LONG_TIMEOUT_METHODS.has(id)
-    ? SIGNING_TIMEOUT_MS
-    : UNARY_TIMEOUT_MS;
+  const timeoutMs =
+    METHOD_TIMEOUT_MS.get(id) ??
+    (LONG_TIMEOUT_METHODS.has(id) ? SIGNING_TIMEOUT_MS : UNARY_TIMEOUT_MS);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`timed out after ${timeoutMs / 1000}s`)),
+      timeoutMs,
+    );
+  });
 
   // The example decides pass/fail explicitly: it resolves on success and throws
   // (via `assert(...)` or any uncaught error) on failure. `console.*` is pure
   // output, captured into `logs` for the report but with no bearing on status.
   let run: RunResult | undefined;
   try {
-    run = await runExample({ source, client: getClient(), onLog });
-    await Promise.race([
-      run.promise,
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`timed out after ${timeoutMs / 1000}s`)),
-          timeoutMs,
-        ),
-      ),
+    const client = getClientSync();
+    if (!client) {
+      throw new Error(
+        "SPA must be opened inside a TrUAPI host (iframe or webview).",
+      );
+    }
+    run = await Promise.race([
+      runExample({ source, client, onLog }),
+      timeoutPromise,
     ]);
+    await Promise.race([run.promise, timeoutPromise]);
     onUpdate(id, {
       status: "pass",
       request: source,
@@ -96,6 +120,7 @@ async function runOne({
       output: log ? `${log}\n${message}` : message,
     });
   } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
     run?.cancel();
   }
 }
