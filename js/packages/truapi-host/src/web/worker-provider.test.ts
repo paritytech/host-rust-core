@@ -165,6 +165,17 @@ async function createProviderFromRuntime(
   };
 }
 
+async function readyRuntime(worker: FakeWorker) {
+  const runtimePromise = createWebWorkerPairingHostRuntime(
+    asWorker(worker),
+    makeHostCallbacks(),
+    { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+  );
+  worker.emit({ kind: "loaded" });
+  worker.emit({ kind: "ready" });
+  return runtimePromise;
+}
+
 async function readyProvider(worker: FakeWorker, options: ReadyOptions = {}) {
   const providerPromise = createProviderFromRuntime(
     asWorker(worker),
@@ -469,6 +480,78 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(await missing).toBeUndefined();
 
     provider.dispose();
+  });
+
+  it("forwards session activation calls and resolves their responses", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const blob = new Uint8Array([1, 2, 3]);
+
+    for (const [kind, call] of [
+      ["activateStoredSession", () => runtime.activateStoredSession()],
+      ["activateExternalSession", () => runtime.activateExternalSession(blob)],
+      ["resetSessionState", () => runtime.resetSessionState()],
+    ] as const) {
+      const pending = call();
+      const msg = lastMessageOfKind(worker, kind);
+      expect(typeof msg.requestId).toBe("number");
+      worker.emit({
+        kind: "sessionActivationResponse",
+        requestId: msg.requestId,
+        ok: true,
+      });
+      await pending;
+    }
+
+    expect(lastMessageOfKind(worker, "activateExternalSession").blob).toEqual(
+      blob,
+    );
+
+    runtime.dispose();
+  });
+
+  it("rejects a session activation the core could not complete", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+
+    const pending = runtime.activateStoredSession();
+    const msg = lastMessageOfKind(worker, "activateStoredSession");
+    worker.emit({
+      kind: "sessionActivationResponse",
+      requestId: msg.requestId,
+      ok: false,
+      error: "no stored session",
+    });
+
+    await expect(pending).rejects.toThrow("no stored session");
+
+    runtime.dispose();
+  });
+
+  it("rejects a session activation still in flight when the worker faults", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+
+    const pending = runtime.activateStoredSession();
+    worker.emitError("boom");
+
+    await expect(pending).rejects.toThrow(/boom/);
+  });
+
+  it("rejects session activation calls made after the runtime is gone", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const blob = new Uint8Array([1, 2, 3]);
+    worker.emitError("boom");
+
+    // Resolving here would tell a host at boot that the activation ran and
+    // found no session, when nothing was ever sent to the worker.
+    await expect(runtime.activateStoredSession()).rejects.toThrow(/boom/);
+    await expect(runtime.activateExternalSession(blob)).rejects.toThrow(/boom/);
+    await expect(runtime.resetSessionState()).rejects.toThrow(/boom/);
+
+    runtime.dispose();
+    await expect(runtime.activateStoredSession()).rejects.toThrow();
   });
 
   it("dispatches callback requests to host hooks", async () => {
