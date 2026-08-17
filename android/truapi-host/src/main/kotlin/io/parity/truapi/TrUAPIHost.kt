@@ -89,7 +89,8 @@ enum class ProductExecutionKind {
  * [hostName], [hostIcon], [hostVersion], [platformType], and [platformVersion]
  * describe the host to the wallet during SSO pairing.
  * [peopleChainGenesisHash], [bulletinChainGenesisHash] and
- * [assetHubChainGenesisHash] must each be exactly 32 bytes. [localSessionSecret] optionally activates a local signing session
+ * [assetHubChainGenesisHash] must each be exactly 32 bytes. [localSessionSecret]
+ * optionally activates a local signing session
  * from host-held BIP-39 entropy (no SSO pairing needed).
  */
 data class RuntimeConfig(
