@@ -7,6 +7,7 @@
 use parity_scale_codec::{Decode, Encode};
 
 use super::StatementAllowanceError;
+use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, AS_RESOURCES, ChainState, Metadata, MetadataError};
 
 /// General-transaction preamble byte: `0b01` (General) | version 5.
@@ -109,9 +110,10 @@ pub fn build_as_resources_extra(
     proof: &[u8],
     ring_index: u32,
     revision: u32,
+    collection: PersonhoodCollection,
 ) -> Result<Vec<u8>, StatementAllowanceError> {
-    let (info_index, lite_people) =
-        metadata.as_resources_variant_indices("RegisterStatementStoreAllowance")?;
+    let (info_index, personhood) =
+        metadata.as_resources_variant_indices("RegisterStatementStoreAllowance", collection)?;
     let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 4 + 1);
     extra.push(OPTION_SOME);
     extra.push(info_index);
@@ -119,23 +121,24 @@ pub fn build_as_resources_extra(
         proof: proof.to_vec(),
         ring_index,
         revision,
-        personhood: lite_people,
+        personhood,
     }
     .encode_to(&mut extra);
     Ok(extra)
 }
 
 /// Encode the `AsResources` extension `extra` for a long-term storage claim:
-/// `Some(ClaimLongTermStorage { proof, ring_index, revision, LitePeople })`,
+/// `Some(ClaimLongTermStorage { proof, ring_index, revision, collection })`,
 /// with the variant indices resolved from `metadata`.
 pub fn build_long_term_storage_extra(
     metadata: &Metadata,
     proof: &[u8],
     ring_index: u32,
     revision: u32,
+    collection: PersonhoodCollection,
 ) -> Result<Vec<u8>, StatementAllowanceError> {
-    let (info_index, lite_people) =
-        metadata.as_resources_variant_indices("ClaimLongTermStorage")?;
+    let (info_index, personhood) =
+        metadata.as_resources_variant_indices("ClaimLongTermStorage", collection)?;
     let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 4 + 1);
     extra.push(OPTION_SOME);
     extra.push(info_index);
@@ -143,7 +146,7 @@ pub fn build_long_term_storage_extra(
         proof: proof.to_vec(),
         ring_index,
         revision,
-        personhood: lite_people,
+        personhood,
     }
     .encode_to(&mut extra);
     Ok(extra)
@@ -180,9 +183,13 @@ pub fn build_as_pgas_extra(
     ring_index: u32,
     revision: u32,
     day: u32,
+    collection: PersonhoodCollection,
 ) -> Result<Vec<u8>, StatementAllowanceError> {
-    let (info_index, lite_people) =
-        metadata.extension_info_and_field_variant_indices(AS_PGAS, "Claim", "LitePeople")?;
+    let (info_index, collection_index) = metadata.extension_info_and_field_variant_indices(
+        AS_PGAS,
+        "Claim",
+        collection.metadata_variant(),
+    )?;
     let mut extra = Vec::with_capacity(2 + 2 + proof.len() + 4 + 4 + 1 + 4);
     extra.push(OPTION_SOME);
     extra.push(info_index);
@@ -190,7 +197,7 @@ pub fn build_as_pgas_extra(
         proof: proof.to_vec(),
         ring_index,
         revision,
-        collection: lite_people,
+        collection: collection_index,
         day,
     }
     .encode_to(&mut extra);
@@ -311,11 +318,48 @@ mod tests {
         );
     }
 
+    /// The collection the extension declares is what the runtime verifies the
+    /// proof against, so each collection has to reach a distinct variant index
+    /// resolved from metadata rather than a hardcoded one.
+    ///
+    /// `AsPgas` lives on Asset Hub, which has no offline fixture, so its
+    /// collection variant is only exercised by the live Asset Hub test.
+    #[test]
+    fn each_collection_reaches_its_own_extension_variant() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let proof = vec![0xEE; 785];
+
+        let mut encoded = Vec::new();
+        for collection in PersonhoodCollection::ALL {
+            let resources = build_as_resources_extra(&metadata, &proof, 3, 9, collection).unwrap();
+            let long_term =
+                build_long_term_storage_extra(&metadata, &proof, 3, 9, collection).unwrap();
+            // The collection is the last byte of each `AsResources` payload.
+            encoded.push((
+                collection,
+                *resources.last().unwrap(),
+                *long_term.last().unwrap(),
+            ));
+        }
+
+        let [people, lite] = <[_; 2]>::try_from(encoded).unwrap();
+        assert_eq!(people.0, PersonhoodCollection::People);
+        assert_eq!(lite.0, PersonhoodCollection::LitePeople);
+        assert_eq!(
+            (people.1, lite.1),
+            (0x00, 0x01),
+            "MembershipCollection declares People before LitePeople in the fixture"
+        );
+        assert_eq!((people.2, lite.2), (0x00, 0x01));
+    }
+
     #[test]
     fn as_resources_extra_wraps_proof_as_bytes() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let proof = vec![0xEE; 785];
-        let extra = build_as_resources_extra(&metadata, &proof, 3, 9).unwrap();
+        let extra =
+            build_as_resources_extra(&metadata, &proof, 3, 9, PersonhoodCollection::LitePeople)
+                .unwrap();
         // Some(0x01) ‖ variant(0x02) ‖ compact(785)=0x45,0x0c ‖ 785 bytes
         // ‖ ringIndex LE ‖ revision LE ‖ LitePeople.
         assert_eq!(
@@ -388,7 +432,14 @@ mod tests {
     fn long_term_storage_extra_wraps_revision() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let proof = vec![0xEE; 785];
-        let extra = build_long_term_storage_extra(&metadata, &proof, 3, 9).unwrap();
+        let extra = build_long_term_storage_extra(
+            &metadata,
+            &proof,
+            3,
+            9,
+            PersonhoodCollection::LitePeople,
+        )
+        .unwrap();
         // Some(0x01) ‖ variant(0x03) ‖ compact(785)=0x45,0x0c ‖ proof
         // ‖ ringIndex LE ‖ revision LE ‖ LitePeople.
         assert_eq!(
@@ -421,7 +472,14 @@ mod tests {
     fn the_body_and_the_proof_message_declare_the_same_extension_version() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let call = build_set_statement_store_account_call(&metadata, 7, 0, &[0u8; 32]).unwrap();
-        let extra = build_as_resources_extra(&metadata, &[0xEE; 785], 0, 0).unwrap();
+        let extra = build_as_resources_extra(
+            &metadata,
+            &[0xEE; 785],
+            0,
+            0,
+            PersonhoodCollection::LitePeople,
+        )
+        .unwrap();
         let xt = build_unsigned_extrinsic(&metadata, &fixture_state(), &call, &extra).unwrap();
 
         let body = &xt[compact_prefix_len(&xt)..];
@@ -440,7 +498,14 @@ mod tests {
     fn extrinsic_has_general_v5_preamble_and_embeds_call() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
         let call = build_set_statement_store_account_call(&metadata, 7, 0, &[0u8; 32]).unwrap();
-        let extra = build_as_resources_extra(&metadata, &[0xEE; 785], 0, 0).unwrap();
+        let extra = build_as_resources_extra(
+            &metadata,
+            &[0xEE; 785],
+            0,
+            0,
+            PersonhoodCollection::LitePeople,
+        )
+        .unwrap();
         let xt = build_unsigned_extrinsic(&metadata, &fixture_state(), &call, &extra).unwrap();
 
         // Strip the compact length prefix and check the body head + tail.

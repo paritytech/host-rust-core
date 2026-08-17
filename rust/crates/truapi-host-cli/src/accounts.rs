@@ -11,12 +11,14 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use truapi_server::host_logic::product_account::{
-    derive_identity_keypair, derive_lite_person_ring_vrf_entropy, product_public_key_to_address,
+    derive_full_person_ring_vrf_entropy, derive_identity_keypair,
+    derive_lite_person_ring_vrf_entropy, product_public_key_to_address,
 };
 
 use crate::attestation;
 use crate::network::NetworkConfig;
 use truapi_server::statement_allowance as alloc;
+use truapi_server::statement_allowance::collection::PersonhoodCollection;
 
 const ACCOUNT_STORE_FILE: &str = "accounts.json";
 const ACCOUNT_STORE_LOCK_FILE: &str = "accounts.json.lock";
@@ -468,18 +470,34 @@ fn resolved_lite_username(username: &str) -> bool {
         .is_some_and(|(name, discriminator)| !name.is_empty() && !discriminator.is_empty())
 }
 
+/// Every personhood collection candidate for `entropy`, widest slot budget first.
+///
+/// Both are always offered; membership is settled on chain, not from local state.
+pub(crate) fn collection_candidates(entropy: &[u8]) -> Vec<alloc::CollectionCandidate> {
+    vec![
+        alloc::CollectionCandidate {
+            collection: PersonhoodCollection::People,
+            entropy: derive_full_person_ring_vrf_entropy(entropy),
+        },
+        alloc::CollectionCandidate {
+            collection: PersonhoodCollection::LitePeople,
+            entropy: derive_lite_person_ring_vrf_entropy(entropy),
+        },
+    ]
+}
+
 async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()> {
     const MAX_ATTEMPTS: usize = 10;
     const SLEEP: Duration = Duration::from_secs(4);
 
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(entropy);
+    let candidates = collection_candidates(entropy);
     let mut metadata = None;
     for attempt in 1..=MAX_ATTEMPTS {
         crate::terminal_ui::update_activity(
             "signer",
             "Setting up signer",
             Some(format!(
-                "Waiting for LitePeople ring membership · attempt {attempt}/{MAX_ATTEMPTS}"
+                "Waiting for personhood ring membership · attempt {attempt}/{MAX_ATTEMPTS}"
             )),
             crate::terminal_ui::ActivityState::Running,
         );
@@ -490,7 +508,7 @@ async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()>
                     attempt,
                     max_attempts = MAX_ATTEMPTS,
                     error = %err,
-                    "could not connect while checking LitePeople ring membership"
+                    "could not connect while checking personhood ring membership"
                 );
                 sleep_ring_poll(attempt, MAX_ATTEMPTS, SLEEP).await;
                 continue;
@@ -504,7 +522,7 @@ async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()>
                         attempt,
                         max_attempts = MAX_ATTEMPTS,
                         error = %err,
-                        "could not fetch metadata while checking LitePeople ring membership"
+                        "could not fetch metadata while checking personhood ring membership"
                     );
                     sleep_ring_poll(attempt, MAX_ATTEMPTS, SLEEP).await;
                     continue;
@@ -512,49 +530,42 @@ async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()>
             }
         }
         let metadata_ref = metadata.as_ref().expect("metadata is initialized");
-        let current = match alloc::ring::read_current_ring_index(&rpc).await {
-            Ok(current) => current,
-            Err(err) => {
-                warn!(
-                    attempt,
-                    max_attempts = MAX_ATTEMPTS,
-                    error = %err,
-                    "could not read current LitePeople ring"
-                );
-                sleep_ring_poll(attempt, MAX_ATTEMPTS, SLEEP).await;
-                continue;
-            }
-        };
-        match alloc::find_including_ring(&rpc, metadata_ref, bandersnatch, current).await {
-            Ok(Some(_)) => {
+        // Every ring back to index 0: the signer may sit in an older one.
+        match alloc::find_including_rings(&rpc, metadata_ref, &candidates, u32::MAX).await {
+            Ok(memberships) if !memberships.is_empty() => {
+                let held = memberships
+                    .iter()
+                    .map(|membership| membership.collection().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 crate::terminal_ui::update_activity(
                     "signer",
                     "Setting up signer",
-                    Some("LitePeople ring membership ready".to_string()),
+                    Some(format!("personhood ring membership ready ({held})")),
                     crate::terminal_ui::ActivityState::Running,
                 );
                 return Ok(());
             }
-            Ok(None) => {}
+            Ok(_) => {}
             Err(err) => {
                 warn!(
                     attempt,
                     max_attempts = MAX_ATTEMPTS,
                     error = %err,
-                    "could not scan LitePeople rings"
+                    "could not scan personhood rings"
                 );
             }
         }
         sleep_ring_poll(attempt, MAX_ATTEMPTS, SLEEP).await;
     }
-    bail!("signer account did not appear in a LitePeople ring");
+    bail!("signer account did not appear in any personhood ring");
 }
 
 async fn sleep_ring_poll(attempt: usize, max_attempts: usize, sleep: Duration) {
     if attempt < max_attempts {
         debug!(
             attempt,
-            max_attempts, "signer account not in a LitePeople ring yet"
+            max_attempts, "signer account not in any personhood ring yet"
         );
         tokio::time::sleep(sleep).await;
     }

@@ -23,6 +23,7 @@ use scale_info::{PortableRegistry, TypeDef, TypeDefPrimitive, TypeDefVariant};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
+use super::collection::PersonhoodCollection;
 
 /// Signed-extension identifier that carries the `AsPgas` authorization on Asset Hub.
 pub const AS_PGAS: &str = "AsPgas";
@@ -416,14 +417,18 @@ impl Metadata {
         Ok([pallet_index, variant.index])
     }
 
-    /// Resolve `AsResourcesInfo::<info_variant>` and the
-    /// `MembershipCollection::LitePeople` index it carries, by name, from the
-    /// `AsResources` extension type.
+    /// Resolve `AsResourcesInfo::<info_variant>` and the `MembershipCollection`
+    /// index naming `collection`, by name, from the `AsResources` extension type.
     pub fn as_resources_variant_indices(
         &self,
         info_variant: &str,
+        collection: PersonhoodCollection,
     ) -> Result<(u8, u8), StatementAllowanceError> {
-        self.extension_info_and_field_variant_indices(AS_RESOURCES, info_variant, "LitePeople")
+        self.extension_info_and_field_variant_indices(
+            AS_RESOURCES,
+            info_variant,
+            collection.metadata_variant(),
+        )
     }
 
     /// Resolve `(info variant index, nested field variant index)` for an
@@ -831,10 +836,16 @@ mod tests {
         assert_eq!(
             (
                 metadata
-                    .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                    .as_resources_variant_indices(
+                        "RegisterStatementStoreAllowance",
+                        PersonhoodCollection::LitePeople,
+                    )
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("ClaimLongTermStorage")
+                    .as_resources_variant_indices(
+                        "ClaimLongTermStorage",
+                        PersonhoodCollection::LitePeople
+                    )
                     .unwrap(),
             ),
             ((0x02, 0x01), (0x03, 0x01)),
@@ -880,7 +891,10 @@ mod tests {
         );
         assert_eq!(
             metadata
-                .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                .as_resources_variant_indices(
+                    "RegisterStatementStoreAllowance",
+                    PersonhoodCollection::LitePeople,
+                )
                 .unwrap(),
             metadata
                 .extension_info_and_field_variant_indices(
@@ -1052,10 +1066,16 @@ mod tests {
                     .call_indices("Resources", "claim_long_term_storage")
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                    .as_resources_variant_indices(
+                        "RegisterStatementStoreAllowance",
+                        PersonhoodCollection::LitePeople,
+                    )
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("ClaimLongTermStorage")
+                    .as_resources_variant_indices(
+                        "ClaimLongTermStorage",
+                        PersonhoodCollection::LitePeople
+                    )
                     .unwrap(),
             ),
             ([0x3f, 0x0a], [0x3f, 0x0c], (0x02, 0x01), (0x03, 0x01)),
@@ -1077,7 +1097,10 @@ mod tests {
                 metadata
                     .extension_info_variant_index(AS_RESOURCES, variant)
                     .unwrap(),
-                metadata.as_resources_variant_indices(variant).unwrap().0,
+                metadata
+                    .as_resources_variant_indices(variant, PersonhoodCollection::LitePeople)
+                    .unwrap()
+                    .0,
                 "{variant}",
             );
         }
@@ -1109,7 +1132,7 @@ mod tests {
                 metadata.call_indices("Resources", "no_such_call").is_err(),
                 metadata.call_indices("NoSuchPallet", "transfer").is_err(),
                 metadata
-                    .as_resources_variant_indices("NoSuchVariant")
+                    .as_resources_variant_indices("NoSuchVariant", PersonhoodCollection::LitePeople)
                     .is_err(),
             ),
             (true, true, true),

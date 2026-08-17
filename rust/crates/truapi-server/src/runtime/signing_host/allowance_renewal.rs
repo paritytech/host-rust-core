@@ -28,7 +28,7 @@ use crate::runtime::statement_allowance::renewal::{
     renew_targets,
 };
 use crate::runtime::statement_allowance::{
-    self, fetch_chain_state, fetch_metadata, find_including_ring,
+    self, fetch_chain_state, fetch_metadata, find_including_rings,
 };
 
 /// Fallback tick delay when the system clock is unusable.
@@ -338,8 +338,8 @@ pub(super) async fn renew_now(
     let session = signing_host
         .current_session()
         .ok_or_else(|| "no active session for statement-store renewal".to_string())?;
-    let bandersnatch = *signing_host
-        .reserved_lite_person_entropy(&session)
+    let candidates = signing_host
+        .reserved_person_collection_candidates(&session)
         .map_err(|err| err.to_string())?;
     let rpc = statement_allowance::rpc::RpcClient::new(
         services
@@ -352,25 +352,26 @@ pub(super) async fn renew_now(
     let chain_state = fetch_chain_state(&rpc)
         .await
         .map_err(|err| err.to_string())?;
-    let current = statement_allowance::ring::read_current_ring_index(&rpc)
+    // Every ring back to index 0, because a membership that stopped being
+    // re-included still proves against the ring that holds it.
+    let memberships = find_including_rings(&rpc, &metadata, &candidates, u32::MAX)
         .await
         .map_err(|err| err.to_string())?;
-    let ring = find_including_ring(&rpc, &metadata, bandersnatch, current)
-        .await
-        .map_err(|err| err.to_string())?
-        .ok_or_else(|| {
-            "signing account is not a LitePeople ring member; cannot renew statement-store allowances"
-                .to_string()
-        })?;
+    if memberships.is_empty() {
+        return Err(
+            "signing account is not a member of any personhood ring; cannot renew statement-store allowances"
+                .to_string(),
+        );
+    }
     let context = RenewalChainContext {
         rpc: &rpc,
         metadata: &metadata,
         chain_state: &chain_state,
-        ring: &ring,
+        candidates: &candidates,
+        memberships: &memberships,
     };
     let mut report = renew_targets(
         &context,
-        bandersnatch,
         period,
         &resolved,
         signing_host.renewal.registration_lock(),
