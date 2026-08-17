@@ -17,8 +17,9 @@ use scale_decode::DecodeAsType;
 use sp_crypto_hashing::twox_128;
 use thiserror::Error;
 
+use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, Metadata, MetadataError};
-use super::ring::{self, LITE_PEOPLE_IDENTIFIER, RingParams, blake2_128_concat};
+use super::ring::{self, RingParams, blake2_128_concat};
 use super::rpc::RpcClient;
 use super::{
     ChainContext, StatementAllowanceError, duplicate_submit_error, extension, extrinsic, proof,
@@ -94,11 +95,11 @@ pub struct PgasClaimOutcome {
 ///
 /// Both map keys are `Blake2_128Concat` here, unlike the People chain's
 /// `Members` maps which take the collection identifier verbatim.
-fn ring_roots_key(ring_index: u32) -> Vec<u8> {
+fn ring_roots_key(collection: PersonhoodCollection, ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"MembersSubscriber").as_slice(),
         twox_128(b"RingRoots").as_slice(),
-        &blake2_128_concat(LITE_PEOPLE_IDENTIFIER),
+        &blake2_128_concat(collection.identifier()),
         &blake2_128_concat(&ring_index.to_le_bytes()),
     ]
     .concat()
@@ -182,11 +183,19 @@ pub async fn claim_pgas(
     let revision = ring::read_ring_revision(
         people_rpc,
         people_metadata,
+        ring.collection,
         ring.ring_index,
         &ring.block_hash,
     )
     .await?;
-    await_ring_revision(asset_hub_rpc, asset_hub_metadata, ring.ring_index, revision).await?;
+    await_ring_revision(
+        asset_hub_rpc,
+        asset_hub_metadata,
+        ring.collection,
+        ring.ring_index,
+        revision,
+    )
+    .await?;
 
     let mut skipped_duplicate_slots = Vec::new();
     loop {
@@ -214,6 +223,7 @@ pub async fn claim_pgas(
             ring.ring_index,
             revision,
             day,
+            ring.collection,
         )?;
         let claim = extrinsic::build_unsigned_extrinsic_with_extra(
             asset_hub_metadata,
@@ -272,6 +282,7 @@ pub async fn claim_pgas(
 pub async fn await_ring_revision(
     rpc: &RpcClient,
     metadata: &Metadata,
+    collection: PersonhoodCollection,
     ring_index: u32,
     revision: u32,
 ) -> Result<(), StatementAllowanceError> {
@@ -283,7 +294,10 @@ pub async fn await_ring_revision(
         })?;
     let started = Instant::now();
     loop {
-        if let Some(bytes) = rpc.get_storage(&ring_roots_key(ring_index)).await? {
+        if let Some(bytes) = rpc
+            .get_storage(&ring_roots_key(collection, ring_index))
+            .await?
+        {
             let mut input = bytes.as_slice();
             let records = Vec::<RingCommitmentRecord>::decode_as_type(
                 &mut input,
@@ -342,12 +356,13 @@ mod tests {
     /// Both map keys are hashed here, unlike the People chain's `Members` maps.
     #[test]
     fn subscriber_ring_key_hashes_both_map_keys() {
-        let key = ring_roots_key(136);
+        let collection = PersonhoodCollection::LitePeople;
+        let key = ring_roots_key(collection, 136);
 
         assert_eq!(key.len(), 16 + 16 + 16 + 32 + 16 + 4);
         assert_eq!(
             &key[48..80],
-            LITE_PEOPLE_IDENTIFIER,
+            collection.identifier(),
             "identifier follows its hash"
         );
         assert_eq!(

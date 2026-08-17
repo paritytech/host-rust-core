@@ -6,6 +6,7 @@
 //! and submit the resulting unsigned General (v5) extrinsic. Native only
 //! (needs the `verifiable` prover and live chain reads).
 
+pub mod collection;
 pub mod extension;
 pub mod extrinsic;
 pub mod pgas;
@@ -26,6 +27,7 @@ use sp_crypto_hashing::twox_128;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+use collection::PersonhoodCollection;
 use extension::{ChainState, Metadata, MetadataError};
 use ring::RingParams;
 use rpc::RpcClient;
@@ -361,11 +363,15 @@ pub enum RegistrationOutcome {
         seq: u32,
         /// Ring index the proof was built against.
         ring_index: u32,
+        /// Collection whose alias space holds the slot.
+        collection: PersonhoodCollection,
     },
     /// The target already held a slot this period; nothing submitted.
     AlreadyAllocated {
         /// Existing slot sequence.
         seq: u32,
+        /// Collection whose alias space holds the slot.
+        collection: PersonhoodCollection,
     },
 }
 
@@ -430,26 +436,53 @@ impl BulletinAllowanceInfo {
     }
 }
 
-/// Find the newest ring (scanning up to `lookback` back from the current index)
-/// that includes our member key. Reads the ring exponent once and stops at the
-/// first match. Every read is pinned to one finalized block so the snapshot is
-/// internally consistent; the pinned hash is recorded on the returned
-/// [`RingParams`].
+/// A collection this device can derive aliases for, with the entropy backing
+/// them. Each collection has its own entropy, so the pair travels together.
+#[derive(Debug, Clone, Copy)]
+pub struct CollectionCandidate {
+    /// Collection to look for membership in.
+    pub collection: PersonhoodCollection,
+    /// Ring-VRF entropy for this collection.
+    pub entropy: [u8; 32],
+}
+
+/// Our provable ring membership in one collection.
+pub struct CollectionMembership {
+    /// Entropy whose member key is included in `ring`.
+    pub entropy: [u8; 32],
+    /// Ring snapshot the membership proof is built against.
+    pub ring: RingParams,
+}
+
+impl CollectionMembership {
+    /// The collection this membership proves.
+    pub fn collection(&self) -> PersonhoodCollection {
+        self.ring.collection
+    }
+}
+
+/// Find the newest ring in `collection` (scanning up to `lookback` back from the
+/// current index) that includes our member key. Reads the ring exponent once and
+/// stops at the first match. Every read is pinned to one finalized block so the
+/// snapshot is internally consistent; the pinned hash is recorded on the
+/// returned [`RingParams`].
 pub async fn find_including_ring(
     rpc: &RpcClient,
     metadata: &Metadata,
+    collection: PersonhoodCollection,
     entropy: [u8; 32],
     lookback: u32,
 ) -> Result<Option<RingParams>, StatementAllowanceError> {
     let member = proof::member_key(entropy);
     let at = rpc.finalized_head().await?;
-    let exponent = ring::read_ring_exponent(rpc, metadata, &at).await?;
-    let current = ring::read_current_ring_index_at(rpc, &at).await?;
+    let exponent = ring::read_ring_exponent(rpc, metadata, collection, &at).await?;
+    let current = ring::read_current_ring_index_at(rpc, collection, &at).await?;
     let oldest = current.saturating_sub(lookback);
     for ring_index in (oldest..=current).rev() {
-        let members = ring::read_ring_members_at(rpc, ring_index, &at).await?;
+        let members = ring::read_ring_members_at(rpc, collection, ring_index, &at).await?;
         if members.contains(&member) {
             return Ok(Some(RingParams {
+                collection,
                 members,
                 exponent,
                 ring_index,
@@ -458,6 +491,47 @@ pub async fn find_including_ring(
         }
     }
     Ok(None)
+}
+
+/// Locate our including ring in each candidate collection, in the order given.
+///
+/// Membership in the ring is the availability test: a candidate whose member key
+/// no ring includes is dropped, so the result is exactly the set of collections
+/// this device can prove right now. A collection this chain does not run is
+/// skipped rather than raised, because a chain without full personhood is not a
+/// failure for a light-personhood device.
+pub async fn find_including_rings(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    candidates: &[CollectionCandidate],
+    lookback: u32,
+) -> Result<Vec<CollectionMembership>, StatementAllowanceError> {
+    let mut memberships = Vec::new();
+    for candidate in candidates {
+        if !candidate.collection.is_supported(metadata) {
+            continue;
+        }
+        let found = find_including_ring(
+            rpc,
+            metadata,
+            candidate.collection,
+            candidate.entropy,
+            lookback,
+        )
+        .await;
+        match found {
+            Ok(Some(ring)) => memberships.push(CollectionMembership {
+                entropy: candidate.entropy,
+                ring,
+            }),
+            Ok(None) => continue,
+            Err(StatementAllowanceError::Ring(ring::RingError::CollectionMissing { .. })) => {
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(memberships)
 }
 
 /// Register statement-store allowance for `target`, proving membership in the
@@ -469,9 +543,11 @@ pub async fn register_statement_account(
     entropy: [u8; 32],
     params: RegistrationParams<'_>,
 ) -> Result<RegistrationOutcome, StatementAllowanceError> {
+    let collection = params.ring.collection;
     let revision = ring::read_ring_revision(
         rpc,
         metadata,
+        collection,
         params.ring.ring_index,
         &params.ring.block_hash,
     )
@@ -489,16 +565,19 @@ pub async fn register_statement_account(
             None => match slot::scan_slot_excluding(
                 rpc,
                 metadata,
-                entropy,
-                params.period,
-                params.target,
-                &skipped_duplicate_slots,
-                params.reuse_existing,
+                slot::SlotScan {
+                    collection,
+                    entropy,
+                    period: params.period,
+                    target: params.target,
+                    excluded: &skipped_duplicate_slots,
+                    reuse_existing: params.reuse_existing,
+                },
             )
             .await?
             {
                 SlotSelection::AlreadyAllocated(seq) => {
-                    return Ok(RegistrationOutcome::AlreadyAllocated { seq });
+                    return Ok(RegistrationOutcome::AlreadyAllocated { seq, collection });
                 }
                 SlotSelection::Free(seq) => seq,
                 SlotSelection::FreeSlotsExcluded => {
@@ -561,6 +640,7 @@ pub async fn register_statement_account(
             &ring_proof,
             params.ring.ring_index,
             revision,
+            collection,
         )?;
         let extrinsic =
             extrinsic::build_unsigned_extrinsic(metadata, chain_state, &call, &as_resources_extra)?;
@@ -581,6 +661,7 @@ pub async fn register_statement_account(
                     block_hash,
                     seq,
                     ring_index: params.ring.ring_index,
+                    collection,
                 });
             }
             Err(err) if duplicate_submit_error(&err.to_string()) => {
@@ -602,6 +683,203 @@ pub async fn register_statement_account(
     }
 }
 
+/// The slot `target` already holds in `period`, in whichever candidate
+/// collection holds it.
+///
+/// Alias derivation and slot reads only, so this stays cheap enough to run
+/// before any ring snapshot is fetched. That ordering matters: a ring snapshot
+/// pages in every member key, and the common case for an established product is
+/// that an allowance is already in place and no proof is needed at all.
+pub async fn existing_allocation(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    candidates: &[CollectionCandidate],
+    period: u32,
+    target: &[u8; 32],
+) -> Result<Option<(PersonhoodCollection, u32)>, StatementAllowanceError> {
+    for candidate in candidates {
+        if !candidate.collection.is_supported(metadata) {
+            continue;
+        }
+        let selection = slot::scan_slot_excluding(
+            rpc,
+            metadata,
+            slot::SlotScan {
+                collection: candidate.collection,
+                entropy: candidate.entropy,
+                period,
+                target,
+                excluded: &[],
+                reuse_existing: true,
+            },
+        )
+        .await?;
+        if let SlotSelection::AlreadyAllocated(seq) = selection {
+            return Ok(Some((candidate.collection, seq)));
+        }
+    }
+    Ok(None)
+}
+
+/// Target and slot-selection inputs for a registration pooled across
+/// collections.
+pub struct PooledRegistrationParams<'a> {
+    /// Account that should receive the statement-store registration.
+    pub target: &'a [u8; 32],
+    /// Statement-store period for which the registration is requested.
+    pub period: u32,
+    /// Whether an existing registration for this period may be reused.
+    pub reuse_existing: bool,
+    /// Slots the caller has already claimed in this batch and must not lose.
+    /// Scoped per collection, because the same `seq` in two collections is two
+    /// unrelated slots and protecting one must not protect the other.
+    pub protected: &'a [(PersonhoodCollection, u32)],
+}
+
+/// Register statement-store allowance for `target`, pooling slots across every
+/// collection in `memberships`.
+///
+/// Each collection is a separate alias space with its own budget, so a device
+/// that can prove two memberships has the sum of both. Collections are tried in
+/// the order given.
+///
+/// A free slot in any collection is always preferred to evicting a live one:
+/// eviction revokes an allowance somebody else is using, so it is considered
+/// only once every collection is full. When it comes to that, the candidate is
+/// the globally oldest replaceable slot across all collections rather than the
+/// oldest within the first full one.
+///
+/// The scan covers every collection before anything is submitted, so a target
+/// that already holds a slot in one collection is never given a second one in
+/// another.
+pub async fn register_statement_account_pooled(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    chain_state: &ChainState,
+    memberships: &[CollectionMembership],
+    params: PooledRegistrationParams<'_>,
+) -> Result<RegistrationOutcome, StatementAllowanceError> {
+    if memberships.is_empty() {
+        return Err(SlotError::NoCollectionMembership.into());
+    }
+
+    let protected_in = |collection: PersonhoodCollection| -> Vec<u32> {
+        params
+            .protected
+            .iter()
+            .filter(|(candidate, _)| *candidate == collection)
+            .map(|(_, seq)| *seq)
+            .collect()
+    };
+
+    let mut free = None;
+    let mut full = Vec::new();
+    for (index, membership) in memberships.iter().enumerate() {
+        let selection = slot::scan_slot_excluding(
+            rpc,
+            metadata,
+            slot::SlotScan {
+                collection: membership.collection(),
+                entropy: membership.entropy,
+                period: params.period,
+                target: params.target,
+                excluded: &[],
+                reuse_existing: params.reuse_existing,
+            },
+        )
+        .await?;
+        match selection {
+            // Reported before any submission so a target holding a slot in one
+            // collection is not handed a second one in another.
+            SlotSelection::AlreadyAllocated(seq) => {
+                return Ok(RegistrationOutcome::AlreadyAllocated {
+                    seq,
+                    collection: membership.collection(),
+                });
+            }
+            SlotSelection::Free(seq) => {
+                if free.is_none() {
+                    free = Some((index, seq));
+                }
+            }
+            // Nothing was excluded from this scan, so this cannot arise here.
+            SlotSelection::FreeSlotsExcluded => {
+                return Err(SlotError::FreeSlotsAwaitingSubmission {
+                    period: params.period,
+                }
+                .into());
+            }
+            SlotSelection::Full { max, occupied } => full.push((index, max, occupied)),
+        }
+    }
+
+    let (index, seq) = match free {
+        Some(free) => free,
+        None => {
+            let cooldown = slot::replacement_cooldown(metadata)?;
+            let chain_now = slot::read_chain_now_seconds(rpc).await?;
+            let mut oldest: Option<(usize, u32, u64)> = None;
+            for (index, _, occupied) in &full {
+                let protected = protected_in(memberships[*index].collection());
+                let Some(seq) = slot::replaceable_slot(
+                    occupied,
+                    params.target,
+                    chain_now,
+                    cooldown,
+                    &protected,
+                ) else {
+                    continue;
+                };
+                let since = occupied
+                    .iter()
+                    .find(|slot| slot.seq == seq)
+                    .map(|slot| slot.since)
+                    .unwrap_or(u64::MAX);
+                let better = match oldest {
+                    Some((_, _, best)) => since < best,
+                    None => true,
+                };
+                if better {
+                    oldest = Some((*index, seq, since));
+                }
+            }
+            match oldest {
+                Some((index, seq, _)) => (index, seq),
+                None => {
+                    return Err(SlotError::NoFreeStatementStoreSlot {
+                        period: params.period,
+                        // The pooled budget, so the error names what the device
+                        // actually has rather than one collection's share.
+                        max: full.iter().map(|(_, max, _)| *max).sum(),
+                    }
+                    .into());
+                }
+            }
+        }
+    };
+
+    let membership = &memberships[index];
+    let protected = protected_in(membership.collection());
+    register_statement_account(
+        rpc,
+        metadata,
+        chain_state,
+        membership.entropy,
+        RegistrationParams {
+            target: params.target,
+            period: params.period,
+            ring: &membership.ring,
+            reuse_existing: params.reuse_existing,
+            preselected: Some(seq),
+            // A duplicate-submit retry rescans within this collection only. It
+            // is a rare race on a slot we just saw free, and staying put keeps
+            // the retry from quietly moving collections mid-call.
+            protected: &protected,
+        },
+    )
+    .await
+}
+
 /// Claim long-term Bulletin storage authorization for `target`, proving
 /// membership in the already-located `ring`, at People-chain `period`.
 pub async fn claim_long_term_storage(
@@ -613,8 +891,14 @@ pub async fn claim_long_term_storage(
     period: u32,
     ring: &RingParams,
 ) -> Result<LongTermStorageOutcome, StatementAllowanceError> {
-    let revision =
-        ring::read_ring_revision(rpc, metadata, ring.ring_index, &ring.block_hash).await?;
+    let revision = ring::read_ring_revision(
+        rpc,
+        metadata,
+        ring.collection,
+        ring.ring_index,
+        &ring.block_hash,
+    )
+    .await?;
     let mut skipped_duplicate_counters = Vec::new();
     loop {
         let counter = slot::scan_long_term_storage_counter_excluding(
@@ -637,6 +921,7 @@ pub async fn claim_long_term_storage(
             &ring_proof,
             ring.ring_index,
             revision,
+            ring.collection,
         )?;
         let extrinsic =
             extrinsic::build_unsigned_extrinsic(metadata, chain_state, &call, &as_resources_extra)?;
@@ -1214,6 +1499,7 @@ mod tests {
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
+            collection: PersonhoodCollection::LitePeople,
             members: vec![proof::member_key(entropy)],
             exponent: 9,
             ring_index: 0,
@@ -1245,6 +1531,262 @@ mod tests {
         (outcome, scripted)
     }
 
+    /// Both collections, People first, with a distinct entropy each.
+    fn pooled_memberships() -> [CollectionMembership; 2] {
+        PersonhoodCollection::ALL.map(|collection| {
+            let entropy = match collection {
+                PersonhoodCollection::People => [0x31; 32],
+                PersonhoodCollection::LitePeople => [0x11; 32],
+            };
+            CollectionMembership {
+                entropy,
+                ring: RingParams {
+                    collection,
+                    members: vec![proof::member_key(entropy)],
+                    exponent: 9,
+                    ring_index: 0,
+                    block_hash: "0xfinal".to_string(),
+                },
+            }
+        })
+    }
+
+    /// One occupied slot entry.
+    fn occupied(account: [u8; 32], since: u64) -> String {
+        format!(r#""0x{}""#, hex::encode((account, 0u32, since).encode()))
+    }
+
+    /// Run `register_statement_account_pooled` over `responses`.
+    fn scripted_pooled(
+        responses: Vec<String>,
+        target: [u8; 32],
+        protected: &[(PersonhoodCollection, u32)],
+    ) -> (
+        Result<RegistrationOutcome, StatementAllowanceError>,
+        ScriptedRpc,
+    ) {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let memberships = pooled_memberships();
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        let outcome = futures::executor::block_on(register_statement_account_pooled(
+            &rpc,
+            &metadata,
+            &chain_state,
+            &memberships,
+            PooledRegistrationParams {
+                target: &target,
+                period: 7,
+                reuse_existing: true,
+                protected,
+            },
+        ));
+        (outcome, scripted)
+    }
+
+    /// Slot tables for both collections: `people` then `lite`, each entry either
+    /// free or occupied.
+    fn tables(people: Vec<Option<String>>, lite: Vec<Option<String>>) -> Vec<String> {
+        assert_eq!(people.len(), 20, "People declares 20 slots in the fixture");
+        assert_eq!(
+            lite.len(),
+            10,
+            "LitePeople declares 10 slots in the fixture"
+        );
+        people
+            .into_iter()
+            .chain(lite)
+            .map(|entry| entry.unwrap_or_else(|| "null".to_string()))
+            .collect()
+    }
+
+    /// The capacity this change exists for: a full People table must not report
+    /// exhaustion while LitePeople still has a free seq.
+    #[test]
+    fn a_full_people_table_falls_back_to_a_free_lite_people_slot() {
+        let target = [0x22; 32];
+        let mut responses = tables(
+            (0..20)
+                .map(|seq| Some(occupied([0x99; 32], 1_000 + seq)))
+                .collect(),
+            (0..10).map(|_| None).collect(),
+        );
+        // Ring revision, then the post-submit verification read.
+        responses.push("null".to_string());
+        responses.push(occupied(target, 5_000));
+
+        let (outcome, _) = scripted_pooled(responses, target, &[]);
+
+        let RegistrationOutcome::Registered {
+            seq, collection, ..
+        } = outcome.expect("a free LitePeople slot is registrable")
+        else {
+            panic!("expected a registration");
+        };
+        assert_eq!(collection, PersonhoodCollection::LitePeople);
+        assert_eq!(seq, 0);
+    }
+
+    /// A free People slot wins over a free LitePeople one, so a full person
+    /// spends the wider budget first and keeps the light one as headroom.
+    #[test]
+    fn a_free_people_slot_is_preferred_to_a_free_lite_people_slot() {
+        let target = [0x22; 32];
+        let mut responses = tables(
+            (0..20).map(|_| None).collect(),
+            (0..10).map(|_| None).collect(),
+        );
+        responses.push("null".to_string());
+        responses.push(occupied(target, 5_000));
+
+        let (outcome, _) = scripted_pooled(responses, target, &[]);
+
+        let RegistrationOutcome::Registered { collection, .. } =
+            outcome.expect("a free People slot is registrable")
+        else {
+            panic!("expected a registration");
+        };
+        assert_eq!(collection, PersonhoodCollection::People);
+    }
+
+    /// Holding a slot in one collection must not earn a second one in another,
+    /// even though every People slot here is free.
+    #[test]
+    fn an_allocation_in_lite_people_blocks_a_second_one_in_people() {
+        let target = [0x22; 32];
+        let responses = tables(
+            (0..20).map(|_| None).collect(),
+            (0..10)
+                .map(|seq| (seq == 3).then(|| occupied(target, 4_000)))
+                .collect(),
+        );
+
+        let (outcome, scripted) = scripted_pooled(responses, target, &[]);
+
+        assert!(
+            matches!(
+                outcome,
+                Ok(RegistrationOutcome::AlreadyAllocated {
+                    seq: 3,
+                    collection: PersonhoodCollection::LitePeople
+                })
+            ),
+            "expected the existing LitePeople slot to be reported: {outcome:?}"
+        );
+        assert!(
+            scripted
+                .calls()
+                .iter()
+                .all(|(method, _)| method != "author_submitAndWatchExtrinsic"),
+            "nothing should have been submitted"
+        );
+    }
+
+    /// With every collection full, the victim is the globally oldest replaceable
+    /// slot, not the oldest inside whichever collection was scanned first.
+    #[test]
+    fn eviction_takes_the_globally_oldest_slot_across_collections() {
+        let target = [0x22; 32];
+        // Every People slot is newer than every LitePeople slot.
+        let mut responses = tables(
+            (0..20)
+                .map(|seq| Some(occupied([0x99; 32], 9_000 + seq)))
+                .collect(),
+            (0..10)
+                .map(|seq| Some(occupied([0x98; 32], 1_000 + seq)))
+                .collect(),
+        );
+        responses.push(chain_clock(10_000_000));
+        responses.push("null".to_string());
+        responses.push(occupied(target, 10_000_000));
+
+        let (outcome, _) = scripted_pooled(responses, target, &[]);
+
+        let RegistrationOutcome::Registered {
+            seq, collection, ..
+        } = outcome.expect("an old LitePeople slot is replaceable")
+        else {
+            panic!("expected a registration");
+        };
+        assert_eq!(collection, PersonhoodCollection::LitePeople);
+        assert_eq!(seq, 0, "seq 0 is the oldest LitePeople slot");
+    }
+
+    /// `protected` is per collection: the same `seq` in two collections is two
+    /// unrelated slots, so protecting one must leave the other evictable.
+    #[test]
+    fn protection_does_not_leak_across_collections() {
+        let target = [0x22; 32];
+        // People holds the oldest slots, so the victim should be People seq 0.
+        // LitePeople seq 0 is protected, and that must not shield People seq 0.
+        let mut responses = tables(
+            (0..20)
+                .map(|seq| Some(occupied([0x99; 32], 1_000 + seq)))
+                .collect(),
+            (0..10)
+                .map(|seq| Some(occupied([0x98; 32], 9_000 + seq)))
+                .collect(),
+        );
+        responses.push(chain_clock(10_000_000));
+        responses.push("null".to_string());
+        responses.push(occupied(target, 10_000_000));
+
+        let (outcome, _) =
+            scripted_pooled(responses, target, &[(PersonhoodCollection::LitePeople, 0)]);
+
+        let RegistrationOutcome::Registered {
+            seq, collection, ..
+        } = outcome.expect("People seq 0 is still replaceable")
+        else {
+            panic!("expected a registration");
+        };
+        assert_eq!(collection, PersonhoodCollection::People);
+        assert_eq!(
+            seq, 0,
+            "protecting LitePeople seq 0 must not protect People seq 0"
+        );
+    }
+
+    /// Exhaustion has to name the pooled budget. Reporting one collection's share
+    /// is what made a full person look capped at ten.
+    #[test]
+    fn exhaustion_names_the_summed_budget() {
+        let target = [0x22; 32];
+        // Everything full and everything inside its cooldown, so nothing is
+        // replaceable and the error is raised.
+        let mut responses = tables(
+            (0..20)
+                .map(|_| Some(occupied([0x99; 32], 9_999_999)))
+                .collect(),
+            (0..10)
+                .map(|_| Some(occupied([0x98; 32], 9_999_999)))
+                .collect(),
+        );
+        responses.push(chain_clock(10_000_000));
+
+        let (outcome, _) = scripted_pooled(responses, target, &[]);
+
+        let err = outcome.expect_err("a full pool cannot register");
+        assert!(
+            matches!(
+                err,
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot {
+                    period: 7,
+                    max: 30
+                })
+            ),
+            "expected the pooled budget of 20 + 10: {err:?}"
+        );
+    }
+
     /// Storage reads the scripted transport served.
     fn storage_reads(scripted: &ScriptedRpc) -> usize {
         scripted
@@ -1267,6 +1809,7 @@ mod tests {
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
+            collection: PersonhoodCollection::LitePeople,
             members: vec![proof::member_key(entropy)],
             exponent: 9,
             ring_index: 0,
@@ -1324,6 +1867,7 @@ mod tests {
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
+            collection: PersonhoodCollection::LitePeople,
             members: vec![proof::member_key(entropy)],
             exponent: 9,
             ring_index: 0,
@@ -1379,6 +1923,7 @@ mod tests {
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
+            collection: PersonhoodCollection::LitePeople,
             members: vec![proof::member_key(entropy)],
             exponent: 9,
             ring_index: 0,
@@ -1427,6 +1972,7 @@ mod tests {
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
+            collection: PersonhoodCollection::LitePeople,
             members: vec![proof::member_key(entropy)],
             exponent: 9,
             ring_index: 0,
@@ -1468,7 +2014,12 @@ mod tests {
 
         assert!(matches!(
             outcome.unwrap(),
-            RegistrationOutcome::Registered { block_hash, seq: 0, ring_index: 0 }
+            RegistrationOutcome::Registered {
+                block_hash,
+                seq: 0,
+                ring_index: 0,
+                collection: PersonhoodCollection::LitePeople,
+            }
                 if block_hash == "0xb10c"
         ));
         let (method, params) = scripted.calls().last().cloned().unwrap();

@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use truapi_server::statement_allowance::collection::PersonhoodCollection;
 use truapi_server::statement_allowance::{self as alloc, ChainContextCache};
 
 /// Default People-chain endpoint, kept in step with `network.rs`.
@@ -108,11 +109,14 @@ async fn scanning_a_live_period_answers_without_erroring() {
     let selection = alloc::slot::scan_slot_excluding(
         &rpc,
         &chain.metadata,
-        [0x11; 32],
-        period,
-        &[0x22; 32],
-        &[],
-        true,
+        alloc::slot::SlotScan {
+            collection: PersonhoodCollection::LitePeople,
+            entropy: [0x11; 32],
+            period,
+            target: &[0x22; 32],
+            excluded: &[],
+            reuse_existing: true,
+        },
     )
     .await
     .expect("scanning a live period is not an error");
@@ -138,11 +142,14 @@ async fn live_metadata_still_exposes_the_allowance_extension_shape() {
 
     let register = chain
         .metadata
-        .as_resources_variant_indices("RegisterStatementStoreAllowance")
+        .as_resources_variant_indices(
+            "RegisterStatementStoreAllowance",
+            PersonhoodCollection::LitePeople,
+        )
         .expect("live runtime exposes RegisterStatementStoreAllowance");
     let claim = chain
         .metadata
-        .as_resources_variant_indices("ClaimLongTermStorage")
+        .as_resources_variant_indices("ClaimLongTermStorage", PersonhoodCollection::LitePeople)
         .expect("live runtime exposes ClaimLongTermStorage");
     let period_duration = alloc::slot::long_term_storage_period_duration(&chain.metadata)
         .expect("live runtime exposes Resources.LongTermStoragePeriodDuration");

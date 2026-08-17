@@ -920,9 +920,9 @@ pub(super) async fn allocate_statement_store_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use super::allowance_renewal::{self, StatementRenewalTarget};
-    use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
-        self, RegistrationParams, find_including_ring, register_statement_account,
+        self, PooledRegistrationParams, existing_allocation, find_including_rings,
+        register_statement_account_pooled,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -932,7 +932,7 @@ pub(super) async fn allocate_statement_store_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
     let client = services
         .statement_store
         .chain_client("statement-store allowance")
@@ -948,62 +948,41 @@ pub(super) async fn allocate_statement_store_allowance(
     // submits nothing.
     let _registration = signing_host.renewal.registration_lock().lock().await;
 
-    // One scan answers both questions: whether an allowance is already recorded
-    // on chain — in which case neither a ring proof nor a submission is needed —
-    // and which slot to claim when it is not. Its result is handed to
-    // `register_statement_account` so the slots are read once, not twice.
-    let preselected = match statement_allowance::slot::scan_slot_excluding(
-        rpc,
-        &chain.metadata,
-        bandersnatch,
-        period,
-        &target,
-        &[],
-        reuse_existing,
-    )
-    .await?
+    // Answered before any ring snapshot is fetched: when an allowance is already
+    // recorded on chain neither a proof nor a submission is needed, and a ring
+    // snapshot pages in every member key. Covers all collections, so a product
+    // holding a slot in one is never given a second one in another.
+    if reuse_existing
+        && let Some((collection, seq)) =
+            existing_allocation(rpc, &chain.metadata, &candidates, period, &target).await?
     {
-        SlotSelection::AlreadyAllocated(seq) => {
-            debug!(
-                %product_id,
-                period,
-                seq,
-                "statement-store allowance already allocated"
-            );
-            return Ok(allowance.secret.to_bytes().to_vec());
-        }
-        SlotSelection::Free(seq) => seq,
-        SlotSelection::FreeSlotsExcluded => {
-            return Err(
-                StatementAllowanceError::Slot(SlotError::FreeSlotsAwaitingSubmission { period })
-                    .into(),
-            );
-        }
-        SlotSelection::Full { max, .. } => {
-            return Err(
-                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
-                    .into(),
-            );
-        }
-    };
+        debug!(
+            %product_id,
+            period,
+            seq,
+            %collection,
+            "statement-store allowance already allocated"
+        );
+        return Ok(allowance.secret.to_bytes().to_vec());
+    }
 
-    let current = statement_allowance::ring::read_current_ring_index(rpc).await?;
-    let ring = find_including_ring(rpc, &chain.metadata, bandersnatch, current)
-        .await?
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+    // Every ring back to index 0, because a membership that stopped being
+    // re-included still proves against the ring that holds it.
+    let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
+    if memberships.is_empty() {
+        return Err(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "statement-store",
-        })?;
-    let outcome = register_statement_account(
+        });
+    }
+    let outcome = register_statement_account_pooled(
         rpc,
         &chain.metadata,
         &chain.state,
-        bandersnatch,
-        RegistrationParams {
+        &memberships,
+        PooledRegistrationParams {
             target: &target,
             period,
-            ring: &ring,
             reuse_existing,
-            preselected: Some(preselected),
             protected: &[],
         },
     )
@@ -1013,19 +992,22 @@ pub(super) async fn allocate_statement_store_allowance(
             block_hash,
             seq,
             ring_index,
+            collection,
         } => {
             debug!(
                 %product_id,
                 %block_hash,
                 seq,
                 ring_index,
+                %collection,
                 "registered statement-store allowance"
             );
         }
-        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq } => {
+        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq, collection } => {
             debug!(
                 %product_id,
                 seq,
+                %collection,
                 "statement-store allowance already allocated"
             );
         }
@@ -1051,7 +1033,7 @@ pub(super) async fn allocate_bulletin_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_ring,
+        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_rings,
         wait_bulletin_authorization,
     };
 
@@ -1085,10 +1067,13 @@ pub(super) async fn allocate_bulletin_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
-    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
-    let ring = find_including_ring(people_rpc, &chain.metadata, bandersnatch, current)
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    // A single claim needs one collection, so take the strongest membership the
+    // person actually holds rather than assuming light personhood.
+    let membership = find_including_rings(people_rpc, &chain.metadata, &candidates, u32::MAX)
         .await?
+        .into_iter()
+        .next()
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
             resource: "Bulletin",
         })?;
@@ -1102,10 +1087,10 @@ pub(super) async fn allocate_bulletin_allowance(
         people_rpc,
         &chain.metadata,
         &chain.state,
-        bandersnatch,
+        membership.entropy,
         &target,
         period,
-        &ring,
+        &membership.ring,
     )
     .await?;
     let statement_allowance::LongTermStorageOutcome::Claimed {
@@ -1171,7 +1156,7 @@ pub(super) async fn allocate_smart_contract_allowance(
     use truapi::latest::ChainIdentifier;
 
     use crate::host_logic::features;
-    use crate::runtime::statement_allowance::{self, ChainClient, find_including_ring, pgas};
+    use crate::runtime::statement_allowance::{self, ChainClient, find_including_rings, pgas};
 
     let session = signing_host
         .current_session()
@@ -1222,10 +1207,13 @@ pub(super) async fn allocate_smart_contract_allowance(
     let people_rpc = people_client.rpc();
     let people = services.chain_context.get(&people_client).await?;
 
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
-    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
-    let ring = find_including_ring(people_rpc, &people.metadata, bandersnatch, current)
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    // A single claim needs one collection, so take the strongest membership the
+    // person actually holds rather than assuming light personhood.
+    let membership = find_including_rings(people_rpc, &people.metadata, &candidates, u32::MAX)
         .await?
+        .into_iter()
+        .next()
         .ok_or(AllowanceAllocationError::MissingLitePeopleMembership { resource: "PGAS" })?;
 
     let outcome = pgas::claim_pgas(pgas::PgasClaim {
@@ -1233,9 +1221,9 @@ pub(super) async fn allocate_smart_contract_allowance(
         asset_hub: &asset_hub,
         people_rpc,
         people_metadata: &people.metadata,
-        entropy: bandersnatch,
+        entropy: membership.entropy,
         target: &target,
-        ring: &ring,
+        ring: &membership.ring,
     })
     .await?;
     debug!(
@@ -1672,7 +1660,7 @@ mod tests {
             })
             .collect();
 
-        // `find_including_ring` opens with `chain_getFinalizedHead`, so none of
+        // `find_including_rings` opens with `chain_getFinalizedHead`, so none of
         // these means no ring was resolved.
         assert_eq!(
             methods
