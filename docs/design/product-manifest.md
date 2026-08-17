@@ -18,13 +18,16 @@ type RootManifest = {
   $v: 1;
   displayName: string;
   description: string;
-  icon: Icon;
+  icon: Icon;                                  // presentational; no icon failure blocks a launch
+  trustedProducts?: Record<string, Granted[]>; // product id, no TLD → what that product may do to THIS one
 };
 
 type Icon = {
   cid: string;            // Bulletin-chain CID
-  format: "jpeg" | "png";
+  format: "jpeg" | "png"; // v1 formats; an unrecognised value is tolerated, not fatal
 };
+
+type Granted = "all";     // only v1 grant; unrecognised values are tolerated, not fatal
 ```
 
 ### Executable Manifest
@@ -53,7 +56,7 @@ type WidgetManifest = CommonExecutableFields & {
 type WorkerManifest = CommonExecutableFields & {
   kind: "worker";
   entrypoint: string;
-  includes: Record<"chat" | "pocket", boolean>;
+  includes: Record<"chat" | "pocket" | "input", boolean>;
 };
 
 type SemVer = [major: number, minor: number, patch: number, build?: string];
@@ -63,10 +66,10 @@ type SemVer = [major: number, minor: number, patch: number, build?: string];
 
 | Subname                     | Text-record key | Carries                    |
 |-----------------------------|-----------------|----------------------------|
-| `<product_id>.dot`          | `manifest`      | Root manifest              |
-| `app.<product_id>.dot`      | `executable`    | App executable manifest    |
-| `widget.<product_id>.dot`   | `executable`    | Widget executable manifest |
-| `worker.<product_id>.dot`   | `executable`    | Worker executable manifest |
+| `<product_id>.<tld>`        | `manifest`      | Root manifest              |
+| `app.<product_id>.<tld>`    | `executable`    | App executable manifest    |
+| `widget.<product_id>.<tld>` | `executable`    | Widget executable manifest |
+| `worker.<product_id>.<tld>` | `executable`    | Worker executable manifest |
 
 Absence of a subname means the product does not provide that executable.
 
@@ -82,14 +85,21 @@ A host resolves a product from its dotNS base name `B` in eight steps:
    └─ empty → product does not exist; stop
 4. Parse JSON, validate $v and RootManifest schema
    └─ failure → malformed; surface diagnostic
+   └─ exempt: unrecognised icon.format and unrecognised trustedProducts
+      grant values still validate
 5. (optional) author = IDotnsRegistry.owner(node)
 6. For each executable type the host can render:
-   subnode = namehash("<type>.<product_id>.dot")
+   subnode = namehash("<type>.<product_id>.<tld>")
    repeat steps 2–4 with text(subnode, "executable")
 7. (optional) Verify owner(subnode) == owner(node)
-8. Fetch bytes: GET <gateway>/ipfs/<cid>
-   verify fetched bytes match the CID
+8. Fetch executable bytes: GET <gateway>/ipfs/<cid>
+   └─ unreachable → cannot launch that executable; surface diagnostic
+   icon: same fetch against icon.cid
+   └─ any failure → placeholder; product still launches
 ```
+
+v1 defines no byte-level CID verification for either fetch; integrity rests on the gateway.
+See the RFC's Unresolved Questions.
 
 ### dotNS Dry-Run Origin
 
@@ -122,6 +132,30 @@ Fixed by the Bulletin chain protocol.
 
 A Bulletin CID is `CIDv1(raw, sha256(data))`.
 
+## Cross-Product Trust
+
+Running products interact through the host — reading another product's account, asking it to
+sign. Normally each is a consent prompt; `trustedProducts` skips the prompt for products the
+publisher pre-approved.
+
+Grants point inward — A's manifest says what others may do **to A**:
+
+```
+A's manifest:  trustedProducts: { "game": ["all"] }
+               → game may act on A
+               → A gets nothing on game
+               → products game trusts get nothing on A
+```
+
+Keys carry no TLD: `game`, not `game.dot`. Append the TLD of the network you resolve against
+before matching. Missing field, empty record, empty array all mean "prompt as usual".
+
+Two rules the host owes the user:
+
+- A grant waives the *publisher's* prompt, never a denial the user already gave.
+- Revocation is a text-record edit with no signal, so cached grants must expire (see
+  [Caching](#caching)).
+
 ## Error Handling
 
 | Condition                                | Host action                              |
@@ -129,14 +163,19 @@ A Bulletin CID is `CIDv1(raw, sha256(data))`.
 | No resolver / empty root manifest        | Product does not exist                   |
 | Unknown `$v`                             | Undiscoverable; skip, surface diagnostic |
 | Malformed JSON / schema validation fail  | Do not launch; surface diagnostic        |
-| Unknown `icon.format` or icon CID fails  | Render placeholder; product launchable   |
+| Unknown `icon.format`                    | Placeholder; never sniff or auto-correct |
+| Unknown `Granted` value                  | Ignore it; manifest stays valid          |
+| `trustedProducts` key does not resolve   | Entry inert; manifest stays valid        |
+| `trustedProducts` key carries a TLD      | Does not resolve; entry inert            |
+| Icon CID unreachable                     | Render placeholder; product launchable   |
+| Icon bytes do not decode as `format`     | Render placeholder; product launchable   |
 | Missing executable subname               | Product does not provide that executable |
 | `kind` does not match subname label      | Skip that executable                     |
-| Executable CID unreachable / mismatch    | Refuse to launch that executable         |
+| Executable CID unreachable               | Cannot launch that executable            |
 | Subname owner differs (strict provenance)| Skip that executable                     |
 
 ## Caching
 
-- **Manifests**: cache by base name. Detect re-publish by re-reading the text record or comparing `appVersion`.
+- **Manifests**: cache by base name. Detect re-publish by re-reading the text record or comparing `appVersion`. Bound the lifetime — a cached `trustedProducts` keeps revoked grants alive.
 - **Icon and executable bytes**: cacheable indefinitely by CID (content-addressed; same CID = same bytes).
 - dotNS provides no push notifications; hosts must poll.
