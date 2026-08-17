@@ -219,8 +219,14 @@ class MyBridge(private val webView: WebView) : HostBridge {
 
     // One confirmation callback for every reviewed core action. Switch on the
     // review variant (SignPayload / SignRaw / CreateTransaction / AccountAlias /
-    // ResourceAllocation / PreimageSubmit / ...) to render the prompt with its
-    // typed fields.
+    // ResourceAllocation / PreimageSubmit / ForeignRingVrfKey / ...) to render the
+    // prompt with its typed fields.
+    //
+    // ForeignRingVrfKey is the one variant a host must not remember: it authorizes
+    // one product's use of another product's ring-VRF key for a single message, and
+    // the core asks again on every call. Show the calling product, the owning
+    // product, and whether the output is a context-scoped proof or an unscoped,
+    // linkable member-key signature.
     override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean {
         return withContext(Dispatchers.Main) { /* show prompt; */ false }
     }

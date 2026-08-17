@@ -22,9 +22,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
 use truapi_platform::{
-    AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, JsonRpcConnection, Navigation,
-    Notifications, Permissions, PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, ForeignRingVrfUse,
+    JsonRpcConnection, Navigation, Notifications, Permissions, PreimageHost, ProductStorage,
+    ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation, UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -774,6 +774,26 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
                 review.requesting_product_id, review.target_product_id
             ),
         ),
+        UserConfirmationReview::ForeignRingVrfKey(review) => {
+            let produced = match &review.key_use {
+                ForeignRingVrfUse::Proof { context, .. } => {
+                    format!("a ring-VRF proof in the {} context", context.product_id)
+                }
+                ForeignRingVrfUse::Signature => {
+                    "a member-key signature, linkable and unscoped".to_string()
+                }
+            };
+            (
+                "use another product's ring-VRF key",
+                format!(
+                    "Product {} requested {produced} with the {} key at index {:?}. \
+                     The message is opaque, so what the result authorizes cannot be shown.",
+                    review.calling_product_id,
+                    review.key_handle.dot_ns_identifier,
+                    review.key_handle.derivation_index,
+                ),
+            )
+        }
     }
 }
 
