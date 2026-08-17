@@ -787,6 +787,7 @@ pub fn blake2b256(message: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_fixtures;
     use super::*;
 
     /// Fixture metadata captured from paseo-next-v2 (raw `RuntimeMetadataPrefixed`).
@@ -843,6 +844,23 @@ mod tests {
             metadata
                 .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
                 .is_some()
+        );
+    }
+
+    /// PGAS authorizes with a different extension from the statement-store
+    /// claims, and only Asset Hub declares it. A re-captured fixture that changed
+    /// the claim arity would otherwise surface as a runtime panic inside
+    /// `validate_transaction` rather than a failing test.
+    #[test]
+    fn the_asset_hub_fixture_declares_the_pgas_claim_shape() {
+        let metadata = test_fixtures::asset_hub();
+
+        assert!(metadata.extension_index(AS_PGAS).is_some());
+        assert_eq!(
+            metadata
+                .extension_info_field_count(AS_PGAS, "Claim")
+                .unwrap(),
+            5,
         );
     }
 

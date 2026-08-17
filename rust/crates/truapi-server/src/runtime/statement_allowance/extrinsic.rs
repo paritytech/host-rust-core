@@ -249,8 +249,10 @@ pub fn build_unsigned_extrinsic_with_extra(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use parity_scale_codec::Compact;
+
+    use super::super::test_fixtures;
+    use super::*;
 
     const FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
 
@@ -338,6 +340,60 @@ mod tests {
                 revision: 9,
                 personhood: 1,
             }
+        );
+    }
+
+    /// `AsPgas::Claim` carries a fifth field the `AsResources` claims do not, the
+    /// day, and the variant indices come from Asset Hub rather than the relay.
+    #[test]
+    fn as_pgas_extra_wraps_proof_and_day() {
+        let metadata = test_fixtures::asset_hub();
+        let proof = vec![0xEE; 785];
+        let extra = build_as_pgas_extra(metadata, &proof, 3, 9, 11).unwrap();
+        // Some(0x01) ‖ variant(0x00) ‖ compact(785)=0x45,0x0c ‖ 785 bytes
+        // ‖ ringIndex LE ‖ revision LE ‖ LitePeople ‖ day LE.
+        assert_eq!(
+            extra,
+            [
+                vec![0x01, 0x00],
+                Compact(785u32).encode(),
+                proof,
+                3u32.to_le_bytes().to_vec(),
+                9u32.to_le_bytes().to_vec(),
+                vec![0x01],
+                11u32.to_le_bytes().to_vec(),
+            ]
+            .concat()
+        );
+        assert_eq!(
+            ClaimPgasInfo::decode(&mut &extra[2..]).unwrap(),
+            ClaimPgasInfo {
+                proof: vec![0xEE; 785],
+                ring_index: 3,
+                revision: 9,
+                collection: 1,
+                day: 11,
+            }
+        );
+    }
+
+    /// The dispatch indices come from Asset Hub's metadata, so the call the claim
+    /// submits is only as right as the pallet the fixture declares.
+    #[test]
+    fn pgas_call_layout_is_pallet_call_slot_target() {
+        let metadata = test_fixtures::asset_hub();
+        let target = [0x33; 32];
+
+        let call = build_claim_pgas_call(metadata, 5, &target).unwrap();
+
+        assert_eq!(
+            call,
+            [
+                vec![0x63, 0x00],
+                5u32.to_le_bytes().to_vec(),
+                target.to_vec()
+            ]
+            .concat()
         );
     }
 

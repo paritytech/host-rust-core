@@ -357,6 +357,7 @@ async fn wait_before_next_ring_revision_poll(
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_fixtures;
     use super::*;
 
     /// Both map keys are hashed here, unlike the People chain's `Members` maps.
@@ -374,6 +375,23 @@ mod tests {
             &key[96..],
             &136u32.to_le_bytes(),
             "ring index is little-endian"
+        );
+    }
+
+    /// `holds_a_full_claim` reads both of these from the runtime, and compares a
+    /// balance against the claim amount. A missing constant would make the warm
+    /// check answer the same way for every account.
+    #[test]
+    fn the_asset_hub_fixture_declares_the_pgas_asset_and_claim_amount() {
+        let metadata = test_fixtures::asset_hub();
+
+        assert_eq!(
+            metadata.constant_u32("Pgas", "PgasAssetId").unwrap(),
+            2_000_000_000
+        );
+        assert_eq!(
+            metadata.constant_u128("Pgas", "PgasClaimAmount").unwrap(),
+            50_000_000_000,
         );
     }
 
