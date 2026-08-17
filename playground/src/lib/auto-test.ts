@@ -28,8 +28,7 @@ const SKIPPED_SERVICES = new Map<string, string>([
   ["Payment", "Payment service not yet wired up by hosts"],
   [
     WEBRTC_SERVICE_NAME,
-    "WebRTC needs a real camera/microphone capture device and grant; run it " +
-      "interactively rather than in the unattended diagnosis",
+    "WebRTC needs a live camera/microphone permission grant; run it interactively from the method browser",
   ],
 ]);
 // Methods that trigger a host permission/signing prompt, so they need the
