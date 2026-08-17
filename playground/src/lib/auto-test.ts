@@ -1,7 +1,7 @@
 import { runExample, type LogEntry, type RunResult } from "./example-runner";
 import { getClientSync } from "@parity/truapi/sandbox";
 import type { MethodInfo, ServiceInfo } from "./services";
-import { WEBRTC_METHOD_NAME, WEBRTC_SERVICE_NAME } from "./webrtc-check";
+import { WEBRTC_SERVICE_NAME } from "./webrtc-check";
 import type { DiagnosisStatus } from "@/shared/diagnosis";
 
 export const DIAGNOSIS_ID = "__diagnosis__";
@@ -21,8 +21,17 @@ const SSO_TIMEOUT_MS = 60_000;
 // preimage cap, leaving time for the result to cross the iframe boundary.
 const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
 
-// Services skipped wholesale in the diagnosis until hosts wire them up.
-const SKIPPED_SERVICES = new Set(["Coin Payment", "Payment"]);
+// Services skipped wholesale in the diagnosis, keyed to the reason shown on the
+// skipped rows.
+const SKIPPED_SERVICES = new Map<string, string>([
+  ["Coin Payment", "Coin Payment service not yet wired up by hosts"],
+  ["Payment", "Payment service not yet wired up by hosts"],
+  [
+    WEBRTC_SERVICE_NAME,
+    "WebRTC needs a real camera/microphone capture device and grant; run it " +
+      "interactively rather than in the unattended diagnosis",
+  ],
+]);
 // Methods that trigger a host permission/signing prompt, so they need the
 // longer signing-class timeout to allow for the user to respond.
 const LONG_TIMEOUT_METHODS = new Set([
@@ -48,8 +57,6 @@ const METHOD_TIMEOUT_MS = new Map<string, number>([
   ["Statement Store/create_proof_authorized", LIVE_ALLOCATION_TIMEOUT_MS],
   ["Statement Store/submit", LIVE_ALLOCATION_TIMEOUT_MS],
   ["Statement Store/subscribe", LIVE_ALLOCATION_TIMEOUT_MS],
-  // Two permission prompts (camera, microphone) may need the user.
-  [`${WEBRTC_SERVICE_NAME}/${WEBRTC_METHOD_NAME}`, SSO_TIMEOUT_MS],
 ]);
 
 type RunOneOpts = {
@@ -65,11 +72,9 @@ async function runOne({
 }: RunOneOpts): Promise<void> {
   const id = `${serviceName}/${method.name}`;
 
-  if (SKIPPED_SERVICES.has(serviceName)) {
-    onUpdate(id, {
-      status: "skipped",
-      output: `${serviceName} service not yet wired up by hosts`,
-    });
+  const skipReason = SKIPPED_SERVICES.get(serviceName);
+  if (skipReason !== undefined) {
+    onUpdate(id, { status: "skipped", output: skipReason });
     return;
   }
   if (!method.exampleSource) {
