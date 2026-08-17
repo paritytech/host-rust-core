@@ -324,8 +324,8 @@ mod tests {
     /// proof against, so each collection has to reach a distinct variant index
     /// resolved from metadata rather than a hardcoded one.
     ///
-    /// `AsPgas` lives on Asset Hub, which has no offline fixture, so its
-    /// collection variant is only exercised by the live Asset Hub test.
+    /// `AsPgas` lives on Asset Hub and is covered separately, against that
+    /// chain's own fixture, by `a_full_person_pgas_claim_names_its_own_collection`.
     #[test]
     fn each_collection_reaches_its_own_extension_variant() {
         let metadata = Metadata::decode(FIXTURE).unwrap();
@@ -393,7 +393,9 @@ mod tests {
     fn as_pgas_extra_wraps_proof_and_day() {
         let metadata = test_fixtures::asset_hub();
         let proof = vec![0xEE; 785];
-        let extra = build_as_pgas_extra(metadata, &proof, 3, 9, 11).unwrap();
+        let extra =
+            build_as_pgas_extra(metadata, &proof, 3, 9, 11, PersonhoodCollection::LitePeople)
+                .unwrap();
         // Some(0x01) ‖ variant(0x00) ‖ compact(785)=0x45,0x0c ‖ 785 bytes
         // ‖ ringIndex LE ‖ revision LE ‖ LitePeople ‖ day LE.
         assert_eq!(
@@ -419,6 +421,32 @@ mod tests {
                 day: 11,
             }
         );
+    }
+
+    /// A full person proves PGAS against their own ring, so the claim has to name
+    /// that collection. Until Asset Hub had a fixture this was only reachable
+    /// live, which left the encoding of the full-person claim untested offline.
+    #[test]
+    fn a_full_person_pgas_claim_names_its_own_collection() {
+        let metadata = test_fixtures::asset_hub();
+        let proof = vec![0xEE; 785];
+
+        let people =
+            build_as_pgas_extra(metadata, &proof, 3, 9, 11, PersonhoodCollection::People).unwrap();
+        let lite =
+            build_as_pgas_extra(metadata, &proof, 3, 9, 11, PersonhoodCollection::LitePeople)
+                .unwrap();
+
+        assert_eq!(
+            ClaimPgasInfo::decode(&mut &people[2..]).unwrap().collection,
+            0,
+            "Asset Hub declares People before LitePeople",
+        );
+        assert_eq!(
+            ClaimPgasInfo::decode(&mut &lite[2..]).unwrap().collection,
+            1
+        );
+        assert_ne!(people, lite, "the collection has to reach the payload");
     }
 
     /// The dispatch indices come from Asset Hub's metadata, so the call the claim

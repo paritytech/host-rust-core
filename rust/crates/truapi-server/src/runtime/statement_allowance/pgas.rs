@@ -378,6 +378,10 @@ mod tests {
     use super::super::test_fixtures;
     use super::*;
 
+    /// The collection the captured roots were read from. `RingRoots` is keyed by
+    /// collection, so the fixture only means anything paired with this one.
+    const CAPTURED_COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
+
     /// The captured ring-5 roots as a scripted `state_getStorage` result.
     fn scripted_ring_5_roots() -> RpcClient {
         let value = format!(
@@ -427,6 +431,7 @@ mod tests {
         let err = futures::executor::block_on(await_ring_revision(
             &scripted_ring_5_roots(),
             test_fixtures::asset_hub(),
+            CAPTURED_COLLECTION,
             5,
             107,
         ))
@@ -444,6 +449,7 @@ mod tests {
         futures::executor::block_on(await_ring_revision(
             &scripted_ring_5_roots(),
             test_fixtures::asset_hub(),
+            CAPTURED_COLLECTION,
             5,
             106,
         ))
