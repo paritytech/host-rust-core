@@ -271,29 +271,39 @@ fn resolve_targets(
 /// an account it never promised, so it is removed rather than skipped — the cost
 /// is paid once per identity change instead of on every tick. The ledger is only
 /// rewritten when something was actually dropped.
+///
+/// The lock covers the read as well as the write, because this is a
+/// read-modify-write of the whole ledger: reading outside it lets a
+/// [`track_targets`] call land in the gap and be overwritten by a view that
+/// predates it, leaving that account tracked nowhere and never renewed again.
+///
+/// The labels are logged here rather than only returned. Every step between this
+/// and the report can fail, and `run_tick` does not read the report at all, so
+/// the log is the one place a prune is recorded unconditionally.
 async fn owned_targets(
     storage: &(impl CoreStorage + ?Sized),
     ledger_lock: &Mutex<()>,
     owner: [u8; 32],
 ) -> Result<(Vec<StatementRenewalTarget>, Vec<String>), String> {
+    let _guard = ledger_lock.lock().await;
     let (owned, foreign): (Vec<_>, Vec<_>) = read_entries(storage)
         .await?
         .into_iter()
         .partition(|entry| entry.is_owned_by(owner));
+    let pruned: Vec<String> = foreign
+        .iter()
+        .map(|entry| target_label(&entry.target))
+        .collect();
     if !foreign.is_empty() {
         warn!(
-            dropped = foreign.len(),
+            dropped = ?pruned,
             "pruning renewal targets promised by a previous identity"
         );
-        let _guard = ledger_lock.lock().await;
         write_entries(storage, &owned).await?;
     }
     Ok((
         owned.into_iter().map(|entry| entry.target).collect(),
-        foreign
-            .iter()
-            .map(|entry| target_label(&entry.target))
-            .collect(),
+        pruned,
     ))
 }
 
@@ -547,6 +557,40 @@ mod tests {
             let mut targets = read_targets(&storage, OWNER).await.unwrap();
             targets.sort_by_key(|target| format!("{target:?}"));
             assert_eq!(targets, vec![product("a.dot"), product("b.dot")]);
+        });
+    }
+
+    /// Pruning rewrites the whole ledger, so it has to hold the lock across its
+    /// read too. Reading outside it lets a `track_targets` land in the gap and be
+    /// overwritten by a view that predates it, leaving that account tracked
+    /// nowhere and never renewed again.
+    #[test]
+    fn a_prune_does_not_overwrite_a_concurrent_track() {
+        let storage = YieldingStorage::default();
+        let ledger_lock = lock();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            // A foreign entry, so the pass prunes and therefore writes.
+            track_targets(&storage, &ledger_lock, OTHER_OWNER, vec![device])
+                .await
+                .unwrap();
+
+            let (pruned, tracked) = futures::join!(
+                owned_targets(&storage, &ledger_lock, OWNER),
+                track_targets(&storage, &ledger_lock, OWNER, vec![product("a.dot")]),
+            );
+            pruned.unwrap();
+            tracked.unwrap();
+
+            assert_eq!(
+                read_targets(&storage, OWNER).await.unwrap(),
+                vec![product("a.dot")],
+                "the concurrently tracked target was overwritten by the prune"
+            );
         });
     }
 

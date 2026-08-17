@@ -1415,10 +1415,8 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
         }
     }
     for label in &report.pruned {
-        terminal_ui::output_event(SystemEvent::AllowanceRenewalFailed {
+        terminal_ui::output_event(SystemEvent::AllowanceRenewalPruned {
             target: label.clone(),
-            reason: "dropped from the ledger: promised by a previous identity, so re-track it"
-                .to_string(),
         });
     }
     terminal_ui::output_event(SystemEvent::AllowanceRenewalReport {
@@ -1427,6 +1425,7 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
         fresh,
         failed,
         skipped,
+        pruned: report.pruned.len(),
     });
 
     if report.slots_exhausted {
