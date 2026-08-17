@@ -161,8 +161,8 @@ async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
 
 use truapi_server::host_logic::dotns_gateway::{
     DotnsTransport, VIEW_CALL_ORIGIN, call_bytes32, classify_labels, decode_address,
-    decode_revive_call_output, discover_pop_controller, encode_revive_call, resolve_labels,
-    selector,
+    decode_revive_call_output, discover_pop_controller, encode_revive_call, label_available,
+    resolve_labels, selector,
 };
 use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
 
@@ -279,5 +279,33 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
     assert!(
         identity.lite_username.is_some() || identity.full_username.is_some(),
         "labels classify into a username"
+    );
+}
+
+/// A reservation or registration for a name the registrar already minted can
+/// never succeed, so the CLI asks the registrar first. `available` is read for
+/// the name's node under the network TLD (`tldNode()`), the same node the
+/// registrar minted.
+#[tokio::test]
+#[ignore = "needs network access to a live Asset Hub"]
+async fn live_asset_hub_reports_registered_names_as_unavailable() {
+    let (rpc, _metadata) = asset_hub().await;
+    let mut transport = PlainRpc(rpc);
+    let controller = discover_pop_controller(&mut transport)
+        .await
+        .expect("discovery")
+        .expect("gateway deployed");
+
+    assert!(
+        !label_available(&mut transport, &controller, "e2epoolns01")
+            .await
+            .expect("available view"),
+        "a minted name is not available"
+    );
+    assert!(
+        label_available(&mut transport, &controller, "truapihostrebasecheckzz")
+            .await
+            .expect("available view"),
+        "an unminted name is available"
     );
 }

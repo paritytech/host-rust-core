@@ -20,6 +20,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::OnceCell;
 use tracing::{debug, warn};
 use truapi_server::host_logic::attestation::build_lite_registration;
+use truapi_server::host_logic::dotns_gateway::{MAX_BASE_LABEL_LEN, is_full_person_label};
 use truapi_server::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_identity_keypair, derive_root_keypair_from_entropy,
     product_public_key_to_address,
@@ -200,6 +201,26 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
         .timestamp_secs()
         .await
         .context("read Asset Hub Timestamp.Now")?;
+
+    // A reserved base name that is already registered can never be claimed,
+    // yet the reservation would hold that stem's queue for the whole
+    // reservation window; neither the backend nor the gateway checks it. Ask
+    // the registrar first.
+    if let Some(reserved) = config.reserved_username.as_deref() {
+        if !is_full_person_label(reserved) {
+            bail!(
+                "reserved username {reserved:?} is not a full-person base label (lowercase ASCII \
+                 letters only, at most {MAX_BASE_LABEL_LEN} bytes); the gateway would reject \
+                 the whole attestation"
+            );
+        }
+        if !reader.label_available(reserved).await? {
+            bail!(
+                "reserved username {reserved:?} is already registered on dotNS; a reservation \
+                 for it could never be claimed and would lock the stem's reservation queue"
+            );
+        }
+    }
 
     let verifier = fetch_verifier(&client, &config.backend_base).await?;
     let registration = build_lite_registration(

@@ -11,8 +11,8 @@ use subxt_rpcs::client::{RpcClient, rpc_params};
 use truapi_platform::async_trait;
 use truapi_server::host_logic::dotns_gateway::{
     DotnsIdentity, DotnsTransport, VIEW_CALL_ORIGIN, account_alias_key, classify_labels,
-    decode_revive_call_output, discover_pop_controller, encode_revive_call, resolve_labels,
-    timestamp_now_key,
+    decode_revive_call_output, discover_pop_controller, encode_revive_call, label_available,
+    resolve_labels, timestamp_now_key,
 };
 
 /// Env var overriding the `DotnsPopController` H160 (hex), skipping on-chain
@@ -67,6 +67,15 @@ impl AssetHubReader {
             .await
             .map_err(anyhow::Error::msg)?;
         Ok(classify_labels(labels))
+    }
+
+    /// Whether the registrar would still mint `label` under the network TLD.
+    /// `false` once the name is registered, whichever flow minted it.
+    pub async fn label_available(&mut self, label: &str) -> Result<bool> {
+        let controller = self.pop_controller().await?;
+        label_available(self, &controller, label)
+            .await
+            .map_err(anyhow::Error::msg)
     }
 
     /// `DotnsPopController` address. The env override wins, otherwise on-chain

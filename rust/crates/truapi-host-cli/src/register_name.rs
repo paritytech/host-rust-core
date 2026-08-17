@@ -67,6 +67,14 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     let who_public = who.public.to_bytes();
 
     let mut reader = AssetHubReader::connect(config.network.asset_hub_ws).await?;
+    // Registered names (any flow) fail only at submission otherwise; a pending
+    // reservation of `label` is not a mint and stays claimable.
+    if !reader.label_available(&config.label).await? {
+        bail!(
+            "label {:?} is already registered on dotNS and cannot be registered again",
+            config.label
+        );
+    }
     let link = resolve_link(config, &mut reader, &who_public).await?;
 
     // Reading the full-person member key's ring and its members from the People

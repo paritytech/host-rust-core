@@ -341,6 +341,16 @@ pub fn decode_string(data: &[u8]) -> Result<String, DotnsContractError> {
     decode_string_at(data, word_usize(data, 0)?)
 }
 
+/// Decodes a single `bool` return value.
+pub fn decode_bool(data: &[u8]) -> Result<bool, DotnsContractError> {
+    let bytes = word(data, 0)?;
+    match bytes {
+        [0, .., 0] => Ok(false),
+        [0, .., 1] if bytes[..31].iter().all(|b| *b == 0) => Ok(true),
+        _ => Err(DotnsContractError::Abi { context: "bool" }),
+    }
+}
+
 /// Decodes a single `address` return value.
 pub fn decode_address(data: &[u8]) -> Result<[u8; 20], DotnsContractError> {
     let bytes = word(data, 0)?;
@@ -634,6 +644,53 @@ fn bare_store_label<'a>(label: &'a str, tld: &str) -> Option<&'a str> {
     (!bare.is_empty() && !bare.contains('.')).then_some(bare)
 }
 
+/// ENS-style node of `label` directly under `parent`:
+/// `keccak256(parent ‖ keccak256(label))`.
+pub fn namehash_under(parent: &[u8; 32], label: &str) -> [u8; 32] {
+    keccak_256(&[parent.as_slice(), &keccak_256(label.as_bytes())].concat())
+}
+
+/// Whether the registrar would still mint `label` on this network: the name's
+/// node under the network TLD is unminted, or held by the name escrow
+/// (`DotnsRegistrar.available`).
+///
+/// A lite-name reservation carrying a `reserved_base_label` that is already
+/// registered can never be claimed, yet it holds the reservation queue for
+/// that stem for the whole reservation window. The gateway pallet does not
+/// check this, so callers ask before attesting or registering.
+pub async fn label_available<T: DotnsTransport + ?Sized>(
+    transport: &mut T,
+    controller: &[u8; 20],
+    label: &str,
+) -> Result<bool, String> {
+    let registry_output = transport
+        .view(controller, call_no_args("protocolRegistry()"))
+        .await?;
+    let registry = decode_address(&registry_output)
+        .map_err(|err| format!("DotnsPopController.protocolRegistry(): {err}"))?;
+
+    let tld_node_output = transport.view(&registry, call_no_args("tldNode()")).await?;
+    let tld_node: [u8; 32] = word(&tld_node_output, 0)
+        .map_err(|err| format!("ProtocolRegistry.tldNode(): {err}"))?
+        .try_into()
+        .expect("a 32-byte ABI word; qed");
+
+    let registrar_output = transport
+        .view(
+            &registry,
+            call_bytes32("get(bytes32)", &registry_key("registrar")),
+        )
+        .await?;
+    let registrar = decode_address(&registrar_output)
+        .map_err(|err| format!("ProtocolRegistry.get(registrar): {err}"))?;
+
+    let node = namehash_under(&tld_node, label);
+    let output = transport
+        .view(&registrar, call_bytes32("available(uint256)", &node))
+        .await?;
+    decode_bool(&output).map_err(|err| format!("DotnsRegistrar.available: {err}"))
+}
+
 /// Gateway-minted labels of `user` still waiting for `claimLabelStore`.
 ///
 /// The deployed controller exposes `pendingClaims(address)`, an array. Older
@@ -793,6 +850,30 @@ mod tests {
         assert_eq!(hex::encode(selector("TARGET()")), "cc1f2afa");
         assert_eq!(hex::encode(selector("pendingClaims(address)")), "ca78533d");
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
+        assert_eq!(hex::encode(selector("tldNode()")), "114902c5");
+        assert_eq!(hex::encode(selector("available(uint256)")), "96e494e8");
+    }
+
+    #[test]
+    fn namehash_matches_the_reference_derivation() {
+        // `cast namehash paseo` and `cast namehash alicebc.paseo`.
+        let tld_node = namehash_under(&[0u8; 32], "paseo");
+        assert_eq!(
+            hex::encode(tld_node),
+            "096b436ee9a398429fe33ad4b359bad4398dd74b412ec1dd043c93dfbf581874"
+        );
+        assert_eq!(
+            hex::encode(namehash_under(&tld_node, "alicebc")),
+            "d3b106171373cd9fea783acd85f69def1bb2085f81cf5f2a65088b0ce4edd82e"
+        );
+    }
+
+    #[test]
+    fn bool_words_decode_strictly() {
+        assert!(decode_bool(&abi_word(1)).unwrap());
+        assert!(!decode_bool(&abi_word(0)).unwrap());
+        assert!(decode_bool(&abi_word(2)).is_err());
+        assert!(decode_bool(&[0u8; 16]).is_err());
     }
 
     #[test]

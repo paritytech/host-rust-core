@@ -814,7 +814,12 @@ A new auto account:
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
 7. builds and submits identity-backend registration proofs, including the dotNS
-   gateway reservation signature timestamped with Asset Hub chain time;
+   gateway reservation signature timestamped with Asset Hub chain time. A
+   reserved base name, when one is requested, must be a full-person label and
+   still available on the dotNS registrar (`DotnsRegistrar.available` for its
+   node under the network TLD): a reservation for a registered name could never
+   be claimed and would hold that stem's reservation queue for the whole
+   reservation window;
 8. polls the dotNS contracts on Asset Hub for the final `name.discriminator`;
 9. waits for inclusion in a LitePeople ring; and
 10. marks and saves the account as attested.
@@ -1515,8 +1520,9 @@ REGISTER_SUBMITTED label=<label> block=<hash>
 ```
 
 and the command then waits until `DotnsGateway.AccountAlias` records the
-account. Runtimes whose `RegisterFullName` shape differs are rejected before
-signing.
+account. Before signing, the label must be available on the dotNS registrar
+(`DotnsRegistrar.available`; a pending reservation is not a mint and stays
+claimable), and runtimes whose `RegisterFullName` shape differs are rejected.
 
 ### 19.3 `alloc-check`
 
