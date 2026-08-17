@@ -13,8 +13,9 @@ pub enum Network {
     #[value(name = "paseo-next-v2")]
     #[default]
     PaseoNextV2,
-    /// Previewnet, the testnet carrying the newer dotNS gateway. Its reservation
-    /// signature scheme has `MaxValiditySeconds`.
+    /// Previewnet, the app team's staging testnet. It runs the same Asset Hub
+    /// runtime (and dotNS gateway) as paseo-next-v2 behind its own chains and
+    /// identity backend.
     #[value(name = "previewnet")]
     Previewnet,
 }
