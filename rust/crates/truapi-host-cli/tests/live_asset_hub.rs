@@ -154,3 +154,130 @@ async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
         "a skipped revision should not be waited out: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// dotNS gateway: the register_name authorization shape and the username reads.
+// ---------------------------------------------------------------------------
+
+use truapi_server::host_logic::dotns_gateway::{
+    DotnsTransport, VIEW_CALL_ORIGIN, call_bytes32, classify_labels, decode_address,
+    decode_revive_call_output, discover_pop_controller, encode_revive_call, resolve_labels,
+    selector,
+};
+use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
+
+/// The `DotnsRegistrar` (ERC721) on paseo-next-v2 Asset Hub, per dotns
+/// `DEPLOYMENTS.md`. Only used to find an account that holds a settled name.
+const PASEO_DOTNS_REGISTRAR: [u8; 20] = [
+    0x4f, 0x06, 0xe8, 0x18, 0xba, 0x3d, 0x98, 0x77, 0x04, 0xfd, 0x91, 0xcf, 0x3d, 0x86, 0x8e, 0x4b,
+    0x01, 0x91, 0x06, 0xab,
+];
+
+/// `namehash("e2epoolns01.paseo")` (`cast namehash`), a name minted through
+/// the public registrar by the e2e pool. Its owner has a settled `LabelStore`.
+const E2E_POOL_NODE: [u8; 32] = [
+    0x65, 0x98, 0x3e, 0xac, 0xfc, 0x5a, 0x91, 0x6a, 0x9f, 0xa7, 0x0c, 0xbe, 0x02, 0x99, 0x07, 0x1e,
+    0x45, 0x66, 0x24, 0x54, 0x9f, 0x08, 0xa4, 0xd1, 0xc5, 0x13, 0x28, 0xc8, 0x69, 0x7b, 0x03, 0x37,
+];
+
+/// `DotnsTransport` over plain RPC, the same two primitives the CLI uses.
+struct PlainRpc(alloc::rpc::RpcClient);
+
+#[truapi_platform::async_trait]
+impl DotnsTransport for PlainRpc {
+    async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+        self.0
+            .get_storage(&key)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, String> {
+        let args = encode_revive_call(&VIEW_CALL_ORIGIN, dest, &input);
+        let output = self
+            .0
+            .call(
+                "state_call",
+                serde_json::json!(["ReviveApi_call", format!("0x{}", hex::encode(args))]),
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        let output = output.as_str().ok_or("state_call output is not a string")?;
+        let bytes = hex::decode(output.trim_start_matches("0x")).map_err(|err| err.to_string())?;
+        decode_revive_call_output(&bytes).map_err(|err| err.to_string())
+    }
+}
+
+/// `register_name` is authorized by `AsDotnsGatewayInfo::RegisterFullName`.
+/// The host asserts its exact field shape before signing, and the encoded
+/// extra has to match it field for field: a shorter payload is accepted
+/// locally and rejected (or worse) by the runtime. The vendored fixture is a
+/// snapshot; this is the live shape.
+#[tokio::test]
+#[ignore = "needs network access to a live Asset Hub"]
+async fn live_asset_hub_declares_the_register_full_name_shape() {
+    let (_rpc, metadata) = asset_hub().await;
+    let variant = metadata
+        .dotns_register_full_name_variant()
+        .expect("RegisterFullName is {proof, ring_index, revision, signature}");
+    assert_eq!(
+        metadata
+            .extension_info_field_count(AS_DOTNS_GATEWAY, "RegisterFullName")
+            .unwrap(),
+        4
+    );
+    metadata
+        .call_indices("DotnsGateway", "register_name")
+        .expect("DotnsGateway.register_name exists");
+    println!("live AsDotnsGateway: RegisterFullName={variant}");
+}
+
+/// End to end over the same resolution steps the CLI and the in-core runtime
+/// share: pallet storage → dispatcher `TARGET()` → controller → registry →
+/// store factory → the owner's `LabelStore` → bare labels. The owner is found
+/// through the registrar, so this covers the warm path (a settled store, whose
+/// labels carry the network TLD) rather than only pending claims.
+#[tokio::test]
+#[ignore = "needs network access to a live Asset Hub"]
+async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
+    let (rpc, _metadata) = asset_hub().await;
+    let mut transport = PlainRpc(rpc);
+
+    let controller = discover_pop_controller(&mut transport)
+        .await
+        .expect("discovery")
+        .expect("the gateway is deployed with a dispatcher");
+    println!("live DotnsPopController: 0x{}", hex::encode(controller));
+
+    // ownerOf(namehash) on the ERC721 registrar. Eth-derived owners map back
+    // to an AccountId32 by `0xEE` padding, which `account_to_h160` truncates.
+    let owner_output = transport
+        .view(
+            &PASEO_DOTNS_REGISTRAR,
+            call_bytes32("ownerOf(uint256)", &E2E_POOL_NODE),
+        )
+        .await
+        .expect("registrar ownerOf");
+    let owner = decode_address(&owner_output).expect("owner address");
+    let mut account = [0xEE; 32];
+    account[..20].copy_from_slice(&owner);
+    assert_eq!(hex::encode(selector("ownerOf(uint256)")), "6352211e");
+
+    let labels = resolve_labels(&mut transport, &controller, &account)
+        .await
+        .expect("resolve labels");
+    println!("live labels of 0x{}: {labels:?}", hex::encode(owner));
+    assert!(
+        labels.iter().any(|label| label == "e2epoolns01"),
+        "the settled store label loses its network TLD: {labels:?}"
+    );
+    assert!(
+        labels.iter().all(|label| !label.contains('.')),
+        "no TLD or subname survives: {labels:?}"
+    );
+    let identity = classify_labels(&labels);
+    assert!(
+        identity.lite_username.is_some() || identity.full_username.is_some(),
+        "labels classify into a username"
+    );
+}
