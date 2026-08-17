@@ -260,6 +260,33 @@ pub async fn claim_pgas(
     }
 }
 
+/// What Asset Hub's held ring roots say about the revision a proof was built
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevisionStatus {
+    /// Asset Hub holds it, so the proof can be verified.
+    Imported,
+    /// Asset Hub holds a newer root, so it will never verify this one.
+    Pruned,
+    /// Not held, and nothing newer is held either.
+    Pending,
+}
+
+/// Classify `revision` against the roots Asset Hub currently holds for a ring.
+///
+/// The newest held root is the test, not the oldest: the window drops revisions
+/// off the front but can also skip one entirely, and a skipped revision is just
+/// as unreachable as an evicted one.
+fn revision_status(held: &[u32], revision: u32) -> RevisionStatus {
+    if held.contains(&revision) {
+        return RevisionStatus::Imported;
+    }
+    match held.iter().max() {
+        Some(&newest) if newest > revision => RevisionStatus::Pruned,
+        _ => RevisionStatus::Pending,
+    }
+}
+
 /// Wait until Asset Hub has imported `revision` of `ring_index`.
 ///
 /// Public so a host can check propagation before offering a claim, and so the
@@ -294,24 +321,17 @@ pub async fn await_ring_revision(
                 context: "subscriber ring roots",
                 source,
             })?;
-            if records.iter().any(|record| record.revision == revision) {
-                return Ok(());
-            }
-            // Asset Hub has moved past ours, so it will never verify it. The
-            // newest held root is the test, not the oldest: the window drops
-            // revisions off the front but can also skip one entirely, and a
-            // skipped revision is just as unreachable as an evicted one.
-            if records
-                .iter()
-                .map(|record| record.revision)
-                .max()
-                .is_some_and(|newest| newest > revision)
-            {
-                return Err(PgasError::RingRevisionPruned {
-                    ring_index,
-                    revision,
+            let held: Vec<u32> = records.iter().map(|record| record.revision).collect();
+            match revision_status(&held, revision) {
+                RevisionStatus::Imported => return Ok(()),
+                RevisionStatus::Pruned => {
+                    return Err(PgasError::RingRevisionPruned {
+                        ring_index,
+                        revision,
+                    }
+                    .into());
                 }
-                .into());
+                RevisionStatus::Pending => {}
             }
         }
         wait_before_next_ring_revision_poll(started, ring_index, revision).await?;
@@ -354,6 +374,59 @@ mod tests {
             &key[96..],
             &136u32.to_le_bytes(),
             "ring index is little-endian"
+        );
+    }
+
+    /// The window holds it, so the proof can be verified.
+    #[test]
+    fn a_held_revision_is_imported() {
+        assert_eq!(
+            revision_status(&[105, 106, 108], 106),
+            RevisionStatus::Imported
+        );
+        assert_eq!(revision_status(&[106], 106), RevisionStatus::Imported);
+    }
+
+    /// Nothing newer is held, so ours may still be on its way. An absent storage
+    /// entry reaches this as an empty window.
+    #[test]
+    fn a_revision_newer_than_the_window_is_pending() {
+        assert_eq!(revision_status(&[], 106), RevisionStatus::Pending);
+        assert_eq!(
+            revision_status(&[103, 104, 105], 106),
+            RevisionStatus::Pending
+        );
+    }
+
+    /// A revision the window skipped is as unreachable as one that fell off the
+    /// front. Testing the oldest held root instead would wait this one out.
+    #[test]
+    fn a_skipped_revision_is_pruned_rather_than_pending() {
+        assert_eq!(
+            revision_status(&[105, 106, 108], 107),
+            RevisionStatus::Pruned
+        );
+    }
+
+    /// Evicted off the front of the window.
+    #[test]
+    fn a_revision_older_than_the_window_is_pruned() {
+        assert_eq!(
+            revision_status(&[105, 106, 108], 42),
+            RevisionStatus::Pruned
+        );
+    }
+
+    /// Storage does not promise an order, so the rule cannot depend on one.
+    #[test]
+    fn the_held_order_does_not_change_the_answer() {
+        assert_eq!(
+            revision_status(&[108, 105, 106], 107),
+            RevisionStatus::Pruned
+        );
+        assert_eq!(
+            revision_status(&[108, 105, 106], 106),
+            RevisionStatus::Imported
         );
     }
 
