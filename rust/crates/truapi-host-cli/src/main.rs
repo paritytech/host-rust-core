@@ -1414,12 +1414,18 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
             TargetRenewalStatus::SkippedExhausted => skipped += 1,
         }
     }
+    for label in &report.pruned {
+        terminal_ui::output_event(SystemEvent::AllowanceRenewalPruned {
+            target: label.clone(),
+        });
+    }
     terminal_ui::output_event(SystemEvent::AllowanceRenewalReport {
         period: report.period,
         renewed,
         fresh,
         failed,
         skipped,
+        pruned: report.pruned.len(),
     });
 
     if report.slots_exhausted {
