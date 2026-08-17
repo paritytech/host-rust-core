@@ -194,7 +194,7 @@ impl<'a> DotnsLookup<'a> {
             follow_id.clone(),
             RemoteChainHeadFollowRequest {
                 genesis_hash: genesis_hash.clone(),
-                with_runtime: false,
+                with_runtime: true,
             },
         );
         let hash = wait_for_chain_head_best_hash(
@@ -291,5 +291,326 @@ fn started_operation_id(operation: OperationStartedResult) -> Result<String, Str
         OperationStartedResult::LimitReached => {
             Err("Asset Hub operation limit reached".to_string())
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    //! The in-core lookup drives every dotNS read over one `chainHead_v1`
+    //! follow. This scripts the Asset Hub node end of that follow: storage
+    //! items for the pallet keys and `ReviveApi_call` outputs for the contract
+    //! views, so the whole chain from follow to classified usernames runs
+    //! without a network.
+
+    use super::*;
+    use crate::chain_runtime::{RuntimeChainProvider, RuntimeFailure};
+    use crate::host_logic::dotns_gateway::{account_to_h160, dispatcher_address_key, selector};
+    use crate::subscription::thread_per_subscription_spawner;
+    use async_trait::async_trait;
+    use futures::StreamExt;
+    use futures::channel::mpsc;
+    use parity_scale_codec::{Compact, Decode, Encode};
+    use serde_json::{Value as JsonValue, json};
+    use std::sync::{Arc, Mutex};
+    use truapi_platform::JsonRpcConnection;
+
+    const FOLLOW_ID: &str = "ah-follow";
+    const BEST_HASH: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const DISPATCHER: [u8; 20] = [0xd1; 20];
+    const CONTROLLER: [u8; 20] = [0xc0; 20];
+    const REGISTRY: [u8; 20] = [0x9e; 20];
+    const FACTORY: [u8; 20] = [0xfa; 20];
+    const STORE: [u8; 20] = [0x57; 20];
+    const ACCOUNT: [u8; 32] = [0xaa; 32];
+
+    fn abi_word(value: u64) -> [u8; 32] {
+        let mut word = [0u8; 32];
+        word[24..].copy_from_slice(&value.to_be_bytes());
+        word
+    }
+
+    fn abi_address(address: &[u8; 20]) -> Vec<u8> {
+        let mut word = [0u8; 32];
+        word[12..].copy_from_slice(address);
+        word.to_vec()
+    }
+
+    /// ABI string tail: a length word plus padded bytes.
+    fn abi_string_tail(value: &str) -> Vec<u8> {
+        let mut out = abi_word(value.len() as u64).to_vec();
+        out.extend_from_slice(value.as_bytes());
+        out.resize(out.len().div_ceil(32) * 32, 0);
+        out
+    }
+
+    /// A single `string` return value.
+    fn abi_string(value: &str) -> Vec<u8> {
+        [abi_word(32).to_vec(), abi_string_tail(value)].concat()
+    }
+
+    /// A `string[]` return value.
+    fn abi_string_array(values: &[&str]) -> Vec<u8> {
+        let tails: Vec<Vec<u8>> = values.iter().map(|v| abi_string_tail(v)).collect();
+        let mut out = abi_word(32).to_vec();
+        out.extend_from_slice(&abi_word(values.len() as u64));
+        let mut offset = 32 * values.len();
+        for tail in &tails {
+            out.extend_from_slice(&abi_word(offset as u64));
+            offset += tail.len();
+        }
+        for tail in tails {
+            out.extend_from_slice(&tail);
+        }
+        out
+    }
+
+    /// A `(string label, uint64 mintedAt)[]` return value with one element.
+    fn abi_pending_claims(label: &str, minted_at: u64) -> Vec<u8> {
+        [
+            abi_word(32).to_vec(),
+            abi_word(1).to_vec(),
+            abi_word(32).to_vec(),
+            abi_word(64).to_vec(),
+            abi_word(minted_at).to_vec(),
+            abi_string_tail(label),
+        ]
+        .concat()
+    }
+
+    /// `ReviveApi_call` output carrying successful return `data`.
+    fn contract_result(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for _ in 0..4 {
+            Compact(7u64).encode_to(&mut out);
+        }
+        for _ in 0..2 {
+            (1u8, 0u128).encode_to(&mut out);
+        }
+        0u128.encode_to(&mut out);
+        out.push(0x00);
+        0u32.encode_to(&mut out);
+        data.encode_to(&mut out);
+        out
+    }
+
+    /// The scripted contract side: `(dest, selector)` → return data.
+    fn view_output(dest: &[u8; 20], input: &[u8]) -> Vec<u8> {
+        let sel: [u8; 4] = input[..4].try_into().unwrap();
+        let data = match (*dest, sel) {
+            (DISPATCHER, s) if s == selector("TARGET()") => abi_address(&CONTROLLER),
+            (CONTROLLER, s) if s == selector("pendingClaims(address)") => {
+                abi_pending_claims("alice01", 42)
+            }
+            (CONTROLLER, s) if s == selector("protocolRegistry()") => abi_address(&REGISTRY),
+            (REGISTRY, s) if s == selector("get(bytes32)") => abi_address(&FACTORY),
+            (REGISTRY, s) if s == selector("tld()") => abi_string(".paseo"),
+            (FACTORY, s) if s == selector("getLabelStore(address)") => abi_address(&STORE),
+            (STORE, s) if s == selector("getLabels(uint256,uint256)") => {
+                abi_string_array(&["myproject.paseo", "app.myproject.paseo"])
+            }
+            (dest, sel) => panic!(
+                "unscripted view {} on 0x{}",
+                hex::encode(sel),
+                hex::encode(dest)
+            ),
+        };
+        contract_result(&data)
+    }
+
+    struct ScriptedAssetHub {
+        sent: Arc<Mutex<Vec<String>>>,
+        follow_with_runtime: Arc<Mutex<Option<bool>>>,
+        sender: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
+        receiver: Arc<Mutex<Option<mpsc::UnboundedReceiver<String>>>>,
+        next_operation: Arc<Mutex<u64>>,
+    }
+
+    impl ScriptedAssetHub {
+        fn new() -> Self {
+            let (sender, receiver) = mpsc::unbounded();
+            Self {
+                sent: Arc::new(Mutex::new(Vec::new())),
+                follow_with_runtime: Arc::new(Mutex::new(None)),
+                sender: Arc::new(Mutex::new(Some(sender))),
+                receiver: Arc::new(Mutex::new(Some(receiver))),
+                next_operation: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn share(&self) -> Self {
+            Self {
+                sent: self.sent.clone(),
+                follow_with_runtime: self.follow_with_runtime.clone(),
+                sender: self.sender.clone(),
+                receiver: self.receiver.clone(),
+                next_operation: self.next_operation.clone(),
+            }
+        }
+
+        fn frames(&self, request: &str) -> Vec<String> {
+            let request: JsonValue = serde_json::from_str(request).unwrap();
+            let id = request.get("id").cloned().unwrap_or(JsonValue::Null);
+            let method = request["method"].as_str().unwrap();
+            let response = |result: JsonValue| {
+                json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
+            };
+            let follow_event = |result: JsonValue| {
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "chainHead_v1_followEvent",
+                    "params": {"subscription": FOLLOW_ID, "result": result}
+                })
+                .to_string()
+            };
+            let mut next_operation = self.next_operation.lock().unwrap();
+            match method {
+                "chainHead_v1_follow" => {
+                    *self.follow_with_runtime.lock().unwrap() = request["params"][0].as_bool();
+                    vec![
+                        response(json!(FOLLOW_ID)),
+                        follow_event(json!({
+                            "event": "initialized",
+                            "finalizedBlockHashes": [BEST_HASH],
+                            "finalizedBlockRuntime": null
+                        })),
+                        follow_event(json!({
+                            "event": "bestBlockChanged",
+                            "bestBlockHash": BEST_HASH
+                        })),
+                    ]
+                }
+                "chainHead_v1_storage" => {
+                    *next_operation += 1;
+                    let operation_id = format!("storage-{}", *next_operation);
+                    let key = request["params"][2][0]["key"].as_str().unwrap();
+                    let key_bytes = hex::decode(key.trim_start_matches("0x")).unwrap();
+                    let mut frames = vec![response(
+                        json!({"result": "started", "operationId": operation_id}),
+                    )];
+                    if key_bytes == dispatcher_address_key() {
+                        frames.push(follow_event(json!({
+                            "event": "operationStorageItems",
+                            "operationId": operation_id,
+                            "items": [{"key": key, "value": format!("0x{}", hex::encode(DISPATCHER))}]
+                        })));
+                    }
+                    frames.push(follow_event(json!({
+                        "event": "operationStorageDone",
+                        "operationId": operation_id
+                    })));
+                    frames
+                }
+                "chainHead_v1_call" => {
+                    *next_operation += 1;
+                    let operation_id = format!("call-{}", *next_operation);
+                    assert_eq!(request["params"][2].as_str(), Some("ReviveApi_call"));
+                    let args = hex::decode(
+                        request["params"][3]
+                            .as_str()
+                            .unwrap()
+                            .trim_start_matches("0x"),
+                    )
+                    .unwrap();
+                    // origin[32] ‖ dest[20] ‖ value u128 ‖ None ‖ None ‖ Vec(input).
+                    let dest: [u8; 20] = args[32..52].try_into().unwrap();
+                    let input = Vec::<u8>::decode(&mut &args[70..]).unwrap();
+                    vec![
+                        response(json!({"result": "started", "operationId": operation_id})),
+                        follow_event(json!({
+                            "event": "operationCallDone",
+                            "operationId": operation_id,
+                            "output": format!("0x{}", hex::encode(view_output(&dest, &input)))
+                        })),
+                    ]
+                }
+                "chainHead_v1_unpin" | "chainHead_v1_unfollow" => vec![response(JsonValue::Null)],
+                other => panic!("unscripted method {other}"),
+            }
+        }
+    }
+
+    struct ScriptedConnection {
+        provider: ScriptedAssetHub,
+        receiver: Mutex<Option<mpsc::UnboundedReceiver<String>>>,
+    }
+
+    impl JsonRpcConnection for ScriptedConnection {
+        fn send(&self, request: String) {
+            self.provider.sent.lock().unwrap().push(request.clone());
+            let frames = self.provider.frames(&request);
+            if let Some(sender) = self.provider.sender.lock().unwrap().as_ref() {
+                for frame in frames {
+                    sender.unbounded_send(frame).unwrap();
+                }
+            }
+        }
+
+        fn responses(&self) -> BoxStream<'static, String> {
+            self.receiver
+                .lock()
+                .unwrap()
+                .take()
+                .expect("responses called once")
+                .boxed()
+        }
+
+        fn close(&self) {
+            self.provider.sender.lock().unwrap().take();
+        }
+    }
+
+    #[async_trait]
+    impl RuntimeChainProvider for ScriptedAssetHub {
+        async fn connect(
+            &self,
+            _genesis_hash: Vec<u8>,
+        ) -> Result<Arc<dyn JsonRpcConnection>, RuntimeFailure> {
+            Ok(Arc::new(ScriptedConnection {
+                receiver: Mutex::new(self.receiver.lock().unwrap().take()),
+                provider: self.share(),
+            }))
+        }
+    }
+
+    #[test]
+    fn in_core_lookup_resolves_usernames_over_one_runtime_follow() {
+        let provider = Arc::new(ScriptedAssetHub::new());
+        let chain = ChainRuntime::new(provider.clone(), thread_per_subscription_spawner());
+        let session = SessionInfo {
+            public_key: [0x11; 32],
+            sso: None,
+            root_entropy_source: None,
+            identity_account_id: Some(ACCOUNT),
+            lite_username: None,
+            full_username: None,
+        };
+
+        let resolved = futures::executor::block_on(resolve_session_identity_with_chain(
+            &chain, [0xcc; 32], session,
+        ));
+
+        // The pending claim yields the lite name; the settled store yields the
+        // full name with the network TLD stripped and the subname dropped.
+        assert_eq!(resolved.lite_username.as_deref(), Some("alice.01"));
+        assert_eq!(resolved.full_username.as_deref(), Some("myproject"));
+        // `chainHead_v1_call` is only served on follows opened with runtime.
+        assert_eq!(
+            *provider.follow_with_runtime.lock().unwrap(),
+            Some(true),
+            "the identity follow must be opened withRuntime=true or every view fails"
+        );
+        // Every view was addressed to the mapped H160 of the identity account.
+        let calls = provider
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.contains("chainHead_v1_call"))
+            .count();
+        assert!(
+            calls >= 7,
+            "expected the full discovery and label chain, got {calls} views"
+        );
+        let _ = account_to_h160(&ACCOUNT);
     }
 }

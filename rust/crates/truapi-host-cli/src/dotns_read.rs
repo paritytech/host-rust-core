@@ -18,8 +18,9 @@ use truapi_server::host_logic::dotns_gateway::{
 /// Env var overriding the `DotnsPopController` H160 (hex), skipping on-chain
 /// discovery.
 ///
-/// Needed on networks whose deployed dispatcher exposes no target getter. On
-/// paseo-next-v2 (post-reset) that address is
+/// Discovery reads `DotnsGateway.DispatcherAddress` and asks the dispatcher
+/// for its `TARGET()`; the override is for networks where that fails. On
+/// paseo-next-v2 (post-reset) the controller is
 /// `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b`; the authoritative value is the
 /// paseo-assethub entry in `DEPLOYMENTS.md` of paritytech/dotns, which changes
 /// on every chain reset.
@@ -69,11 +70,7 @@ impl AssetHubReader {
     }
 
     /// `DotnsPopController` address. The env override wins, otherwise on-chain
-    /// discovery.
-    ///
-    /// The currently deployed paseo dispatcher exposes no target getter at all.
-    /// Its fallback reverts every unknown selector. On-chain discovery cannot
-    /// reach the controller there, hence the override.
+    /// discovery through the dispatcher's `TARGET()` getter.
     async fn pop_controller(&mut self) -> Result<[u8; 20]> {
         if let Ok(value) = std::env::var(DOTNS_POP_CONTROLLER_ENV) {
             let trimmed = value.trim();

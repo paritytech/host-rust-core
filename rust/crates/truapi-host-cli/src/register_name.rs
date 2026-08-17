@@ -14,8 +14,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use tracing::debug;
 use truapi_server::host_logic::dotns_gateway::{
-    DOTNS_GATEWAY_CONTEXT, Link, build_register_proof_message, encode_register_full_name_extra,
-    encode_register_name_call,
+    DOTNS_GATEWAY_CONTEXT, Link, MAX_BASE_LABEL_LEN, build_register_proof_message,
+    encode_register_full_name_extra, encode_register_name_call, is_dotted_lite_username,
+    is_full_person_label,
 };
 use truapi_server::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_full_person_ring_vrf_entropy, derive_identity_keypair,
@@ -46,6 +47,21 @@ pub struct RegisterNameConfig {
 /// Registers (or claims) `label` as a full-person username. Waits until the
 /// gateway records the account's alias on Asset Hub.
 pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
+    // The pallet and the contract reject malformed labels only at submission
+    // (as an invalid transaction or a revert), so check the cheap rules here.
+    if !is_full_person_label(&config.label) {
+        bail!(
+            "label {:?} is not a full-person base label: lowercase ASCII letters, digits and \
+             hyphens, not starting or ending with a hyphen, not ending with a digit, at most \
+             {MAX_BASE_LABEL_LEN} bytes",
+            config.label
+        );
+    }
+    if let Some(lite) = &config.link_lite
+        && !is_dotted_lite_username(lite)
+    {
+        bail!("--link-lite {lite:?} is not a dotted lite username (`name.NN`)");
+    }
     let who = derive_identity_keypair(&config.entropy)
         .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
     let who_public = who.public.to_bytes();
@@ -76,8 +92,28 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
         &at,
     )
     .await?;
+    // `Members.Members` reports a ring index as soon as the key is onboarded;
+    // the members read above is sliced to the keys already built into the
+    // ring's root, so a fresh member can be missing from it for a few blocks.
+    if !members.contains(&member) {
+        bail!(
+            "the account's full-person key is onboarded into People ring {ring_index} but \
+             not yet built into its root; retry once the next root revision is built"
+        );
+    }
+    // The revision of the root the proof is built against, at the same pinned
+    // block as the members read, so the two cannot disagree.
+    let revision = ring::read_collection_ring_revision(
+        &people_rpc,
+        &people_metadata,
+        ring::PEOPLE_IDENTIFIER,
+        ring_index,
+        &at,
+    )
+    .await?;
     debug!(
         ring_index,
+        revision,
         members = members.len(),
         "full-person ring resolved"
     );
@@ -124,7 +160,25 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
         &proof_message,
     )?;
 
-    let extra = encode_register_full_name_extra(info_variant, &ring_proof, ring_index, &signature);
+    // Asset Hub only verifies proofs against root revisions it has imported
+    // from People; wait for this one before submitting.
+    alloc::pgas::await_collection_ring_revision(
+        &ah_rpc,
+        &ah_metadata,
+        ring::PEOPLE_IDENTIFIER,
+        ring_index,
+        revision,
+    )
+    .await
+    .context("wait for Asset Hub to import the People ring root revision")?;
+
+    let extra = encode_register_full_name_extra(
+        info_variant,
+        &ring_proof,
+        ring_index,
+        revision,
+        &signature,
+    );
     let extrinsic = extrinsic::build_unsigned_extrinsic_with_extra(
         &ah_metadata,
         &chain_state,

@@ -94,11 +94,11 @@ pub struct PgasClaimOutcome {
 ///
 /// Both map keys are `Blake2_128Concat` here, unlike the People chain's
 /// `Members` maps which take the collection identifier verbatim.
-fn ring_roots_key(ring_index: u32) -> Vec<u8> {
+fn collection_ring_roots_key(identifier: &[u8; 32], ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"MembersSubscriber").as_slice(),
         twox_128(b"RingRoots").as_slice(),
-        &blake2_128_concat(LITE_PEOPLE_IDENTIFIER),
+        &blake2_128_concat(identifier),
         &blake2_128_concat(&ring_index.to_le_bytes()),
     ]
     .concat()
@@ -275,6 +275,18 @@ pub async fn await_ring_revision(
     ring_index: u32,
     revision: u32,
 ) -> Result<(), StatementAllowanceError> {
+    await_collection_ring_revision(rpc, metadata, LITE_PEOPLE_IDENTIFIER, ring_index, revision)
+        .await
+}
+
+/// Same, for collection `identifier`'s `ring_index`.
+pub async fn await_collection_ring_revision(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    identifier: &[u8; 32],
+    ring_index: u32,
+    revision: u32,
+) -> Result<(), StatementAllowanceError> {
     let value_type = metadata
         .storage_value_type("MembersSubscriber", "RingRoots")
         .ok_or(MetadataError::MissingStorageType {
@@ -283,7 +295,10 @@ pub async fn await_ring_revision(
         })?;
     let started = Instant::now();
     loop {
-        if let Some(bytes) = rpc.get_storage(&ring_roots_key(ring_index)).await? {
+        if let Some(bytes) = rpc
+            .get_storage(&collection_ring_roots_key(identifier, ring_index))
+            .await?
+        {
             let mut input = bytes.as_slice();
             let records = Vec::<RingCommitmentRecord>::decode_as_type(
                 &mut input,
@@ -342,7 +357,7 @@ mod tests {
     /// Both map keys are hashed here, unlike the People chain's `Members` maps.
     #[test]
     fn subscriber_ring_key_hashes_both_map_keys() {
-        let key = ring_roots_key(136);
+        let key = collection_ring_roots_key(LITE_PEOPLE_IDENTIFIER, 136);
 
         assert_eq!(key.len(), 16 + 16 + 16 + 32 + 16 + 4);
         assert_eq!(

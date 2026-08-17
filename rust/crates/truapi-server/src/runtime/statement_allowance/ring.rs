@@ -127,12 +127,12 @@ fn collections_key() -> Vec<u8> {
     .concat()
 }
 
-/// `Members.Root[(id, ring_index)]` storage key.
-fn ring_root_key(ring_index: u32) -> Vec<u8> {
+/// `Members.Root[(identifier, ring_index)]` storage key.
+fn collection_ring_root_key(identifier: &[u8; 32], ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"Members").as_slice(),
         twox_128(b"Root").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
+        identifier.as_slice(),
         &blake2_128_concat(&ring_index.to_le_bytes()),
     ]
     .concat()
@@ -394,7 +394,22 @@ pub async fn read_ring_revision(
     ring_index: u32,
     at: &str,
 ) -> Result<u32, StatementAllowanceError> {
-    match rpc.get_storage_at(&ring_root_key(ring_index), at).await? {
+    read_collection_ring_revision(rpc, metadata, LITE_PEOPLE_IDENTIFIER, ring_index, at).await
+}
+
+/// Same, for collection `identifier`'s `ring_index`: the revision of its
+/// current root, `0` when no root has been built yet.
+pub async fn read_collection_ring_revision(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    identifier: &[u8; 32],
+    ring_index: u32,
+    at: &str,
+) -> Result<u32, StatementAllowanceError> {
+    match rpc
+        .get_storage_at(&collection_ring_root_key(identifier, ring_index), at)
+        .await?
+    {
         Some(bytes) => {
             let value_type = metadata.storage_value_type("Members", "Root").ok_or(
                 MetadataError::MissingStorageType {

@@ -93,7 +93,7 @@ pub enum MetadataError {
     /// `AsDotnsGatewayInfo::RegisterFullName` did not have the expected field shape.
     #[error(
         "AsDotnsGatewayInfo::RegisterFullName fields are [{actual}], expected \
-         [proof, ring_index, signature]; the runtime shape drifted"
+         [proof, ring_index, revision, signature]; the runtime shape drifted"
     )]
     RegisterFullNameShapeDrift {
         /// Actual comma-separated field names.
@@ -565,9 +565,10 @@ impl Metadata {
 
     /// Resolve `AsDotnsGatewayInfo::RegisterFullName` to its variant index.
     ///
-    /// Asserts the exact `{proof, ring_index, signature}` field shape. A runtime
-    /// that grows the variant, say with a `revision` field, then fails loudly
-    /// instead of mis-encoding.
+    /// Asserts the exact `{proof, ring_index, revision, signature}` field shape
+    /// (the People-collection root revision the proof was built against). A
+    /// runtime that changes the variant then fails loudly instead of
+    /// mis-encoding.
     pub fn dotns_register_full_name_variant(&self) -> Result<u8, StatementAllowanceError> {
         let variant = self.extension_info_variant(AS_DOTNS_GATEWAY, "RegisterFullName")?;
         let fields: Vec<&str> = variant
@@ -575,7 +576,7 @@ impl Metadata {
             .iter()
             .map(|field| field.name.as_deref().unwrap_or("<unnamed>"))
             .collect();
-        if fields != ["proof", "ring_index", "signature"] {
+        if fields != ["proof", "ring_index", "revision", "signature"] {
             return Err(MetadataError::RegisterFullNameShapeDrift {
                 actual: fields.join(", "),
             }
@@ -1156,8 +1157,9 @@ mod tests {
         );
     }
 
-    /// Asset Hub fixture metadata captured from paseo-next-v2. That is the
-    /// runtime the dotNS gateway flows were validated against.
+    /// Asset Hub fixture metadata captured from paseo-next-v2 (V16, spec
+    /// 2000036, identical to previewnet). That is the runtime the dotNS gateway
+    /// flows were validated against.
     const AH_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/paseo-next-v2-asset-hub-metadata.scale");
 
@@ -1169,7 +1171,7 @@ mod tests {
             ..fixture_state()
         };
 
-        // RegisterFullName resolves with the asserted 3-field shape.
+        // RegisterFullName resolves with the asserted 4-field shape.
         assert_eq!(metadata.dotns_register_full_name_variant().unwrap(), 0);
         assert!(
             metadata
