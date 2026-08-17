@@ -720,6 +720,26 @@ impl CoreStorageKey {
         }
     }
 
+    /// Persisted authorization key for a single domain pattern inside a
+    /// product's remote-access grant.
+    ///
+    /// A product may request several domains at once, but enforcement asks
+    /// about one host at a time, so each pattern gets its own slot: a
+    /// multi-domain grant is stored as one key per pattern and stays visible to
+    /// a later single-host lookup. The key is a one-element
+    /// [`RemotePermission::Remote`] set, so this shares the encoding — and the
+    /// case/dedup canonicalization — of the bundle form.
+    pub fn remote_domain_authorization(product_id: &str, domain: &str) -> Self {
+        Self::remote_permission_authorization(
+            product_id,
+            &RemotePermissionRequest {
+                permission: RemotePermission::Remote {
+                    domains: vec![domain.to_string()],
+                },
+            },
+        )
+    }
+
     /// Persisted authorization key for product-scoped identity disclosure.
     pub fn identity_disclosure_authorization(product_id: &str) -> Self {
         Self::PermissionAuthorization {
@@ -738,6 +758,37 @@ impl CoreStorageKey {
             },
         }
     }
+}
+
+/// Stored domain patterns that would authorize outbound access to `host`,
+/// ordered most specific first.
+///
+/// Implements the RFC 0002 matching rules: an exact host match, a single-level
+/// wildcard over the host's immediate parent, and the universal wildcard. Two
+/// consequences worth holding onto, because both are load-bearing:
+///
+/// - A wildcard spans exactly one label. `*.example.com` authorizes
+///   `api.example.com` but not `deep.api.example.com`, whose only wildcard
+///   candidate is `*.api.example.com`.
+/// - A bare parent domain is never a candidate. Granting `example.com` does not
+///   extend to `api.example.com`; that needs the explicit host or the wildcard.
+///
+/// Ordering is the precedence rule for the caller: the most specific stored
+/// decision wins, so an explicit grant for one host survives a denial of its
+/// parent wildcard, and vice versa.
+pub fn remote_domain_candidates(host: &str) -> Vec<String> {
+    let normalized = host.to_ascii_lowercase();
+    let mut candidates = vec![normalized.clone()];
+    // Only a multi-label parent earns a wildcard: `*.com` would hand over a
+    // whole TLD from a grant for one domain under it.
+    if let Some((_label, parent)) = normalized.split_once('.')
+        && parent.contains('.')
+    {
+        candidates.push(format!("*.{parent}"));
+    }
+    candidates.push("*".to_string());
+    candidates.dedup();
+    candidates
 }
 
 fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissionRequest {
@@ -925,6 +976,61 @@ mod tests {
         assert_ne!(identity, other_product_identity);
         assert_ne!(account_access, other_target);
         assert_ne!(account_access, camera);
+    }
+
+    #[test]
+    fn remote_domain_candidates_follow_rfc_0002_wildcard_rules() {
+        assert_eq!(
+            remote_domain_candidates("api.example.com"),
+            ["api.example.com", "*.example.com", "*"]
+        );
+        // A wildcard spans one label, so the two-level host's only wildcard is
+        // over its immediate parent. `*.example.com` must NOT appear here.
+        assert_eq!(
+            remote_domain_candidates("deep.api.example.com"),
+            ["deep.api.example.com", "*.api.example.com", "*"]
+        );
+        // No `*.com`: a grant for one domain cannot widen to its TLD.
+        assert_eq!(
+            remote_domain_candidates("example.com"),
+            ["example.com", "*"]
+        );
+        assert_eq!(remote_domain_candidates("localhost"), ["localhost", "*"]);
+        // A stored pattern resolves to itself, not to a duplicated entry.
+        assert_eq!(
+            remote_domain_candidates("*.example.com"),
+            ["*.example.com", "*"]
+        );
+        assert_eq!(remote_domain_candidates("*"), ["*"]);
+        assert_eq!(
+            remote_domain_candidates("API.Example.COM"),
+            ["api.example.com", "*.example.com", "*"]
+        );
+    }
+
+    #[test]
+    fn remote_domain_authorization_key_matches_the_one_element_bundle() {
+        // Enforcement keys a single host; a product granting that one domain
+        // must land in the same slot, or the grant is invisible to the gate.
+        assert_eq!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "Example.COM"),
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                &RemotePermissionRequest {
+                    permission: RemotePermission::Remote {
+                        domains: vec!["example.com".to_string()],
+                    },
+                }
+            )
+        );
+        assert_ne!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "example.com"),
+            CoreStorageKey::remote_domain_authorization("product.dot", "*.example.com")
+        );
+        assert_ne!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "example.com"),
+            CoreStorageKey::remote_domain_authorization("other.dot", "example.com")
+        );
     }
 
     #[test]

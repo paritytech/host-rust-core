@@ -189,6 +189,20 @@ fn normalize_external(input: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
+/// Host of an already-canonical [`NavigateDecision::External`] URL, in the
+/// [`normalize_host`] form the permission store keys on.
+///
+/// Returns `None` for a URL with no host component, which the permission gate
+/// treats as unauthorizable rather than guessing a domain for it.
+pub fn external_host(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some(normalize_host(host))
+}
+
 fn strip_leading_slash(path: &str) -> String {
     path.strip_prefix('/').unwrap_or(path).to_string()
 }
