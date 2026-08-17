@@ -345,6 +345,16 @@ async fn submit_registration(
         warn!(%status, "username already registered; confirming on-chain");
         return Ok(());
     }
+    if text.contains("dotNS gateway is not enabled") {
+        bail!(
+            "username registration failed ({status}): {text}\n\
+             This identity backend does not record usernames on the dotNS gateway, and the \
+             host reads usernames only from dotNS on Asset Hub, so no username can be \
+             resolved for accounts registered through it. Use a preset whose backend has \
+             the gateway enabled (`--network previewnet`), or point \
+             HOST_CLI_IDENTITY_BACKEND_BASE at one that does."
+        );
+    }
     bail!("username registration failed ({status}): {text}");
 }
 
