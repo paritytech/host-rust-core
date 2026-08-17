@@ -602,8 +602,7 @@ pub async fn resolve_labels<T: DotnsTransport + ?Sized>(
         return Ok(labels);
     }
 
-    let tld_output = transport.view(&registry, call_no_args("tld()")).await?;
-    let tld = decode_string(&tld_output).map_err(|err| format!("ProtocolRegistry.tld(): {err}"))?;
+    let tld = network_tld(transport, &registry).await?;
 
     for page in 0..LABEL_PAGE_MAX {
         let labels_output = transport
@@ -644,6 +643,31 @@ fn bare_store_label<'a>(label: &'a str, tld: &str) -> Option<&'a str> {
     (!bare.is_empty() && !bare.contains('.')).then_some(bare)
 }
 
+/// The TLD before it became network-configurable on `DotnsProtocolRegistry`
+/// (dotns `b4096968`); deployments from before that expose no `tld()` and use
+/// this one.
+const LEGACY_TLD: &str = ".dot";
+
+/// The network TLD with its leading dot (`.paseo`), read from
+/// `ProtocolRegistry.tld()`. A registry without that view (an older deployment)
+/// reverts, which yields [`LEGACY_TLD`].
+async fn network_tld<T: DotnsTransport + ?Sized>(
+    transport: &mut T,
+    registry: &[u8; 20],
+) -> Result<String, String> {
+    match transport.view(registry, call_no_args("tld()")).await {
+        Ok(output) => {
+            decode_string(&output).map_err(|err| format!("ProtocolRegistry.tld(): {err}"))
+        }
+        Err(_) => Ok(LEGACY_TLD.to_string()),
+    }
+}
+
+/// The node of the network TLD: `namehash(tld)` for a single-label TLD.
+fn tld_node(tld: &str) -> [u8; 32] {
+    namehash_under(&[0u8; 32], tld.trim_start_matches('.'))
+}
+
 /// ENS-style node of `label` directly under `parent`:
 /// `keccak256(parent ‖ keccak256(label))`.
 pub fn namehash_under(parent: &[u8; 32], label: &str) -> [u8; 32] {
@@ -651,8 +675,9 @@ pub fn namehash_under(parent: &[u8; 32], label: &str) -> [u8; 32] {
 }
 
 /// Whether the registrar would still mint `label` on this network: the name's
-/// node under the network TLD is unminted, or held by the name escrow
-/// (`DotnsRegistrar.available`).
+/// node under the network TLD (`namehash(label.tld)`, derived here rather than
+/// read, so registries without `tldNode()` work too) is unminted, or held by
+/// the name escrow (`DotnsRegistrar.available`).
 ///
 /// A lite-name reservation carrying a `reserved_base_label` that is already
 /// registered can never be claimed, yet it holds the reservation queue for
@@ -669,11 +694,7 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
     let registry = decode_address(&registry_output)
         .map_err(|err| format!("DotnsPopController.protocolRegistry(): {err}"))?;
 
-    let tld_node_output = transport.view(&registry, call_no_args("tldNode()")).await?;
-    let tld_node: [u8; 32] = word(&tld_node_output, 0)
-        .map_err(|err| format!("ProtocolRegistry.tldNode(): {err}"))?
-        .try_into()
-        .expect("a 32-byte ABI word; qed");
+    let tld = network_tld(transport, &registry).await?;
 
     let registrar_output = transport
         .view(
@@ -684,10 +705,11 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
     let registrar = decode_address(&registrar_output)
         .map_err(|err| format!("ProtocolRegistry.get(registrar): {err}"))?;
 
-    let node = namehash_under(&tld_node, label);
+    let node = namehash_under(&tld_node(&tld), label);
     let output = transport
         .view(&registrar, call_bytes32("available(uint256)", &node))
-        .await?;
+        .await
+        .map_err(|err| format!("DotnsRegistrar.available({label}): {err}"))?;
     decode_bool(&output).map_err(|err| format!("DotnsRegistrar.available: {err}"))
 }
 
@@ -850,7 +872,6 @@ mod tests {
         assert_eq!(hex::encode(selector("TARGET()")), "cc1f2afa");
         assert_eq!(hex::encode(selector("pendingClaims(address)")), "ca78533d");
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
-        assert_eq!(hex::encode(selector("tldNode()")), "114902c5");
         assert_eq!(hex::encode(selector("available(uint256)")), "96e494e8");
     }
 
@@ -866,6 +887,8 @@ mod tests {
             hex::encode(namehash_under(&tld_node, "alicebc")),
             "d3b106171373cd9fea783acd85f69def1bb2085f81cf5f2a65088b0ce4edd82e"
         );
+        assert_eq!(super::tld_node(".paseo"), tld_node);
+        assert_eq!(super::tld_node("paseo"), tld_node);
     }
 
     #[test]

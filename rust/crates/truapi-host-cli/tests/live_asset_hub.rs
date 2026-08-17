@@ -13,13 +13,19 @@
 use truapi_server::statement_allowance::{self as alloc, extension::AS_PGAS, pgas};
 
 const ASSET_HUB_WS: &str = "wss://paseo-asset-hub-next-rpc.polkadot.io";
+
+/// `LIVE_ASSET_HUB_WS` points the dotNS checks at another Asset Hub, for
+/// instance previewnet's `wss://previewnet.substrate.dev/asset-hub`.
+fn asset_hub_ws() -> String {
+    std::env::var("LIVE_ASSET_HUB_WS").unwrap_or_else(|_| ASSET_HUB_WS.to_string())
+}
 const PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";
 
 /// The ring our onboarded test identity sits in.
 const RING_INDEX: u32 = 2;
 
 async fn asset_hub() -> (alloc::rpc::RpcClient, alloc::extension::Metadata) {
-    let rpc = alloc::rpc::RpcClient::connect(ASSET_HUB_WS)
+    let rpc = alloc::rpc::RpcClient::connect(&asset_hub_ws())
         .await
         .expect("connect to Asset Hub");
     let metadata = alloc::fetch_metadata(&rpc)
@@ -162,23 +168,31 @@ async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
 use truapi_server::host_logic::dotns_gateway::{
     DotnsTransport, VIEW_CALL_ORIGIN, call_bytes32, classify_labels, decode_address,
     decode_revive_call_output, discover_pop_controller, encode_revive_call, label_available,
-    resolve_labels, selector,
+    namehash_under, resolve_labels, selector,
 };
 use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
 
-/// The `DotnsRegistrar` (ERC721) on paseo-next-v2 Asset Hub, per dotns
-/// `DEPLOYMENTS.md`. Only used to find an account that holds a settled name.
-const PASEO_DOTNS_REGISTRAR: [u8; 20] = [
+/// The `DotnsRegistrar` (ERC721), the same CREATE3 address on every network
+/// per dotns `DEPLOYMENTS.md`. Only used to find an account that holds a
+/// settled name.
+const DOTNS_REGISTRAR: [u8; 20] = [
     0x4f, 0x06, 0xe8, 0x18, 0xba, 0x3d, 0x98, 0x77, 0x04, 0xfd, 0x91, 0xcf, 0x3d, 0x86, 0x8e, 0x4b,
     0x01, 0x91, 0x06, 0xab,
 ];
 
-/// `namehash("e2epoolns01.paseo")` (`cast namehash`), a name minted through
-/// the public registrar by the e2e pool. Its owner has a settled `LabelStore`.
-const E2E_POOL_NODE: [u8; 32] = [
-    0x65, 0x98, 0x3e, 0xac, 0xfc, 0x5a, 0x91, 0x6a, 0x9f, 0xa7, 0x0c, 0xbe, 0x02, 0x99, 0x07, 0x1e,
-    0x45, 0x66, 0x24, 0x54, 0x9f, 0x08, 0xa4, 0xd1, 0xc5, 0x13, 0x28, 0xc8, 0x69, 0x7b, 0x03, 0x37,
-];
+/// A label minted through the public registrar on the checked network, whose
+/// owner therefore has a settled `LabelStore`. `LIVE_MINTED_LABEL` overrides
+/// the paseo-next-v2 default (`e2epoolns01`); `LIVE_TLD` names the network TLD
+/// (`paseo` by default, `dot` on previewnet).
+fn minted_label() -> String {
+    std::env::var("LIVE_MINTED_LABEL").unwrap_or_else(|_| "e2epoolns01".to_string())
+}
+
+/// `namehash(<minted label>.<tld>)`, the registrar's token id.
+fn minted_node() -> [u8; 32] {
+    let tld = std::env::var("LIVE_TLD").unwrap_or_else(|_| "paseo".to_string());
+    namehash_under(&namehash_under(&[0u8; 32], &tld), &minted_label())
+}
 
 /// `DotnsTransport` over plain RPC, the same two primitives the CLI uses.
 struct PlainRpc(alloc::rpc::RpcClient);
@@ -253,8 +267,8 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
     // to an AccountId32 by `0xEE` padding, which `account_to_h160` truncates.
     let owner_output = transport
         .view(
-            &PASEO_DOTNS_REGISTRAR,
-            call_bytes32("ownerOf(uint256)", &E2E_POOL_NODE),
+            &DOTNS_REGISTRAR,
+            call_bytes32("ownerOf(uint256)", &minted_node()),
         )
         .await
         .expect("registrar ownerOf");
@@ -268,7 +282,7 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
         .expect("resolve labels");
     println!("live labels of 0x{}: {labels:?}", hex::encode(owner));
     assert!(
-        labels.iter().any(|label| label == "e2epoolns01"),
+        labels.iter().any(|label| *label == minted_label()),
         "the settled store label loses its network TLD: {labels:?}"
     );
     assert!(
@@ -297,7 +311,7 @@ async fn live_asset_hub_reports_registered_names_as_unavailable() {
         .expect("gateway deployed");
 
     assert!(
-        !label_available(&mut transport, &controller, "e2epoolns01")
+        !label_available(&mut transport, &controller, &minted_label())
             .await
             .expect("available view"),
         "a minted name is not available"
