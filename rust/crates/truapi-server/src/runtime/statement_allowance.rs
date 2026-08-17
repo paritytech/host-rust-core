@@ -2,7 +2,7 @@
 //!
 //! Mirrors how an iOS/web client obtains statement-store allowance from the real
 //! People chain: build the `Resources.set_statement_store_account` call, prove
-//! LitePeople membership with the caller's registry-selected ring-VRF key,
+//! personhood ring membership with the caller's registry-selected ring-VRF key,
 //! and submit the resulting unsigned General (v5) extrinsic. Native only
 //! (needs the `verifiable` prover and live chain reads).
 
@@ -351,6 +351,28 @@ fn json_u32(value: &Value, field: &'static str) -> Result<u32, StatementAllowanc
         .ok_or_else(|| ChainStateError::MissingU32Field { field }.into())
 }
 
+/// A slot a caller's own scan already chose, and what claiming it costs.
+///
+/// The distinction is not cosmetic: claiming a free slot revokes nothing, while a
+/// takeover revokes somebody's allowance. Registration limits itself to one
+/// revocation per call, so it has to know which kind it was handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preselected {
+    /// A slot observed free; claiming it revokes nothing.
+    Free(u32),
+    /// A live slot the caller judged replaceable.
+    Takeover(u32),
+}
+
+impl Preselected {
+    /// The chosen slot sequence.
+    pub fn seq(self) -> u32 {
+        match self {
+            Self::Free(seq) | Self::Takeover(seq) => seq,
+        }
+    }
+}
+
 /// Result of a statement-store allowance registration attempt.
 #[derive(Debug)]
 pub enum RegistrationOutcome {
@@ -385,10 +407,10 @@ pub struct RegistrationParams<'a> {
     pub ring: &'a RingParams,
     /// Whether an existing registration for this period may be reused.
     pub reuse_existing: bool,
-    /// A free slot the caller's own scan already selected, used for the first
-    /// attempt so the scan is not repeated. The duplicate-submit retry rescans,
-    /// so this only ever shortcuts the first submission.
-    pub preselected: Option<u32>,
+    /// A slot the caller's own scan already selected, used for the first attempt
+    /// so the scan is not repeated. The duplicate-submit retry rescans, so this
+    /// only ever shortcuts the first submission.
+    pub preselected: Option<Preselected>,
     /// Slots the caller has already claimed in this batch and must not lose.
     /// A multi-target pass would otherwise take a slot back off a target it
     /// registered moments earlier and never settle.
@@ -507,31 +529,48 @@ pub async fn find_including_rings(
     lookback: u32,
 ) -> Result<Vec<CollectionMembership>, StatementAllowanceError> {
     let mut memberships = Vec::new();
+    let mut first_error = None;
     for candidate in candidates {
-        if !candidate.collection.is_supported(metadata) {
+        let collection = candidate.collection;
+        if !collection.is_supported(metadata) {
+            // Logged rather than silent: if a runtime renames the constant, a
+            // full person quietly loses their wider budget and the only symptom
+            // is exhaustion at the light collection's share.
+            debug!(%collection, "chain declares no slot budget for this collection");
             continue;
         }
-        let found = find_including_ring(
-            rpc,
-            metadata,
-            candidate.collection,
-            candidate.entropy,
-            lookback,
-        )
-        .await;
-        match found {
-            Ok(Some(ring)) => memberships.push(CollectionMembership {
-                entropy: candidate.entropy,
-                ring,
-            }),
-            Ok(None) => continue,
-            Err(StatementAllowanceError::Ring(ring::RingError::CollectionMissing { .. })) => {
-                continue;
+        match find_including_ring(rpc, metadata, collection, candidate.entropy, lookback).await {
+            Ok(Some(ring)) => {
+                // A ring whose exponent has no proof domain cannot be proved
+                // against, so it must not enter the set: selecting it would fail
+                // after the collection was already chosen, with no fallback left.
+                if let Err(err) = proof::domain_for_ring_exponent(ring.exponent) {
+                    warn!(%collection, %err, "unusable ring exponent; skipping collection");
+                    continue;
+                }
+                memberships.push(CollectionMembership {
+                    entropy: candidate.entropy,
+                    ring,
+                });
             }
-            Err(err) => return Err(err),
+            Ok(None) => debug!(%collection, "no ring includes our member key"),
+            // One collection's failure must not take down the others. A device
+            // that can only prove light personhood should still get its
+            // allowance when the full-personhood storage is unreadable.
+            Err(err) => {
+                warn!(%collection, %err, "could not resolve this collection");
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
         }
     }
-    Ok(memberships)
+    // Every candidate erroring is an outage, not an answer: reporting "not a
+    // member" there would let a caller conclude the person has no personhood.
+    match (memberships.is_empty(), first_error) {
+        (true, Some(err)) => Err(err),
+        _ => Ok(memberships),
+    }
 }
 
 /// Register statement-store allowance for `target`, proving membership in the
@@ -558,10 +597,13 @@ pub async fn register_statement_account(
     // was written for free slots, where trying another costs nothing; on a full
     // period each attempt is a revocation, and the earlier submission may still
     // land, so a second takeover can leave two allowances revoked for one call.
-    let mut took_over_a_slot = false;
+    //
+    // A preselected takeover counts: the caller already spent this call's one
+    // revocation, so a retry must not spend another.
+    let mut took_over_a_slot = matches!(preselected, Some(Preselected::Takeover(_)));
     loop {
         let seq = match preselected.take() {
-            Some(seq) => seq,
+            Some(preselected) => preselected.seq(),
             None => match slot::scan_slot_excluding(
                 rpc,
                 metadata,
@@ -813,8 +855,9 @@ pub async fn register_statement_account_pooled(
         }
     }
 
-    let (index, seq) = match free {
-        Some(free) => free,
+    let pooled_budget: u32 = full.iter().map(|(_, max, _)| *max).sum();
+    let (index, choice) = match free {
+        Some((index, seq)) => (index, Preselected::Free(seq)),
         None => {
             let cooldown = slot::replacement_cooldown(metadata)?;
             let chain_now = slot::read_chain_now_seconds(rpc).await?;
@@ -844,13 +887,13 @@ pub async fn register_statement_account_pooled(
                 }
             }
             match oldest {
-                Some((index, seq, _)) => (index, seq),
+                Some((index, seq, _)) => (index, Preselected::Takeover(seq)),
                 None => {
                     return Err(SlotError::NoFreeStatementStoreSlot {
                         period: params.period,
                         // The pooled budget, so the error names what the device
                         // actually has rather than one collection's share.
-                        max: full.iter().map(|(_, max, _)| *max).sum(),
+                        max: pooled_budget,
                     }
                     .into());
                 }
@@ -870,7 +913,7 @@ pub async fn register_statement_account_pooled(
             period: params.period,
             ring: &membership.ring,
             reuse_existing: params.reuse_existing,
-            preselected: Some(seq),
+            preselected: Some(choice),
             // A duplicate-submit retry rescans within this collection only. It
             // is a rare race on a slot we just saw free, and staying put keeps
             // the retry from quietly moving collections mid-call.
@@ -878,6 +921,19 @@ pub async fn register_statement_account_pooled(
         },
     )
     .await
+    .map_err(|err| match err {
+        // The retry rescans one collection, so its own exhaustion error names
+        // that collection's share. Restate it as the pooled budget so the same
+        // error never means two different things to a caller.
+        StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, .. }) => {
+            SlotError::NoFreeStatementStoreSlot {
+                period,
+                max: pooled_budget,
+            }
+            .into()
+        }
+        other => other,
+    })
 }
 
 /// Claim long-term Bulletin storage authorization for `target`, proving
@@ -1484,7 +1540,7 @@ mod tests {
     /// verification read at that block returning `verified_entry`.
     fn scripted_registration_with(
         verified_entry: &str,
-        preselected: Option<u32>,
+        preselected: Option<Preselected>,
         free_slots: usize,
     ) -> (
         Result<RegistrationOutcome, StatementAllowanceError>,
@@ -1787,6 +1843,116 @@ mod tests {
         );
     }
 
+    /// A takeover chosen by the pooled caller still spends this call's single
+    /// revocation, so a refused submission has to be named rather than surfacing
+    /// as a raw RPC string. The pooled path is the shipping path, so testing this
+    /// only through a direct call with no preselection misses it entirely.
+    #[test]
+    fn a_refused_takeover_is_named_on_the_pooled_path() {
+        let target = [0x22; 32];
+        // Everything full and old enough to replace, so the pool evicts.
+        let mut responses = tables(
+            (0..20)
+                .map(|seq| Some(occupied([0x99; 32], 1_000 + seq)))
+                .collect(),
+            (0..10)
+                .map(|seq| Some(occupied([0x98; 32], 5_000 + seq)))
+                .collect(),
+        );
+        responses.push(chain_clock(10_000_000));
+        responses.push("null".to_string());
+
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let memberships = pooled_memberships();
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        scripted.script_subscription_errors("User error: Invalid Transaction (1010)", 1);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let err = futures::executor::block_on(register_statement_account_pooled(
+            &rpc,
+            &metadata,
+            &chain_state,
+            &memberships,
+            PooledRegistrationParams {
+                target: &target,
+                period: 7,
+                reuse_existing: true,
+                protected: &[],
+            },
+        ))
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not replaceable yet"),
+            "a refused pooled takeover should be named, got: {err}"
+        );
+    }
+
+    /// One registration revokes at most one allowance. A duplicate-submit retry
+    /// after a pooled takeover must not evict a second slot, because the first
+    /// submission may still land.
+    #[test]
+    fn a_pooled_takeover_does_not_evict_a_second_slot_on_retry() {
+        let target = [0x22; 32];
+        let mut responses = tables(
+            (0..20)
+                .map(|seq| Some(occupied([0x99; 32], 1_000 + seq)))
+                .collect(),
+            (0..10)
+                .map(|seq| Some(occupied([0x98; 32], 5_000 + seq)))
+                .collect(),
+        );
+        responses.push(chain_clock(10_000_000));
+        responses.push("null".to_string());
+        // The retry rescans this collection and finds it still full.
+        responses.extend((0..20).map(|seq| occupied([0x99; 32], 1_000 + seq)));
+
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let memberships = pooled_memberships();
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        // A duplicate-submit rejection drives the retry.
+        scripted.script_subscription_errors("Priority is too low", 1);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let err = futures::executor::block_on(register_statement_account_pooled(
+            &rpc,
+            &metadata,
+            &chain_state,
+            &memberships,
+            PooledRegistrationParams {
+                target: &target,
+                period: 7,
+                reuse_existing: true,
+                protected: &[],
+            },
+        ))
+        .unwrap_err();
+
+        // Exhaustion, not a second eviction, and it names the pooled budget.
+        assert!(
+            matches!(
+                err,
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot {
+                    period: 7,
+                    max: 30
+                })
+            ),
+            "a retry after a takeover should give up rather than evict again: {err:?}"
+        );
+    }
+
     /// Storage reads the scripted transport served.
     fn storage_reads(scripted: &ScriptedRpc) -> usize {
         scripted
@@ -2034,7 +2200,8 @@ mod tests {
     fn a_preselected_slot_is_not_rescanned() {
         // No slots are scripted as free: if the caller's selection were ignored
         // and the slots rescanned, the scripted transport would run dry.
-        let (outcome, scripted) = scripted_registration_with(&slot_entry([0x22; 32]), Some(0), 0);
+        let (outcome, scripted) =
+            scripted_registration_with(&slot_entry([0x22; 32]), Some(Preselected::Free(0)), 0);
 
         assert!(matches!(
             outcome.unwrap(),

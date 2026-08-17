@@ -187,10 +187,10 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("system clock before UNIX epoch")]
     SystemClockBeforeUnixEpoch,
-    /// The signing account is not in the required LitePeople ring.
+    /// The signing account is not in any personhood ring.
     #[cfg(not(target_arch = "wasm32"))]
-    #[error("signing account is not a LitePeople ring member; cannot grant {resource} allowance")]
-    MissingLitePeopleMembership {
+    #[error("signing account is not a personhood ring member; cannot grant {resource} allowance")]
+    MissingPersonhoodMembership {
         /// Resource name.
         resource: &'static str,
     },
@@ -970,7 +970,7 @@ pub(super) async fn allocate_statement_store_allowance(
     // re-included still proves against the ring that holds it.
     let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
     if memberships.is_empty() {
-        return Err(AllowanceAllocationError::MissingLitePeopleMembership {
+        return Err(AllowanceAllocationError::MissingPersonhoodMembership {
             resource: "statement-store",
         });
     }
@@ -1074,7 +1074,7 @@ pub(super) async fn allocate_bulletin_allowance(
         .await?
         .into_iter()
         .next()
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+        .ok_or(AllowanceAllocationError::MissingPersonhoodMembership {
             resource: "Bulletin",
         })?;
     let period_duration =
@@ -1214,7 +1214,7 @@ pub(super) async fn allocate_smart_contract_allowance(
         .await?
         .into_iter()
         .next()
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership { resource: "PGAS" })?;
+        .ok_or(AllowanceAllocationError::MissingPersonhoodMembership { resource: "PGAS" })?;
 
     let outcome = pgas::claim_pgas(pgas::PgasClaim {
         asset_hub_rpc: asset_hub_client.rpc(),
