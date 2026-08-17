@@ -7,7 +7,9 @@
 //! - `signing-host`: a wallet-local host that answers a pairing deeplink and
 //!   auto-signs, replacing the external signing-bot in e2e.
 //!
-//! Plus `alloc-check`, a diagnostic for on-chain statement-store allowance.
+//! Plus three diagnostics: `identity-check` for People-chain identity records,
+//! `alloc-check` for statement-store allowance, and `pgas-check` for an Asset Hub
+//! PGAS allowance claim.
 
 mod accounts;
 mod attestation;
@@ -341,8 +343,9 @@ async fn main() -> Result<()> {
 /// Diagnose an Asset Hub PGAS claim, and optionally submit it.
 ///
 /// Connects to both chains directly rather than through the host's
-/// `ChainProvider`: that filters Asset Hub out unless `E2E_LIVE_CHAIN=1` and then
-/// falls back to the People chain, which would silently exercise the wrong chain.
+/// `ChainProvider`, because a diagnostic should not depend on a host being wired
+/// up. The provider would route Asset Hub correctly now that the preset serves it
+/// as a role, so this is a choice about the subcommand rather than a workaround.
 async fn run_pgas_check(
     mnemonic: String,
     network: crate::network::NetworkConfig,
@@ -1380,8 +1383,9 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("allowance renewal failed: {}", err.reason))?;
 
     let (mut renewed, mut fresh, mut failed, mut skipped) = (0usize, 0usize, 0usize, 0usize);
-    for (target, status) in &report.outcomes {
-        match status {
+    for outcome in &report.outcomes {
+        let target = &outcome.label;
+        match &outcome.status {
             TargetRenewalStatus::Registered { seq, block_hash } => {
                 renewed += 1;
                 terminal_ui::output_event(SystemEvent::AllowanceReady {

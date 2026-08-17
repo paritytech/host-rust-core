@@ -297,10 +297,14 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
     ) throws
-    func notifyThemeChanged(theme: ThemeVariant)
+    func notifyThemeChanged(theme: HostThemeSubscribeItem)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
+    func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws
+    func renewStatementAllowances() throws -> StatementRenewalReport
+    func startStatementAllowanceRenewal()
+    func nextStatementRenewalDelay() -> TimeInterval
 }
 
 /// Product-scoped key-value storage provided by the embedding host.
@@ -371,13 +375,16 @@ public protocol HostBridge: AnyObject, Sendable {
     /// stall other TrUAPI traffic.
     func remotePermission(request: RemotePermission) async throws -> Bool
 
-    /// Observe an auth state change. The core emits states only when they
-    /// actually change, in transition order: render `.pairing` as the pairing
-    /// QR UI, `.connected`/`.disconnected` as the account badge, and
-    /// `.loginFailed` as a retryable error. Report a user dismissal of the
-    /// pairing UI through ``TrUAPIHostCore/cancelLogin()``. Invoked on the
-    /// dispatcher thread; hand the state to the main thread and return
-    /// promptly.
+    /// Observe an auth state change, in transition order: render `.pairing` as
+    /// the pairing QR UI, `.connected`/`.disconnected` as the account badge,
+    /// and `.loginFailed` as a retryable error. A pairing host's session
+    /// activation reports its outcome even when it is the default
+    /// `.disconnected`, so a host that awaits activation before routing never
+    /// has to read silence as "signed out"; every other emission, and every
+    /// emission on a host role that has no session activation, happens only
+    /// when the state actually changes. Report a user dismissal of the pairing
+    /// UI through ``TrUAPIHostCore/cancelLogin()``. Invoked on the dispatcher
+    /// thread; hand the state to the main thread and return promptly.
     func authStateChanged(state: AuthState)
 
     /// Open a JSON-RPC chain connection and return a host-assigned id, or nil if unsupported.
@@ -395,8 +402,9 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Return the current preimage value for `key`, or nil for a miss.
     func lookupPreimage(key: Data) async throws -> Data?
 
-    /// Return the current host theme.
-    func currentTheme() throws -> ThemeVariant
+    /// Return the current host theme. Hosts with no named themes report
+    /// `ThemeName.default`.
+    func currentTheme() throws -> HostThemeSubscribeItem
 
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
@@ -448,7 +456,9 @@ public extension HostBridge {
     func chainClose(connectionId: UInt32) throws {}
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool { false }
     func lookupPreimage(key: Data) async throws -> Data? { nil }
-    func currentTheme() throws -> ThemeVariant { .dark }
+    func currentTheme() throws -> HostThemeSubscribeItem {
+        HostThemeSubscribeItem(name: .default, variant: .dark)
+    }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
 }
 
@@ -602,7 +612,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         }
     }
 
-    func currentTheme() throws -> ThemeVariant {
+    func currentTheme() throws -> HostThemeSubscribeItem {
         try withHostRejection {
             try bridge.currentTheme()
         }
@@ -741,6 +751,69 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     public func notifyChainClosed(connectionId: UInt32) {
         inner.notifyChainClosed(connectionId: connectionId)
     }
+
+    /// Record the accounts renewal should keep allowed on the Statement Store.
+    ///
+    /// Needs an active session, so call it after
+    /// ``activateLocalSession(secret:liteUsername:)`` or after pairing, not at
+    /// construction.
+    ///
+    /// Recipe-shaped targets survive a change of root entropy; a raw
+    /// ``StatementRenewalTarget/account(accountId:label:)`` does not, and is
+    /// dropped by the next pass after ``activateLocalSession(secret:liteUsername:)``
+    /// installs a different identity. Re-track those whenever the identity changes.
+    public func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws {
+        try inner.trackStatementRenewalTargets(targets: targets.map(\.native))
+    }
+
+    /// Run one renewal pass now, reporting what each tracked target got.
+    ///
+    /// Submits extrinsics and blocks until they are included, so call it off the
+    /// main thread. There is no cancellation: a pass with several targets can
+    /// outlast a short background budget, though a target registered before the
+    /// process is killed is not lost and reads back as already allocated.
+    public func renewStatementAllowances() throws -> StatementRenewalReport {
+        try inner.renewStatementAllowances()
+    }
+
+    /// Start the in-process renewal loop, for a host that stays resident. A
+    /// suspended app stops ticking, so prefer scheduling
+    /// ``renewStatementAllowances()``.
+    public func startStatementAllowanceRenewal() {
+        inner.startStatementAllowanceRenewal()
+    }
+
+    /// The in-process loop's own cadence, capped at an hour. Allowances only
+    /// stop being renewed at a period boundary and survive it by the chain's
+    /// grace window, so a host scheduling one wake-up per period
+    /// should read a value under an hour as the boundary approaching rather
+    /// than waking hourly.
+    public func nextStatementRenewalDelay() -> TimeInterval {
+        inner.nextStatementRenewalDelay()
+    }
+}
+
+/// An account renewal should keep allowed on the Statement Store.
+public enum StatementRenewalTarget: Sendable {
+    /// The statement-store allowance account derived for one product. Resolves
+    /// under whatever root entropy is active, so it survives a rotation.
+    case productStatementAllowance(productId: String)
+    /// The wallet's own SSO account. Also a derivation, so it survives a rotation.
+    case walletSso
+    /// A fixed account, such as a pairing peer's device statement key. Must be
+    /// exactly 32 bytes, and is dropped when the promising identity changes.
+    case account(accountId: Data, label: String)
+
+    var native: NativeStatementRenewalTarget {
+        switch self {
+        case let .productStatementAllowance(productId):
+            .productStatementAllowance(productId: productId)
+        case .walletSso:
+            .walletSso
+        case let .account(accountId, label):
+            .account(accountId: accountId, label: label)
+        }
+    }
 }
 
 /// Testable surface for one connection-scoped product execution.
@@ -761,7 +834,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
     ) throws
-    func notifyThemeChanged(theme: ThemeVariant)
+    func notifyThemeChanged(theme: HostThemeSubscribeItem)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -832,7 +905,7 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
         try inner.setPermissionAuthorizationStatus(request: request, status: status)
     }
 
-    public func notifyThemeChanged(theme: ThemeVariant) {
+    public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme: theme)
     }
 
@@ -928,6 +1001,31 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
         try inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
     }
 
+    /// Record the accounts renewal should keep allowed on the Statement Store.
+    /// See ``TrUAPIHostRuntime/trackStatementRenewalTargets(_:)``.
+    public func trackStatementRenewalTargets(_ targets: [StatementRenewalTarget]) throws {
+        try inner.trackStatementRenewalTargets(targets: targets.map(\.native))
+    }
+
+    /// Run one renewal pass now. Blocks until the extrinsics are included, so
+    /// call it off the main thread. See
+    /// ``TrUAPIHostRuntime/renewStatementAllowances()``.
+    public func renewStatementAllowances() throws -> StatementRenewalReport {
+        try inner.renewStatementAllowances()
+    }
+
+    /// Start the in-process renewal loop. See
+    /// ``TrUAPIHostRuntime/startStatementAllowanceRenewal()``.
+    public func startStatementAllowanceRenewal() {
+        inner.startStatementAllowanceRenewal()
+    }
+
+    /// The in-process loop's cadence, capped at an hour. See
+    /// ``TrUAPIHostRuntime/nextStatementRenewalDelay()``.
+    public func nextStatementRenewalDelay() -> TimeInterval {
+        inner.nextStatementRenewalDelay()
+    }
+
     /// Read a stored permission authorization status without prompting.
     public func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
@@ -945,7 +1043,7 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    public func notifyThemeChanged(theme: ThemeVariant) {
+    public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme: theme)
     }
 

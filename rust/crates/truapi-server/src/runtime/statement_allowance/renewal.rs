@@ -1,8 +1,11 @@
 //! Proactive renewal of statement-store allowances across period boundaries.
 //!
-//! Allowances are claimed per UTC-day period and die at the boundary, so a
-//! long-lived host must re-register every account it promised to keep allowed
-//! (RFC-0010 assigns renewal to the Account Holder). This module is the
+//! Allowances are claimed per UTC-day period and stop being renewed at the
+//! boundary, so a long-lived host must re-register every account it promised to
+//! keep allowed (RFC-0010 assigns renewal to the Account Holder). They are not
+//! revoked the instant the period ends: `Resources.StmtStoreGraceWindow` keeps
+//! an ended period's allowances active until cleanup catches up, 172800 seconds
+//! on `paseo-next-v2` as of 2026-08-15. This module is the
 //! chain-pure pass: given already-resolved targets, register each for the
 //! requested period. Scheduling and target persistence live in
 //! `signing_host::allowance_renewal`.
@@ -20,8 +23,13 @@ use super::{
     RegistrationOutcome, RegistrationParams, StatementAllowanceError, register_statement_account,
 };
 
-/// Cap between renewal ticks, mirroring the on-chain grace period after a
-/// period boundary.
+/// Cap between renewal ticks for the in-process loop.
+///
+/// A retry rhythm, not a deadline. An allowance stays usable for
+/// `Resources.StmtStoreGraceWindow` past its period boundary, which is 48 hours
+/// on `paseo-next-v2`, so a pass has ample slack and this only decides how
+/// promptly a transient failure is retried. A host scheduling its own wake-ups
+/// does not need this cadence; one pass per period is enough.
 const MAX_TICK_INTERVAL: Duration = Duration::from_secs(3_600);
 /// Margin after a period boundary before the boundary tick fires, so the
 /// chain has rotated to the new period by the time we scan slots.
@@ -60,6 +68,7 @@ pub struct ResolvedRenewalTarget {
 
 /// Outcome of renewing one target.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum TargetRenewalStatus {
     /// The extrinsic reached a block; the target holds `seq` this period.
     Registered {
@@ -82,13 +91,25 @@ pub enum TargetRenewalStatus {
     SkippedExhausted,
 }
 
+/// What one target's renewal produced, paired with the label that identifies it
+/// in the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct StatementRenewalOutcome {
+    /// Ledger label for the renewed target.
+    pub label: String,
+    /// What the pass did for this target.
+    pub status: TargetRenewalStatus,
+}
+
 /// Summary of one renewal pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct StatementRenewalReport {
     /// Period the pass registered for.
     pub period: u32,
-    /// Per-target `(label, status)` in ledger order.
-    pub outcomes: Vec<(String, TargetRenewalStatus)>,
+    /// Per-target outcomes in ledger order.
+    pub outcomes: Vec<StatementRenewalOutcome>,
     /// Whether the pass hit slot exhaustion for this period.
     pub slots_exhausted: bool,
 }
@@ -164,7 +185,8 @@ pub async fn renew_targets(
 }
 
 /// Delay until the next renewal tick: hourly, but always shortly after each
-/// period boundary so expired allowances are refreshed within the grace window.
+/// period boundary rather than before it. The margin is about the chain's clock,
+/// not urgency; see the inline note below.
 pub fn next_tick_delay(now_seconds: u64) -> Duration {
     let next_boundary =
         (now_seconds / STATEMENT_STORE_PERIOD_SECONDS + 1) * STATEMENT_STORE_PERIOD_SECONDS;
@@ -229,7 +251,10 @@ fn fold_outcomes(
                 }
                 None => TargetRenewalStatus::SkippedExhausted,
             };
-            (target.label.clone(), status)
+            StatementRenewalOutcome {
+                label: target.label.clone(),
+                status,
+            }
         })
         .collect();
     StatementRenewalReport {
@@ -325,9 +350,9 @@ mod tests {
         let seqs: Vec<u32> = report
             .outcomes
             .iter()
-            .filter_map(|(_, status)| match status {
+            .filter_map(|outcome| match outcome.status {
                 TargetRenewalStatus::Registered { seq, .. }
-                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(*seq),
+                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(seq),
                 _ => None,
             })
             .collect();
@@ -358,6 +383,13 @@ mod tests {
         ResolvedRenewalTarget {
             label: label.to_string(),
             account_id: [0u8; 32],
+        }
+    }
+
+    fn outcome(label: &str, status: TargetRenewalStatus) -> StatementRenewalOutcome {
+        StatementRenewalOutcome {
+            label: label.to_string(),
+            status,
         }
     }
 
@@ -429,18 +461,15 @@ mod tests {
             StatementRenewalReport {
                 period: 7,
                 outcomes: vec![
-                    (
-                        "a".to_string(),
-                        TargetRenewalStatus::AlreadyAllocated { seq: 1 }
-                    ),
-                    (
-                        "b".to_string(),
+                    outcome("a", TargetRenewalStatus::AlreadyAllocated { seq: 1 }),
+                    outcome(
+                        "b",
                         TargetRenewalStatus::Failed {
                             reason: "rpc timeout".to_string()
                         }
                     ),
-                    (
-                        "c".to_string(),
+                    outcome(
+                        "c",
                         TargetRenewalStatus::Registered {
                             seq: 2,
                             block_hash: "0xabc".to_string()
@@ -468,17 +497,14 @@ mod tests {
             StatementRenewalReport {
                 period: 7,
                 outcomes: vec![
-                    (
-                        "a".to_string(),
-                        TargetRenewalStatus::AlreadyAllocated { seq: 0 }
-                    ),
-                    (
-                        "b".to_string(),
+                    outcome("a", TargetRenewalStatus::AlreadyAllocated { seq: 0 }),
+                    outcome(
+                        "b",
                         TargetRenewalStatus::Failed {
                             reason: exhausted_failure().reason
                         }
                     ),
-                    ("c".to_string(), TargetRenewalStatus::SkippedExhausted),
+                    outcome("c", TargetRenewalStatus::SkippedExhausted),
                 ],
                 slots_exhausted: true,
             }

@@ -35,9 +35,9 @@ use truapi::latest::{
     HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
     HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
     HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RemotePermissionResponse, RingLocation, ThemeVariant,
+    HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
+    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
+    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
@@ -1062,8 +1062,12 @@ pub enum AuthState {
 
 /// Host auth UI driven by core-owned [`AuthState`] transitions.
 pub trait AuthPresenter: Send + Sync {
-    /// Observe an auth state change. Emitted only when the state actually
-    /// changes, in transition order. Default is a no-op for hosts that
+    /// Observe an auth state change, in transition order. A pairing host's
+    /// session activation reports its outcome even when it is the default
+    /// `Disconnected`, so a host that awaits activation before routing never
+    /// has to read silence as "signed out". Every other emission, and every
+    /// emission on a host role that has no session activation, happens only
+    /// when the state actually changes. Default is a no-op for hosts that
     /// render no auth UI.
     fn auth_state_changed(&self, state: AuthState) {
         let _ = state;
@@ -1228,8 +1232,9 @@ pub trait UserConfirmation: Send + Sync {
 
 /// Host theme source.
 pub trait ThemeHost: Send + Sync {
-    /// Emits current theme immediately, then future changes.
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<ThemeVariant, GenericError>>;
+    /// Emits current theme immediately, then future changes. Hosts with no
+    /// named themes report `ThemeName::Default`.
+    fn subscribe_theme(&self) -> BoxStream<'static, Result<HostThemeSubscribeItem, GenericError>>;
 }
 
 /// Host preimage backend. The core builds, signs, and submits the Bulletin

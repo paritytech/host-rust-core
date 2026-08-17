@@ -417,10 +417,14 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::RemotePermission,
     ) -> Result<bool, HostRejection>;
 
-    /// Observe an auth state change. Emitted only when the state actually
-    /// changes, in transition order: render `Pairing` as the pairing QR UI,
-    /// `Connected`/`Disconnected` as the account badge, `LoginFailed` as a
-    /// retryable error. User cancellation is reported through
+    /// Observe an auth state change, in transition order: render `Pairing` as
+    /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
+    /// `LoginFailed` as a retryable error. A pairing host's session activation
+    /// reports its outcome even when it is the default `Disconnected`, so a
+    /// host that awaits activation before routing never has to read silence as
+    /// "signed out". Every other emission, and every emission on a host role
+    /// that has no session activation, happens only when the state actually
+    /// changes. User cancellation is reported through
     /// `NativeTrUApiCore.cancel_login()`.
     fn auth_state_changed(&self, state: AuthState);
 
@@ -456,9 +460,9 @@ pub trait HostCallbacks: Send + Sync {
     /// current item in its subscription stream.
     async fn lookup_preimage(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>, HostRejection>;
 
-    /// Current host theme. The native shim emits this as the current item in
-    /// its subscription stream.
-    fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection>;
+    /// Current host theme, named variant included. The native shim emits this
+    /// as the current item in its subscription stream.
+    fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection>;
 
     /// Answer a feature-support query.
     async fn feature_supported(
@@ -610,6 +614,79 @@ impl NativeTrUApiHostRuntime {
     }
 }
 
+/// An account the host wants kept allowed on the Statement Store across
+/// periods. Mirrors [`crate::runtime::StatementRenewalTarget`] with a
+/// length-checked `account_id`, because UniFFI carries byte arrays as `Vec<u8>`
+/// rather than a fixed width.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum NativeStatementRenewalTarget {
+    /// The statement-store allowance account derived for one product.
+    ProductStatementAllowance {
+        /// Product the allowance account belongs to.
+        product_id: String,
+    },
+    /// The wallet's own SSO account.
+    WalletSso,
+    /// A fixed account, such as a pairing peer's device statement key.
+    Account {
+        /// Account to keep allowed; exactly 32 bytes.
+        account_id: Vec<u8>,
+        /// Human-readable name used in logs and reports.
+        label: String,
+    },
+}
+
+/// Rejected renewal-target registration.
+#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+pub enum NativeRenewalTargetError {
+    /// `account_id` was not exactly 32 bytes.
+    #[error("account_id must be exactly 32 bytes, got {actual}")]
+    InvalidAccountId {
+        /// Supplied byte length.
+        actual: u64,
+    },
+    /// `product_id` is not a usable product identifier.
+    #[error("product_id {product_id} is not a valid product identifier")]
+    InvalidProductId {
+        /// The identifier as supplied.
+        product_id: String,
+    },
+    /// The core refused to record the targets.
+    #[error("{reason}")]
+    Rejected {
+        /// Human-readable rejection reason.
+        reason: String,
+    },
+}
+
+impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalTarget {
+    type Error = NativeRenewalTargetError;
+
+    fn try_from(target: NativeStatementRenewalTarget) -> Result<Self, Self::Error> {
+        Ok(match target {
+            NativeStatementRenewalTarget::ProductStatementAllowance { product_id } => {
+                // The renewal account is derived from this string, and a product
+                // connection derives its own from the normalized form. Skipping
+                // the normalization here renews an account no product uses, and
+                // the real one lapses at the next boundary.
+                Self::ProductStatementAllowance {
+                    product_id: normalize_product_identifier(&product_id)
+                        .map_err(|_| NativeRenewalTargetError::InvalidProductId { product_id })?,
+                }
+            }
+            NativeStatementRenewalTarget::WalletSso => Self::WalletSso,
+            NativeStatementRenewalTarget::Account { account_id, label } => {
+                let account_id: [u8; 32] = account_id.as_slice().try_into().map_err(|_| {
+                    NativeRenewalTargetError::InvalidAccountId {
+                        actual: account_id.len() as u64,
+                    }
+                })?;
+                Self::Account { account_id, label }
+            }
+        })
+    }
+}
+
 #[uniffi::export]
 impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
@@ -643,6 +720,63 @@ impl NativeTrUApiHostRuntime {
     /// Core-owned logout for the process-wide authentication session.
     pub fn disconnect(&self) {
         futures::executor::block_on(self.runtime.disconnect_session());
+    }
+
+    /// Record the accounts a renewal pass should keep allowed. The ledger
+    /// persists, so this only has to be called when the set changes, not on
+    /// every launch. Renewal has nothing to do until at least one target is
+    /// tracked.
+    pub fn track_statement_renewal_targets(
+        &self,
+        targets: Vec<NativeStatementRenewalTarget>,
+    ) -> Result<(), NativeRenewalTargetError> {
+        let targets = targets
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
+        futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Run one renewal pass now and report what each tracked target got.
+    ///
+    /// This is the entry point for hosts whose process cannot stay alive
+    /// between periods: drive it from WorkManager or BGTaskScheduler rather
+    /// than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
+    /// and blocks until they are included, so call it from a background thread.
+    ///
+    /// Needs an active session, which is the whole difficulty of the scheduled
+    /// case: an OS-woken cold start has none until the host restores one, and
+    /// the pass then fails with the bare reason `Disconnected`. Restore the
+    /// session before calling, and treat that reason as "not ready" rather than
+    /// as a renewal failure. [`Self::start_statement_allowance_renewal`] does
+    /// not need this care; its loop skips a tick with no session and retries.
+    pub fn renew_statement_allowances(
+        &self,
+    ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
+        futures::executor::block_on(self.runtime.renew_statement_allowances())
+            .map_err(HostRejection::from)
+    }
+
+    /// Start the in-process renewal loop, for hosts that stay resident. Mobile
+    /// hosts should schedule [`Self::renew_statement_allowances`] instead,
+    /// because a suspended process stops ticking. Idempotent; the loop ends
+    /// when this runtime is dropped.
+    pub fn start_statement_allowance_renewal(&self) {
+        self.runtime.start_statement_allowance_renewal();
+    }
+
+    /// The in-process loop's own cadence: at most an hour, tightening to land
+    /// just after the next period boundary.
+    ///
+    /// The hourly cap is a retry rhythm, not a statement about when work is
+    /// due. An allowance stays usable for `Resources.StmtStoreGraceWindow` past
+    /// its boundary, 48 hours on `paseo-next-v2`, so a host scheduling one OS
+    /// wake-up per period has ample slack and should treat any value under an
+    /// hour as the boundary approaching, rather than requesting a wake every
+    /// hour for a pass that will almost always report `AlreadyAllocated`.
+    pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
+        self.runtime.next_statement_renewal_delay()
     }
 
     /// Activate or replace the process-wide local signing session.
@@ -764,7 +898,7 @@ impl NativeProductExecution {
     }
 
     /// Push a host theme replacement to this execution's subscriptions.
-    pub fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+    pub fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.events.notify_theme_changed(theme);
     }
 
@@ -996,6 +1130,59 @@ impl NativeTrUApiCore {
         self.host.activate_local_session(secret, lite_username)
     }
 
+    /// Record the accounts renewal should keep allowed. The ledger persists, so
+    /// this only has to be called when the set changes, not on every launch.
+    /// Renewal has nothing to do until at least one target is tracked.
+    ///
+    /// Needs an active session, so call it after
+    /// [`Self::activate_local_session`] or after pairing, not at construction.
+    ///
+    /// The ledger is append-only. There is no untrack, and an entry is dropped
+    /// only when the identity that promised it changes, which keeps derivation
+    /// recipes and discards raw account ids. Re-tracking is idempotent, so
+    /// re-track the full set after an identity change.
+    pub fn track_statement_renewal_targets(
+        &self,
+        targets: Vec<NativeStatementRenewalTarget>,
+    ) -> Result<(), NativeRenewalTargetError> {
+        self.host.track_statement_renewal_targets(targets)
+    }
+
+    /// Run one renewal pass now and report what each tracked target got.
+    ///
+    /// For hosts whose process cannot stay alive between periods: drive it from
+    /// WorkManager or BGTaskScheduler rather than
+    /// [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
+    /// blocks until they are included, so call it from a background thread.
+    ///
+    /// Needs an active session, which is the whole difficulty of the scheduled
+    /// case: an OS-woken cold start has none until the host restores one, and
+    /// the pass then fails with the bare reason `Disconnected`. Restore the
+    /// session before calling, and treat that reason as "not ready" rather than
+    /// as a renewal failure.
+    pub fn renew_statement_allowances(
+        &self,
+    ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
+        self.host.renew_statement_allowances()
+    }
+
+    /// Start the in-process renewal loop, for a host that stays resident. A
+    /// suspended app stops ticking, so prefer scheduling
+    /// [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
+    /// call it tolerates having no session: a tick without one is skipped and
+    /// retried.
+    pub fn start_statement_allowance_renewal(&self) {
+        self.host.start_statement_allowance_renewal();
+    }
+
+    /// The in-process loop's own cadence, capped at an hour. An allowance stays
+    /// usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
+    /// on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
+    /// slack and should read a value under an hour as the boundary approaching.
+    pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
+        self.host.next_statement_renewal_delay()
+    }
+
     /// List registered providers for a ring so host UI can present the RFC-0024
     /// personhood-provider setting.
     pub fn ring_vrf_providers(
@@ -1028,7 +1215,7 @@ impl NativeTrUApiCore {
     }
 
     /// Push a host theme update to active TrUAPI theme subscriptions.
-    pub fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+    pub fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.execution.notify_theme_changed(theme);
     }
 
@@ -1128,7 +1315,8 @@ struct CallbackPlatform {
 
 #[derive(Default)]
 struct NativeEventBus {
-    theme_changes: Mutex<Vec<mpsc::UnboundedSender<Result<v01::ThemeVariant, v01::GenericError>>>>,
+    theme_changes:
+        Mutex<Vec<mpsc::UnboundedSender<Result<v01::HostThemeSubscribeItem, v01::GenericError>>>>,
     preimage_changes: Mutex<Vec<PreimageSubscription>>,
     chain_responses: Mutex<HashMap<u32, mpsc::UnboundedSender<String>>>,
     chat_room_changes: Mutex<Vec<mpsc::UnboundedSender<v01::HostChatListSubscribeItem>>>,
@@ -1142,8 +1330,8 @@ struct PreimageSubscription {
 impl NativeEventBus {
     fn subscribe_theme(
         &self,
-        current: Result<v01::ThemeVariant, v01::GenericError>,
-    ) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+        current: Result<v01::HostThemeSubscribeItem, v01::GenericError>,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         let (tx, rx) = mpsc::unbounded();
         self.theme_changes
             .lock()
@@ -1152,11 +1340,11 @@ impl NativeEventBus {
         stream::once(async move { current }).chain(rx).boxed()
     }
 
-    fn notify_theme_changed(&self, theme: v01::ThemeVariant) {
+    fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.theme_changes
             .lock()
             .expect("native theme subscribers mutex poisoned")
-            .retain(|tx| tx.unbounded_send(Ok(theme)).is_ok());
+            .retain(|tx| tx.unbounded_send(Ok(theme.clone())).is_ok());
     }
 
     fn subscribe_preimage_changes(
@@ -1500,7 +1688,9 @@ impl UserConfirmation for CallbackPlatform {
 }
 
 impl ThemeHost for CallbackPlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         let current = self
             .callbacks
             .current_theme()
@@ -1603,6 +1793,89 @@ mod tests {
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
+    /// UniFFI hands `account_id` over as a length-free `Vec<u8>`, so the width
+    /// the ledger depends on is only enforced here. A short id that converted
+    /// anyway would renew an allowance for the wrong account.
+    #[test]
+    fn a_renewal_target_account_id_must_be_exactly_32_bytes() {
+        let target = |len: usize| NativeStatementRenewalTarget::Account {
+            account_id: vec![0x11; len],
+            label: "device".to_string(),
+        };
+
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(target(32)),
+            Ok(crate::runtime::StatementRenewalTarget::Account { account_id, .. })
+                if account_id == [0x11; 32]
+        ));
+        for len in [0, 31, 33] {
+            assert!(
+                matches!(
+                    crate::runtime::StatementRenewalTarget::try_from(target(len)),
+                    Err(NativeRenewalTargetError::InvalidAccountId { actual }) if actual == len as u64
+                ),
+                "a {len}-byte account id must be rejected, and report its length"
+            );
+        }
+    }
+
+    /// The renewal account is derived from `product_id`, and a product
+    /// connection derives its own from the normalized form, so an unnormalized
+    /// id here renews an account no product uses while the real one lapses.
+    #[test]
+    fn a_product_target_normalizes_its_identifier() {
+        for supplied in [
+            "  truapi-playground.dot  ",
+            "TruAPI-Playground.dot",
+            "TRUAPI-PLAYGROUND.DOT",
+        ] {
+            let converted = crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: supplied.to_string(),
+                },
+            );
+            assert!(
+                matches!(
+                    converted,
+                    Ok(crate::runtime::StatementRenewalTarget::ProductStatementAllowance {
+                        ref product_id
+                    }) if product_id == "truapi-playground.dot"
+                ),
+                "{supplied:?} did not normalize: {converted:?}"
+            );
+        }
+
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: "not a product".to_string(),
+                }
+            ),
+            Err(NativeRenewalTargetError::InvalidProductId { .. })
+        ));
+    }
+
+    /// The other two variants carry no bytes to validate, so they must convert
+    /// rather than share the `Account` arm's failure path.
+    #[test]
+    fn byteless_renewal_targets_convert() {
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::WalletSso
+            ),
+            Ok(crate::runtime::StatementRenewalTarget::WalletSso)
+        ));
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: "truapi-playground.dot".to_string(),
+                }
+            ),
+            Ok(crate::runtime::StatementRenewalTarget::ProductStatementAllowance { product_id })
+                if product_id == "truapi-playground.dot"
+        ));
+    }
+
     fn text_chat_action(text: &str) -> v01::HostChatActionSubscribeItem {
         v01::HostChatActionSubscribeItem {
             room_id: "room".to_string(),
@@ -1617,7 +1890,7 @@ mod tests {
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
         chat_created_rooms: Mutex<Vec<String>>,
         chat_posted_text: Mutex<Vec<(String, String)>>,
-        theme: Mutex<v01::ThemeVariant>,
+        theme: Mutex<v01::HostThemeSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
         chain_id: Mutex<Option<u32>>,
@@ -1632,7 +1905,10 @@ mod tests {
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
                 chat_posted_text: Mutex::new(Vec::new()),
-                theme: Mutex::new(v01::ThemeVariant::Light),
+                theme: Mutex::new(v01::HostThemeSubscribeItem {
+                    name: v01::ThemeName::Default,
+                    variant: v01::ThemeVariant::Light,
+                }),
                 preimages: Mutex::new(Vec::new()),
                 auth_states: Mutex::new(Vec::new()),
                 chain_id: Mutex::new(None),
@@ -1721,8 +1997,8 @@ mod tests {
                 .find(|(stored_key, _)| stored_key == &key)
                 .and_then(|(_, value)| value.clone()))
         }
-        fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
-            Ok(*self.theme.lock().expect("theme mutex poisoned"))
+        fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
+            Ok(self.theme.lock().expect("theme mutex poisoned").clone())
         }
         async fn feature_supported(
             &self,
@@ -2014,14 +2290,24 @@ mod tests {
     fn native_theme_subscription_emits_current_then_notified_changes() {
         let (callbacks, events, platform) = event_platform();
         let mut stream = platform.subscribe_theme();
+        let named = v01::HostThemeSubscribeItem {
+            name: v01::ThemeName::Custom("midnight".to_string()),
+            variant: v01::ThemeVariant::Dark,
+        };
 
         let first = futures::executor::block_on(stream.next()).unwrap();
-        *callbacks.theme.lock().expect("theme mutex poisoned") = v01::ThemeVariant::Dark;
-        events.notify_theme_changed(v01::ThemeVariant::Dark);
+        *callbacks.theme.lock().expect("theme mutex poisoned") = named.clone();
+        events.notify_theme_changed(named.clone());
         let second = futures::executor::block_on(stream.next()).unwrap();
 
-        assert_eq!(first.unwrap(), v01::ThemeVariant::Light);
-        assert_eq!(second.unwrap(), v01::ThemeVariant::Dark);
+        assert_eq!(
+            first.unwrap(),
+            v01::HostThemeSubscribeItem {
+                name: v01::ThemeName::Default,
+                variant: v01::ThemeVariant::Light,
+            }
+        );
+        assert_eq!(second.unwrap(), named);
     }
 
     #[test]
@@ -2351,8 +2637,11 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
-                Ok(v01::ThemeVariant::Light)
+            fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
+                Ok(v01::HostThemeSubscribeItem {
+                    name: v01::ThemeName::Default,
+                    variant: v01::ThemeVariant::Light,
+                })
             }
             async fn feature_supported(
                 &self,
@@ -2496,8 +2785,11 @@ mod tests {
             ) -> Result<Option<Vec<u8>>, HostRejection> {
                 Ok(None)
             }
-            fn current_theme(&self) -> Result<v01::ThemeVariant, HostRejection> {
-                Ok(v01::ThemeVariant::Light)
+            fn current_theme(&self) -> Result<v01::HostThemeSubscribeItem, HostRejection> {
+                Ok(v01::HostThemeSubscribeItem {
+                    name: v01::ThemeName::Default,
+                    variant: v01::ThemeVariant::Light,
+                })
             }
             async fn feature_supported(
                 &self,

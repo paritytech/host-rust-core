@@ -36,10 +36,10 @@ import type {
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   NotificationId,
   RemotePermissionResponse,
   Result,
-  ThemeVariant,
 } from "@parity/truapi";
 
 /**
@@ -745,8 +745,12 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
  */
 export interface AuthPresenter {
   /**
-   * Observe an auth state change. Emitted only when the state actually
-   * changes, in transition order. Default is a no-op for hosts that
+   * Observe an auth state change, in transition order. A pairing host's
+   * session activation reports its outcome even when it is the default
+   * `Disconnected`, so a host that awaits activation before routing never
+   * has to read silence as "signed out". Every other emission, and every
+   * emission on a host role that has no session activation, happens only
+   * when the state actually changes. Default is a no-op for hosts that
    * render no auth UI.
    */
   authStateChanged?(state: AuthState): void;
@@ -1012,9 +1016,10 @@ export interface ProductStorage {
  */
 export interface ThemeHost {
   /**
-   * Emits current theme immediately, then future changes.
+   * Emits current theme immediately, then future changes. Hosts with no
+   * named themes report `ThemeName::Default`.
    */
-  subscribeTheme(): AsyncIterable<Result<ThemeVariant, GenericError>>;
+  subscribeTheme(): AsyncIterable<Result<HostThemeSubscribeItem, GenericError>>;
 }
 
 /**
