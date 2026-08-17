@@ -385,9 +385,12 @@ assembly, submit). The signing account must be an attested member of at least
 one personhood collection, and may sit in an old ring, so the signing host scans
 back from the current ring index (slow, one-time per pairing).
 
-Each collection is a separate alias space with its own slot budget, so a signer
-with full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
-`LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Registration pools across every
+Each collection is a separate alias space with its own budget, so a signer with
+full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
+`LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
+same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
+`MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
+the collection it is proved against. Registration pools across every
 collection the signer can prove: a free slot anywhere is taken before any live
 slot is evicted, and when everything is full the slot replaced is the globally
 oldest replaceable one. `alloc-check` prints both collections' member keys, ring
