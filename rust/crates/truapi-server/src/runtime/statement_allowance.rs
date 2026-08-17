@@ -469,6 +469,7 @@ pub struct CollectionCandidate {
 }
 
 /// Our provable ring membership in one collection.
+#[derive(Debug)]
 pub struct CollectionMembership {
     /// Entropy whose member key is included in `ring`.
     pub entropy: [u8; 32],
@@ -1950,6 +1951,89 @@ mod tests {
                 })
             ),
             "a retry after a takeover should give up rather than evict again: {err:?}"
+        );
+    }
+
+    /// A real `Members.Collections[LitePeople]` value from the live People chain.
+    /// Hand-encoding one means encoding `CollectionOwner` and `RingMode` too, and
+    /// a wrong guess would make the test pass for the wrong reason.
+    const LIVE_LITE_COLLECTION: &str = r#""0x000001043e000900""#;
+
+    /// The regression this guards: a device that can only prove light personhood
+    /// must still get its allowance when the full-personhood storage is broken.
+    /// Resolving every collection in one fallible pass made any People-side
+    /// failure abort the whole allowance path, including for lite-only devices
+    /// that never needed People at all.
+    #[test]
+    fn a_broken_people_collection_does_not_discard_a_lite_people_membership() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let candidates = pooled_memberships().map(|membership| CollectionCandidate {
+            collection: membership.collection(),
+            entropy: membership.entropy,
+        });
+        let lite_entropy = candidates[1].entropy;
+        let page = format!(r#""0x04{}""#, hex::encode(proof::member_key(lite_entropy)));
+
+        let responses = vec![
+            // People: a finalized head, then an undecodable Collections value.
+            r#""0xfinal""#.to_string(),
+            r#""0x00""#.to_string(),
+            // LitePeople: resolves normally.
+            r#""0xfinal""#.to_string(),
+            LIVE_LITE_COLLECTION.to_string(),
+            r#""0x00000000""#.to_string(),
+            page,
+            "null".to_string(),
+            "null".to_string(),
+        ];
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let memberships = futures::executor::block_on(find_including_rings(
+            &rpc,
+            &metadata,
+            &candidates,
+            u32::MAX,
+        ))
+        .expect("a broken People collection must not fail the whole resolution");
+
+        assert_eq!(memberships.len(), 1, "LitePeople should still resolve");
+        assert_eq!(
+            memberships[0].collection(),
+            PersonhoodCollection::LitePeople
+        );
+        assert_eq!(memberships[0].entropy, lite_entropy);
+    }
+
+    /// Every candidate failing is an outage, not an answer. Reporting it as "no
+    /// membership" would let a caller conclude the person has no personhood.
+    #[test]
+    fn every_collection_failing_is_reported_as_an_error() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let candidates = pooled_memberships().map(|membership| CollectionCandidate {
+            collection: membership.collection(),
+            entropy: membership.entropy,
+        });
+
+        let responses = vec![
+            r#""0xfinal""#.to_string(),
+            r#""0x00""#.to_string(),
+            r#""0xfinal""#.to_string(),
+            r#""0x00""#.to_string(),
+        ];
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let err = futures::executor::block_on(find_including_rings(
+            &rpc,
+            &metadata,
+            &candidates,
+            u32::MAX,
+        ))
+        .expect_err("no collection resolved, so this is a failure not an empty answer");
+        assert!(
+            matches!(err, StatementAllowanceError::Ring(_)),
+            "unexpected error: {err:?}"
         );
     }
 

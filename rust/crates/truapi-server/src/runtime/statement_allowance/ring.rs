@@ -90,6 +90,7 @@ struct RingRoot {
 /// with the entropy whose member key is in `members`: the extension declares the
 /// collection, and the runtime verifies the proof against that collection's
 /// ring, so a mismatched pair is rejected on chain.
+#[derive(Debug)]
 pub struct RingParams {
     /// Collection this ring belongs to.
     pub collection: PersonhoodCollection,
