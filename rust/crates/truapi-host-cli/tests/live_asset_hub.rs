@@ -51,10 +51,19 @@ async fn live_asset_hub_declares_the_pgas_claim_shape() {
         5,
         "AsPgas::Claim arity changed; the encoded payload has to change with it"
     );
-    let (claim, lite_people) = metadata
-        .extension_info_and_field_variant_indices(AS_PGAS, "Claim", "LitePeople")
-        .expect("AsPgas carries a LitePeople claim");
-    println!("live AsPgas: Claim={claim} LitePeople={lite_people}");
+    // Both collections have to be nameable here, not just the light one: a full
+    // person proves PGAS against the `People` ring, and a missing variant would
+    // only surface when such a person tried to claim.
+    for collection in PersonhoodCollection::ALL {
+        let (claim, variant) = metadata
+            .extension_info_and_field_variant_indices(
+                AS_PGAS,
+                "Claim",
+                collection.metadata_variant(),
+            )
+            .unwrap_or_else(|err| panic!("AsPgas carries no {collection} claim: {err}"));
+        println!("live AsPgas: Claim={claim} {collection}={variant}");
+    }
 
     assert!(
         alloc::slot::max_pgas_claims(&metadata).unwrap() > 0,
