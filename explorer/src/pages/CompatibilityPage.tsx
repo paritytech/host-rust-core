@@ -153,10 +153,10 @@ function CompatibilitySection({
           </thead>
           <tbody>
             {version.services
-              .filter(
-                (service) =>
-                  service.requiredExecution === undefined ||
-                  service.requiredExecution === execution,
+              .filter((service) =>
+                execution === "Chat"
+                  ? service.requiredExecution === "Chat"
+                  : service.requiredExecution === undefined,
               )
               .map((service) => ({
                 name: service.name,

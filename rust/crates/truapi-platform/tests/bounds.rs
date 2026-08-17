@@ -154,3 +154,110 @@ fn product_storage_key_round_trips_scopes_and_arbitrary_keys() {
     assert_eq!(decoded, key);
     assert!(ProductStorageKey::decode("unknown:key").is_err());
 }
+
+#[test]
+fn chat_icons_accept_only_https_and_inline_images() {
+    for hostile in [
+        "javascript:alert(1)",
+        "\u{0}javascript:alert(1)",
+        "java\u{9}script:alert(1)",
+        "JavaScript:alert(1)",
+        "vbscript:msgbox(1)",
+        "file:///etc/passwd",
+        "fi\u{9}le:///etc/passwd",
+        "data:text/html,<script>alert(1)</script>",
+        "data: text/html,<script>alert(1)</script>",
+        "data:\ttext/html;base64,AAAA",
+        "data: TEXT/HTML;base64,AAAA",
+        "data:image/svg+xml,<svg onload=alert(1)>",
+        "blob:https://evil.example/x",
+        "about:blank",
+        "intent://evil#Intent;scheme=http;end",
+        "content://com.evil/x",
+        "//evil.example/x.png",
+        "../../../etc/passwd",
+        "http://tracker.example/pixel.png",
+        "ftp://example.invalid/x.png",
+    ] {
+        assert!(
+            truapi_platform::validate_chat_icon("icon", hostile).is_err(),
+            "{hostile:?} must be rejected"
+        );
+    }
+
+    for allowed in [
+        "",
+        "   ",
+        "https://example.invalid/icon.png",
+        "data:image/png;base64,iVBORw0KGgo=",
+        "data:image/jpeg;base64,/9j/4AAQ",
+        "data:image/gif;base64,R0lGODlh",
+        "data:image/webp;base64,UklGRg==",
+        "data:image/avif;base64,AAAAGGZ0",
+    ] {
+        assert!(
+            truapi_platform::validate_chat_icon("icon", allowed).is_ok(),
+            "{allowed:?} must be accepted"
+        );
+    }
+}
+
+#[test]
+fn chat_names_keep_joiners_and_bidi_marks_but_drop_spoofing_controls() {
+    for legitimate in [
+        "👩‍💻 Devs",
+        "👨‍👩‍👧 Family",
+        "🏳️‍🌈 Pride",
+        "می‌روم",
+        "\u{200e}שלום",
+        "🎲 Dice",
+        "",
+    ] {
+        assert!(
+            truapi_platform::validate_chat_name("name", legitimate).is_ok(),
+            "{legitimate:?} must be accepted"
+        );
+    }
+
+    for spoofing in [
+        "a\u{202e}b",
+        "a\u{2066}b",
+        "a\u{200b}b",
+        "a\u{061c}b",
+        "a\u{e0041}b",
+        "a\u{feff}b",
+        "a\u{0}b",
+    ] {
+        assert!(
+            truapi_platform::validate_chat_name("name", spoofing).is_err(),
+            "{spoofing:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn chat_identifiers_normalize_and_bound_the_value_the_host_receives() {
+    let nfc = truapi_platform::normalize_chat_identifier("botId", "cafe\u{301}").unwrap();
+    assert_eq!(
+        nfc,
+        truapi_platform::normalize_chat_identifier("botId", "caf\u{e9}").unwrap()
+    );
+
+    assert!(truapi_platform::normalize_chat_identifier("botId", "").is_err());
+    assert!(truapi_platform::normalize_chat_identifier("botId", "   ").is_err());
+
+    // The cap applies after NFC, which can expand the input.
+    let expanding = "\u{1d160}".repeat(64);
+    assert!(expanding.len() <= truapi_platform::CHAT_FIELD_MAX_BYTES);
+    let rejected = truapi_platform::normalize_chat_identifier("botId", &expanding);
+    assert!(
+        rejected.is_err(),
+        "a value that expands past the cap under NFC must be rejected"
+    );
+
+    let oversized = "f".repeat(truapi_platform::CHAT_FIELD_MAX_BYTES + 1);
+    assert!(truapi_platform::normalize_chat_identifier("botId", &oversized).is_err());
+
+    let icon = "d".repeat(truapi_platform::CHAT_ICON_MAX_BYTES + 1);
+    assert!(truapi_platform::validate_chat_icon("icon", &icon).is_err());
+}

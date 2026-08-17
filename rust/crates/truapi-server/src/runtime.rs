@@ -2213,7 +2213,17 @@ impl Chat for ProductRuntimeHost {
         request: HostChatPostMessageRequest,
     ) -> Result<HostChatPostMessageResponse, CallError<HostChatPostMessageError>> {
         let platform = self.chat_platform()?;
-        let HostChatPostMessageRequest::V1(request) = request;
+        let HostChatPostMessageRequest::V1(mut request) = request;
+        // The same normalization create_room applied, so a product's own
+        // spelling of a room id still resolves to the stored room.
+        request.room_id =
+            normalize_chat_identifier("roomId", &request.room_id).map_err(|error| {
+                CallError::Domain(HostChatPostMessageError::V1(
+                    v01::HostChatPostMessageError::Unknown {
+                        reason: error.to_string(),
+                    },
+                ))
+            })?;
         platform
             .post_message(&self.product, request)
             .await
@@ -2879,6 +2889,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingChatPlatform {
         registered_bots: Mutex<Vec<String>>,
+        created_rooms: Mutex<Vec<String>>,
+        posted_rooms: Mutex<Vec<String>>,
     }
 
     #[truapi::async_trait]
@@ -2886,11 +2898,15 @@ mod tests {
         async fn create_room(
             &self,
             _product: &ProductContext,
-            _request: truapi::latest::HostChatCreateRoomRequest,
+            request: truapi::latest::HostChatCreateRoomRequest,
         ) -> Result<
             truapi::latest::HostChatCreateRoomResponse,
             truapi::latest::HostChatCreateRoomError,
         > {
+            self.created_rooms
+                .lock()
+                .expect("created rooms mutex poisoned")
+                .push(request.room_id);
             Ok(truapi::latest::HostChatCreateRoomResponse {
                 status: v01::ChatRoomRegistrationStatus::New,
             })
@@ -2916,11 +2932,15 @@ mod tests {
         async fn post_message(
             &self,
             _product: &ProductContext,
-            _request: truapi::latest::HostChatPostMessageRequest,
+            request: truapi::latest::HostChatPostMessageRequest,
         ) -> Result<
             truapi::latest::HostChatPostMessageResponse,
             truapi::latest::HostChatPostMessageError,
         > {
+            self.posted_rooms
+                .lock()
+                .expect("posted rooms mutex poisoned")
+                .push(request.room_id);
             Ok(truapi::latest::HostChatPostMessageResponse {
                 message_id: "message-id".to_string(),
             })
@@ -2935,10 +2955,89 @@ mod tests {
         }
     }
 
-    /// Guards the failure mode that hid `register_bot`: a `Chat` trait method
-    /// with no `impl` silently falls back to the trait default and answers
-    /// `unavailable`, while codegen, the wire table and the TS types all still
-    /// advertise it.
+    #[test]
+    fn chat_room_ids_agree_across_create_and_post() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Chat,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+        install_pairing_session(&host, session_info());
+
+        // Precomposed on create, decomposed on post: the host must see one id,
+        // or the message lands in a room that does not exist.
+        futures::executor::block_on(Chat::create_room(
+            &host,
+            &CallContext::default(),
+            HostChatCreateRoomRequest::V1(v01::HostChatCreateRoomRequest {
+                room_id: "caf\u{e9}".to_string(),
+                name: "Cafe".to_string(),
+                icon: String::new(),
+            }),
+        ))
+        .expect("create_room accepts a normalizable id");
+
+        futures::executor::block_on(Chat::post_message(
+            &host,
+            &CallContext::default(),
+            HostChatPostMessageRequest::V1(v01::HostChatPostMessageRequest {
+                room_id: "cafe\u{301}".to_string(),
+                payload: v01::ChatMessageContent::Text {
+                    text: "hello".to_string(),
+                },
+            }),
+        ))
+        .expect("post_message accepts the other spelling of the same id");
+
+        let created = chat_platform
+            .created_rooms
+            .lock()
+            .expect("created rooms mutex poisoned")
+            .clone();
+        let posted = chat_platform
+            .posted_rooms
+            .lock()
+            .expect("posted rooms mutex poisoned")
+            .clone();
+        assert_eq!(created, posted);
+
+        // create_room screens the same fields register_bot does.
+        for (room_id, icon) in [("", ""), ("room\u{202e}", ""), ("room", "javascript:x")] {
+            let rejected = futures::executor::block_on(Chat::create_room(
+                &host,
+                &CallContext::default(),
+                HostChatCreateRoomRequest::V1(v01::HostChatCreateRoomRequest {
+                    room_id: room_id.to_string(),
+                    name: "Room".to_string(),
+                    icon: icon.to_string(),
+                }),
+            ));
+            assert!(
+                matches!(
+                    rejected,
+                    Err(CallError::Domain(HostChatCreateRoomError::V1(
+                        v01::HostChatCreateRoomError::Unknown { .. }
+                    )))
+                ),
+                "{room_id:?}/{icon:?} must be a domain error, got {rejected:?}"
+            );
+        }
+    }
+
     #[test]
     fn chat_register_bot_rejects_unsafe_product_fields() {
         let (host_config, _) = runtime_config("chat.dot");
@@ -2975,20 +3074,29 @@ mod tests {
             ))
         };
 
-        assert!(register("", "Flipper", "").is_err(), "empty bot id");
-        assert!(register("   ", "Flipper", "").is_err(), "blank bot id");
-        assert!(
-            register("flip\u{202e}per", "Flipper", "").is_err(),
-            "bidi override in bot id"
-        );
-        assert!(
-            register("flipper", "Flipper", "javascript:alert(1)").is_err(),
-            "script-scheme icon"
-        );
-        assert!(
-            register(&"f".repeat(300), "Flipper", "").is_err(),
-            "oversized bot id"
-        );
+        // A rejected field is a domain error naming the field, not the
+        // transport-level `Unsupported` that means "this host has no Chat".
+        for (bot_id, name, icon, expected_field) in [
+            ("", "Flipper", "", "botId"),
+            ("   ", "Flipper", "", "botId"),
+            ("flip\u{202e}per", "Flipper", "", "botId"),
+            ("flipper", "Flip\u{202e}per", "", "name"),
+            ("flipper", "Flipper", "javascript:alert(1)", "icon"),
+            ("flipper", "Flipper", "data: text/html,<script>", "icon"),
+            ("flipper", "Flipper", "data:image/svg+xml,<svg>", "icon"),
+            ("flipper", "Flipper", "file:///etc/passwd", "icon"),
+            ("flipper", "Flipper", "//evil.example/x.png", "icon"),
+        ] {
+            match register(bot_id, name, icon) {
+                Err(CallError::Domain(HostChatRegisterBotError::V1(
+                    v01::HostChatRegisterBotError::Unknown { reason },
+                ))) => assert!(
+                    reason.contains(expected_field),
+                    "{bot_id:?}/{name:?}/{icon:?} must name {expected_field}, got {reason:?}"
+                ),
+                other => panic!("{bot_id:?}/{name:?}/{icon:?} must be a domain error: {other:?}"),
+            }
+        }
         assert!(
             chat_platform
                 .registered_bots
@@ -3010,6 +3118,10 @@ mod tests {
         assert_eq!(bots[0], bots[1]);
     }
 
+    /// Guards the failure mode that hid `register_bot`: a `Chat` trait method
+    /// with no `impl` silently falls back to the trait default and answers
+    /// `unavailable`, while codegen, the wire table and the TS types all still
+    /// advertise it.
     #[test]
     fn chat_register_bot_reaches_the_installed_adapter() {
         let (host_config, _) = runtime_config("chat.dot");

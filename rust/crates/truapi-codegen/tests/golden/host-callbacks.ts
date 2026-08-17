@@ -782,8 +782,10 @@ export interface ChainProvider {
  * `Chat` execution created there answer unsupported and its subscriptions end
  * empty, which a product cannot tell from a healthy close.
  *
- * Product-supplied ids, names and icons arrive unvalidated; a host that
- * persists or renders them owns the length and URL-scheme checks.
+ * On `create_room` and `register_bot` the core bounds ids, names and icons,
+ * NFC-normalizes them, screens control and bidi characters, and restricts an
+ * icon to `https` or an inline raster image. Contextual output escaping,
+ * storage limits, and every `post_message` field remain host-owned.
  */
 export interface ChatPlatform {
   /**

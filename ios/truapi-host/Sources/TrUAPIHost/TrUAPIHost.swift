@@ -431,8 +431,9 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     func createRoom(roomId: String, name: String, icon: String) throws
         -> ChatRoomRegistrationStatus
 
-    /// Register or resolve a native product Chat bot. Arguments arrive from the
-    /// product unvalidated; bound them before persisting or rendering.
+    /// Register or resolve a native product Chat bot. The core has bounded and
+    /// normalized these arguments and screened the icon scheme; escaping them
+    /// for the surface that renders them is still the host's job.
     func registerBot(botId: String, name: String, icon: String) throws
         -> ChatBotRegistrationStatus
 
