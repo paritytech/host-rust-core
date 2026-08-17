@@ -57,6 +57,14 @@ impl PersonhoodCollection {
         }
     }
 
+    /// The `Pgas` constant bounding claims per period for this collection.
+    pub fn pgas_claims_per_period_constant(self) -> &'static str {
+        match self {
+            Self::People => "MaxClaimsPerPeriodPerPerson",
+            Self::LitePeople => "MaxClaimsPerPeriodPerLitePerson",
+        }
+    }
+
     /// Whether this chain declares a StatementStore slot budget for this
     /// collection. A chain that does not run a collection omits its constant, so
     /// this is the support test rather than an error.
@@ -125,6 +133,24 @@ mod tests {
                 PersonhoodCollection::People,
                 PersonhoodCollection::LitePeople
             ],
+        );
+    }
+
+    #[test]
+    fn each_collection_names_its_own_pgas_claim_constant() {
+        // Asset Hub declares a separate claim budget per collection, so a full
+        // person must not be scanned against the light one's share.
+        assert_eq!(
+            PersonhoodCollection::People.pgas_claims_per_period_constant(),
+            "MaxClaimsPerPeriodPerPerson",
+        );
+        assert_eq!(
+            PersonhoodCollection::LitePeople.pgas_claims_per_period_constant(),
+            "MaxClaimsPerPeriodPerLitePerson",
+        );
+        assert_ne!(
+            PersonhoodCollection::People.pgas_claims_per_period_constant(),
+            PersonhoodCollection::LitePeople.pgas_claims_per_period_constant(),
         );
     }
 

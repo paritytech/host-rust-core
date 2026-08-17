@@ -66,9 +66,16 @@ async fn live_asset_hub_declares_the_pgas_claim_shape() {
     }
 
     assert!(
-        alloc::slot::max_pgas_claims(&metadata).unwrap() > 0,
+        alloc::slot::max_pgas_claims(&metadata, PersonhoodCollection::LitePeople).unwrap() > 0,
         "a lite person must be allowed at least one claim per day"
     );
+    // A full person has their own budget on Asset Hub; scanning them against the
+    // light one's share would hide claims they are entitled to.
+    let people = alloc::slot::max_pgas_claims(&metadata, PersonhoodCollection::People)
+        .expect("Asset Hub declares a full-person claim budget");
+    let lite = alloc::slot::max_pgas_claims(&metadata, PersonhoodCollection::LitePeople).unwrap();
+    println!("live PGAS claims per day: People={people} LitePeople={lite}");
+    assert!(people >= lite, "People={people} LitePeople={lite}");
 }
 
 /// Asset Hub learns People's rings through `MembersSubscriber`. A claim can only

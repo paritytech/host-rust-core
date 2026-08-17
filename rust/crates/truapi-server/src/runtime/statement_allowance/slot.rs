@@ -475,8 +475,11 @@ pub async fn scan_slot_excluding(
 
 /// Claims a lite person may make per PGAS period, from
 /// `Pgas.MaxClaimsPerPeriodPerLitePerson`.
-pub fn max_pgas_claims(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
-    metadata.constant_u32("Pgas", "MaxClaimsPerPeriodPerLitePerson")
+pub fn max_pgas_claims(
+    metadata: &Metadata,
+    collection: PersonhoodCollection,
+) -> Result<u32, StatementAllowanceError> {
+    metadata.constant_u32("Pgas", collection.pgas_claims_per_period_constant())
 }
 
 /// Scan PGAS slots `0..max` for `day`, returning the first whose alias has not
@@ -487,11 +490,12 @@ pub fn max_pgas_claims(metadata: &Metadata) -> Result<u32, StatementAllowanceErr
 pub async fn scan_pgas_slot_excluding(
     rpc: &RpcClient,
     metadata: &Metadata,
+    collection: PersonhoodCollection,
     entropy: [u8; 32],
     day: u32,
     excluded: &[u32],
 ) -> Result<u32, StatementAllowanceError> {
-    let max = max_pgas_claims(metadata)?;
+    let max = max_pgas_claims(metadata, collection)?;
     scan_pgas_slot_in(rpc, entropy, day, max, excluded).await
 }
 

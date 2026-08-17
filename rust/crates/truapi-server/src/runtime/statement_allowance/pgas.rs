@@ -202,6 +202,7 @@ pub async fn claim_pgas(
         let slot_index = slot::scan_pgas_slot_excluding(
             asset_hub_rpc,
             asset_hub_metadata,
+            ring.collection,
             entropy,
             day,
             &skipped_duplicate_slots,

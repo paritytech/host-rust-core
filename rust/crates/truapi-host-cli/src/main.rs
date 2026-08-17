@@ -452,7 +452,8 @@ async fn run_pgas_check(
             .await
             .map_err(anyhow::Error::msg)?,
     );
-    let max = alloc::slot::max_pgas_claims(&asset_hub_metadata).map_err(anyhow::Error::msg)?;
+    let max = alloc::slot::max_pgas_claims(&asset_hub_metadata, ring.collection)
+        .map_err(anyhow::Error::msg)?;
     println!(
         "day={day} max_claims_per_day={max} target=0x{}",
         hex::encode(target)
@@ -460,6 +461,7 @@ async fn run_pgas_check(
     match alloc::slot::scan_pgas_slot_excluding(
         &asset_hub_rpc,
         &asset_hub_metadata,
+        ring.collection,
         membership.entropy,
         day,
         &[],

@@ -1974,7 +1974,7 @@ mod tests {
         let lite_entropy = candidates[1].entropy;
         let page = format!(r#""0x04{}""#, hex::encode(proof::member_key(lite_entropy)));
 
-        let responses = vec![
+        let responses = [
             // People: a finalized head, then an undecodable Collections value.
             r#""0xfinal""#.to_string(),
             r#""0x00""#.to_string(),
@@ -2015,7 +2015,7 @@ mod tests {
             entropy: membership.entropy,
         });
 
-        let responses = vec![
+        let responses = [
             r#""0xfinal""#.to_string(),
             r#""0x00""#.to_string(),
             r#""0xfinal""#.to_string(),
