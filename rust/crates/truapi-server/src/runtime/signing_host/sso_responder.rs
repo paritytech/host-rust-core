@@ -1079,12 +1079,14 @@ pub(super) async fn allocate_bulletin_allowance(
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
     let candidates = signing_host.reserved_person_collection_candidates(&session)?;
-    // Long-term storage has a single budget, `Resources.LongTermStorageClaimsPerPeriod`,
-    // with no per-collection variant, but the spent-alias counters still derive
-    // from the claiming collection's entropy. Claiming as a full person would
-    // therefore hide the counters already spent as a light one and restart the
-    // scan at zero, so the light collection is preferred and full personhood is
-    // only the fallback for a device that somehow lacks it.
+    // Statement-store slots and PGAS claims are each bounded by a per-collection
+    // constant, so their budgets are meant to be spent per collection. Long-term
+    // storage is bounded by `Resources.LongTermStorageClaimsPerPeriod` alone, with
+    // no per-collection variant, so the budget reads as per person. Its spent
+    // counters are still keyed by a collection-scoped alias, which means changing
+    // collection silently restarts the count at zero. Staying in the light
+    // collection keeps one person to one count; full personhood is the fallback
+    // for a device without light personhood.
     let memberships =
         find_including_rings(people_rpc, &chain.metadata, &candidates, u32::MAX).await?;
     let membership = memberships
