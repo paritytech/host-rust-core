@@ -121,7 +121,4 @@ freezeValue(document, 'createElement', (tagName: string, options?: ElementCreati
   return _createElement(tagName, options);
 });
 
-// --- WebRTC: no permission path in TrUAPI mode ---
-freezeAndDelete(window, 'RTCPeerConnection');
-
 export {};

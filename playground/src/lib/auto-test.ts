@@ -1,6 +1,7 @@
 import { runExample, type LogEntry, type RunResult } from "./example-runner";
 import { getClientSync } from "@parity/truapi/sandbox";
 import type { MethodInfo, ServiceInfo } from "./services";
+import { WEBRTC_SERVICE_NAME } from "./webrtc-check";
 import type { DiagnosisStatus } from "@/shared/diagnosis";
 
 export const DIAGNOSIS_ID = "__diagnosis__";
@@ -20,8 +21,16 @@ const SSO_TIMEOUT_MS = 60_000;
 // preimage cap, leaving time for the result to cross the iframe boundary.
 const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
 
-// Services skipped wholesale in the diagnosis until hosts wire them up.
-const SKIPPED_SERVICES = new Set(["Coin Payment", "Payment"]);
+// Services skipped wholesale in the diagnosis, keyed to the reason shown on the
+// skipped rows.
+const SKIPPED_SERVICES = new Map<string, string>([
+  ["Coin Payment", "Coin Payment service not yet wired up by hosts"],
+  ["Payment", "Payment service not yet wired up by hosts"],
+  [
+    WEBRTC_SERVICE_NAME,
+    "WebRTC needs a live camera/microphone permission grant; run it interactively from the method browser",
+  ],
+]);
 // Methods that trigger a host permission/signing prompt, so they need the
 // longer signing-class timeout to allow for the user to respond.
 const LONG_TIMEOUT_METHODS = new Set([
@@ -62,11 +71,9 @@ async function runOne({
 }: RunOneOpts): Promise<void> {
   const id = `${serviceName}/${method.name}`;
 
-  if (SKIPPED_SERVICES.has(serviceName)) {
-    onUpdate(id, {
-      status: "skipped",
-      output: `${serviceName} service not yet wired up by hosts`,
-    });
+  const skipReason = SKIPPED_SERVICES.get(serviceName);
+  if (skipReason !== undefined) {
+    onUpdate(id, { status: "skipped", output: skipReason });
     return;
   }
   if (!method.exampleSource) {
