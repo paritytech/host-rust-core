@@ -14,7 +14,7 @@ expects.
 | `paseo-next-v2-metadata.scale` | Paseo Next v2 | V14 | | | `AsResources`, three-field allowance info |
 | `paseo-next-v2-metadata-v16.scale` | Paseo Next v2 | V16 | 1000032 | | `AsResources`, four-field allowance info |
 | `paseo-next-asset-hub-metadata.scale` | Paseo Asset Hub Next | V16 | 2000036 | 2026-08-17 | `AsPgas`, `Pgas`, `MembersSubscriber` |
-| `bulletin_paseo_metadata.scale` | Polkadot Bulletin (Paseo) | | | | preimage and storage calls |
+| `bulletin_paseo_metadata.scale` | Polkadot Bulletin (Paseo) | V14 | 1000020 | | preimage and storage calls |
 
 The two paseo-next-v2 fixtures deliberately disagree about arity: V14 predates the
 `revision` field, and `the_two_fixtures_disagree_about_the_allowance_arity` pins that.
@@ -29,6 +29,11 @@ Read the spec version from `state_getRuntimeVersion` at the same time and record
 Blank cells are fixtures that predate this README.
 
 ## Storage values
+
+Storage values are decoded against the metadata fixture's own type registry, so a storage
+fixture and the metadata beside it are a matched pair. Capture both from the same runtime,
+and replace both together. Re-capturing metadata alone will fail
+`captured_ring_roots_project_to_their_revisions` if the record layout changed.
 
 | File | Storage | Chain | Block | Captured |
 |---|---|---|---|---|
