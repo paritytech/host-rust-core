@@ -74,6 +74,26 @@ final class StubCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
 // protocol extension supplies every optional callback and a new one cannot
 // leave this file behind. Only the six requirements without a default are
 // written out.
+// Conforms to `ChatHostBridge` so a new requirement there fails this job.
+// `registerBot` is left to its default on purpose.
+final class StubChatHostBridge: ChatHostBridge {
+    func createRoom(
+        roomId _: String,
+        name _: String,
+        icon _: String
+    ) throws -> ChatRoomRegistrationStatus { .new }
+
+    func postTextMessage(roomId _: String, text _: String) throws -> String { "message-id" }
+
+    func postCustomMessage(
+        roomId _: String,
+        messageType _: String,
+        payload _: Data
+    ) throws -> String { "message-id" }
+
+    func listRooms() throws -> [ChatRoom] { [] }
+}
+
 final class StubHostBridge: HostBridge {
     let storage: HostStorageBackend = StubStorage()
     let coreStorage: HostCoreStorageBackend = StubCoreStorage()

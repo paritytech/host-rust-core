@@ -57,6 +57,7 @@ pub struct HostChatRegisterBotRequest {
 
 /// Whether the bot was newly registered or already existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChatBotRegistrationStatus {
     /// The bot was registered.
     New,

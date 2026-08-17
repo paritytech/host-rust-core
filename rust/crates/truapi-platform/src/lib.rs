@@ -31,6 +31,7 @@ use truapi::latest::{
     AllocatableResource, ChainIdentifier, GenericError, HostChatCreateRoomError,
     HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
     HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
     HostDevicePermissionRequest, HostDevicePermissionResponse, HostFeatureSupportedRequest,
     HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
     HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
@@ -1250,7 +1251,12 @@ pub trait PreimageHost: Send + Sync {
 }
 
 /// Host-implemented adapter through which product Chat calls reach native
-/// storage and UI.
+/// storage and UI. Installed separately from [`Platform`], and only by the
+/// native entrypoints: a WASM/JS host cannot supply one, so a `Chat` execution
+/// created there answers every Chat call as unsupported.
+///
+/// Product-supplied ids, names and icons arrive unvalidated; a host that
+/// persists or renders them owns the length and URL-scheme checks.
 #[async_trait]
 pub trait ChatPlatform: Send + Sync {
     /// Create or resolve a product-scoped native chat room.
@@ -1260,7 +1266,16 @@ pub trait ChatPlatform: Send + Sync {
         request: HostChatCreateRoomRequest,
     ) -> Result<HostChatCreateRoomResponse, HostChatCreateRoomError>;
 
-    /// Persist a product-authored message in a native chat room.
+    /// Register or resolve a product-scoped native chat bot. Host-owned in the
+    /// same way rooms are.
+    async fn register_bot(
+        &self,
+        product: &ProductContext,
+        request: HostChatRegisterBotRequest,
+    ) -> Result<HostChatRegisterBotResponse, HostChatRegisterBotError>;
+
+    /// Persist a product-authored message in a native chat room. A host that
+    /// cannot store a given content variant reports a domain error for it.
     async fn post_message(
         &self,
         product: &ProductContext,

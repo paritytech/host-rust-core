@@ -431,6 +431,11 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     func createRoom(roomId: String, name: String, icon: String) throws
         -> ChatRoomRegistrationStatus
 
+    /// Register or resolve a native product Chat bot. Arguments arrive from the
+    /// product unvalidated; bound them before persisting or rendering.
+    func registerBot(botId: String, name: String, icon: String) throws
+        -> ChatBotRegistrationStatus
+
     /// Persist a text message in native Chat storage.
     func postTextMessage(roomId: String, text: String) throws -> String
 
@@ -443,6 +448,18 @@ public protocol ChatHostBridge: AnyObject, Sendable {
 
     /// Return the current product-scoped native Chat rooms.
     func listRooms() throws -> [ChatRoom]
+}
+
+public extension ChatHostBridge {
+    /// Reports bot registration as unavailable. Hosts with a bot backend
+    /// override it.
+    func registerBot(botId: String, name: String, icon: String) throws
+        -> ChatBotRegistrationStatus
+    {
+        throw HostRejection.Rejected(
+            reason: "registerBot is not implemented by this host"
+        )
+    }
 }
 
 public extension HostBridge {
@@ -478,6 +495,16 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
     ) throws -> ChatRoomRegistrationStatus {
         try withHostRejection {
             try bridge.createRoom(roomId: roomId, name: name, icon: icon)
+        }
+    }
+
+    func registerBot(
+        botId: String,
+        name: String,
+        icon: String
+    ) throws -> ChatBotRegistrationStatus {
+        try withHostRejection {
+            try bridge.registerBot(botId: botId, name: name, icon: icon)
         }
     }
 

@@ -76,6 +76,12 @@ pub mod latest {
     pub type HostChatCreateRoomResponse = LatestOf<versioned::chat::HostChatCreateRoomResponse>;
     /// Native chat room creation failure.
     pub type HostChatCreateRoomError = LatestOf<versioned::chat::HostChatCreateRoomError>;
+    /// Native chat bot registration request.
+    pub type HostChatRegisterBotRequest = LatestOf<versioned::chat::HostChatRegisterBotRequest>;
+    /// Native chat bot registration result.
+    pub type HostChatRegisterBotResponse = LatestOf<versioned::chat::HostChatRegisterBotResponse>;
+    /// Native chat bot registration failure.
+    pub type HostChatRegisterBotError = LatestOf<versioned::chat::HostChatRegisterBotError>;
     /// Current native room list for a product.
     pub type HostChatListSubscribeItem = LatestOf<versioned::chat::HostChatListSubscribeItem>;
     /// Native chat message posting request.

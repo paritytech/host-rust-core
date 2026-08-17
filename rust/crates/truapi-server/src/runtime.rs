@@ -120,7 +120,8 @@ use truapi::versioned::chain::{
 use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
+    HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -2152,6 +2153,21 @@ impl Chat for ProductRuntimeHost {
             .map_err(|error| CallError::Domain(HostChatCreateRoomError::V1(error)))
     }
 
+    #[instrument(skip_all, fields(runtime.method = "chat.register_bot"))]
+    async fn register_bot(
+        &self,
+        _cx: &CallContext,
+        request: HostChatRegisterBotRequest,
+    ) -> Result<HostChatRegisterBotResponse, CallError<HostChatRegisterBotError>> {
+        let platform = self.chat_platform()?;
+        let HostChatRegisterBotRequest::V1(request) = request;
+        platform
+            .register_bot(&self.product, request)
+            .await
+            .map(HostChatRegisterBotResponse::V1)
+            .map_err(|error| CallError::Domain(HostChatRegisterBotError::V1(error)))
+    }
+
     #[instrument(skip_all, fields(runtime.method = "chat.list_subscribe"))]
     async fn list_subscribe(&self, _cx: &CallContext) -> Subscription<HostChatListSubscribeItem> {
         let Ok(platform) = self.chat_platform::<()>() else {
@@ -2713,6 +2729,121 @@ mod tests {
             CallError::Domain(RemoteChainInfoError::V1(
                 v01::RemoteChainInfoError::NotSupported
             ))
+        );
+    }
+
+    /// Records which `ChatPlatform` methods the runtime actually reached.
+    #[derive(Default)]
+    struct RecordingChatPlatform {
+        registered_bots: Mutex<Vec<String>>,
+    }
+
+    #[truapi::async_trait]
+    impl truapi_platform::ChatPlatform for RecordingChatPlatform {
+        async fn create_room(
+            &self,
+            _product: &ProductContext,
+            _request: truapi::latest::HostChatCreateRoomRequest,
+        ) -> Result<
+            truapi::latest::HostChatCreateRoomResponse,
+            truapi::latest::HostChatCreateRoomError,
+        > {
+            Ok(truapi::latest::HostChatCreateRoomResponse {
+                status: v01::ChatRoomRegistrationStatus::New,
+            })
+        }
+
+        async fn register_bot(
+            &self,
+            _product: &ProductContext,
+            request: truapi::latest::HostChatRegisterBotRequest,
+        ) -> Result<
+            truapi::latest::HostChatRegisterBotResponse,
+            truapi::latest::HostChatRegisterBotError,
+        > {
+            self.registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .push(request.bot_id);
+            Ok(truapi::latest::HostChatRegisterBotResponse {
+                status: v01::ChatBotRegistrationStatus::New,
+            })
+        }
+
+        async fn post_message(
+            &self,
+            _product: &ProductContext,
+            _request: truapi::latest::HostChatPostMessageRequest,
+        ) -> Result<
+            truapi::latest::HostChatPostMessageResponse,
+            truapi::latest::HostChatPostMessageError,
+        > {
+            Ok(truapi::latest::HostChatPostMessageResponse {
+                message_id: "message-id".to_string(),
+            })
+        }
+
+        fn subscribe_rooms(
+            &self,
+            _product: &ProductContext,
+        ) -> futures::stream::BoxStream<'static, truapi::latest::HostChatListSubscribeItem>
+        {
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    /// Guards the failure mode that hid `register_bot`: a `Chat` trait method
+    /// with no `impl` silently falls back to the trait default and answers
+    /// `unavailable`, while codegen, the wire table and the TS types all still
+    /// advertise it.
+    #[test]
+    fn chat_register_bot_reaches_the_installed_adapter() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Chat,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host = ProductRuntimeHost::from_services(
+            services.clone(),
+            adapters,
+            pairing_host,
+            product.clone(),
+        );
+        install_pairing_session(&host, session_info());
+
+        let response = futures::executor::block_on(Chat::register_bot(
+            &host,
+            &CallContext::default(),
+            HostChatRegisterBotRequest::V1(v01::HostChatRegisterBotRequest {
+                bot_id: "flipper".to_string(),
+                name: "Flipper".to_string(),
+                icon: String::new(),
+            }),
+        ));
+
+        let HostChatRegisterBotResponse::V1(response) =
+            response.expect("register_bot must reach the adapter, not fall back to unavailable");
+        assert_eq!(response.status, v01::ChatBotRegistrationStatus::New);
+        assert_eq!(
+            chat_platform
+                .registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .as_slice(),
+            &["flipper"]
         );
     }
 

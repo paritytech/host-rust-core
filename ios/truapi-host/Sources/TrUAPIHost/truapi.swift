@@ -4022,6 +4022,81 @@ public func FfiConverterTypeChatActionPayload_lower(_ value: ChatActionPayload) 
 
 
 /**
+ * Whether the bot was newly registered or already existed.
+ */
+
+public enum ChatBotRegistrationStatus: Equatable, Hashable {
+
+    /**
+     * The bot was registered.
+     */
+    case new
+    /**
+     * A bot with this ID already existed.
+     */
+    case exists
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ChatBotRegistrationStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChatBotRegistrationStatus: FfiConverterRustBuffer {
+    typealias SwiftType = ChatBotRegistrationStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChatBotRegistrationStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .new
+
+        case 2: return .exists
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ChatBotRegistrationStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .new:
+            writeInt(&buf, Int32(1))
+
+
+        case .exists:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChatBotRegistrationStatus_lift(_ buf: RustBuffer) throws -> ChatBotRegistrationStatus {
+    return try FfiConverterTypeChatBotRegistrationStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChatBotRegistrationStatus_lower(_ value: ChatBotRegistrationStatus) -> RustBuffer {
+    return FfiConverterTypeChatBotRegistrationStatus.lower(value)
+}
+
+
+
+/**
  * Content of a chat message -- one of several types.
  */
 

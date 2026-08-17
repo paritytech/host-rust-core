@@ -1947,6 +1947,11 @@ public protocol NativeChatCallbacks: AnyObject, Sendable {
     func createRoom(roomId: String, name: String, icon: String) throws  -> ChatRoomRegistrationStatus
 
     /**
+     * Register or resolve a native product Chat bot.
+     */
+    func registerBot(botId: String, name: String, icon: String) throws  -> ChatBotRegistrationStatus
+
+    /**
      * Persist a text message in native Chat storage.
      */
     func postTextMessage(roomId: String, text: String) throws  -> String
@@ -2031,6 +2036,21 @@ open func createRoom(roomId: String, name: String, icon: String)throws  -> ChatR
     uniffi_truapi_server_fn_method_nativechatcallbacks_create_room(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(roomId),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(icon),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Register or resolve a native product Chat bot.
+     */
+open func registerBot(botId: String, name: String, icon: String)throws  -> ChatBotRegistrationStatus  {
+    return try  FfiConverterTypeChatBotRegistrationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativechatcallbacks_register_bot(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(botId),
         FfiConverterString.lower(name),
         FfiConverterString.lower(icon),uniffiCallStatus
     )
@@ -2128,6 +2148,35 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
 
 
             let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeChatRoomRegistrationStatus_lower($0) }
+            uniffiTraitInterfaceCallWithError(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeHostRejection_lower
+            )
+        },
+        registerBot: { (
+            uniffiHandle: UInt64,
+            botId: RustBuffer,
+            name: RustBuffer,
+            icon: RustBuffer,
+            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> ChatBotRegistrationStatus in
+                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try uniffiObj.registerBot(
+                     botId: try FfiConverterString.lift(botId),
+                     name: try FfiConverterString.lift(name),
+                     icon: try FfiConverterString.lift(icon)
+                )
+            }
+
+
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeChatBotRegistrationStatus_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -6202,13 +6251,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_text_message() != 10747) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_register_bot() != 59357) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_custom_message() != 33405) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_text_message() != 49314) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 21374) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_custom_message() != 28844) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 37616) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 59343) {
