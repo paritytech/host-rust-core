@@ -357,8 +357,80 @@ async fn wait_before_next_ring_revision_poll(
 
 #[cfg(test)]
 mod tests {
+    use subxt_rpcs::RpcClient as HostRpcClient;
+
+    use super::super::rpc::testing::ScriptedRpc;
     use super::super::test_fixtures;
     use super::*;
+
+    /// The captured ring-5 roots as a scripted `state_getStorage` result.
+    fn scripted_ring_5_roots() -> RpcClient {
+        let value = format!(
+            r#""0x{}""#,
+            hex::encode(test_fixtures::ASSET_HUB_RING_5_ROOTS)
+        );
+        RpcClient::new(HostRpcClient::new(ScriptedRpc::new([value.as_str()])))
+    }
+
+    /// `RingCommitmentRecord` takes one field out of a much wider runtime struct,
+    /// so decode a captured value rather than a hand-built one: the projection is
+    /// the part that a changed record layout would silently break.
+    #[test]
+    fn captured_ring_roots_project_to_their_revisions() {
+        let metadata = test_fixtures::asset_hub();
+        let value_type = metadata
+            .storage_value_type("MembersSubscriber", "RingRoots")
+            .expect("the fixture declares the subscriber storage");
+
+        let records = Vec::<RingCommitmentRecord>::decode_as_type(
+            &mut &test_fixtures::ASSET_HUB_RING_5_ROOTS[..],
+            value_type,
+            metadata.registry(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.revision)
+                .collect::<Vec<_>>(),
+            vec![105, 106, 108],
+        );
+    }
+
+    /// End to end over the real path, against roots Asset Hub actually served: a
+    /// revision the window skipped reports as pruned instead of being waited out.
+    ///
+    /// Only the two terminating outcomes are reachable here. Pending keeps
+    /// polling until `RING_REVISION_WAIT` expires, so it is covered by the
+    /// `revision_status` table instead.
+    #[test]
+    fn a_skipped_revision_reports_as_pruned_against_captured_roots() {
+        let err = futures::executor::block_on(await_ring_revision(
+            &scripted_ring_5_roots(),
+            test_fixtures::asset_hub(),
+            5,
+            107,
+        ))
+        .expect_err("revision 107 is missing from the captured window");
+
+        assert!(
+            err.to_string().contains("pruned"),
+            "a skipped revision should not be waited out: {err}"
+        );
+    }
+
+    /// And one the window holds returns without a second poll.
+    #[test]
+    fn a_held_revision_returns_against_captured_roots() {
+        futures::executor::block_on(await_ring_revision(
+            &scripted_ring_5_roots(),
+            test_fixtures::asset_hub(),
+            5,
+            106,
+        ))
+        .expect("revision 106 is in the captured window");
+    }
 
     /// Both map keys are hashed here, unlike the People chain's `Members` maps.
     #[test]
