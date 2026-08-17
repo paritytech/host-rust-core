@@ -198,8 +198,9 @@ class MyBridge(private val webView: WebView) : HostBridge {
     // Core-owned auth state stream: render AuthState.Pairing as the pairing
     // QR sheet, connected/disconnected as the account badge, and login-failed
     // as a retryable error, unless its kind is
-    // LoginFailureKind.NoFreeAllowanceSlots, which cannot succeed again until
-    // the period rolls over. When the user closes the pairing sheet, report it
+    // LoginFailureKind.NoFreeAllowanceSlots, which is unlikely to succeed
+    // before the period rolls over, so retry should not be the primary action.
+    // When the user closes the pairing sheet, report it
     // with `core.cancelLogin()`.
     override fun authStateChanged(state: AuthState) {
         main.post { /* render the state */ }

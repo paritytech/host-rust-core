@@ -420,8 +420,9 @@ pub trait HostCallbacks: Send + Sync {
     /// Observe an auth state change, in transition order: render `Pairing` as
     /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
     /// `LoginFailed` as a retryable error unless its `kind` is
-    /// `NoFreeAllowanceSlots`, which cannot succeed again until the period
-    /// rolls over. A pairing host's session activation reports its outcome even
+    /// `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
+    /// rolls over, so retry should not be the primary action. A pairing host's
+    /// session activation reports its outcome even
     /// when it is the default `Disconnected`, so a host that awaits activation
     /// before routing never has to read silence as "signed out". Every other
     /// emission, and every emission on a host role that has no session

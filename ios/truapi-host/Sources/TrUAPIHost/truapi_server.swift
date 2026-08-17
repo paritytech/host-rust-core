@@ -690,8 +690,9 @@ public protocol HostCallbacks: AnyObject, Sendable {
      * Observe an auth state change, in transition order: render `Pairing` as
      * the pairing QR UI, `Connected`/`Disconnected` as the account badge,
      * `LoginFailed` as a retryable error unless its `kind` is
-     * `NoFreeAllowanceSlots`, which cannot succeed again until the period
-     * rolls over. A pairing host's session activation reports its outcome even
+     * `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
+     * rolls over, so retry should not be the primary action. A pairing host's
+     * session activation reports its outcome even
      * when it is the default `Disconnected`, so a host that awaits activation
      * before routing never has to read silence as "signed out". Every other
      * emission, and every emission on a host role that has no session
@@ -957,8 +958,9 @@ open func remotePermission(request: RemotePermission)async throws  -> Bool  {
      * Observe an auth state change, in transition order: render `Pairing` as
      * the pairing QR UI, `Connected`/`Disconnected` as the account badge,
      * `LoginFailed` as a retryable error unless its `kind` is
-     * `NoFreeAllowanceSlots`, which cannot succeed again until the period
-     * rolls over. A pairing host's session activation reports its outcome even
+     * `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
+     * rolls over, so retry should not be the primary action. A pairing host's
+     * session activation reports its outcome even
      * when it is the default `Disconnected`, so a host that awaits activation
      * before routing never has to read silence as "signed out". Every other
      * emission, and every emission on a host role that has no session
@@ -6109,7 +6111,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 25245) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 23332) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 41678) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 59238) {

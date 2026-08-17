@@ -265,8 +265,9 @@ interface HostBridge {
      * Observe an auth state change, in transition order: render
      * [AuthState.Pairing] as the pairing QR UI, connected/disconnected as the
      * account badge, and login-failed as a retryable error, unless its kind is
-     * [LoginFailureKind.NoFreeAllowanceSlots], which cannot succeed again until
-     * the period rolls over. A pairing host's session activation reports its
+     * [LoginFailureKind.NoFreeAllowanceSlots], which is unlikely to succeed
+     * before the period rolls over, so retry should not be the primary action.
+     * A pairing host's session activation reports its
      * outcome even when it is the default disconnected, so a host that awaits
      * activation before routing never has to read silence as "signed out";
      * every other emission, and every emission on a host role that has no

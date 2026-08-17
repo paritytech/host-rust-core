@@ -1069,8 +1069,12 @@ pub enum AuthState {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum LoginFailureKind {
     /// The wallet has no free statement-store allowance slot for this period,
-    /// so it cannot register the device. Deterministic until the period rolls
-    /// over: retrying wastes the user's remaining budget.
+    /// so it cannot register the device — which normally holds until the period
+    /// rolls over, making a retry a waste of the user's remaining budget.
+    ///
+    /// Recovered heuristically from the wallet's prose, whose wording is not
+    /// this workspace's to pin, so treat it as a strong hint rather than a
+    /// proof: do not make retry the primary action, but leave a way to reach it.
     NoFreeAllowanceSlots,
     /// Anything else. `reason` carries the detail.
     #[default]

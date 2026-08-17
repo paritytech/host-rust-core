@@ -378,8 +378,9 @@ public protocol HostBridge: AnyObject, Sendable {
     /// Observe an auth state change, in transition order: render `.pairing` as
     /// the pairing QR UI, `.connected`/`.disconnected` as the account badge,
     /// and `.loginFailed` as a retryable error, unless its `kind` is
-    /// `.noFreeAllowanceSlots`, which cannot succeed again until the period
-    /// rolls over. A pairing host's session activation reports its outcome even
+    /// `.noFreeAllowanceSlots`, which is unlikely to succeed before the period
+    /// rolls over, so retry should not be the primary action. A pairing host's
+    /// session activation reports its outcome even
     /// when it is the default `.disconnected`, so a host that awaits activation
     /// before routing never has to read silence as "signed out"; every other
     /// emission, and every emission on a host role that has no session
