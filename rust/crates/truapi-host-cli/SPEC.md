@@ -726,9 +726,10 @@ Before a signing host answers a link, it:
 2. decodes the V2 handshake;
 3. derives its RFC-0022 `uid.dot` identity account;
 4. reads the pairing device Statement Store account from the proposal;
-5. finds the signer's LitePeople ring through the pairing-attestation bootstrap
-   `peopl.dot` index-1 key, scanning back from the current ring (RFC-0024
-   operational key selection uses the registry instead);
+5. finds the signer's rings through the pairing-attestation bootstrap `peopl.dot`
+   keys, index 0 for `People` and index 1 for `LitePeople`, scanning back from
+   the current ring in each (RFC-0024 operational key selection uses the
+   registry instead);
 6. grants or reuses Statement Store allowance for the identity account;
 7. grants or reuses allowance for the pairing device; and
 8. starts the real SSO responder.
@@ -814,7 +815,7 @@ A new auto account:
 6. saves a pending account record;
 7. builds and submits identity-backend registration proofs;
 8. polls `Resources.Consumers` for the final `name.discriminator`;
-9. waits for inclusion in a LitePeople ring; and
+9. waits for inclusion in a personhood ring; and
 10. marks and saves the account as attested.
 
 Identity and ring polling each allow 10 attempts with four seconds between
@@ -1378,7 +1379,7 @@ The CLI exposes events for:
 - exhausted signer-account rotation;
 - responder start/stop/failure;
 - product connection reset after session/profile replacement;
-- LitePeople ring discovery;
+- personhood ring discovery;
 - wallet and device allowance preparation/results;
 - notification scheduling/delivery/cancellation;
 - pairing link/authentication/connection/disconnection/failure;

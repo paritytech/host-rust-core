@@ -14,6 +14,7 @@ use verifiable::GenerateVerifiable;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use super::StatementAllowanceError;
+use super::collection::PersonhoodCollection;
 use super::extension::{Metadata, MetadataError};
 use super::ring::blake2_128_concat;
 use super::rpc::RpcClient;
@@ -90,6 +91,9 @@ pub enum SlotError {
         /// Period scanned.
         period: u32,
     },
+    /// No collection membership could be proved, so no alias space is available.
+    #[error("no provable personhood collection membership")]
+    NoCollectionMembership,
     /// `Timestamp.Now` was absent or undecodable, so slot ages cannot be judged.
     #[error("Timestamp.Now missing from chain state")]
     MissingChainTimestamp,
@@ -265,9 +269,12 @@ fn spent_long_term_storage_alias_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
     .concat()
 }
 
-/// Max StatementStore slots per period from `Resources.LiteStmtStoreSlotsPerPeriod`.
-fn max_slots(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
-    metadata.constant_u32("Resources", "LiteStmtStoreSlotsPerPeriod")
+/// Max StatementStore slots per period for `collection`.
+fn max_slots(
+    metadata: &Metadata,
+    collection: PersonhoodCollection,
+) -> Result<u32, StatementAllowanceError> {
+    collection.slots_per_period(metadata)
 }
 
 /// Max long-term-storage claims per period from
@@ -397,19 +404,39 @@ pub enum SlotSelection {
     FreeSlotsExcluded,
 }
 
-/// Scan slots `0..max` for `period`, returning the first non-excluded free seq
-/// (or detecting that `target` already holds one). `entropy` is our
-/// bandersnatch entropy.
+/// Inputs for one statement-store slot scan. The collection fixes both the slot
+/// budget and the alias space, so it travels with the entropy that derives them.
+pub struct SlotScan<'a> {
+    /// Collection whose alias space and slot budget are scanned.
+    pub collection: PersonhoodCollection,
+    /// Our bandersnatch entropy for `collection`.
+    pub entropy: [u8; 32],
+    /// Statement-store period to scan.
+    pub period: u32,
+    /// Account whose existing slot, if any, should be reported.
+    pub target: &'a [u8; 32],
+    /// Slots to skip, held back by this call's own in-flight submissions.
+    pub excluded: &'a [u32],
+    /// Whether an existing slot for `target` may be reused.
+    pub reuse_existing: bool,
+}
+
+/// Scan slots `0..max` for the scan's period, returning the first non-excluded
+/// free seq (or detecting that the target already holds one).
 pub async fn scan_slot_excluding(
     rpc: &RpcClient,
     metadata: &Metadata,
-    entropy: [u8; 32],
-    period: u32,
-    target: &[u8; 32],
-    excluded: &[u32],
-    reuse_existing: bool,
+    scan: SlotScan<'_>,
 ) -> Result<SlotSelection, StatementAllowanceError> {
-    let max = max_slots(metadata)?;
+    let SlotScan {
+        collection,
+        entropy,
+        period,
+        target,
+        excluded,
+        reuse_existing,
+    } = scan;
+    let max = max_slots(metadata, collection)?;
     let mut first_free: Option<u32> = None;
     let mut excluded_free = false;
     let mut occupied = Vec::new();
@@ -446,10 +473,13 @@ pub async fn scan_slot_excluding(
     })
 }
 
-/// Claims a lite person may make per PGAS period, from
-/// `Pgas.MaxClaimsPerPeriodPerLitePerson`.
-pub fn max_pgas_claims(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
-    metadata.constant_u32("Pgas", "MaxClaimsPerPeriodPerLitePerson")
+/// Claims `collection` may make per PGAS period, from its `Pgas` claim-budget
+/// constant.
+pub fn max_pgas_claims(
+    metadata: &Metadata,
+    collection: PersonhoodCollection,
+) -> Result<u32, StatementAllowanceError> {
+    metadata.constant_u32("Pgas", collection.pgas_claims_per_period_constant())
 }
 
 /// Scan PGAS slots `0..max` for `day`, returning the first whose alias has not
@@ -460,11 +490,12 @@ pub fn max_pgas_claims(metadata: &Metadata) -> Result<u32, StatementAllowanceErr
 pub async fn scan_pgas_slot_excluding(
     rpc: &RpcClient,
     metadata: &Metadata,
+    collection: PersonhoodCollection,
     entropy: [u8; 32],
     day: u32,
     excluded: &[u32],
 ) -> Result<u32, StatementAllowanceError> {
-    let max = max_pgas_claims(metadata)?;
+    let max = max_pgas_claims(metadata, collection)?;
     scan_pgas_slot_in(rpc, entropy, day, max, excluded).await
 }
 
@@ -593,11 +624,14 @@ mod tests {
         futures::executor::block_on(scan_slot_excluding(
             &rpc,
             &metadata,
-            [0x11; 32],
-            7,
-            &[0x22; 32],
-            &[],
-            true,
+            SlotScan {
+                collection: PersonhoodCollection::LitePeople,
+                entropy: [0x11; 32],
+                period: 7,
+                target: &[0x22; 32],
+                excluded: &[],
+                reuse_existing: true,
+            },
         ))
         .unwrap()
     }
@@ -647,10 +681,21 @@ mod tests {
         let scripted = ScriptedRpc::new(entries.iter().map(String::as_str).collect::<Vec<_>>());
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
 
-        let SlotSelection::Full { occupied, .. } = futures::executor::block_on(
-            scan_slot_excluding(&rpc, &metadata, [0x11; 32], 7, &[0x22; 32], &[], true),
-        )
-        .unwrap() else {
+        let SlotSelection::Full { occupied, .. } =
+            futures::executor::block_on(scan_slot_excluding(
+                &rpc,
+                &metadata,
+                SlotScan {
+                    collection: PersonhoodCollection::LitePeople,
+                    entropy: [0x11; 32],
+                    period: 7,
+                    target: &[0x22; 32],
+                    excluded: &[],
+                    reuse_existing: true,
+                },
+            ))
+            .unwrap()
+        else {
             panic!("a full table should report Full");
         };
 
@@ -806,11 +851,14 @@ mod tests {
         let selection = futures::executor::block_on(scan_slot_excluding(
             &rpc,
             &metadata,
-            [0x11; 32],
-            7,
-            &[0x22; 32],
-            &[(SLOTS - 1) as u32],
-            true,
+            SlotScan {
+                collection: PersonhoodCollection::LitePeople,
+                entropy: [0x11; 32],
+                period: 7,
+                target: &[0x22; 32],
+                excluded: &[(SLOTS - 1) as u32],
+                reuse_existing: true,
+            },
         ))
         .unwrap();
 
