@@ -596,15 +596,22 @@ async fn run_alloc_check(
         if memberships.is_empty() {
             bail!("cannot submit: member not in any ring");
         }
+        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         match alloc::register_statement_account_pooled(
             &rpc,
             &metadata,
             &chain_state,
+            &scans,
             &memberships,
             alloc::PooledRegistrationParams {
                 target: &target,
                 period,
                 reuse_existing: true,
+                // A diagnostic that submits behaves as it did before pooling,
+                // where a full table was replaced rather than reported.
+                allow_eviction: true,
                 protected: &[],
             },
         )
@@ -1738,15 +1745,22 @@ async fn register_pairing_allowances(
         terminal_ui::output_event(SystemEvent::AllowanceChecking {
             target: label.to_string(),
         });
+        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
+            .await
+            .map_err(anyhow::Error::msg)?;
         let outcome = alloc::register_statement_account_pooled(
             &rpc,
             &metadata,
             &chain_state,
+            &scans,
             &memberships,
             alloc::PooledRegistrationParams {
                 target: &target,
                 period,
                 reuse_existing: true,
+                // The signing host grants its own identity and device allowances
+                // here, and replaced a full table before pooling.
+                allow_eviction: true,
                 protected: &[],
             },
         )

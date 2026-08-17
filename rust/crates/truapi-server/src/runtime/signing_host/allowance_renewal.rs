@@ -367,6 +367,7 @@ pub(super) async fn renew_now(
         rpc: &rpc,
         metadata: &metadata,
         chain_state: &chain_state,
+        candidates: &candidates,
         memberships: &memberships,
     };
     let mut report = renew_targets(

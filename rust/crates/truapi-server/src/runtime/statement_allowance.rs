@@ -726,42 +726,86 @@ pub async fn register_statement_account(
     }
 }
 
-/// The slot `target` already holds in `period`, in whichever candidate
-/// collection holds it.
+/// One collection's scan of a period's slot table.
+pub struct CollectionScan {
+    /// Collection scanned.
+    pub collection: PersonhoodCollection,
+    /// Entropy whose aliases were read.
+    pub entropy: [u8; 32],
+    /// What the scan found.
+    pub selection: SlotSelection,
+}
+
+/// Scan the period's slot table in every supported candidate collection.
 ///
-/// Alias derivation and slot reads only, so this stays cheap enough to run
-/// before any ring snapshot is fetched. That ordering matters: a ring snapshot
-/// pages in every member key, and the common case for an established product is
-/// that an allowance is already in place and no proof is needed at all.
-pub async fn existing_allocation(
+/// Alias derivation and slot reads only, so this runs before any ring snapshot
+/// is fetched. That ordering matters twice over: a ring snapshot pages in every
+/// member key, and the common case for an established product is that an
+/// allowance is already in place and no proof is needed at all.
+///
+/// The result is handed to [`register_statement_account_pooled`] so the table is
+/// read once per period rather than once per question asked about it.
+///
+/// A candidate whose read fails is logged and skipped: one unreadable collection
+/// must not fail an allocation the device could satisfy from another.
+pub async fn scan_collections(
     rpc: &RpcClient,
     metadata: &Metadata,
     candidates: &[CollectionCandidate],
     period: u32,
     target: &[u8; 32],
-) -> Result<Option<(PersonhoodCollection, u32)>, StatementAllowanceError> {
+    reuse_existing: bool,
+) -> Result<Vec<CollectionScan>, StatementAllowanceError> {
+    let mut scans = Vec::new();
     for candidate in candidates {
-        if !candidate.collection.is_supported(metadata) {
+        let collection = candidate.collection;
+        if !collection.is_supported(metadata) {
+            debug!(%collection, "chain declares no slot budget for this collection");
             continue;
         }
         let selection = slot::scan_slot_excluding(
             rpc,
             metadata,
             slot::SlotScan {
-                collection: candidate.collection,
+                collection,
                 entropy: candidate.entropy,
                 period,
                 target,
                 excluded: &[],
-                reuse_existing: true,
+                reuse_existing,
             },
         )
-        .await?;
-        if let SlotSelection::AlreadyAllocated(seq) = selection {
-            return Ok(Some((candidate.collection, seq)));
+        .await;
+        match selection {
+            Ok(selection) => {
+                // An allowance already held settles the question, so the
+                // remaining collections are reads nobody needs.
+                let settled = matches!(selection, SlotSelection::AlreadyAllocated(_));
+                scans.push(CollectionScan {
+                    collection,
+                    entropy: candidate.entropy,
+                    selection,
+                });
+                if settled {
+                    break;
+                }
+            }
+            Err(err) => warn!(%collection, %err, "could not scan this collection's slots"),
         }
     }
-    Ok(None)
+    Ok(scans)
+}
+
+/// The slot `target` already holds, according to `scans`.
+///
+/// Covers every collection that was scanned, including ones whose ring the device
+/// cannot currently prove: the allowance is live regardless of whether a fresh
+/// proof could be built, so a second slot must not be claimed for the same target.
+pub fn allocated_in(scans: &[CollectionScan]) -> Option<(PersonhoodCollection, u32)> {
+    scans.iter().find_map(|scan| match scan.selection {
+        SlotSelection::AlreadyAllocated(seq) => Some((scan.collection, seq)),
+        _ => None,
+    })
 }
 
 /// Target and slot-selection inputs for a registration pooled across
@@ -773,6 +817,13 @@ pub struct PooledRegistrationParams<'a> {
     pub period: u32,
     /// Whether an existing registration for this period may be reused.
     pub reuse_existing: bool,
+    /// Whether a live slot may be replaced once every collection is full.
+    ///
+    /// Off for on-demand allocation: connecting a product must not revoke another
+    /// product's allowance, and with a replacement cooldown of a minute nearly
+    /// every occupied slot would qualify. On for the renewal pass, whose job is
+    /// to keep the ledger's own targets alive across period boundaries.
+    pub allow_eviction: bool,
     /// Slots the caller has already claimed in this batch and must not lose.
     /// Scoped per collection, because the same `seq` in two collections is two
     /// unrelated slots and protecting one must not protect the other.
@@ -780,30 +831,31 @@ pub struct PooledRegistrationParams<'a> {
 }
 
 /// Register statement-store allowance for `target`, pooling slots across every
-/// collection in `memberships`.
+/// collection in `memberships`, using the slot tables `scans` already read.
 ///
 /// Each collection is a separate alias space with its own budget, so a device
 /// that can prove two memberships has the sum of both. Collections are tried in
-/// the order given.
+/// the order the memberships are given.
 ///
-/// A free slot in any collection is always preferred to evicting a live one:
-/// eviction revokes an allowance somebody else is using, so it is considered
-/// only once every collection is full. When it comes to that, the candidate is
-/// the globally oldest replaceable slot across all collections rather than the
-/// oldest within the first full one.
+/// A free slot in any collection is always preferred to replacing a live one. A
+/// replacement is only considered when `allow_eviction` is set and every
+/// collection is full, and the candidate is then the globally oldest replaceable
+/// slot across all collections rather than the oldest within the first full one.
 ///
-/// The scan covers every collection before anything is submitted, so a target
-/// that already holds a slot in one collection is never given a second one in
-/// another.
+/// `scans` may cover collections absent from `memberships`. That is deliberate:
+/// an allowance the target already holds counts even where a fresh proof could
+/// not be built, so it is reported instead of claiming a second slot.
 pub async fn register_statement_account_pooled(
     rpc: &RpcClient,
     metadata: &Metadata,
     chain_state: &ChainState,
+    scans: &[CollectionScan],
     memberships: &[CollectionMembership],
     params: PooledRegistrationParams<'_>,
 ) -> Result<RegistrationOutcome, StatementAllowanceError> {
-    if memberships.is_empty() {
-        return Err(SlotError::NoCollectionMembership.into());
+    // Answered across every scanned collection before anything is submitted.
+    if let Some((collection, seq)) = allocated_in(scans) {
+        return Ok(RegistrationOutcome::AlreadyAllocated { seq, collection });
     }
 
     let protected_in = |collection: PersonhoodCollection| -> Vec<u32> {
@@ -815,55 +867,62 @@ pub async fn register_statement_account_pooled(
             .collect()
     };
 
+    // Only collections we can both prove and have read a table for are usable.
     let mut free = None;
     let mut full = Vec::new();
+    let mut budget: u32 = 0;
+    let mut usable = 0;
     for (index, membership) in memberships.iter().enumerate() {
-        let selection = slot::scan_slot_excluding(
-            rpc,
-            metadata,
-            slot::SlotScan {
-                collection: membership.collection(),
-                entropy: membership.entropy,
-                period: params.period,
-                target: params.target,
-                excluded: &[],
-                reuse_existing: params.reuse_existing,
-            },
-        )
-        .await?;
-        match selection {
-            // Reported before any submission so a target holding a slot in one
-            // collection is not handed a second one in another.
-            SlotSelection::AlreadyAllocated(seq) => {
-                return Ok(RegistrationOutcome::AlreadyAllocated {
-                    seq,
-                    collection: membership.collection(),
-                });
-            }
+        let collection = membership.collection();
+        let Some(scan) = scans.iter().find(|scan| scan.collection == collection) else {
+            continue;
+        };
+        usable += 1;
+        // Summed from the collections in play rather than from the full ones, so
+        // the figure is the device's budget whichever branch reports it.
+        budget = budget.saturating_add(collection.slots_per_period(metadata)?);
+        match &scan.selection {
             SlotSelection::Free(seq) => {
                 if free.is_none() {
-                    free = Some((index, seq));
+                    free = Some((index, *seq));
                 }
             }
-            // Nothing was excluded from this scan, so this cannot arise here.
+            SlotSelection::Full { occupied, .. } => full.push((index, occupied)),
+            // A free slot held back by this call's own in-flight submission.
+            // Replacing a live slot instead would revoke an allowance for
+            // capacity that is about to come back.
             SlotSelection::FreeSlotsExcluded => {
                 return Err(SlotError::FreeSlotsAwaitingSubmission {
                     period: params.period,
                 }
                 .into());
             }
-            SlotSelection::Full { max, occupied } => full.push((index, max, occupied)),
+            // Handled above, before any collection was chosen.
+            SlotSelection::AlreadyAllocated(seq) => {
+                return Ok(RegistrationOutcome::AlreadyAllocated {
+                    seq: *seq,
+                    collection,
+                });
+            }
         }
     }
+    if usable == 0 {
+        return Err(SlotError::NoCollectionMembership.into());
+    }
 
-    let pooled_budget: u32 = full.iter().map(|(_, max, _)| *max).sum();
+    let exhausted = || SlotError::NoFreeStatementStoreSlot {
+        period: params.period,
+        max: budget,
+    };
+
     let (index, choice) = match free {
         Some((index, seq)) => (index, Preselected::Free(seq)),
+        None if !params.allow_eviction => return Err(exhausted().into()),
         None => {
             let cooldown = slot::replacement_cooldown(metadata)?;
             let chain_now = slot::read_chain_now_seconds(rpc).await?;
             let mut oldest: Option<(usize, u32, u64)> = None;
-            for (index, _, occupied) in &full {
+            for (index, occupied) in &full {
                 let protected = protected_in(memberships[*index].collection());
                 let Some(seq) = slot::replaceable_slot(
                     occupied,
@@ -889,15 +948,7 @@ pub async fn register_statement_account_pooled(
             }
             match oldest {
                 Some((index, seq, _)) => (index, Preselected::Takeover(seq)),
-                None => {
-                    return Err(SlotError::NoFreeStatementStoreSlot {
-                        period: params.period,
-                        // The pooled budget, so the error names what the device
-                        // actually has rather than one collection's share.
-                        max: pooled_budget,
-                    }
-                    .into());
-                }
+                None => return Err(exhausted().into()),
             }
         }
     };
@@ -923,15 +974,11 @@ pub async fn register_statement_account_pooled(
     )
     .await
     .map_err(|err| match err {
-        // The retry rescans one collection, so its own exhaustion error names
-        // that collection's share. Restate it as the pooled budget so the same
-        // error never means two different things to a caller.
-        StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, .. }) => {
-            SlotError::NoFreeStatementStoreSlot {
-                period,
-                max: pooled_budget,
-            }
-            .into()
+        // The retry rescans one collection, so its own exhaustion names that
+        // collection's share. Restate it as the device's pooled budget so the
+        // same error never means two different things to a caller.
+        StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { .. }) => {
+            exhausted().into()
         }
         other => other,
     })
@@ -1613,11 +1660,20 @@ mod tests {
         format!(r#""0x{}""#, hex::encode((account, 0u32, since).encode()))
     }
 
-    /// Run `register_statement_account_pooled` over `responses`.
+    /// Candidates matching [`pooled_memberships`], for the scan pass.
+    fn pooled_candidates() -> [CollectionCandidate; 2] {
+        pooled_memberships().map(|membership| CollectionCandidate {
+            collection: membership.collection(),
+            entropy: membership.entropy,
+        })
+    }
+
+    /// Scan both collections then register from that scan, over `responses`.
     fn scripted_pooled(
         responses: Vec<String>,
         target: [u8; 32],
         protected: &[(PersonhoodCollection, u32)],
+        allow_eviction: bool,
     ) -> (
         Result<RegistrationOutcome, StatementAllowanceError>,
         ScriptedRpc,
@@ -1630,23 +1686,69 @@ mod tests {
             nonce: 0,
         };
         let memberships = pooled_memberships();
+        let candidates = pooled_candidates();
         let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
         scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
-        let outcome = futures::executor::block_on(register_statement_account_pooled(
-            &rpc,
-            &metadata,
-            &chain_state,
-            &memberships,
-            PooledRegistrationParams {
-                target: &target,
-                period: 7,
-                reuse_existing: true,
-                protected,
-            },
-        ));
+        let outcome = futures::executor::block_on(async {
+            let scans = scan_collections(&rpc, &metadata, &candidates, 7, &target, true).await?;
+            register_statement_account_pooled(
+                &rpc,
+                &metadata,
+                &chain_state,
+                &scans,
+                &memberships,
+                PooledRegistrationParams {
+                    target: &target,
+                    period: 7,
+                    reuse_existing: true,
+                    allow_eviction,
+                    protected,
+                },
+            )
+            .await
+        });
         (outcome, scripted)
+    }
+
+    /// Scan then register, with the submission failing with `submit_error`.
+    fn scripted_pooled_with_submit_error(
+        responses: Vec<String>,
+        target: [u8; 32],
+        submit_error: &str,
+    ) -> Result<RegistrationOutcome, StatementAllowanceError> {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+        };
+        let memberships = pooled_memberships();
+        let candidates = pooled_candidates();
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        scripted.script_subscription_errors(submit_error, 1);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        futures::executor::block_on(async {
+            let scans = scan_collections(&rpc, &metadata, &candidates, 7, &target, true).await?;
+            register_statement_account_pooled(
+                &rpc,
+                &metadata,
+                &chain_state,
+                &scans,
+                &memberships,
+                PooledRegistrationParams {
+                    target: &target,
+                    period: 7,
+                    reuse_existing: true,
+                    allow_eviction: true,
+                    protected: &[],
+                },
+            )
+            .await
+        })
     }
 
     /// Slot tables for both collections: `people` then `lite`, each entry either
@@ -1680,7 +1782,7 @@ mod tests {
         responses.push("null".to_string());
         responses.push(occupied(target, 5_000));
 
-        let (outcome, _) = scripted_pooled(responses, target, &[]);
+        let (outcome, _) = scripted_pooled(responses, target, &[], true);
 
         let RegistrationOutcome::Registered {
             seq, collection, ..
@@ -1704,7 +1806,7 @@ mod tests {
         responses.push("null".to_string());
         responses.push(occupied(target, 5_000));
 
-        let (outcome, _) = scripted_pooled(responses, target, &[]);
+        let (outcome, _) = scripted_pooled(responses, target, &[], true);
 
         let RegistrationOutcome::Registered { collection, .. } =
             outcome.expect("a free People slot is registrable")
@@ -1726,7 +1828,7 @@ mod tests {
                 .collect(),
         );
 
-        let (outcome, scripted) = scripted_pooled(responses, target, &[]);
+        let (outcome, scripted) = scripted_pooled(responses, target, &[], true);
 
         assert!(
             matches!(
@@ -1765,7 +1867,7 @@ mod tests {
         responses.push("null".to_string());
         responses.push(occupied(target, 10_000_000));
 
-        let (outcome, _) = scripted_pooled(responses, target, &[]);
+        let (outcome, _) = scripted_pooled(responses, target, &[], true);
 
         let RegistrationOutcome::Registered {
             seq, collection, ..
@@ -1796,8 +1898,12 @@ mod tests {
         responses.push("null".to_string());
         responses.push(occupied(target, 10_000_000));
 
-        let (outcome, _) =
-            scripted_pooled(responses, target, &[(PersonhoodCollection::LitePeople, 0)]);
+        let (outcome, _) = scripted_pooled(
+            responses,
+            target,
+            &[(PersonhoodCollection::LitePeople, 0)],
+            true,
+        );
 
         let RegistrationOutcome::Registered {
             seq, collection, ..
@@ -1829,7 +1935,7 @@ mod tests {
         );
         responses.push(chain_clock(10_000_000));
 
-        let (outcome, _) = scripted_pooled(responses, target, &[]);
+        let (outcome, _) = scripted_pooled(responses, target, &[], true);
 
         let err = outcome.expect_err("a full pool cannot register");
         assert!(
@@ -1863,30 +1969,11 @@ mod tests {
         responses.push(chain_clock(10_000_000));
         responses.push("null".to_string());
 
-        let metadata = Metadata::decode(FIXTURE).unwrap();
-        let chain_state = ChainState {
-            spec_version: 1_000_000,
-            transaction_version: 1,
-            genesis_hash: [0xab; 32],
-            nonce: 0,
-        };
-        let memberships = pooled_memberships();
-        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
-        scripted.script_subscription_errors("User error: Invalid Transaction (1010)", 1);
-        let rpc = RpcClient::new(HostRpcClient::new(scripted));
-
-        let err = futures::executor::block_on(register_statement_account_pooled(
-            &rpc,
-            &metadata,
-            &chain_state,
-            &memberships,
-            PooledRegistrationParams {
-                target: &target,
-                period: 7,
-                reuse_existing: true,
-                protected: &[],
-            },
-        ))
+        let err = scripted_pooled_with_submit_error(
+            responses,
+            target,
+            "User error: Invalid Transaction (1010)",
+        )
         .unwrap_err();
 
         assert!(
@@ -1914,32 +2001,9 @@ mod tests {
         // The retry rescans this collection and finds it still full.
         responses.extend((0..20).map(|seq| occupied([0x99; 32], 1_000 + seq)));
 
-        let metadata = Metadata::decode(FIXTURE).unwrap();
-        let chain_state = ChainState {
-            spec_version: 1_000_000,
-            transaction_version: 1,
-            genesis_hash: [0xab; 32],
-            nonce: 0,
-        };
-        let memberships = pooled_memberships();
-        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
         // A duplicate-submit rejection drives the retry.
-        scripted.script_subscription_errors("Priority is too low", 1);
-        let rpc = RpcClient::new(HostRpcClient::new(scripted));
-
-        let err = futures::executor::block_on(register_statement_account_pooled(
-            &rpc,
-            &metadata,
-            &chain_state,
-            &memberships,
-            PooledRegistrationParams {
-                target: &target,
-                period: 7,
-                reuse_existing: true,
-                protected: &[],
-            },
-        ))
-        .unwrap_err();
+        let err = scripted_pooled_with_submit_error(responses, target, "Priority is too low")
+            .unwrap_err();
 
         // Exhaustion, not a second eviction, and it names the pooled budget.
         assert!(
@@ -2034,6 +2098,112 @@ mod tests {
         assert!(
             matches!(err, StatementAllowanceError::Ring(_)),
             "unexpected error: {err:?}"
+        );
+    }
+
+    /// Exhaustion raised by the inner rescan has to name the device's budget on
+    /// the free-slot path too. Summing only the collections that reported `Full`
+    /// makes that figure empty here, so the retry reported a budget of zero.
+    #[test]
+    fn a_retry_from_a_free_slot_still_names_the_summed_budget() {
+        let target = [0x22; 32];
+        // Both tables free, so the first choice is a free People slot.
+        let mut responses = tables(
+            (0..20).map(|_| None).collect(),
+            (0..10).map(|_| None).collect(),
+        );
+        // Ring revision, then the rescan the duplicate-submit retry performs:
+        // People is now full and every slot is inside its cooldown.
+        responses.push("null".to_string());
+        responses.extend((0..20).map(|_| occupied([0x99; 32], 9_999_999)));
+        responses.push(chain_clock(10_000_000));
+
+        let err = scripted_pooled_with_submit_error(responses, target, "Priority is too low")
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot {
+                    period: 7,
+                    max: 30
+                })
+            ),
+            "expected the pooled budget of 20 + 10, not one branch's share: {err:?}"
+        );
+    }
+
+    /// Connecting a product must not revoke another product's allowance. A full
+    /// period is exhaustion, and reclaiming space is the renewal pass's job.
+    #[test]
+    fn on_demand_allocation_reports_exhaustion_rather_than_evicting() {
+        let target = [0x22; 32];
+        // Everything full and old enough that eviction would succeed if allowed.
+        let responses = tables(
+            (0..20)
+                .map(|seq| Some(occupied([0x99; 32], 1_000 + seq)))
+                .collect(),
+            (0..10)
+                .map(|seq| Some(occupied([0x98; 32], 1_000 + seq)))
+                .collect(),
+        );
+
+        let (outcome, scripted) = scripted_pooled(responses, target, &[], false);
+
+        let err = outcome.expect_err("a full pool cannot allocate without evicting");
+        assert!(
+            matches!(
+                err,
+                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot {
+                    period: 7,
+                    max: 30
+                })
+            ),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            scripted
+                .calls()
+                .iter()
+                .all(|(method, _)| method != "author_submitAndWatchExtrinsic"),
+            "nothing should have been submitted"
+        );
+    }
+
+    /// The scan pass isolates per-collection failures too. It runs before the
+    /// membership resolution, so a failed People read here would fail the whole
+    /// allocation for a device that could never hold a slot in People.
+    #[test]
+    fn a_failed_people_scan_still_finds_the_lite_people_allocation() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let candidates = pooled_candidates();
+        let target = [0x22; 32];
+
+        let responses = [
+            // People: an undecodable storage value fails this collection's scan.
+            r#""zz""#.to_string(),
+            // LitePeople: the target holds seq 3.
+            "null".to_string(),
+            "null".to_string(),
+            "null".to_string(),
+            occupied(target, 4_000),
+        ];
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let scans = futures::executor::block_on(scan_collections(
+            &rpc,
+            &metadata,
+            &candidates,
+            7,
+            &target,
+            true,
+        ))
+        .expect("a broken People scan must not fail the pass");
+
+        assert_eq!(
+            allocated_in(&scans),
+            Some((PersonhoodCollection::LitePeople, 3)),
         );
     }
 

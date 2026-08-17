@@ -921,8 +921,8 @@ pub(super) async fn allocate_statement_store_allowance(
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use super::allowance_renewal::{self, StatementRenewalTarget};
     use crate::runtime::statement_allowance::{
-        self, PooledRegistrationParams, existing_allocation, find_including_rings,
-        register_statement_account_pooled,
+        self, PooledRegistrationParams, allocated_in, find_including_rings,
+        register_statement_account_pooled, scan_collections,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -948,14 +948,19 @@ pub(super) async fn allocate_statement_store_allowance(
     // submits nothing.
     let _registration = signing_host.renewal.registration_lock().lock().await;
 
-    // Answered before any ring snapshot is fetched: when an allowance is already
-    // recorded on chain neither a proof nor a submission is needed, and a ring
-    // snapshot pages in every member key. Covers all collections, so a product
-    // holding a slot in one is never given a second one in another.
-    if reuse_existing
-        && let Some((collection, seq)) =
-            existing_allocation(rpc, &chain.metadata, &candidates, period, &target).await?
-    {
+    // One read of the period's slot tables, reused below rather than rescanned:
+    // when an allowance is already recorded on chain neither a proof nor a
+    // submission is needed, and a ring snapshot pages in every member key.
+    let scans = scan_collections(
+        rpc,
+        &chain.metadata,
+        &candidates,
+        period,
+        &target,
+        reuse_existing,
+    )
+    .await?;
+    if let Some((collection, seq)) = allocated_in(&scans) {
         debug!(
             %product_id,
             period,
@@ -978,11 +983,16 @@ pub(super) async fn allocate_statement_store_allowance(
         rpc,
         &chain.metadata,
         &chain.state,
+        &scans,
         &memberships,
         PooledRegistrationParams {
             target: &target,
             period,
             reuse_existing,
+            // Connecting a product must not revoke another product's allowance.
+            // A full period is reported as exhaustion; reclaiming space is the
+            // renewal pass's job, which only ever replaces for its own ledger.
+            allow_eviction: false,
             protected: &[],
         },
     )
@@ -1032,6 +1042,7 @@ pub(super) async fn allocate_bulletin_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::runtime::statement_allowance::{
         self, claim_long_term_storage, fetch_bulletin_allowance, find_including_rings,
         wait_bulletin_authorization,
@@ -1068,12 +1079,18 @@ pub(super) async fn allocate_bulletin_allowance(
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
     let candidates = signing_host.reserved_person_collection_candidates(&session)?;
-    // A single claim needs one collection, so take the strongest membership the
-    // person actually holds rather than assuming light personhood.
-    let membership = find_including_rings(people_rpc, &chain.metadata, &candidates, u32::MAX)
-        .await?
-        .into_iter()
-        .next()
+    // Long-term storage has a single budget, `Resources.LongTermStorageClaimsPerPeriod`,
+    // with no per-collection variant, but the spent-alias counters still derive
+    // from the claiming collection's entropy. Claiming as a full person would
+    // therefore hide the counters already spent as a light one and restart the
+    // scan at zero, so the light collection is preferred and full personhood is
+    // only the fallback for a device that somehow lacks it.
+    let memberships =
+        find_including_rings(people_rpc, &chain.metadata, &candidates, u32::MAX).await?;
+    let membership = memberships
+        .iter()
+        .find(|membership| membership.collection() == PersonhoodCollection::LitePeople)
+        .or_else(|| memberships.first())
         .ok_or(AllowanceAllocationError::MissingPersonhoodMembership {
             resource: "Bulletin",
         })?;

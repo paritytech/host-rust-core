@@ -20,8 +20,8 @@ use super::extension::{ChainState, Metadata};
 use super::rpc::RpcClient;
 use super::slot::{STATEMENT_STORE_PERIOD_SECONDS, SlotError};
 use super::{
-    CollectionMembership, PooledRegistrationParams, RegistrationOutcome, StatementAllowanceError,
-    register_statement_account_pooled,
+    CollectionCandidate, CollectionMembership, PooledRegistrationParams, RegistrationOutcome,
+    StatementAllowanceError, register_statement_account_pooled, scan_collections,
 };
 
 /// Cap between renewal ticks for the in-process loop.
@@ -132,6 +132,9 @@ pub struct RenewalChainContext<'a> {
     pub metadata: &'a Metadata,
     /// Signed-extension chain state.
     pub chain_state: &'a ChainState,
+    /// Every collection the host can derive aliases for, so an allowance already
+    /// held in a collection whose ring cannot currently be proved is still seen.
+    pub candidates: &'a [CollectionCandidate],
     /// Every collection the host can prove membership in, widest budget first.
     /// Renewal pools slots across all of them, so a device with full personhood
     /// renews against the combined budget rather than one collection's share.
@@ -161,15 +164,35 @@ pub async fn renew_targets(
     for target in targets {
         let result = {
             let _guard = registration_lock.lock().await;
+            let scans = match scan_collections(
+                context.rpc,
+                context.metadata,
+                context.candidates,
+                period,
+                &target.account_id,
+                true,
+            )
+            .await
+            {
+                Ok(scans) => scans,
+                Err(err) => {
+                    results.push(Err(RenewalFailure::from(err)));
+                    continue;
+                }
+            };
             register_statement_account_pooled(
                 context.rpc,
                 context.metadata,
                 context.chain_state,
+                &scans,
                 context.memberships,
                 PooledRegistrationParams {
                     target: &target.account_id,
                     period,
                     reuse_existing: true,
+                    // Renewal exists to keep the ledger's targets alive across a
+                    // period boundary, so it may reclaim space when full.
+                    allow_eviction: true,
                     protected: &claimed,
                 },
             )
@@ -359,10 +382,15 @@ mod tests {
         scripted.script_subscription([r#"{"inBlock":"0xb10d"}"#]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
 
+        let candidates = [CollectionCandidate {
+            collection: PersonhoodCollection::LitePeople,
+            entropy,
+        }];
         let context = RenewalChainContext {
             rpc: &rpc,
             metadata: &metadata,
             chain_state: &chain_state,
+            candidates: &candidates,
             memberships: &memberships,
         };
         let lock = Mutex::new(());

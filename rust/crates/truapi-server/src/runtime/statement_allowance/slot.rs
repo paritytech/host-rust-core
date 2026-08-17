@@ -473,8 +473,8 @@ pub async fn scan_slot_excluding(
     })
 }
 
-/// Claims a lite person may make per PGAS period, from
-/// `Pgas.MaxClaimsPerPeriodPerLitePerson`.
+/// Claims `collection` may make per PGAS period, from its `Pgas` claim-budget
+/// constant.
 pub fn max_pgas_claims(
     metadata: &Metadata,
     collection: PersonhoodCollection,
