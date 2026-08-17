@@ -477,8 +477,9 @@ mod tests {
         assert_eq!(revision_status(&[106], 106), RevisionStatus::Imported);
     }
 
-    /// Nothing newer is held, so ours may still be on its way. An absent storage
-    /// entry reaches this as an empty window.
+    /// Nothing newer is held, so ours may still be on its way. An empty window
+    /// reaches this if the entry exists but holds no roots; an absent entry
+    /// skips the classification entirely and goes straight to the next poll.
     #[test]
     fn a_revision_newer_than_the_window_is_pending() {
         assert_eq!(revision_status(&[], 106), RevisionStatus::Pending);
