@@ -185,10 +185,23 @@ fn decode_entries(blob: &[u8]) -> Result<Vec<LedgerEntry>, String> {
 }
 
 /// Resolve a ledger entry into a concrete account for this session's entropy.
+/// The label a target reports under, derivable without an active session so a
+/// pruned entry reads the same as a renewed one.
+fn target_label(target: &StatementRenewalTarget) -> String {
+    match target {
+        StatementRenewalTarget::ProductStatementAllowance { product_id } => {
+            format!("product:{product_id}")
+        }
+        StatementRenewalTarget::WalletSso => "wallet-sso".to_string(),
+        StatementRenewalTarget::Account { label, .. } => label.clone(),
+    }
+}
+
 fn resolve_target(
     entropy: &[u8],
     target: &StatementRenewalTarget,
 ) -> Result<ResolvedRenewalTarget, String> {
+    let label = target_label(target);
     match target {
         StatementRenewalTarget::ProductStatementAllowance { product_id } => {
             let pair = derive_sr25519_hard_path(
@@ -197,7 +210,7 @@ fn resolve_target(
             )
             .map_err(|err| err.to_string())?;
             Ok(ResolvedRenewalTarget {
-                label: format!("product:{product_id}"),
+                label,
                 account_id: pair.public.to_bytes(),
             })
         }
@@ -205,12 +218,12 @@ fn resolve_target(
             let pair = derive_sr25519_hard_path(entropy, &["wallet", "sso"])
                 .map_err(|err| err.to_string())?;
             Ok(ResolvedRenewalTarget {
-                label: "wallet-sso".to_string(),
+                label,
                 account_id: pair.public.to_bytes(),
             })
         }
-        StatementRenewalTarget::Account { account_id, label } => Ok(ResolvedRenewalTarget {
-            label: label.clone(),
+        StatementRenewalTarget::Account { account_id, .. } => Ok(ResolvedRenewalTarget {
+            label,
             account_id: *account_id,
         }),
     }
@@ -262,7 +275,7 @@ async fn owned_targets(
     storage: &(impl CoreStorage + ?Sized),
     ledger_lock: &Mutex<()>,
     owner: [u8; 32],
-) -> Result<Vec<StatementRenewalTarget>, String> {
+) -> Result<(Vec<StatementRenewalTarget>, Vec<String>), String> {
     let (owned, foreign): (Vec<_>, Vec<_>) = read_entries(storage)
         .await?
         .into_iter()
@@ -275,7 +288,13 @@ async fn owned_targets(
         let _guard = ledger_lock.lock().await;
         write_entries(storage, &owned).await?;
     }
-    Ok(owned.into_iter().map(|entry| entry.target).collect())
+    Ok((
+        owned.into_iter().map(|entry| entry.target).collect(),
+        foreign
+            .iter()
+            .map(|entry| target_label(&entry.target))
+            .collect(),
+    ))
 }
 
 /// One renewal pass: resolve the ledger against the active session and renew
@@ -288,7 +307,7 @@ pub(super) async fn renew_now(
     let period = statement_allowance::slot::current_period(
         current_unix_secs().map_err(|err| err.to_string())?,
     );
-    let targets = owned_targets(
+    let (targets, pruned) = owned_targets(
         signing_host.platform.as_ref(),
         signing_host.renewal.ledger_lock(),
         owner_key(&entropy)?,
@@ -299,6 +318,7 @@ pub(super) async fn renew_now(
         return Ok(StatementRenewalReport {
             period,
             outcomes: Vec::new(),
+            pruned,
             slots_exhausted: false,
         });
     }
@@ -338,14 +358,16 @@ pub(super) async fn renew_now(
         chain_state: &chain_state,
         ring: &ring,
     };
-    Ok(renew_targets(
+    let mut report = renew_targets(
         &context,
         bandersnatch,
         period,
         &resolved,
         signing_host.renewal.registration_lock(),
     )
-    .await)
+    .await;
+    report.pruned = pruned;
+    Ok(report)
 }
 
 /// Spawn the periodic renewal loop; repeated calls are no-ops. The loop holds
@@ -547,9 +569,12 @@ mod tests {
                 .await
                 .unwrap();
 
-            let targets = owned_targets(&storage, &lock(), OWNER).await.unwrap();
+            let (targets, pruned) = owned_targets(&storage, &lock(), OWNER).await.unwrap();
 
             assert_eq!(targets, vec![product("a.dot")]);
+            // Reported, not just dropped: the pass is a host's only view of the
+            // ledger, so a silent prune is one it cannot notice or re-track.
+            assert_eq!(pruned, vec!["device".to_string()]);
             // Dropped, not merely skipped, so the cost is paid once.
             assert_eq!(
                 read_entries(&storage).await.unwrap(),
@@ -573,7 +598,7 @@ mod tests {
 
             assert_eq!(
                 owned_targets(&storage, &lock(), OWNER).await.unwrap(),
-                Vec::new()
+                (Vec::new(), vec!["device".to_string()])
             );
             assert_eq!(read_entries(&storage).await.unwrap(), Vec::new());
         });
@@ -589,7 +614,7 @@ mod tests {
                 .unwrap();
             let after_seeding = storage.writes();
 
-            let targets = owned_targets(&storage, &lock(), OWNER).await.unwrap();
+            let (targets, _pruned) = owned_targets(&storage, &lock(), OWNER).await.unwrap();
 
             assert_eq!(targets, vec![product("a.dot")]);
             // Every tick calls this; rewriting the ledger each time would be waste.

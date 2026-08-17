@@ -110,6 +110,15 @@ pub struct StatementRenewalReport {
     pub period: u32,
     /// Per-target outcomes in ledger order.
     pub outcomes: Vec<StatementRenewalOutcome>,
+    /// Labels of targets this pass dropped because a different identity
+    /// promised them.
+    ///
+    /// Dropping is silent otherwise: a pruned target simply stops appearing in
+    /// `outcomes`, and the surface has no way to list the ledger, so a host
+    /// could only infer it from an absence. A raw account target does not
+    /// survive a change of root entropy, so this is how a host learns to
+    /// re-track one.
+    pub pruned: Vec<String>,
     /// Whether the pass hit slot exhaustion for this period.
     pub slots_exhausted: bool,
 }
@@ -260,6 +269,9 @@ fn fold_outcomes(
     StatementRenewalReport {
         period,
         outcomes,
+        // fold_outcomes only sees targets that survived to be renewed; the
+        // caller that read the ledger attaches what it dropped.
+        pruned: Vec::new(),
         slots_exhausted,
     }
 }
@@ -476,6 +488,7 @@ mod tests {
                         }
                     ),
                 ],
+                pruned: Vec::new(),
                 slots_exhausted: false,
             }
         );
@@ -506,6 +519,7 @@ mod tests {
                     ),
                     outcome("c", TargetRenewalStatus::SkippedExhausted),
                 ],
+                pruned: Vec::new(),
                 slots_exhausted: true,
             }
         );
