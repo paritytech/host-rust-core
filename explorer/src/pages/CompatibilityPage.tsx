@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import { Check, ChevronDown, Minus, X } from "lucide-react";
-import type { VersionEntry } from "../data/types";
+import type { ProductExecutionKind, VersionEntry } from "../data/types";
 import { methodPath } from "../data/registry";
 import { chatCompatibility, compatibility } from "../data/compatibility";
 import type {
@@ -88,6 +88,7 @@ export default function CompatibilityPage() {
         <CompatibilitySection
           title="SPA compatibility"
           description="API coverage measured from the visible SPA execution."
+          execution="Spa"
           matrix={compatibility}
           version={version}
           expandedId={expandedId}
@@ -96,6 +97,7 @@ export default function CompatibilityPage() {
         <CompatibilitySection
           title="Chat compatibility"
           description="Chat API coverage measured from the product's native Chat worker."
+          execution="Chat"
           matrix={chatCompatibility}
           version={version}
           expandedId={expandedId}
@@ -109,6 +111,7 @@ export default function CompatibilityPage() {
 function CompatibilitySection({
   title,
   description,
+  execution,
   matrix,
   version,
   expandedId,
@@ -116,6 +119,7 @@ function CompatibilitySection({
 }: {
   title: string;
   description: string;
+  execution: ProductExecutionKind;
   matrix: CompatibilityMatrix;
   version: VersionEntry;
   expandedId: string | null;
@@ -149,6 +153,11 @@ function CompatibilitySection({
           </thead>
           <tbody>
             {version.services
+              .filter(
+                (service) =>
+                  service.requiredExecution === undefined ||
+                  service.requiredExecution === execution,
+              )
               .map((service) => ({
                 name: service.name,
                 // Every generated method, measured or not. A method with no
@@ -166,7 +175,6 @@ function CompatibilitySection({
                   };
                 }),
               }))
-              .filter((service) => service.methods.length > 0)
               .map((service, i) => (
                 <ServiceRows
                   key={service.name}

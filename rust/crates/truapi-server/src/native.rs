@@ -486,8 +486,8 @@ pub trait HostCallbacks: Send + Sync {
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
 /// pass an implementation to
 /// [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
-/// simply pass `None`. Callbacks run inline on the dispatcher thread and must
-/// return promptly without blocking.
+/// simply pass `None`. Callbacks run inline on the process-wide dispatch pool
+/// shared by every product execution, so one that blocks stalls the others.
 #[uniffi::export(rust, foreign)]
 pub trait NativeChatCallbacks: Send + Sync {
     /// Create or resolve a native product Chat room.
@@ -1913,9 +1913,9 @@ mod tests {
 
     struct EventCallbacks {
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
-        chat_created_rooms: Mutex<Vec<String>>,
+        chat_created_rooms: Mutex<Vec<(String, String, String)>>,
         chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
-        chat_registered_bots: Mutex<Vec<String>>,
+        chat_registered_bots: Mutex<Vec<(String, String, String)>>,
         chat_bot_rejection: Mutex<Option<String>>,
         chat_posted_text: Mutex<Vec<(String, String)>>,
         theme: Mutex<v01::HostThemeSubscribeItem>,
@@ -2062,13 +2062,13 @@ mod tests {
         fn create_room(
             &self,
             room_id: String,
-            _name: String,
-            _icon: String,
+            name: String,
+            icon: String,
         ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
             self.chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
-                .push(room_id);
+                .push((room_id, name, icon));
             Ok(*self
                 .chat_room_status
                 .lock()
@@ -2078,8 +2078,8 @@ mod tests {
         fn register_bot(
             &self,
             bot_id: String,
-            _name: String,
-            _icon: String,
+            name: String,
+            icon: String,
         ) -> Result<v01::ChatBotRegistrationStatus, HostRejection> {
             if let Some(reason) = self
                 .chat_bot_rejection
@@ -2092,7 +2092,7 @@ mod tests {
             self.chat_registered_bots
                 .lock()
                 .expect("registered bots mutex poisoned")
-                .push(bot_id);
+                .push((bot_id, name, icon));
             Ok(*self
                 .chat_bot_status
                 .lock()
@@ -2121,11 +2121,13 @@ mod tests {
         }
 
         fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
-            let mut room_ids = self
+            let mut room_ids: Vec<String> = self
                 .chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
-                .clone();
+                .iter()
+                .map(|(room_id, _, _)| room_id.clone())
+                .collect();
             room_ids.sort();
             room_ids.dedup();
             Ok(room_ids
@@ -2566,7 +2568,10 @@ mod tests {
                 .lock()
                 .expect("registered bots mutex poisoned")
                 .as_slice(),
-            &["flipper", "flipper"]
+            &[
+                ("flipper".to_string(), "Flipper".to_string(), String::new()),
+                ("flipper".to_string(), "Flipper".to_string(), String::new()),
+            ]
         );
 
         // Registering a bot is not a room change. Polled without blocking so an
@@ -2653,7 +2658,10 @@ mod tests {
                 .lock()
                 .expect("created rooms mutex poisoned")
                 .as_slice(),
-            &["support", "support"]
+            &[
+                ("support".to_string(), "Support".to_string(), String::new()),
+                ("support".to_string(), "Support".to_string(), String::new()),
+            ]
         );
         assert_eq!(
             callbacks

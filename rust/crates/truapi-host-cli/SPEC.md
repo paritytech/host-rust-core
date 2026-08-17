@@ -1572,11 +1572,12 @@ The implementation is covered by:
 
 The reports currently have identical method results apart from their title:
 
-- 45 implemented-success methods;
-- 6 unavailable Chat surface entries (five product-initiated methods plus the
-  host-initiated custom-render subscription);
-- 9 unavailable Coin Payment methods; and
-- 4 unavailable Payment methods.
+- 65 rows: 52 implemented-success methods and 13 unsupported ones;
+- 9 unsupported Coin Payment methods; and
+- 4 unsupported Payment methods.
+
+The Chat surface does not appear: it requires a `Chat` execution, and these are
+SPA reports.
 
 Recommended local verification after CLI changes:
 

@@ -450,18 +450,6 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     func listRooms() throws -> [ChatRoom]
 }
 
-public extension ChatHostBridge {
-    /// Reports bot registration as unavailable. Hosts with a bot backend
-    /// override it.
-    func registerBot(botId: String, name: String, icon: String) throws
-        -> ChatBotRegistrationStatus
-    {
-        throw HostRejection.Rejected(
-            reason: "registerBot is not implemented by this host"
-        )
-    }
-}
-
 public extension HostBridge {
     /// Default no-op logger. Override to plumb into your logging framework.
     func onCoreLog(marker: String, detail: String) {}

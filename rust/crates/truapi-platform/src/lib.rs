@@ -277,6 +277,111 @@ pub fn normalize_product_identifier(
     }
 }
 
+/// Largest accepted length for a product-supplied chat identifier or display
+/// name, in bytes.
+pub const CHAT_FIELD_MAX_BYTES: usize = 256;
+
+/// Largest accepted length for a product-supplied chat icon, in bytes. Wide
+/// enough for a `data:` thumbnail, far below the transport frame cap.
+pub const CHAT_ICON_MAX_BYTES: usize = 64 * 1024;
+
+/// URL schemes a chat icon may never carry, because hosts render it.
+const REJECTED_ICON_SCHEMES: [&str; 4] = ["javascript:", "vbscript:", "file:", "data:text/html"];
+
+/// Normalize a product-supplied chat room or bot identifier.
+///
+/// Applied before the identifier reaches a host so two byte-different ids
+/// cannot render identically, mirroring [`normalize_product_identifier`].
+pub fn normalize_chat_identifier(field: &'static str, id: &str) -> Result<String, ChatFieldError> {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return Err(ChatFieldError::Empty { field });
+    }
+    if trimmed.len() > CHAT_FIELD_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_FIELD_MAX_BYTES,
+        });
+    }
+    let normalized = trimmed.nfc().collect::<String>();
+    if normalized.chars().any(is_display_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(normalized)
+}
+
+/// Validate a product-supplied chat display name.
+pub fn validate_chat_name(field: &'static str, name: &str) -> Result<String, ChatFieldError> {
+    let trimmed = name.trim();
+    if trimmed.len() > CHAT_FIELD_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_FIELD_MAX_BYTES,
+        });
+    }
+    let normalized = trimmed.nfc().collect::<String>();
+    if normalized.chars().any(is_display_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(normalized)
+}
+
+/// Validate a product-supplied chat icon, which is a URL or an inline image.
+pub fn validate_chat_icon(field: &'static str, icon: &str) -> Result<String, ChatFieldError> {
+    let trimmed = icon.trim();
+    if trimmed.len() > CHAT_ICON_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_ICON_MAX_BYTES,
+        });
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if REJECTED_ICON_SCHEMES
+        .iter()
+        .any(|scheme| lowered.starts_with(scheme))
+    {
+        return Err(ChatFieldError::RejectedScheme { field });
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Control characters and bidi overrides let two distinct values render alike.
+fn is_display_unsafe(character: char) -> bool {
+    character.is_control()
+        || matches!(character, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// Rejection of a product-supplied chat field.
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
+pub enum ChatFieldError {
+    /// The field is required and arrived blank.
+    #[display("{field} must not be empty")]
+    Empty {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The field exceeded its byte budget.
+    #[display("{field} must be at most {limit} bytes")]
+    TooLong {
+        /// Offending field name.
+        field: &'static str,
+        /// Accepted maximum.
+        limit: usize,
+    },
+    /// The field carried characters that make values indistinguishable.
+    #[display("{field} must not contain control or bidirectional characters")]
+    UnsafeCharacter {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The icon carried a scheme a host must not render.
+    #[display("{field} carries a scheme that cannot be rendered")]
+    RejectedScheme {
+        /// Offending field name.
+        field: &'static str,
+    },
+}
+
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), RuntimeConfigValidationError> {
     if value.trim().is_empty() {
         return Err(RuntimeConfigValidationError::EmptyField { field });
@@ -1252,8 +1357,9 @@ pub trait PreimageHost: Send + Sync {
 
 /// Host-implemented adapter through which product Chat calls reach native
 /// storage and UI. Installed separately from [`Platform`], and only by the
-/// native entrypoints: a WASM/JS host cannot supply one, so a `Chat` execution
-/// created there answers every Chat call as unsupported.
+/// native entrypoints: a WASM/JS host cannot supply one, so requests from a
+/// `Chat` execution created there answer unsupported and its subscriptions end
+/// empty, which a product cannot tell from a healthy close.
 ///
 /// Product-supplied ids, names and icons arrive unvalidated; a host that
 /// persists or renders them owns the length and URL-scheme checks.

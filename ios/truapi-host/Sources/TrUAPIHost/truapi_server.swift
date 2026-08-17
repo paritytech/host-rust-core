@@ -1936,8 +1936,8 @@ public func FfiConverterTypeHostCallbacks_lower(_ value: HostCallbacks) -> UInt6
  * Native Chat storage and UI adapter. Hosts that support the Chat modality
  * pass an implementation to
  * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
- * simply pass `None`. Callbacks run inline on the dispatcher thread and must
- * return promptly without blocking.
+ * simply pass `None`. Callbacks run inline on the process-wide dispatch pool
+ * shared by every product execution, so one that blocks stalls the others.
  */
 public protocol NativeChatCallbacks: AnyObject, Sendable {
 
@@ -1971,8 +1971,8 @@ public protocol NativeChatCallbacks: AnyObject, Sendable {
  * Native Chat storage and UI adapter. Hosts that support the Chat modality
  * pass an implementation to
  * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
- * simply pass `None`. Callbacks run inline on the dispatcher thread and must
- * return promptly without blocking.
+ * simply pass `None`. Callbacks run inline on the process-wide dispatch pool
+ * shared by every product execution, so one that blocks stalls the others.
  */
 open class NativeChatCallbacksImpl: NativeChatCallbacks, @unchecked Sendable {
     fileprivate let handle: UInt64

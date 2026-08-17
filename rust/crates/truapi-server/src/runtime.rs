@@ -123,6 +123,20 @@ use truapi::versioned::chat::{
     HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
     HostChatRegisterBotRequest, HostChatRegisterBotResponse,
 };
+use truapi::versioned::coin_payment::{
+    HostCoinPaymentCreateChequeError, HostCoinPaymentCreateChequeRequest,
+    HostCoinPaymentCreateChequeResponse, HostCoinPaymentCreatePurseError,
+    HostCoinPaymentCreatePurseRequest, HostCoinPaymentCreatePurseResponse,
+    HostCoinPaymentCreateReceivableError, HostCoinPaymentCreateReceivableRequest,
+    HostCoinPaymentCreateReceivableResponse, HostCoinPaymentDeletePurseError,
+    HostCoinPaymentDeletePurseItem, HostCoinPaymentDeletePurseRequest, HostCoinPaymentDepositError,
+    HostCoinPaymentDepositItem, HostCoinPaymentDepositRequest, HostCoinPaymentListenForError,
+    HostCoinPaymentListenForItem, HostCoinPaymentListenForRequest, HostCoinPaymentQueryPurseError,
+    HostCoinPaymentQueryPurseRequest, HostCoinPaymentQueryPurseResponse,
+    HostCoinPaymentRebalancePurseError, HostCoinPaymentRebalancePurseItem,
+    HostCoinPaymentRebalancePurseRequest, HostCoinPaymentRefundError, HostCoinPaymentRefundItem,
+    HostCoinPaymentRefundRequest,
+};
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
 };
@@ -176,7 +190,8 @@ use truapi_platform::{
     AccountAccessReview, CreateTransactionReview, IdentityDisclosureReview,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
     ProductContext, ProductStorageKey, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
-    SignRawReview, UserConfirmationReview, normalize_product_identifier,
+    SignRawReview, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    validate_chat_icon, validate_chat_name,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -2126,8 +2141,7 @@ impl ProductRuntimeHost {
     fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
         self.native_chat_platform().map_err(|error| match error {
             crate::host_core::ProductRuntimeError::Denied => CallError::Denied,
-            crate::host_core::ProductRuntimeError::Unsupported => CallError::Unsupported,
-            _ => unreachable!("Chat platform policy only returns Denied or Unsupported"),
+            _ => CallError::Unsupported,
         })
     }
 
@@ -2145,7 +2159,13 @@ impl Chat for ProductRuntimeHost {
         request: HostChatCreateRoomRequest,
     ) -> Result<HostChatCreateRoomResponse, CallError<HostChatCreateRoomError>> {
         let platform = self.chat_platform()?;
-        let HostChatCreateRoomRequest::V1(request) = request;
+        let HostChatCreateRoomRequest::V1(mut request) = request;
+        request.room_id = normalize_chat_identifier("roomId", &request.room_id)
+            .map_err(chat_create_room_field_error)?;
+        request.name =
+            validate_chat_name("name", &request.name).map_err(chat_create_room_field_error)?;
+        request.icon =
+            validate_chat_icon("icon", &request.icon).map_err(chat_create_room_field_error)?;
         platform
             .create_room(&self.product, request)
             .await
@@ -2160,7 +2180,13 @@ impl Chat for ProductRuntimeHost {
         request: HostChatRegisterBotRequest,
     ) -> Result<HostChatRegisterBotResponse, CallError<HostChatRegisterBotError>> {
         let platform = self.chat_platform()?;
-        let HostChatRegisterBotRequest::V1(request) = request;
+        let HostChatRegisterBotRequest::V1(mut request) = request;
+        request.bot_id = normalize_chat_identifier("botId", &request.bot_id)
+            .map_err(chat_register_bot_field_error)?;
+        request.name =
+            validate_chat_name("name", &request.name).map_err(chat_register_bot_field_error)?;
+        request.icon =
+            validate_chat_icon("icon", &request.icon).map_err(chat_register_bot_field_error)?;
         platform
             .register_bot(&self.product, request)
             .await
@@ -2206,8 +2232,125 @@ impl Chat for ProductRuntimeHost {
         self.chat.subscribe_actions()
     }
 }
+/// Report a rejected chat bot field as a bot-registration domain error.
+fn chat_register_bot_field_error(
+    error: truapi_platform::ChatFieldError,
+) -> CallError<HostChatRegisterBotError> {
+    CallError::Domain(HostChatRegisterBotError::V1(
+        v01::HostChatRegisterBotError::Unknown {
+            reason: error.to_string(),
+        },
+    ))
+}
+
+/// Report a rejected chat room field as a room-creation domain error.
+fn chat_create_room_field_error(
+    error: truapi_platform::ChatFieldError,
+) -> CallError<HostChatCreateRoomError> {
+    CallError::Domain(HostChatCreateRoomError::V1(
+        v01::HostChatCreateRoomError::Unknown {
+            reason: error.to_string(),
+        },
+    ))
+}
+
 #[truapi::async_trait]
-impl CoinPayment for ProductRuntimeHost {}
+impl CoinPayment for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.create_purse"))]
+    async fn create_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentCreatePurseRequest,
+    ) -> Result<HostCoinPaymentCreatePurseResponse, CallError<HostCoinPaymentCreatePurseError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.query_purse"))]
+    async fn query_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentQueryPurseRequest,
+    ) -> Result<HostCoinPaymentQueryPurseResponse, CallError<HostCoinPaymentQueryPurseError>> {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.rebalance_purse"))]
+    async fn rebalance_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentRebalancePurseRequest,
+    ) -> Result<
+        Subscription<HostCoinPaymentRebalancePurseItem>,
+        CallError<HostCoinPaymentRebalancePurseError>,
+    > {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.delete_purse"))]
+    async fn delete_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentDeletePurseRequest,
+    ) -> Result<
+        Subscription<HostCoinPaymentDeletePurseItem>,
+        CallError<HostCoinPaymentDeletePurseError>,
+    > {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.create_receivable"))]
+    async fn create_receivable(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentCreateReceivableRequest,
+    ) -> Result<
+        HostCoinPaymentCreateReceivableResponse,
+        CallError<HostCoinPaymentCreateReceivableError>,
+    > {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.create_cheque"))]
+    async fn create_cheque(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentCreateChequeRequest,
+    ) -> Result<HostCoinPaymentCreateChequeResponse, CallError<HostCoinPaymentCreateChequeError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.deposit"))]
+    async fn deposit(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentDepositRequest,
+    ) -> Result<Subscription<HostCoinPaymentDepositItem>, CallError<HostCoinPaymentDepositError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.refund"))]
+    async fn refund(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentRefundRequest,
+    ) -> Result<Subscription<HostCoinPaymentRefundItem>, CallError<HostCoinPaymentRefundError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.listen_for_payment"))]
+    async fn listen_for_payment(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentListenForRequest,
+    ) -> Result<Subscription<HostCoinPaymentListenForItem>, CallError<HostCoinPaymentListenForError>>
+    {
+        Err(CallError::Unsupported)
+    }
+}
 #[truapi::async_trait]
 impl Payment for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "payment.balance_subscribe"))]
@@ -2796,6 +2939,77 @@ mod tests {
     /// with no `impl` silently falls back to the trait default and answers
     /// `unavailable`, while codegen, the wire table and the TS types all still
     /// advertise it.
+    #[test]
+    fn chat_register_bot_rejects_unsafe_product_fields() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Chat,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host =
+            ProductRuntimeHost::from_services(services, adapters, pairing_host, product.clone());
+        install_pairing_session(&host, session_info());
+
+        let register = |bot_id: &str, name: &str, icon: &str| {
+            futures::executor::block_on(Chat::register_bot(
+                &host,
+                &CallContext::default(),
+                HostChatRegisterBotRequest::V1(v01::HostChatRegisterBotRequest {
+                    bot_id: bot_id.to_string(),
+                    name: name.to_string(),
+                    icon: icon.to_string(),
+                }),
+            ))
+        };
+
+        assert!(register("", "Flipper", "").is_err(), "empty bot id");
+        assert!(register("   ", "Flipper", "").is_err(), "blank bot id");
+        assert!(
+            register("flip\u{202e}per", "Flipper", "").is_err(),
+            "bidi override in bot id"
+        );
+        assert!(
+            register("flipper", "Flipper", "javascript:alert(1)").is_err(),
+            "script-scheme icon"
+        );
+        assert!(
+            register(&"f".repeat(300), "Flipper", "").is_err(),
+            "oversized bot id"
+        );
+        assert!(
+            chat_platform
+                .registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .is_empty(),
+            "no rejected field may reach the host"
+        );
+
+        // NFD and NFC spellings normalize to one id, so they cannot become two
+        // bots that render identically.
+        register("cafe\u{301}", "Cafe", "").expect("normalized id is accepted");
+        register("caf\u{e9}", "Cafe", "").expect("normalized id is accepted");
+        let bots = chat_platform
+            .registered_bots
+            .lock()
+            .expect("registered bots mutex poisoned");
+        assert_eq!(bots.len(), 2);
+        assert_eq!(bots[0], bots[1]);
+    }
+
     #[test]
     fn chat_register_bot_reaches_the_installed_adapter() {
         let (host_config, _) = runtime_config("chat.dot");

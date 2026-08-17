@@ -778,8 +778,9 @@ export interface ChainProvider {
 /**
  * Host-implemented adapter through which product Chat calls reach native
  * storage and UI. Installed separately from `Platform`, and only by the
- * native entrypoints: a WASM/JS host cannot supply one, so a `Chat` execution
- * created there answers every Chat call as unsupported.
+ * native entrypoints: a WASM/JS host cannot supply one, so requests from a
+ * `Chat` execution created there answer unsupported and its subscriptions end
+ * empty, which a product cannot tell from a healthy close.
  *
  * Product-supplied ids, names and icons arrive unvalidated; a host that
  * persists or renders them owns the length and URL-scheme checks.
