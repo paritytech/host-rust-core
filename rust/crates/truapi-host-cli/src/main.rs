@@ -1392,7 +1392,7 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
 }
 
 fn is_statement_slot_exhaustion(err: &anyhow::Error) -> bool {
-    err.to_string().contains("no free StatementStore slot")
+    truapi_server::reports_exhausted_period(&err.to_string())
 }
 
 /// Best-effort: record the pairing allowance accounts in the renewal ledger so

@@ -935,7 +935,7 @@ mod tests {
         assert!(
             auth_states
                 .iter()
-                .any(|state| matches!(state, AuthState::LoginFailed { reason } if reason == expected_reason)),
+                .any(|state| matches!(state, AuthState::LoginFailed { reason, .. } if reason == expected_reason)),
             "wallet failure should be surfaced to the modal: {auth_states:?}"
         );
     }
@@ -1128,8 +1128,10 @@ mod tests {
             .lock()
             .expect("auth state list mutex poisoned");
         assert_eq!(auth_states.len(), 1, "states: {auth_states:?}");
-        assert!(matches!(&auth_states[0], AuthState::LoginFailed { reason }
-            if reason.contains("identity storage unavailable")));
+        assert!(
+            matches!(&auth_states[0], AuthState::LoginFailed { reason, .. }
+            if reason.contains("identity storage unavailable"))
+        );
     }
 
     #[test]
