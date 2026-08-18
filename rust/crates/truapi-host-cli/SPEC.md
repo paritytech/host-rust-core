@@ -1574,12 +1574,14 @@ The implementation is covered by:
 The reports currently have identical method results apart from their title:
 
 - 65 rows: 52 succeeding methods and 13 failing ones;
-- 9 Coin Payment methods answering `CallError::Unsupported`; and
-- 4 Payment methods answering a typed `Unknown` domain error.
+- 9 Coin Payment methods, which answer `CallError::Unsupported`; and
+- 4 Payment methods, which answer a typed `Unknown` domain error.
 
 The Chat surface does not appear: it requires a `Chat` execution, and these are
-SPA reports. The enumeration in 15.1 lists 45 methods and predates later
-additions to the surface; the reports are the authority on the count.
+SPA reports. Two caveats on the checked-in reports: the enumeration in 15.1
+lists 45 methods and predates later additions to the surface, and the Coin
+Payment `Details` strings still record the older `HostFailure` shape. Both
+refresh on the next `make e2e-signing-cli` / `make e2e-pairing-cli` run.
 
 Recommended local verification after CLI changes:
 

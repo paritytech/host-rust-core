@@ -297,12 +297,18 @@ const ALLOWED_ICON_DATA_TYPES: [&str; 5] = [
 
 /// Normalize a product-supplied chat room or bot identifier.
 ///
-/// Applied before the identifier reaches a host so two byte-different ids
-/// cannot render identically, mirroring [`normalize_product_identifier`].
+/// Screened harder than a display name, mirroring
+/// [`normalize_product_identifier`]: an identifier is matched, not read, so it
+/// also rejects the invisible characters a name legitimately needs — joiners,
+/// variation selectors, soft hyphens and non-ASCII spaces — which would
+/// otherwise let two distinct ids render identically.
 pub fn normalize_chat_identifier(field: &'static str, id: &str) -> Result<String, ChatFieldError> {
     let normalized = normalize_chat_text(field, id)?;
     if normalized.is_empty() {
         return Err(ChatFieldError::Empty { field });
+    }
+    if normalized.chars().any(is_identifier_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
     }
     Ok(normalized)
 }
@@ -395,6 +401,18 @@ fn is_allowed_icon_data_url(candidate: &str) -> bool {
         .collect::<String>()
         .to_ascii_lowercase();
     ALLOWED_ICON_DATA_TYPES.contains(&media_type.as_str())
+}
+
+/// Invisible characters an identifier must not carry. A display name keeps
+/// these: ZWJ builds emoji sequences and ZWNJ is required by Persian.
+fn is_identifier_unsafe(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00ad}'                        // soft hyphen
+            | '\u{200c}' | '\u{200d}'     // ZWNJ, ZWJ
+            | '\u{2060}'..='\u{2064}'     // word joiner, invisible operators
+            | '\u{fe00}'..='\u{fe0f}'     // variation selectors
+    ) || (character.is_whitespace() && character != ' ')
 }
 
 /// Control characters and bidi overrides let two distinct values render alike.

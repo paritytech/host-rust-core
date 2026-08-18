@@ -261,3 +261,35 @@ fn chat_identifiers_normalize_and_bound_the_value_the_host_receives() {
     let icon = "d".repeat(truapi_platform::CHAT_ICON_MAX_BYTES + 1);
     assert!(truapi_platform::validate_chat_icon("icon", &icon).is_err());
 }
+
+#[test]
+fn chat_identifiers_reject_invisibles_that_names_keep() {
+    // Every one of these renders identically to its plain spelling.
+    for invisible in [
+        "flip\u{200d}per",
+        "flip\u{200c}per",
+        "flip\u{fe0e}per",
+        "flip\u{00ad}per",
+        "flip\u{2060}per",
+        "flip\u{205f}per",
+        "flip\u{00a0}per",
+    ] {
+        assert!(
+            truapi_platform::normalize_chat_identifier("botId", invisible).is_err(),
+            "{invisible:?} must not be a valid identifier"
+        );
+        // A display name still accepts them: emoji and Persian need joiners.
+        assert!(
+            truapi_platform::validate_chat_name("name", invisible).is_ok(),
+            "{invisible:?} must remain a valid display name"
+        );
+    }
+
+    // Ordinary identifiers, including an interior ASCII space, still pass.
+    for ordinary in ["flipper", "flip-per", "flip per", "café", "支付"] {
+        assert!(
+            truapi_platform::normalize_chat_identifier("botId", ordinary).is_ok(),
+            "{ordinary:?} must remain a valid identifier"
+        );
+    }
+}
