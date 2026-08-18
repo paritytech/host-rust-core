@@ -4,7 +4,7 @@
 //! same categorization and the `navigate_to` callback only receives
 //! already-validated input.
 
-use truapi_platform::has_dotns_tld;
+use truapi_platform::{has_dotns_tld, normalize_remote_domain};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
@@ -189,18 +189,24 @@ fn normalize_external(input: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-/// Host of an already-canonical [`NavigateDecision::External`] URL, in the
-/// [`normalize_host`] form the permission store keys on.
+/// Authorizable domain of an already-canonical [`NavigateDecision::External`]
+/// URL, in the [`normalize_remote_domain`] form the permission store keys on.
 ///
-/// Returns `None` for a URL with no host component, which the permission gate
-/// treats as unauthorizable rather than guessing a domain for it.
+/// Only `http` and `https` address an internet origin that a domain grant can
+/// speak about. The rest of [`ALLOWED_EXTERNAL_SCHEMES`] are handoffs to
+/// another app — `mailto:` and `tel:` have no host at all, `polkadot:` and
+/// `dot:` name an in-ecosystem target — so they return `None`, and the
+/// permission gate lets them through instead of inventing a domain for them.
 pub fn external_host(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
     let host = parsed.host_str()?;
     if host.is_empty() {
         return None;
     }
-    Some(normalize_host(host))
+    Some(normalize_remote_domain(host))
 }
 
 fn strip_leading_slash(path: &str) -> String {
@@ -511,6 +517,37 @@ mod tests {
                 NavigateDecision::DotName { identifier: b, .. },
             ) => assert_eq!(a, b, "NFC and NFD inputs must normalize to one identifier"),
             other => panic!("expected two DotName decisions, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn external_host_names_a_domain_only_for_http_schemes() {
+        assert_eq!(
+            external_host("https://api.example.com/page"),
+            Some("api.example.com".to_string())
+        );
+        assert_eq!(
+            external_host("http://Example.COM./"),
+            Some("example.com".to_string())
+        );
+        // The permission store keys punycode, so a non-ASCII host resolves to
+        // the same slot as its ASCII spelling.
+        assert_eq!(
+            external_host("https://bücher.example/"),
+            external_host("https://xn--bcher-kva.example/")
+        );
+        // Handoff schemes address another app, not a domain a grant can name.
+        for handoff in [
+            "mailto:someone@example.com",
+            "tel:+15551234567",
+            "polkadot://1exampleaddress",
+            "dot:transfer",
+        ] {
+            assert_eq!(
+                external_host(handoff),
+                None,
+                "{handoff} is not a web origin"
+            );
         }
     }
 }

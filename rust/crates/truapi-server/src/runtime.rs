@@ -803,22 +803,21 @@ impl System for ProductRuntimeHost {
             // reaches an arbitrary internet host, so neither consumes a grant.
             NavigateDecision::DotName { canonical_url, .. }
             | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
-            // External navigation hands an arbitrary host the referrer, the
-            // shape of the URL, and whatever the product put in it, so it needs
-            // the same per-domain grant that gates outbound access to that host.
+            // An `http(s)` URL hands an arbitrary host the referrer, the shape
+            // of the URL, and whatever the product put in it, so it needs the
+            // same per-domain grant that gates outbound access to that host.
+            // The other allowed schemes are app handoffs with no authorizable
+            // domain (`external_host` returns `None`) and pass straight through.
             NavigateDecision::External { url } => {
-                let host = external_host(&url).ok_or_else(|| {
-                    CallError::Domain(HostNavigateToError::V1(v01::HostNavigateToError::Unknown {
-                        reason: format!("external URL `{url}` has no host to authorize"),
-                    }))
-                })?;
-                self.require_remote_permission(
-                    v01::RemotePermission::Remote {
-                        domains: vec![host],
-                    },
-                    HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied),
-                )
-                .await?;
+                if let Some(host) = external_host(&url) {
+                    self.require_remote_permission(
+                        v01::RemotePermission::Remote {
+                            domains: vec![host],
+                        },
+                        HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied),
+                    )
+                    .await?;
+                }
                 url
             }
         };
@@ -2906,6 +2905,52 @@ mod tests {
                 .lock()
                 .expect("remote permission list mutex poisoned")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn navigate_to_handoff_schemes_bypass_the_remote_gate() {
+        // Only `http(s)` reaches a domain a grant can name. The other allowed
+        // schemes hand the URL to another app, so a denying platform must not
+        // turn them into a permission error.
+        let platform = Arc::new(StubPlatform {
+            remote_permission_denied: true,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+
+        let handoffs = [
+            "mailto:someone@example.com",
+            "tel:+15551234567",
+            "polkadot://1exampleaddress",
+            "dot:transfer",
+        ];
+        for url in handoffs {
+            let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                url: url.to_string(),
+            });
+            assert_eq!(
+                futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
+                HostNavigateToResponse::V1,
+                "{url} has no authorizable domain and must reach the platform"
+            );
+        }
+        assert!(
+            platform
+                .remote_permission_requests
+                .lock()
+                .expect("remote permission list mutex poisoned")
+                .is_empty(),
+            "a hostless scheme must not consume a grant"
+        );
+        assert_eq!(
+            platform
+                .navigations
+                .lock()
+                .expect("navigation list mutex poisoned")
+                .len(),
+            handoffs.len()
         );
     }
 
