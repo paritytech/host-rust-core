@@ -82,11 +82,8 @@ final class StubHostBridge: HostBridge {
     func devicePermission(request _: HostDevicePermissionRequest) async throws -> Bool { false }
     func remotePermission(request _: RemotePermission) async throws -> Bool { false }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
-<<<<<<< HEAD
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func localStorageRead(key: String) throws -> Data? { localStore[key] }
     func localStorageWrite(key: String, value: Data) throws { localStore[key] = value }
     func localStorageClear(key: String) throws { localStore[key] = nil }
-=======
->>>>>>> main
 }
