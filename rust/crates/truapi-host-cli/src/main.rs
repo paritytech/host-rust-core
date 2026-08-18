@@ -268,6 +268,13 @@ struct SigningHostArgs {
     /// Approve every confirmation without prompting on the CLI.
     #[arg(long)]
     auto_accept: bool,
+    /// Serve product frames without a terminal UI and stay up until stopped.
+    /// Needs no TTY, so a dev server can supervise this process: the frame
+    /// endpoint and every lifecycle event are logged one line at a time, and
+    /// the signer is ready once "Signing host ready" is printed. Pair it with
+    /// `--auto-accept`, because a process with no terminal cannot prompt.
+    #[arg(long)]
+    serve: bool,
     /// Execute one slash command without starting the terminal UI.
     #[command(subcommand)]
     action: Option<SigningHostAction>,
@@ -832,10 +839,10 @@ async fn run_signing_host(
         .action
         .as_ref()
         .map(|SigningHostAction::Exec { command }| command.clone());
-    let interactive = args.script.is_none() && exec_input.is_none();
+    let interactive = args.script.is_none() && exec_input.is_none() && !args.serve;
     if interactive && !terminal_ui::is_interactive_terminal() {
         invalid_invocation(
-            "interactive signing-host requires a TTY; use `signing-host exec '/script path.ts'` or --script",
+            "interactive signing-host requires a TTY; use --serve to run headless, or `signing-host exec '/script path.ts'`, or --script",
         );
     }
     let exec_command = exec_input
@@ -885,21 +892,7 @@ async fn run_signing_host(
         let script_frame_url = frame_url.clone();
         let initial_deeplink = args.deeplink.clone();
         let status = with_frame_server(runtime_for_frames, product, frame_server, async move {
-            let mut responder = None;
-            if let Some(deeplink) = initial_deeplink {
-                prepare_pairing_response(&mut session, &deeplink).await?;
-                let runtime = session.runtime.clone();
-                responder = Some(tokio::spawn(async move {
-                    match runtime.respond_to_pairing(&deeplink).await {
-                        Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
-                            outcome: format!("{exit:?}"),
-                        }),
-                        Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
-                            reason: err.reason,
-                        }),
-                    }
-                }));
-            }
+            let responder = spawn_pairing_responder(&mut session, initial_deeplink).await?;
             ensure_signer(&mut session).await?;
             let status = script_runner::run(
                 &script_frame_url,
@@ -919,6 +912,31 @@ async fn run_signing_host(
         std::process::exit(code);
     }
 
+    if args.serve {
+        let serve_deeplink = args.deeplink.clone();
+        let serve_frame_url = frame_url.clone();
+        let auto_accept = args.auto_accept;
+        return with_frame_server(
+            runtime_for_frames,
+            product.clone(),
+            frame_server,
+            async move {
+                let responder = spawn_pairing_responder(&mut session, serve_deeplink).await?;
+                ensure_signer(&mut session).await?;
+                terminal_ui::output_event(SystemEvent::ServeReady {
+                    url: serve_frame_url,
+                    auto_accept,
+                });
+                wait_for_shutdown().await;
+                if let Some(responder) = responder {
+                    responder.abort();
+                }
+                Ok(())
+            },
+        )
+        .await;
+    }
+
     let initial_deeplink = args.deeplink.clone();
     if let Some(command) = exec_command {
         return with_frame_server(
@@ -926,22 +944,7 @@ async fn run_signing_host(
             product.clone(),
             frame_server,
             async move {
-                let responder = if let Some(deeplink) = initial_deeplink {
-                    prepare_pairing_response(&mut session, &deeplink).await?;
-                    let runtime = session.runtime.clone();
-                    Some(tokio::spawn(async move {
-                        match runtime.respond_to_pairing(&deeplink).await {
-                            Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
-                                outcome: format!("{exit:?}"),
-                            }),
-                            Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
-                                reason: err.reason,
-                            }),
-                        }
-                    }))
-                } else {
-                    None
-                };
+                let responder = spawn_pairing_responder(&mut session, initial_deeplink).await?;
                 let result = execute_non_interactive_command(
                     &mut session,
                     &frame_url,
@@ -1181,6 +1184,12 @@ fn validate_signing_args(args: &SigningHostArgs) -> Result<()> {
     if args.script.is_some() && args.action.is_some() {
         bail!("--script cannot be combined with the exec subcommand");
     }
+    if args.serve && args.script.is_some() {
+        bail!("--serve cannot be combined with --script");
+    }
+    if args.serve && args.action.is_some() {
+        bail!("--serve cannot be combined with the exec subcommand");
+    }
     if mnemonic.is_some() && account.is_some() {
         bail!("--account cannot be used when --mnemonic or HOST_CLI_SIGNER_MNEMONIC is set");
     }
@@ -1229,6 +1238,42 @@ where
     let result = body.await;
     server.abort();
     result
+}
+
+/// Answer a pairing deeplink in the background, when one was given. The caller
+/// aborts the returned task once its own work is done.
+async fn spawn_pairing_responder(
+    session: &mut SigningHostSession,
+    deeplink: Option<String>,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    let Some(deeplink) = deeplink else {
+        return Ok(None);
+    };
+    prepare_pairing_response(session, &deeplink).await?;
+    let runtime = session.runtime.clone();
+    Ok(Some(tokio::spawn(async move {
+        match runtime.respond_to_pairing(&deeplink).await {
+            Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
+                outcome: format!("{exit:?}"),
+            }),
+            Err(err) => {
+                terminal_ui::output_event(SystemEvent::SigningHostError { reason: err.reason })
+            }
+        }
+    })))
+}
+
+/// Park until the operator stops the process. Ctrl-C is awaited so the host owns
+/// its own shutdown; SIGTERM keeps its default action and ends the process.
+async fn wait_for_shutdown() {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        // Nothing to await without a signal handler, so stay up and serve until
+        // the process is killed rather than exiting as soon as it starts.
+        terminal_ui::output_event(SystemEvent::SigningHostError {
+            reason: format!("ctrl-c handling unavailable: {error}"),
+        });
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
@@ -2426,6 +2471,73 @@ mod cli_tests {
                 .to_string()
                 .contains("--script cannot be combined")
         );
+    }
+
+    #[test]
+    fn signing_host_serve_needs_no_tty_and_refuses_one_shot_modes() {
+        let cli = Cli::try_parse_from([
+            "truapi-host",
+            "signing-host",
+            "--serve",
+            "--frame-listen",
+            "127.0.0.1:9955",
+            "--auto-accept",
+        ])
+        .expect("serve should parse");
+        let Command::SigningHost(args) = cli.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(args.serve);
+        assert!(validate_signing_args(&args).is_ok());
+
+        let with_script = Cli::try_parse_from([
+            "truapi-host",
+            "signing-host",
+            "--serve",
+            "--script",
+            "smoke.ts",
+        ])
+        .expect("serve with a script should parse");
+        let Command::SigningHost(args) = with_script.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(
+            validate_signing_args(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("--serve cannot be combined with --script")
+        );
+
+        let with_exec =
+            Cli::try_parse_from(["truapi-host", "signing-host", "--serve", "exec", "/help"])
+                .expect("serve with exec should parse");
+        let Command::SigningHost(args) = with_exec.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(
+            validate_signing_args(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("--serve cannot be combined with the exec subcommand")
+        );
+    }
+
+    #[test]
+    fn serve_ready_names_the_endpoint_and_the_approval_policy() {
+        let prompting = terminal_ui::SystemEvent::ServeReady {
+            url: "ws://127.0.0.1:9955".to_string(),
+            auto_accept: false,
+        }
+        .human();
+        assert!(prompting.contains("ws://127.0.0.1:9955"));
+        assert!(prompting.contains("--auto-accept"));
+
+        let accepting = terminal_ui::SystemEvent::ServeReady {
+            url: "ws://127.0.0.1:9955".to_string(),
+            auto_accept: true,
+        }
+        .human();
+        assert!(accepting.contains("approved automatically"));
     }
 
     #[test]

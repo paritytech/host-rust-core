@@ -110,6 +110,10 @@ pub enum SystemEvent {
     FramesListening {
         url: String,
     },
+    ServeReady {
+        url: String,
+        auto_accept: bool,
+    },
     SigningHostReady,
     SigningHostNeedsSession,
     SigningHostAccountExhausted {
@@ -1281,6 +1285,18 @@ impl App {
                 NoticeTone::Info,
                 "Listening for product frames".to_string(),
                 Some(url),
+            ),
+            SystemEvent::ServeReady { url, auto_accept } => self.notice(
+                NoticeTone::Info,
+                "Serving product frames until stopped".to_string(),
+                Some(format!(
+                    "{url}\n{}",
+                    if auto_accept {
+                        "Confirmations are approved automatically"
+                    } else {
+                        "Confirmations will be denied: there is no terminal to prompt on, so pass --auto-accept"
+                    }
+                )),
             ),
             SystemEvent::SigningHostReady => self.activity(
                 "signer".to_string(),
