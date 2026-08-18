@@ -17,6 +17,7 @@
 use parity_scale_codec::{Compact, Decode, Encode};
 use sp_crypto_hashing::{blake2_128, blake2_256, keccak_256, twox_128};
 use thiserror::Error;
+use tracing::warn;
 
 /// Ring-VRF context for `register_name` proofs.
 ///
@@ -642,6 +643,13 @@ pub async fn resolve_labels<T: DotnsTransport + ?Sized>(
         }
         if short_page {
             break;
+        }
+        if page + 1 == LABEL_PAGE_MAX {
+            warn!(
+                store = %hex::encode(store),
+                read = LABEL_PAGE_MAX * LABEL_PAGE_LIMIT,
+                "LabelStore holds more labels than the pages read; a name past this point is not resolved"
+            );
         }
     }
     Ok(labels)

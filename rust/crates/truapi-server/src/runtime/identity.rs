@@ -35,8 +35,13 @@ use truapi::latest::{
     StorageQueryType,
 };
 
-/// Budget for the whole Asset Hub lookup: best block, storage, contract views.
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+/// Budget for the whole Asset Hub lookup: best block, controller discovery, the
+/// contract walk and the label pages of a large store, well over a dozen
+/// round trips on one follow.
+const LOOKUP_BUDGET: Duration = Duration::from_secs(45);
+/// Budget for one step of it: opening the follow, one storage read, one
+/// contract view. A step that stalls this long is not going to answer.
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 const BEST_BLOCK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Monotonic salt for local identity lookup follow ids. It keeps concurrent
@@ -147,7 +152,7 @@ async fn lookup_dotns_identity(
     asset_hub_chain_genesis_hash: [u8; 32],
     account_id: [u8; 32],
 ) -> Result<Option<DotnsIdentity>, String> {
-    let timeout = futures_timer::Delay::new(LOOKUP_TIMEOUT).fuse();
+    let timeout = futures_timer::Delay::new(LOOKUP_BUDGET).fuse();
     pin_mut!(timeout);
     let lookup = async {
         let mut lookup =
@@ -200,7 +205,7 @@ impl<'a> DotnsLookup<'a> {
         let hash = wait_for_chain_head_best_hash(
             &mut follow,
             "Asset Hub",
-            LOOKUP_TIMEOUT,
+            OPERATION_TIMEOUT,
             BEST_BLOCK_TIMEOUT,
         )
         .await?;
@@ -242,7 +247,7 @@ impl DotnsTransport for DotnsLookup<'_> {
                 operation_id: &operation_id,
                 key: &key,
                 label: "Asset Hub",
-                timeout: LOOKUP_TIMEOUT,
+                timeout: OPERATION_TIMEOUT,
             },
         )
         .await?;
@@ -278,7 +283,7 @@ impl DotnsTransport for DotnsLookup<'_> {
             &mut self.follow,
             &operation_id,
             "Asset Hub",
-            LOOKUP_TIMEOUT,
+            OPERATION_TIMEOUT,
         )
         .await
         .map_err(DotnsViewError::Failed)?;

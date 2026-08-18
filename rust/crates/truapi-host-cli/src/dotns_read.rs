@@ -28,6 +28,8 @@ pub const DOTNS_POP_CONTROLLER_ENV: &str = "HOST_CLI_DOTNS_POP_CONTROLLER";
 /// One Asset Hub RPC connection for a batch of dotNS reads.
 pub struct AssetHubReader {
     rpc: RpcClient,
+    /// `DotnsPopController` once resolved; it does not change within a run.
+    pop_controller: Option<[u8; 20]>,
 }
 
 impl AssetHubReader {
@@ -36,7 +38,10 @@ impl AssetHubReader {
         let rpc = RpcClient::from_insecure_url(asset_hub_ws)
             .await
             .with_context(|| format!("connect {asset_hub_ws}"))?;
-        Ok(Self { rpc })
+        Ok(Self {
+            rpc,
+            pop_controller: None,
+        })
     }
 
     /// Asset Hub chain time in Unix seconds. `Timestamp.Now` itself is
@@ -56,7 +61,7 @@ impl AssetHubReader {
     /// Alias `account` registered with, per `DotnsGateway.AccountAlias`.
     pub async fn account_alias(&self, account: &[u8; 32]) -> Result<Option<[u8; 32]>> {
         let value = self.raw_storage(&account_alias_key(account)).await?;
-        Ok(value.and_then(|bytes| bytes.try_into().ok()))
+        account_id_value("DotnsGateway.AccountAlias", value)
     }
 
     /// Account that reserved the dotted lite username `lite_label` through the
@@ -65,7 +70,7 @@ impl AssetHubReader {
         let value = self
             .raw_storage(&lite_label_owner_key(lite_label.as_bytes()))
             .await?;
-        Ok(value.and_then(|bytes| bytes.try_into().ok()))
+        account_id_value("DotnsGateway.LiteLabelOwner", value)
     }
 
     /// Usernames of `account` as recorded by the dotNS contracts.
@@ -86,9 +91,19 @@ impl AssetHubReader {
             .map_err(anyhow::Error::msg)
     }
 
-    /// `DotnsPopController` address. The env override wins, otherwise on-chain
-    /// discovery through the dispatcher's `TARGET()` getter.
+    /// `DotnsPopController` address, resolved once per reader. The env override
+    /// wins, otherwise on-chain discovery through the dispatcher's `TARGET()`
+    /// getter.
     async fn pop_controller(&mut self) -> Result<[u8; 20]> {
+        if let Some(controller) = self.pop_controller {
+            return Ok(controller);
+        }
+        let controller = self.resolve_pop_controller().await?;
+        self.pop_controller = Some(controller);
+        Ok(controller)
+    }
+
+    async fn resolve_pop_controller(&mut self) -> Result<[u8; 20]> {
         if let Ok(value) = std::env::var(DOTNS_POP_CONTROLLER_ENV) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
@@ -159,6 +174,19 @@ impl AssetHubReader {
             })
             .transpose()
     }
+}
+
+/// Decodes an optional 32-byte account id storage value. A value of another
+/// length is an error, not "absent": treating it as absent would let a
+/// registration proceed that the gateway then rejects.
+fn account_id_value(entry: &str, value: Option<Vec<u8>>) -> Result<Option<[u8; 32]>> {
+    value
+        .map(|bytes| {
+            let len = bytes.len();
+            <[u8; 32]>::try_from(bytes)
+                .map_err(|_| anyhow::anyhow!("{entry} value is {len} bytes, expected 32"))
+        })
+        .transpose()
 }
 
 #[async_trait]

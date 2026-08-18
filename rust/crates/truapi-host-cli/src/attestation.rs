@@ -17,7 +17,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use bip39::Mnemonic;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use tokio::sync::OnceCell;
+use std::sync::Mutex;
 use tracing::{debug, warn};
 use truapi_server::host_logic::attestation::build_lite_registration;
 use truapi_server::host_logic::dotns_gateway::{RESERVED_LABEL_LEN, is_reservable_base_label};
@@ -33,8 +33,9 @@ use crate::dotns_read::AssetHubReader;
 /// auth handshake itself ([`backend_token`]).
 pub const IDENTITY_BACKEND_TOKEN_ENV: &str = "HOST_CLI_IDENTITY_BACKEND_TOKEN";
 
-/// Access token for the username routes, minted once per process.
-static BACKEND_TOKEN: OnceCell<String> = OnceCell::const_new();
+/// Access tokens for the username routes, minted once per backend base and
+/// process. Keyed by base so two backends in one process never share a token.
+static BACKEND_TOKENS: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
 
 /// Bearer token for the identity backend's username routes.
 ///
@@ -44,15 +45,30 @@ static BACKEND_TOKEN: OnceCell<String> = OnceCell::const_new();
 /// its own candidate account. A fresh subject each run keeps repeat
 /// registrations clear of the per-subject device gate and rate limit.
 async fn backend_token(client: &reqwest::Client, backend_base: &str) -> Result<&'static str> {
-    BACKEND_TOKEN
-        .get_or_try_init(|| async {
-            match std::env::var(IDENTITY_BACKEND_TOKEN_ENV) {
-                Ok(token) if !token.trim().is_empty() => Ok(token.trim().to_string()),
-                _ => mint_backend_token(client, backend_base).await,
-            }
-        })
-        .await
-        .map(String::as_str)
+    if let Ok(token) = std::env::var(IDENTITY_BACKEND_TOKEN_ENV)
+        && !token.trim().is_empty()
+    {
+        return Ok(Box::leak(token.trim().to_string().into_boxed_str()));
+    }
+    let cached = BACKEND_TOKENS
+        .lock()
+        .expect("backend token cache mutex poisoned")
+        .iter()
+        .find(|(base, _)| base == backend_base)
+        .map(|(_, token)| *token);
+    if let Some(token) = cached {
+        return Ok(token);
+    }
+    let token: &'static str = Box::leak(
+        mint_backend_token(client, backend_base)
+            .await?
+            .into_boxed_str(),
+    );
+    BACKEND_TOKENS
+        .lock()
+        .expect("backend token cache mutex poisoned")
+        .push((backend_base.to_string(), token));
+    Ok(token)
 }
 
 /// Runs the backend's auth handshake and returns its access JWT.
