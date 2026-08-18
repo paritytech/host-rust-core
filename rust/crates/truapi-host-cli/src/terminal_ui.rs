@@ -140,12 +140,16 @@ pub enum SystemEvent {
         target: String,
         reason: String,
     },
+    AllowanceRenewalPruned {
+        target: String,
+    },
     AllowanceRenewalReport {
         period: u32,
         renewed: usize,
         fresh: usize,
         failed: usize,
         skipped: usize,
+        pruned: usize,
     },
     NotificationDelivered {
         id: u32,
@@ -1348,21 +1352,31 @@ impl App {
                 Some(reason),
                 ActivityState::Failed,
             ),
+            // A prune is not a failed renewal: nothing was rejected, an entry
+            // this identity never promised was discarded. Rendering it red beside
+            // chain rejections reads as an error the host should chase.
+            SystemEvent::AllowanceRenewalPruned { target } => self.activity(
+                format!("allowance:{target}"),
+                format!("{} dropped from the ledger", allowance_name(&target)),
+                Some("promised by a previous identity; re-track it to keep it renewed".to_string()),
+                ActivityState::Warning,
+            ),
             SystemEvent::AllowanceRenewalReport {
                 period,
                 renewed,
                 fresh,
                 failed,
                 skipped,
+                pruned,
             } => {
-                if renewed + fresh + failed + skipped == 0 {
+                if renewed + fresh + failed + skipped + pruned == 0 {
                     self.notice(
                         NoticeTone::Info,
                         "No tracked allowance targets".to_string(),
                         Some(format!("Statement period {period}")),
                     );
                 } else {
-                    let tone = if failed + skipped > 0 {
+                    let tone = if failed + skipped + pruned > 0 {
                         NoticeTone::Warning
                     } else {
                         NoticeTone::Success
@@ -1371,7 +1385,7 @@ impl App {
                         tone,
                         "Allowance renewal finished".to_string(),
                         Some(format!(
-                            "Period {period} · {renewed} renewed · {fresh} fresh · {failed} failed · {skipped} skipped"
+                            "Period {period} · {renewed} renewed · {fresh} fresh · {failed} failed · {skipped} skipped · {pruned} pruned"
                         )),
                     );
                 }

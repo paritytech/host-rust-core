@@ -4134,6 +4134,17 @@ public struct StatementRenewalReport: Equatable, Hashable {
      */
     public var outcomes: [StatementRenewalOutcome]
     /**
+     * Labels of targets this pass dropped because a different identity
+     * promised them.
+     *
+     * Dropping is silent otherwise: a pruned target simply stops appearing in
+     * `outcomes`, and the surface has no way to list the ledger, so a host
+     * could only infer it from an absence. A raw account target does not
+     * survive a change of root entropy, so this is how a host learns to
+     * re-track one.
+     */
+    public var pruned: [String]
+    /**
      * Whether the pass hit slot exhaustion for this period.
      */
     public var slotsExhausted: Bool
@@ -4148,10 +4159,21 @@ public struct StatementRenewalReport: Equatable, Hashable {
          * Per-target outcomes in ledger order.
          */outcomes: [StatementRenewalOutcome],
         /**
+         * Labels of targets this pass dropped because a different identity
+         * promised them.
+         *
+         * Dropping is silent otherwise: a pruned target simply stops appearing in
+         * `outcomes`, and the surface has no way to list the ledger, so a host
+         * could only infer it from an absence. A raw account target does not
+         * survive a change of root entropy, so this is how a host learns to
+         * re-track one.
+         */pruned: [String],
+        /**
          * Whether the pass hit slot exhaustion for this period.
          */slotsExhausted: Bool) {
         self.period = period
         self.outcomes = outcomes
+        self.pruned = pruned
         self.slotsExhausted = slotsExhausted
     }
 
@@ -4173,6 +4195,7 @@ public struct FfiConverterTypeStatementRenewalReport: FfiConverterRustBuffer {
             try StatementRenewalReport(
                 period: FfiConverterUInt32.read(from: &buf),
                 outcomes: FfiConverterSequenceTypeStatementRenewalOutcome.read(from: &buf),
+                pruned: FfiConverterSequenceString.read(from: &buf),
                 slotsExhausted: FfiConverterBool.read(from: &buf)
         )
     }
@@ -4180,6 +4203,7 @@ public struct FfiConverterTypeStatementRenewalReport: FfiConverterRustBuffer {
     public static func write(_ value: StatementRenewalReport, into buf: inout [UInt8]) {
         FfiConverterUInt32.write(value.period, into: &buf)
         FfiConverterSequenceTypeStatementRenewalOutcome.write(value.outcomes, into: &buf)
+        FfiConverterSequenceString.write(value.pruned, into: &buf)
         FfiConverterBool.write(value.slotsExhausted, into: &buf)
     }
 }
@@ -5798,6 +5822,31 @@ fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffe
         case 1: return try FfiConverterTypeProductAccountId.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
     }
 }
 
