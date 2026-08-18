@@ -113,7 +113,7 @@ A pass reports per target and only throws when it could not run at all, so decid
 
 - every status `Registered` or `AlreadyAllocated`: `Result.success()`.
 - any status `Failed`: `Result.retry()`. The grace window means the retry can wait for the worker's own backoff rather than a tight loop.
-- any status `SkippedExhausted`, or `report.slotsExhausted`: `Result.success()`. Retrying cannot free a slot, only time or a replacement can, so a retry here only burns the worker's budget. Nothing currently surfaces exhaustion to the person, so log it.
+- any status `SkippedExhausted`, or `report.slotsExhausted`: `Result.success()`. Retrying cannot free a slot, only time or a replacement can, so a retry here only burns the worker's budget. It does mean an allowance went unrenewed, so tell the person rather than only logging it.
 - an exception carrying `Disconnected` before a session is restored: not ready rather than failed. Restore a session and let the next run take it.
 
 Scheduling is one of three layers, and only the first needs the OS:
@@ -121,6 +121,8 @@ Scheduling is one of three layers, and only the first needs the OS:
 1. a `WorkManager` run, which is the only one that covers an app nobody opens.
 2. a pass on session activation, which covers an app somebody does.
 3. on-demand allocation, which registers a product's own account for the current period when that product asks for a statement-store allowance and none is held. That covers the asking product, not the rest of the ledger, so it narrows the window rather than closing it.
+
+`lastStatementRenewalReport()` returns the most recent pass from either path, or `null` if none has run yet, which is "not yet" rather than healthy. A host driving the in-process loop has no return value to inspect, so this is where it reads what the loop achieved; checking it on resume is enough to catch an exhausted period.
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
 

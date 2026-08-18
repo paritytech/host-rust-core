@@ -539,7 +539,16 @@ impl SigningHost {
     pub(crate) async fn renew_statement_allowances(
         &self,
     ) -> Result<crate::runtime::statement_allowance::renewal::StatementRenewalReport, String> {
-        allowance_renewal::renew_now(&self.services, self).await
+        let report = allowance_renewal::renew_now(&self.services, self).await?;
+        self.renewal.record_report(&report);
+        Ok(report)
+    }
+
+    /// The most recent renewal pass, from the loop or a direct call.
+    pub(crate) fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::runtime::statement_allowance::renewal::StatementRenewalReport> {
+        self.renewal.last_report()
     }
 
     /// Start the periodic statement-store renewal loop. Idempotent.

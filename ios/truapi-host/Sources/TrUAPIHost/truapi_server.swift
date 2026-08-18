@@ -2836,6 +2836,17 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
+     * The most recent renewal pass, from the in-process loop or a direct call.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
+
+    /**
      * The in-process loop's own cadence, capped at an hour. An allowance stays
      * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
      * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
@@ -3087,6 +3098,24 @@ open func disconnect()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+    /**
+     * The most recent renewal pass, from the in-process loop or a direct call.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -3408,7 +3437,16 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
      * wake-up per period has ample slack and should treat any value under an
      * hour as the boundary approaching, rather than requesting a wake every
      * hour for a pass that will almost always report `AlreadyAllocated`.
+     * The most recent renewal pass, from the in-process loop or a direct call.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
      */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
+
     func nextStatementRenewalDelay()  -> TimeInterval
 
     /**
@@ -3565,7 +3603,23 @@ open func disconnect()  {try! rustCall() {
      * wake-up per period has ample slack and should treat any value under an
      * hour as the boundary approaching, rather than requesting a wake every
      * hour for a pass that will almost always report `AlreadyAllocated`.
+     * The most recent renewal pass, from the in-process loop or a direct call.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
      */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
 open func nextStatementRenewalDelay() -> TimeInterval  {
     return try!  FfiConverterDuration.lift(try! rustCall() {
         uniffiCallStatus in
@@ -5872,6 +5926,30 @@ fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeStatementRenewalReport: FfiConverterRustBuffer {
+    typealias SwiftType = StatementRenewalReport?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeStatementRenewalReport.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeStatementRenewalReport.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeBytes32: FfiConverterRustBuffer {
     typealias SwiftType = Bytes32?
 
@@ -6330,6 +6408,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_last_statement_renewal_report() != 42505) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 13069) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6384,7 +6465,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 33452) {
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_last_statement_renewal_report() != 50601) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 22605) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_notify_chain_closed() != 55360) {

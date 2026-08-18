@@ -22,10 +22,10 @@
 //! A caller reading [`StatementRenewalReport`] to answer an OS scheduler should
 //! treat every `Registered` or `AlreadyAllocated` as success, a `Failed` as worth
 //! retrying on the next opportunistic wake, and exhaustion as success: retrying
-//! cannot free a slot, only time or a replacement can. Exhaustion still needs
-//! reporting somewhere a person can see, which no surface does yet. The host
-//! READMEs under `ios/truapi-host` and `android/truapi-host` carry the
-//! platform-specific form of this.
+//! cannot free a slot, only time or a replacement can. A host driving the loop
+//! instead reads the same report from `last_statement_renewal_report`, since the
+//! loop has no caller to return one to. The host READMEs under `ios/truapi-host`
+//! and `android/truapi-host` carry the platform-specific form of this.
 
 use std::time::Duration;
 
