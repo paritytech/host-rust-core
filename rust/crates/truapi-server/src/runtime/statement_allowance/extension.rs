@@ -23,6 +23,7 @@ use scale_info::{PortableRegistry, TypeDef, TypeDefPrimitive, TypeDefVariant};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
+use super::collection::PersonhoodCollection;
 
 /// Signed-extension identifier that carries the `AsPgas` authorization on Asset Hub.
 pub const AS_PGAS: &str = "AsPgas";
@@ -434,14 +435,18 @@ impl Metadata {
         Ok([pallet_index, variant.index])
     }
 
-    /// Resolve `AsResourcesInfo::<info_variant>` and the
-    /// `MembershipCollection::LitePeople` index it carries, by name, from the
-    /// `AsResources` extension type.
+    /// Resolve `AsResourcesInfo::<info_variant>` and the `MembershipCollection`
+    /// index naming `collection`, by name, from the `AsResources` extension type.
     pub fn as_resources_variant_indices(
         &self,
         info_variant: &str,
+        collection: PersonhoodCollection,
     ) -> Result<(u8, u8), StatementAllowanceError> {
-        self.extension_info_and_field_variant_indices(AS_RESOURCES, info_variant, "LitePeople")
+        self.extension_info_and_field_variant_indices(
+            AS_RESOURCES,
+            info_variant,
+            collection.metadata_variant(),
+        )
     }
 
     /// Resolve `(info variant index, nested field variant index)` for an
@@ -827,6 +832,7 @@ pub fn blake2b256(message: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_fixtures;
     use super::*;
 
     /// Fixture metadata captured from paseo-next-v2 (raw `RuntimeMetadataPrefixed`).
@@ -872,10 +878,16 @@ mod tests {
         assert_eq!(
             (
                 metadata
-                    .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                    .as_resources_variant_indices(
+                        "RegisterStatementStoreAllowance",
+                        PersonhoodCollection::LitePeople,
+                    )
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("ClaimLongTermStorage")
+                    .as_resources_variant_indices(
+                        "ClaimLongTermStorage",
+                        PersonhoodCollection::LitePeople
+                    )
                     .unwrap(),
             ),
             ((0x02, 0x01), (0x03, 0x01)),
@@ -884,6 +896,43 @@ mod tests {
             metadata
                 .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
                 .is_some()
+        );
+    }
+
+    /// PGAS authorizes with a different extension from the statement-store
+    /// claims, and only Asset Hub declares it. A re-captured fixture that changed
+    /// the claim arity would otherwise surface as a runtime panic inside
+    /// `validate_transaction` rather than a failing test.
+    #[test]
+    fn the_asset_hub_fixture_declares_the_pgas_claim_shape() {
+        let metadata = test_fixtures::asset_hub();
+
+        assert!(metadata.extension_index(AS_PGAS).is_some());
+        assert_eq!(
+            metadata
+                .extension_info_field_count(AS_PGAS, "Claim")
+                .unwrap(),
+            5,
+        );
+        // `ClaimPgasInfo` encodes positionally, so the order is what the payload
+        // depends on. Arity alone would still hold if the runtime swapped two
+        // fields, and the collection is located by variant name rather than by
+        // position, so nothing else would notice.
+        assert_eq!(
+            metadata
+                .extension_info_variant(AS_PGAS, "Claim")
+                .unwrap()
+                .fields
+                .iter()
+                .map(|field| field.name.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("proof"),
+                Some("ring_index"),
+                Some("revision"),
+                Some("collection"),
+                Some("day"),
+            ],
         );
     }
 
@@ -921,7 +970,10 @@ mod tests {
         );
         assert_eq!(
             metadata
-                .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                .as_resources_variant_indices(
+                    "RegisterStatementStoreAllowance",
+                    PersonhoodCollection::LitePeople,
+                )
                 .unwrap(),
             metadata
                 .extension_info_and_field_variant_indices(
@@ -1093,10 +1145,16 @@ mod tests {
                     .call_indices("Resources", "claim_long_term_storage")
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                    .as_resources_variant_indices(
+                        "RegisterStatementStoreAllowance",
+                        PersonhoodCollection::LitePeople,
+                    )
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("ClaimLongTermStorage")
+                    .as_resources_variant_indices(
+                        "ClaimLongTermStorage",
+                        PersonhoodCollection::LitePeople
+                    )
                     .unwrap(),
             ),
             ([0x3f, 0x0a], [0x3f, 0x0c], (0x02, 0x01), (0x03, 0x01)),
@@ -1118,7 +1176,10 @@ mod tests {
                 metadata
                     .extension_info_variant_index(AS_RESOURCES, variant)
                     .unwrap(),
-                metadata.as_resources_variant_indices(variant).unwrap().0,
+                metadata
+                    .as_resources_variant_indices(variant, PersonhoodCollection::LitePeople)
+                    .unwrap()
+                    .0,
                 "{variant}",
             );
         }
@@ -1150,7 +1211,7 @@ mod tests {
                 metadata.call_indices("Resources", "no_such_call").is_err(),
                 metadata.call_indices("NoSuchPallet", "transfer").is_err(),
                 metadata
-                    .as_resources_variant_indices("NoSuchVariant")
+                    .as_resources_variant_indices("NoSuchVariant", PersonhoodCollection::LitePeople)
                     .is_err(),
             ),
             (true, true, true),

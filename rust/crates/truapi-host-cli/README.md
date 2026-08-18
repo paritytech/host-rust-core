@@ -376,15 +376,33 @@ apply to TrUAPI targets while other third-party dependencies remain at `warn`.
 
 The real statement store enforces per-account allowance. Before pairing, the
 signing host grants it on-chain exactly as a real client does: it proves its
-LitePeople ring membership with a bandersnatch ring-VRF and submits an unsigned
+personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
 that submits statements — its RFC-0022 `uid.dot` identity account and the
 pairing host's per-pairing device key. The shared native implementation lives in
 `truapi-server/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
-assembly, submit). The signing account must be an attested LitePeople member,
-and may sit in an old ring, so the signing host scans back from the current ring
-index (slow, one-time per pairing). Auto-managed accounts are stored in
+assembly, submit). The signing account must be an attested member of at least
+one personhood collection, and may sit in an old ring, so the signing host scans
+back from the current ring index (slow, one-time per pairing).
+
+Each collection is a separate alias space with its own budget, so a signer with
+full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
+`LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
+same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
+`MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
+the collection it is proved against. A PGAS claim proves one collection rather
+than pooling across both, so it is bounded by that collection's budget alone.
+
+Registration pools across every collection the signer can prove, and a free slot
+anywhere is taken before any live slot is replaced. Whether a live slot may be
+replaced at all depends on the caller. The renewal pass, the pairing-time grant,
+and `alloc-check --submit` may replace, and then take the globally oldest
+replaceable slot across all collections. Allocation on behalf of a connecting
+product may not: it reports the period as exhausted, because every entry in the
+table is one of this wallet's own products and reclaiming space belongs to the
+renewal pass. `alloc-check` prints both collections' member keys, ring indices and
+slot tables. Auto-managed accounts are stored in
 `accounts.json` under `--base-path`; mnemonics are plaintext local test secrets
 and the file is written with `0600` permissions on Unix. `alloc-check` verifies
 membership and can submit a test registration.

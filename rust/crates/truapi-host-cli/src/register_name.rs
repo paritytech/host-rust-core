@@ -21,6 +21,7 @@ use truapi_server::host_logic::dotns_gateway::{
 use truapi_server::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_full_person_ring_vrf_entropy, derive_identity_keypair,
 };
+use truapi_server::statement_allowance::collection::PersonhoodCollection;
 use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
 use truapi_server::statement_allowance::{
     self as alloc, extension, extrinsic, proof, ring, rpc::RpcClient,
@@ -87,19 +88,15 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     let ring_index = ring::read_member_ring_index(
         &people_rpc,
         &people_metadata,
-        ring::PEOPLE_IDENTIFIER,
+        PersonhoodCollection::People,
         &member,
         &at,
     )
     .await
     .context("resolve full-person ring membership (is the account a recognized person?)")?;
-    let members = ring::read_collection_ring_members_at(
-        &people_rpc,
-        ring::PEOPLE_IDENTIFIER,
-        ring_index,
-        &at,
-    )
-    .await?;
+    let members =
+        ring::read_ring_members_at(&people_rpc, PersonhoodCollection::People, ring_index, &at)
+            .await?;
     // `Members.Members` reports a ring index as soon as the key is onboarded;
     // the members read above is sliced to the keys already built into the
     // ring's root, so a fresh member can be missing from it for a few blocks.
@@ -111,10 +108,10 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     }
     // The revision of the root the proof is built against, at the same pinned
     // block as the members read, so the two cannot disagree.
-    let revision = ring::read_collection_ring_revision(
+    let revision = ring::read_ring_revision(
         &people_rpc,
         &people_metadata,
-        ring::PEOPLE_IDENTIFIER,
+        PersonhoodCollection::People,
         ring_index,
         &at,
     )
@@ -138,7 +135,8 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     };
     let info_variant = ah_metadata.dotns_register_full_name_variant()?;
     let exponent =
-        ring::read_subscriber_ring_exponent(&ah_rpc, &ah_metadata, ring::PEOPLE_IDENTIFIER).await?;
+        ring::read_subscriber_ring_exponent(&ah_rpc, &ah_metadata, PersonhoodCollection::People)
+            .await?;
     let domain = proof::domain_for_ring_exponent(exponent)?;
 
     let call_indices = ah_metadata.call_indices("DotnsGateway", "register_name")?;
@@ -170,10 +168,10 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
 
     // Asset Hub only verifies proofs against root revisions it has imported
     // from People; wait for this one before submitting.
-    alloc::pgas::await_collection_ring_revision(
+    alloc::pgas::await_ring_revision(
         &ah_rpc,
         &ah_metadata,
-        ring::PEOPLE_IDENTIFIER,
+        PersonhoodCollection::People,
         ring_index,
         revision,
     )

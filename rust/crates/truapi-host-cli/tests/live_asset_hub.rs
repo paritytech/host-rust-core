@@ -10,6 +10,7 @@
 //! are about the chain rather than about host wiring. The provider routes Asset Hub
 //! now that the preset serves it as a role.
 
+use truapi_server::statement_allowance::collection::PersonhoodCollection;
 use truapi_server::statement_allowance::{self as alloc, extension::AS_PGAS, pgas};
 
 const ASSET_HUB_WS: &str = "wss://paseo-asset-hub-next-rpc.polkadot.io";
@@ -23,6 +24,8 @@ const PEOPLE_WS: &str = "wss://paseo-people-next-system-rpc.polkadot.io";
 
 /// The ring our onboarded test identity sits in.
 const RING_INDEX: u32 = 2;
+/// The ring this fixture's index belongs to.
+const COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
 
 async fn asset_hub() -> (alloc::rpc::RpcClient, alloc::extension::Metadata) {
     let rpc = alloc::rpc::RpcClient::connect(&asset_hub_ws())
@@ -54,15 +57,31 @@ async fn live_asset_hub_declares_the_pgas_claim_shape() {
         5,
         "AsPgas::Claim arity changed; the encoded payload has to change with it"
     );
-    let (claim, lite_people) = metadata
-        .extension_info_and_field_variant_indices(AS_PGAS, "Claim", "LitePeople")
-        .expect("AsPgas carries a LitePeople claim");
-    println!("live AsPgas: Claim={claim} LitePeople={lite_people}");
+    // Both collections have to be nameable here, not just the light one: a full
+    // person proves PGAS against the `People` ring, and a missing variant would
+    // only surface when such a person tried to claim.
+    for collection in PersonhoodCollection::ALL {
+        let (claim, variant) = metadata
+            .extension_info_and_field_variant_indices(
+                AS_PGAS,
+                "Claim",
+                collection.metadata_variant(),
+            )
+            .unwrap_or_else(|err| panic!("AsPgas carries no {collection} claim: {err}"));
+        println!("live AsPgas: Claim={claim} {collection}={variant}");
+    }
 
     assert!(
-        alloc::slot::max_pgas_claims(&metadata).unwrap() > 0,
+        alloc::slot::max_pgas_claims(&metadata, PersonhoodCollection::LitePeople).unwrap() > 0,
         "a lite person must be allowed at least one claim per day"
     );
+    // A full person has their own budget on Asset Hub; scanning them against the
+    // light one's share would hide claims they are entitled to.
+    let people = alloc::slot::max_pgas_claims(&metadata, PersonhoodCollection::People)
+        .expect("Asset Hub declares a full-person claim budget");
+    let lite = alloc::slot::max_pgas_claims(&metadata, PersonhoodCollection::LitePeople).unwrap();
+    println!("live PGAS claims per day: People={people} LitePeople={lite}");
+    assert!(people >= lite, "People={people} LitePeople={lite}");
 }
 
 /// Asset Hub learns People's rings through `MembersSubscriber`. A claim can only
@@ -79,14 +98,21 @@ async fn live_asset_hub_has_imported_the_current_people_ring_revision() {
         .await
         .expect("People metadata");
     let at = people_rpc.finalized_head().await.expect("finalized head");
-    let revision = alloc::ring::read_ring_revision(&people_rpc, &people_metadata, RING_INDEX, &at)
-        .await
-        .expect("People reports a ring revision");
+    let revision =
+        alloc::ring::read_ring_revision(&people_rpc, &people_metadata, COLLECTION, RING_INDEX, &at)
+            .await
+            .expect("People reports a ring revision");
     println!("People ring {RING_INDEX} is at revision {revision}");
 
-    pgas::await_ring_revision(&asset_hub_rpc, &asset_hub_metadata, RING_INDEX, revision)
-        .await
-        .expect("Asset Hub has imported the current revision");
+    pgas::await_ring_revision(
+        &asset_hub_rpc,
+        &asset_hub_metadata,
+        COLLECTION,
+        RING_INDEX,
+        revision,
+    )
+    .await
+    .expect("Asset Hub has imported the current revision");
 }
 
 /// A revision Asset Hub has moved past can never be verified, and has to be told
@@ -97,7 +123,7 @@ async fn live_asset_hub_has_imported_the_current_people_ring_revision() {
 async fn live_asset_hub_reports_a_pruned_revision_rather_than_waiting() {
     let (rpc, metadata) = asset_hub().await;
 
-    let err = pgas::await_ring_revision(&rpc, &metadata, RING_INDEX, 1)
+    let err = pgas::await_ring_revision(&rpc, &metadata, COLLECTION, RING_INDEX, 1)
         .await
         .expect_err("revision 1 is long pruned");
 
@@ -143,15 +169,17 @@ async fn live_asset_hub_reports_whether_an_account_holds_a_full_claim() {
 /// A revision the window skipped is as unreachable as one that fell off the front,
 /// and has to report as pruned rather than waiting out the timeout.
 ///
-/// paseo Asset Hub holds `[105, 106, 108]` for lite-people ring 5 — every other
-/// ring is contiguous — so revision 107 is the live case that distinguishes
-/// testing the newest held root from testing the oldest.
+/// The rule itself is covered offline, against a frozen copy of this window, by
+/// `revision_status` and `a_skipped_revision_reports_as_pruned_against_captured_roots`.
+/// What this adds is drift: it only passes while lite-people ring 5 still skips
+/// revision 107 on the live chain, so it fails once the window moves on. That is
+/// chain state changing, not the code breaking.
 #[tokio::test]
 #[ignore = "needs network access to a live Asset Hub"]
 async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
     let (rpc, metadata) = asset_hub().await;
 
-    let err = pgas::await_ring_revision(&rpc, &metadata, 5, 107)
+    let err = pgas::await_ring_revision(&rpc, &metadata, COLLECTION, 5, 107)
         .await
         .expect_err("revision 107 was skipped for ring 5");
 

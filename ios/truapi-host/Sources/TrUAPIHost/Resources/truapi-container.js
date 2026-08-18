@@ -94,5 +94,4 @@
     }
     return _createElement(tagName, options);
   });
-  freezeAndDelete(window, "RTCPeerConnection");
 })();
