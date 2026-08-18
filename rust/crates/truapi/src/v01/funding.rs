@@ -13,6 +13,11 @@ pub type FundingIntentId = String;
 /// Distinct from [`super::payment::Balance`], which is denominated in the
 /// host's single fixed payment asset. A funding session names its asset, so its
 /// units are not fixed.
+///
+/// Always the session's asset — credited inbound, debited outbound — never the
+/// external side. What the user pays into a card or receives into a bank is the
+/// provider's to quote, because the host does not know which provider or
+/// instrument will serve the intent and so cannot price it.
 pub type FundingAmount = u128;
 
 /// Which way value crosses the boundary between the user's Polkadot balance
@@ -210,6 +215,18 @@ pub enum HostFundingStatusSubscribeItem {
     },
     /// Outbound: awaiting the user's authorization to release funds.
     AwaitingRelease,
+    /// The user is inside the provider's own flow and the host cannot see
+    /// where. Verification, card authorization, and bank settlement all report
+    /// as this. May precede or interleave with the awaiting heads, since a
+    /// route can require verification before a deposit is possible.
+    ///
+    /// Annotation only: it never settles a session, and a session reaches a
+    /// terminal state whether or not this is ever emitted.
+    ProviderSide {
+        /// Provider-supplied description of the stage, already localized.
+        /// `None` when the provider reported no detail.
+        note: Option<String>,
+    },
     /// The external-side leg has been seen but is not settled.
     Confirming,
     /// Value is moving between chains or venues.
@@ -300,6 +317,17 @@ pub enum HostFundingReportRequest {
         intent: FundingIntentId,
         /// Where to send.
         target: FundingDelivery,
+    },
+    /// The user is inside the provider's own flow, such as verification or a
+    /// card authorization. Surfaces as
+    /// [`HostFundingStatusSubscribeItem::ProviderSide`] and advances the
+    /// session no further.
+    InProgress {
+        /// Session being reported on.
+        intent: FundingIntentId,
+        /// Description of the stage to surface, already localized. `None`
+        /// reports presence in the provider's flow without detail.
+        note: Option<String>,
     },
     /// Inbound: external-side deposit observed by the provider.
     Deposited {

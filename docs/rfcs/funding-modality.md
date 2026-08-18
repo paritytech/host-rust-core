@@ -48,7 +48,9 @@ Funding therefore says nothing about credentials beyond declining to carry them.
 
 The third produces recurring volume rather than one-time top-ups, and it is unbuildable unless the intent carries enough context to resume. That is why `resume` is in the intent type and not deferred.
 
-**Two routes need no partner at all.** Funding from a friend is a payment request, and `CoinPayment::create_receivable` plus `CoinPayment::listen_for_payment` cover it — the latter emits `Channel` then `Cheque`, which is exactly the friend-to-friend handoff. Funding from an exchange is a deposit address plus a watch on it, and that one is *not* covered: `Chain::follow_head_subscribe` follows chain head, and nothing in the protocol watches a specific address for an inbound transfer. That watch is Host-internal work this RFC assumes rather than specifies.
+**Two routes need no partner at all.** Funding from a friend is a payment request, and `CoinPayment::create_receivable` plus `CoinPayment::listen_for_payment` cover it — the latter emits `Channel` then `Cheque`, which is exactly the friend-to-friend handoff. Funding from an exchange is a deposit address plus a watch on it, and no *product-facing* method covers that: `Chain::follow_head_subscribe` follows chain head, and nothing in the protocol watches a specific address for an inbound transfer.
+
+The watch is nonetheless not per-Host work. `truapi-server` reaches chains itself through the `ChainProvider` / `JsonRpcConnection` platform traits every Host already implements, and `ChainRuntime` exposes both halves needed — `remote_chain_head_follow` and `remote_chain_head_storage`. The runtime can therefore follow head, read the destination account, and emit `Delivered` from shared code. See [Watching a session](#watching-a-session) and requirement 2: this is what turns the RFC's central guarantee from a rule each Host must be trusted to honor into one the architecture provides.
 
 Both routes need no counterparty agreement, which is the point: the modality can ship, and be exercised end to end, before any partner term sheet exists.
 
@@ -179,6 +181,12 @@ type FundingIntentId = String;
 /// Distinct from `Balance`, which is denominated in the Host's single fixed
 /// payment asset. A funding session names its asset, so its units are not
 /// fixed.
+///
+/// Always the session's asset — credited inbound, debited outbound — never the
+/// external side. What the user pays into a card or receives into a bank is the
+/// provider's to quote, because the Host does not know which provider or
+/// instrument will serve the intent and so cannot price it. Route limits are
+/// declared in the same terms.
 type FundingAmount = u128;
 
 /// Which way value crosses the boundary.
@@ -284,6 +292,18 @@ enum HostFundingStatusSubscribeItem {
     },
     /// Outbound: awaiting the user's authorization to release funds.
     AwaitingRelease,
+    /// The user is inside the provider's own flow and the Host cannot see
+    /// where. Verification, card authorization, and bank settlement all report
+    /// as this. May precede or interleave with the awaiting heads, since a
+    /// route can require verification before a deposit is possible.
+    ///
+    /// Annotation only: it never settles a session, and a session reaches a
+    /// terminal state whether or not this is ever emitted.
+    ProviderSide {
+        /// Provider-supplied description of the stage, already localized.
+        /// `None` when the provider reported no detail.
+        note: Option<String>,
+    },
     /// The external-side leg has been seen but is not settled.
     Confirming,
     /// Value is moving between chains or venues.
@@ -318,6 +338,15 @@ enum HostFundingStatusSubscribeItem {
 ```
 
 The non-terminal variants are the stamp bar — one vocabulary for money in flight, shared with trades and payments, so no feature invents its own synonym for "pending". `AwaitingDeposit` and `AwaitingRelease` are the direction-specific heads of it: inbound the user is being asked to send, outbound to authorize.
+
+`ProviderSide` is the one variant that reports an absence of knowledge, and it earns its place because the alternative is a label that is wrong. A route requiring verification puts the user inside the provider before any deposit is possible; without this variant that session reads `AwaitingDeposit` — "awaiting your deposit on the external side" — while the user is in fact photographing an ID. The Host owning the vocabulary of money in flight is worth little if the vocabulary misdescribes the commonest first-run case, and a provider that *wants* to correct the record needs somewhere to put it.
+
+Two rules govern it, and both generalize something this RFC already does elsewhere:
+
+- **Observed beats reported.** `ProviderSide` never overrides an observed terminal state. This is the same rule that makes a provider's `Sent` unable to produce `Delivered`, applied to the whole reporting surface: a provider report says when to look and what to display, never what happened.
+- **A session terminates correctly with zero reports.** `ProviderSide` is annotation, never the mechanism by which a session completes or expires. A provider that reports nothing — including one entered as a page rather than a worker, which cannot call `report` at all — still reaches a terminal state through Host observation and the session's own window. This is what makes minimizing safe: after the frame is dismissed there may be nothing left to report.
+
+The second rule has a consequence for the session window. A session that has heard `ProviderSide` recently is progressing and should be allowed to wait considerably longer than a silent one, so `ProviderTimeout` is measured from the last report where there is one, and from handoff where there is not.
 
 Every terminal variant carries an amount because partial movement is a real outcome on most routes, matching `HostPaymentTopUpError::PartialPayment`. `CoinPaymentStatus` reports the same idea as `cleared`; the name differs because that type counts Coinage coins clearing over several blocks, whereas this one counts a single asset amount.
 
@@ -440,6 +469,17 @@ enum HostFundingReportRequest {
         /// Where to send.
         target: FundingDelivery,
     },
+    /// The user is inside the provider's own flow, such as verification or a
+    /// card authorization. Surfaces as
+    /// [`HostFundingStatusSubscribeItem::ProviderSide`] and advances the
+    /// session no further.
+    InProgress {
+        /// Session being reported on.
+        intent: FundingIntentId,
+        /// Description of the stage to surface, already localized. `None`
+        /// reports presence in the provider's flow without detail.
+        note: Option<String>,
+    },
     /// Inbound: external-side deposit observed by the provider.
     Deposited {
         /// Session being reported on.
@@ -472,6 +512,24 @@ Minting a fresh inbound target per session limits what a provider learns, and pr
 A provider receives no jurisdiction, no verification tier, no user identity, and no `resume` bytes. It gets a direction, a rail, an asset, an amount, and one on-chain target.
 
 `Sent` moves the session no further than `Bridging` on its own. The Host watches the chain and emits `Delivered` when it sees arrival — which is what makes a provider's honesty irrelevant to inbound correctness. Outbound has no equivalent, which is why `Released` claims less.
+
+#### Entering a framed surface
+
+`serve_subscribe` addresses a provider's **worker**, which presumes one: a product declaring `includes.funding` under the [Product Manifest Format][manifest]. That is the full integration, and it is what an outbound route requires, because `AwaitingTarget` has no answer without `report`.
+
+It is not the only shape a provider takes. A provider may be a **page** — an App with no funding worker — and such a provider is entered by URL, carrying the intent's public fields as query parameters:
+
+```
+?direction=in&rail=bank_or_card&asset=<id>&amount=<amount>&intent=<id>
+```
+
+The parameters disclose no more than `HostFundingServeSubscribeItem` already does, and requirement 6 continues to hold: `resume` is never among them. An inbound `DeliverTo` target is passed the same way it would arrive over `serve_subscribe`.
+
+A page-entered provider cannot call `report`, so its session advances on Host observation alone and stays at `ProviderSide { note: None }` for as long as it is inside the provider's flow. Inbound that is sufficient — `Delivered` never depended on a provider report — and it is what lets a partner-backed inbound route ship before the manifest RFC lands. Outbound it is not sufficient, so outbound requires the worker level.
+
+`intent` is what makes re-entry work. A Host that reclaimed the screen and later re-frames it passes the same id, and the provider re-establishes its own state from it — which is how a partly-completed verification resumes without the Host ever learning what stage it reached.
+
+Specifying this level is also what keeps the two-level boundary honest. If the only way to frame a provider were to run its worker, the pressure to add a third level — a provider-supplied tree the Host renders natively — would arrive immediately, for the ordinary reason that framing a whole App to show a deposit address is heavy. That level is [Out of Scope](#out-of-scope) for good reasons, and it stays out more comfortably when a lighter one exists.
 
 ### Method surface
 
@@ -589,8 +647,8 @@ Ids continue the append-only sequence. `Account::sign_vrf` holds 164–165, `Cha
 
 ### Behavioral requirements
 
-1. A session survives minimize, product reload, and Host restart. On cold relaunch mid-flow the user sees the session, not an empty balance.
-2. `Delivered` is emitted only on the Host's own on-chain observation. A provider report never produces it.
+1. A session survives minimize, product reload, and Host restart. On cold relaunch mid-flow the user sees the session, not an empty balance. Sessions persist through `CoreStorage` under a typed slot, alongside the auth session and allowance keys, so durability is a property of the runtime rather than something each Host reimplements — and a session that was in flight when the app died resumes its own watch on relaunch.
+2. `Delivered` is emitted only on the runtime's own on-chain observation, made through `ChainRuntime` and therefore identical across Hosts. A provider report never produces it, and a Host is not the party that emits it.
 3. `Released` is emitted only after the user authorized the release and the Host observed funds leave. It asserts nothing about the off-chain leg, and a Host MUST NOT present it as confirmation that the user was paid.
 4. An outbound session debits the user, so the Host collects that authorization itself. A provider never collects it, and never receives it.
 5. An inbound delivery target is minted by the Host, fresh per session, and never reused. An outbound settlement target is named by the provider and used for that session only.
@@ -623,6 +681,8 @@ Ids continue the append-only sequence. `Account::sign_vrf` holds 164–165, `Cha
 
 **Provider completion webhooks as settlement.** Rejected. It would make each provider a trusted party for the one fact the Host is uniquely able to check itself.
 
+A webhook could also not be received, which matters for the weaker proposal — a status channel used only to populate `ProviderSide` rather than to settle. `truapi-server` has no HTTP client; its only network reach is `ChainProvider` / `JsonRpcConnection`, both Host-provided, and it compiles to `wasm32-unknown-unknown` for web Hosts, so a native client could not be used uniformly even if one were added. A device has no publicly reachable address either. Any provider-reported status that is not `Funding::report` therefore needs a Host-performed fetch on a runtime-owned schedule, or a relay terminating the callback and forwarding it as a push — and a relay is a new party with sight of users' funding sessions, with its own ownership, retention, and authentication questions. `report` covers the case without any of that, for any provider integrated at the worker level.
+
 **Per-provider verification.** Not chosen here, but not foreclosed: the surface treats verification state as Host-held, so a single reusable verification is expressible without a protocol change. Whether it is owned that way is unresolved.
 
 ## Out of Scope
@@ -635,7 +695,7 @@ Deliberately excluded, with the reason, so a reviewer sees the boundary rather t
 
 **An asset descriptor lookup.** A call resolving a `FundingAsset` to a symbol, decimals, and network for display, letting a product name a destination it was not handed. The Host's own balance card needs the descriptor regardless; it is excluded only because no product does yet.
 
-**A deposit-address watch primitive.** Watching a specific address for an inbound transfer is Host-internal today. If more than one route needs it, it deserves a protocol surface of its own rather than being reimplemented per Host.
+**A product-facing deposit-address watch.** The runtime watches inbound addresses itself through `ChainRuntime` (see [Motivation](#motivation) and requirement 2), so nothing is reimplemented per Host. What is excluded is exposing that watch to *products* as a method of its own. No product needs it yet — the Host is the only party minting inbound targets — and adding it would let a product watch an address it did not mint.
 
 **A failure and recovery matrix.** Per route, per failure mode: what the user sees, who is accountable, whether funds are recoverable, and whether a human path exists. The reason codes name outcomes; they assign no owner. This belongs with partner terms rather than in a protocol RFC, but it blocks partner conversations rather than the protocol.
 
