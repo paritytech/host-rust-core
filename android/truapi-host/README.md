@@ -265,6 +265,12 @@ core.notifyChainClosed(chainConnectionId)
 // literal because the container enforces it inside the product's own realm,
 // where an async permission request would be forgeable. A fresh grant therefore
 // only takes effect once the web view reloads.
+//
+// Read this as a policy value, not a gate: Android injects no lockdown
+// container, so nothing consumes the decision and WebRTC is reachable on
+// Android whatever the status says. Pass what the core returns anyway — a
+// literal `true` compiles and would silently keep that open once the container
+// does land (#334 scopes the gate to iOS).
 val webRtcAllowed = core.permissionAuthorizationStatus(
     PermissionAuthorizationRequest.Remote(RemotePermissionRequest(RemotePermission.WebRtc))
 ) == PermissionAuthorizationStatus.AUTHORIZED

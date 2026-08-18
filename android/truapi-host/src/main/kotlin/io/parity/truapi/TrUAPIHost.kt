@@ -422,11 +422,26 @@ object LocalhostBridgeBootstrap {
      * relies on and resolve it itself. A settled value has nothing to steal.
      * The consequence is that a fresh grant only takes effect once the web view
      * reloads.
+     *
+     * The parameter is required so that every host has to answer, but a `Boolean`
+     * cannot force the answer to be a real one: passing a literal `true`
+     * compiles and grants WebRTC unconditionally, which is the pre-gate
+     * behaviour. Nothing downstream can detect that, so read the status from the
+     * core and pass what it returns. A type that only a
+     * [PermissionAuthorizationStatus] could produce would make the mistake
+     * unrepresentable; it is deliberately deferred until Android enforces the
+     * decision at all (see the container note where the policy is published).
      */
     fun script(port: UShort, token: String, webRtcAllowed: Boolean): String {
         val url = "ws://127.0.0.1:$port/?t=$token"
         val safeUrl = jsStringLiteral(url)
         val safeToken = jsStringLiteral(token)
+        // Published for the lockdown container to read, but Android does not
+        // inject the container, so on Android nothing reads it and WebRTC stays
+        // reachable regardless of the decision. This is a policy value, not an
+        // enforcement point: it is here so the bootstrap contract matches iOS,
+        // where the container is injected and does enforce it. Android
+        // enforcement is tracked separately (#334 scopes the gate to iOS).
         val safeWebRtc = if (webRtcAllowed) "true" else "false"
         return """
         (function() {

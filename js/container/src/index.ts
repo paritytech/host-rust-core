@@ -19,7 +19,12 @@
 // Isolation: Lock down globals so product scripts cannot access platform APIs.
 // =============================================================================
 
-import { freezeAndDelete, freezeValue } from './freeze.js';
+import {
+  freezeAndDelete,
+  freezeCustom,
+  freezeValue,
+  reportLockdownFailures,
+} from './freeze.js';
 import { consumeWebRtcPolicy, installWebRtcPolicy } from './webrtc.js';
 
 // Capture native fetch BEFORE lockdown so the same-origin gate can use it.
@@ -41,13 +46,12 @@ freezeValue(window, 'WebSocket', _GatedWebSocket);
 
 // Close the prototype-constructor bypass: `new window.WebSocket.prototype.constructor(url)`
 // would reach the ungated native constructor without this.
-try {
-  Object.defineProperty(_NativeWebSocket.prototype, 'constructor', {
-    value: _GatedWebSocket,
-    writable: false,
-    configurable: false,
-  });
-} catch { /* best effort */ }
+freezeCustom(
+  _NativeWebSocket.prototype,
+  'constructor',
+  { value: _GatedWebSocket, writable: false },
+  (current) => current === _GatedWebSocket,
+);
 
 // --- Network: fetch gated to same-origin only ---
 freezeValue(window, 'fetch', (input: RequestInfo | URL, init?: RequestInit) => {
@@ -74,27 +78,26 @@ freezeAndDelete(window, 'indexedDB');
 freezeAndDelete(window, 'caches');
 
 // document.cookie — redefine as no-op getter/setter
-try {
-  Object.defineProperty(document, 'cookie', {
-    get: () => '',
-    set: () => {},
-    configurable: false,
-  });
-} catch { /* best effort */ }
+freezeCustom(
+  document,
+  'cookie',
+  { get: () => '', set: () => {} },
+  (current) => current === '',
+);
 
 // --- Workers ---
 freezeAndDelete(window, 'SharedWorker');
 
 if (navigator.serviceWorker) {
-  try {
-    Object.defineProperty(navigator, 'serviceWorker', {
-      value: Object.freeze({
-        register: () => { throw new Error('ServiceWorker is not available'); },
-      }),
-      writable: false,
-      configurable: false,
-    });
-  } catch { /* best effort */ }
+  const _stubServiceWorker = Object.freeze({
+    register: () => { throw new Error('ServiceWorker is not available'); },
+  });
+  freezeCustom(
+    navigator,
+    'serviceWorker',
+    { value: _stubServiceWorker, writable: false },
+    (current) => current === _stubServiceWorker,
+  );
 }
 
 // --- DOM: block iframe creation ---
@@ -111,5 +114,11 @@ freezeValue(document, 'createElement', (tagName: string, options?: ElementCreati
 // rewrite it. An absent policy denies, which is what makes a subframe (no
 // bootstrap, so no policy) fail closed.
 installWebRtcPolicy(window, consumeWebRtcPolicy(window));
+
+// --- Report: every lock above has been attempted, so a failure can throw ---
+// A lock that did not take is a hole in the sandbox. Reporting last means the
+// throw costs no coverage, and it means the host learns rather than serving
+// products into a realm it believes is closed.
+reportLockdownFailures();
 
 export {};
