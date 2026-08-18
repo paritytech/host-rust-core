@@ -95,8 +95,12 @@ fn normalize_host(host: &str) -> String {
 
 /// dotNS TLD check, applied to the [`normalize_host`] form so `Example.DOT`
 /// and the trailing-dot FQDN `example.dot.` classify like `example.dot`.
-/// Shares [`truapi_platform::DOTNS_TLDS`] with product-identifier validation
-/// so navigation and derivation accept the same per-network names.
+///
+/// Reads [`truapi_platform::DOTNS_TLDS`], which is narrower than the set of
+/// TLDs a product identifier may be scoped under. A name classified here
+/// resolves into the host's own product surface and so bypasses the outbound
+/// domain grant; a TLD that a resolver can point anywhere must stay external and
+/// keep that gate.
 fn is_dotns_domain(host: &str) -> bool {
     has_dotns_tld(&normalize_host(host))
 }
@@ -280,6 +284,19 @@ mod tests {
                 name: "dot li is external",
                 input: "mytestapp.dot.li",
                 expected: external("https://mytestapp.dot.li/"),
+            },
+            TestCase {
+                // `test` is an accepted product scope but not a dotNS name: a
+                // resolver can point it anywhere, so it must stay external and
+                // keep consuming the outbound domain grant.
+                name: "test is external, not a dotns name",
+                input: "mytestapp.test",
+                expected: external("https://mytestapp.test/"),
+            },
+            TestCase {
+                name: "test with port stays external",
+                input: "http://mytestapp.test:5173/app",
+                expected: external("http://mytestapp.test:5173/app"),
             },
             TestCase {
                 name: "dot with https",
