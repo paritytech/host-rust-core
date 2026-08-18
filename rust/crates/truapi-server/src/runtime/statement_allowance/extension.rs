@@ -873,6 +873,26 @@ mod tests {
                 .unwrap(),
             5,
         );
+        // `ClaimPgasInfo` encodes positionally, so the order is what the payload
+        // depends on. Arity alone would still hold if the runtime swapped two
+        // fields, and the collection is located by variant name rather than by
+        // position, so nothing else would notice.
+        assert_eq!(
+            metadata
+                .extension_info_variant(AS_PGAS, "Claim")
+                .unwrap()
+                .fields
+                .iter()
+                .map(|field| field.name.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("proof"),
+                Some("ring_index"),
+                Some("revision"),
+                Some("collection"),
+                Some("day"),
+            ],
+        );
     }
 
     /// The V16 fixture is current, so it declares the four fields the live runtime

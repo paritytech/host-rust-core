@@ -390,7 +390,8 @@ full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
 `LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
 same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
 `MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
-the collection it is proved against.
+the collection it is proved against. A PGAS claim proves one collection rather
+than pooling across both, so it is bounded by that collection's budget alone.
 
 Registration pools across every collection the signer can prove, and a free slot
 anywhere is taken before any live slot is replaced. Whether a live slot may be

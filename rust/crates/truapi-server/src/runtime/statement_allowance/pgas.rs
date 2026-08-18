@@ -118,7 +118,7 @@ pub struct PgasClaim<'a> {
     pub people_rpc: &'a RpcClient,
     /// People-chain metadata.
     pub people_metadata: &'a Metadata,
-    /// Our lite-person ring-VRF entropy.
+    /// Our ring-VRF entropy for the collection `ring` names.
     pub entropy: [u8; 32],
     /// Account the claim credits.
     pub target: &'a [u8; 32],
@@ -384,13 +384,58 @@ mod tests {
     /// collection, so the fixture only means anything paired with this one.
     const CAPTURED_COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
 
-    /// The captured ring-5 roots as a scripted `state_getStorage` result.
-    fn scripted_ring_5_roots() -> RpcClient {
+    /// The captured ring-5 roots as a scripted `state_getStorage` result, with the
+    /// transport handle so the key that was read can be checked.
+    fn scripted_ring_5_roots() -> (RpcClient, ScriptedRpc) {
         let value = format!(
             r#""0x{}""#,
             hex::encode(test_fixtures::ASSET_HUB_RING_5_ROOTS)
         );
-        RpcClient::new(HostRpcClient::new(ScriptedRpc::new([value.as_str()])))
+        let scripted = ScriptedRpc::new([value.as_str()]);
+        (
+            RpcClient::new(HostRpcClient::new(scripted.clone())),
+            scripted,
+        )
+    }
+
+    /// `ScriptedRpc` replays by position and ignores the key, so without this the
+    /// collection paired with the captured blob would be a comment rather than a
+    /// fact: re-capturing the blob against another collection, or editing the
+    /// constant, would leave every test in this module green.
+    ///
+    /// The expected key is built from the identifier literal the fixtures README
+    /// records the capture under, not from `CAPTURED_COLLECTION`. Deriving both
+    /// sides from the constant would move them together and assert nothing.
+    fn assert_read_ring_5_of(scripted: &ScriptedRpc) {
+        const CAPTURED_UNDER: &[u8; 32] = b"pop:polkadot.network/people-lite";
+        assert_eq!(
+            CAPTURED_COLLECTION.identifier(),
+            CAPTURED_UNDER,
+            "the committed blob was read under the lite-people identifier",
+        );
+        let expected = format!(
+            r#"["0x{}"]"#,
+            hex::encode(
+                [
+                    twox_128(b"MembersSubscriber").as_slice(),
+                    twox_128(b"RingRoots").as_slice(),
+                    &blake2_128_concat(CAPTURED_UNDER),
+                    &blake2_128_concat(&5u32.to_le_bytes()),
+                ]
+                .concat()
+            )
+        );
+        let reads: Vec<String> = scripted
+            .calls()
+            .into_iter()
+            .filter(|(method, _)| method == "state_getStorage")
+            .map(|(_, params)| params)
+            .collect();
+        assert_eq!(
+            reads,
+            vec![expected],
+            "the captured blob has to be paired with the collection it was read for"
+        );
     }
 
     /// `RingCommitmentRecord` takes one field out of a much wider runtime struct,
@@ -430,14 +475,16 @@ mod tests {
     /// `revision_status` table instead.
     #[test]
     fn a_skipped_revision_reports_as_pruned_against_captured_roots() {
+        let (rpc, scripted) = scripted_ring_5_roots();
         let err = futures::executor::block_on(await_ring_revision(
-            &scripted_ring_5_roots(),
+            &rpc,
             test_fixtures::asset_hub(),
             CAPTURED_COLLECTION,
             5,
             107,
         ))
         .expect_err("revision 107 is missing from the captured window");
+        assert_read_ring_5_of(&scripted);
 
         assert!(
             err.to_string().contains("pruned"),
@@ -448,14 +495,16 @@ mod tests {
     /// And one the window holds returns without a second poll.
     #[test]
     fn a_held_revision_returns_against_captured_roots() {
+        let (rpc, scripted) = scripted_ring_5_roots();
         futures::executor::block_on(await_ring_revision(
-            &scripted_ring_5_roots(),
+            &rpc,
             test_fixtures::asset_hub(),
             CAPTURED_COLLECTION,
             5,
             106,
         ))
         .expect("revision 106 is in the captured window");
+        assert_read_ring_5_of(&scripted);
     }
 
     /// Both map keys are hashed here, unlike the People chain's `Members` maps.

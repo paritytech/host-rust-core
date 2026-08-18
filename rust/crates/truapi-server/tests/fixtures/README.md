@@ -41,8 +41,8 @@ and replace both together. Re-capturing metadata alone will fail
 
 Ring 5 holds `[105, 106, 108]`. The skipped 107 is the case that distinguishes testing the
 newest held root from testing the oldest, and freezing it makes that case permanent
-instead of dependent on a chain window that moves. It was the only lite-people ring of
-twelve that was not contiguous when captured.
+instead of dependent on a chain window that moves. Of the fourteen lite-people rings
+holding roots at that block, it was the only one that was not contiguous.
 
 There is no CLI for a storage read by raw key. Build the key the way `pgas::ring_roots_key`
 does, then call `state_getStorageAt`:

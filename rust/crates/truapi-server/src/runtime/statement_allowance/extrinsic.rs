@@ -103,7 +103,7 @@ pub fn build_claim_long_term_storage_call(
 }
 
 /// Encode the `AsResources` extension `extra` for a statement-store allowance:
-/// `Some(RegisterStatementStoreAllowance { proof, ring_index, LitePeople })`,
+/// `Some(RegisterStatementStoreAllowance { proof, ring_index, collection })`,
 /// with the variant indices resolved from `metadata`.
 pub fn build_as_resources_extra(
     metadata: &Metadata,
@@ -172,8 +172,11 @@ pub fn build_claim_pgas_call(
 }
 
 /// Encode the `AsPgas` extension `extra` for a PGAS claim:
-/// `Some(Claim { proof, ring_index, revision, LitePeople, day })`, with the
+/// `Some(Claim { proof, ring_index, revision, collection, day })`, with the
 /// variant indices resolved from `metadata`.
+///
+/// The runtime verifies the proof against the collection this declares, so it
+/// must be the collection whose ring the proof was built in.
 ///
 /// `AsPgas` names its membership enum `PgasCollection` rather than
 /// `MembershipCollection`, so the tier is resolved by variant name.

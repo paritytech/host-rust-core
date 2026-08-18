@@ -1487,9 +1487,8 @@ hex.
 Submission uses the shared metadata-driven `set_statement_store_account`
 implementation, pooled across every collection whose membership the signer can
 prove. An allocation already held in any collection is reused. When every
-collection is full it replaces the globally oldest replaceable slot, which is the
-behavior this diagnostic had before pooling; on-demand allocation for a product
-reports exhaustion instead.
+collection is full it replaces the globally oldest replaceable slot across all of
+them; on-demand allocation for a product reports exhaustion instead.
 
 ## 20. Exit status and shutdown
 
