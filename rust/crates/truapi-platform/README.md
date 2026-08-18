@@ -18,6 +18,29 @@ wasm callback boundary, where every parameter is encoded with
 `parity-scale-codec`; `ProductContext` decodes through its validating
 constructor, so a context off the wire carries a normalized product id.
 
+## Product Identity
+
+`normalize_product_identifier` is the single chokepoint that turns a host- or
+wire-supplied product id into the canonical form derivation, product storage and
+permission scopes are keyed by; `is_product_identifier` is its boolean form.
+
+Two TLD lists back it, and they are deliberately different sizes:
+
+- `DOTNS_TLDS` (`dot`, `paseo`) — names navigation resolves back into the host's
+  own product surface. A name classified this way bypasses the outbound domain
+  grant, so this list stays narrow.
+- `PRODUCT_ID_TLDS` (`dot`, `paseo`, `test`) — TLDs a product identifier may be
+  scoped under. `test` is a legal product scope but not a dotNS name, so a
+  `.test` URL stays external and keeps consuming a domain grant.
+
+`REMOTE_PERMISSION_TRUSTED_LABELS` lists bare product labels — no TLD, so one
+entry covers every network in `PRODUCT_ID_TLDS` — whose products hold every
+`RemotePermission` without a user prompt, tested with
+`has_trusted_remote_permissions`. It covers remote permissions only: device
+permissions, identity disclosure and cross-product account access always prompt.
+A stored decision outranks the list, so a `Denied` written through `CoreAdmin`
+revokes the grant.
+
 ## Host Callback Traits
 
 - `ProductStorage`: product-scoped key-value storage.
