@@ -1141,7 +1141,7 @@ mod tests {
         };
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
-        const ENTROPY: [u8; 16] = [0xab; 16];
+        const ENTROPY: [u8; 32] = [0xab; 32];
 
         let config = SigningHostConfig::new(
             HostInfo {
@@ -1186,7 +1186,7 @@ mod tests {
         };
         use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
 
-        const ENTROPY: [u8; 16] = [0xab; 16];
+        const ENTROPY: [u8; 32] = [0xab; 32];
 
         let config = SigningHostConfig::new(
             HostInfo {
