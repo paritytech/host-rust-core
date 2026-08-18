@@ -313,11 +313,14 @@ fn word_usize(data: &[u8], index: usize) -> Result<usize, DotnsContractError> {
             context: "oversized word",
         });
     }
-    Ok(u64::from_be_bytes(
+    let value = u64::from_be_bytes(
         bytes[24..]
             .try_into()
             .expect("8-byte tail of a 32-byte word; qed"),
-    ) as usize)
+    );
+    usize::try_from(value).map_err(|_| DotnsContractError::Abi {
+        context: "oversized word",
+    })
 }
 
 /// Decodes an ABI `string` at byte offset `at`.
@@ -339,16 +342,6 @@ fn decode_string_at(data: &[u8], at: usize) -> Result<String, DotnsContractError
 /// Decodes a single `string` return value (`ProtocolRegistry.tld()`).
 pub fn decode_string(data: &[u8]) -> Result<String, DotnsContractError> {
     decode_string_at(data, word_usize(data, 0)?)
-}
-
-/// Decodes a single `bool` return value.
-pub fn decode_bool(data: &[u8]) -> Result<bool, DotnsContractError> {
-    let bytes = word(data, 0)?;
-    match bytes {
-        [0, .., 0] => Ok(false),
-        [0, .., 1] if bytes[..31].iter().all(|b| *b == 0) => Ok(true),
-        _ => Err(DotnsContractError::Abi { context: "bool" }),
-    }
 }
 
 /// Decodes a single `address` return value.
@@ -431,7 +424,7 @@ where
     let mut identity = DotnsIdentity::default();
     for label in labels {
         let label = label.as_ref();
-        if label.contains('.') {
+        if !label.is_ascii() || label.contains('.') {
             continue;
         }
         let (stem, digits) = label.split_at(label.len().saturating_sub(2));
@@ -473,6 +466,24 @@ pub fn is_full_person_label(label: &str) -> bool {
         && label.chars().all(|c| c.is_ascii_lowercase())
 }
 
+/// Shortest base a person can register: `PopRules` classifies bases of five
+/// characters or fewer as reserved for governance.
+pub const MIN_PERSON_LABEL_LEN: usize = 6;
+/// Lengths `PopRules.reserveBaseName` accepts for a reserved base name.
+pub const RESERVED_LABEL_LEN: core::ops::RangeInclusive<usize> = 6..=8;
+
+/// Whether `label` can be registered as a full-person username: the pallet's
+/// [`is_full_person_label`] plus the `PopRules` length tier.
+pub fn is_registrable_full_label(label: &str) -> bool {
+    is_full_person_label(label) && label.len() >= MIN_PERSON_LABEL_LEN
+}
+
+/// Whether `label` can be reserved for a later full-person claim: the pallet's
+/// [`is_full_person_label`] plus the `PopRules` reservation length band.
+pub fn is_reservable_base_label(label: &str) -> bool {
+    is_full_person_label(label) && RESERVED_LABEL_LEN.contains(&label.len())
+}
+
 /// Whether `value` is a dotted lite username, `stem.NN`: a DNS-label stem, one
 /// dot, exactly two digits (`StringUtils.isSingleDotLiteLabel`), and at most
 /// [`MAX_BASE_LABEL_LEN`] bytes once flattened.
@@ -495,6 +506,35 @@ const LABEL_PAGE_LIMIT: u64 = 16;
 /// grow well past the one lite and one full name a gateway user holds.
 const LABEL_PAGE_MAX: u64 = 16;
 
+/// Why a contract view returned no data.
+///
+/// A revert is an answer from the contract (the view refused, or the address
+/// has no such function); anything else means the answer is unknown.
+#[derive(Debug, Error)]
+pub enum DotnsViewError {
+    /// The contract executed and reverted.
+    #[error("{0}")]
+    Reverted(DotnsContractError),
+    /// The view could not be dry-run or its output could not be decoded.
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl From<DotnsViewError> for String {
+    fn from(error: DotnsViewError) -> Self {
+        error.to_string()
+    }
+}
+
+/// Splits a `ReviveApi_call` output into return data, a revert, or a failure,
+/// for [`DotnsTransport::view`] implementations.
+pub fn view_output(output: &[u8]) -> Result<Vec<u8>, DotnsViewError> {
+    decode_revive_call_output(output).map_err(|err| match err {
+        DotnsContractError::Reverted { .. } => DotnsViewError::Reverted(err),
+        other => DotnsViewError::Failed(other.to_string()),
+    })
+}
+
 /// How a caller reaches Asset Hub for dotNS reads.
 ///
 /// The surface is one storage read plus one contract view. The headless CLI
@@ -506,7 +546,7 @@ pub trait DotnsTransport {
     async fn storage(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, String>;
 
     /// Dry-runs a contract view against `dest` and returns its return data.
-    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, String>;
+    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError>;
 }
 
 /// Resolves the `DotnsPopController` address: `DotnsGateway.DispatcherAddress`
@@ -515,13 +555,12 @@ pub trait DotnsTransport {
 pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
     transport: &mut T,
 ) -> Result<Option<[u8; 20]>, String> {
-    let Some(dispatcher) = transport
-        .storage(dispatcher_address_key())
-        .await?
-        .and_then(|value| <[u8; 20]>::try_from(value).ok())
-    else {
+    let Some(value) = transport.storage(dispatcher_address_key()).await? else {
         return Ok(None);
     };
+    let dispatcher: [u8; 20] = value.try_into().map_err(|value: Vec<u8>| {
+        format!("DotnsGateway.DispatcherAddress is {} bytes", value.len())
+    })?;
     let output = transport
         .view(&dispatcher, call_no_args("TARGET()"))
         .await
@@ -542,7 +581,9 @@ pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
 ///
 /// A store alone is not proof that pending claims are settled: a public
 /// registration or an incoming transfer deploys the store while gateway names
-/// stay pending, so both sources are always read.
+/// stay pending, so both sources are always read. The store is append-only,
+/// so a name transferred away is still listed; ownership is not re-checked
+/// here.
 pub async fn resolve_labels<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     controller: &[u8; 20],
@@ -623,7 +664,8 @@ const TLD_WITHOUT_VIEW: &str = ".dot";
 
 /// The network TLD with its leading dot (`.paseo`), read from
 /// `ProtocolRegistry.tld()`. A registry without that view reverts, which
-/// yields [`TLD_WITHOUT_VIEW`].
+/// yields [`TLD_WITHOUT_VIEW`]; any other failure is an error, since guessing
+/// the TLD would drop every label carrying the real one.
 async fn network_tld<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     registry: &[u8; 20],
@@ -632,7 +674,8 @@ async fn network_tld<T: DotnsTransport + ?Sized>(
         Ok(output) => {
             decode_string(&output).map_err(|err| format!("ProtocolRegistry.tld(): {err}"))
         }
-        Err(_) => Ok(TLD_WITHOUT_VIEW.to_string()),
+        Err(DotnsViewError::Reverted(_)) => Ok(TLD_WITHOUT_VIEW.to_string()),
+        Err(DotnsViewError::Failed(reason)) => Err(format!("ProtocolRegistry.tld(): {reason}")),
     }
 }
 
@@ -647,9 +690,11 @@ pub fn namehash_under(parent: &[u8; 32], label: &str) -> [u8; 32] {
     keccak_256(&[parent.as_slice(), &keccak_256(label.as_bytes())].concat())
 }
 
-/// Whether the registrar would still mint `label` on this network: the name's
-/// node under the network TLD (`namehash(label.tld)`, derived locally) is
-/// unminted, or held by the name escrow (`DotnsRegistrar.available`).
+/// Whether the gateway could still mint `label` on this network: the name's
+/// node under the network TLD (`namehash(label.tld)`, derived locally) has no
+/// owner on the `DotnsRegistrar` (`ownerOf` reverts). A minted name is taken
+/// whoever holds it, the name escrow included: the gateway's registration path
+/// only mints fresh ids.
 ///
 /// A lite-name reservation carrying a `reserved_base_label` that is already
 /// registered can never be claimed, yet it holds the reservation queue for
@@ -678,11 +723,18 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
         .map_err(|err| format!("ProtocolRegistry.get(registrar): {err}"))?;
 
     let node = namehash_under(&tld_node(&tld), label);
-    let output = transport
-        .view(&registrar, call_bytes32("available(uint256)", &node))
+    match transport
+        .view(&registrar, call_bytes32("ownerOf(uint256)", &node))
         .await
-        .map_err(|err| format!("DotnsRegistrar.available({label}): {err}"))?;
-    decode_bool(&output).map_err(|err| format!("DotnsRegistrar.available: {err}"))
+    {
+        Ok(output) => decode_address(&output)
+            .map(|_owner| false)
+            .map_err(|err| format!("DotnsRegistrar.ownerOf({label}): {err}")),
+        Err(DotnsViewError::Reverted(_)) => Ok(true),
+        Err(DotnsViewError::Failed(reason)) => {
+            Err(format!("DotnsRegistrar.ownerOf({label}): {reason}"))
+        }
+    }
 }
 
 /// Gateway-minted labels of `user` still waiting for `claimLabelStore`, from
@@ -713,6 +765,16 @@ pub fn account_alias_key(account: &[u8; 32]) -> Vec<u8> {
     let mut key = plain_key(b"DotnsGateway", b"AccountAlias");
     key.extend_from_slice(&blake2_128(account));
     key.extend_from_slice(account);
+    key
+}
+
+/// `DotnsGateway.LiteLabelOwner[lite_label]` storage key, the dotted lite
+/// username (`alice.01`) as a `BaseLabel`. The value is the owning account.
+pub fn lite_label_owner_key(lite_label: &[u8]) -> Vec<u8> {
+    let encoded = lite_label.encode();
+    let mut key = plain_key(b"DotnsGateway", b"LiteLabelOwner");
+    key.extend_from_slice(&blake2_128(&encoded));
+    key.extend_from_slice(&encoded);
     key
 }
 
@@ -823,7 +885,7 @@ mod tests {
         assert_eq!(hex::encode(selector("TARGET()")), "cc1f2afa");
         assert_eq!(hex::encode(selector("pendingClaims(address)")), "ca78533d");
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
-        assert_eq!(hex::encode(selector("available(uint256)")), "96e494e8");
+        assert_eq!(hex::encode(selector("ownerOf(uint256)")), "6352211e");
     }
 
     #[test]
@@ -840,14 +902,6 @@ mod tests {
         );
         assert_eq!(super::tld_node(".paseo"), tld_node);
         assert_eq!(super::tld_node("paseo"), tld_node);
-    }
-
-    #[test]
-    fn bool_words_decode_strictly() {
-        assert!(decode_bool(&abi_word(1)).unwrap());
-        assert!(!decode_bool(&abi_word(0)).unwrap());
-        assert!(decode_bool(&abi_word(2)).is_err());
-        assert!(decode_bool(&[0u8; 16]).is_err());
     }
 
     #[test]
@@ -1008,7 +1062,14 @@ mod tests {
         // Dotted labels are not base names and are skipped; a DNS stem may hold
         // digits and hyphens (`isSingleDotLiteLabel`), a hyphen may not lead or
         // trail it.
-        let identity = classify_labels(["bobby42.dot", "app.web3app", "web3app", "a2b34", "-x01"]);
+        let identity = classify_labels([
+            "bobby42.dot",
+            "app.web3app",
+            "aé01",
+            "web3app",
+            "a2b34",
+            "-x01",
+        ]);
         assert_eq!(identity.lite_username.as_deref(), Some("a2b.34"));
         assert_eq!(identity.full_username.as_deref(), Some("web3app"));
 
@@ -1025,10 +1086,21 @@ mod tests {
     #[test]
     fn label_validators_follow_the_contract_rules() {
         assert!(is_full_person_label("alicebc"));
+        assert!(is_full_person_label(&"a".repeat(32)));
         assert!(!is_full_person_label("web3-app"), "no digits or hyphens");
         assert!(!is_full_person_label("alice01"));
         assert!(!is_full_person_label("Alice"));
         assert!(!is_full_person_label(""));
+
+        // PopRules tiers: five letters or fewer are governance-reserved; a
+        // reservation is six to eight.
+        assert!(is_registrable_full_label("georgex"));
+        assert!(is_registrable_full_label(&"a".repeat(32)));
+        assert!(!is_registrable_full_label("alice"));
+        assert!(is_reservable_base_label("george"));
+        assert!(is_reservable_base_label("georgeab"));
+        assert!(!is_reservable_base_label("georg"));
+        assert!(!is_reservable_base_label("georgeabc"));
         assert!(!is_full_person_label("alice.bc"));
         assert!(!is_full_person_label("-alice"));
         assert!(!is_full_person_label(&"a".repeat(33)));
@@ -1041,6 +1113,78 @@ mod tests {
         assert!(!is_dotted_lite_username("a.lice.01"));
         assert!(!is_dotted_lite_username(".01"));
         assert!(!is_dotted_lite_username(&format!("{}.01", "a".repeat(31))));
+    }
+
+    /// A transport whose every view answers with one scripted result.
+    struct OneAnswer(fn() -> Result<Vec<u8>, DotnsViewError>);
+
+    #[truapi_platform::async_trait]
+    impl DotnsTransport for OneAnswer {
+        async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+
+        async fn view(
+            &mut self,
+            _dest: &[u8; 20],
+            _input: Vec<u8>,
+        ) -> Result<Vec<u8>, DotnsViewError> {
+            (self.0)()
+        }
+    }
+
+    #[test]
+    fn the_tld_falls_back_only_when_the_view_reverts() {
+        let registry = [0x9e; 20];
+        let served = futures::executor::block_on(network_tld(
+            &mut OneAnswer(|| Ok([abi_word(32).to_vec(), abi_string(".paseo")].concat())),
+            &registry,
+        ));
+        assert_eq!(served.as_deref(), Ok(".paseo"));
+
+        let reverted = futures::executor::block_on(network_tld(
+            &mut OneAnswer(|| {
+                Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+                    detail: "(empty)".to_string(),
+                }))
+            }),
+            &registry,
+        ));
+        assert_eq!(reverted.as_deref(), Ok(TLD_WITHOUT_VIEW));
+
+        // A transport failure is not an answer: no guessing.
+        let failed = futures::executor::block_on(network_tld(
+            &mut OneAnswer(|| Err(DotnsViewError::Failed("timed out".to_string()))),
+            &registry,
+        ));
+        assert!(failed.is_err(), "{failed:?}");
+    }
+
+    #[test]
+    fn view_output_separates_reverts_from_failures() {
+        let reverted = contract_result(&{
+            let mut out = vec![0x00];
+            1u32.encode_to(&mut out); // ReturnFlags::REVERT
+            Vec::<u8>::new().encode_to(&mut out);
+            out
+        });
+        assert!(matches!(
+            view_output(&reverted),
+            Err(DotnsViewError::Reverted(
+                DotnsContractError::Reverted { .. }
+            ))
+        ));
+        assert!(matches!(
+            view_output(&[0x01]),
+            Err(DotnsViewError::Failed(_))
+        ));
+        let returned = contract_result(&{
+            let mut out = vec![0x00];
+            0u32.encode_to(&mut out);
+            vec![1u8, 2, 3, 4].encode_to(&mut out);
+            out
+        });
+        assert_eq!(view_output(&returned).unwrap(), vec![1, 2, 3, 4]);
     }
 
     #[test]
@@ -1057,6 +1201,20 @@ mod tests {
 
     #[test]
     fn storage_keys_have_the_expected_layout() {
+        // Blake2_128Concat over the SCALE-encoded BaseLabel (compact length ‖ bytes).
+        let owner_key = lite_label_owner_key(b"alice.01");
+        let encoded = [&[0x20u8][..], b"alice.01"].concat();
+        assert_eq!(
+            &owner_key[..32],
+            [
+                twox_128(b"DotnsGateway").as_slice(),
+                twox_128(b"LiteLabelOwner").as_slice(),
+            ]
+            .concat()
+        );
+        assert_eq!(&owner_key[32..48], &blake2_128(&encoded));
+        assert_eq!(&owner_key[48..], &encoded);
+
         let alias_key = account_alias_key(&[0x11; 32]);
         let prefix = [
             twox_128(b"DotnsGateway").as_slice(),

@@ -286,8 +286,10 @@ startup:
 - `--mnemonic` with `--account`;
 - `--mnemonic` with `--session`;
 - `--mnemonic` with `--lite-username-prefix` or `--reserved-username`;
-- `--account` with `--session`; and
-- `--account` with `--lite-username-prefix` or `--reserved-username`.
+- `--account` with `--session`;
+- `--account` with `--lite-username-prefix` or `--reserved-username`; and
+- a `--reserved-username` that is not a full-person base label (lowercase ASCII
+  letters only, at most 32 bytes).
 
 The same conflicts apply when the mnemonic came from
 `HOST_CLI_SIGNER_MNEMONIC`.
@@ -818,7 +820,7 @@ A new auto account:
 7. builds and submits identity-backend registration proofs, including the dotNS
    gateway reservation signature timestamped with Asset Hub chain time. A
    reserved base name (`--reserved-username`) must be a full-person label and
-   still available on the dotNS registrar (`DotnsRegistrar.available` for its
+   unminted on the dotNS registrar (`DotnsRegistrar.ownerOf` reverts for its
    node under the network TLD): a reservation for a registered name could never
    be claimed and would hold that stem's reservation queue for the whole
    reservation window;
@@ -838,8 +840,7 @@ once per process. It takes a challenge from `auth/challenges`. It answers
 The token's subject only identifies the calling app instance. The username claim
 carries its own candidate account. A fresh subject per run therefore stays clear
 of the backend's per-subject device gate and rate limit. Availability answers are
-read from both wire shapes: the `{_tag, value: {base: {status}}}` record and the
-flat `{base: "AVAILABLE"}` map.
+the flat `{base: "AVAILABLE" | …}` map.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
@@ -1122,6 +1123,13 @@ selection files.
 Two presets are selectable with `--network`: `paseo-next-v2` (default) and
 `previewnet`. Every preset is a test network; the account store keeps BIP-39
 entropy for disposable test identities only.
+
+Auto-account onboarding (§12.3) needs an identity backend that records the
+lite username on the dotNS gateway. The `paseo-next-v2` backend answers
+`POST /usernames` with "dotNS gateway is not enabled in this environment", so
+new auto accounts cannot be onboarded there until that changes; the CLI reports
+it and points at `previewnet`, whose backend has the gateway enabled. Reads
+(`identity-check`, session usernames) work on both presets.
 
 `paseo-next-v2`:
 
@@ -1519,12 +1527,17 @@ above. `RestrictOrigins` carries `true`. Success prints:
 
 ```text
 REGISTER_SUBMITTED label=<label> block=<hash>
+REGISTER_ALIAS alias=0x<alias>
+REGISTER_CONFIRMED label=<label> full_username=<name>
 ```
 
-and the command then waits until `DotnsGateway.AccountAlias` records the
-account. Before signing, the label must be available on the dotNS registrar
-(`DotnsRegistrar.available`; a pending reservation is not a mint and stays
-claimable), and runtimes whose `RegisterFullName` shape differs are rejected.
+`REGISTER_ALIAS` is printed once `DotnsGateway.AccountAlias` records the
+account, `REGISTER_CONFIRMED` once the dotNS contracts return the name (or
+`<pending>`). Before signing: the label must be unminted on `DotnsRegistrar` (a
+pending reservation is not a mint and stays claimable); the account must not
+already hold a `DotnsGateway.AccountAlias`; a linked lite username must be
+owned by the account per `DotnsGateway.LiteLabelOwner`; and runtimes whose
+`RegisterFullName` shape differs are rejected.
 
 ### 19.3 `alloc-check`
 
@@ -1596,7 +1609,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_LOG` | Default `--log-level`. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
-| `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
+| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
 | `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
@@ -1618,6 +1631,8 @@ ended. This preserves the child status but bypasses later Rust destructors.
 These are part of the as-built specification:
 
 - only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
+- auto-account onboarding works on `previewnet` only, until the `paseo-next-v2`
+  identity backend enables the dotNS gateway (§14.1);
 - product scripts require Bun and, by default, the source checkout;
 - there is no structured/JSON output mode;
 - there is no `--version`;

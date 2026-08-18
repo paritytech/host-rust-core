@@ -427,8 +427,9 @@ HOST_CLI_SIGNER_MNEMONIC="spin battle …" truapi-host signing-host --deeplink '
 truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 ```
 
-Both hosts take `--network` (default `paseo-next-v2`; `previewnet` is the
-other preset). The network preset owns
+Every command takes `--network` (default `paseo-next-v2`; `previewnet` is the
+other preset, and the only one whose identity backend currently onboards new
+auto accounts through the dotNS gateway). The network preset owns
 the identity backend URL, the People, Bulletin and Asset Hub RPCs, and their
 genesis hashes; there is
 no public `--statement-store` flag. `HOST_CLI_IDENTITY_BACKEND_BASE` swaps only

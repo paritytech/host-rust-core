@@ -1218,11 +1218,10 @@ mod tests {
         );
     }
 
-    /// Asset Hub fixture metadata captured from paseo-next-v2 (V16, spec
-    /// 2000036, identical to previewnet). That is the runtime the dotNS gateway
-    /// flows were validated against.
+    /// Asset Hub fixture metadata (V16, spec 2000036; previewnet serves the
+    /// same runtime). The dotNS gateway flows are validated against it.
     const AH_FIXTURE: &[u8] =
-        include_bytes!("../../../tests/fixtures/paseo-next-v2-asset-hub-metadata.scale");
+        include_bytes!("../../../tests/fixtures/paseo-next-asset-hub-metadata.scale");
 
     #[test]
     fn dotns_gateway_pipeline_matches_the_reference_transaction_layout() {

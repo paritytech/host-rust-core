@@ -21,8 +21,8 @@ use crate::chain_runtime::{
     wait_for_chain_head_storage_value,
 };
 use crate::host_logic::dotns_gateway::{
-    DotnsIdentity, DotnsTransport, VIEW_CALL_ORIGIN, classify_labels, decode_revive_call_output,
-    discover_pop_controller, encode_revive_call, resolve_labels,
+    DotnsIdentity, DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, classify_labels,
+    discover_pop_controller, encode_revive_call, resolve_labels, view_output,
 };
 use crate::host_logic::session::SessionInfo;
 
@@ -260,7 +260,7 @@ impl DotnsTransport for DotnsLookup<'_> {
     ///
     /// Views originate from the synthetic always-mapped account. They work
     /// regardless of the queried account's revive mapping.
-    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, String> {
+    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError> {
         let response = self
             .chain
             .remote_chain_head_call(RemoteChainHeadCallRequest {
@@ -271,16 +271,18 @@ impl DotnsTransport for DotnsLookup<'_> {
                 call_parameters: encode_revive_call(&VIEW_CALL_ORIGIN, dest, &input),
             })
             .await
-            .map_err(|failure| failure.reason())?;
-        let operation_id = started_operation_id(response.operation)?;
+            .map_err(|failure| DotnsViewError::Failed(failure.reason()))?;
+        let operation_id =
+            started_operation_id(response.operation).map_err(DotnsViewError::Failed)?;
         let output = wait_for_chain_head_call_output(
             &mut self.follow,
             &operation_id,
             "Asset Hub",
             LOOKUP_TIMEOUT,
         )
-        .await?;
-        decode_revive_call_output(&output).map_err(|err| err.to_string())
+        .await
+        .map_err(DotnsViewError::Failed)?;
+        view_output(&output)
     }
 }
 
@@ -517,6 +519,12 @@ mod tests {
                     )
                     .unwrap();
                     // origin[32] ‖ dest[20] ‖ value u128 ‖ None ‖ None ‖ Vec(input).
+                    assert_eq!(&args[..32], VIEW_CALL_ORIGIN.as_slice());
+                    assert_eq!(
+                        &args[52..70],
+                        &[0u8; 18],
+                        "zero value, no gas or deposit limit"
+                    );
                     let dest: [u8; 20] = args[32..52].try_into().unwrap();
                     let input = Vec::<u8>::decode(&mut &args[70..]).unwrap();
                     vec![
@@ -611,9 +619,11 @@ mod tests {
             .iter()
             .filter(|request| request.contains("chainHead_v1_call"))
             .count();
-        assert!(
-            calls >= 7,
-            "expected the full discovery and label chain, got {calls} views"
+        // TARGET, pendingClaims, protocolRegistry, get(storeFactory),
+        // getLabelStore, tld, one short getLabels page.
+        assert_eq!(
+            calls, 7,
+            "the discovery and label chain is exactly seven views"
         );
     }
 }

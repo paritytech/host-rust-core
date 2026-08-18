@@ -5,14 +5,14 @@
 //! chain over them. The CLI and the in-core `chainHead_v1` lookup therefore
 //! resolve identically.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use subxt_rpcs::client::{RpcClient, rpc_params};
 use truapi_platform::async_trait;
 use truapi_server::host_logic::dotns_gateway::{
-    DotnsIdentity, DotnsTransport, VIEW_CALL_ORIGIN, account_alias_key, classify_labels,
-    decode_revive_call_output, discover_pop_controller, encode_revive_call, label_available,
-    resolve_labels, timestamp_now_key,
+    DotnsIdentity, DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, account_alias_key,
+    classify_labels, discover_pop_controller, encode_revive_call, label_available,
+    lite_label_owner_key, resolve_labels, timestamp_now_key, view_output,
 };
 
 /// Env var overriding the `DotnsPopController` H160 (hex), skipping on-chain
@@ -56,6 +56,15 @@ impl AssetHubReader {
     /// Alias `account` registered with, per `DotnsGateway.AccountAlias`.
     pub async fn account_alias(&self, account: &[u8; 32]) -> Result<Option<[u8; 32]>> {
         let value = self.raw_storage(&account_alias_key(account)).await?;
+        Ok(value.and_then(|bytes| bytes.try_into().ok()))
+    }
+
+    /// Account that reserved the dotted lite username `lite_label` through the
+    /// gateway, per `DotnsGateway.LiteLabelOwner`.
+    pub async fn lite_label_owner(&self, lite_label: &str) -> Result<Option<[u8; 32]>> {
+        let value = self
+            .raw_storage(&lite_label_owner_key(lite_label.as_bytes()))
+            .await?;
         Ok(value.and_then(|bytes| bytes.try_into().ok()))
     }
 
@@ -109,7 +118,7 @@ impl AssetHubReader {
     ///
     /// Views originate from the synthetic always-mapped account. They work
     /// regardless of the queried account's revive mapping.
-    async fn raw_view(&self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>> {
+    async fn raw_view(&self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError> {
         let args = encode_revive_call(&VIEW_CALL_ORIGIN, dest, &input);
         let output: Value = self
             .rpc
@@ -118,13 +127,18 @@ impl AssetHubReader {
                 rpc_params!["ReviveApi_call", format!("0x{}", hex::encode(args))],
             )
             .await
-            .context("rpc state_call ReviveApi_call")?;
+            .map_err(|err| {
+                DotnsViewError::Failed(format!("rpc state_call ReviveApi_call: {err}"))
+            })?;
         let Some(output) = output.as_str() else {
-            bail!("state_call returned a non-string response");
+            return Err(DotnsViewError::Failed(
+                "state_call returned a non-string response".to_string(),
+            ));
         };
-        let bytes = hex::decode(output.strip_prefix("0x").unwrap_or(output))
-            .context("state_call output is not valid hex")?;
-        Ok(decode_revive_call_output(&bytes)?)
+        let bytes = hex::decode(output.strip_prefix("0x").unwrap_or(output)).map_err(|err| {
+            DotnsViewError::Failed(format!("state_call output is not valid hex: {err}"))
+        })?;
+        view_output(&bytes)
     }
 
     /// One `state_getStorage` read at the best block.
@@ -155,9 +169,7 @@ impl DotnsTransport for AssetHubReader {
             .map_err(|err| format!("{err:#}"))
     }
 
-    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, String> {
-        self.raw_view(dest, input)
-            .await
-            .map_err(|err| format!("{err:#}"))
+    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError> {
+        self.raw_view(dest, input).await
     }
 }

@@ -194,9 +194,9 @@ async fn live_asset_hub_reports_a_skipped_revision_as_pruned() {
 // ---------------------------------------------------------------------------
 
 use truapi_server::host_logic::dotns_gateway::{
-    DotnsTransport, VIEW_CALL_ORIGIN, call_bytes32, classify_labels, decode_address,
-    decode_revive_call_output, discover_pop_controller, encode_revive_call, label_available,
-    namehash_under, resolve_labels, selector,
+    DotnsTransport, DotnsViewError, VIEW_CALL_ORIGIN, call_bytes32, classify_labels,
+    decode_address, discover_pop_controller, encode_revive_call, label_available, namehash_under,
+    resolve_labels, selector, view_output,
 };
 use truapi_server::statement_allowance::extension::AS_DOTNS_GATEWAY;
 
@@ -234,7 +234,7 @@ impl DotnsTransport for PlainRpc {
             .map_err(|err| err.to_string())
     }
 
-    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, String> {
+    async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, DotnsViewError> {
         let args = encode_revive_call(&VIEW_CALL_ORIGIN, dest, &input);
         let output = self
             .0
@@ -243,10 +243,13 @@ impl DotnsTransport for PlainRpc {
                 serde_json::json!(["ReviveApi_call", format!("0x{}", hex::encode(args))]),
             )
             .await
-            .map_err(|err| err.to_string())?;
-        let output = output.as_str().ok_or("state_call output is not a string")?;
-        let bytes = hex::decode(output.trim_start_matches("0x")).map_err(|err| err.to_string())?;
-        decode_revive_call_output(&bytes).map_err(|err| err.to_string())
+            .map_err(|err| DotnsViewError::Failed(err.to_string()))?;
+        let output = output
+            .as_str()
+            .ok_or_else(|| DotnsViewError::Failed("state_call output is not a string".into()))?;
+        let bytes = hex::decode(output.trim_start_matches("0x"))
+            .map_err(|err| DotnsViewError::Failed(err.to_string()))?;
+        view_output(&bytes)
     }
 }
 
@@ -317,6 +320,15 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
         labels.iter().all(|label| !label.contains('.')),
         "no TLD or subname survives: {labels:?}"
     );
+    // The default owner's store holds far more than one `getLabels` page, so
+    // this also proves the store is paged rather than read once.
+    if std::env::var("LIVE_MINTED_LABEL").is_err() {
+        assert!(
+            labels.len() > 16,
+            "expected the e2e pool store to span several pages, got {}",
+            labels.len()
+        );
+    }
     let identity = classify_labels(&labels);
     assert!(
         identity.lite_username.is_some() || identity.full_username.is_some(),

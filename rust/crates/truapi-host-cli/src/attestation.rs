@@ -20,7 +20,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::OnceCell;
 use tracing::{debug, warn};
 use truapi_server::host_logic::attestation::build_lite_registration;
-use truapi_server::host_logic::dotns_gateway::{MAX_BASE_LABEL_LEN, is_full_person_label};
+use truapi_server::host_logic::dotns_gateway::{RESERVED_LABEL_LEN, is_reservable_base_label};
 use truapi_server::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_identity_keypair, derive_root_keypair_from_entropy,
     product_public_key_to_address,
@@ -198,11 +198,12 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
     // reservation window; neither the backend nor the gateway checks it. Ask
     // the registrar first.
     if let Some(reserved) = config.reserved_username.as_deref() {
-        if !is_full_person_label(reserved) {
+        if !is_reservable_base_label(reserved) {
             bail!(
-                "reserved username {reserved:?} is not a full-person base label (lowercase ASCII \
-                 letters only, at most {MAX_BASE_LABEL_LEN} bytes); the gateway would reject \
-                 the whole attestation"
+                "reserved username {reserved:?} is not a reservable base label (lowercase ASCII \
+                 letters only, {} to {} bytes); the gateway would reject the whole attestation",
+                RESERVED_LABEL_LEN.start(),
+                RESERVED_LABEL_LEN.end()
             );
         }
         if !reader.label_available(reserved).await? {
@@ -245,11 +246,9 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
         .context("registered dotNS identity has no lite username")
 }
 
-/// Resolves the on-chain lite username for an already-attested signer.
-///
-/// Older CLI account records stored the requested username base rather than the
-/// final `name.discriminator` assigned on chain. Reading the dotNS record repairs
-/// those records without re-attesting the account.
+/// Resolves the on-chain lite username for an already-attested signer: the
+/// discriminated `name.NN` the dotNS contracts hold for its identity account,
+/// whatever base the account record asked for.
 pub async fn registered_lite_username(asset_hub_ws: &str, entropy: &[u8]) -> Result<String> {
     let identity = derive_identity_keypair(entropy)
         .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
@@ -354,7 +353,7 @@ async fn submit_registration(
     // Already-registered is a soft success; the on-chain poll confirms it.
     if text.contains("already") || text.contains("AlreadyRegistered") || text.contains("duplicate")
     {
-        warn!(%status, "username already registered; confirming on-chain");
+        warn!(%status, body = %text, "username already registered; confirming on-chain");
         return Ok(());
     }
     if text.contains("dotNS gateway is not enabled") {

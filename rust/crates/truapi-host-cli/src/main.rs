@@ -40,6 +40,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use truapi_platform::{HostInfo, PlatformInfo};
+use truapi_server::host_logic::dotns_gateway::{RESERVED_LABEL_LEN, is_reservable_base_label};
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
@@ -1272,6 +1273,16 @@ fn validate_signing_args(args: &SigningHostArgs) -> Result<()> {
     }
     if account.is_some() && reserved.is_some() {
         bail!("--reserved-username only applies when --account is omitted");
+    }
+    if let Some(reserved) = &reserved
+        && !is_reservable_base_label(reserved)
+    {
+        bail!(
+            "--reserved-username {reserved:?} is not a reservable base label: lowercase ASCII \
+             letters only, {} to {} bytes",
+            RESERVED_LABEL_LEN.start(),
+            RESERVED_LABEL_LEN.end()
+        );
     }
     Ok(())
 }

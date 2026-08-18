@@ -14,9 +14,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use tracing::debug;
 use truapi_server::host_logic::dotns_gateway::{
-    DOTNS_GATEWAY_CONTEXT, Link, MAX_BASE_LABEL_LEN, build_register_proof_message,
-    encode_register_full_name_extra, encode_register_name_call, is_dotted_lite_username,
-    is_full_person_label,
+    DOTNS_GATEWAY_CONTEXT, Link, MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN,
+    build_register_proof_message, encode_register_full_name_extra, encode_register_name_call,
+    is_dotted_lite_username, is_registrable_full_label,
 };
 use truapi_server::host_logic::product_account::{
     SR25519_SIGNING_CONTEXT, derive_full_person_ring_vrf_entropy, derive_identity_keypair,
@@ -52,10 +52,10 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     // The pallet and the contract reject malformed labels only at submission
     // (as an invalid transaction or a revert), so check the cheap rules here.
     let label = &config.label;
-    if !is_full_person_label(label) {
+    if !is_registrable_full_label(label) {
         bail!(
-            "label {label:?} is not a full-person base label: lowercase ASCII letters only, at \
-             most {MAX_BASE_LABEL_LEN} bytes"
+            "label {label:?} is not a registrable full-person base label: lowercase ASCII \
+             letters only, {MIN_PERSON_LABEL_LEN} to {MAX_BASE_LABEL_LEN} bytes"
         );
     }
     if let Some(lite) = &config.link_lite
@@ -73,7 +73,26 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     if !reader.label_available(label).await? {
         bail!("label {label:?} is already registered on dotNS and cannot be registered again");
     }
+    // The gateway rejects a second registration for the account and a lite
+    // link the account does not own; both are storage reads, so ask first.
+    if reader.account_alias(&who_public).await?.is_some() {
+        bail!("this account has already registered a full-person username on the gateway");
+    }
     let link = resolve_link(config, &mut reader, &who_public).await?;
+    if let Link::LiteUsername(lite) = &link {
+        let lite = core::str::from_utf8(lite).unwrap_or_default();
+        match reader.lite_label_owner(lite).await? {
+            Some(owner) if owner == who_public => {}
+            Some(_) => bail!(
+                "lite username {lite:?} was reserved for another account; pass --chat-key for a \
+                 standalone registration"
+            ),
+            None => bail!(
+                "lite username {lite:?} was not reserved through the dotNS gateway on this \
+                 network; pass --chat-key for a standalone registration"
+            ),
+        }
+    }
 
     // Reading the full-person member key's ring and its members from the People
     // chain, pinned to one finalized block.
