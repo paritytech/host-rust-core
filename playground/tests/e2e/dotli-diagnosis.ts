@@ -319,9 +319,9 @@ async function waitForSignedIn(
   signingHost: SigningHostCliProcess,
 ): Promise<string> {
   try {
-    const existingFailure = await latestLoginFailureReason(page);
+    const existingFailure = await latestLoginFailure(page);
     if (existingFailure !== null) {
-      throw new Error(`Login failed: ${existingFailure}`);
+      throw new Error(formatLoginFailure(existingFailure));
     }
     const outcome = await Promise.race([
       page
@@ -334,14 +334,18 @@ async function waitForSignedIn(
             const listener = (event: Event): void => {
               const state = (
                 event as CustomEvent<
-                  { tag?: string; reason?: string } | undefined
+                  { tag?: string; kind?: string; reason?: string } | undefined
                 >
               ).detail;
               if (state?.tag !== "LoginFailed") {
                 return;
               }
               window.removeEventListener("dotli:truapi-auth-state", listener);
-              reject(new Error(`Login failed: ${state.reason ?? "unknown"}`));
+              reject(
+                new Error(
+                  `Login failed (${state.kind ?? "Other"}): ${state.reason ?? "unknown"}`,
+                ),
+              );
             };
             window.addEventListener("dotli:truapi-auth-state", listener);
           }),
@@ -370,15 +374,29 @@ async function waitForSignedIn(
   }
 }
 
-async function latestLoginFailureReason(page: Page): Promise<string | null> {
+/** A login failure the host reported, with the core's typed cause. */
+interface LoginFailure {
+  kind: string;
+  reason: string;
+}
+
+/** Name the cause first: `NoFreeAllowanceSlots` cannot succeed on a retry. */
+function formatLoginFailure(failure: LoginFailure): string {
+  return `Login failed (${failure.kind}): ${failure.reason}`;
+}
+
+async function latestLoginFailure(page: Page): Promise<LoginFailure | null> {
   return await page.evaluate(() => {
     const states = window.__dotliE2eAuthStates ?? [];
     for (let i = states.length - 1; i >= 0; i--) {
       const candidate = states[i] as {
-        detail?: { tag?: string; reason?: string };
+        detail?: { tag?: string; kind?: string; reason?: string };
       };
       if (candidate.detail?.tag === "LoginFailed") {
-        return candidate.detail.reason ?? "unknown";
+        return {
+          kind: candidate.detail.kind ?? "Other",
+          reason: candidate.detail.reason ?? "unknown",
+        };
       }
     }
     return null;
