@@ -41,7 +41,7 @@ let useLocalProviderBinary =
 // Set by ios/truapi-provider/scripts/publish.sh. No release exists yet, so remote
 // resolution fails on the checksum until the first publish.
 
-let providerBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-provider%400.0.0-unpublished/truapi_provider.xcframework.zip"
+let providerBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-provider%400.0.0-unpublished/truapi_provider.xcframework.zip"
 let providerBinaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000"
 
 let providerBinaryTarget: Target = useLocalProviderBinary

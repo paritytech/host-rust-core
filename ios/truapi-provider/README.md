@@ -31,7 +31,7 @@ Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the
 Add the package as an SPM dependency and link the `TrUAPIProvider` product into the app target:
 
 ```swift
-.package(url: "https://github.com/paritytech/truapi.git", branch: "main")
+.package(url: "https://github.com/paritytech/host-rust-core.git", branch: "main")
 ```
 
 ```swift
