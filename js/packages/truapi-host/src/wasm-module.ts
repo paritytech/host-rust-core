@@ -21,6 +21,8 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   disconnectSession(): Promise<void>;
   cancelPairing(): void;
   notifySessionStoreChanged(): void;
+  sessionChatIdentityKey(): Uint8Array | undefined;
+  deviceEncryptionKey(): Promise<Uint8Array>;
   activateStoredSession(): Promise<void>;
   activateExternalSession(blob: Uint8Array): Promise<void>;
   resetSessionState(): Promise<void>;
