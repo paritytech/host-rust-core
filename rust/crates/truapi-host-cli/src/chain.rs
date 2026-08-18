@@ -192,7 +192,6 @@ impl JsonRpcConnection for WsJsonRpcConnection {
 #[cfg(test)]
 mod tests {
     use clap::ValueEnum;
-    use truapi::latest::ChainIdentifier;
 
     use super::*;
     use crate::network::Network;
@@ -232,12 +231,12 @@ mod tests {
                 false,
             );
             for entry in config.host_chain_set().chains {
-                let expected = match entry.identifier {
-                    ChainIdentifier::People => config.people_ws,
-                    ChainIdentifier::Bulletin => config.bulletin_ws,
-                    ChainIdentifier::AssetHub => config.asset_hub_ws,
-                    other => panic!("{} serves {other:?} with no preset URL", config.id),
-                };
+                let expected = config.url_for_role(entry.identifier).unwrap_or_else(|| {
+                    panic!(
+                        "{} serves {:?} with no preset URL",
+                        config.id, entry.identifier
+                    )
+                });
                 assert!(
                     provider.routes(&entry.genesis_hash),
                     "{} serves {:?} but does not route it; the fallback would hide this",

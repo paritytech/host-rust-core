@@ -5718,7 +5718,10 @@ public enum RemotePermission: Equatable, Hashable {
          */domains: [String]
     )
     /**
-     * WebRTC media access.
+     * WebRTC access. Advertised and persistable, but host enforcement is not
+     * yet implemented: the lockdown container leaves `RTCPeerConnection`
+     * available to products, and camera/microphone capture is gated by the OS
+     * permission prompts rather than by this permission.
      */
     case webRtc
     /**

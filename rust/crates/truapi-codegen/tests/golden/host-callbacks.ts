@@ -100,7 +100,7 @@ export type AuthState =
   /**
    * The last login attempt failed; show the reason and offer a retry.
    */
-  | { tag: "LoginFailed"; value: { reason: string } }
+  | { tag: "LoginFailed"; value: { kind: LoginFailureKind; reason: string } }
   /**
    * The wallet accepted the pairing request and the core is resolving and
    * persisting the session. Hosts should replace the pairing QR with an
@@ -155,7 +155,17 @@ export type CoreStorageKey =
   /**
    * Statement-store allowance targets the signing host keeps renewed.
    */
-  | { tag: "StatementRenewalTargets"; value?: undefined };
+  | { tag: "StatementRenewalTargets"; value?: undefined }
+  /**
+   * This device's long-lived X25519 encryption secret, advertised to peers
+   * as the device encryption public key. Random rather than identity-derived
+   * so devices restoring one identity stay individually addressable.
+   *
+   * Hosts must back this slot with storage scoped to the install, outliving
+   * logout and any per-user namespacing: once it changes, peers addressing
+   * the previous key can no longer reach this device.
+   */
+  | { tag: "DeviceEncryptionKey"; value?: undefined };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -235,6 +245,12 @@ export interface IdentityDisclosureReview {
    */
   productId: string;
 }
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+export type LoginFailureKind = "NoFreeAllowanceSlots" | "Other";
 
 /**
  * Permission request whose authorization status can be inspected or updated
@@ -337,6 +353,26 @@ export interface SessionUiInfo {
    * Wallet identity account id used for People-chain username lookup.
    */
   identityAccountId?: Bytes32;
+
+  /**
+   * X25519 public key addressing this identity in chat. Public counterpart
+   * of the key `CoreAdmin::get_session_chat_identity_key` serves.
+   */
+  chatPublicKey?: Bytes32;
+
+  /**
+   * X25519 public key of the wallet device that answered pairing. Hosts
+   * running their own encrypted device-sync channel key it against this.
+   */
+  deviceEncPublicKey?: Bytes32;
+
+  /**
+   * Statement-store account id the paired wallet signs every session-channel
+   * statement with. Whether it is scoped to the wallet device or to the
+   * wallet identity is the wallet's choice, so hosts must not treat it as a
+   * device discriminator; use `Self::device_enc_public_key` for that.
+   */
+  peerStatementAccountId?: Bytes32;
 
   /**
    * Short username from the People-chain identity record.
@@ -491,7 +527,10 @@ export const AuthState: S.Codec<AuthState> = S.lazy(
       Disconnected: S._void,
       Pairing: S.Struct({ deeplink: S.str }) as S.Codec<{ deeplink: string }>,
       Connected: SessionUiInfo,
-      LoginFailed: S.Struct({ reason: S.str }) as S.Codec<{ reason: string }>,
+      LoginFailed: S.Struct({
+        kind: LoginFailureKind,
+        reason: S.str,
+      }) as S.Codec<{ kind: LoginFailureKind; reason: string }>,
       Authenticating: S._void,
     }),
 );
@@ -527,6 +566,7 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         rootPublicKey: Uint8Array;
       }>,
       StatementRenewalTargets: S._void,
+      DeviceEncryptionKey: S._void,
     }),
 );
 
@@ -585,6 +625,14 @@ export const IdentityDisclosureReview: S.Codec<IdentityDisclosureReview> =
     (): S.Codec<IdentityDisclosureReview> =>
       S.Struct({ productId: S.str }) as S.Codec<IdentityDisclosureReview>,
   );
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+export const LoginFailureKind: S.Codec<LoginFailureKind> = S.lazy(
+  (): S.Codec<LoginFailureKind> => S.Status("NoFreeAllowanceSlots", "Other"),
+);
 
 /**
  * Permission request whose authorization status can be inspected or updated
@@ -667,6 +715,9 @@ export const SessionUiInfo: S.Codec<SessionUiInfo> = S.lazy(
     S.Struct({
       publicKey: Bytes32,
       identityAccountId: S.Option(Bytes32),
+      chatPublicKey: S.Option(Bytes32),
+      deviceEncPublicKey: S.Option(Bytes32),
+      peerStatementAccountId: S.Option(Bytes32),
       liteUsername: S.Option(S.str),
       fullUsername: S.Option(S.str),
     }) as S.Codec<SessionUiInfo>,
@@ -839,6 +890,30 @@ export interface CoreAdmin {
     request: PermissionAuthorizationRequest,
     status: PermissionAuthorizationStatus,
   ): Promise<void>;
+
+  /**
+   * Read the active session's X25519 chat identity private key, for hosts
+   * that run their own P2P chat channel for the paired identity.
+   *
+   * The wallet derives this key from the identity root and shares it during
+   * pairing; the core retains it verbatim, because a value derived
+   * host-side would address an identity no existing peer can reach. ``undefined``
+   * when no session is active.
+   *
+   * Deliberately not on `SessionUiInfo`: that projection rides every
+   * `AuthState` broadcast to all registered `AuthPresenter`s, so a
+   * secret placed there would reach hosts that never asked for it.
+   */
+  getSessionChatIdentityKey(): Promise<Bytes32 | undefined>;
+
+  /**
+   * Read this device's X25519 encryption secret, for hosts that run device
+   * sync against the peer's `SessionUiInfo::device_enc_public_key`.
+   *
+   * Generated and persisted on first read, so the returned key is stable for
+   * the install and matches the public key peers were told to address.
+   */
+  getDeviceEncryptionKey(): Promise<Bytes32>;
 }
 
 /**

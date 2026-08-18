@@ -18,10 +18,10 @@ use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
-use truapi::v01;
+use truapi::{Bytes32, v01};
 use truapi_platform::{
-    AuthPresenter, AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
-    JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
+    AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
+    HostInfo, JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Permissions, PlatformInfo, PreimageHost, ProductContext,
     ProductExecutionKind, ProductStorage, RuntimeConfigValidationError, SigningHostConfig,
     ThemeHost, UserConfirmation, UserConfirmationReview, async_trait, normalize_product_identifier,
@@ -419,12 +419,15 @@ pub trait HostCallbacks: Send + Sync {
 
     /// Observe an auth state change, in transition order: render `Pairing` as
     /// the pairing QR UI, `Connected`/`Disconnected` as the account badge,
-    /// `LoginFailed` as a retryable error. A pairing host's session activation
-    /// reports its outcome even when it is the default `Disconnected`, so a
-    /// host that awaits activation before routing never has to read silence as
-    /// "signed out". Every other emission, and every emission on a host role
-    /// that has no session activation, happens only when the state actually
-    /// changes. User cancellation is reported through
+    /// `LoginFailed` as a retryable error unless its `kind` is
+    /// `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
+    /// rolls over, so retry should not be the primary action. A pairing host's
+    /// session activation reports its outcome even
+    /// when it is the default `Disconnected`, so a host that awaits activation
+    /// before routing never has to read silence as "signed out". Every other
+    /// emission, and every emission on a host role that has no session
+    /// activation, happens only when the state actually changes. User
+    /// cancellation is reported through
     /// `NativeTrUApiCore.cancel_login()`.
     fn auth_state_changed(&self, state: AuthState);
 
@@ -614,6 +617,79 @@ impl NativeTrUApiHostRuntime {
     }
 }
 
+/// An account the host wants kept allowed on the Statement Store across
+/// periods. Mirrors [`crate::runtime::StatementRenewalTarget`] with a
+/// length-checked `account_id`, because UniFFI carries byte arrays as `Vec<u8>`
+/// rather than a fixed width.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum NativeStatementRenewalTarget {
+    /// The statement-store allowance account derived for one product.
+    ProductStatementAllowance {
+        /// Product the allowance account belongs to.
+        product_id: String,
+    },
+    /// The wallet's own SSO account.
+    WalletSso,
+    /// A fixed account, such as a pairing peer's device statement key.
+    Account {
+        /// Account to keep allowed; exactly 32 bytes.
+        account_id: Vec<u8>,
+        /// Human-readable name used in logs and reports.
+        label: String,
+    },
+}
+
+/// Rejected renewal-target registration.
+#[derive(Debug, Clone, thiserror::Error, uniffi::Error)]
+pub enum NativeRenewalTargetError {
+    /// `account_id` was not exactly 32 bytes.
+    #[error("account_id must be exactly 32 bytes, got {actual}")]
+    InvalidAccountId {
+        /// Supplied byte length.
+        actual: u64,
+    },
+    /// `product_id` is not a usable product identifier.
+    #[error("product_id {product_id} is not a valid product identifier")]
+    InvalidProductId {
+        /// The identifier as supplied.
+        product_id: String,
+    },
+    /// The core refused to record the targets.
+    #[error("{reason}")]
+    Rejected {
+        /// Human-readable rejection reason.
+        reason: String,
+    },
+}
+
+impl TryFrom<NativeStatementRenewalTarget> for crate::runtime::StatementRenewalTarget {
+    type Error = NativeRenewalTargetError;
+
+    fn try_from(target: NativeStatementRenewalTarget) -> Result<Self, Self::Error> {
+        Ok(match target {
+            NativeStatementRenewalTarget::ProductStatementAllowance { product_id } => {
+                // The renewal account is derived from this string, and a product
+                // connection derives its own from the normalized form. Skipping
+                // the normalization here renews an account no product uses, and
+                // the real one lapses at the next boundary.
+                Self::ProductStatementAllowance {
+                    product_id: normalize_product_identifier(&product_id)
+                        .map_err(|_| NativeRenewalTargetError::InvalidProductId { product_id })?,
+                }
+            }
+            NativeStatementRenewalTarget::WalletSso => Self::WalletSso,
+            NativeStatementRenewalTarget::Account { account_id, label } => {
+                let account_id: [u8; 32] = account_id.as_slice().try_into().map_err(|_| {
+                    NativeRenewalTargetError::InvalidAccountId {
+                        actual: account_id.len() as u64,
+                    }
+                })?;
+                Self::Account { account_id, label }
+            }
+        })
+    }
+}
+
 #[uniffi::export]
 impl NativeTrUApiHostRuntime {
     /// Construct one host-level runtime and optionally activate its local session.
@@ -647,6 +723,63 @@ impl NativeTrUApiHostRuntime {
     /// Core-owned logout for the process-wide authentication session.
     pub fn disconnect(&self) {
         futures::executor::block_on(self.runtime.disconnect_session());
+    }
+
+    /// Record the accounts a renewal pass should keep allowed. The ledger
+    /// persists, so this only has to be called when the set changes, not on
+    /// every launch. Renewal has nothing to do until at least one target is
+    /// tracked.
+    pub fn track_statement_renewal_targets(
+        &self,
+        targets: Vec<NativeStatementRenewalTarget>,
+    ) -> Result<(), NativeRenewalTargetError> {
+        let targets = targets
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
+        futures::executor::block_on(self.runtime.track_statement_renewal_targets(targets))
+            .map_err(|err| NativeRenewalTargetError::Rejected { reason: err.reason })
+    }
+
+    /// Run one renewal pass now and report what each tracked target got.
+    ///
+    /// This is the entry point for hosts whose process cannot stay alive
+    /// between periods: drive it from WorkManager or BGTaskScheduler rather
+    /// than [`Self::start_statement_allowance_renewal`]. It submits extrinsics
+    /// and blocks until they are included, so call it from a background thread.
+    ///
+    /// Needs an active session, which is the whole difficulty of the scheduled
+    /// case: an OS-woken cold start has none until the host restores one, and
+    /// the pass then fails with the bare reason `Disconnected`. Restore the
+    /// session before calling, and treat that reason as "not ready" rather than
+    /// as a renewal failure. [`Self::start_statement_allowance_renewal`] does
+    /// not need this care; its loop skips a tick with no session and retries.
+    pub fn renew_statement_allowances(
+        &self,
+    ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
+        futures::executor::block_on(self.runtime.renew_statement_allowances())
+            .map_err(HostRejection::from)
+    }
+
+    /// Start the in-process renewal loop, for hosts that stay resident. Mobile
+    /// hosts should schedule [`Self::renew_statement_allowances`] instead,
+    /// because a suspended process stops ticking. Idempotent; the loop ends
+    /// when this runtime is dropped.
+    pub fn start_statement_allowance_renewal(&self) {
+        self.runtime.start_statement_allowance_renewal();
+    }
+
+    /// The in-process loop's own cadence: at most an hour, tightening to land
+    /// just after the next period boundary.
+    ///
+    /// The hourly cap is a retry rhythm, not a statement about when work is
+    /// due. An allowance stays usable for `Resources.StmtStoreGraceWindow` past
+    /// its boundary, 48 hours on `paseo-next-v2`, so a host scheduling one OS
+    /// wake-up per period has ample slack and should treat any value under an
+    /// hour as the boundary approaching, rather than requesting a wake every
+    /// hour for a pass that will almost always report `AlreadyAllocated`.
+    pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
+        self.runtime.next_statement_renewal_delay()
     }
 
     /// Activate or replace the process-wide local signing session.
@@ -765,6 +898,22 @@ impl NativeProductExecution {
                 .set_permission_authorization_status(request, status),
         )?;
         Ok(())
+    }
+
+    /// Read the active session's X25519 chat identity private key, or `None`
+    /// when no session is active.
+    pub fn session_chat_identity_key(&self) -> Result<Option<Bytes32>, HostRejection> {
+        Ok(futures::executor::block_on(
+            self.admin().get_session_chat_identity_key(),
+        )?)
+    }
+
+    /// Read this device's X25519 encryption secret, for device sync against a
+    /// peer's `deviceEncPublicKey`. Generated and persisted on first read.
+    pub fn device_encryption_key(&self) -> Result<Bytes32, HostRejection> {
+        Ok(futures::executor::block_on(
+            self.admin().get_device_encryption_key(),
+        )?)
     }
 
     /// Push a host theme replacement to this execution's subscriptions.
@@ -998,6 +1147,59 @@ impl NativeTrUApiCore {
         lite_username: Option<String>,
     ) -> Result<(), HostRejection> {
         self.host.activate_local_session(secret, lite_username)
+    }
+
+    /// Record the accounts renewal should keep allowed. The ledger persists, so
+    /// this only has to be called when the set changes, not on every launch.
+    /// Renewal has nothing to do until at least one target is tracked.
+    ///
+    /// Needs an active session, so call it after
+    /// [`Self::activate_local_session`] or after pairing, not at construction.
+    ///
+    /// The ledger is append-only. There is no untrack, and an entry is dropped
+    /// only when the identity that promised it changes, which keeps derivation
+    /// recipes and discards raw account ids. Re-tracking is idempotent, so
+    /// re-track the full set after an identity change.
+    pub fn track_statement_renewal_targets(
+        &self,
+        targets: Vec<NativeStatementRenewalTarget>,
+    ) -> Result<(), NativeRenewalTargetError> {
+        self.host.track_statement_renewal_targets(targets)
+    }
+
+    /// Run one renewal pass now and report what each tracked target got.
+    ///
+    /// For hosts whose process cannot stay alive between periods: drive it from
+    /// WorkManager or BGTaskScheduler rather than
+    /// [`Self::start_statement_allowance_renewal`]. It submits extrinsics and
+    /// blocks until they are included, so call it from a background thread.
+    ///
+    /// Needs an active session, which is the whole difficulty of the scheduled
+    /// case: an OS-woken cold start has none until the host restores one, and
+    /// the pass then fails with the bare reason `Disconnected`. Restore the
+    /// session before calling, and treat that reason as "not ready" rather than
+    /// as a renewal failure.
+    pub fn renew_statement_allowances(
+        &self,
+    ) -> Result<crate::statement_allowance::renewal::StatementRenewalReport, HostRejection> {
+        self.host.renew_statement_allowances()
+    }
+
+    /// Start the in-process renewal loop, for a host that stays resident. A
+    /// suspended app stops ticking, so prefer scheduling
+    /// [`Self::renew_statement_allowances`]. Idempotent, and unlike the one-shot
+    /// call it tolerates having no session: a tick without one is skipped and
+    /// retried.
+    pub fn start_statement_allowance_renewal(&self) {
+        self.host.start_statement_allowance_renewal();
+    }
+
+    /// The in-process loop's own cadence, capped at an hour. An allowance stays
+    /// usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
+    /// on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
+    /// slack and should read a value under an hour as the boundary approaching.
+    pub fn next_statement_renewal_delay(&self) -> std::time::Duration {
+        self.host.next_statement_renewal_delay()
     }
 
     /// List registered providers for a ring so host UI can present the RFC-0024
@@ -1610,6 +1812,89 @@ mod tests {
 
     type PreimageFixtureEntries = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
+    /// UniFFI hands `account_id` over as a length-free `Vec<u8>`, so the width
+    /// the ledger depends on is only enforced here. A short id that converted
+    /// anyway would renew an allowance for the wrong account.
+    #[test]
+    fn a_renewal_target_account_id_must_be_exactly_32_bytes() {
+        let target = |len: usize| NativeStatementRenewalTarget::Account {
+            account_id: vec![0x11; len],
+            label: "device".to_string(),
+        };
+
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(target(32)),
+            Ok(crate::runtime::StatementRenewalTarget::Account { account_id, .. })
+                if account_id == [0x11; 32]
+        ));
+        for len in [0, 31, 33] {
+            assert!(
+                matches!(
+                    crate::runtime::StatementRenewalTarget::try_from(target(len)),
+                    Err(NativeRenewalTargetError::InvalidAccountId { actual }) if actual == len as u64
+                ),
+                "a {len}-byte account id must be rejected, and report its length"
+            );
+        }
+    }
+
+    /// The renewal account is derived from `product_id`, and a product
+    /// connection derives its own from the normalized form, so an unnormalized
+    /// id here renews an account no product uses while the real one lapses.
+    #[test]
+    fn a_product_target_normalizes_its_identifier() {
+        for supplied in [
+            "  truapi-playground.dot  ",
+            "TruAPI-Playground.dot",
+            "TRUAPI-PLAYGROUND.DOT",
+        ] {
+            let converted = crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: supplied.to_string(),
+                },
+            );
+            assert!(
+                matches!(
+                    converted,
+                    Ok(crate::runtime::StatementRenewalTarget::ProductStatementAllowance {
+                        ref product_id
+                    }) if product_id == "truapi-playground.dot"
+                ),
+                "{supplied:?} did not normalize: {converted:?}"
+            );
+        }
+
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: "not a product".to_string(),
+                }
+            ),
+            Err(NativeRenewalTargetError::InvalidProductId { .. })
+        ));
+    }
+
+    /// The other two variants carry no bytes to validate, so they must convert
+    /// rather than share the `Account` arm's failure path.
+    #[test]
+    fn byteless_renewal_targets_convert() {
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::WalletSso
+            ),
+            Ok(crate::runtime::StatementRenewalTarget::WalletSso)
+        ));
+        assert!(matches!(
+            crate::runtime::StatementRenewalTarget::try_from(
+                NativeStatementRenewalTarget::ProductStatementAllowance {
+                    product_id: "truapi-playground.dot".to_string(),
+                }
+            ),
+            Ok(crate::runtime::StatementRenewalTarget::ProductStatementAllowance { product_id })
+                if product_id == "truapi-playground.dot"
+        ));
+    }
+
     fn text_chat_action(text: &str) -> v01::HostChatActionSubscribeItem {
         v01::HostChatActionSubscribeItem {
             room_id: "room".to_string(),
@@ -1993,6 +2278,9 @@ mod tests {
             truapi_platform::SessionUiInfo {
                 public_key: [7; 32],
                 identity_account_id: None,
+                chat_public_key: None,
+                device_enc_public_key: None,
+                peer_statement_account_id: None,
                 lite_username: Some("alice".to_string()),
                 full_username: None,
             },
@@ -2012,6 +2300,9 @@ mod tests {
                 AuthState::Connected(truapi_platform::SessionUiInfo {
                     public_key: [7; 32],
                     identity_account_id: None,
+                    chat_public_key: None,
+                    device_enc_public_key: None,
+                    peer_statement_account_id: None,
                     lite_username: Some("alice".to_string()),
                     full_username: None,
                 }),

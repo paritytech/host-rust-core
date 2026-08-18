@@ -1122,6 +1122,23 @@ public struct SessionUiInfo: Equatable, Hashable {
      */
     public var identityAccountId: Bytes32?
     /**
+     * X25519 public key addressing this identity in chat. Public counterpart
+     * of the key [`CoreAdmin::get_session_chat_identity_key`] serves.
+     */
+    public var chatPublicKey: Bytes32?
+    /**
+     * X25519 public key of the wallet device that answered pairing. Hosts
+     * running their own encrypted device-sync channel key it against this.
+     */
+    public var deviceEncPublicKey: Bytes32?
+    /**
+     * Statement-store account id the paired wallet signs every session-channel
+     * statement with. Whether it is scoped to the wallet device or to the
+     * wallet identity is the wallet's choice, so hosts must not treat it as a
+     * device discriminator; use [`Self::device_enc_public_key`] for that.
+     */
+    public var peerStatementAccountId: Bytes32?
+    /**
      * Short username from the People-chain identity record.
      */
     public var liteUsername: String?
@@ -1140,6 +1157,20 @@ public struct SessionUiInfo: Equatable, Hashable {
          * Wallet identity account id used for People-chain username lookup.
          */identityAccountId: Bytes32?,
         /**
+         * X25519 public key addressing this identity in chat. Public counterpart
+         * of the key [`CoreAdmin::get_session_chat_identity_key`] serves.
+         */chatPublicKey: Bytes32?,
+        /**
+         * X25519 public key of the wallet device that answered pairing. Hosts
+         * running their own encrypted device-sync channel key it against this.
+         */deviceEncPublicKey: Bytes32?,
+        /**
+         * Statement-store account id the paired wallet signs every session-channel
+         * statement with. Whether it is scoped to the wallet device or to the
+         * wallet identity is the wallet's choice, so hosts must not treat it as a
+         * device discriminator; use [`Self::device_enc_public_key`] for that.
+         */peerStatementAccountId: Bytes32?,
+        /**
          * Short username from the People-chain identity record.
          */liteUsername: String?,
         /**
@@ -1147,6 +1178,9 @@ public struct SessionUiInfo: Equatable, Hashable {
          */fullUsername: String?) {
         self.publicKey = publicKey
         self.identityAccountId = identityAccountId
+        self.chatPublicKey = chatPublicKey
+        self.deviceEncPublicKey = deviceEncPublicKey
+        self.peerStatementAccountId = peerStatementAccountId
         self.liteUsername = liteUsername
         self.fullUsername = fullUsername
     }
@@ -1169,6 +1203,9 @@ public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
             try SessionUiInfo(
                 publicKey: FfiConverterTypeBytes32.read(from: &buf),
                 identityAccountId: FfiConverterOptionTypeBytes32.read(from: &buf),
+                chatPublicKey: FfiConverterOptionTypeBytes32.read(from: &buf),
+                deviceEncPublicKey: FfiConverterOptionTypeBytes32.read(from: &buf),
+                peerStatementAccountId: FfiConverterOptionTypeBytes32.read(from: &buf),
                 liteUsername: FfiConverterOptionString.read(from: &buf),
                 fullUsername: FfiConverterOptionString.read(from: &buf)
         )
@@ -1177,6 +1214,9 @@ public struct FfiConverterTypeSessionUiInfo: FfiConverterRustBuffer {
     public static func write(_ value: SessionUiInfo, into buf: inout [UInt8]) {
         FfiConverterTypeBytes32.write(value.publicKey, into: &buf)
         FfiConverterOptionTypeBytes32.write(value.identityAccountId, into: &buf)
+        FfiConverterOptionTypeBytes32.write(value.chatPublicKey, into: &buf)
+        FfiConverterOptionTypeBytes32.write(value.deviceEncPublicKey, into: &buf)
+        FfiConverterOptionTypeBytes32.write(value.peerStatementAccountId, into: &buf)
         FfiConverterOptionString.write(value.liteUsername, into: &buf)
         FfiConverterOptionString.write(value.fullUsername, into: &buf)
     }
@@ -1371,6 +1411,10 @@ public enum AuthState: Equatable, Hashable {
      */
     case loginFailed(
         /**
+         * What kind of failure this was. Hosts branch on this and treat
+         * `reason` as display copy only.
+         */kind: LoginFailureKind,
+        /**
          * Human-readable failure reason.
          */reason: String
     )
@@ -1409,7 +1453,7 @@ public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
         case 3: return .connected(try FfiConverterTypeSessionUiInfo.read(from: &buf)
         )
 
-        case 4: return .loginFailed(reason: try FfiConverterString.read(from: &buf)
+        case 4: return .loginFailed(kind: try FfiConverterTypeLoginFailureKind.read(from: &buf), reason: try FfiConverterString.read(from: &buf)
         )
 
         case 5: return .authenticating
@@ -1436,8 +1480,9 @@ public struct FfiConverterTypeAuthState: FfiConverterRustBuffer {
             FfiConverterTypeSessionUiInfo.write(v1, into: &buf)
 
 
-        case let .loginFailed(reason):
+        case let .loginFailed(kind,reason):
             writeInt(&buf, Int32(4))
+            FfiConverterTypeLoginFailureKind.write(kind, into: &buf)
             FfiConverterString.write(reason, into: &buf)
 
 
@@ -1542,6 +1587,88 @@ public func FfiConverterTypeCreateTransactionReview_lift(_ buf: RustBuffer) thro
 #endif
 public func FfiConverterTypeCreateTransactionReview_lower(_ value: CreateTransactionReview) -> RustBuffer {
     return FfiConverterTypeCreateTransactionReview.lower(value)
+}
+
+
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+
+public enum LoginFailureKind: Equatable, Hashable {
+
+    /**
+     * The wallet has no free statement-store allowance slot for this period,
+     * so it cannot register the device — which normally holds until the period
+     * rolls over, making a retry a waste of the user's remaining budget.
+     *
+     * Recovered heuristically from the wallet's prose, whose wording is not
+     * this workspace's to pin, so treat it as a strong hint rather than a
+     * proof: do not make retry the primary action, but leave a way to reach it.
+     */
+    case noFreeAllowanceSlots
+    /**
+     * Anything else. `reason` carries the detail.
+     */
+    case other
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension LoginFailureKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLoginFailureKind: FfiConverterRustBuffer {
+    typealias SwiftType = LoginFailureKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LoginFailureKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .noFreeAllowanceSlots
+
+        case 2: return .other
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: LoginFailureKind, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .noFreeAllowanceSlots:
+            writeInt(&buf, Int32(1))
+
+
+        case .other:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLoginFailureKind_lift(_ buf: RustBuffer) throws -> LoginFailureKind {
+    return try FfiConverterTypeLoginFailureKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLoginFailureKind_lower(_ value: LoginFailureKind) -> RustBuffer {
+    return FfiConverterTypeLoginFailureKind.lower(value)
 }
 
 
