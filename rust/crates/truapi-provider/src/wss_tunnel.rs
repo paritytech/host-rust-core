@@ -33,6 +33,7 @@
 
 use core::time::Duration;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use serde_json::value::RawValue;
@@ -42,10 +43,27 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
-/// Upstream `(host, port)` to the loopback port relaying to it. One tunnel per
+/// Upstream `(host, port)` to the loopback tunnel relaying to it. One tunnel per
 /// upstream, reused by every chain that names it, so the chains of a network
 /// that share a hostname share a single listener.
-static TUNNELS: OnceLock<Mutex<HashMap<(String, u16), u16>>> = OnceLock::new();
+static TUNNELS: OnceLock<Mutex<HashMap<(String, u16), Tunnel>>> = OnceLock::new();
+
+/// A loopback listener and whether its accept loop is still running.
+#[derive(Clone)]
+struct Tunnel {
+    local: u16,
+    alive: Arc<AtomicBool>,
+}
+
+/// Clears a tunnel's `alive` flag however its accept loop ends, including by
+/// panic, so a dead listener is never handed out as live.
+struct AliveUntilDropped(Arc<AtomicBool>);
+
+impl Drop for AliveUntilDropped {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 /// How long a relayed connection may take to reach the upstream and finish its
 /// TLS handshake. The relay itself is not deadlined: a tunnelled connection
@@ -157,17 +175,20 @@ fn tunnel_address(address: &str) -> Option<String> {
 
 /// The loopback port relaying to `host:port`, starting a listener on first use.
 ///
-/// A cached entry whose listener has died is replaced rather than handed out
-/// again: the accept loop only exits when its socket is gone, and returning that
-/// port would make every later dial fail with nothing listening.
+/// A cached entry whose accept loop has ended is replaced rather than handed out
+/// again, since returning that port would make every later dial fail with
+/// nothing listening. Liveness is read from the flag the loop clears on exit
+/// rather than by connecting: a probe connection is itself accepted and relayed,
+/// so it would cost an upstream TLS handshake on every reuse, and it would block
+/// while this function holds the tunnel map.
 fn ensure_tunnel(host: &str, port: u16) -> Option<u16> {
     let tunnels = TUNNELS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = lock(tunnels);
     let key = (host.to_owned(), port);
-    if let Some(local) = guard.get(&key)
-        && std::net::TcpStream::connect(("127.0.0.1", *local)).is_ok()
+    if let Some(tunnel) = guard.get(&key)
+        && tunnel.alive.load(Ordering::Acquire)
     {
-        return Some(*local);
+        return Some(tunnel.local);
     }
 
     // Bind synchronously so the caller learns the port before the spec is
@@ -181,15 +202,20 @@ fn ensure_tunnel(host: &str, port: u16) -> Option<u16> {
     };
     let local = listener.local_addr().ok()?.port();
     let upstream_host = host.to_owned();
+    let alive = Arc::new(AtomicBool::new(true));
+    let loop_alive = Arc::clone(&alive);
     if let Err(error) = std::thread::Builder::new()
         .name(format!("truapi-wss-{local}"))
-        .spawn(move || run_tunnel(listener, upstream_host, port))
+        .spawn(move || {
+            let _alive = AliveUntilDropped(loop_alive);
+            run_tunnel(listener, upstream_host, port);
+        })
     {
         tracing::warn!(%error, "could not start a tunnel thread; leaving the bootnode as wss");
         return None;
     }
 
-    guard.insert(key, local);
+    guard.insert(key, Tunnel { local, alive });
     tracing::debug!(
         host,
         port,
@@ -327,7 +353,67 @@ fn tls_config() -> Arc<ClientConfig> {
 
 #[cfg(test)]
 mod tests {
-    use super::{rewrite_host, tunnel_address, tunnel_wss_bootnodes};
+    use super::{
+        Ordering, TUNNELS, ensure_tunnel, lock, rewrite_host, tunnel_address,
+        tunnel_wss_bootnodes,
+    };
+
+    /// Reuse is what makes one listener serve every chain naming the same
+    /// upstream, so it has to hold without dialling the port to find out.
+    #[test]
+    fn a_live_tunnel_is_reused_rather_than_rebound() {
+        let host = "reuse.test.invalid";
+        let first = ensure_tunnel(host, 443).expect("bind a tunnel");
+        let second = ensure_tunnel(host, 443).expect("reuse the tunnel");
+
+        assert_eq!(first, second);
+    }
+
+    /// The case the `alive` flag exists for: handing back a port whose accept
+    /// loop has ended would make every later dial fail with nothing listening.
+    #[test]
+    fn a_dead_tunnel_is_replaced() {
+        let host = "dead.test.invalid";
+        let live = ensure_tunnel(host, 443).expect("bind a tunnel");
+
+        // Mark it dead exactly as `AliveUntilDropped` does when the loop ends.
+        {
+            let tunnels = TUNNELS.get().expect("tunnel map initialised");
+            let guard = lock(tunnels);
+            guard
+                .get(&(host.to_owned(), 443))
+                .expect("the tunnel just created")
+                .alive
+                .store(false, Ordering::Release);
+        }
+
+        let replacement = ensure_tunnel(host, 443).expect("rebind after death");
+
+        assert_ne!(
+            replacement, live,
+            "a dead tunnel must be rebound, not handed out again"
+        );
+    }
+
+    /// Distinct upstreams must not share a listener, or a chain would be relayed
+    /// to the wrong node.
+    #[test]
+    fn distinct_upstreams_get_distinct_tunnels() {
+        let one = ensure_tunnel("one.test.invalid", 443).expect("bind one");
+        let two = ensure_tunnel("two.test.invalid", 443).expect("bind two");
+
+        assert_ne!(one, two);
+    }
+
+    /// The same host on two ports is two upstreams.
+    #[test]
+    fn the_upstream_port_is_part_of_the_tunnel_identity() {
+        let host = "ports.test.invalid";
+        let https = ensure_tunnel(host, 443).expect("bind 443");
+        let alt = ensure_tunnel(host, 9944).expect("bind 9944");
+
+        assert_ne!(https, alt);
+    }
 
     #[test]
     fn a_plain_ws_bootnode_is_left_alone() {
