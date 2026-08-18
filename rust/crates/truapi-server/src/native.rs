@@ -3040,6 +3040,44 @@ mod tests {
     }
 
     #[test]
+    fn handle_sso_request_reencodes_a_request_response() {
+        use crate::host_logic::sso::messages::{
+            ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
+        };
+        use parity_scale_codec::{Decode, Encode};
+        // The default test config carries a local session secret, so the
+        // runtime is activated at construction.
+        let runtime = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let request = RemoteMessage {
+            message_id: "m9".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeRequest(
+                ProductSubtreeRequest {
+                    product_id: "browse.dot".to_string(),
+                },
+            )),
+        };
+        let outcome = futures::executor::block_on(runtime.handle_sso_request(request.encode()))
+            .expect("decodable message");
+        let SsoRequestOutcome::Response { message } = outcome else {
+            panic!("expected a response outcome");
+        };
+        let response =
+            RemoteMessage::decode(&mut message.as_slice()).expect("valid response encoding");
+        assert_eq!(response.message_id, "m9:response");
+        let RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(payload)) =
+            response.data
+        else {
+            panic!("expected a product subtree response payload");
+        };
+        assert_eq!(payload.responding_to, "m9");
+        assert!(payload.product_public_key.is_ok());
+    }
+
+    #[test]
     fn prepare_disconnect_request_round_trips_with_fresh_ids() {
         use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
         use parity_scale_codec::Decode;

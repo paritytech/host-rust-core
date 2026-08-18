@@ -1178,4 +1178,51 @@ mod tests {
         let outcome = futures::executor::block_on(runtime.answer_sso_message(response_variant));
         assert!(matches!(outcome, SsoRequestOutcome::Ignored));
     }
+
+    #[test]
+    fn answer_sso_message_answers_a_request_with_a_correlated_response() {
+        use crate::host_logic::sso::messages::{
+            ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
+        };
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        const ENTROPY: [u8; 16] = [0xab; 16];
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+        )
+        .expect("signing host config is valid");
+        let runtime =
+            SigningHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner());
+        futures::executor::block_on(runtime.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let request = RemoteMessage {
+            message_id: "m3".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeRequest(
+                ProductSubtreeRequest {
+                    product_id: "browse.dot".to_string(),
+                },
+            )),
+        };
+        let outcome = futures::executor::block_on(runtime.answer_sso_message(request));
+        let SsoRequestOutcome::Response(response) = outcome else {
+            panic!("expected a response outcome");
+        };
+        assert_eq!(response.message_id, "m3:response");
+        let RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(payload)) =
+            response.data
+        else {
+            panic!("expected a product subtree response payload");
+        };
+        assert_eq!(payload.responding_to, "m3");
+        assert!(payload.product_public_key.is_ok());
+    }
 }
