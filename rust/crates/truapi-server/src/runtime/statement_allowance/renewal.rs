@@ -1,8 +1,11 @@
 //! Proactive renewal of statement-store allowances across period boundaries.
 //!
-//! Allowances are claimed per UTC-day period and die at the boundary, so a
-//! long-lived host must re-register every account it promised to keep allowed
-//! (RFC-0010 assigns renewal to the Account Holder). This module is the
+//! Allowances are claimed per UTC-day period and stop being renewed at the
+//! boundary, so a long-lived host must re-register every account it promised to
+//! keep allowed (RFC-0010 assigns renewal to the Account Holder). They are not
+//! revoked the instant the period ends: `Resources.StmtStoreGraceWindow` keeps
+//! an ended period's allowances active until cleanup catches up, 172800 seconds
+//! on `paseo-next-v2` as of 2026-08-15. This module is the
 //! chain-pure pass: given already-resolved targets, register each for the
 //! requested period. Scheduling and target persistence live in
 //! `signing_host::allowance_renewal`.
@@ -12,16 +15,22 @@ use std::time::Duration;
 use futures::lock::Mutex;
 use tracing::{debug, info, warn};
 
+use super::collection::PersonhoodCollection;
 use super::extension::{ChainState, Metadata};
-use super::ring::RingParams;
 use super::rpc::RpcClient;
 use super::slot::{STATEMENT_STORE_PERIOD_SECONDS, SlotError};
 use super::{
-    RegistrationOutcome, RegistrationParams, StatementAllowanceError, register_statement_account,
+    CollectionCandidate, CollectionMembership, PooledRegistrationParams, RegistrationOutcome,
+    StatementAllowanceError, register_statement_account_pooled, scan_collections,
 };
 
-/// Cap between renewal ticks, mirroring the on-chain grace period after a
-/// period boundary.
+/// Cap between renewal ticks for the in-process loop.
+///
+/// A retry rhythm, not a deadline. An allowance stays usable for
+/// `Resources.StmtStoreGraceWindow` past its period boundary, which is 48 hours
+/// on `paseo-next-v2`, so a pass has ample slack and this only decides how
+/// promptly a transient failure is retried. A host scheduling its own wake-ups
+/// does not need this cadence; one pass per period is enough.
 const MAX_TICK_INTERVAL: Duration = Duration::from_secs(3_600);
 /// Margin after a period boundary before the boundary tick fires, so the
 /// chain has rotated to the new period by the time we scan slots.
@@ -60,6 +69,7 @@ pub struct ResolvedRenewalTarget {
 
 /// Outcome of renewing one target.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Enum))]
 pub enum TargetRenewalStatus {
     /// The extrinsic reached a block; the target holds `seq` this period.
     Registered {
@@ -82,13 +92,34 @@ pub enum TargetRenewalStatus {
     SkippedExhausted,
 }
 
+/// What one target's renewal produced, paired with the label that identifies it
+/// in the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
+pub struct StatementRenewalOutcome {
+    /// Ledger label for the renewed target.
+    pub label: String,
+    /// What the pass did for this target.
+    pub status: TargetRenewalStatus,
+}
+
 /// Summary of one renewal pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(uniffi::Record))]
 pub struct StatementRenewalReport {
     /// Period the pass registered for.
     pub period: u32,
-    /// Per-target `(label, status)` in ledger order.
-    pub outcomes: Vec<(String, TargetRenewalStatus)>,
+    /// Per-target outcomes in ledger order.
+    pub outcomes: Vec<StatementRenewalOutcome>,
+    /// Labels of targets this pass dropped because a different identity
+    /// promised them.
+    ///
+    /// Dropping is silent otherwise: a pruned target simply stops appearing in
+    /// `outcomes`, and the surface has no way to list the ledger, so a host
+    /// could only infer it from an absence. A raw account target does not
+    /// survive a change of root entropy, so this is how a host learns to
+    /// re-track one.
+    pub pruned: Vec<String>,
     /// Whether the pass hit slot exhaustion for this period.
     pub slots_exhausted: bool,
 }
@@ -101,8 +132,13 @@ pub struct RenewalChainContext<'a> {
     pub metadata: &'a Metadata,
     /// Signed-extension chain state.
     pub chain_state: &'a ChainState,
-    /// Ring the host's membership proof is built against.
-    pub ring: &'a RingParams,
+    /// Every collection the host can derive aliases for, so an allowance already
+    /// held in a collection whose ring cannot currently be proved is still seen.
+    pub candidates: &'a [CollectionCandidate],
+    /// Every collection the host can prove membership in, widest budget first.
+    /// Renewal pools slots across all of them, so a device with full personhood
+    /// renews against the combined budget rather than one collection's share.
+    pub memberships: &'a [CollectionMembership],
 }
 
 /// Register every target for `period`, continuing past per-target failures
@@ -119,28 +155,44 @@ pub struct RenewalChainContext<'a> {
 /// on-demand allocation sharing the lock waits at most one registration.
 pub async fn renew_targets(
     context: &RenewalChainContext<'_>,
-    entropy: [u8; 32],
     period: u32,
     targets: &[ResolvedRenewalTarget],
     registration_lock: &Mutex<()>,
 ) -> StatementRenewalReport {
     let mut results = Vec::with_capacity(targets.len());
-    let mut claimed = Vec::new();
+    let mut claimed: Vec<(PersonhoodCollection, u32)> = Vec::new();
     for target in targets {
         let result = {
             let _guard = registration_lock.lock().await;
-            register_statement_account(
+            let scans = match scan_collections(
+                context.rpc,
+                context.metadata,
+                context.candidates,
+                period,
+                &target.account_id,
+                true,
+            )
+            .await
+            {
+                Ok(scans) => scans,
+                Err(err) => {
+                    results.push(Err(RenewalFailure::from(err)));
+                    continue;
+                }
+            };
+            register_statement_account_pooled(
                 context.rpc,
                 context.metadata,
                 context.chain_state,
-                entropy,
-                RegistrationParams {
+                &scans,
+                context.memberships,
+                PooledRegistrationParams {
                     target: &target.account_id,
                     period,
-                    ring: context.ring,
                     reuse_existing: true,
-                    // The pass has no scan of its own, so registration scans.
-                    preselected: None,
+                    // Renewal exists to keep the ledger's targets alive across a
+                    // period boundary, so it may reclaim space when full.
+                    allow_eviction: true,
                     protected: &claimed,
                 },
             )
@@ -150,8 +202,12 @@ pub async fn renew_targets(
         log_target_result(period, &target.label, &result);
         if let Ok(outcome) = &result {
             match outcome {
-                RegistrationOutcome::Registered { seq, .. }
-                | RegistrationOutcome::AlreadyAllocated { seq } => claimed.push(*seq),
+                RegistrationOutcome::Registered {
+                    seq, collection, ..
+                }
+                | RegistrationOutcome::AlreadyAllocated { seq, collection } => {
+                    claimed.push((*collection, *seq));
+                }
             }
         }
         let exhausted = matches!(&result, Err(failure) if failure.slots_exhausted);
@@ -164,7 +220,8 @@ pub async fn renew_targets(
 }
 
 /// Delay until the next renewal tick: hourly, but always shortly after each
-/// period boundary so expired allowances are refreshed within the grace window.
+/// period boundary rather than before it. The margin is about the chain's clock,
+/// not urgency; see the inline note below.
 pub fn next_tick_delay(now_seconds: u64) -> Duration {
     let next_boundary =
         (now_seconds / STATEMENT_STORE_PERIOD_SECONDS + 1) * STATEMENT_STORE_PERIOD_SECONDS;
@@ -190,7 +247,7 @@ fn log_target_result(
         Ok(RegistrationOutcome::Registered {
             block_hash, seq, ..
         }) => info!(period, label, seq, %block_hash, "renewed statement-store allowance"),
-        Ok(RegistrationOutcome::AlreadyAllocated { seq }) => {
+        Ok(RegistrationOutcome::AlreadyAllocated { seq, .. }) => {
             debug!(
                 period,
                 label, seq, "statement-store allowance already fresh"
@@ -218,7 +275,7 @@ fn fold_outcomes(
                 Some(Ok(RegistrationOutcome::Registered {
                     block_hash, seq, ..
                 })) => TargetRenewalStatus::Registered { seq, block_hash },
-                Some(Ok(RegistrationOutcome::AlreadyAllocated { seq })) => {
+                Some(Ok(RegistrationOutcome::AlreadyAllocated { seq, .. })) => {
                     TargetRenewalStatus::AlreadyAllocated { seq }
                 }
                 Some(Err(failure)) => {
@@ -229,12 +286,18 @@ fn fold_outcomes(
                 }
                 None => TargetRenewalStatus::SkippedExhausted,
             };
-            (target.label.clone(), status)
+            StatementRenewalOutcome {
+                label: target.label.clone(),
+                status,
+            }
         })
         .collect();
     StatementRenewalReport {
         period,
         outcomes,
+        // fold_outcomes only sees targets that survived to be renewed; the
+        // caller that read the ledger attaches what it dropped.
+        pruned: Vec::new(),
         slots_exhausted,
     }
 }
@@ -258,6 +321,7 @@ mod tests {
         use parity_scale_codec::Encode;
         use subxt_rpcs::RpcClient as HostRpcClient;
 
+        use crate::runtime::statement_allowance::CollectionMembership;
         use crate::runtime::statement_allowance::extension::{ChainState, Metadata};
         use crate::runtime::statement_allowance::proof;
         use crate::runtime::statement_allowance::ring::RingParams;
@@ -284,26 +348,32 @@ mod tests {
             nonce: 0,
         };
         let entropy = [0x11; 32];
-        let ring = RingParams {
-            members: vec![proof::member_key(entropy)],
-            exponent: 9,
-            ring_index: 0,
-            block_hash: "0xfinal".to_string(),
-        };
+        // One collection, so this stays a test of cross-target protection rather
+        // than of pooling; pooling has its own tests.
+        let memberships = [CollectionMembership {
+            entropy,
+            ring: RingParams {
+                collection: PersonhoodCollection::LitePeople,
+                members: vec![proof::member_key(entropy)],
+                exponent: 9,
+                ring_index: 0,
+                block_hash: "0xfinal".to_string(),
+            },
+        }];
         let targets = [
             target_with("first", [0xa1; 32]),
             target_with("second", [0xa2; 32]),
         ];
 
-        // Per target: revision, ten occupied slots (seq 0 oldest), the chain
-        // clock, then the post-submit verification read. The scripted chain does
-        // not mutate, so both passes see the same table; only the protection of
-        // slot 0 can push the second target elsewhere.
+        // Per target: ten occupied slots (seq 0 oldest), the chain clock, the ring
+        // revision, then the post-submit verification read. The scripted chain
+        // does not mutate, so both passes see the same table; only the protection
+        // of slot 0 can push the second target elsewhere.
         let mut owned = Vec::new();
         for target in &targets {
-            owned.push("null".to_string());
             owned.extend((0..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
             owned.push(clock());
+            owned.push("null".to_string());
             owned.push(entry(target.account_id, NOW));
         }
         let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
@@ -312,22 +382,26 @@ mod tests {
         scripted.script_subscription([r#"{"inBlock":"0xb10d"}"#]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
 
+        let candidates = [CollectionCandidate {
+            collection: PersonhoodCollection::LitePeople,
+            entropy,
+        }];
         let context = RenewalChainContext {
             rpc: &rpc,
             metadata: &metadata,
             chain_state: &chain_state,
-            ring: &ring,
+            candidates: &candidates,
+            memberships: &memberships,
         };
         let lock = Mutex::new(());
-        let report =
-            futures::executor::block_on(renew_targets(&context, entropy, 7, &targets, &lock));
+        let report = futures::executor::block_on(renew_targets(&context, 7, &targets, &lock));
 
         let seqs: Vec<u32> = report
             .outcomes
             .iter()
-            .filter_map(|(_, status)| match status {
+            .filter_map(|outcome| match outcome.status {
                 TargetRenewalStatus::Registered { seq, .. }
-                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(*seq),
+                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(seq),
                 _ => None,
             })
             .collect();
@@ -358,6 +432,13 @@ mod tests {
         ResolvedRenewalTarget {
             label: label.to_string(),
             account_id: [0u8; 32],
+        }
+    }
+
+    fn outcome(label: &str, status: TargetRenewalStatus) -> StatementRenewalOutcome {
+        StatementRenewalOutcome {
+            label: label.to_string(),
+            status,
         }
     }
 
@@ -412,7 +493,10 @@ mod tests {
             7,
             &targets,
             vec![
-                Ok(RegistrationOutcome::AlreadyAllocated { seq: 1 }),
+                Ok(RegistrationOutcome::AlreadyAllocated {
+                    seq: 1,
+                    collection: PersonhoodCollection::LitePeople,
+                }),
                 Err(RenewalFailure {
                     reason: "rpc timeout".to_string(),
                     slots_exhausted: false,
@@ -421,6 +505,7 @@ mod tests {
                     block_hash: "0xabc".to_string(),
                     seq: 2,
                     ring_index: 0,
+                    collection: PersonhoodCollection::LitePeople,
                 }),
             ],
         );
@@ -429,24 +514,22 @@ mod tests {
             StatementRenewalReport {
                 period: 7,
                 outcomes: vec![
-                    (
-                        "a".to_string(),
-                        TargetRenewalStatus::AlreadyAllocated { seq: 1 }
-                    ),
-                    (
-                        "b".to_string(),
+                    outcome("a", TargetRenewalStatus::AlreadyAllocated { seq: 1 }),
+                    outcome(
+                        "b",
                         TargetRenewalStatus::Failed {
                             reason: "rpc timeout".to_string()
                         }
                     ),
-                    (
-                        "c".to_string(),
+                    outcome(
+                        "c",
                         TargetRenewalStatus::Registered {
                             seq: 2,
                             block_hash: "0xabc".to_string()
                         }
                     ),
                 ],
+                pruned: Vec::new(),
                 slots_exhausted: false,
             }
         );
@@ -459,7 +542,10 @@ mod tests {
             7,
             &targets,
             vec![
-                Ok(RegistrationOutcome::AlreadyAllocated { seq: 0 }),
+                Ok(RegistrationOutcome::AlreadyAllocated {
+                    seq: 0,
+                    collection: PersonhoodCollection::LitePeople,
+                }),
                 Err(exhausted_failure()),
             ],
         );
@@ -468,18 +554,16 @@ mod tests {
             StatementRenewalReport {
                 period: 7,
                 outcomes: vec![
-                    (
-                        "a".to_string(),
-                        TargetRenewalStatus::AlreadyAllocated { seq: 0 }
-                    ),
-                    (
-                        "b".to_string(),
+                    outcome("a", TargetRenewalStatus::AlreadyAllocated { seq: 0 }),
+                    outcome(
+                        "b",
                         TargetRenewalStatus::Failed {
                             reason: exhausted_failure().reason
                         }
                     ),
-                    ("c".to_string(), TargetRenewalStatus::SkippedExhausted),
+                    outcome("c", TargetRenewalStatus::SkippedExhausted),
                 ],
+                pruned: Vec::new(),
                 slots_exhausted: true,
             }
         );

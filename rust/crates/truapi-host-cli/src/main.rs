@@ -7,7 +7,9 @@
 //! - `signing-host`: a wallet-local host that answers a pairing deeplink and
 //!   auto-signs, replacing the external signing-bot in e2e.
 //!
-//! Plus `alloc-check`, a diagnostic for on-chain statement-store allowance.
+//! Plus three diagnostics: `identity-check` for People-chain identity records,
+//! `alloc-check` for statement-store allowance, and `pgas-check` for an Asset Hub
+//! PGAS allowance claim.
 
 mod accounts;
 mod attestation;
@@ -181,6 +183,26 @@ enum Command {
         #[arg(long)]
         submit: bool,
     },
+    /// Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring
+    /// membership on People, revision propagation to Asset Hub, the day's free
+    /// slot, and the `Pgas.claim_pgas` extrinsic.
+    PgasCheck {
+        /// BIP-39 mnemonic proving LitePeople ring membership.
+        #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
+        mnemonic: String,
+        /// Network preset to use for People and Asset Hub RPC.
+        #[arg(long, value_enum, default_value = "paseo-next-v2")]
+        network: Network,
+        /// Account (hex, 32 bytes) the claim credits. Required with `--submit`.
+        #[arg(long)]
+        target: Option<String>,
+        /// How many rings back from the current index to scan for our member.
+        #[arg(long, default_value_t = 8)]
+        lookback: u32,
+        /// Submit the claim instead of only reporting what it would do.
+        #[arg(long)]
+        submit: bool,
+    },
 }
 
 #[derive(Args)]
@@ -308,7 +330,172 @@ async fn main() -> Result<()> {
             lookback,
             submit,
         } => run_alloc_check(mnemonic, network.config(), target, lookback, submit).await,
+        Command::PgasCheck {
+            mnemonic,
+            network,
+            target,
+            lookback,
+            submit,
+        } => run_pgas_check(mnemonic, network.config(), target, lookback, submit).await,
     }
+}
+
+/// Diagnose an Asset Hub PGAS claim, and optionally submit it.
+///
+/// Connects to both chains directly rather than through the host's
+/// `ChainProvider`, because a diagnostic should not depend on a host being wired
+/// up. The provider would route Asset Hub correctly now that the preset serves it
+/// as a role, so this is a choice about the subcommand rather than a workaround.
+async fn run_pgas_check(
+    mnemonic: String,
+    network: crate::network::NetworkConfig,
+    target: Option<String>,
+    lookback: u32,
+    submit: bool,
+) -> Result<()> {
+    use std::sync::Arc;
+
+    use truapi_server::statement_allowance::pgas;
+
+    let entropy = bip39::Mnemonic::parse(mnemonic.trim())
+        .context("invalid BIP-39 mnemonic")?
+        .to_entropy();
+    let candidates = accounts::collection_candidates(&entropy);
+
+    if submit && target.is_none() {
+        bail!("--target is required with --submit; a claim has to credit an account");
+    }
+    let target = match target {
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str.strip_prefix("0x").unwrap_or(&hex_str))
+                .context("invalid --target hex")?;
+            <[u8; 32]>::try_from(bytes.as_slice())
+                .map_err(|_| anyhow::anyhow!("--target must be 32 bytes"))?
+        }
+        None => [0u8; 32],
+    };
+
+    let people_rpc = alloc::rpc::RpcClient::connect(network.people_ws)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let people_metadata = alloc::fetch_metadata(&people_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let asset_hub_rpc = alloc::rpc::RpcClient::connect(network.asset_hub_ws)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let asset_hub_metadata = alloc::fetch_metadata(&asset_hub_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let asset_hub_state = alloc::fetch_chain_state(&asset_hub_rpc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    println!(
+        "asset hub: metadata V{} specVersion={} txVersion={} genesis=0x{}",
+        asset_hub_metadata.metadata_version(),
+        asset_hub_state.spec_version,
+        asset_hub_state.transaction_version,
+        hex::encode(asset_hub_state.genesis_hash),
+    );
+
+    for candidate in &candidates {
+        println!(
+            "{} member=0x{}",
+            candidate.collection,
+            hex::encode(alloc::proof::member_key(candidate.entropy))
+        );
+    }
+    let memberships =
+        alloc::find_including_rings(&people_rpc, &people_metadata, &candidates, lookback)
+            .await
+            .map_err(anyhow::Error::msg)?;
+    for membership in &memberships {
+        println!(
+            "member INCLUDED in {} ring_index={} exponent={} members={}",
+            membership.collection(),
+            membership.ring.ring_index,
+            membership.ring.exponent,
+            membership.ring.members.len()
+        );
+    }
+    // The widest membership the signer actually holds; a claim needs exactly one.
+    let Some(membership) = memberships.first() else {
+        bail!("member is not in the last {lookback} rings of any collection (onboarding pending)");
+    };
+    let ring = &membership.ring;
+
+    let revision = alloc::ring::read_ring_revision(
+        &people_rpc,
+        &people_metadata,
+        ring.collection,
+        ring.ring_index,
+        &ring.block_hash,
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    println!("people ring revision={revision}");
+    match pgas::await_ring_revision(
+        &asset_hub_rpc,
+        &asset_hub_metadata,
+        ring.collection,
+        ring.ring_index,
+        revision,
+    )
+    .await
+    {
+        Ok(()) => println!("asset hub has imported revision {revision}"),
+        Err(err) => bail!("asset hub cannot authorize this ring: {err}"),
+    }
+
+    let day = alloc::slot::current_period(
+        alloc::slot::read_chain_now_seconds(&asset_hub_rpc)
+            .await
+            .map_err(anyhow::Error::msg)?,
+    );
+    let max = alloc::slot::max_pgas_claims(&asset_hub_metadata, ring.collection)
+        .map_err(anyhow::Error::msg)?;
+    println!(
+        "day={day} max_claims_per_day={max} target=0x{}",
+        hex::encode(target)
+    );
+    match alloc::slot::scan_pgas_slot_excluding(
+        &asset_hub_rpc,
+        &asset_hub_metadata,
+        ring.collection,
+        membership.entropy,
+        day,
+        &[],
+    )
+    .await
+    {
+        Ok(slot_index) => println!("slot scan: free slot_index={slot_index}"),
+        Err(err) => println!("slot scan: {err}"),
+    }
+
+    if !submit {
+        return Ok(());
+    }
+
+    let asset_hub = alloc::ChainContext {
+        metadata: Arc::new(asset_hub_metadata),
+        state: asset_hub_state,
+    };
+    let outcome = pgas::claim_pgas(pgas::PgasClaim {
+        asset_hub_rpc: &asset_hub_rpc,
+        asset_hub: &asset_hub,
+        people_rpc: &people_rpc,
+        people_metadata: &people_metadata,
+        entropy: membership.entropy,
+        target: &target,
+        ring: &membership.ring,
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("claim failed: {err}"))?;
+    println!(
+        "CLAIMED day={} slot_index={} ring_index={} block={}",
+        outcome.day, outcome.slot_index, outcome.ring_index, outcome.block_hash
+    );
+    Ok(())
 }
 
 fn log_target_is_visible(target: &str) -> bool {
@@ -328,12 +515,10 @@ async fn run_alloc_check(
     lookback: u32,
     submit: bool,
 ) -> Result<()> {
-    use truapi_server::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
-
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
+    let candidates = accounts::collection_candidates(&entropy);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; the all-zero default is read-only");
@@ -365,23 +550,30 @@ async fn run_alloc_check(
         hex::encode(chain_state.genesis_hash),
     );
 
-    let member = alloc::proof::member_key(bandersnatch);
-    println!("bandersnatch member=0x{}", hex::encode(member));
-    let current_ring = alloc::ring::read_current_ring_index(&rpc)
+    for candidate in &candidates {
+        println!(
+            "{} member=0x{} current_ring_index={}",
+            candidate.collection,
+            hex::encode(alloc::proof::member_key(candidate.entropy)),
+            alloc::ring::read_current_ring_index(&rpc, candidate.collection)
+                .await
+                .map_err(anyhow::Error::msg)?,
+        );
+    }
+    let memberships = alloc::find_including_rings(&rpc, &metadata, &candidates, lookback)
         .await
         .map_err(anyhow::Error::msg)?;
-    println!("current ring index={current_ring}");
-    let ring = alloc::find_including_ring(&rpc, &metadata, bandersnatch, lookback)
-        .await
-        .map_err(anyhow::Error::msg)?;
-    match &ring {
-        Some(r) => println!(
-            "member INCLUDED in ring_index={} exponent={} included_members={}",
-            r.ring_index,
-            r.exponent,
-            r.members.len(),
-        ),
-        None => println!("member NOT in the last {lookback} rings (onboarding pending)"),
+    if memberships.is_empty() {
+        println!("member NOT in the last {lookback} rings of any collection (onboarding pending)");
+    }
+    for membership in &memberships {
+        println!(
+            "member INCLUDED in {} ring_index={} exponent={} included_members={}",
+            membership.collection(),
+            membership.ring.ring_index,
+            membership.ring.exponent,
+            membership.ring.members.len(),
+        );
     }
 
     let now = std::time::SystemTime::now()
@@ -391,14 +583,79 @@ async fn run_alloc_check(
     let period = alloc::slot::current_period(now);
     println!("period={period} target=0x{}", hex::encode(target));
 
+    for candidate in &candidates {
+        if !candidate.collection.is_supported(&metadata) {
+            println!("{}: not offered by this chain", candidate.collection);
+            continue;
+        }
+        print!("{}: ", candidate.collection);
+        report_slot_scan(&rpc, &metadata, *candidate, period, &target, now).await?;
+    }
+
+    if submit {
+        if memberships.is_empty() {
+            bail!("cannot submit: member not in any ring");
+        }
+        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        match alloc::register_statement_account_pooled(
+            &rpc,
+            &metadata,
+            &chain_state,
+            &scans,
+            &memberships,
+            alloc::PooledRegistrationParams {
+                target: &target,
+                period,
+                reuse_existing: true,
+                // A diagnostic that submits behaves as it did before pooling,
+                // where a full table was replaced rather than reported.
+                allow_eviction: true,
+                protected: &[],
+            },
+        )
+        .await
+        {
+            Ok(alloc::RegistrationOutcome::Registered {
+                block_hash,
+                seq,
+                ring_index,
+                collection,
+            }) => println!(
+                "REGISTERED in {collection} seq={seq} ring_index={ring_index} block={block_hash}"
+            ),
+            Ok(alloc::RegistrationOutcome::AlreadyAllocated { seq, collection }) => {
+                println!("already allocated in {collection} at seq={seq}")
+            }
+            Err(err) => bail!("registration failed: {err}"),
+        }
+    }
+
+    Ok(())
+}
+
+/// Print one collection's slot table for `period`: the free or reusable slot, or
+/// the full table with each occupant's age against the chain clock.
+async fn report_slot_scan(
+    rpc: &alloc::rpc::RpcClient,
+    metadata: &alloc::extension::Metadata,
+    candidate: alloc::CollectionCandidate,
+    period: u32,
+    target: &[u8; 32],
+    now: u64,
+) -> Result<()> {
     match alloc::slot::scan_slot_excluding(
-        &rpc,
-        &metadata,
-        bandersnatch,
-        period,
-        &target,
-        &[],
-        true,
+        rpc,
+        metadata,
+        alloc::slot::SlotScan {
+            collection: candidate.collection,
+            entropy: candidate.entropy,
+            period,
+            target,
+            excluded: &[],
+            reuse_existing: true,
+        },
     )
     .await
     {
@@ -408,9 +665,9 @@ async fn run_alloc_check(
         }
         Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
-            let cooldown = alloc::slot::replacement_cooldown(&metadata)?;
+            let cooldown = alloc::slot::replacement_cooldown(metadata)?;
             // The runtime judges ages against its own clock, which trails ours.
-            let chain_now = alloc::slot::read_chain_now_seconds(&rpc).await?;
+            let chain_now = alloc::slot::read_chain_now_seconds(rpc).await?;
             println!(
                 "  chain clock={chain_now} (host clock is {}s ahead)",
                 now.saturating_sub(chain_now)
@@ -429,7 +686,7 @@ async fn run_alloc_check(
                     hex::encode(slot.account_id)
                 );
             }
-            match alloc::slot::replaceable_slot(&occupied, &target, chain_now, cooldown, &[]) {
+            match alloc::slot::replaceable_slot(&occupied, target, chain_now, cooldown, &[]) {
                 Some(seq) => println!("would replace seq={seq} (oldest replaceable)"),
                 None => println!("nothing replaceable: cooldown={cooldown}s"),
             }
@@ -438,36 +695,6 @@ async fn run_alloc_check(
             println!("slot scan: target already allocated at seq={seq}")
         }
         Err(err) => println!("slot scan: {err}"),
-    }
-
-    if submit {
-        let ring = ring.ok_or_else(|| anyhow::anyhow!("cannot submit: member not in any ring"))?;
-        match alloc::register_statement_account(
-            &rpc,
-            &metadata,
-            &chain_state,
-            bandersnatch,
-            alloc::RegistrationParams {
-                target: &target,
-                period,
-                ring: &ring,
-                reuse_existing: true,
-                preselected: None,
-                protected: &[],
-            },
-        )
-        .await
-        {
-            Ok(alloc::RegistrationOutcome::Registered {
-                block_hash,
-                seq,
-                ring_index,
-            }) => println!("REGISTERED seq={seq} ring_index={ring_index} block={block_hash}"),
-            Ok(alloc::RegistrationOutcome::AlreadyAllocated { seq }) => {
-                println!("already allocated at seq={seq}")
-            }
-            Err(err) => bail!("registration failed: {err}"),
-        }
     }
 
     Ok(())
@@ -530,8 +757,7 @@ async fn run_pairing_host(
         (None, None)
     };
     let platform = CliPlatform::new(
-        network.people_ws,
-        network.live_chain_endpoints,
+        network,
         Some(storage_paths),
         approval_policy(args.auto_accept),
         ui_handle,
@@ -922,8 +1148,7 @@ fn build_signing_runtime(
     ui: Option<UiHandle>,
 ) -> Result<Arc<SigningHostRuntime>> {
     let platform = CliPlatform::new(
-        network.people_ws,
-        network.live_chain_endpoints,
+        network,
         Some(CliStoragePaths::new(storage_path, product_storage_dir)),
         approval,
         ui,
@@ -1202,8 +1427,9 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("allowance renewal failed: {}", err.reason))?;
 
     let (mut renewed, mut fresh, mut failed, mut skipped) = (0usize, 0usize, 0usize, 0usize);
-    for (target, status) in &report.outcomes {
-        match status {
+    for outcome in &report.outcomes {
+        let target = &outcome.label;
+        match &outcome.status {
             TargetRenewalStatus::Registered { seq, block_hash } => {
                 renewed += 1;
                 terminal_ui::output_event(SystemEvent::AllowanceReady {
@@ -1232,12 +1458,18 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
             TargetRenewalStatus::SkippedExhausted => skipped += 1,
         }
     }
+    for label in &report.pruned {
+        terminal_ui::output_event(SystemEvent::AllowanceRenewalPruned {
+            target: label.clone(),
+        });
+    }
     terminal_ui::output_event(SystemEvent::AllowanceRenewalReport {
         period: report.period,
         renewed,
         fresh,
         failed,
         skipped,
+        pruned: report.pruned.len(),
     });
 
     if report.slots_exhausted {
@@ -1454,9 +1686,7 @@ async fn register_pairing_allowances(
     entropy: &[u8],
     deeplink: &str,
 ) -> Result<[u8; 32]> {
-    use truapi_server::host_logic::product_account::{
-        derive_identity_keypair, derive_lite_person_ring_vrf_entropy,
-    };
+    use truapi_server::host_logic::product_account::derive_identity_keypair;
     use truapi_server::host_logic::sso::pairing::{
         VersionedHandshakeProposal, decode_pairing_deeplink,
     };
@@ -1469,7 +1699,7 @@ async fn register_pairing_allowances(
         decode_pairing_deeplink(deeplink).map_err(anyhow::Error::msg)?;
     let device = proposal.device.statement_account_id;
 
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(entropy);
+    let candidates = accounts::collection_candidates(entropy);
     let rpc = alloc::rpc::RpcClient::connect(statement_store_url)
         .await
         .map_err(anyhow::Error::msg)?;
@@ -1483,28 +1713,25 @@ async fn register_pairing_allowances(
     // Account provisioning waits for ring membership on a separate RPC
     // connection. A load-balanced endpoint can briefly route this fresh
     // connection to a node that has not observed the same ring yet.
-    let mut ring = None;
+    let mut memberships = Vec::new();
     for attempt in 1..=10 {
         // The signing account may be in an old ring, so scan back to genesis.
-        let current = alloc::ring::read_current_ring_index(&rpc)
+        memberships = alloc::find_including_rings(&rpc, &metadata, &candidates, u32::MAX)
             .await
             .map_err(anyhow::Error::msg)?;
-        ring = alloc::find_including_ring(&rpc, &metadata, bandersnatch, current)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        if ring.is_some() {
+        if !memberships.is_empty() {
             break;
         }
         if attempt < 10 {
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         }
     }
-    let ring = ring.ok_or_else(|| {
-        anyhow::anyhow!("signing account is not a LitePeople ring member; cannot grant allowance")
-    })?;
+    let Some(widest) = memberships.first() else {
+        bail!("signing account is not in any personhood ring; cannot grant allowance");
+    };
     terminal_ui::output_event(SystemEvent::RingInfo {
-        ring_index: ring.ring_index,
-        members: ring.members.len(),
+        ring_index: widest.ring.ring_index,
+        members: widest.ring.members.len(),
     });
 
     let period = alloc::slot::current_period(
@@ -1518,17 +1745,22 @@ async fn register_pairing_allowances(
         terminal_ui::output_event(SystemEvent::AllowanceChecking {
             target: label.to_string(),
         });
-        let outcome = alloc::register_statement_account(
+        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let outcome = alloc::register_statement_account_pooled(
             &rpc,
             &metadata,
             &chain_state,
-            bandersnatch,
-            alloc::RegistrationParams {
+            &scans,
+            &memberships,
+            alloc::PooledRegistrationParams {
                 target: &target,
                 period,
-                ring: &ring,
                 reuse_existing: true,
-                preselected: None,
+                // The signing host grants its own identity and device allowances
+                // here, and replaced a full table before pooling.
+                allow_eviction: true,
                 protected: &[],
             },
         )
@@ -1543,7 +1775,7 @@ async fn register_pairing_allowances(
                 block_hash: Some(block_hash),
                 already_allocated: false,
             }),
-            alloc::RegistrationOutcome::AlreadyAllocated { seq } => {
+            alloc::RegistrationOutcome::AlreadyAllocated { seq, .. } => {
                 terminal_ui::output_event(SystemEvent::AllowanceReady {
                     target: label.to_string(),
                     sequence: seq,

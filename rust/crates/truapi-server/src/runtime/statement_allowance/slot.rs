@@ -14,6 +14,7 @@ use verifiable::GenerateVerifiable;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
 
 use super::StatementAllowanceError;
+use super::collection::PersonhoodCollection;
 use super::extension::{Metadata, MetadataError};
 use super::ring::blake2_128_concat;
 use super::rpc::RpcClient;
@@ -22,6 +23,16 @@ use super::rpc::RpcClient;
 pub const STATEMENT_STORE_PERIOD_SECONDS: u64 = 86_400;
 /// Bulletin long-term-storage claim context prefix.
 const LONG_TERM_STORAGE_CONTEXT_PREFIX: &[u8] = b"pop:polkadot.net/rsc-lts";
+/// Ring-VRF alias context prefix for an Asset Hub PGAS claim.
+const PGAS_CONTEXT_PREFIX: &[u8] = b"pop:gas:";
+/// Slots probed per batched storage read while scanning for a free PGAS slot.
+///
+/// Reading every slot in one request would cost a round trip flat, but each slot's
+/// key needs a bandersnatch alias first, and those are milliseconds each — paying
+/// for all of them when the first slot is usually free is the worse trade. A batch
+/// keeps the common case to one round trip and bounds the full-table case to a
+/// handful.
+const PGAS_SCAN_BATCH: u32 = 10;
 
 /// Error while deriving aliases or selecting allowance slots.
 #[derive(Debug, Error)]
@@ -64,6 +75,14 @@ pub enum SlotError {
         /// Slot the takeover targeted.
         seq: u32,
     },
+    /// No unclaimed PGAS slot was found for the day.
+    #[error("no free PGAS slot on day {day} (max {max})")]
+    NoFreePgasSlot {
+        /// Day scanned.
+        day: u32,
+        /// Maximum claims per day.
+        max: u32,
+    },
     /// Free slots exist but all were excluded by this call's own submissions.
     #[error(
         "every free StatementStore slot in period {period} is awaiting one of this call's own submissions"
@@ -72,6 +91,9 @@ pub enum SlotError {
         /// Period scanned.
         period: u32,
     },
+    /// No collection membership could be proved, so no alias space is available.
+    #[error("no provable personhood collection membership")]
+    NoCollectionMembership,
     /// `Timestamp.Now` was absent or undecodable, so slot ages cannot be judged.
     #[error("Timestamp.Now missing from chain state")]
     MissingChainTimestamp,
@@ -133,6 +155,21 @@ pub fn derive_slot_context(period: u32, seq: u32) -> [u8; 32] {
     ctx
 }
 
+/// Derive the 32-byte Asset Hub PGAS claim context:
+/// `"pop:gas:" ‖ u32le(day) ‖ u32le(slot_index) ‖ zero fill`.
+///
+/// The two integers are little-endian here, unlike the big-endian statement-store
+/// and long-term-storage contexts. The mobile wallet writes them this way and the
+/// runtime verifies against the same bytes, so the layout is not ours to tidy.
+pub fn derive_pgas_context(day: u32, slot_index: u32) -> [u8; 32] {
+    let mut ctx = [0u8; 32];
+    ctx[..PGAS_CONTEXT_PREFIX.len()].copy_from_slice(PGAS_CONTEXT_PREFIX);
+    let offset = PGAS_CONTEXT_PREFIX.len();
+    ctx[offset..offset + 4].copy_from_slice(&day.to_le_bytes());
+    ctx[offset + 4..offset + 8].copy_from_slice(&slot_index.to_le_bytes());
+    ctx
+}
+
 /// Derive the 32-byte Bulletin long-term-storage slot context:
 /// `"pop:polkadot.net/rsc-lts" ‖ u32be(period) ‖ counter ‖ zero fill`.
 pub fn derive_long_term_storage_context(period: u32, counter: u8) -> [u8; 32] {
@@ -155,6 +192,23 @@ pub fn slot_alias(
     BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
         SlotError::AliasInContext {
             context: "statement-store slot",
+            error: err,
+        }
+        .into()
+    })
+}
+
+/// The PGAS claim alias for our `entropy` at `(day, slot_index)`.
+pub fn pgas_alias(
+    entropy: [u8; 32],
+    day: u32,
+    slot_index: u32,
+) -> Result<[u8; 32], StatementAllowanceError> {
+    let secret = BandersnatchVrfVerifiable::new_secret(entropy);
+    let context = derive_pgas_context(day, slot_index);
+    BandersnatchVrfVerifiable::alias_in_context(&secret, &context).map_err(|err| {
+        SlotError::AliasInContext {
+            context: "PGAS claim slot",
             error: err,
         }
         .into()
@@ -190,6 +244,19 @@ fn statement_store_allowance_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
     .concat()
 }
 
+/// `Pgas.ClaimedGasAliases[day][alias]` storage key on Asset Hub.
+/// key1 = Identity(u32be day); key2 = Blake2_128Concat(alias). Presence alone
+/// marks the slot spent; the value is unit.
+fn claimed_gas_alias_key(day: u32, alias: &[u8; 32]) -> Vec<u8> {
+    [
+        twox_128(b"Pgas").as_slice(),
+        twox_128(b"ClaimedGasAliases").as_slice(),
+        &day.to_be_bytes(),
+        &blake2_128_concat(alias),
+    ]
+    .concat()
+}
+
 /// `Resources.SpentLongTermStorageAliases[period][alias]` storage key.
 /// key1 = Identity(u32be period); key2 = Blake2_128Concat(alias).
 fn spent_long_term_storage_alias_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
@@ -202,18 +269,12 @@ fn spent_long_term_storage_alias_key(period: u32, alias: &[u8; 32]) -> Vec<u8> {
     .concat()
 }
 
-/// Max StatementStore slots per period from `Resources.LiteStmtStoreSlotsPerPeriod`.
-fn max_slots(metadata: &Metadata) -> Result<u32, StatementAllowanceError> {
-    let bytes = metadata
-        .constant("Resources", "LiteStmtStoreSlotsPerPeriod")
-        .ok_or(MetadataError::MissingConstant {
-            pallet: "Resources",
-            constant: "LiteStmtStoreSlotsPerPeriod",
-        })?;
-    let mut buf = [0u8; 4];
-    let n = bytes.len().min(4);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    Ok(u32::from_le_bytes(buf))
+/// Max StatementStore slots per period for `collection`.
+fn max_slots(
+    metadata: &Metadata,
+    collection: PersonhoodCollection,
+) -> Result<u32, StatementAllowanceError> {
+    collection.slots_per_period(metadata)
 }
 
 /// Max long-term-storage claims per period from
@@ -236,16 +297,7 @@ fn long_term_storage_claims_per_period(metadata: &Metadata) -> Result<u8, Statem
 pub fn long_term_storage_period_duration(
     metadata: &Metadata,
 ) -> Result<u32, StatementAllowanceError> {
-    let bytes = metadata
-        .constant("Resources", "LongTermStoragePeriodDuration")
-        .ok_or(MetadataError::MissingConstant {
-            pallet: "Resources",
-            constant: "LongTermStoragePeriodDuration",
-        })?;
-    let mut buf = [0u8; 4];
-    let n = bytes.len().min(4);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    Ok(u32::from_le_bytes(buf))
+    metadata.constant_u32("Resources", "LongTermStoragePeriodDuration")
 }
 
 /// Decode a slot entry: `account_id(32) ‖ seq(u32 LE) ‖ since(u64 LE)`.
@@ -307,16 +359,9 @@ pub async fn read_chain_now_seconds(rpc: &RpcClient) -> Result<u64, StatementAll
 
 /// Seconds an occupied slot must age before the runtime allows replacing it.
 pub fn replacement_cooldown(metadata: &Metadata) -> Result<u64, StatementAllowanceError> {
-    let bytes = metadata
-        .constant("Resources", "StmtStoreReplacementCooldown")
-        .ok_or(MetadataError::MissingConstant {
-            pallet: "Resources",
-            constant: "StmtStoreReplacementCooldown",
-        })?;
-    let mut buf = [0u8; 4];
-    let n = bytes.len().min(4);
-    buf[..n].copy_from_slice(&bytes[..n]);
-    Ok(u64::from(u32::from_le_bytes(buf)))
+    metadata
+        .constant_u32("Resources", "StmtStoreReplacementCooldown")
+        .map(u64::from)
 }
 
 /// The account holding our alias slot `(period, seq)`, read pinned to
@@ -359,19 +404,39 @@ pub enum SlotSelection {
     FreeSlotsExcluded,
 }
 
-/// Scan slots `0..max` for `period`, returning the first non-excluded free seq
-/// (or detecting that `target` already holds one). `entropy` is our
-/// bandersnatch entropy.
+/// Inputs for one statement-store slot scan. The collection fixes both the slot
+/// budget and the alias space, so it travels with the entropy that derives them.
+pub struct SlotScan<'a> {
+    /// Collection whose alias space and slot budget are scanned.
+    pub collection: PersonhoodCollection,
+    /// Our bandersnatch entropy for `collection`.
+    pub entropy: [u8; 32],
+    /// Statement-store period to scan.
+    pub period: u32,
+    /// Account whose existing slot, if any, should be reported.
+    pub target: &'a [u8; 32],
+    /// Slots to skip, held back by this call's own in-flight submissions.
+    pub excluded: &'a [u32],
+    /// Whether an existing slot for `target` may be reused.
+    pub reuse_existing: bool,
+}
+
+/// Scan slots `0..max` for the scan's period, returning the first non-excluded
+/// free seq (or detecting that the target already holds one).
 pub async fn scan_slot_excluding(
     rpc: &RpcClient,
     metadata: &Metadata,
-    entropy: [u8; 32],
-    period: u32,
-    target: &[u8; 32],
-    excluded: &[u32],
-    reuse_existing: bool,
+    scan: SlotScan<'_>,
 ) -> Result<SlotSelection, StatementAllowanceError> {
-    let max = max_slots(metadata)?;
+    let SlotScan {
+        collection,
+        entropy,
+        period,
+        target,
+        excluded,
+        reuse_existing,
+    } = scan;
+    let max = max_slots(metadata, collection)?;
     let mut first_free: Option<u32> = None;
     let mut excluded_free = false;
     let mut occupied = Vec::new();
@@ -406,6 +471,87 @@ pub async fn scan_slot_excluding(
         (None, true) => SlotSelection::FreeSlotsExcluded,
         (None, false) => SlotSelection::Full { max, occupied },
     })
+}
+
+/// Claims `collection` may make per PGAS period, from its `Pgas` claim-budget
+/// constant.
+pub fn max_pgas_claims(
+    metadata: &Metadata,
+    collection: PersonhoodCollection,
+) -> Result<u32, StatementAllowanceError> {
+    metadata.constant_u32("Pgas", collection.pgas_claims_per_period_constant())
+}
+
+/// Scan PGAS slots `0..max` for `day`, returning the first whose alias has not
+/// been claimed and is not listed in `excluded`.
+///
+/// `ClaimedGasAliases` records spent aliases with a unit value, so presence is
+/// the whole answer and nothing is decoded.
+pub async fn scan_pgas_slot_excluding(
+    rpc: &RpcClient,
+    metadata: &Metadata,
+    collection: PersonhoodCollection,
+    entropy: [u8; 32],
+    day: u32,
+    excluded: &[u32],
+) -> Result<u32, StatementAllowanceError> {
+    let max = max_pgas_claims(metadata, collection)?;
+    scan_pgas_slot_in(rpc, entropy, day, max, excluded).await
+}
+
+/// The scan itself, over a known slot count.
+///
+/// Split from the constant read so it can be exercised without Asset Hub metadata.
+async fn scan_pgas_slot_in(
+    rpc: &RpcClient,
+    entropy: [u8; 32],
+    day: u32,
+    max: u32,
+    excluded: &[u32],
+) -> Result<u32, StatementAllowanceError> {
+    let mut probed = 0;
+    while probed < max {
+        let batch: Vec<u32> = (probed..max.min(probed + PGAS_SCAN_BATCH))
+            .filter(|slot_index| !excluded.contains(slot_index))
+            .collect();
+        probed = max.min(probed + PGAS_SCAN_BATCH);
+        if batch.is_empty() {
+            continue;
+        }
+        let keys = batch
+            .iter()
+            .map(|&slot_index| {
+                pgas_alias(entropy, day, slot_index).map(|alias| claimed_gas_alias_key(day, &alias))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let claimed = rpc.get_storage_many(&keys).await?;
+        if let Some(slot_index) = batch
+            .iter()
+            .zip(claimed)
+            .find_map(|(&slot_index, value)| value.is_none().then_some(slot_index))
+        {
+            return Ok(slot_index);
+        }
+    }
+    Err(SlotError::NoFreePgasSlot { day, max }.into())
+}
+
+/// Whether `day`'s PGAS slot for `slot_index` is recorded as claimed at
+/// `block_hash`.
+///
+/// A claim reaching a block does not mean it succeeded: `Pgas.claim_pgas` can
+/// dispatch-error and the extrinsic still lands. The pallet marks the alias spent
+/// on success, so its presence at the included block is what distinguishes the two.
+pub async fn pgas_slot_is_claimed_at(
+    rpc: &RpcClient,
+    entropy: [u8; 32],
+    day: u32,
+    slot_index: u32,
+    block_hash: &str,
+) -> Result<bool, StatementAllowanceError> {
+    let alias = pgas_alias(entropy, day, slot_index)?;
+    let key = claimed_gas_alias_key(day, &alias);
+    Ok(rpc.get_storage_at(&key, block_hash).await?.is_some())
 }
 
 /// Scan long-term-storage aliases `0..max` for `period`, returning the first
@@ -477,11 +623,14 @@ mod tests {
         futures::executor::block_on(scan_slot_excluding(
             &rpc,
             &metadata,
-            [0x11; 32],
-            7,
-            &[0x22; 32],
-            &[],
-            true,
+            SlotScan {
+                collection: PersonhoodCollection::LitePeople,
+                entropy: [0x11; 32],
+                period: 7,
+                target: &[0x22; 32],
+                excluded: &[],
+                reuse_existing: true,
+            },
         ))
         .unwrap()
     }
@@ -524,10 +673,21 @@ mod tests {
         let scripted = ScriptedRpc::new(entries.iter().map(String::as_str).collect::<Vec<_>>());
         let rpc = RpcClient::new(HostRpcClient::new(scripted));
 
-        let SlotSelection::Full { occupied, .. } = futures::executor::block_on(
-            scan_slot_excluding(&rpc, &metadata, [0x11; 32], 7, &[0x22; 32], &[], true),
-        )
-        .unwrap() else {
+        let SlotSelection::Full { occupied, .. } =
+            futures::executor::block_on(scan_slot_excluding(
+                &rpc,
+                &metadata,
+                SlotScan {
+                    collection: PersonhoodCollection::LitePeople,
+                    entropy: [0x11; 32],
+                    period: 7,
+                    target: &[0x22; 32],
+                    excluded: &[],
+                    reuse_existing: true,
+                },
+            ))
+            .unwrap()
+        else {
             panic!("a full table should report Full");
         };
 
@@ -683,15 +843,109 @@ mod tests {
         let selection = futures::executor::block_on(scan_slot_excluding(
             &rpc,
             &metadata,
-            [0x11; 32],
-            7,
-            &[0x22; 32],
-            &[(SLOTS - 1) as u32],
-            true,
+            SlotScan {
+                collection: PersonhoodCollection::LitePeople,
+                entropy: [0x11; 32],
+                period: 7,
+                target: &[0x22; 32],
+                excluded: &[(SLOTS - 1) as u32],
+                reuse_existing: true,
+            },
         ))
         .unwrap();
 
         assert_eq!(selection, SlotSelection::FreeSlotsExcluded);
+    }
+
+    /// The scan probes a batch per round trip, not a key per round trip, and still
+    /// returns the first free slot in order. One round trip per slot cost seconds
+    /// against a live chain when the early slots were taken.
+    #[test]
+    fn the_pgas_scan_reads_a_batch_per_round_trip() {
+        const ENTROPY: [u8; 32] = [0x11; 32];
+        const DAY: u32 = 20678;
+
+        // Slots 0-2 are claimed; 3 is free. `state_queryStorageAt` reports only the
+        // keys that exist, so the absent ones are simply missing from `changes`.
+        let claimed: Vec<String> = (0..3u32)
+            .map(|slot_index| {
+                let alias = pgas_alias(ENTROPY, DAY, slot_index).unwrap();
+                format!(
+                    r#"["0x{}","0x"]"#,
+                    hex::encode(claimed_gas_alias_key(DAY, &alias))
+                )
+            })
+            .collect();
+        let response = format!(
+            r#"[{{"block":"0xb10c","changes":[{}]}}]"#,
+            claimed.join(",")
+        );
+        let scripted = ScriptedRpc::new(vec![response.as_str()]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
+
+        let chosen =
+            futures::executor::block_on(scan_pgas_slot_in(&rpc, ENTROPY, DAY, 40, &[])).unwrap();
+
+        assert_eq!(chosen, 3, "the first free slot, in order");
+        let calls = scripted.calls();
+        assert_eq!(calls.len(), 1, "one round trip covered the whole batch");
+        assert_eq!(calls[0].0, "state_queryStorageAt");
+    }
+
+    /// Inclusion is not success: the pallet marks the alias spent only when the
+    /// claim dispatches cleanly, so its absence at the included block is how a
+    /// dispatch error is caught.
+    #[test]
+    fn a_claim_is_only_recorded_when_the_alias_is_spent() {
+        const ENTROPY: [u8; 32] = [0x11; 32];
+        const DAY: u32 = 20678;
+
+        let spent = ScriptedRpc::new(vec![r#""0x""#]);
+        let absent = ScriptedRpc::new(vec!["null"]);
+
+        assert!(
+            futures::executor::block_on(pgas_slot_is_claimed_at(
+                &RpcClient::new(HostRpcClient::new(spent)),
+                ENTROPY,
+                DAY,
+                0,
+                "0xb10c",
+            ))
+            .unwrap()
+        );
+        assert!(
+            !futures::executor::block_on(pgas_slot_is_claimed_at(
+                &RpcClient::new(HostRpcClient::new(absent)),
+                ENTROPY,
+                DAY,
+                0,
+                "0xb10c",
+            ))
+            .unwrap()
+        );
+    }
+
+    /// The PGAS context is little-endian where the other two are big-endian, and
+    /// the runtime verifies the proof against these exact bytes.
+    #[test]
+    fn pgas_context_layout_is_little_endian() {
+        let ctx = derive_pgas_context(0x0102_0304, 0x0506_0708);
+
+        assert_eq!(&ctx[..8], b"pop:gas:");
+        assert_eq!(&ctx[8..12], &[0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(&ctx[12..16], &[0x08, 0x07, 0x06, 0x05]);
+        assert_eq!(&ctx[16..], &[0u8; 16]);
+    }
+
+    /// `ClaimedGasAliases` is `Identity(u32be day) ‖ Blake2_128Concat(alias)`.
+    #[test]
+    fn claimed_gas_alias_key_layout() {
+        let alias = [0x42; 32];
+        let key = claimed_gas_alias_key(0x0102_0304, &alias);
+
+        assert_eq!(key.len(), 16 + 16 + 4 + 16 + 32);
+        assert_eq!(&key[32..36], &[0x01, 0x02, 0x03, 0x04], "day is big-endian");
+        assert_eq!(&key[52..], &alias, "alias follows its blake2_128 prefix");
     }
 
     #[test]

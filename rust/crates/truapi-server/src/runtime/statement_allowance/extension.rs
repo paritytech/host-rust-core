@@ -23,6 +23,10 @@ use scale_info::{PortableRegistry, TypeDef, TypeDefPrimitive, TypeDefVariant};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
+use super::collection::PersonhoodCollection;
+
+/// Signed-extension identifier that carries the `AsPgas` authorization on Asset Hub.
+pub const AS_PGAS: &str = "AsPgas";
 
 /// Signed-extension identifier that carries the `AsResources` authorization.
 pub const AS_RESOURCES: &str = "AsResources";
@@ -83,15 +87,18 @@ pub enum MetadataError {
         /// Variant name.
         variant: String,
     },
-    /// Named `AsResourcesInfo` variant did not carry a membership collection.
-    #[error("AsResourcesInfo::{variant} carries no MembershipCollection field")]
-    MissingMembershipCollection {
-        /// Variant name.
+    /// Info variant carried no enum field holding the requested variant.
+    #[error(
+        "{identifier} info variant {variant} carries no field enum with a {field_variant} variant"
+    )]
+    MissingExtensionFieldVariant {
+        /// Extension whose info enum was inspected.
+        identifier: String,
+        /// Info variant inspected.
         variant: String,
+        /// Nested variant that was not found.
+        field_variant: String,
     },
-    /// `MembershipCollection::LitePeople` variant was not found.
-    #[error("MembershipCollection::LitePeople not found in metadata")]
-    MissingLitePeopleCollection,
     /// Type id did not resolve in the portable registry.
     #[error("unknown type id {type_id}")]
     UnknownTypeId {
@@ -410,34 +417,95 @@ impl Metadata {
         Ok([pallet_index, variant.index])
     }
 
-    /// Resolve `AsResourcesInfo::<info_variant>` and the
-    /// `MembershipCollection::LitePeople` index it carries, by name, from the
-    /// `AsResources` extension type.
+    /// Resolve `AsResourcesInfo::<info_variant>` and the `MembershipCollection`
+    /// index naming `collection`, by name, from the `AsResources` extension type.
     pub fn as_resources_variant_indices(
         &self,
         info_variant: &str,
+        collection: PersonhoodCollection,
     ) -> Result<(u8, u8), StatementAllowanceError> {
-        let variant = self.extension_info_variant(AS_RESOURCES, info_variant)?;
-        let collection_type = variant
+        self.extension_info_and_field_variant_indices(
+            AS_RESOURCES,
+            info_variant,
+            collection.metadata_variant(),
+        )
+    }
+
+    /// Resolve `(info variant index, nested field variant index)` for an
+    /// extension shaped as `Wrapper(Option<Info>)` whose named info variant
+    /// carries an enum field.
+    ///
+    /// The field enum is located by the variant name it contains rather than by
+    /// its type name, because each extension names its own collection type
+    /// (`MembershipCollection` for `AsResources`, `PgasCollection` for `AsPgas`)
+    /// while the membership tier inside them is named the same.
+    pub fn extension_info_and_field_variant_indices(
+        &self,
+        identifier: &str,
+        info_variant: &str,
+        field_variant: &str,
+    ) -> Result<(u8, u8), StatementAllowanceError> {
+        let variant = self.extension_info_variant(identifier, info_variant)?;
+        let nested = variant
             .fields
             .iter()
             .rev()
-            .map(|field| field.ty.id)
-            .find(|&id| {
-                self.resolve_type(id).is_ok_and(|ty| {
-                    ty.path.segments.last().map(String::as_str) == Some("MembershipCollection")
-                })
+            .find_map(|field| {
+                self.resolve_variant(field.ty.id)
+                    .ok()
+                    .and_then(|enumeration| {
+                        enumeration
+                            .variants
+                            .iter()
+                            .find(|candidate| candidate.name == field_variant)
+                    })
             })
-            .ok_or_else(|| MetadataError::MissingMembershipCollection {
+            .ok_or_else(|| MetadataError::MissingExtensionFieldVariant {
+                identifier: identifier.to_string(),
                 variant: info_variant.to_string(),
+                field_variant: field_variant.to_string(),
             })?;
-        let lite_people = self
-            .resolve_variant(collection_type)?
-            .variants
-            .iter()
-            .find(|v| v.name == "LitePeople")
-            .ok_or(MetadataError::MissingLitePeopleCollection)?;
-        Ok((variant.index, lite_people.index))
+        Ok((variant.index, nested.index))
+    }
+
+    /// A pallet constant decoded as `u32`.
+    ///
+    /// Runtime constants are SCALE-encoded at their declared width, which for
+    /// these is `u32` or narrower, so short values are zero-extended rather than
+    /// rejected: a `u8` slot count is a valid count, not a decode failure.
+    pub fn constant_u32(
+        &self,
+        pallet: &'static str,
+        name: &'static str,
+    ) -> Result<u32, StatementAllowanceError> {
+        let bytes = self
+            .constant(pallet, name)
+            .ok_or(MetadataError::MissingConstant {
+                pallet,
+                constant: name,
+            })?;
+        let mut buf = [0u8; 4];
+        let n = bytes.len().min(4);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    /// A pallet constant decoded as `u128`, zero-extended like [`Self::constant_u32`].
+    pub fn constant_u128(
+        &self,
+        pallet: &'static str,
+        name: &'static str,
+    ) -> Result<u128, StatementAllowanceError> {
+        let bytes = self
+            .constant(pallet, name)
+            .ok_or(MetadataError::MissingConstant {
+                pallet,
+                constant: name,
+            })?;
+        let mut buf = [0u8; 16];
+        let n = bytes.len().min(16);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        Ok(u128::from_le_bytes(buf))
     }
 
     /// Number of fields the runtime declares for one `AsResourcesInfo` variant.
@@ -449,8 +517,17 @@ impl Metadata {
         &self,
         info_variant: &str,
     ) -> Result<usize, StatementAllowanceError> {
+        self.extension_info_field_count(AS_RESOURCES, info_variant)
+    }
+
+    /// Same, for any authorizing extension.
+    pub fn extension_info_field_count(
+        &self,
+        identifier: &str,
+        info_variant: &str,
+    ) -> Result<usize, StatementAllowanceError> {
         Ok(self
-            .extension_info_variant(AS_RESOURCES, info_variant)?
+            .extension_info_variant(identifier, info_variant)?
             .fields
             .len())
     }
@@ -671,12 +748,23 @@ pub fn build_proof_message(
     call_data: &[u8],
     state: &ChainState,
 ) -> Result<[u8; 32], StatementAllowanceError> {
+    build_proof_message_after_extension(metadata, call_data, state, AS_RESOURCES)
+}
+
+/// Same, for any authorizing extension: the tail is the extensions ordered
+/// strictly after `identifier`.
+pub fn build_proof_message_after_extension(
+    metadata: &Metadata,
+    call_data: &[u8],
+    state: &ChainState,
+    identifier: &str,
+) -> Result<[u8; 32], StatementAllowanceError> {
     let all = metadata.encode_signed_extensions(state);
     let tail_start = metadata
-        .as_resources_index()
+        .extension_index(identifier)
         .map(|i| i + 1)
         .ok_or_else(|| MetadataError::MissingExtension {
-            identifier: AS_RESOURCES.to_string(),
+            identifier: identifier.to_string(),
         })?;
     let tail = &all[tail_start..];
 
@@ -748,10 +836,16 @@ mod tests {
         assert_eq!(
             (
                 metadata
-                    .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                    .as_resources_variant_indices(
+                        "RegisterStatementStoreAllowance",
+                        PersonhoodCollection::LitePeople,
+                    )
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("ClaimLongTermStorage")
+                    .as_resources_variant_indices(
+                        "ClaimLongTermStorage",
+                        PersonhoodCollection::LitePeople
+                    )
                     .unwrap(),
             ),
             ((0x02, 0x01), (0x03, 0x01)),
@@ -783,6 +877,63 @@ mod tests {
         );
     }
 
+    /// The generalized builders must agree with the `AsResources` wrappers they
+    /// now back, or the ring proof stops matching the extrinsic.
+    #[test]
+    fn the_as_resources_wrappers_match_the_general_forms() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let state = fixture_state();
+        let call = fixture_call();
+
+        assert_eq!(
+            build_proof_message(&metadata, &call, &state).unwrap(),
+            build_proof_message_after_extension(&metadata, &call, &state, AS_RESOURCES).unwrap(),
+        );
+        assert_eq!(
+            metadata
+                .as_resources_variant_indices(
+                    "RegisterStatementStoreAllowance",
+                    PersonhoodCollection::LitePeople,
+                )
+                .unwrap(),
+            metadata
+                .extension_info_and_field_variant_indices(
+                    AS_RESOURCES,
+                    "RegisterStatementStoreAllowance",
+                    "LitePeople",
+                )
+                .unwrap(),
+        );
+    }
+
+    /// An unknown extension, info variant, or nested variant each fail rather
+    /// than resolving to something arbitrary.
+    #[test]
+    fn the_general_resolver_rejects_names_it_cannot_find() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        for (identifier, variant, field) in [
+            (
+                "NoSuchExtension",
+                "RegisterStatementStoreAllowance",
+                "LitePeople",
+            ),
+            (AS_RESOURCES, "NoSuchVariant", "LitePeople"),
+            (
+                AS_RESOURCES,
+                "RegisterStatementStoreAllowance",
+                "NoSuchTier",
+            ),
+        ] {
+            assert!(
+                metadata
+                    .extension_info_and_field_variant_indices(identifier, variant, field)
+                    .is_err(),
+                "{identifier}/{variant}/{field} should not resolve"
+            );
+        }
+    }
+
     /// Mainnet keeps more than one transaction-extension pipeline, and a
     /// transaction has to declare the one it was encoded for. Encoding for the
     /// newest matches Subxt, so both builders in this crate agree.
@@ -800,6 +951,34 @@ mod tests {
             "two pipelines: encode for the newer"
         );
         assert_eq!(encoding_extension_version([2u8, 0, 1].iter()), 2);
+    }
+
+    /// Constants are encoded at their declared width, so a `u8` count has to read
+    /// as that count rather than failing. A constant the pallet does not declare is
+    /// still an error.
+    #[test]
+    fn constants_read_as_u32_whatever_width_they_declare() {
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+
+        assert_eq!(
+            metadata
+                .constant_u32("Resources", "LiteStmtStoreSlotsPerPeriod")
+                .unwrap(),
+            10,
+            "a u32 constant"
+        );
+        assert_eq!(
+            metadata
+                .constant_u32("Resources", "LongTermStorageClaimsPerPeriod")
+                .unwrap(),
+            10,
+            "a u8 constant zero-extends rather than erroring"
+        );
+        assert!(
+            metadata
+                .constant_u32("Resources", "NoSuchConstant")
+                .is_err()
+        );
     }
 
     /// A pipeline may list a subset, in its own order, so the map decides both
@@ -887,10 +1066,16 @@ mod tests {
                     .call_indices("Resources", "claim_long_term_storage")
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("RegisterStatementStoreAllowance")
+                    .as_resources_variant_indices(
+                        "RegisterStatementStoreAllowance",
+                        PersonhoodCollection::LitePeople,
+                    )
                     .unwrap(),
                 metadata
-                    .as_resources_variant_indices("ClaimLongTermStorage")
+                    .as_resources_variant_indices(
+                        "ClaimLongTermStorage",
+                        PersonhoodCollection::LitePeople
+                    )
                     .unwrap(),
             ),
             ([0x3f, 0x0a], [0x3f, 0x0c], (0x02, 0x01), (0x03, 0x01)),
@@ -912,7 +1097,10 @@ mod tests {
                 metadata
                     .extension_info_variant_index(AS_RESOURCES, variant)
                     .unwrap(),
-                metadata.as_resources_variant_indices(variant).unwrap().0,
+                metadata
+                    .as_resources_variant_indices(variant, PersonhoodCollection::LitePeople)
+                    .unwrap()
+                    .0,
                 "{variant}",
             );
         }
@@ -944,7 +1132,7 @@ mod tests {
                 metadata.call_indices("Resources", "no_such_call").is_err(),
                 metadata.call_indices("NoSuchPallet", "transfer").is_err(),
                 metadata
-                    .as_resources_variant_indices("NoSuchVariant")
+                    .as_resources_variant_indices("NoSuchVariant", PersonhoodCollection::LitePeople)
                     .is_err(),
             ),
             (true, true, true),

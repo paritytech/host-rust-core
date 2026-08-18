@@ -33,6 +33,8 @@ import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
+import uniffi.truapi.HostThemeSubscribeItem
+import uniffi.truapi.ThemeName
 import uniffi.truapi.ThemeVariant
 import uniffi.truapi_platform.AuthState
 import uniffi.truapi_platform.HostChainSet
@@ -45,10 +47,13 @@ import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeHostRuntimeConfig as UniFfiNativeHostRuntimeConfig
+import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
+import uniffi.truapi_server.NativeStatementRenewalTarget
 import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.NativeTrUApiHostRuntime
 import uniffi.truapi_server.SsoRequestOutcome
+import uniffi.truapi_server.StatementRenewalReport
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
 import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDeeplinkScheme
@@ -263,12 +268,16 @@ interface HostBridge {
     suspend fun remotePermission(request: RemotePermission): Boolean
 
     /**
-     * Observe an auth state change. The core emits states only when they
-     * actually change, in transition order: render [AuthState.Pairing] as the
-     * pairing QR UI, connected/disconnected as the account badge, and
-     * login-failed as a retryable error. Report a user dismissal of the pairing
-     * UI through [TrUAPIHostCore.cancelLogin]. Invoked on the dispatcher thread;
-     * marshal the state to the main thread and return promptly.
+     * Observe an auth state change, in transition order: render
+     * [AuthState.Pairing] as the pairing QR UI, connected/disconnected as the
+     * account badge, and login-failed as a retryable error. A pairing host's
+     * session activation reports its outcome even when it is the default
+     * disconnected, so a host that awaits activation before routing never has
+     * to read silence as "signed out"; every other emission, and every emission
+     * on a host role that has no session activation, happens only when the
+     * state actually changes. Report a user dismissal of the pairing UI through
+     * [TrUAPIHostCore.cancelLogin]. Invoked on the dispatcher thread; marshal
+     * the state to the main thread and return promptly.
      */
     fun authStateChanged(state: AuthState) {}
 
@@ -298,9 +307,10 @@ interface HostBridge {
     @Throws(HostRejection::class)
     suspend fun lookupPreimage(key: ByteArray): ByteArray? = null
 
-    /** Return the current host theme. */
+    /** Return the current host theme. Hosts with no named themes report [ThemeName.Default]. */
     @Throws(HostRejection::class)
-    fun currentTheme(): ThemeVariant = ThemeVariant.DARK
+    fun currentTheme(): HostThemeSubscribeItem =
+        HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK)
 
     /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
@@ -311,7 +321,7 @@ interface HostBridge {
 
     /**
      * Enumerate the chains this host serves: its environment plus one entry
-     * per chain role. Must match exactly what [chainConnect] accepts.
+     * per chain role.
      */
     @Throws(HostRejection::class)
     fun supportedChains(): HostChainSet = HostChainSet(network = "", chains = emptyList())
@@ -374,7 +384,7 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
         bridge.lookupPreimage(key)
 
-    override fun currentTheme(): ThemeVariant =
+    override fun currentTheme(): HostThemeSubscribeItem =
         bridge.currentTheme()
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
@@ -592,6 +602,51 @@ class TrUAPIHostCore private constructor(
         inner.activateLocalSession(secret, liteUsername)
     }
 
+    /**
+     * Record the accounts renewal should keep allowed on the Statement Store.
+     * Needs an active session, so call it after [activateLocalSession] or after
+     * pairing, not at construction.
+     *
+     * The ledger is append-only: there is no untrack, and a target is only
+     * dropped when the identity that promised it changes. Recipe-shaped targets
+     * survive that; a raw [NativeStatementRenewalTarget.Account] does not, so
+     * re-track those whenever the active identity changes.
+     */
+    @Throws(NativeRenewalTargetException::class)
+    fun trackStatementRenewalTargets(targets: List<NativeStatementRenewalTarget>) {
+        inner.trackStatementRenewalTargets(targets)
+    }
+
+    /**
+     * Run one renewal pass now, reporting what each tracked target got.
+     *
+     * Submits extrinsics and blocks until they are included, so call it from a
+     * WorkManager worker rather than the main thread. There is no cancellation:
+     * a pass with several targets can outlast a short background budget, though
+     * a target registered before the process is killed is not lost and reads
+     * back as already allocated.
+     */
+    @Throws(HostRejection::class)
+    fun renewStatementAllowances(): StatementRenewalReport = inner.renewStatementAllowances()
+
+    /**
+     * Start the in-process renewal loop, for a host that stays resident. A
+     * suspended app stops ticking, so prefer scheduling
+     * [renewStatementAllowances].
+     */
+    fun startStatementAllowanceRenewal() {
+        inner.startStatementAllowanceRenewal()
+    }
+
+    /**
+     * The in-process loop's own cadence, capped at an hour. Allowances only
+     * stop being renewed at a period boundary and survive it by the chain's
+     * grace window, so a host scheduling one wake-up per period
+     * should read a value under an hour as the boundary approaching rather than
+     * waking hourly.
+     */
+    fun nextStatementRenewalDelay(): java.time.Duration = inner.nextStatementRenewalDelay()
+
     /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)
     fun permissionAuthorizationStatus(
@@ -612,7 +667,7 @@ class TrUAPIHostCore private constructor(
     }
 
     /** Push a host theme update to active TrUAPI theme subscriptions. */
-    fun notifyThemeChanged(theme: ThemeVariant) {
+    fun notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme)
     }
 

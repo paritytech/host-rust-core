@@ -2520,6 +2520,75 @@ public func FfiConverterTypeHostSignRawWithLegacyAccountRequest_lower(_ value: H
 
 
 /**
+ * Current theme state pushed to subscribers.
+ */
+public struct HostThemeSubscribeItem: Equatable, Hashable {
+    /**
+     * Theme name.
+     */
+    public var name: ThemeName
+    /**
+     * Light or dark variant.
+     */
+    public var variant: ThemeVariant
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Theme name.
+         */name: ThemeName,
+        /**
+         * Light or dark variant.
+         */variant: ThemeVariant) {
+        self.name = name
+        self.variant = variant
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostThemeSubscribeItem: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostThemeSubscribeItem: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostThemeSubscribeItem {
+        return
+            try HostThemeSubscribeItem(
+                name: FfiConverterTypeThemeName.read(from: &buf),
+                variant: FfiConverterTypeThemeVariant.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostThemeSubscribeItem, into buf: inout [UInt8]) {
+        FfiConverterTypeThemeName.write(value.name, into: &buf)
+        FfiConverterTypeThemeVariant.write(value.variant, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostThemeSubscribeItem_lift(_ buf: RustBuffer) throws -> HostThemeSubscribeItem {
+    return try FfiConverterTypeHostThemeSubscribeItem.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostThemeSubscribeItem_lower(_ value: HostThemeSubscribeItem) -> RustBuffer {
+    return FfiConverterTypeHostThemeSubscribeItem.lower(value)
+}
+
+
+/**
  * Transaction payload for a legacy (non-product) account.
  *
  * Identical to [`ProductAccountTxPayload`] except the signer is a raw
@@ -5649,7 +5718,10 @@ public enum RemotePermission: Equatable, Hashable {
          */domains: [String]
     )
     /**
-     * WebRTC media access.
+     * WebRTC access. Advertised and persistable, but host enforcement is not
+     * yet implemented: the lockdown container leaves `RTCPeerConnection`
+     * available to products, and camera/microphone capture is gated by the OS
+     * permission prompts rather than by this permission.
      */
     case webRtc
     /**
@@ -5903,6 +5975,84 @@ public func FfiConverterTypeShape_lift(_ buf: RustBuffer) throws -> Shape {
 #endif
 public func FfiConverterTypeShape_lower(_ value: Shape) -> RustBuffer {
     return FfiConverterTypeShape.lower(value)
+}
+
+
+
+/**
+ * Identifies a named theme.
+ */
+
+public enum ThemeName: Equatable, Hashable {
+
+    /**
+     * A custom named theme.
+     */
+    case custom(String
+    )
+    /**
+     * The host's default theme.
+     */
+    case `default`
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ThemeName: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeThemeName: FfiConverterRustBuffer {
+    typealias SwiftType = ThemeName
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ThemeName {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .custom(try FfiConverterString.read(from: &buf)
+        )
+
+        case 2: return .`default`
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ThemeName, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .custom(v1):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(v1, into: &buf)
+
+
+        case .`default`:
+            writeInt(&buf, Int32(2))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThemeName_lift(_ buf: RustBuffer) throws -> ThemeName {
+    return try FfiConverterTypeThemeName.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeThemeName_lower(_ value: ThemeName) -> RustBuffer {
+    return FfiConverterTypeThemeName.lower(value)
 }
 
 

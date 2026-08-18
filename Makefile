@@ -16,6 +16,8 @@ HOST_CALLBACKS_GENERATED := $(HOST_WASM_PKG)/src/generated/host-callbacks.ts
 HOST_WASM_ADAPTER_GENERATED := $(HOST_WASM_PKG)/src/generated/host-callbacks-adapter.ts
 HOST_WASM_WORKER_CALLBACKS_GENERATED := $(HOST_WASM_PKG)/src/generated/worker-callbacks.ts
 HOST_WASM_WEB := $(HOST_WASM_PKG)/dist/wasm/web/truapi_server.js
+HOST_WASM_WEB_BINARY := $(HOST_WASM_PKG)/dist/wasm/web/truapi_server_bg.wasm
+DOTLI_HOST_VITE_CONFIG := $(DOTLI)/apps/host/vite.config.ts
 DOTLI_UI := $(DOTLI)/packages/ui
 DOTLI_NODE_MODULES := $(DOTLI)/node_modules
 DOTLI_TRUAPI_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi
@@ -205,7 +207,7 @@ android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish t
 test: ## Run Rust + TypeScript client tests.
 	cargo test --workspace
 	cd $(TRUAPI_PKG) && npm test
-	cd $(JS_PACKAGES)/truapi-host && npm test
+	cd $(HOST_WASM_PKG) && npm run build && npm test
 
 check: ## Full verification suite (build, fmt, clippy, test, TS tests, playground build + lint).
 	cargo build --workspace
@@ -214,7 +216,7 @@ check: ## Full verification suite (build, fmt, clippy, test, TS tests, playgroun
 	cargo clippy --workspace --all-targets --all-features -- -D warnings
 	cargo test --workspace --all-features --all-targets
 	cd $(TRUAPI_PKG) && npm run build && npm test
-	cd $(JS_PACKAGES)/truapi-host && npm install --no-fund --no-audit && npm test
+	cd $(HOST_WASM_PKG) && npm install --no-fund --no-audit && npm run build && npm test
 	cd $(PLAYGROUND) && yarn build && yarn lint
 
 clean: ## Remove local build/test artifacts without deleting dependencies.
@@ -247,7 +249,14 @@ dev-bootstrap: ## Prepare ignored generated/build artifacts needed by dotli prev
 	if [ ! -d node_modules ]; then npm ci --ignore-scripts; fi
 	./scripts/codegen.sh
 	cd $(HOST_WASM_PKG) && npm run build
-	TRUAPI_WASM_PROFILE=dev $(MAKE) wasm
+	# Release profile, because dotli precaches the WASM in its service worker and
+	# vite-plugin-pwa fails the build outright on anything over its workbox limit.
+	# A dev-profile build is several times that limit; a release build is well
+	# under it. TRUAPI_WASM_PROFILE=dev is therefore not usable with `make dev`
+	# or `make e2e-dotli` at all: dev-link-check rejects the artifact rather than
+	# letting dotli fail deeper in. Build one directly with
+	# `TRUAPI_WASM_PROFILE=dev make wasm` if you need it for something else.
+	$(MAKE) wasm
 	cd $(PLAYGROUND) && yarn install --frozen-lockfile
 	cd $(DOTLI) && bun install --frozen-lockfile
 	$(MAKE) dev-link-check
@@ -258,6 +267,8 @@ dev-link-check: dotli-link ## Verify dotli can resolve the local @parity/truapi-
 	@test -f "$(HOST_WASM_WORKER_CALLBACKS_GENERATED)" || (echo "Missing generated host callbacks worker bridge. Run: make codegen"; exit 1)
 	@test -f "$(HOST_WASM_PKG)/dist/index.js" || (echo "Missing @parity/truapi-host dist. Run: npm run build --prefix $(HOST_WASM_PKG)"; exit 1)
 	@test -f "$(HOST_WASM_WEB)" || (echo "Missing @parity/truapi-host web WASM glue. Run: make wasm"; exit 1)
+	@test -f "$(HOST_WASM_WEB_BINARY)" || (echo "Missing @parity/truapi-host web WASM binary. Run: make wasm"; exit 1)
+	@node scripts/check-dotli-wasm-precache.mjs "$(HOST_WASM_WEB_BINARY)" "$(DOTLI_HOST_VITE_CONFIG)"
 	@test -e "$(DOTLI_TRUAPI_LINK)/package.json" || (echo "dotli cannot resolve @parity/truapi. Run top-level: make dotli-link"; exit 1)
 	@test -e "$(DOTLI_HOST_WASM_LINK)/package.json" || (echo "dotli cannot resolve @parity/truapi-host. Run top-level: make dotli-link"; exit 1)
 	@test ! -e "$(DOTLI_UI_TRUAPI_SHADOW)/package.json" || (echo "$(DOTLI_UI_TRUAPI_SHADOW) shadows the local workspace link. Run top-level: make dotli-link"; exit 1)

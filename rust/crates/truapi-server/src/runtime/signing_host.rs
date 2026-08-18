@@ -44,17 +44,23 @@ use crate::host_logic::extrinsic::{
     Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
     build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
     derive_root_keypair_from_entropy,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::{
+    derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
+};
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
 use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
 use crate::runtime::auth_state::AuthStateMachine;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::CollectionCandidate;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
     create_proof, member_from_entropy, sign_from_entropy,
@@ -371,16 +377,34 @@ impl SigningHost {
             })
     }
 
-    /// Wallet-internal allowance proofs retain Android's reserved `peopl.dot/1` key.
-    /// Product-facing RFC-0024 operations resolve only explicitly registered handles.
+    /// Every personhood collection this wallet can derive allowance aliases for,
+    /// widest slot budget first.
+    ///
+    /// Wallet-internal allowance proofs use the reserved `peopl.dot` keys the
+    /// mobile hosts use. Product-facing RFC-0024 operations are unrelated: those
+    /// resolve only explicitly registered handles.
+    ///
+    /// Both entropies are always returned; which collections the person is
+    /// actually a member of is settled on chain by looking for a ring that
+    /// includes each member key, not by local state. That keeps the two hosts
+    /// from disagreeing about personhood.
     #[cfg(not(target_arch = "wasm32"))]
-    fn reserved_lite_person_entropy(
+    fn reserved_person_collection_candidates(
         &self,
         session: &AuthoritySession,
-    ) -> Result<Zeroizing<[u8; 32]>, AuthorityError> {
+    ) -> Result<Vec<CollectionCandidate>, AuthorityError> {
         self.require_current_session(session)?;
         let root = self.root_entropy()?;
-        Ok(Zeroizing::new(derive_lite_person_ring_vrf_entropy(&root)))
+        Ok(vec![
+            CollectionCandidate {
+                collection: PersonhoodCollection::People,
+                entropy: derive_full_person_ring_vrf_entropy(&root),
+            },
+            CollectionCandidate {
+                collection: PersonhoodCollection::LitePeople,
+                entropy: derive_lite_person_ring_vrf_entropy(&root),
+            },
+        ])
     }
 
     async fn registered_ring_vrf_entry(
@@ -923,8 +947,16 @@ impl ProductAuthority for SigningHost {
                     .await
                     .map(|_| v01::AllocationOutcome::Allocated)
                 }
-                v01::AllocatableResource::SmartContractAllowance(_) => {
-                    Ok(v01::AllocationOutcome::NotAvailable)
+                v01::AllocatableResource::SmartContractAllowance(index) => {
+                    sso_responder::allocate_smart_contract_allowance(
+                        &self.services,
+                        self,
+                        &product_id,
+                        index,
+                        OnExistingAllowancePolicy::Increase,
+                    )
+                    .await
+                    .map(|()| v01::AllocationOutcome::Allocated)
                 }
                 v01::AllocatableResource::AutoSigning => self
                     .grant_auto_signing(session, &product_id)
@@ -1199,6 +1231,7 @@ mod tests {
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
+    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
     use truapi::api::{Account, Entropy, ResourceAllocation, Signing};
     use truapi::versioned::account::{HostAccountGetError, HostAccountGetRequest};
@@ -1368,19 +1401,32 @@ mod tests {
     }
 
     #[test]
-    fn internal_allowances_use_the_reserved_lite_person_handle() {
+    fn internal_allowances_offer_both_reserved_person_handles_widest_first() {
         let (_, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
-        let actual = authority
-            .reserved_lite_person_entropy(&session)
-            .expect("reserved key derives");
-        let expected =
-            derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(1))
-                .expect("reserved RFC-0024 handle derives");
+        let candidates = authority
+            .reserved_person_collection_candidates(&session)
+            .expect("reserved keys derive");
 
-        assert_eq!(*actual, expected);
+        // Index 0 is the full-person handle and index 1 the light-person one, and
+        // People leads so a full person spends its wider slot budget first.
+        let expected = [
+            (PersonhoodCollection::People, 0u32),
+            (PersonhoodCollection::LitePeople, 1),
+        ];
+        assert_eq!(candidates.len(), expected.len());
+        for (candidate, (collection, index)) in candidates.iter().zip(expected) {
+            assert_eq!(candidate.collection, collection);
+            assert_eq!(
+                candidate.entropy,
+                derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(index))
+                    .expect("reserved RFC-0024 handle derives"),
+                "{collection} candidate does not use peopl.dot/{index}",
+            );
+        }
+        assert_ne!(candidates[0].entropy, candidates[1].entropy);
     }
 
     #[test]
@@ -2470,9 +2516,56 @@ mod tests {
         assert_eq!(err, AuthorityError::Disconnected);
     }
 
+    /// A PGAS request has to actually reach Asset Hub. Asserting the outcome alone
+    /// cannot show that: the stub this replaced answered `NotAvailable` with no
+    /// chain access at all, which looks identical from outside. Pin instead that
+    /// the request is left waiting on the connection.
+    #[test]
+    fn a_pgas_request_waits_on_the_asset_hub_connection() {
+        use std::future::Future;
+        use std::task::{Context, Poll};
+
+        let platform = Arc::new(StubPlatform {
+            chain_connect_pending: true,
+            ..StubPlatform::default()
+        });
+        let (_services, authority) = signing_runtime_with_platform(platform);
+        futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation");
+        let session = authority.current_session().expect("connected");
+        let cx = CallContext::default();
+
+        let mut allocation = Box::pin(authority.allocate_resources(
+            &cx,
+            &session,
+            "myapp.dot".to_string(),
+            v01::HostRequestResourceAllocationRequest {
+                resources: vec![v01::AllocatableResource::SmartContractAllowance(
+                    v01::DerivationIndex::Index(0),
+                )],
+            },
+        ));
+        let waker = futures::task::noop_waker();
+        let mut task_cx = Context::from_waker(&waker);
+
+        match allocation.as_mut().poll(&mut task_cx) {
+            Poll::Pending => {}
+            Poll::Ready(outcome) => {
+                panic!("a PGAS claim should be waiting on Asset Hub, got {outcome:?}")
+            }
+        }
+    }
+
     #[test]
     fn direct_allocation_handles_empty_and_optional_resource_batches() {
-        let (_services, authority) = signing_runtime();
+        // A PGAS request now reaches Asset Hub, so the stub has to fail the
+        // connect for this to be deterministic. What the batch pins is that one
+        // resource failing does not poison the others.
+        let platform = Arc::new(StubPlatform {
+            chain_connect_error: Some("asset hub unavailable"),
+            ..StubPlatform::default()
+        });
+        let (_services, authority) = signing_runtime_with_platform(platform);
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation");
         let session = authority.current_session().expect("connected");
@@ -2504,7 +2597,10 @@ mod tests {
         assert_eq!(
             optional.outcomes,
             vec![
+                // The chain is unreachable, so the claim degrades rather than
+                // failing the request.
                 v01::AllocationOutcome::NotAvailable,
+                // And the resource that needs no chain still allocates.
                 v01::AllocationOutcome::Allocated,
             ]
         );

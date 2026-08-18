@@ -23,6 +23,7 @@ One binary, `truapi-host`:
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
 | `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
+| `pgas-check` | Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring membership on People, whether Asset Hub has imported that ring revision, the day's first unclaimed slot, and the `Pgas.claim_pgas` extrinsic. |
 
 The repository's `make e2e-dotli` target builds this binary and runs the
 dotli/playground Diagnosis suite with a non-interactive signing-host responder.
@@ -241,7 +242,7 @@ product id and raw product keys. On first use, the older combined
 as `product-storage.v1.json.migrated`. Product and core JSON writes use a
 flushed temporary file and atomic rename.
 
-Five scripts ship under `js/scripts/`:
+Six scripts ship under `js/scripts/`:
 
 - `battery.ts` — the generated full-surface gate. It discovers every method
   from the same code-generated example manifest as the playground Diagnosis,
@@ -308,6 +309,13 @@ Five scripts ship under `js/scripts/`:
 - `whoami.ts` — calls `getUserId` and prints `WHOAMI <primary username>`; this
   remains available as an explicit `/script <path>` example.
 - `signing-smoke.ts` — a focused product-account signing check.
+- `smart-contract-allowance-smoke.ts` — requests a PGAS allowance for product
+  account index 0. Reports `Allocated` against `paseo-next-v2`; a host that serves
+  no Asset Hub role reports `NotAvailable` rather than failing. The direct path asks
+  for `Increase`, so each run submits a real claim and spends one of the day's slots
+  rather than noticing the account is already funded: repeat runs within a day can
+  exhaust them and then fail for that reason rather than a regression. The host logs
+  the real cause, which the wire value flattens to `NotAvailable`.
 - `ring-vrf-smoke.ts` — registers and lists an explicit RFC-0024 key, derives
   its alias, verifies a fresh non-member key returns `NotMember` for a proof,
   and exercises direct ring-VRF signing.
@@ -367,15 +375,26 @@ apply to TrUAPI targets while other third-party dependencies remain at `warn`.
 
 The real statement store enforces per-account allowance. Before pairing, the
 signing host grants it on-chain exactly as a real client does: it proves its
-LitePeople ring membership with a bandersnatch ring-VRF and submits an unsigned
+personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
 that submits statements — its RFC-0022 `uid.dot` identity account and the
 pairing host's per-pairing device key. The shared native implementation lives in
 `truapi-server/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
-assembly, submit). The signing account must be an attested LitePeople member,
-and may sit in an old ring, so the signing host scans back from the current ring
-index (slow, one-time per pairing). Auto-managed accounts are stored in
+assembly, submit). The signing account must be an attested member of at least
+one personhood collection, and may sit in an old ring, so the signing host scans
+back from the current ring index (slow, one-time per pairing).
+
+Each collection is a separate alias space with its own budget, so a signer with
+full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
+`LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
+same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
+`MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
+the collection it is proved against. Registration pools across every
+collection the signer can prove: a free slot anywhere is taken before any live
+slot is evicted, and when everything is full the slot replaced is the globally
+oldest replaceable one. `alloc-check` prints both collections' member keys, ring
+indices and slot tables. Auto-managed accounts are stored in
 `accounts.json` under `--base-path`; mnemonics are plaintext local test secrets
 and the file is written with `0600` permissions on Unix. `alloc-check` verifies
 membership and can submit a test registration.
@@ -399,15 +418,17 @@ truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 ```
 
 Both hosts take `--network` (default `paseo-next-v2`). The network preset owns
-the identity backend URL, People RPC, Bulletin RPC, and genesis hashes; there is
+the identity backend URL, the People, Bulletin and Asset Hub RPCs, and their
+genesis hashes; there is
 no public `--statement-store` flag. Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
 
 ## Scope / gaps
 
-- **Chain methods** route to real `wss://` nodes from the selected `--network`
-  when `E2E_LIVE_CHAIN=1`; off by default. A rustls crypto provider is
+- **Chain methods** route to real `wss://` nodes from the selected `--network`.
+  Every role the preset serves is routed unconditionally; `E2E_LIVE_CHAIN=1` only
+  widens routing to endpoints it carries without serving. A rustls crypto provider is
   installed at startup for the TLS connections.
 - **Ring-VRF product-account aliases and proofs** are implemented by the
   signing host via the `verifiable` crate (`get_account_alias` and
@@ -417,10 +438,10 @@ cleans up a unique temporary Unix socket.
   usernames via the identity backend (`src/attestation.rs`); first registration
   is backend-async and can take minutes (ring onboarding). `truapi-host
   identity-check --mnemonic <m>` probes which derivation carries a username.
-- `set_statement_store_account` and Bulletin long-term-storage resource
-  allocation are implemented over SSO on native headless hosts.
+- `set_statement_store_account`, Bulletin long-term-storage, and Asset Hub PGAS
+  resource allocation are implemented over SSO on native headless hosts.
 - Everything else the browser host exercises passes: signing (raw, payload,
   create-transaction, and their legacy variants), statement store, entropy,
   aliases, preimage, storage, permissions, notifications, theme, system, chain
-  (with `E2E_LIVE_CHAIN=1`), and user id, subject to live chain availability
+  and user id, subject to live chain availability
   and allowance-slot capacity.

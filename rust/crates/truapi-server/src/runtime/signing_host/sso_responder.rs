@@ -143,6 +143,17 @@ pub(super) enum AllowanceAllocationError {
     /// Signing host session or authority state was unavailable.
     #[error("{0}")]
     Authority(AuthorityError),
+    /// The host serves no chain for this role, so there is nothing to claim on.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("host serves no {chain} chain")]
+    ChainNotServed {
+        /// Role that could not be resolved.
+        chain: &'static str,
+    },
+    /// Reading the host's chain set failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("supported chains: {0}")]
+    SupportedChains(String),
     /// Product-account key derivation failed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{0}")]
@@ -158,8 +169,8 @@ pub(super) enum AllowanceAllocationError {
     /// Runtime service could not open the required Bulletin RPC client.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("{context}: {source}")]
-    BulletinRpcClient {
-        /// Client context.
+    ChainRpcClient {
+        /// Client context, naming which chain failed.
         context: &'static str,
         /// Chain runtime failure.
         #[source]
@@ -176,10 +187,10 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("system clock before UNIX epoch")]
     SystemClockBeforeUnixEpoch,
-    /// The signing account is not in the required LitePeople ring.
+    /// The signing account is not in any personhood ring.
     #[cfg(not(target_arch = "wasm32"))]
-    #[error("signing account is not a LitePeople ring member; cannot grant {resource} allowance")]
-    MissingLitePeopleMembership {
+    #[error("signing account is not a personhood ring member; cannot grant {resource} allowance")]
+    MissingPersonhoodMembership {
         /// Resource name.
         resource: &'static str,
     },
@@ -846,8 +857,18 @@ async fn resource_allocation_response(
                     slot_account_key,
                 })
             }),
-            SsoAllocatableResource::SmartContractAllowance(_) => {
-                Ok(SsoAllocationOutcome::NotAvailable)
+            SsoAllocatableResource::SmartContractAllowance(index) => {
+                allocate_smart_contract_allowance(
+                    services,
+                    signing_host,
+                    &request.calling_product_id,
+                    index.clone(),
+                    request.on_existing,
+                )
+                .await
+                .map(|()| {
+                    SsoAllocationOutcome::Allocated(SsoAllocatedResource::SmartContractAllowance)
+                })
             }
             SsoAllocatableResource::AutoSigning => (|| -> Result<_, AllowanceAllocationError> {
                 let product_root_private_key = signing_host
@@ -903,9 +924,9 @@ pub(super) async fn allocate_statement_store_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use super::allowance_renewal::{self, StatementRenewalTarget};
-    use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
-        self, RegistrationParams, find_including_ring, register_statement_account,
+        self, PooledRegistrationParams, allocated_in, find_including_rings,
+        register_statement_account_pooled, scan_collections,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -915,7 +936,7 @@ pub(super) async fn allocate_statement_store_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
     let client = services
         .statement_store
         .chain_client("statement-store allowance")
@@ -931,62 +952,51 @@ pub(super) async fn allocate_statement_store_allowance(
     // submits nothing.
     let _registration = signing_host.renewal.registration_lock().lock().await;
 
-    // One scan answers both questions: whether an allowance is already recorded
-    // on chain — in which case neither a ring proof nor a submission is needed —
-    // and which slot to claim when it is not. Its result is handed to
-    // `register_statement_account` so the slots are read once, not twice.
-    let preselected = match statement_allowance::slot::scan_slot_excluding(
+    // One read of the period's slot tables, reused below rather than rescanned:
+    // when an allowance is already recorded on chain neither a proof nor a
+    // submission is needed, and a ring snapshot pages in every member key.
+    let scans = scan_collections(
         rpc,
         &chain.metadata,
-        bandersnatch,
+        &candidates,
         period,
         &target,
-        &[],
         reuse_existing,
     )
-    .await?
-    {
-        SlotSelection::AlreadyAllocated(seq) => {
-            debug!(
-                %product_id,
-                period,
-                seq,
-                "statement-store allowance already allocated"
-            );
-            return Ok(allowance.secret.to_bytes().to_vec());
-        }
-        SlotSelection::Free(seq) => seq,
-        SlotSelection::FreeSlotsExcluded => {
-            return Err(
-                StatementAllowanceError::Slot(SlotError::FreeSlotsAwaitingSubmission { period })
-                    .into(),
-            );
-        }
-        SlotSelection::Full { max, .. } => {
-            return Err(
-                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
-                    .into(),
-            );
-        }
-    };
+    .await?;
+    if let Some((collection, seq)) = allocated_in(&scans) {
+        debug!(
+            %product_id,
+            period,
+            seq,
+            %collection,
+            "statement-store allowance already allocated"
+        );
+        return Ok(allowance.secret.to_bytes().to_vec());
+    }
 
-    let current = statement_allowance::ring::read_current_ring_index(rpc).await?;
-    let ring = find_including_ring(rpc, &chain.metadata, bandersnatch, current)
-        .await?
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+    // Every ring back to index 0, because a membership that stopped being
+    // re-included still proves against the ring that holds it.
+    let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
+    if memberships.is_empty() {
+        return Err(AllowanceAllocationError::MissingPersonhoodMembership {
             resource: "statement-store",
-        })?;
-    let outcome = register_statement_account(
+        });
+    }
+    let outcome = register_statement_account_pooled(
         rpc,
         &chain.metadata,
         &chain.state,
-        bandersnatch,
-        RegistrationParams {
+        &scans,
+        &memberships,
+        PooledRegistrationParams {
             target: &target,
             period,
-            ring: &ring,
             reuse_existing,
-            preselected: Some(preselected),
+            // Connecting a product must not revoke another product's allowance.
+            // A full period is reported as exhaustion; reclaiming space is the
+            // renewal pass's job, which only ever replaces for its own ledger.
+            allow_eviction: false,
             protected: &[],
         },
     )
@@ -996,19 +1006,22 @@ pub(super) async fn allocate_statement_store_allowance(
             block_hash,
             seq,
             ring_index,
+            collection,
         } => {
             debug!(
                 %product_id,
                 %block_hash,
                 seq,
                 ring_index,
+                %collection,
                 "registered statement-store allowance"
             );
         }
-        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq } => {
+        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq, collection } => {
             debug!(
                 %product_id,
                 seq,
+                %collection,
                 "statement-store allowance already allocated"
             );
         }
@@ -1033,8 +1046,9 @@ pub(super) async fn allocate_bulletin_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_ring,
+        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_rings,
         wait_bulletin_authorization,
     };
 
@@ -1047,7 +1061,7 @@ pub(super) async fn allocate_bulletin_allowance(
             .bulletin
             .client("bulletin allowance")
             .await
-            .map_err(|source| AllowanceAllocationError::BulletinRpcClient {
+            .map_err(|source| AllowanceAllocationError::ChainRpcClient {
                 context: "bulletin allowance client",
                 source,
             })?,
@@ -1068,11 +1082,22 @@ pub(super) async fn allocate_bulletin_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
-    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
-    let ring = find_including_ring(people_rpc, &chain.metadata, bandersnatch, current)
-        .await?
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    // Statement-store slots and PGAS claims are each bounded by a per-collection
+    // constant, so their budgets are meant to be spent per collection. Long-term
+    // storage is bounded by `Resources.LongTermStorageClaimsPerPeriod` alone, with
+    // no per-collection variant, so the budget reads as per person. Its spent
+    // counters are still keyed by a collection-scoped alias, which means changing
+    // collection silently restarts the count at zero. Staying in the light
+    // collection keeps one person to one count; full personhood is the fallback
+    // for a device without light personhood.
+    let memberships =
+        find_including_rings(people_rpc, &chain.metadata, &candidates, u32::MAX).await?;
+    let membership = memberships
+        .iter()
+        .find(|membership| membership.collection() == PersonhoodCollection::LitePeople)
+        .or_else(|| memberships.first())
+        .ok_or(AllowanceAllocationError::MissingPersonhoodMembership {
             resource: "Bulletin",
         })?;
     let period_duration =
@@ -1085,10 +1110,10 @@ pub(super) async fn allocate_bulletin_allowance(
         people_rpc,
         &chain.metadata,
         &chain.state,
-        bandersnatch,
+        membership.entropy,
         &target,
         period,
-        &ring,
+        &membership.ring,
     )
     .await?;
     let statement_allowance::LongTermStorageOutcome::Claimed {
@@ -1130,6 +1155,121 @@ pub(super) async fn allocate_statement_store_allowance(
     Err(AllowanceAllocationError::NativeOnly {
         resource: "statement-store",
     })
+}
+
+/// Claim an Asset Hub PGAS allowance for the product account `derivation_index`
+/// selects.
+///
+/// Unlike the statement-store and Bulletin allowances, this credits the product
+/// account itself rather than a dedicated `//allowance//…` account, and returns
+/// nothing: PGAS pre-warms a balance on an account the host already controls, so
+/// there is no key to hand back.
+///
+/// Asset Hub is resolved through the host's chain set rather than a configured
+/// hash, so a host that does not serve it says so instead of claiming against
+/// whatever chain a stale hash happens to reach.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) async fn allocate_smart_contract_allowance(
+    services: &Arc<RuntimeServices>,
+    signing_host: &SigningHost,
+    product_id: &str,
+    derivation_index: v01::DerivationIndex,
+    policy: OnExistingAllowancePolicy,
+) -> Result<(), AllowanceAllocationError> {
+    use truapi::latest::ChainIdentifier;
+
+    use crate::host_logic::features;
+    use crate::runtime::statement_allowance::{self, ChainClient, find_including_rings, pgas};
+
+    let session = signing_host
+        .current_session()
+        .ok_or(AuthorityError::Disconnected)?;
+
+    // PGAS credits the product account the caller named.
+    let target = signing_host
+        .product_keypair(&v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index,
+        })?
+        .public
+        .to_bytes();
+
+    let chains = features::supported_chains(services.platform.as_ref())
+        .await
+        .map_err(|err| AllowanceAllocationError::SupportedChains(err.reason))?;
+    let asset_hub_genesis = features::genesis_for(&chains, ChainIdentifier::AssetHub)
+        .ok_or(AllowanceAllocationError::ChainNotServed { chain: "Asset Hub" })?;
+    let asset_hub_client = ChainClient::new(
+        statement_allowance::rpc::RpcClient::new(subxt_rpcs::RpcClient::new(
+            services
+                .chain
+                .rpc_client("PGAS allowance", &asset_hub_genesis)
+                .await
+                .map_err(|source| AllowanceAllocationError::ChainRpcClient {
+                    context: "Asset Hub PGAS client",
+                    source,
+                })?,
+        )),
+        asset_hub_genesis,
+    );
+    let asset_hub = services.chain_context.get(&asset_hub_client).await?;
+
+    // A claim spends one of the day's slots, so honour a caller that asked to leave
+    // an existing allowance alone rather than topping up an already-warm account.
+    if matches!(policy, OnExistingAllowancePolicy::Ignore)
+        && pgas::holds_a_full_claim(asset_hub_client.rpc(), &asset_hub.metadata, &target).await?
+    {
+        debug!(%product_id, "PGAS allowance already funded; leaving it alone");
+        return Ok(());
+    }
+
+    let people_client = services
+        .statement_store
+        .chain_client("PGAS allowance ring")
+        .await?;
+    let people_rpc = people_client.rpc();
+    let people = services.chain_context.get(&people_client).await?;
+
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    // A single claim needs one collection, so take the strongest membership the
+    // person actually holds rather than assuming light personhood.
+    let membership = find_including_rings(people_rpc, &people.metadata, &candidates, u32::MAX)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(AllowanceAllocationError::MissingPersonhoodMembership { resource: "PGAS" })?;
+
+    let outcome = pgas::claim_pgas(pgas::PgasClaim {
+        asset_hub_rpc: asset_hub_client.rpc(),
+        asset_hub: &asset_hub,
+        people_rpc,
+        people_metadata: &people.metadata,
+        entropy: membership.entropy,
+        target: &target,
+        ring: &membership.ring,
+    })
+    .await?;
+    debug!(
+        %product_id,
+        day = outcome.day,
+        slot_index = outcome.slot_index,
+        ring_index = outcome.ring_index,
+        block = %outcome.block_hash,
+        "claimed PGAS allowance"
+    );
+    Ok(())
+}
+
+/// PGAS claims need chain access the wasm host does not have.
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn allocate_smart_contract_allowance(
+    _services: &Arc<RuntimeServices>,
+    _signing_host: &SigningHost,
+    _product_id: &str,
+    _derivation_index: v01::DerivationIndex,
+    _policy: OnExistingAllowancePolicy,
+) -> Result<(), AllowanceAllocationError> {
+    Err(AllowanceAllocationError::NativeOnly { resource: "PGAS" })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1543,7 +1683,7 @@ mod tests {
             })
             .collect();
 
-        // `find_including_ring` opens with `chain_getFinalizedHead`, so none of
+        // `find_including_rings` opens with `chain_getFinalizedHead`, so none of
         // these means no ring was resolved.
         assert_eq!(
             methods
