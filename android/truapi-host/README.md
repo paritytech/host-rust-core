@@ -49,7 +49,6 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence.
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
 - `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, local-session activation, permission-authorization status, and native change notifications for session storage, theme, and preimage updates.
-- `TrUAPIHostRuntime` - thin wrapper around the UniFFI-generated `NativeTrUApiHostRuntime` for wallet hosts that manage their own statement-store SSO session. `handleSsoRequest(message)` routes one decrypted remote message through the Rust core and returns a `SsoRequestOutcome` (response bytes to post back, a disconnect marker, or ignored). `prepareDisconnectRequest()` builds the SCALE-encoded wire message when the wallet initiates the disconnect. Posting the response and session-record cleanup remain with the wallet.
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
 
 ## Architecture

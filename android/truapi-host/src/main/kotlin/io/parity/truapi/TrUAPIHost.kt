@@ -15,9 +15,6 @@
 //   * `TrUAPIHostCore` - owning wrapper around the UniFFI-generated
 //     `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core
 //     and exposes session + WS-bridge controls plus native change notifications.
-//   * `TrUAPIHostRuntime` - process-owned runtime for wallet hosts that manage
-//     their own statement-store SSO session; exposes `handleSsoRequest` and
-//     `prepareDisconnectRequest`.
 //   * `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge
 //     endpoint to the product page so it can dial back in.
 //
@@ -46,13 +43,10 @@ import uniffi.truapi_server.HostNavigateRejection
 import uniffi.truapi_server.HostRejection
 import uniffi.truapi_server.HostStorageException
 import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
-import uniffi.truapi_server.NativeHostRuntimeConfig as UniFfiNativeHostRuntimeConfig
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeStatementRenewalTarget
 import uniffi.truapi_server.NativeTrUApiCore
-import uniffi.truapi_server.NativeTrUApiHostRuntime
-import uniffi.truapi_server.SsoRequestOutcome
 import uniffi.truapi_server.StatementRenewalReport
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
@@ -685,118 +679,6 @@ class TrUAPIHostCore private constructor(
     fun notifyChainClosed(connectionId: UInt) {
         inner.notifyChainClosed(connectionId)
     }
-
-    override fun close() {
-        inner.close()
-    }
-}
-
-/**
- * Static config supplied to [TrUAPIHostRuntime]. Fields mirror the Rust
- * `NativeHostRuntimeConfig`; [toNative] converts for the generated boundary.
- *
- * [hostName], [hostIcon], [hostVersion], [platformType], and [platformVersion]
- * describe this host to the wallet during SSO pairing.
- * [peopleChainGenesisHash] and [bulletinChainGenesisHash] must each be exactly
- * 32 bytes. [localSessionSecret] optionally activates a local signing session
- * from host-held BIP-39 entropy without SSO pairing.
- */
-data class HostRuntimeConfig(
-    val hostName: String,
-    val hostIcon: String? = null,
-    val hostVersion: String? = null,
-    val platformType: String? = null,
-    val platformVersion: String? = null,
-    val peopleChainGenesisHash: ByteArray,
-    val bulletinChainGenesisHash: ByteArray,
-    val localSessionSecret: ByteArray? = null,
-    val localSessionLiteUsername: String? = null,
-) {
-    internal fun toNative(): UniFfiNativeHostRuntimeConfig =
-        UniFfiNativeHostRuntimeConfig(
-            hostName = hostName,
-            hostIcon = hostIcon,
-            hostVersion = hostVersion,
-            platformType = platformType,
-            platformVersion = platformVersion,
-            peopleChainGenesisHash = peopleChainGenesisHash,
-            bulletinChainGenesisHash = bulletinChainGenesisHash,
-            localSessionSecret = localSessionSecret,
-            localSessionLiteUsername = localSessionLiteUsername,
-        )
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is HostRuntimeConfig) return false
-        return hostName == other.hostName &&
-            hostIcon == other.hostIcon &&
-            hostVersion == other.hostVersion &&
-            platformType == other.platformType &&
-            platformVersion == other.platformVersion &&
-            peopleChainGenesisHash.contentEquals(other.peopleChainGenesisHash) &&
-            bulletinChainGenesisHash.contentEquals(other.bulletinChainGenesisHash) &&
-            localSessionSecret.contentEquals(other.localSessionSecret) &&
-            localSessionLiteUsername == other.localSessionLiteUsername
-    }
-
-    override fun hashCode(): Int {
-        var result = hostName.hashCode()
-        result = 31 * result + (hostIcon?.hashCode() ?: 0)
-        result = 31 * result + (hostVersion?.hashCode() ?: 0)
-        result = 31 * result + (platformType?.hashCode() ?: 0)
-        result = 31 * result + (platformVersion?.hashCode() ?: 0)
-        result = 31 * result + peopleChainGenesisHash.contentHashCode()
-        result = 31 * result + bulletinChainGenesisHash.contentHashCode()
-        result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
-        result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
-        return result
-    }
-}
-
-/**
- * Process-owned Rust host runtime. Exposes SSO request handling over a
- * wallet-managed statement-store session. Retain across the application lifetime
- * to maintain session and authentication state.
- */
-class TrUAPIHostRuntime private constructor(
-    bridge: HostBridge,
-    runtimeConfig: UniFfiNativeHostRuntimeConfig,
-) : AutoCloseable {
-    @Throws(NativeRuntimeConfigException::class)
-    constructor(bridge: HostBridge, runtimeConfig: HostRuntimeConfig) : this(
-        bridge,
-        runtimeConfig.toNative(),
-    )
-
-    private val callbackRetainer: HostCallbacks = HostCallbackAdapter(bridge)
-    private val inner: NativeTrUApiHostRuntime =
-        NativeTrUApiHostRuntime.withRuntimeConfig(callbackRetainer, runtimeConfig)
-
-    /**
-     * Activate or replace the local signing-host session from host-held secret
-     * material (raw BIP-39 entropy). Lets the host run without SSO pairing.
-     * Blocks on key derivation — call from a coroutine on a background
-     * dispatcher, never the main thread.
-     */
-    @Throws(HostRejection::class)
-    fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
-        inner.activateLocalSession(secret, liteUsername)
-    }
-
-    /**
-     * Answer one decrypted SSO remote message from the wallet-managed
-     * statement-store session. Response carries the SCALE-encoded reply to
-     * post back; Disconnected means the peer ended the session (perform
-     * native teardown); Ignored means the message was not a request.
-     * Confirmation-gated requests await confirmUserAction — call from a
-     * coroutine on a background dispatcher, never the main thread.
-     */
-    @Throws(HostRejection::class)
-    suspend fun handleSsoRequest(message: ByteArray): SsoRequestOutcome =
-        inner.handleSsoRequest(message)
-
-    /** SCALE-encoded Disconnected message to post over a session being ended. */
-    fun prepareDisconnectRequest(): ByteArray = inner.prepareDisconnectRequest()
 
     override fun close() {
         inner.close()
