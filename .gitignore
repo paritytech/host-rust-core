@@ -59,6 +59,9 @@ playground/test/generated/
 # Auto-generated FFI / WASM binding outputs
 android/truapi-host/src/main/kotlin/generated/
 android/truapi-host/src/main/jniLibs/
+android/truapi-provider/src/main/kotlin/generated/
+android/truapi-provider/src/main/jniLibs/
+ios/truapi-provider/Binaries/
 rust/crates/truapi-server/pkg/
 js/packages/truapi/src/generated/
 js/packages/truapi/dist/generated/
