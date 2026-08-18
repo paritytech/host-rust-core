@@ -466,6 +466,32 @@ pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
     response_id: 165,
 };
 
+/// Wire discriminants for `funding_request`.
+pub const FUNDING_REQUEST: RequestFrameIds = RequestFrameIds {
+    request_id: 176,
+    response_id: 177,
+};
+
+/// Wire discriminants for `funding_status_subscribe`.
+pub const FUNDING_STATUS_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 178,
+    stop_id: 179,
+    interrupt_id: 180,
+    receive_id: 181,
+};
+
+/// Wire discriminants for `funding_serve_subscribe`.
+pub const FUNDING_SERVE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+    start_id: 182,
+    stop_id: 183,
+    interrupt_id: 184,
+    receive_id: 185,
+};
+
+/// Wire discriminants for `funding_report`.
+pub const FUNDING_REPORT: RequestFrameIds = RequestFrameIds {
+    request_id: 186,
+    response_id: 187,
 /// Wire discriminants for `chain_get_chain_info`.
 pub const CHAIN_GET_CHAIN_INFO: RequestFrameIds = RequestFrameIds {
     request_id: 166,
@@ -754,6 +780,20 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Request(ACCOUNT_SIGN_VRF),
     },
     WireEntry {
+        method: "funding_request",
+        kind: WireKind::Request(FUNDING_REQUEST),
+    },
+    WireEntry {
+        method: "funding_status_subscribe",
+        kind: WireKind::Subscription(FUNDING_STATUS_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "funding_serve_subscribe",
+        kind: WireKind::Subscription(FUNDING_SERVE_SUBSCRIBE),
+    },
+    WireEntry {
+        method: "funding_report",
+        kind: WireKind::Request(FUNDING_REPORT),
         method: "chain_get_chain_info",
         kind: WireKind::Request(CHAIN_GET_CHAIN_INFO),
     },
