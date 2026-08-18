@@ -96,6 +96,8 @@ export type MainToWorker =
       request: Uint8Array;
       status: PermissionAuthorizationStatus;
     }
+  | { kind: "getSessionChatIdentityKey"; requestId: number }
+  | { kind: "getDeviceEncryptionKey"; requestId: number }
   | { kind: "callbackResponse"; requestId: number; ok: true; value: unknown }
   | { kind: "callbackResponse"; requestId: number; ok: false; error: string }
   | { kind: "subscriptionItem"; subId: number; value: unknown }
@@ -169,6 +171,30 @@ export type WorkerToMain =
     }
   | {
       kind: "setPermissionAuthorizationStatusResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "sessionChatIdentityKeyResponse";
+      requestId: number;
+      ok: true;
+      key: Uint8Array | undefined;
+    }
+  | {
+      kind: "sessionChatIdentityKeyResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "deviceEncryptionKeyResponse";
+      requestId: number;
+      ok: true;
+      key: Uint8Array;
+    }
+  | {
+      kind: "deviceEncryptionKeyResponse";
       requestId: number;
       ok: false;
       error: string;
