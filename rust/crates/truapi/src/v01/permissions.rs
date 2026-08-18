@@ -34,8 +34,7 @@ pub enum HostDevicePermissionRequest {
     /// Handing a URL to the operating system, leaving the host application
     /// entirely. Requestable and persistable, but the core enforces nothing with
     /// it: *which* hosts a product may send the user to is
-    /// [`RemotePermission::Remote`](RemotePermission::Remote), wherever the
-    /// destination ends up opening.
+    /// `RemotePermission::Remote`, wherever the destination ends up opening.
     #[display("open URL")]
     OpenUrl,
     /// Biometric authentication.
@@ -51,8 +50,7 @@ pub enum HostDevicePermissionRequest {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RemotePermission {
     /// Reaching a set of domains: outbound HTTP/WebSocket access, and sending
-    /// the user out to one of them via
-    /// [`System::navigate_to`](crate::api::System::navigate_to).
+    /// the user out to one of them with `navigate_to`.
     ///
     /// One grant per host covers both, because both hand the same third party
     /// the same thing: that the user is here, and whatever the product puts in
