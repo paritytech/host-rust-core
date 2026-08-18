@@ -18,10 +18,10 @@ use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
-use truapi::v01;
+use truapi::{Bytes32, v01};
 use truapi_platform::{
-    AuthPresenter, AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, HostInfo,
-    JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
+    AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
+    HostInfo, JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Permissions, PlatformInfo, PreimageHost, ProductContext,
     ProductExecutionKind, ProductStorage, RuntimeConfigValidationError, SigningHostConfig,
     ThemeHost, UserConfirmation, UserConfirmationReview, async_trait, normalize_product_identifier,
@@ -906,6 +906,22 @@ impl NativeProductExecution {
                 .set_permission_authorization_status(request, status),
         )?;
         Ok(())
+    }
+
+    /// Read the active session's X25519 chat identity private key, or `None`
+    /// when no session is active.
+    pub fn session_chat_identity_key(&self) -> Result<Option<Bytes32>, HostRejection> {
+        Ok(futures::executor::block_on(
+            self.admin().get_session_chat_identity_key(),
+        )?)
+    }
+
+    /// Read this device's X25519 encryption secret, for device sync against a
+    /// peer's `deviceEncPublicKey`. Generated and persisted on first read.
+    pub fn device_encryption_key(&self) -> Result<Bytes32, HostRejection> {
+        Ok(futures::executor::block_on(
+            self.admin().get_device_encryption_key(),
+        )?)
     }
 
     /// Push a host theme replacement to this execution's subscriptions.
@@ -2319,6 +2335,9 @@ mod tests {
             truapi_platform::SessionUiInfo {
                 public_key: [7; 32],
                 identity_account_id: None,
+                chat_public_key: None,
+                device_enc_public_key: None,
+                peer_statement_account_id: None,
                 lite_username: Some("alice".to_string()),
                 full_username: None,
             },
@@ -2338,6 +2357,9 @@ mod tests {
                 AuthState::Connected(truapi_platform::SessionUiInfo {
                     public_key: [7; 32],
                     identity_account_id: None,
+                    chat_public_key: None,
+                    device_enc_public_key: None,
+                    peer_statement_account_id: None,
                     lite_username: Some("alice".to_string()),
                     full_username: None,
                 }),

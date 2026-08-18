@@ -45,3 +45,7 @@ when it provides the Chat modality.
 `CoreAdmin` is not part of the host-provided `Platform` callback surface. It is
 the core-owned control API exposed to host UI for logout, pairing cancellation,
 session-store refresh, and permission administration.
+
+It also serves the session's X25519 chat identity private key. Public session
+material a host needs to address the identity or the paired device travels on
+`SessionUiInfo` instead; only the secret requires this deliberate call.

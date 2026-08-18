@@ -198,6 +198,26 @@ impl PairingHostRuntime {
             .map_err(ring_vrf_admin_error)
     }
 
+    /// Read the active session's X25519 chat identity private key, for hosts
+    /// running their own P2P chat channel for the paired identity.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.session_chat_identity_key"))]
+    pub fn session_chat_identity_key(&self) -> Option<[u8; 32]> {
+        self.pairing_host
+            .session_state()
+            .current()?
+            .identity_chat_private_key
+    }
+
+    /// Read this device's X25519 encryption secret, for hosts running device
+    /// sync. Generated and persisted on first read.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.device_encryption_key"))]
+    pub async fn device_encryption_key(&self) -> Result<[u8; 32], v01::GenericError> {
+        self.services
+            .device_encryption_secret()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Clear the canonical paired session and all capability caches/storage
     /// without sending a peer-disconnect notice.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.reset_session_state"))]
@@ -692,6 +712,22 @@ impl CoreAdmin for HostAdmin {
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
         HostAdmin::set_permission_authorization_status(self, request, status).await
+    }
+
+    async fn get_session_chat_identity_key(&self) -> Result<Option<[u8; 32]>, v01::GenericError> {
+        Ok(self
+            .authority
+            .session_state()
+            .current()
+            .and_then(|session| session.identity_chat_private_key))
+    }
+
+    async fn get_device_encryption_key(&self) -> Result<[u8; 32], v01::GenericError> {
+        self.product_runtime
+            .services()
+            .device_encryption_secret()
+            .await
+            .map_err(|reason| v01::GenericError { reason })
     }
 }
 

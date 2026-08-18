@@ -12,6 +12,7 @@ JS_PACKAGES := js/packages
 EXPLORER := explorer
 DOTLI := hosts/dotli
 HOST_WASM_PKG := $(JS_PACKAGES)/truapi-host
+PROVIDER_WASM_PKG := $(JS_PACKAGES)/truapi-provider
 HOST_CALLBACKS_GENERATED := $(HOST_WASM_PKG)/src/generated/host-callbacks.ts
 HOST_WASM_ADAPTER_GENERATED := $(HOST_WASM_PKG)/src/generated/host-callbacks-adapter.ts
 HOST_WASM_WORKER_CALLBACKS_GENERATED := $(HOST_WASM_PKG)/src/generated/worker-callbacks.ts
@@ -69,8 +70,9 @@ codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 	./scripts/codegen.sh
 	cd $(PLAYGROUND) && rm -rf node_modules/@parity && yarn install
 
-wasm: ## Rebuild the truapi-server WASM artifacts under js/packages/truapi-host/dist/wasm/.
+wasm: ## Rebuild the truapi-server and truapi-provider WASM bundles under js/packages/*/dist/.
 	cd $(HOST_WASM_PKG) && npm run build:wasm
+	cd $(PROVIDER_WASM_PKG) && npm run build:wasm
 
 wasm-crypto-test: ## Run crypto/vector tests on wasm32 via wasm-pack/node.
 	wasm-pack test --node rust/crates/truapi-server --test wasm_crypto_vectors --no-default-features
@@ -84,8 +86,10 @@ UNIFFI_CDYLIB_DIR := target/codegen
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.dylib
+PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.dylib
 else
 UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.so
+PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.so
 endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
@@ -203,6 +207,34 @@ android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs 
 
 android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
 	gradle :truapi-host:publishReleasePublicationToMavenLocal
+
+# truapi-provider ships as its own per-platform artifacts (iOS xcframework,
+# Android AAR, npm wasm) so a host consumes chain transport without depending on
+# the Rust crate. The `uniffi` feature carries no `ws` backend: these builds are
+# the light client alone.
+PROVIDER_KOTLIN_OUT := android/truapi-provider/src/main/kotlin/generated
+PROVIDER_JNILIBS := android/truapi-provider/src/main/jniLibs
+
+provider-ios: ## Build the TrUAPIProvider Swift bindings + xcframework (adds --sim-only via SIM_ONLY=1).
+	bash ios/truapi-provider/scripts/rebuild.sh $(if $(SIM_ONLY),--sim-only,)
+
+provider-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-provider cdylib.
+	$(CARGO) build -p truapi-provider --profile codegen --no-default-features --features uniffi
+	rm -rf $(PROVIDER_KOTLIN_OUT)
+	mkdir -p $(PROVIDER_KOTLIN_OUT)
+	$(CARGO) run -p uniffi-bindgen-cli -- generate \
+		--library $(PROVIDER_CDYLIB) \
+		--language kotlin \
+		--out-dir $(PROVIDER_KOTLIN_OUT)
+
+provider-android-jni: ## Cross-compile libtruapi_provider.so for Android ABIs into the module's jniLibs (needs cargo-ndk + NDK).
+	@command -v cargo-ndk >/dev/null || { echo "cargo-ndk not found: cargo install cargo-ndk"; exit 1; }
+	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
+		-o $(PROVIDER_JNILIBS) \
+		build --release -p truapi-provider --no-default-features --features uniffi
+
+provider-android-publish-local: provider-kotlin provider-android-jni ## Publish the self-contained provider AAR (bindings + cdylib) to ~/.m2.
+	gradle :truapi-provider:publishReleasePublicationToMavenLocal
 
 test: ## Run Rust + TypeScript client tests.
 	cargo test --workspace

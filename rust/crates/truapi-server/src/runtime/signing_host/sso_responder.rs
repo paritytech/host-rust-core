@@ -44,8 +44,8 @@ use crate::host_logic::sso::messages::{
 };
 use crate::host_logic::sso::pairing::{
     ResponderIdentity, VersionedHandshakeProposal, bootstrap_topic, decode_pairing_deeplink,
-    derive_x25519_keypair_from_entropy, encrypt_v2_handshake_response,
-    establish_responder_session_info, v2,
+    derive_identity_chat_private_key, derive_x25519_keypair_from_entropy,
+    encrypt_v2_handshake_response, establish_responder_session_info, v2, x25519_public_key,
 };
 use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
 use crate::runtime::authority::{
@@ -64,8 +64,6 @@ use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
 /// RFC-0022 domain for the responder's persistent SSO X25519 key.
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
-/// RFC-0022 domain for the identity chat X25519 key shared in the handshake.
-const CHAT_ENCRYPTION_DOMAIN: &[u8] = b"chat";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
 #[cfg(not(target_arch = "wasm32"))]
@@ -83,8 +81,7 @@ fn derive_responder_identity(
     let statement = derive_identity_keypair(entropy)?;
     let (encryption_secret_key, encryption_public_key) =
         derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
-    let (identity_chat_private_key, _) =
-        derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN);
+    let identity_chat_private_key = derive_identity_chat_private_key(entropy);
     Ok((
         ResponderIdentity {
             statement_secret: statement.secret.to_bytes(),
@@ -238,6 +235,7 @@ pub(crate) async fn respond_to_pairing(
         .map_err(|err| format!("root account derivation failed: {err}"))?;
     let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
         .map_err(|err| format!("responder identity derivation failed: {err}"))?;
+    let device_enc_pub_key = x25519_public_key(services.device_encryption_secret().await?);
     let session = establish_responder_session_info(
         &identity,
         proposal.device.statement_account_id,
@@ -249,7 +247,7 @@ pub(crate) async fn respond_to_pairing(
         root_account_id: root.public.to_bytes(),
         identity_chat_private_key,
         sso_enc_pub_key: identity.encryption_public_key,
-        device_enc_pub_key: identity.encryption_public_key,
+        device_enc_pub_key,
         root_entropy_source: root_entropy_source(&entropy),
     }));
     let handshake = encrypt_v2_handshake_response(proposal.device.encryption_public_key, &success)?;
@@ -1734,6 +1732,20 @@ mod tests {
             decode_verified_statement_data(&statement, Some(identity.statement_public_key))
                 .unwrap();
         assert_eq!(verified.signer, local_identity);
+    }
+
+    #[test]
+    fn advertised_device_key_is_independent_of_the_identity() {
+        let (services, _signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+
+        let advertised = x25519_public_key(
+            futures::executor::block_on(services.device_encryption_secret()).unwrap(),
+        );
+
+        // The regression this guards: advertising the SSO channel key as the
+        // device key makes every device sharing an identity indistinguishable.
+        let (_, sso_public) = derive_x25519_keypair_from_entropy(&ENTROPY, SSO_ENCRYPTION_DOMAIN);
+        assert_ne!(advertised, sso_public);
     }
 
     fn response_payload(answer: AnsweredRemoteMessage) -> v1::RemoteMessage {
