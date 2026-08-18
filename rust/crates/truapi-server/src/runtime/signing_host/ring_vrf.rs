@@ -13,7 +13,7 @@ use crate::host_logic::sso::messages::RingVrfError;
 use async_trait::async_trait;
 use subxt::dynamic;
 use subxt::ext::scale_decode::DecodeAsType;
-use truapi::v01::{ProductProofContext, RingLocation, RingLocationJunction};
+use truapi::v01::{DerivationIndex, ProductProofContext, RingLocation, RingLocationJunction};
 use verifiable::GenerateVerifiable;
 use verifiable::ring::RingDomainSize;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
@@ -212,7 +212,47 @@ impl RingResolver for ChainRingResolver {
     }
 }
 
+/// Env var that arms [`raw_context_override`]. Set it to `1`.
+const RAW_CONTEXT_ENV: &str = "TRUAPI_RAW_PROOF_CONTEXT";
+
+/// Product id that asks for a verbatim context. Not a dotNS name — names carry
+/// no `:`, so no real product lands on this by accident.
+const RAW_CONTEXT_PRODUCT_ID: &str = "raw:";
+
+/// Spike-only: take the request's 32 raw suffix bytes as the proof context
+/// verbatim, instead of hashing them into the product's namespace.
+///
+/// The chain does not accept product-scoped contexts. `pallet-people-lite`'s
+/// `AsLiteAliasWithProof` checks the proof's context against the runtime's own
+/// constants — `pop:polkadot.network/score` for the game — and no
+/// `blake2b("product/…")` hash can ever equal one of those. Aligning the two is
+/// individuality#1247; until it lands the lite free-play flow cannot be
+/// exercised at all, because the proof is refused by the extension rather than
+/// by anything a product could fix on its side.
+///
+/// This exists to run that flow once, on the CLI host, against a testnet, so we
+/// can say which parts already work before the alignment is designed. It is
+/// gated twice: an env var no released host sets, and a product id dotNS cannot
+/// issue. It must not ship — a host that honours it lets a product mint a proof
+/// in a context it does not own, which is the property the derivation exists to
+/// guarantee.
+fn raw_context_override(context: &ProductProofContext) -> Option<[u8; 32]> {
+    if context.product_id != RAW_CONTEXT_PRODUCT_ID {
+        return None;
+    }
+    if std::env::var(RAW_CONTEXT_ENV).as_deref() != Ok("1") {
+        return None;
+    }
+    match context.suffix {
+        DerivationIndex::Raw(bytes) => Some(bytes),
+        DerivationIndex::Index(_) => None,
+    }
+}
+
 pub(in crate::runtime) fn context_bytes(context: &ProductProofContext) -> [u8; 32] {
+    if let Some(raw) = raw_context_override(context) {
+        return raw;
+    }
     let suffix = derivation_index_bytes(&context.suffix);
     let mut input = Vec::with_capacity(9 + context.product_id.len() + suffix.len());
     input.extend_from_slice(b"product/");
