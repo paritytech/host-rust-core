@@ -1,8 +1,10 @@
 //! Asset Hub PGAS allowance claims.
 //!
 //! Mirrors the mobile wallet flow: pick the first unclaimed daily PGAS slot for
-//! the target, prove LitePeople membership with the `AsPgas` transaction
-//! extension, and submit `Pgas.claim_pgas` on Asset Hub.
+//! the target, prove membership in the claiming collection with the `AsPgas`
+//! transaction extension, and submit `Pgas.claim_pgas` on Asset Hub. The slot
+//! budget and the alias space are both per collection, so the claim is bounded by
+//! whichever collection it proves.
 //!
 //! Two chains are involved. The ring and its revision come from the People
 //! chain, where membership lives; the claim is submitted on Asset Hub, which
@@ -17,8 +19,9 @@ use scale_decode::DecodeAsType;
 use sp_crypto_hashing::twox_128;
 use thiserror::Error;
 
+use super::collection::PersonhoodCollection;
 use super::extension::{AS_PGAS, Metadata, MetadataError};
-use super::ring::{self, LITE_PEOPLE_IDENTIFIER, RingParams, blake2_128_concat};
+use super::ring::{self, RingParams, blake2_128_concat};
 use super::rpc::RpcClient;
 use super::{
     ChainContext, StatementAllowanceError, duplicate_submit_error, extension, extrinsic, proof,
@@ -94,11 +97,11 @@ pub struct PgasClaimOutcome {
 ///
 /// Both map keys are `Blake2_128Concat` here, unlike the People chain's
 /// `Members` maps which take the collection identifier verbatim.
-fn ring_roots_key(ring_index: u32) -> Vec<u8> {
+fn ring_roots_key(collection: PersonhoodCollection, ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"MembersSubscriber").as_slice(),
         twox_128(b"RingRoots").as_slice(),
-        &blake2_128_concat(LITE_PEOPLE_IDENTIFIER),
+        &blake2_128_concat(collection.identifier()),
         &blake2_128_concat(&ring_index.to_le_bytes()),
     ]
     .concat()
@@ -115,7 +118,7 @@ pub struct PgasClaim<'a> {
     pub people_rpc: &'a RpcClient,
     /// People-chain metadata.
     pub people_metadata: &'a Metadata,
-    /// Our lite-person ring-VRF entropy.
+    /// Our ring-VRF entropy for the collection `ring` names.
     pub entropy: [u8; 32],
     /// Account the claim credits.
     pub target: &'a [u8; 32],
@@ -182,17 +185,26 @@ pub async fn claim_pgas(
     let revision = ring::read_ring_revision(
         people_rpc,
         people_metadata,
+        ring.collection,
         ring.ring_index,
         &ring.block_hash,
     )
     .await?;
-    await_ring_revision(asset_hub_rpc, asset_hub_metadata, ring.ring_index, revision).await?;
+    await_ring_revision(
+        asset_hub_rpc,
+        asset_hub_metadata,
+        ring.collection,
+        ring.ring_index,
+        revision,
+    )
+    .await?;
 
     let mut skipped_duplicate_slots = Vec::new();
     loop {
         let slot_index = slot::scan_pgas_slot_excluding(
             asset_hub_rpc,
             asset_hub_metadata,
+            ring.collection,
             entropy,
             day,
             &skipped_duplicate_slots,
@@ -214,6 +226,7 @@ pub async fn claim_pgas(
             ring.ring_index,
             revision,
             day,
+            ring.collection,
         )?;
         let claim = extrinsic::build_unsigned_extrinsic_with_extra(
             asset_hub_metadata,
@@ -260,6 +273,33 @@ pub async fn claim_pgas(
     }
 }
 
+/// What Asset Hub's held ring roots say about the revision a proof was built
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevisionStatus {
+    /// Asset Hub holds it, so the proof can be verified.
+    Imported,
+    /// Asset Hub holds a newer root, so it will never verify this one.
+    Pruned,
+    /// Not held, and nothing newer is held either.
+    Pending,
+}
+
+/// Classify `revision` against the roots Asset Hub currently holds for a ring.
+///
+/// The newest held root is the test, not the oldest: the window drops revisions
+/// off the front but can also skip one entirely, and a skipped revision is just
+/// as unreachable as an evicted one.
+fn revision_status(held: &[u32], revision: u32) -> RevisionStatus {
+    if held.contains(&revision) {
+        return RevisionStatus::Imported;
+    }
+    match held.iter().max() {
+        Some(&newest) if newest > revision => RevisionStatus::Pruned,
+        _ => RevisionStatus::Pending,
+    }
+}
+
 /// Wait until Asset Hub has imported `revision` of `ring_index`.
 ///
 /// Public so a host can check propagation before offering a claim, and so the
@@ -272,6 +312,7 @@ pub async fn claim_pgas(
 pub async fn await_ring_revision(
     rpc: &RpcClient,
     metadata: &Metadata,
+    collection: PersonhoodCollection,
     ring_index: u32,
     revision: u32,
 ) -> Result<(), StatementAllowanceError> {
@@ -283,7 +324,10 @@ pub async fn await_ring_revision(
         })?;
     let started = Instant::now();
     loop {
-        if let Some(bytes) = rpc.get_storage(&ring_roots_key(ring_index)).await? {
+        if let Some(bytes) = rpc
+            .get_storage(&ring_roots_key(collection, ring_index))
+            .await?
+        {
             let mut input = bytes.as_slice();
             let records = Vec::<RingCommitmentRecord>::decode_as_type(
                 &mut input,
@@ -294,24 +338,17 @@ pub async fn await_ring_revision(
                 context: "subscriber ring roots",
                 source,
             })?;
-            if records.iter().any(|record| record.revision == revision) {
-                return Ok(());
-            }
-            // Asset Hub has moved past ours, so it will never verify it. The
-            // newest held root is the test, not the oldest: the window drops
-            // revisions off the front but can also skip one entirely, and a
-            // skipped revision is just as unreachable as an evicted one.
-            if records
-                .iter()
-                .map(|record| record.revision)
-                .max()
-                .is_some_and(|newest| newest > revision)
-            {
-                return Err(PgasError::RingRevisionPruned {
-                    ring_index,
-                    revision,
+            let held: Vec<u32> = records.iter().map(|record| record.revision).collect();
+            match revision_status(&held, revision) {
+                RevisionStatus::Imported => return Ok(()),
+                RevisionStatus::Pruned => {
+                    return Err(PgasError::RingRevisionPruned {
+                        ring_index,
+                        revision,
+                    }
+                    .into());
                 }
-                .into());
+                RevisionStatus::Pending => {}
             }
         }
         wait_before_next_ring_revision_poll(started, ring_index, revision).await?;
@@ -337,23 +374,226 @@ async fn wait_before_next_ring_revision_poll(
 
 #[cfg(test)]
 mod tests {
+    use subxt_rpcs::RpcClient as HostRpcClient;
+
+    use super::super::rpc::testing::ScriptedRpc;
+    use super::super::test_fixtures;
     use super::*;
+
+    /// The collection the captured roots were read from. `RingRoots` is keyed by
+    /// collection, so the fixture only means anything paired with this one.
+    const CAPTURED_COLLECTION: PersonhoodCollection = PersonhoodCollection::LitePeople;
+
+    /// The captured ring-5 roots as a scripted `state_getStorage` result, with the
+    /// transport handle so the key that was read can be checked.
+    fn scripted_ring_5_roots() -> (RpcClient, ScriptedRpc) {
+        let value = format!(
+            r#""0x{}""#,
+            hex::encode(test_fixtures::ASSET_HUB_RING_5_ROOTS)
+        );
+        let scripted = ScriptedRpc::new([value.as_str()]);
+        (
+            RpcClient::new(HostRpcClient::new(scripted.clone())),
+            scripted,
+        )
+    }
+
+    /// `ScriptedRpc` replays by position and ignores the key, so without this the
+    /// collection paired with the captured blob would be a comment rather than a
+    /// fact: re-capturing the blob against another collection, or editing the
+    /// constant, would leave every test in this module green.
+    ///
+    /// The expected key is built from the identifier literal the fixtures README
+    /// records the capture under, not from `CAPTURED_COLLECTION`. Deriving both
+    /// sides from the constant would move them together and assert nothing.
+    fn assert_read_ring_5_of(scripted: &ScriptedRpc) {
+        const CAPTURED_UNDER: &[u8; 32] = b"pop:polkadot.network/people-lite";
+        assert_eq!(
+            CAPTURED_COLLECTION.identifier(),
+            CAPTURED_UNDER,
+            "the committed blob was read under the lite-people identifier",
+        );
+        let expected = format!(
+            r#"["0x{}"]"#,
+            hex::encode(
+                [
+                    twox_128(b"MembersSubscriber").as_slice(),
+                    twox_128(b"RingRoots").as_slice(),
+                    &blake2_128_concat(CAPTURED_UNDER),
+                    &blake2_128_concat(&5u32.to_le_bytes()),
+                ]
+                .concat()
+            )
+        );
+        let reads: Vec<String> = scripted
+            .calls()
+            .into_iter()
+            .filter(|(method, _)| method == "state_getStorage")
+            .map(|(_, params)| params)
+            .collect();
+        assert_eq!(
+            reads,
+            vec![expected],
+            "the captured blob has to be paired with the collection it was read for"
+        );
+    }
+
+    /// `RingCommitmentRecord` takes one field out of a much wider runtime struct,
+    /// so decode a captured value rather than a hand-built one: the projection is
+    /// the part that a changed record layout would silently break.
+    #[test]
+    fn captured_ring_roots_project_to_their_revisions() {
+        let metadata = test_fixtures::asset_hub();
+        let value_type = metadata
+            .storage_value_type("MembersSubscriber", "RingRoots")
+            .expect(
+                "the metadata fixture declares MembersSubscriber; \
+                 re-capture it and the roots blob together",
+            );
+
+        let records = Vec::<RingCommitmentRecord>::decode_as_type(
+            &mut &test_fixtures::ASSET_HUB_RING_5_ROOTS[..],
+            value_type,
+            metadata.registry(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.revision)
+                .collect::<Vec<_>>(),
+            vec![105, 106, 108],
+        );
+    }
+
+    /// End to end over the real path, against roots Asset Hub actually served: a
+    /// revision the window skipped reports as pruned instead of being waited out.
+    ///
+    /// Only the two terminating outcomes are reachable here. Pending keeps
+    /// polling until `RING_REVISION_WAIT` expires, so it is covered by the
+    /// `revision_status` table instead.
+    #[test]
+    fn a_skipped_revision_reports_as_pruned_against_captured_roots() {
+        let (rpc, scripted) = scripted_ring_5_roots();
+        let err = futures::executor::block_on(await_ring_revision(
+            &rpc,
+            test_fixtures::asset_hub(),
+            CAPTURED_COLLECTION,
+            5,
+            107,
+        ))
+        .expect_err("revision 107 is missing from the captured window");
+        assert_read_ring_5_of(&scripted);
+
+        assert!(
+            err.to_string().contains("pruned"),
+            "a skipped revision should not be waited out: {err}"
+        );
+    }
+
+    /// And one the window holds returns without a second poll.
+    #[test]
+    fn a_held_revision_returns_against_captured_roots() {
+        let (rpc, scripted) = scripted_ring_5_roots();
+        futures::executor::block_on(await_ring_revision(
+            &rpc,
+            test_fixtures::asset_hub(),
+            CAPTURED_COLLECTION,
+            5,
+            106,
+        ))
+        .expect("revision 106 is in the captured window");
+        assert_read_ring_5_of(&scripted);
+    }
 
     /// Both map keys are hashed here, unlike the People chain's `Members` maps.
     #[test]
     fn subscriber_ring_key_hashes_both_map_keys() {
-        let key = ring_roots_key(136);
+        let collection = PersonhoodCollection::LitePeople;
+        let key = ring_roots_key(collection, 136);
 
         assert_eq!(key.len(), 16 + 16 + 16 + 32 + 16 + 4);
         assert_eq!(
             &key[48..80],
-            LITE_PEOPLE_IDENTIFIER,
+            collection.identifier(),
             "identifier follows its hash"
         );
         assert_eq!(
             &key[96..],
             &136u32.to_le_bytes(),
             "ring index is little-endian"
+        );
+    }
+
+    /// `holds_a_full_claim` reads both of these from the runtime, and compares a
+    /// balance against the claim amount. A missing constant would make the warm
+    /// check answer the same way for every account.
+    #[test]
+    fn the_asset_hub_fixture_declares_the_pgas_asset_and_claim_amount() {
+        let metadata = test_fixtures::asset_hub();
+
+        assert_eq!(
+            metadata.constant_u32("Pgas", "PgasAssetId").unwrap(),
+            2_000_000_000
+        );
+        assert_eq!(
+            metadata.constant_u128("Pgas", "PgasClaimAmount").unwrap(),
+            50_000_000_000,
+        );
+    }
+
+    /// The window holds it, so the proof can be verified.
+    #[test]
+    fn a_held_revision_is_imported() {
+        assert_eq!(
+            revision_status(&[105, 106, 108], 106),
+            RevisionStatus::Imported
+        );
+        assert_eq!(revision_status(&[106], 106), RevisionStatus::Imported);
+    }
+
+    /// Nothing newer is held, so ours may still be on its way. An empty window
+    /// reaches this if the entry exists but holds no roots; an absent entry
+    /// skips the classification entirely and goes straight to the next poll.
+    #[test]
+    fn a_revision_newer_than_the_window_is_pending() {
+        assert_eq!(revision_status(&[], 106), RevisionStatus::Pending);
+        assert_eq!(
+            revision_status(&[103, 104, 105], 106),
+            RevisionStatus::Pending
+        );
+    }
+
+    /// A revision the window skipped is as unreachable as one that fell off the
+    /// front. Testing the oldest held root instead would wait this one out.
+    #[test]
+    fn a_skipped_revision_is_pruned_rather_than_pending() {
+        assert_eq!(
+            revision_status(&[105, 106, 108], 107),
+            RevisionStatus::Pruned
+        );
+    }
+
+    /// Evicted off the front of the window.
+    #[test]
+    fn a_revision_older_than_the_window_is_pruned() {
+        assert_eq!(
+            revision_status(&[105, 106, 108], 42),
+            RevisionStatus::Pruned
+        );
+    }
+
+    /// Storage does not promise an order, so the rule cannot depend on one.
+    #[test]
+    fn the_held_order_does_not_change_the_answer() {
+        assert_eq!(
+            revision_status(&[108, 105, 106], 107),
+            RevisionStatus::Pruned
+        );
+        assert_eq!(
+            revision_status(&[108, 105, 106], 106),
+            RevisionStatus::Imported
         );
     }
 

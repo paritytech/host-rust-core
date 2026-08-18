@@ -1,8 +1,9 @@
-//! LitePeople ring parameters from the People chain (`Members` pallet).
+//! Ring parameters from the People chain (`Members` pallet).
 //!
 //! Reads the on-chain ring so the membership proof is built against the same
 //! members the runtime verifies against: the baked-in `included` prefix of the
-//! current ring. Mirrors signing-bot `ring-proof.ts`.
+//! current ring. Every read is scoped to one [`PersonhoodCollection`], because
+//! each collection is a separate ring with its own members and index.
 
 use parity_scale_codec::{Compact, Decode};
 use scale_decode::DecodeAsType;
@@ -10,18 +11,22 @@ use sp_crypto_hashing::{blake2_128, twox_64, twox_128};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
+use super::collection::PersonhoodCollection;
 use super::extension::{Metadata, MetadataError};
 use super::rpc::RpcClient;
 
-/// Error while reading or decoding LitePeople ring storage.
+/// Error while reading or decoding ring storage.
 #[derive(Debug, Error)]
 pub enum RingError {
     /// Current ring index storage failed to decode.
     #[error("ring index: {0}")]
     RingIndex(#[source] parity_scale_codec::Error),
-    /// LitePeople collection info was absent.
-    #[error("Members.Collections[LitePeople] missing")]
-    LitePeopleCollectionMissing,
+    /// Collection info was absent for the requested collection.
+    #[error("Members.Collections[{collection}] missing")]
+    CollectionMissing {
+        /// Collection whose info was absent.
+        collection: PersonhoodCollection,
+    },
     /// Metadata-aware storage decode failed.
     #[error("{context}: {source}")]
     DecodeAsType {
@@ -45,8 +50,6 @@ pub enum RingError {
     RingStatus(#[source] parity_scale_codec::Error),
 }
 
-/// LitePeople collection identifier: ASCII, exactly 32 bytes.
-pub(super) const LITE_PEOPLE_IDENTIFIER: &[u8; 32] = b"pop:polkadot.network/people-lite";
 /// Ring member public key length.
 const MEMBER_LEN: usize = 32;
 
@@ -81,8 +84,16 @@ struct RingRoot {
     revision: u32,
 }
 
-/// On-chain LitePeople ring parameters for building a verifying proof.
+/// On-chain ring parameters for building a verifying proof.
+///
+/// The `collection` names the ring these members came from. It must stay paired
+/// with the entropy whose member key is in `members`: the extension declares the
+/// collection, and the runtime verifies the proof against that collection's
+/// ring, so a mismatched pair is rejected on chain.
+#[derive(Debug)]
 pub struct RingParams {
+    /// Collection this ring belongs to.
+    pub collection: PersonhoodCollection,
     /// Ring members, sliced to the baked-in `included` prefix.
     pub members: Vec<[u8; 32]>,
     /// Ring size exponent (9 / 10 / 14).
@@ -94,53 +105,53 @@ pub struct RingParams {
 }
 
 /// `Members.CurrentRingIndex[id]` storage key.
-fn current_ring_index_key() -> Vec<u8> {
+fn current_ring_index_key(collection: PersonhoodCollection) -> Vec<u8> {
     [
         twox_128(b"Members").as_slice(),
         twox_128(b"CurrentRingIndex").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
+        collection.identifier().as_slice(),
     ]
     .concat()
 }
 
 /// `Members.Collections[id]` storage key.
-fn collections_key() -> Vec<u8> {
+fn collections_key(collection: PersonhoodCollection) -> Vec<u8> {
     [
         twox_128(b"Members").as_slice(),
         twox_128(b"Collections").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
+        collection.identifier().as_slice(),
     ]
     .concat()
 }
 
 /// `Members.RingKeysStatus[(id, ring_index)]` storage key.
-fn ring_keys_status_key(ring_index: u32) -> Vec<u8> {
+fn ring_keys_status_key(collection: PersonhoodCollection, ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"Members").as_slice(),
         twox_128(b"RingKeysStatus").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
+        collection.identifier().as_slice(),
         &blake2_128_concat(&ring_index.to_le_bytes()),
     ]
     .concat()
 }
 
 /// `Members.Root[(id, ring_index)]` storage key.
-fn ring_root_key(ring_index: u32) -> Vec<u8> {
+fn ring_root_key(collection: PersonhoodCollection, ring_index: u32) -> Vec<u8> {
     [
         twox_128(b"Members").as_slice(),
         twox_128(b"Root").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
+        collection.identifier().as_slice(),
         &blake2_128_concat(&ring_index.to_le_bytes()),
     ]
     .concat()
 }
 
 /// `Members.RingKeys[(id, ring_index, page)]` storage key.
-fn ring_keys_key(ring_index: u32, page: u32) -> Vec<u8> {
+fn ring_keys_key(collection: PersonhoodCollection, ring_index: u32, page: u32) -> Vec<u8> {
     [
         twox_128(b"Members").as_slice(),
         twox_128(b"RingKeys").as_slice(),
-        LITE_PEOPLE_IDENTIFIER.as_slice(),
+        collection.identifier().as_slice(),
         &blake2_128_concat(&ring_index.to_le_bytes()),
         &twox_64_concat(&page.to_le_bytes()),
     ]
@@ -157,18 +168,26 @@ fn twox_64_concat(x: &[u8]) -> Vec<u8> {
     [twox_64(x).as_slice(), x].concat()
 }
 
-/// Read the current LitePeople ring index at the current best block
+/// Read the current ring index for `collection` at the current best block
 /// (absent => 0).
-pub async fn read_current_ring_index(rpc: &RpcClient) -> Result<u32, StatementAllowanceError> {
-    decode_ring_index(rpc.get_storage(&current_ring_index_key()).await?)
+pub async fn read_current_ring_index(
+    rpc: &RpcClient,
+    collection: PersonhoodCollection,
+) -> Result<u32, StatementAllowanceError> {
+    decode_ring_index(rpc.get_storage(&current_ring_index_key(collection)).await?)
 }
 
-/// Read the current LitePeople ring index pinned to block `at` (absent => 0).
+/// Read the current ring index for `collection` pinned to block `at`
+/// (absent => 0).
 pub async fn read_current_ring_index_at(
     rpc: &RpcClient,
+    collection: PersonhoodCollection,
     at: &str,
 ) -> Result<u32, StatementAllowanceError> {
-    decode_ring_index(rpc.get_storage_at(&current_ring_index_key(), at).await?)
+    decode_ring_index(
+        rpc.get_storage_at(&current_ring_index_key(collection), at)
+            .await?,
+    )
 }
 
 /// Decode a `CurrentRingIndex` storage value (absent => 0).
@@ -179,27 +198,28 @@ fn decode_ring_index(bytes: Option<Vec<u8>>) -> Result<u32, StatementAllowanceEr
     }
 }
 
-/// Read the LitePeople ring size exponent from `Collections[LitePeople].ring_size`,
-/// pinned to block `at`. This is a chain constant, so read it once and reuse
-/// across ring indices.
+/// Read the ring size exponent from `Collections[collection].ring_size`, pinned
+/// to block `at`. This is a per-collection chain constant, so read it once and
+/// reuse across ring indices.
 pub async fn read_ring_exponent(
     rpc: &RpcClient,
     metadata: &Metadata,
+    collection: PersonhoodCollection,
     at: &str,
 ) -> Result<u8, StatementAllowanceError> {
-    let collection = rpc
-        .get_storage_at(&collections_key(), at)
+    let info = rpc
+        .get_storage_at(&collections_key(collection), at)
         .await?
-        .ok_or(RingError::LitePeopleCollectionMissing)?;
+        .ok_or(RingError::CollectionMissing { collection })?;
     let value_type = metadata
         .storage_value_type("Members", "Collections")
         .ok_or(MetadataError::MissingStorageType {
             pallet: "Members",
             entry: "Collections",
         })?;
-    let mut input = collection.as_slice();
+    let mut input = info.as_slice();
     CollectionInfo::decode_as_type(&mut input, value_type, metadata.registry())
-        .map(|collection| collection.ring_size.exponent())
+        .map(|info| info.ring_size.exponent())
         .map_err(|err| {
             RingError::DecodeAsType {
                 context: "Members.Collections",
@@ -214,6 +234,7 @@ pub async fn read_ring_exponent(
 /// one consistent snapshot.
 pub async fn read_ring_members_at(
     rpc: &RpcClient,
+    collection: PersonhoodCollection,
     ring_index: u32,
     at: &str,
 ) -> Result<Vec<[u8; 32]>, StatementAllowanceError> {
@@ -221,7 +242,7 @@ pub async fn read_ring_members_at(
     let mut members = Vec::new();
     for page in 0.. {
         let Some(bytes) = rpc
-            .get_storage_at(&ring_keys_key(ring_index, page), at)
+            .get_storage_at(&ring_keys_key(collection, ring_index, page), at)
             .await?
         else {
             break;
@@ -244,7 +265,7 @@ pub async fn read_ring_members_at(
 
     // 2. Slice to the baked-in `included` prefix (absent status => all included).
     if let Some(status) = rpc
-        .get_storage_at(&ring_keys_status_key(ring_index), at)
+        .get_storage_at(&ring_keys_status_key(collection, ring_index), at)
         .await?
     {
         // RingStatus = { total: u32 LE, included: u32 LE, .. }.
@@ -256,15 +277,19 @@ pub async fn read_ring_members_at(
     Ok(members)
 }
 
-/// Read `Members.Root[LitePeople][ring_index].revision` pinned to block `at`
+/// Read `Members.Root[collection][ring_index].revision` pinned to block `at`
 /// (absent => 0).
 pub async fn read_ring_revision(
     rpc: &RpcClient,
     metadata: &Metadata,
+    collection: PersonhoodCollection,
     ring_index: u32,
     at: &str,
 ) -> Result<u32, StatementAllowanceError> {
-    match rpc.get_storage_at(&ring_root_key(ring_index), at).await? {
+    match rpc
+        .get_storage_at(&ring_root_key(collection, ring_index), at)
+        .await?
+    {
         Some(bytes) => {
             let value_type = metadata.storage_value_type("Members", "Root").ok_or(
                 MetadataError::MissingStorageType {
@@ -363,6 +388,48 @@ mod tests {
     }
 
     #[test]
+    fn every_ring_key_is_scoped_to_its_collection() {
+        // Without the identifier in the key, a People read would return the
+        // LitePeople ring and the proof would be built against the wrong members.
+        fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+            haystack.windows(needle.len()).any(|w| w == needle)
+        }
+
+        for (lite, full) in [
+            (
+                current_ring_index_key(PersonhoodCollection::LitePeople),
+                current_ring_index_key(PersonhoodCollection::People),
+            ),
+            (
+                collections_key(PersonhoodCollection::LitePeople),
+                collections_key(PersonhoodCollection::People),
+            ),
+            (
+                ring_keys_status_key(PersonhoodCollection::LitePeople, 4),
+                ring_keys_status_key(PersonhoodCollection::People, 4),
+            ),
+            (
+                ring_root_key(PersonhoodCollection::LitePeople, 4),
+                ring_root_key(PersonhoodCollection::People, 4),
+            ),
+            (
+                ring_keys_key(PersonhoodCollection::LitePeople, 4, 1),
+                ring_keys_key(PersonhoodCollection::People, 4, 1),
+            ),
+        ] {
+            assert_ne!(lite, full);
+            assert!(
+                contains(&lite, PersonhoodCollection::LitePeople.identifier()),
+                "key does not carry the LitePeople identifier",
+            );
+            assert!(
+                contains(&full, PersonhoodCollection::People.identifier()),
+                "key does not carry the People identifier",
+            );
+        }
+    }
+
+    #[test]
     fn member_reads_are_pinned_and_truncated_to_included() {
         // Page 0 holds two members; RingStatus { total: 2, included: 1, None }.
         let page = format!(
@@ -374,13 +441,15 @@ mod tests {
         let scripted = ScriptedRpc::new([page.as_str(), "null", status]);
         let rpc = RpcClient::new(HostRpcClient::new(scripted.clone()));
 
-        let members = futures::executor::block_on(read_ring_members_at(&rpc, 3, "0xat")).unwrap();
+        let collection = PersonhoodCollection::LitePeople;
+        let members =
+            futures::executor::block_on(read_ring_members_at(&rpc, collection, 3, "0xat")).unwrap();
 
         assert_eq!(members, vec![[0xaa; 32]]);
         let expected: Vec<(String, String)> = [
-            ring_keys_key(3, 0),
-            ring_keys_key(3, 1),
-            ring_keys_status_key(3),
+            ring_keys_key(collection, 3, 0),
+            ring_keys_key(collection, 3, 1),
+            ring_keys_status_key(collection, 3),
         ]
         .into_iter()
         .map(|key| {
