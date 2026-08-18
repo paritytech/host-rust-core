@@ -129,6 +129,21 @@ if report.slotsExhausted {
 
 One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed wake-up is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a `BGTaskScheduler` host should read a value under an hour as the boundary approaching rather than requesting a wake-up every hour for a pass that will almost always report `alreadyAllocated`.
 
+### Answering the scheduler
+
+A pass reports per target and only throws when it could not run at all, so decide from the report rather than from the absence of an error:
+
+- every status `Registered` or `AlreadyAllocated`: completed successfully.
+- any status `Failed`: complete unsuccessfully and submit a fresh request, since iOS does not reschedule one for you. The grace window means that request can wait for the next opportunistic wake rather than a tight loop.
+- any status `SkippedExhausted`, or `report.slotsExhausted`: completed successfully. Retrying cannot free a slot, only time or a replacement can, so a retry here only burns background budget. Nothing currently surfaces exhaustion to the person, so log it.
+- a throw carrying `Disconnected` before a session is restored: not ready rather than failed. Restore a session and let the next wake run the pass.
+
+Scheduling is one of three layers, and only the first needs the OS:
+
+1. a `BGTaskScheduler` wake, which is the only one that covers an app nobody opens.
+2. a pass on session activation, which covers an app somebody does.
+3. on-demand allocation, which registers a product's own account for the current period when that product asks for a statement-store allowance and none is held. That covers the asking product, not the rest of the ledger, so it narrows the window rather than closing it.
+
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call. A pass has no cancellation, so several targets can outlast a short background budget; targets registered before the process is killed are not lost, and read back as already allocated next time.
 
 An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.InvalidAccountId` before any chain work happens.
