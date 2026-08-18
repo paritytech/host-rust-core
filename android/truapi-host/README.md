@@ -89,13 +89,17 @@ core.trackStatementRenewalTargets(
 )
 ```
 
-The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not, so re-track raw accounts whenever the active identity changes. A pruned target is absent from the report rather than reported as failed. There is no reader and no untrack on this surface: a host cannot list what is tracked, cannot remove a wrong entry, and cannot detect a pruned one except by noticing it missing from a report. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. There is still no reader and no untrack on this surface, so a host cannot list what is tracked or remove a wrong entry. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
 
 Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread. It needs an active session too, which is the whole difficulty here: a worker on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
 ```kotlin
 val report = core.renewStatementAllowances()
 report.outcomes.forEach { Log.i(TAG, "${it.label}: ${it.status}") }
+report.pruned.forEach {
+    // Promised by a previous identity and discarded; re-track to keep it renewed.
+    Log.w(TAG, "dropped: $it")
+}
 if (report.slotsExhausted) {
     // Every slot for this period is taken and none was replaceable.
 }
@@ -197,7 +201,10 @@ class MyBridge(private val webView: WebView) : HostBridge {
 
     // Core-owned auth state stream: render AuthState.Pairing as the pairing
     // QR sheet, connected/disconnected as the account badge, and login-failed
-    // as a retryable error. When the user closes the pairing sheet, report it
+    // as a retryable error, unless its kind is
+    // LoginFailureKind.NoFreeAllowanceSlots, which is unlikely to succeed
+    // before the period rolls over, so retry should not be the primary action.
+    // When the user closes the pairing sheet, report it
     // with `core.cancelLogin()`.
     override fun authStateChanged(state: AuthState) {
         main.post { /* render the state */ }

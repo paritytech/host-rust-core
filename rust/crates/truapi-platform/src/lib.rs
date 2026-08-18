@@ -1097,6 +1097,9 @@ pub enum AuthState {
     Connected(SessionUiInfo),
     /// The last login attempt failed; show the reason and offer a retry.
     LoginFailed {
+        /// What kind of failure this was. Hosts branch on this and treat
+        /// `reason` as display copy only.
+        kind: LoginFailureKind,
         /// Human-readable failure reason.
         reason: String,
     },
@@ -1104,6 +1107,24 @@ pub enum AuthState {
     /// persisting the session. Hosts should replace the pairing QR with an
     /// in-progress presentation until a terminal state is emitted.
     Authenticating,
+}
+
+/// Why a login attempt failed, for hosts that need to act on the cause rather
+/// than only display it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum LoginFailureKind {
+    /// The wallet has no free statement-store allowance slot for this period,
+    /// so it cannot register the device — which normally holds until the period
+    /// rolls over, making a retry a waste of the user's remaining budget.
+    ///
+    /// Recovered heuristically from the wallet's prose, whose wording is not
+    /// this workspace's to pin, so treat it as a strong hint rather than a
+    /// proof: do not make retry the primary action, but leave a way to reach it.
+    NoFreeAllowanceSlots,
+    /// Anything else. `reason` carries the detail.
+    #[default]
+    Other,
 }
 
 /// Host auth UI driven by core-owned [`AuthState`] transitions.

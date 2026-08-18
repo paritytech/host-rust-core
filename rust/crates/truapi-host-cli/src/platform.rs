@@ -722,7 +722,7 @@ impl truapi_platform::AuthPresenter for CliPlatform {
             AuthState::Disconnected => {
                 ("disconnected".to_string(), SystemEvent::PairingDisconnected)
             }
-            AuthState::LoginFailed { reason } => (
+            AuthState::LoginFailed { reason, .. } => (
                 "failed".to_string(),
                 SystemEvent::PairingFailed {
                     reason: reason.clone(),

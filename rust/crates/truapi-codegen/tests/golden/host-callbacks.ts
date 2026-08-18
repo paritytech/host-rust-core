@@ -100,7 +100,7 @@ export type AuthState =
   /**
    * The last login attempt failed; show the reason and offer a retry.
    */
-  | { tag: "LoginFailed"; value: { reason: string } }
+  | { tag: "LoginFailed"; value: { kind: LoginFailureKind; reason: string } }
   /**
    * The wallet accepted the pairing request and the core is resolving and
    * persisting the session. Hosts should replace the pairing QR with an
@@ -245,6 +245,12 @@ export interface IdentityDisclosureReview {
    */
   productId: string;
 }
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+export type LoginFailureKind = "NoFreeAllowanceSlots" | "Other";
 
 /**
  * Permission request whose authorization status can be inspected or updated
@@ -521,7 +527,10 @@ export const AuthState: S.Codec<AuthState> = S.lazy(
       Disconnected: S._void,
       Pairing: S.Struct({ deeplink: S.str }) as S.Codec<{ deeplink: string }>,
       Connected: SessionUiInfo,
-      LoginFailed: S.Struct({ reason: S.str }) as S.Codec<{ reason: string }>,
+      LoginFailed: S.Struct({
+        kind: LoginFailureKind,
+        reason: S.str,
+      }) as S.Codec<{ kind: LoginFailureKind; reason: string }>,
       Authenticating: S._void,
     }),
 );
@@ -616,6 +625,14 @@ export const IdentityDisclosureReview: S.Codec<IdentityDisclosureReview> =
     (): S.Codec<IdentityDisclosureReview> =>
       S.Struct({ productId: S.str }) as S.Codec<IdentityDisclosureReview>,
   );
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+export const LoginFailureKind: S.Codec<LoginFailureKind> = S.lazy(
+  (): S.Codec<LoginFailureKind> => S.Status("NoFreeAllowanceSlots", "Other"),
+);
 
 /**
  * Permission request whose authorization status can be inspected or updated

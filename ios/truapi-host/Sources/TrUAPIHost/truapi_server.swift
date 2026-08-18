@@ -689,12 +689,15 @@ public protocol HostCallbacks: AnyObject, Sendable {
     /**
      * Observe an auth state change, in transition order: render `Pairing` as
      * the pairing QR UI, `Connected`/`Disconnected` as the account badge,
-     * `LoginFailed` as a retryable error. A pairing host's session activation
-     * reports its outcome even when it is the default `Disconnected`, so a
-     * host that awaits activation before routing never has to read silence as
-     * "signed out". Every other emission, and every emission on a host role
-     * that has no session activation, happens only when the state actually
-     * changes. User cancellation is reported through
+     * `LoginFailed` as a retryable error unless its `kind` is
+     * `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
+     * rolls over, so retry should not be the primary action. A pairing host's
+     * session activation reports its outcome even
+     * when it is the default `Disconnected`, so a host that awaits activation
+     * before routing never has to read silence as "signed out". Every other
+     * emission, and every emission on a host role that has no session
+     * activation, happens only when the state actually changes. User
+     * cancellation is reported through
      * `NativeTrUApiCore.cancel_login()`.
      */
     func authStateChanged(state: AuthState)
@@ -954,12 +957,15 @@ open func remotePermission(request: RemotePermission)async throws  -> Bool  {
     /**
      * Observe an auth state change, in transition order: render `Pairing` as
      * the pairing QR UI, `Connected`/`Disconnected` as the account badge,
-     * `LoginFailed` as a retryable error. A pairing host's session activation
-     * reports its outcome even when it is the default `Disconnected`, so a
-     * host that awaits activation before routing never has to read silence as
-     * "signed out". Every other emission, and every emission on a host role
-     * that has no session activation, happens only when the state actually
-     * changes. User cancellation is reported through
+     * `LoginFailed` as a retryable error unless its `kind` is
+     * `NoFreeAllowanceSlots`, which is unlikely to succeed before the period
+     * rolls over, so retry should not be the primary action. A pairing host's
+     * session activation reports its outcome even
+     * when it is the default `Disconnected`, so a host that awaits activation
+     * before routing never has to read silence as "signed out". Every other
+     * emission, and every emission on a host role that has no session
+     * activation, happens only when the state actually changes. User
+     * cancellation is reported through
      * `NativeTrUApiCore.cancel_login()`.
      */
 open func authStateChanged(state: AuthState)  {try! rustCall() {
@@ -4172,6 +4178,17 @@ public struct StatementRenewalReport: Equatable, Hashable {
      */
     public var outcomes: [StatementRenewalOutcome]
     /**
+     * Labels of targets this pass dropped because a different identity
+     * promised them.
+     *
+     * Dropping is silent otherwise: a pruned target simply stops appearing in
+     * `outcomes`, and the surface has no way to list the ledger, so a host
+     * could only infer it from an absence. A raw account target does not
+     * survive a change of root entropy, so this is how a host learns to
+     * re-track one.
+     */
+    public var pruned: [String]
+    /**
      * Whether the pass hit slot exhaustion for this period.
      */
     public var slotsExhausted: Bool
@@ -4186,10 +4203,21 @@ public struct StatementRenewalReport: Equatable, Hashable {
          * Per-target outcomes in ledger order.
          */outcomes: [StatementRenewalOutcome],
         /**
+         * Labels of targets this pass dropped because a different identity
+         * promised them.
+         *
+         * Dropping is silent otherwise: a pruned target simply stops appearing in
+         * `outcomes`, and the surface has no way to list the ledger, so a host
+         * could only infer it from an absence. A raw account target does not
+         * survive a change of root entropy, so this is how a host learns to
+         * re-track one.
+         */pruned: [String],
+        /**
          * Whether the pass hit slot exhaustion for this period.
          */slotsExhausted: Bool) {
         self.period = period
         self.outcomes = outcomes
+        self.pruned = pruned
         self.slotsExhausted = slotsExhausted
     }
 
@@ -4211,6 +4239,7 @@ public struct FfiConverterTypeStatementRenewalReport: FfiConverterRustBuffer {
             try StatementRenewalReport(
                 period: FfiConverterUInt32.read(from: &buf),
                 outcomes: FfiConverterSequenceTypeStatementRenewalOutcome.read(from: &buf),
+                pruned: FfiConverterSequenceString.read(from: &buf),
                 slotsExhausted: FfiConverterBool.read(from: &buf)
         )
     }
@@ -4218,6 +4247,7 @@ public struct FfiConverterTypeStatementRenewalReport: FfiConverterRustBuffer {
     public static func write(_ value: StatementRenewalReport, into buf: inout [UInt8]) {
         FfiConverterUInt32.write(value.period, into: &buf)
         FfiConverterSequenceTypeStatementRenewalOutcome.write(value.outcomes, into: &buf)
+        FfiConverterSequenceString.write(value.pruned, into: &buf)
         FfiConverterBool.write(value.slotsExhausted, into: &buf)
     }
 }
@@ -5866,6 +5896,31 @@ fileprivate struct FfiConverterOptionTypeBytes32: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeChatRoom: FfiConverterRustBuffer {
     typealias SwiftType = [ChatRoom]
 
@@ -6167,7 +6222,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 25245) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 46688) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 41678) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 59238) {
