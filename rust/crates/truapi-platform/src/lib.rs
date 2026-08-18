@@ -31,6 +31,7 @@ use truapi::latest::{
     AllocatableResource, ChainIdentifier, GenericError, HostChatCreateRoomError,
     HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
     HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatRegisterBotError, HostChatRegisterBotRequest, HostChatRegisterBotResponse,
     HostDevicePermissionRequest, HostDevicePermissionResponse, HostFeatureSupportedRequest,
     HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
     HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
@@ -274,6 +275,189 @@ pub fn normalize_product_identifier(
             product_id: product_id.to_string(),
         })
     }
+}
+
+/// Largest accepted length for a product-supplied chat identifier or display
+/// name, in bytes.
+pub const CHAT_FIELD_MAX_BYTES: usize = 256;
+
+/// Largest accepted length for a product-supplied chat icon, in bytes. Wide
+/// enough for a `data:` thumbnail, far below the transport frame cap.
+pub const CHAT_ICON_MAX_BYTES: usize = 64 * 1024;
+
+/// Inline image media types a chat icon may carry. SVG is excluded: it can
+/// carry script.
+const ALLOWED_ICON_DATA_TYPES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+];
+
+/// Normalize a product-supplied chat room or bot identifier.
+///
+/// Screened harder than a display name, mirroring
+/// [`normalize_product_identifier`]: an identifier is matched, not read, so it
+/// also rejects the invisible characters a name legitimately needs — joiners,
+/// variation selectors, soft hyphens and non-ASCII spaces — which would
+/// otherwise let two distinct ids render identically.
+pub fn normalize_chat_identifier(field: &'static str, id: &str) -> Result<String, ChatFieldError> {
+    let normalized = normalize_chat_text(field, id)?;
+    if normalized.is_empty() {
+        return Err(ChatFieldError::Empty { field });
+    }
+    if normalized.chars().any(is_identifier_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(normalized)
+}
+
+/// Validate a product-supplied chat display name.
+pub fn validate_chat_name(field: &'static str, name: &str) -> Result<String, ChatFieldError> {
+    normalize_chat_text(field, name)
+}
+
+/// Trim, NFC-normalize and screen one product-supplied chat string.
+///
+/// The byte budget applies to the normalized value, which is what a host
+/// receives: NFC can expand the input.
+fn normalize_chat_text(field: &'static str, value: &str) -> Result<String, ChatFieldError> {
+    let normalized = value.trim().nfc().collect::<String>();
+    if normalized.len() > CHAT_FIELD_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_FIELD_MAX_BYTES,
+        });
+    }
+    if normalized.chars().any(is_display_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(normalized)
+}
+
+/// Validate a product-supplied chat icon: absent, an `https` URL, or an inline
+/// image in [`ALLOWED_ICON_DATA_TYPES`].
+///
+/// An allowlist rather than a denylist, because a URL parser reaches a scheme
+/// through whitespace, tabs and NUL that a prefix comparison does not.
+pub fn validate_chat_icon(field: &'static str, icon: &str) -> Result<String, ChatFieldError> {
+    let trimmed = icon.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if trimmed.len() > CHAT_ICON_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_ICON_MAX_BYTES,
+        });
+    }
+
+    match icon_scheme(trimmed).as_deref() {
+        Some("https") => Url::parse(trimmed)
+            .ok()
+            .filter(|parsed| parsed.scheme() == "https")
+            .map(|_| trimmed.to_string())
+            .ok_or(ChatFieldError::RejectedScheme { field }),
+        Some("data") if is_allowed_icon_data_url(trimmed) => Ok(trimmed.to_string()),
+        _ => Err(ChatFieldError::RejectedScheme { field }),
+    }
+}
+
+/// Scheme a URL parser would resolve, with the characters parsers ignore
+/// removed so `java\tscript:` and a leading NUL cannot hide one.
+fn icon_scheme(candidate: &str) -> Option<String> {
+    let stripped: String = candidate
+        .chars()
+        .filter(|character| !character.is_whitespace() && *character != '\u{0}')
+        .collect();
+    let (scheme, _) = stripped.split_once(':')?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
+        return None;
+    }
+    Some(scheme.to_ascii_lowercase())
+}
+
+/// Whether an inline image declares an allowed media type. The media type is
+/// read the way a data-URL processor reads it: whitespace-insensitive.
+fn is_allowed_icon_data_url(candidate: &str) -> bool {
+    let Some(rest) = candidate
+        .char_indices()
+        .find(|(_, c)| *c == ':')
+        .map(|(index, _)| &candidate[index + 1..])
+    else {
+        return false;
+    };
+    let media_type: String = rest
+        .split(&[',', ';'][..])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    ALLOWED_ICON_DATA_TYPES.contains(&media_type.as_str())
+}
+
+/// Invisible characters an identifier must not carry. A display name keeps
+/// these: ZWJ builds emoji sequences and ZWNJ is required by Persian.
+fn is_identifier_unsafe(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00ad}'                        // soft hyphen
+            | '\u{200c}' | '\u{200d}'     // ZWNJ, ZWJ
+            | '\u{2060}'..='\u{2064}'     // word joiner, invisible operators
+            | '\u{fe00}'..='\u{fe0f}'     // variation selectors
+    ) || (character.is_whitespace() && character != ' ')
+}
+
+/// Control characters and bidi overrides let two distinct values render alike.
+fn is_display_unsafe(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{200b}'
+                | '\u{061c}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+                | '\u{e0000}'..='\u{e007f}'
+        )
+}
+
+/// Rejection of a product-supplied chat field.
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
+pub enum ChatFieldError {
+    /// The field is required and arrived blank.
+    #[display("{field} must not be empty")]
+    Empty {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The field exceeded its byte budget.
+    #[display("{field} must be at most {limit} bytes")]
+    TooLong {
+        /// Offending field name.
+        field: &'static str,
+        /// Accepted maximum.
+        limit: usize,
+    },
+    /// The field carried characters that make values indistinguishable.
+    #[display("{field} must not contain control or bidirectional characters")]
+    UnsafeCharacter {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The icon carried a scheme a host must not render.
+    #[display("{field} carries a scheme that cannot be rendered")]
+    RejectedScheme {
+        /// Offending field name.
+        field: &'static str,
+    },
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), RuntimeConfigValidationError> {
@@ -1317,7 +1501,15 @@ pub trait PreimageHost: Send + Sync {
 }
 
 /// Host-implemented adapter through which product Chat calls reach native
-/// storage and UI.
+/// storage and UI. Installed separately from [`Platform`], and only by the
+/// native entrypoints: a WASM/JS host cannot supply one, so requests from a
+/// `Chat` execution created there answer unsupported and its subscriptions end
+/// empty, which a product cannot tell from a healthy close.
+///
+/// On `create_room` and `register_bot` the core bounds ids, names and icons,
+/// NFC-normalizes them, screens control and bidi characters, and restricts an
+/// icon to `https` or an inline raster image. Contextual output escaping,
+/// storage limits, and every `post_message` field remain host-owned.
 #[async_trait]
 pub trait ChatPlatform: Send + Sync {
     /// Create or resolve a product-scoped native chat room.
@@ -1327,7 +1519,16 @@ pub trait ChatPlatform: Send + Sync {
         request: HostChatCreateRoomRequest,
     ) -> Result<HostChatCreateRoomResponse, HostChatCreateRoomError>;
 
-    /// Persist a product-authored message in a native chat room.
+    /// Register or resolve a product-scoped native chat bot. Host-owned in the
+    /// same way rooms are.
+    async fn register_bot(
+        &self,
+        product: &ProductContext,
+        request: HostChatRegisterBotRequest,
+    ) -> Result<HostChatRegisterBotResponse, HostChatRegisterBotError>;
+
+    /// Persist a product-authored message in a native chat room. A host that
+    /// cannot store a given content variant reports a domain error for it.
     async fn post_message(
         &self,
         product: &ProductContext,
