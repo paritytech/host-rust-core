@@ -17,7 +17,7 @@ import PackageDescription
 // The published release asset remains the default for remote consumers.
 let useLocalBinary = ProcessInfo.processInfo.environment["TRUAPI_USE_LOCAL_BINARY"] == "1"
 
-let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.6.0/truapi_server.xcframework.zip"
+let publishedBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-host%400.6.0/truapi_server.xcframework.zip"
 let publishedBinaryChecksum = "bf879b1dd489594635f5435f71cbe5dad1809603da408c98438ae7ca6f4b74bb"
 
 let binaryTarget: Target = useLocalBinary
@@ -41,7 +41,7 @@ let useLocalProviderBinary =
 // Set by ios/truapi-provider/scripts/publish.sh. No release exists yet, so remote
 // resolution fails on the checksum until the first publish.
 
-let providerBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-provider%400.0.0-unpublished/truapi_provider.xcframework.zip"
+let providerBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-provider%400.0.0-unpublished/truapi_provider.xcframework.zip"
 let providerBinaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000"
 
 let providerBinaryTarget: Target = useLocalProviderBinary
