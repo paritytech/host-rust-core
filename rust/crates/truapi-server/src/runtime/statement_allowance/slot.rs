@@ -582,6 +582,7 @@ mod tests {
     use subxt_rpcs::RpcClient as HostRpcClient;
 
     use super::super::rpc::testing::ScriptedRpc;
+    use super::super::test_fixtures;
     use super::*;
 
     /// Fixture metadata captured from paseo-next-v2; its
@@ -633,6 +634,25 @@ mod tests {
             },
         ))
         .unwrap()
+    }
+
+    /// The scan bound is whatever Asset Hub declares, not a compiled-in constant,
+    /// and it bounds how many keys a full scan hashes and reads.
+    ///
+    /// Asset Hub budgets each collection separately, so both are pinned: one
+    /// number alone would still pass if the two constants were swapped.
+    #[test]
+    fn the_asset_hub_fixture_declares_a_daily_pgas_budget_per_collection() {
+        let metadata = test_fixtures::asset_hub();
+
+        assert_eq!(
+            max_pgas_claims(metadata, PersonhoodCollection::People).unwrap(),
+            100,
+        );
+        assert_eq!(
+            max_pgas_claims(metadata, PersonhoodCollection::LitePeople).unwrap(),
+            40,
+        );
     }
 
     #[test]
