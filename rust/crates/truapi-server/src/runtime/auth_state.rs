@@ -5,7 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot;
-use truapi_platform::{AuthPresenter, AuthState, Platform, SessionUiInfo};
+use truapi_platform::{AuthPresenter, AuthState, LoginFailureKind, Platform, SessionUiInfo};
+
+use crate::runtime::login_failure::classify_login_failure;
 
 /// Serialized auth-state machine bound to the platform's `auth_state_changed`
 /// sink. Each transition mutates under the lock, releases it, then emits the
@@ -80,6 +82,8 @@ impl AuthStateMachine {
     }
 
     /// Active login -> `LoginFailed`: the in-flight login reported a failure.
+    /// The kind is recovered from `reason`, which is the only form the wallet
+    /// reports a refusal in.
     pub(super) fn login_failed(&self, reason: String) {
         self.transition(|inner| {
             if !matches!(
@@ -89,7 +93,10 @@ impl AuthStateMachine {
                 return None;
             }
             inner.cancel_tx = None;
-            inner.state = AuthState::LoginFailed { reason };
+            inner.state = AuthState::LoginFailed {
+                kind: classify_login_failure(&reason),
+                reason,
+            };
             Some(())
         });
     }
@@ -106,7 +113,12 @@ impl AuthStateMachine {
             ) {
                 return None;
             }
-            inner.state = AuthState::LoginFailed { reason };
+            // Pre-pairing failures are the pairing host's own (device identity,
+            // bootstrap); allowance exhaustion is only ever wallet-reported.
+            inner.state = AuthState::LoginFailed {
+                kind: LoginFailureKind::Other,
+                reason,
+            };
             Some(())
         });
     }
@@ -244,6 +256,31 @@ mod tests {
     }
 
     #[test]
+    fn a_wallet_reported_exhausted_period_reaches_the_host_as_a_typed_kind() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+        let (_cancel_rx, epoch) = machine
+            .pairing_started("polkadotapp://pair".to_string())
+            .expect("login should start");
+        machine.authentication_started(epoch);
+
+        machine.login_failed("no free StatementStore slot in period 7 (max 8)".to_string());
+
+        assert_eq!(
+            platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned")
+                .last(),
+            Some(&AuthState::LoginFailed {
+                kind: LoginFailureKind::NoFreeAllowanceSlots,
+                reason: "no free StatementStore slot in period 7 (max 8)".to_string(),
+            }),
+            "a host must be able to branch on the kind without reading the reason"
+        );
+    }
+
+    #[test]
     fn announcing_after_a_restored_session_leaves_connected_alone() {
         let platform = stub_platform();
         let machine = AuthStateMachine::new(platform.clone());
@@ -293,6 +330,30 @@ mod tests {
                 .expect("auth state list mutex poisoned"),
             vec![AuthState::Connected(session)],
             "the restored session is the host's first and only opening state"
+        );
+    }
+
+    #[test]
+    fn a_pre_pairing_failure_is_never_reported_as_an_exhausted_period() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+
+        // Allowance exhaustion is only ever wallet-reported, so this path does
+        // not classify even when the text would otherwise match.
+        machine.login_failed_before_pairing(
+            "no free StatementStore slot in period 7 (max 8)".to_string(),
+        );
+
+        assert_eq!(
+            platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned")
+                .last(),
+            Some(&AuthState::LoginFailed {
+                kind: LoginFailureKind::Other,
+                reason: "no free StatementStore slot in period 7 (max 8)".to_string(),
+            })
         );
     }
 
