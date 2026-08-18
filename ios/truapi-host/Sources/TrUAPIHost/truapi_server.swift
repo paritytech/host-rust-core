@@ -2433,6 +2433,12 @@ public func FfiConverterTypeNativeCustomRendererSubscription_lower(_ value: Nati
 public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
 
     /**
+     * Read this device's X25519 encryption secret, for device sync against a
+     * peer's `deviceEncPublicKey`. Generated and persisted on first read.
+     */
+    func deviceEncryptionKey() throws  -> Bytes32
+
+    /**
      * Notify this execution's chain adapter that a connection closed.
      */
     func notifyChainClosed(connectionId: UInt32)
@@ -2472,6 +2478,12 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
      * Request typed native UI for one stored custom Chat message.
      */
     func renderCustomMessage(messageId: String, messageType: String, payload: Data, observer: NativeCustomRendererObserver) throws  -> NativeCustomRendererSubscription
+
+    /**
+     * Read the active session's X25519 chat identity private key, or `None`
+     * when no session is active.
+     */
+    func sessionChatIdentityKey() throws  -> Bytes32?
 
     /**
      * Update a product-scoped permission authorization.
@@ -2553,6 +2565,19 @@ open class NativeProductExecution: NativeProductExecutionProtocol, @unchecked Se
 
 
 
+
+    /**
+     * Read this device's X25519 encryption secret, for device sync against a
+     * peer's `deviceEncPublicKey`. Generated and persisted on first read.
+     */
+open func deviceEncryptionKey()throws  -> Bytes32  {
+    return try  FfiConverterTypeBytes32_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_device_encryption_key(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
 
     /**
      * Notify this execution's chain adapter that a connection closed.
@@ -2654,6 +2679,19 @@ open func renderCustomMessage(messageId: String, messageType: String, payload: D
         FfiConverterString.lower(messageType),
         FfiConverterData.lower(payload),
         FfiConverterCallbackInterfaceNativeCustomRendererObserver_lower(observer),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Read the active session's X25519 chat identity private key, or `None`
+     * when no session is active.
+     */
+open func sessionChatIdentityKey()throws  -> Bytes32?  {
+    return try  FfiConverterOptionTypeBytes32.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_session_chat_identity_key(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -5998,6 +6036,30 @@ fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeBytes32: FfiConverterRustBuffer {
+    typealias SwiftType = Bytes32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBytes32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBytes32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -6381,6 +6443,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 21374) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_device_encryption_key() != 18707) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 59343) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6403,6 +6468,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_render_custom_message() != 17716) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_session_chat_identity_key() != 3903) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_set_permission_authorization_status() != 14164) {

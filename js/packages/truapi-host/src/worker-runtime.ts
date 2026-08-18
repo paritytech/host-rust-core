@@ -249,6 +249,12 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     case "cancelPairing":
       runtime?.cancelPairing();
       break;
+    case "getSessionChatIdentityKey":
+      handleGetSessionChatIdentityKey(msg.requestId);
+      break;
+    case "getDeviceEncryptionKey":
+      void handleGetDeviceEncryptionKey(msg.requestId);
+      break;
     case "notifySessionStoreChanged":
       runtime?.notifySessionStoreChanged();
       break;
@@ -426,6 +432,60 @@ async function handleDisconnectSession(requestId: number): Promise<void> {
   } catch (err) {
     postToMain({
       kind: "disconnectSessionResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
+function handleGetSessionChatIdentityKey(requestId: number): void {
+  if (!runtime) {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: false,
+      error: "getSessionChatIdentityKey received before runtime is ready",
+    });
+    return;
+  }
+  try {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: true,
+      key: runtime.sessionChatIdentityKey(),
+    });
+  } catch (err) {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
+async function handleGetDeviceEncryptionKey(requestId: number): Promise<void> {
+  if (!runtime) {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
+      requestId,
+      ok: false,
+      error: "getDeviceEncryptionKey received before runtime is ready",
+    });
+    return;
+  }
+  try {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
+      requestId,
+      ok: true,
+      key: await runtime.deviceEncryptionKey(),
+    });
+  } catch (err) {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
       requestId,
       ok: false,
       error: errorMessage(err),
