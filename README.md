@@ -58,16 +58,21 @@ rust/crates/
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         #[wire(id = N)] proc-macro
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
+  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
+  truapi-provider/         @parity/truapi-provider: WASM ChainProvider backends
+                          (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
 android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
 playground/                Interactive Next.js playground (truapi-playground dotNS label)
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
@@ -94,6 +99,24 @@ a single package with tree-shakeable subpath entries:
   MessageChannel handshake (`createIframeHost`) plus `createWebWorkerProvider`.
 - `@parity/truapi-host/worker-runtime` is the Web Worker entrypoint so the WASM core can
   run off the page main thread.
+
+### Chain transport
+
+A host that serves chain traffic itself embeds the `truapi-provider` crate: an
+embedded smoldot light client plus a bundled chain-spec catalog, addressed by
+genesis hash, so the host ships no chain specs and never refreshes them. The crate
+compiles to one binary artifact per platform, each exposing the same
+`ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
+dependency on the crate:
+
+- [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
+  browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
+- [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
+  `Package.swift`, an xcframework plus committed Swift bindings, built by
+  `make provider-ios`.
+- [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
+  Kotlin bindings and the cdylib per ABI, built by
+  `make provider-android-publish-local`.
 
 ## How it works
 
