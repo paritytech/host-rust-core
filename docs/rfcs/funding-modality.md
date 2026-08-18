@@ -658,6 +658,8 @@ Ids continue the append-only sequence. `Account::sign_vrf` holds 164–165, `Cha
 9. Latency and account requirements are shown on the row before the user commits, in both directions.
 10. Partial movement is reported on the terminal item, not collapsed into a bare failure.
 11. The Host reclaims the screen when the provider's flow ends, and returns the caller to what it was doing.
+12. A session reaches a terminal state without any provider report. Reports say when to look and what to display; the Host's own observation and the session's window are sufficient on their own. A page-entered provider cannot report at all, and an inbound session through one still terminates correctly.
+13. An observed state is never overridden by a reported one. A provider's report cannot contradict what the Host saw on-chain, and `ProviderSide` never displaces a terminal state.
 
 ## Drawbacks
 
