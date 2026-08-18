@@ -7,9 +7,10 @@
 //! - `signing-host`: a wallet-local host that answers a pairing deeplink and
 //!   auto-signs, replacing the external signing-bot in e2e.
 //!
-//! Plus three diagnostics: `identity-check` for People-chain identity records,
-//! `alloc-check` for statement-store allowance, and `pgas-check` for an Asset Hub
-//! PGAS allowance claim.
+//! Plus the diagnostics and one-shot commands: `identity-check` for the dotNS
+//! usernames of a mnemonic's accounts, `register-name` for a full-person
+//! username, `alloc-check` for statement-store allowance, and `pgas-check` for
+//! an Asset Hub PGAS allowance claim.
 
 mod accounts;
 mod attestation;
@@ -280,6 +281,10 @@ struct SigningHostArgs {
     /// Prefix for newly-created lite usernames in auto-account mode.
     #[arg(long = "lite-username-prefix")]
     lite_username_prefix: Option<String>,
+    /// Full-person base name a newly-created auto account reserves on dotNS
+    /// alongside its lite username, to claim later as a full person.
+    #[arg(long = "reserved-username")]
+    reserved_username: Option<String>,
     /// Root directory for CLI-managed account and host state.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
@@ -1046,6 +1051,7 @@ struct SigningHostSession {
     mnemonic: Option<String>,
     default_account: Option<String>,
     lite_username_prefix: Option<String>,
+    reserved_username: Option<String>,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
 }
@@ -1116,6 +1122,7 @@ async fn start_signing_host(
             mnemonic: mnemonic.clone(),
             account: None,
             lite_username_prefix: None,
+            reserved_username: None,
         })
         .await?;
         match attestation::registered_lite_username(network.asset_hub_ws, &explicit_signer.entropy)
@@ -1189,6 +1196,7 @@ async fn start_signing_host(
         mnemonic,
         default_account,
         lite_username_prefix: normalized(args.lite_username_prefix.clone()),
+        reserved_username: normalized(args.reserved_username.clone()),
         approval,
         ui,
     })
@@ -1256,6 +1264,15 @@ fn validate_signing_args(args: &SigningHostArgs) -> Result<()> {
     if account.is_some() && prefix.is_some() {
         bail!("--lite-username-prefix only applies when --account is omitted");
     }
+    let reserved = normalized(args.reserved_username.clone());
+    if mnemonic.is_some() && reserved.is_some() {
+        bail!(
+            "--reserved-username cannot be used when --mnemonic or HOST_CLI_SIGNER_MNEMONIC is set"
+        );
+    }
+    if account.is_some() && reserved.is_some() {
+        bail!("--reserved-username only applies when --account is omitted");
+    }
     Ok(())
 }
 
@@ -1306,6 +1323,7 @@ async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
             mnemonic: session.mnemonic.clone(),
             account,
             lite_username_prefix,
+            reserved_username: session.reserved_username.clone(),
         })
         .await?,
     );
@@ -1436,6 +1454,7 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
                         mnemonic: None,
                         account: None,
                         lite_username_prefix,
+                        reserved_username: session.reserved_username.clone(),
                     })
                     .await?,
                 );
@@ -1678,6 +1697,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
             None
         },
         lite_username_prefix,
+        reserved_username: session.reserved_username.clone(),
     })
     .await?;
     let profile = if let Some(user_id) = &signer.lite_username {

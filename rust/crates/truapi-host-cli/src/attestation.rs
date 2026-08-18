@@ -1,4 +1,4 @@
-//! Lite-username attestation against the People-chain identity backend.
+//! Lite-username attestation against the identity backend.
 //!
 //! Fetches the backend verifier. Builds the client proofs
 //! (`truapi_server::host_logic::attestation`), including the dotNS gateway
@@ -44,14 +44,13 @@ static BACKEND_TOKEN: OnceCell<String> = OnceCell::const_new();
 /// its own candidate account. A fresh subject each run keeps repeat
 /// registrations clear of the per-subject device gate and rate limit.
 async fn backend_token(client: &reqwest::Client, backend_base: &str) -> Result<&'static str> {
-    if let Ok(token) = std::env::var(IDENTITY_BACKEND_TOKEN_ENV) {
-        let token = token.trim();
-        if !token.is_empty() {
-            return Ok(Box::leak(token.to_string().into_boxed_str()));
-        }
-    }
     BACKEND_TOKEN
-        .get_or_try_init(|| mint_backend_token(client, backend_base))
+        .get_or_try_init(|| async {
+            match std::env::var(IDENTITY_BACKEND_TOKEN_ENV) {
+                Ok(token) if !token.trim().is_empty() => Ok(token.trim().to_string()),
+                _ => mint_backend_token(client, backend_base).await,
+            }
+        })
         .await
         .map(String::as_str)
 }
@@ -172,18 +171,10 @@ pub async fn lite_username_available(backend_base: &str, username_base: &str) ->
     Ok(availability_status(&body, username_base) == Some("AVAILABLE"))
 }
 
-/// Reads one base's availability status out of either wire shape. Those are the
-/// v1 record `{_tag, value: {base: {status, …}}}` and the flat
-/// `{base: "AVAILABLE"}` the preset backends serve.
+/// Reads one base's status out of the availability response, a flat
+/// `{base: "AVAILABLE" | …}` map.
 fn availability_status<'a>(body: &'a Value, username_base: &str) -> Option<&'a str> {
-    let entry = body
-        .get("value")
-        .and_then(|value| value.get(username_base))
-        .or_else(|| body.get(username_base))?;
-    match entry {
-        Value::String(status) => Some(status),
-        entry => entry.get("status").and_then(Value::as_str),
-    }
+    body.get(username_base).and_then(Value::as_str)
 }
 
 /// Registers (or confirms) the signing host's lite username. Waits until the
@@ -426,19 +417,12 @@ async fn wait_for_dotns_username(
 mod tests {
     use super::*;
 
-    /// Both backends the CLI talks to are understood. Those are the identity
-    /// backend's v1 record and the flat map the preset backends serve.
+    /// The availability response is a flat `{base: status}` map.
     #[test]
-    fn availability_reads_both_wire_shapes() {
-        let v1 = json!({
-            "_tag": "v1",
-            "value": { "pntest": { "status": "AVAILABLE", "availableDigits": [1, 2] } },
-        });
-        assert_eq!(availability_status(&v1, "pntest"), Some("AVAILABLE"));
-
-        let flat = json!({ "pntest": "EXHAUSTED" });
+    fn availability_reads_the_flat_status_map() {
+        let flat = json!({ "pntest": "EXHAUSTED", "other": "AVAILABLE" });
         assert_eq!(availability_status(&flat, "pntest"), Some("EXHAUSTED"));
-
-        assert_eq!(availability_status(&v1, "other"), None);
+        assert_eq!(availability_status(&flat, "other"), Some("AVAILABLE"));
+        assert_eq!(availability_status(&flat, "missing"), None);
     }
 }

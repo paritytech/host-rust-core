@@ -377,19 +377,7 @@ pub fn decode_string_array(data: &[u8]) -> Result<Vec<String>, DotnsContractErro
         .collect()
 }
 
-/// Decodes `DotnsPopController.pendingClaim(address)`, an ABI
-/// `(string label, uint64 mintedAt)`. An empty label means no pending claim.
-pub fn decode_pending_claim(data: &[u8]) -> Result<(String, u64), DotnsContractError> {
-    let struct_at = word_usize(data, 0)?;
-    let claim = data.get(struct_at..).ok_or(DotnsContractError::Abi {
-        context: "struct offset",
-    })?;
-    let label = decode_string_at(claim, word_usize(claim, 0)?)?;
-    let minted_at = word_usize(claim, 1)? as u64;
-    Ok((label, minted_at))
-}
-
-/// Decodes the deployed-era `pendingClaims(address)`, an ABI
+/// Decodes `DotnsPopController.pendingClaims(address)`, an ABI
 /// `(string label, uint64 mintedAt)[]`. Returns the labels.
 pub fn decode_pending_claims_array(data: &[u8]) -> Result<Vec<String>, DotnsContractError> {
     let array_at = word_usize(data, 0)?;
@@ -476,13 +464,13 @@ pub fn is_dns_label(value: &str) -> bool {
 /// Longest label the gateway pallet accepts (`BaseLabel = BoundedVec<u8, 32>`).
 pub const MAX_BASE_LABEL_LEN: usize = 32;
 
-/// Whether `label` can be a full-person base label: a DNS label of at most
-/// [`MAX_BASE_LABEL_LEN`] bytes with no trailing digits, so it can never be
-/// mistaken for a flattened lite username (`is_lite_person_label`).
+/// Whether `label` is a full-person base label as the gateway pallet accepts
+/// it (`is_person_label`): non-empty, lowercase ASCII letters only, no digits
+/// or hyphens, at most [`MAX_BASE_LABEL_LEN`] bytes.
 pub fn is_full_person_label(label: &str) -> bool {
-    is_dns_label(label)
+    !label.is_empty()
         && label.len() <= MAX_BASE_LABEL_LEN
-        && !label.ends_with(|c: char| c.is_ascii_digit())
+        && label.chars().all(|c| c.is_ascii_lowercase())
 }
 
 /// Whether `value` is a dotted lite username, `stem.NN`: a DNS-label stem, one
@@ -521,22 +509,12 @@ pub trait DotnsTransport {
     async fn view(&mut self, dest: &[u8; 20], input: Vec<u8>) -> Result<Vec<u8>, String>;
 }
 
-/// Resolves the `DotnsPopController` address.
-///
-/// The pallet's stored controller wins when present. Otherwise the dispatcher's
-/// target getter answers: `TARGET()` on the deployed `RootGatewayDispatcher`
-/// (dotNS `master`), with `target()` kept as a fallback for older builds. `None`
-/// when the gateway is not deployed on the chain at all.
+/// Resolves the `DotnsPopController` address: `DotnsGateway.DispatcherAddress`
+/// names the `RootGatewayDispatcher`, whose `TARGET()` is the controller.
+/// `None` when the gateway is not deployed on the chain at all.
 pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
     transport: &mut T,
 ) -> Result<Option<[u8; 20]>, String> {
-    if let Some(controller) = transport
-        .storage(pop_controller_address_key())
-        .await?
-        .and_then(|value| <[u8; 20]>::try_from(value).ok())
-    {
-        return Ok(Some(controller));
-    }
     let Some(dispatcher) = transport
         .storage(dispatcher_address_key())
         .await?
@@ -544,17 +522,13 @@ pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
     else {
         return Ok(None);
     };
-    let output = match transport.view(&dispatcher, call_no_args("TARGET()")).await {
-        Ok(output) => output,
-        Err(_) => {
-            transport
-                .view(&dispatcher, call_no_args("target()"))
-                .await?
-        }
-    };
+    let output = transport
+        .view(&dispatcher, call_no_args("TARGET()"))
+        .await
+        .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}"))?;
     decode_address(&output)
         .map(Some)
-        .map_err(|err| format!("RootGatewayDispatcher target getter: {err}"))
+        .map_err(|err| format!("RootGatewayDispatcher.TARGET(): {err}"))
 }
 
 /// Resolves the bare contract labels `account` holds.
@@ -643,14 +617,13 @@ fn bare_store_label<'a>(label: &'a str, tld: &str) -> Option<&'a str> {
     (!bare.is_empty() && !bare.contains('.')).then_some(bare)
 }
 
-/// The TLD before it became network-configurable on `DotnsProtocolRegistry`
-/// (dotns `b4096968`); deployments from before that expose no `tld()` and use
-/// this one.
-const LEGACY_TLD: &str = ".dot";
+/// The TLD of networks whose `DotnsProtocolRegistry` has no `tld()` view;
+/// previewnet is one.
+const TLD_WITHOUT_VIEW: &str = ".dot";
 
 /// The network TLD with its leading dot (`.paseo`), read from
-/// `ProtocolRegistry.tld()`. A registry without that view (an older deployment)
-/// reverts, which yields [`LEGACY_TLD`].
+/// `ProtocolRegistry.tld()`. A registry without that view reverts, which
+/// yields [`TLD_WITHOUT_VIEW`].
 async fn network_tld<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     registry: &[u8; 20],
@@ -659,7 +632,7 @@ async fn network_tld<T: DotnsTransport + ?Sized>(
         Ok(output) => {
             decode_string(&output).map_err(|err| format!("ProtocolRegistry.tld(): {err}"))
         }
-        Err(_) => Ok(LEGACY_TLD.to_string()),
+        Err(_) => Ok(TLD_WITHOUT_VIEW.to_string()),
     }
 }
 
@@ -675,9 +648,8 @@ pub fn namehash_under(parent: &[u8; 32], label: &str) -> [u8; 32] {
 }
 
 /// Whether the registrar would still mint `label` on this network: the name's
-/// node under the network TLD (`namehash(label.tld)`, derived here rather than
-/// read, so registries without `tldNode()` work too) is unminted, or held by
-/// the name escrow (`DotnsRegistrar.available`).
+/// node under the network TLD (`namehash(label.tld)`, derived locally) is
+/// unminted, or held by the name escrow (`DotnsRegistrar.available`).
 ///
 /// A lite-name reservation carrying a `reserved_base_label` that is already
 /// registered can never be claimed, yet it holds the reservation queue for
@@ -713,41 +685,23 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
     decode_bool(&output).map_err(|err| format!("DotnsRegistrar.available: {err}"))
 }
 
-/// Gateway-minted labels of `user` still waiting for `claimLabelStore`.
-///
-/// The deployed controller exposes `pendingClaims(address)`, an array. Older
-/// builds exposed `pendingClaim(address)`, one struct; it is kept as a fallback.
+/// Gateway-minted labels of `user` still waiting for `claimLabelStore`, from
+/// `DotnsPopController.pendingClaims(address)`.
 async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     controller: &[u8; 20],
     user: &[u8; 20],
 ) -> Result<Vec<String>, String> {
-    match transport
+    let output = transport
         .view(controller, call_address("pendingClaims(address)", user))
         .await
-    {
-        Ok(claims_output) => decode_pending_claims_array(&claims_output)
-            .map_err(|err| format!("DotnsPopController.pendingClaims: {err}")),
-        Err(_) => {
-            let claim_output = transport
-                .view(controller, call_address("pendingClaim(address)", user))
-                .await?;
-            let (label, minted_at) = decode_pending_claim(&claim_output)
-                .map_err(|err| format!("DotnsPopController.pendingClaim: {err}"))?;
-            Ok(if minted_at == 0 { vec![] } else { vec![label] })
-        }
-    }
-}
-
-/// `DotnsGateway.PopControllerAddress` storage key.
-/// Older runtimes store the controller directly. It is absent on runtimes that
-/// wire a dispatcher instead.
-pub fn pop_controller_address_key() -> Vec<u8> {
-    plain_key(b"DotnsGateway", b"PopControllerAddress")
+        .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
+    decode_pending_claims_array(&output)
+        .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))
 }
 
 /// `DotnsGateway.DispatcherAddress` storage key.
-/// The entry holds the `RootGatewayDispatcher`. Its `target()` is the
+/// The entry holds the `RootGatewayDispatcher`, whose `TARGET()` is the
 /// `DotnsPopController`.
 pub fn dispatcher_address_key() -> Vec<u8> {
     plain_key(b"DotnsGateway", b"DispatcherAddress")
@@ -840,9 +794,8 @@ mod tests {
         );
 
         // Layout: 0x01 (Some) ‖ variant ‖ compact-len proof ‖ ring_index LE ‖
-        // revision LE ‖ 0x01 (Sr25519) ‖ signature. Matches registerTx.ts
-        // encodeAsDotnsGatewayValue plus the revision field the runtime added
-        // (individuality#1013).
+        // revision LE ‖ 0x01 (Sr25519) ‖ signature, the AsDotnsGatewayInfo::
+        // RegisterFullName field order.
         let extra = encode_register_full_name_extra(0, &[0xEE; 785], 3, 5, &[0xAB; 64]);
         assert_eq!(
             extra,
@@ -865,10 +818,8 @@ mod tests {
             hex::encode(selector("getLabels(uint256,uint256)")),
             "2d7b5794"
         );
-        assert_eq!(hex::encode(selector("pendingClaim(address)")), "0ef4b248");
         assert_eq!(hex::encode(selector("protocolRegistry()")), "7656419f");
         assert_eq!(hex::encode(selector("get(bytes32)")), "8eaa6ac0");
-        assert_eq!(hex::encode(selector("target()")), "d4b83992");
         assert_eq!(hex::encode(selector("TARGET()")), "cc1f2afa");
         assert_eq!(hex::encode(selector("pendingClaims(address)")), "ca78533d");
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
@@ -1019,17 +970,7 @@ mod tests {
             Vec::<String>::new()
         );
 
-        // pendingClaim = ("alice", 42).
-        let mut claim = abi_word(0x20).to_vec();
-        claim.extend_from_slice(&abi_word(0x40));
-        claim.extend_from_slice(&abi_word(42));
-        claim.extend_from_slice(&abi_string("alice"));
-        assert_eq!(
-            decode_pending_claim(&claim).unwrap(),
-            ("alice".to_string(), 42)
-        );
-
-        // pendingClaims = [("alice01", 42), ("bob", 7)]. Deployed-era plural.
+        // pendingClaims = [("alice01", 42), ("bob", 7)].
         let struct_a = [
             abi_word(0x40).to_vec(),
             abi_word(42).to_vec(),
@@ -1084,12 +1025,10 @@ mod tests {
     #[test]
     fn label_validators_follow_the_contract_rules() {
         assert!(is_full_person_label("alicebc"));
-        assert!(is_full_person_label("web3-app"));
-        assert!(
-            !is_full_person_label("alice01"),
-            "trailing digits are lite format"
-        );
+        assert!(!is_full_person_label("web3-app"), "no digits or hyphens");
+        assert!(!is_full_person_label("alice01"));
         assert!(!is_full_person_label("Alice"));
+        assert!(!is_full_person_label(""));
         assert!(!is_full_person_label("alice.bc"));
         assert!(!is_full_person_label("-alice"));
         assert!(!is_full_person_label(&"a".repeat(33)));
@@ -1128,7 +1067,6 @@ mod tests {
         // Blake2_128Concat over the raw account bytes.
         assert_eq!(&alias_key[48..], &[0x11; 32]);
 
-        assert_eq!(pop_controller_address_key().len(), 32);
         assert_eq!(dispatcher_address_key().len(), 32);
         assert_eq!(timestamp_now_key().len(), 32);
     }

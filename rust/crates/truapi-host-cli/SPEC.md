@@ -269,6 +269,7 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--account <name>` | none | Use one named account from the default account store. |
 | `--session <name>` | remembered session | Restore or create a managed session. |
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
+| `--reserved-username <label>` | none | Full-person base name a newly created auto account reserves on dotNS alongside its lite username (§12.3). |
 | `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
 | `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
@@ -284,9 +285,9 @@ startup:
 - `--script` with `exec`;
 - `--mnemonic` with `--account`;
 - `--mnemonic` with `--session`;
-- `--mnemonic` with `--lite-username-prefix`;
+- `--mnemonic` with `--lite-username-prefix` or `--reserved-username`;
 - `--account` with `--session`; and
-- `--account` with `--lite-username-prefix`.
+- `--account` with `--lite-username-prefix` or `--reserved-username`.
 
 The same conflicts apply when the mnemonic came from
 `HOST_CLI_SIGNER_MNEMONIC`.
@@ -816,7 +817,7 @@ A new auto account:
 6. saves a pending account record;
 7. builds and submits identity-backend registration proofs, including the dotNS
    gateway reservation signature timestamped with Asset Hub chain time. A
-   reserved base name, when one is requested, must be a full-person label and
+   reserved base name (`--reserved-username`) must be a full-person label and
    still available on the dotNS registrar (`DotnsRegistrar.available` for its
    node under the network TLD): a reservation for a registered name could never
    be claimed and would hold that stem's reservation queue for the whole
@@ -1598,7 +1599,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
-| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. On paseo-next-v2 (post-reset) that address is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b`; the authoritative value is the paseo-assethub entry in `DEPLOYMENTS.md` of paritytech/dotns, which changes on every chain reset. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |

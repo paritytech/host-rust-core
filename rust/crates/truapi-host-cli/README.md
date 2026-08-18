@@ -147,7 +147,9 @@ New auto-managed accounts use the session name as their Lite username prefix;
 characters other than lowercase letters are omitted. For example, session
 `pgtest` creates usernames beginning with `pgtest`. An explicit
 `--lite-username-prefix` takes precedence, and `default` retains the historical
-`headless` prefix.
+`headless` prefix. `--reserved-username <label>` additionally reserves a
+full-person base name on dotNS for a newly created account, to be claimed later
+with `register-name`; the CLI refuses labels the registrar has already minted.
 The selected username and last script reference are cached in `session.json`
 inside the displayed session path. Scratch scripts use a portable filename;
 explicit scripts use an absolute path. On restart, an

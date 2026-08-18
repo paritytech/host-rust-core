@@ -317,20 +317,9 @@ pub async fn read_ring_members_at(
 #[derive(Debug, PartialEq, Eq, DecodeAsType)]
 enum MemberRingPosition {
     /// Waiting in the onboarding queue.
-    Onboarding {
-        #[allow(dead_code)]
-        queue_page: u32,
-        #[allow(dead_code)]
-        queued_at: u64,
-    },
+    Onboarding {},
     /// Included in a built ring.
-    Included {
-        ring_index: u32,
-        #[allow(dead_code)]
-        ring_page: u32,
-        #[allow(dead_code)]
-        ring_position: u32,
-    },
+    Included { ring_index: u32 },
     /// Suspended from all rings.
     Suspended,
 }
@@ -338,7 +327,7 @@ enum MemberRingPosition {
 /// Reads the ring index `member` is included in for `collection`, from
 /// `Members.Members`, pinned to block `at`. Errors when the member has no
 /// record. Errors too when the member is not `Included` yet.
-pub async fn read_member_ring_index(
+pub async fn read_member_ring_index_at(
     rpc: &RpcClient,
     metadata: &Metadata,
     collection: PersonhoodCollection,
@@ -363,7 +352,7 @@ pub async fn read_member_ring_index(
         })?;
     match position {
         MemberRingPosition::Included { ring_index, .. } => Ok(ring_index),
-        MemberRingPosition::Onboarding { .. } => Err(RingError::MemberNotIncluded {
+        MemberRingPosition::Onboarding {} => Err(RingError::MemberNotIncluded {
             status: "onboarding",
         }
         .into()),
@@ -512,6 +501,42 @@ mod tests {
         // from the projection and variant-name decoding is exercised.
         let _ = SourceRingExponent::R2e14;
         let _ = SourceRingExponent::R2e9;
+
+        // `Members.Members` value: the runtime's `RingPosition`, of which only
+        // `Included.ring_index` is read.
+        #[allow(dead_code)]
+        #[derive(Encode, TypeInfo)]
+        enum SourceRingPosition {
+            Onboarding {
+                queue_page: u32,
+                queued_at: u64,
+            },
+            Included {
+                ring_index: u32,
+                ring_page: u32,
+                ring_position: u32,
+            },
+            Suspended,
+        }
+        assert_eq!(
+            decode_as::<_, MemberRingPosition>(SourceRingPosition::Included {
+                ring_index: 7,
+                ring_page: 2,
+                ring_position: 300,
+            }),
+            MemberRingPosition::Included { ring_index: 7 }
+        );
+        assert_eq!(
+            decode_as::<_, MemberRingPosition>(SourceRingPosition::Onboarding {
+                queue_page: 1,
+                queued_at: 99,
+            }),
+            MemberRingPosition::Onboarding {}
+        );
+        assert_eq!(
+            decode_as::<_, MemberRingPosition>(SourceRingPosition::Suspended),
+            MemberRingPosition::Suspended
+        );
     }
 
     #[test]

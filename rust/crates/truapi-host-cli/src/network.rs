@@ -62,7 +62,7 @@ impl Network {
 
 /// Replaces the preset's identity backend base with `base` when it carries a
 /// non-empty URL. Trailing slashes are stripped so path joins stay clean. The
-/// override is leaked once per process, which is fine for a CLI.
+/// override string is leaked; the CLI reads it a handful of times per process.
 fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> NetworkConfig {
     if let Some(base) = base {
         let trimmed = base.trim().trim_end_matches('/');

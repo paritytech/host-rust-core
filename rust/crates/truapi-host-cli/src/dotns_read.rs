@@ -19,11 +19,10 @@ use truapi_server::host_logic::dotns_gateway::{
 /// discovery.
 ///
 /// Discovery reads `DotnsGateway.DispatcherAddress` and asks the dispatcher
-/// for its `TARGET()`; the override is for networks where that fails. On
-/// paseo-next-v2 (post-reset) the controller is
-/// `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b`; the authoritative value is the
-/// paseo-assethub entry in `DEPLOYMENTS.md` of paritytech/dotns, which changes
-/// on every chain reset.
+/// for its `TARGET()`; the override is for networks where that fails. The
+/// controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2
+/// and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per
+/// network.
 pub const DOTNS_POP_CONTROLLER_ENV: &str = "HOST_CLI_DOTNS_POP_CONTROLLER";
 
 /// One Asset Hub RPC connection for a batch of dotNS reads.

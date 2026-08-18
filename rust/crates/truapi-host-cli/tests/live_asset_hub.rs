@@ -326,7 +326,7 @@ async fn live_asset_hub_resolves_a_settled_store_over_dotns_discovery() {
 
 /// A reservation or registration for a name the registrar already minted can
 /// never succeed, so the CLI asks the registrar first. `available` is read for
-/// the name's node under the network TLD (`tldNode()`), the same node the
+/// the name's node under the network TLD (`namehash(label.tld)`), the same node the
 /// registrar minted.
 #[tokio::test]
 #[ignore = "needs network access to a live Asset Hub"]

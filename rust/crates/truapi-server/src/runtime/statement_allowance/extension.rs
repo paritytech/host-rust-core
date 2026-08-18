@@ -1232,7 +1232,7 @@ mod tests {
             ..fixture_state()
         };
 
-        // RegisterFullName resolves with the asserted 4-field shape.
+        // RegisterFullName resolves with the asserted field shape.
         assert_eq!(metadata.dotns_register_full_name_variant().unwrap(), 0);
         assert!(
             metadata

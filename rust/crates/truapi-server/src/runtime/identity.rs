@@ -399,12 +399,17 @@ mod tests {
         let data = match (*dest, sel) {
             (DISPATCHER, s) if s == selector("TARGET()") => abi_address(&CONTROLLER),
             (CONTROLLER, s) if s == selector("pendingClaims(address)") => {
+                // The user argument is the mapped H160 of the identity account.
+                assert_eq!(&input[16..36], account_to_h160(&ACCOUNT));
                 abi_pending_claims("alice01", 42)
             }
             (CONTROLLER, s) if s == selector("protocolRegistry()") => abi_address(&REGISTRY),
             (REGISTRY, s) if s == selector("get(bytes32)") => abi_address(&FACTORY),
             (REGISTRY, s) if s == selector("tld()") => abi_string(".paseo"),
-            (FACTORY, s) if s == selector("getLabelStore(address)") => abi_address(&STORE),
+            (FACTORY, s) if s == selector("getLabelStore(address)") => {
+                assert_eq!(&input[16..36], account_to_h160(&ACCOUNT));
+                abi_address(&STORE)
+            }
             (STORE, s) if s == selector("getLabels(uint256,uint256)") => {
                 abi_string_array(&["myproject.paseo", "app.myproject.paseo"])
             }
@@ -599,7 +604,6 @@ mod tests {
             Some(true),
             "the identity follow must be opened withRuntime=true or every view fails"
         );
-        // Every view was addressed to the mapped H160 of the identity account.
         let calls = provider
             .sent
             .lock()
@@ -611,6 +615,5 @@ mod tests {
             calls >= 7,
             "expected the full discovery and label chain, got {calls} views"
         );
-        let _ = account_to_h160(&ACCOUNT);
     }
 }

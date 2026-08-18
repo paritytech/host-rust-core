@@ -51,11 +51,11 @@ pub struct RegisterNameConfig {
 pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     // The pallet and the contract reject malformed labels only at submission
     // (as an invalid transaction or a revert), so check the cheap rules here.
-    if !is_full_person_label(&config.label) {
+    let label = &config.label;
+    if !is_full_person_label(label) {
         bail!(
-            "label {:?} is not a full-person base label: lowercase ASCII letters only, at \
-             most {MAX_BASE_LABEL_LEN} bytes",
-            config.label
+            "label {label:?} is not a full-person base label: lowercase ASCII letters only, at \
+             most {MAX_BASE_LABEL_LEN} bytes"
         );
     }
     if let Some(lite) = &config.link_lite
@@ -70,22 +70,21 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     let mut reader = AssetHubReader::connect(config.network.asset_hub_ws).await?;
     // Registered names (any flow) fail only at submission otherwise; a pending
     // reservation of `label` is not a mint and stays claimable.
-    if !reader.label_available(&config.label).await? {
-        bail!(
-            "label {:?} is already registered on dotNS and cannot be registered again",
-            config.label
-        );
+    if !reader.label_available(label).await? {
+        bail!("label {label:?} is already registered on dotNS and cannot be registered again");
     }
     let link = resolve_link(config, &mut reader, &who_public).await?;
 
     // Reading the full-person member key's ring and its members from the People
     // chain, pinned to one finalized block.
-    let people_rpc = RpcClient::connect(config.network.people_ws).await?;
+    let people_rpc = RpcClient::connect(config.network.people_ws)
+        .await
+        .context("connect People RPC")?;
     let people_metadata = alloc::fetch_metadata(&people_rpc).await?;
     let at = people_rpc.finalized_head().await?;
     let full_entropy = derive_full_person_ring_vrf_entropy(&config.entropy);
     let member = proof::member_key(full_entropy);
-    let ring_index = ring::read_member_ring_index(
+    let ring_index = ring::read_member_ring_index_at(
         &people_rpc,
         &people_metadata,
         PersonhoodCollection::People,
@@ -126,7 +125,9 @@ pub async fn register_name(config: &RegisterNameConfig) -> Result<()> {
     // Reading Asset Hub metadata, which asserts the RegisterFullName shape.
     // Then the chain state and the exponent the subscriber verifies proofs
     // against.
-    let ah_rpc = RpcClient::connect(config.network.asset_hub_ws).await?;
+    let ah_rpc = RpcClient::connect(config.network.asset_hub_ws)
+        .await
+        .context("connect Asset Hub RPC")?;
     let ah_metadata = alloc::fetch_metadata(&ah_rpc).await?;
     let chain_state = extension::ChainState {
         // A restricted-origin general transaction. RestrictOrigins carries true.
