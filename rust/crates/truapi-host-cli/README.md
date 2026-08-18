@@ -390,11 +390,17 @@ full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
 `LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
 same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
 `MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
-the collection it is proved against. Registration pools across every
-collection the signer can prove: a free slot anywhere is taken before any live
-slot is evicted, and when everything is full the slot replaced is the globally
-oldest replaceable one. `alloc-check` prints both collections' member keys, ring
-indices and slot tables. Auto-managed accounts are stored in
+the collection it is proved against.
+
+Registration pools across every collection the signer can prove, and a free slot
+anywhere is taken before any live slot is replaced. Whether a live slot may be
+replaced at all depends on the caller. The renewal pass, the pairing-time grant,
+and `alloc-check --submit` may replace, and then take the globally oldest
+replaceable slot across all collections. Allocation on behalf of a connecting
+product may not: it reports the period as exhausted, because every entry in the
+table is one of this wallet's own products and reclaiming space belongs to the
+renewal pass. `alloc-check` prints both collections' member keys, ring indices and
+slot tables. Auto-managed accounts are stored in
 `accounts.json` under `--base-path`; mnemonics are plaintext local test secrets
 and the file is written with `0600` permissions on Unix. `alloc-check` verifies
 membership and can submit a test registration.

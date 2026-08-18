@@ -1466,21 +1466,30 @@ It prints:
 - runtime spec version;
 - transaction version;
 - genesis hash;
-- derived bandersnatch member key;
-- current ring index;
-- matching ring details or onboarding-pending status;
+- per personhood collection, the derived bandersnatch member key and that
+  collection's current ring index;
+- per collection, matching ring details, or a single onboarding-pending line when
+  no collection includes the member key;
 - current allowance period;
 - target account;
-- free/already-allocated slot or scan error; and
-- submission result when requested.
+- per collection, the free or already-allocated slot, a scan error, or a note that
+  the chain does not offer that collection; and
+- the submission result, naming the collection the slot was taken in, when
+  requested.
+
+Each collection is a separate alias space with its own slot budget, so the scan
+reports one table per collection rather than one combined table.
 
 Without `--target`, the target is all zeroes and the command is scan-only.
 `--submit` requires an explicit 32-byte target. `0x` is optional on target
 hex.
 
-Submission uses the shared metadata-driven
-`set_statement_store_account` implementation and reuses an existing allocation
-when present.
+Submission uses the shared metadata-driven `set_statement_store_account`
+implementation, pooled across every collection whose membership the signer can
+prove. An allocation already held in any collection is reused. When every
+collection is full it replaces the globally oldest replaceable slot, which is the
+behavior this diagnostic had before pooling; on-demand allocation for a product
+reports exhaustion instead.
 
 ## 20. Exit status and shutdown
 
