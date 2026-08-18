@@ -354,8 +354,7 @@ fn tls_config() -> Arc<ClientConfig> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Ordering, TUNNELS, ensure_tunnel, lock, rewrite_host, tunnel_address,
-        tunnel_wss_bootnodes,
+        Ordering, TUNNELS, ensure_tunnel, lock, rewrite_host, tunnel_address, tunnel_wss_bootnodes,
     };
 
     /// Reuse is what makes one listener serve every chain naming the same

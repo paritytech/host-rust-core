@@ -237,7 +237,10 @@ mod redaction_tests {
         let printed = redacted(&url);
 
         assert!(!printed.contains("alice"), "leaked the username: {printed}");
-        assert!(!printed.contains("hunter2"), "leaked the password: {printed}");
+        assert!(
+            !printed.contains("hunter2"),
+            "leaked the password: {printed}"
+        );
         assert!(printed.contains("node.example"), "lost the host: {printed}");
     }
 
