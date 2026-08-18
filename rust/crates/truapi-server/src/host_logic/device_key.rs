@@ -6,7 +6,7 @@
 //! because a regenerated key silently strands peers still addressing the old
 //! one.
 
-use tracing::{debug, instrument};
+use tracing::{instrument, warn};
 use truapi_platform::{CoreStorage, CoreStorageKey};
 
 use crate::host_logic::sso::pairing::generate_x25519_keypair;
@@ -27,7 +27,7 @@ pub async fn read_or_create_device_encryption_secret(
     if let Some(stored) = stored {
         match <[u8; 32]>::try_from(stored.as_slice()) {
             Ok(secret) => return Ok(secret),
-            Err(_) => debug!("discarding malformed stored device encryption key"),
+            Err(_) => warn!("discarding malformed stored device encryption key"),
         }
     }
 

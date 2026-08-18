@@ -341,12 +341,12 @@ impl ProductRuntimeHost {
         }
     }
 
-    /// Trusted executable kind attached to this product connection.
     /// Role-neutral services shared with the owning host runtime.
     pub(crate) fn services(&self) -> &Arc<RuntimeServices> {
         &self.services
     }
 
+    /// Trusted executable kind attached to this product connection.
     pub(crate) fn execution_kind(&self) -> truapi_platform::ProductExecutionKind {
         self.product.execution_kind
     }
