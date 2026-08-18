@@ -242,6 +242,21 @@ mod tests {
     }
 
     #[test]
+    fn probe_answers_match_registered_dispatch_surface_exhaustively() {
+        let core = make_core();
+        let registered = core.dispatcher.callable_id_set();
+
+        for id in 0..=u8::MAX {
+            let advertised = crate::frame::method_entry_registered(id);
+            assert_eq!(
+                advertised,
+                registered.contains(&id),
+                "probe answer for id {id} disagrees with the registered dispatch surface"
+            );
+        }
+    }
+
+    #[test]
     fn local_storage_read_round_trips_none() {
         let core = make_core();
         let request = HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest {

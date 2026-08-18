@@ -31,7 +31,7 @@ pub trait Chat: Send + Sync {
         _cx: &CallContext,
         _request: HostChatCreateRoomRequest,
     ) -> Result<HostChatCreateRoomResponse, CallError<HostChatCreateRoomError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Register a chat bot.
@@ -51,7 +51,7 @@ pub trait Chat: Send + Sync {
         _cx: &CallContext,
         _request: HostChatRegisterBotRequest,
     ) -> Result<HostChatRegisterBotResponse, CallError<HostChatRegisterBotError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Subscribe to the list of chat rooms.
@@ -85,7 +85,7 @@ pub trait Chat: Send + Sync {
         _cx: &CallContext,
         _request: HostChatPostMessageRequest,
     ) -> Result<HostChatPostMessageResponse, CallError<HostChatPostMessageError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Subscribe to received chat actions.

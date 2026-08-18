@@ -45,6 +45,6 @@ pub trait ResourceAllocation: Send + Sync {
         _request: HostRequestResourceAllocationRequest,
     ) -> Result<HostRequestResourceAllocationResponse, CallError<HostRequestResourceAllocationError>>
     {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

@@ -612,7 +612,11 @@ impl Features for CliPlatform {
         &self,
         request: api::HostFeatureSupportedRequest,
     ) -> Result<api::HostFeatureSupportedResponse, api::GenericError> {
-        let api::HostFeatureSupportedRequest::Chain { genesis_hash } = request;
+        let api::HostFeatureSupportedRequest::Chain { genesis_hash } = request else {
+            return Err(api::GenericError {
+                reason: "method-support queries are answered by the core".to_string(),
+            });
+        };
         let supported = self
             .chains
             .chains
@@ -1249,6 +1253,19 @@ mod tests {
             [config.people_genesis.as_slice(), &[0u8]].concat()
         ));
         assert!(!supported(vec![0u8; 32]));
+    }
+
+    #[test]
+    fn method_query_at_the_platform_is_a_typed_error_not_a_false_answer() {
+        let platform = CliPlatform::new(test_network(), None, ApprovalPolicy::AutoAccept, None);
+        let err = futures::executor::block_on(
+            platform.feature_supported(api::HostFeatureSupportedRequest::Method { id: 2 }),
+        )
+        .expect_err("a Method query must not reach a platform");
+        assert_eq!(
+            err.reason,
+            "method-support queries are answered by the core"
+        );
     }
 
     #[test]

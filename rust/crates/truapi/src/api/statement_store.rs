@@ -66,7 +66,7 @@ pub trait StatementStore: Send + Sync {
         Subscription<RemoteStatementStoreSubscribeItem>,
         CallError<RemoteStatementStoreSubscribeError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Create a proof for a statement.
@@ -105,7 +105,7 @@ pub trait StatementStore: Send + Sync {
         RemoteStatementStoreCreateProofResponse,
         CallError<RemoteStatementStoreCreateProofError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Create a proof for a statement using a pre-allocated allowance account,
@@ -132,7 +132,7 @@ pub trait StatementStore: Send + Sync {
         RemoteStatementStoreCreateProofAuthorizedResponse,
         CallError<RemoteStatementStoreCreateProofAuthorizedError>,
     > {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 
     /// Submit a signed statement to the network. The request body is the
@@ -161,6 +161,6 @@ pub trait StatementStore: Send + Sync {
         _cx: &CallContext,
         _request: RemoteStatementStoreSubmitRequest,
     ) -> Result<(), CallError<RemoteStatementStoreSubmitError>> {
-        Err(CallError::unavailable())
+        Err(CallError::unsupported())
     }
 }

@@ -107,6 +107,14 @@ impl Dispatcher {
         )
     }
 
+    /// Every request and subscription-start id this dispatcher routes.
+    #[cfg(test)]
+    pub(crate) fn callable_id_set(&self) -> std::collections::BTreeSet<u8> {
+        let mut ids: std::collections::BTreeSet<u8> = self.by_request.keys().copied().collect();
+        ids.extend(self.by_start.keys().copied());
+        ids
+    }
+
     /// Register a subscription handler, keyed on `ids.start_id`, and record
     /// `ids.stop_id` so a matching `_stop` frame tears the subscription down.
     /// Returns the previously registered entry if any.

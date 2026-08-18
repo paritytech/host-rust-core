@@ -868,6 +868,12 @@ export interface CoreStorage {
 export interface Features {
   /**
    * Report whether the requested feature is supported.
+   *
+   * Only `Chain` queries reach a platform: the core answers `Method`
+   * queries (RFC 0027) from its wire table before dispatch. The parameter
+   * type still admits `Method` because narrowing it would change a callback
+   * signature every embedder implements; the invariant is held by the core
+   * and covered by tests, not by this type.
    */
   featureSupported(
     request: HostFeatureSupportedRequest,

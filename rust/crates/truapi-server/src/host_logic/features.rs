@@ -4,7 +4,9 @@
 //! host owns the set of chains it can service. This module is a thin shim
 //! that forwards through to [`truapi_platform::Features`], plus the in-core
 //! RFC-0026 resolution that answers `get_chain_info` from the host's chain
-//! set so per-request semantics (ordering, `NotSupported`) stay core-owned.
+//! set so per-request semantics (ordering, `NotSupported`) stay core-owned,
+//! and the RFC-0027 resolution that answers `Method` support queries from
+//! the wire table. Only `Chain` queries reach the platform.
 
 use truapi::latest::{
     ChainIdentifier, RemoteChainInfoError, RemoteChainInfoRequest, RemoteChainInfoResponse,
@@ -12,12 +14,21 @@ use truapi::latest::{
 use truapi::v01::{GenericError, HostFeatureSupportedRequest, HostFeatureSupportedResponse};
 use truapi_platform::{Features, HostChainSet};
 
-/// Forward a feature-support query to the platform implementation.
+/// Answer a feature-support query. `Chain` forwards to the platform;
+/// `Method` (RFC 0027) is answered from the wire table, so no host learns
+/// wire discriminants.
 pub async fn feature_supported<P: Features + ?Sized>(
     platform: &P,
     request: HostFeatureSupportedRequest,
 ) -> Result<HostFeatureSupportedResponse, GenericError> {
-    platform.feature_supported(request).await
+    match request {
+        HostFeatureSupportedRequest::Method { id } => Ok(HostFeatureSupportedResponse {
+            supported: crate::frame::method_entry_registered(id),
+        }),
+        request @ HostFeatureSupportedRequest::Chain { .. } => {
+            platform.feature_supported(request).await
+        }
+    }
 }
 
 /// Fetch the host's chain set from the platform implementation.
@@ -163,6 +174,52 @@ mod tests {
         };
         let err = chain_info(&paseo_set(), &request).unwrap_err();
         assert_eq!(err, RemoteChainInfoError::NotSupported);
+    }
+
+    #[test]
+    fn request_and_start_ids_answer_true() {
+        let request_id = crate::frame::request_ids("system_feature_supported")
+            .expect("known request method")
+            .request_id;
+        let start_id = crate::frame::subscription_ids("chain_follow_head_subscribe")
+            .expect("known subscription method")
+            .start_id;
+
+        for id in [request_id, start_id] {
+            let resp = futures::executor::block_on(feature_supported(
+                &AlwaysUnsupported,
+                HostFeatureSupportedRequest::Method { id },
+            ))
+            .unwrap();
+            assert!(resp.supported, "id {id} opens a method");
+        }
+    }
+
+    #[test]
+    fn non_entry_and_unallocated_ids_answer_false() {
+        use crate::generated::wire_table::CHAT_CUSTOM_MESSAGE_RENDER;
+
+        let response_id = crate::frame::request_ids("system_feature_supported")
+            .expect("known request method")
+            .response_id;
+        let sub_ids = crate::frame::subscription_ids("chain_follow_head_subscribe")
+            .expect("known subscription method");
+
+        for id in [
+            response_id,
+            sub_ids.stop_id,
+            sub_ids.interrupt_id,
+            sub_ids.receive_id,
+            CHAT_CUSTOM_MESSAGE_RENDER.start_id,
+            0xFA,
+        ] {
+            let resp = futures::executor::block_on(feature_supported(
+                &AlwaysSupported,
+                HostFeatureSupportedRequest::Method { id },
+            ))
+            .unwrap();
+            assert!(!resp.supported, "id {id} does not open a method");
+        }
     }
 }
 

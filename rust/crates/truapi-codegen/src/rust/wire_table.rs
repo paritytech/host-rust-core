@@ -30,6 +30,7 @@ struct SubEntry {
     stop_id: u8,
     interrupt_id: u8,
     receive_id: u8,
+    host_initiated: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,6 +123,7 @@ fn method_entry(trait_def: &TraitDef, method: &MethodDef) -> Result<MethodEntry>
                 stop_id,
                 interrupt_id,
                 receive_id,
+                host_initiated: wire.host_initiated,
             }))
         }
     }
@@ -154,6 +156,7 @@ fn insert_entry(
             stop_id,
             interrupt_id,
             receive_id,
+            ..
         }) => vec![
             (start_id, format!("{method_name}_start")),
             (stop_id, format!("{method_name}_stop")),
@@ -212,6 +215,8 @@ fn render(methods: &[(String, MethodEntry)]) -> Result<String> {
             pub method: &'static str,
             /// What kind of slot this entry describes.
             pub kind: WireKind,
+            /// Whether this is a host-initiated subscription.
+            pub host_initiated: bool,
         }}
 
         /// Wire-slot shape: request/response pair or subscription quartet.
@@ -246,6 +251,7 @@ fn render(methods: &[(String, MethodEntry)]) -> Result<String> {
                 stop_id,
                 interrupt_id,
                 receive_id,
+                ..
             }) => formatdoc! {
                 r#"
                 /// Wire discriminants for `{name}`.
@@ -274,15 +280,18 @@ fn render(methods: &[(String, MethodEntry)]) -> Result<String> {
     .unwrap();
     for (name, entry) in methods {
         let konst = const_name(name);
-        let variant = match entry {
-            MethodEntry::Request(_) => "Request",
-            MethodEntry::Subscription(_) => "Subscription",
+        let (variant, host_initiated) = match entry {
+            MethodEntry::Request(_) => ("Request", false),
+            MethodEntry::Subscription(SubEntry { host_initiated, .. }) => {
+                ("Subscription", *host_initiated)
+            }
         };
         let block = formatdoc! {
             r#"
             WireEntry {{
                 method: "{name}",
                 kind: WireKind::{variant}({konst}),
+                host_initiated: {host_initiated},
             }},
             "#
         };
