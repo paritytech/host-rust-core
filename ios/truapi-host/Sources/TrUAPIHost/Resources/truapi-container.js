@@ -1,6 +1,6 @@
 "use strict";
 (() => {
-  // src/index.ts
+  // src/freeze.ts
   function freezeAndDelete(obj, prop) {
     try {
       Object.defineProperty(obj, prop, {
@@ -27,6 +27,24 @@
     } catch {
     }
   }
+
+  // src/webrtc.ts
+  var POLICY_GLOBAL = "__truapi_policy__";
+  function installWebRtcPolicy(win, allowed) {
+    if (allowed === true) {
+      return;
+    }
+    freezeAndDelete(win, "RTCPeerConnection");
+    freezeAndDelete(win, "webkitRTCPeerConnection");
+    freezeAndDelete(win, "mozRTCPeerConnection");
+  }
+  function consumeWebRtcPolicy(win) {
+    const allowed = win?.[POLICY_GLOBAL]?.webRtcAllowed;
+    freezeAndDelete(win, POLICY_GLOBAL);
+    return allowed;
+  }
+
+  // src/index.ts
   var _nativeFetch = window.fetch.bind(window);
   var _NativeWebSocket = window.WebSocket;
   var _bridgeUrl = window.__truapi_localhost?.url;
@@ -94,4 +112,5 @@
     }
     return _createElement(tagName, options);
   });
+  installWebRtcPolicy(window, consumeWebRtcPolicy(window));
 })();

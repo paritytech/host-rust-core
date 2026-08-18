@@ -1,41 +1,26 @@
 // ============================================================================
 // TrUAPI mode lockdown. Runs AFTER LocalhostBridgeBootstrap (native injects
 // the bootstrap first), which publishes the bridge endpoint on
-// window.__truapi_localhost and exposes __HOST_API_PORT__ / __HOST_WEBVIEW_MARK__.
+// window.__truapi_localhost, the pre-resolved permission decisions on
+// window.__truapi_policy__, and exposes __HOST_API_PORT__ /
+// __HOST_WEBVIEW_MARK__.
 // The bootstrap dials its WebSocket lazily (inside port.start()), so
 // window.WebSocket must remain constructible for exactly the bridge URL.
+//
+// Hosts must inject this script into EVERY frame, not just the main frame. A
+// realm without it has pristine fetch/WebSocket/RTCPeerConnection, and a
+// product can reach one through any iframe path that skips
+// `document.createElement` (innerHTML, document.write, createElementNS,
+// srcdoc). Only the bootstrap is main-frame-only: a subframe with no bridge
+// endpoint and no policy fails closed on every gate below.
 // ============================================================================
 
 // =============================================================================
 // Isolation: Lock down globals so product scripts cannot access platform APIs.
 // =============================================================================
 
-function freezeAndDelete(obj: any, prop: string) {
-  try {
-    Object.defineProperty(obj, prop, {
-      get: () => undefined,
-      set() { /* silently ignore */ },
-      configurable: false,
-    });
-  } catch {
-    // Property may already be non-configurable; try delete as fallback
-    try { delete obj[prop]; } catch { /* best effort */ }
-  }
-}
-
-function freezeValue(obj: any, prop: string, value: any) {
-  try {
-    // Use a getter instead of a data property with writable:false.
-    // A non-writable data property on the prototype chain prevents
-    // descendant objects from shadowing it, which breaks polyfills
-    // that create objects with window/self as prototype.
-    Object.defineProperty(obj, prop, {
-      get: () => value,
-      set() { /* silently ignore */ },
-      configurable: false,
-    });
-  } catch { /* best effort */ }
-}
+import { freezeAndDelete, freezeValue } from './freeze.js';
+import { consumeWebRtcPolicy, installWebRtcPolicy } from './webrtc.js';
 
 // Capture native fetch BEFORE lockdown so the same-origin gate can use it.
 const _nativeFetch = window.fetch.bind(window);
@@ -120,5 +105,11 @@ freezeValue(document, 'createElement', (tagName: string, options?: ElementCreati
   }
   return _createElement(tagName, options);
 });
+
+// --- WebRTC: gated on the decision the host resolved before this realm ---
+// Read and clear the policy global first so nothing downstream can observe or
+// rewrite it. An absent policy denies, which is what makes a subframe (no
+// bootstrap, so no policy) fail closed.
+installWebRtcPolicy(window, consumeWebRtcPolicy(window));
 
 export {};

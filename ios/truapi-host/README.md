@@ -254,10 +254,29 @@ core.notifyChainClosed(connectionId: chainConnectionId)
 
 // Both scripts must be registered before the web view loads the product page,
 // and in this order: the bootstrap publishes the bridge endpoint on
-// `window.__truapi_localhost`; the container script then locks down the
-// page's platform APIs and reads that endpoint at eval time.
+// `window.__truapi_localhost` and the resolved permission decisions on
+// `window.__truapi_policy__`; the container script then locks down the page's
+// platform APIs and reads both at eval time.
+//
+// The frame scopes differ, and the difference is load-bearing:
+//
+//   * the CONTAINER goes into every frame (`forMainFrameOnly: false`). A realm
+//     without it has pristine fetch/WebSocket/RTCPeerConnection, and a product
+//     can reach one through any iframe path that skips `document.createElement`
+//     (innerHTML, document.write, createElementNS, srcdoc). Injecting only the
+//     main frame leaves the whole lockdown one line away from bypass.
+//   * the BOOTSTRAP stays main-frame-only. A subframe then has no bridge
+//     endpoint and no policy, so every gate in the container fails closed there.
 let contentController = WKUserContentController()
-let bootstrapScript = LocalhostBridgeBootstrap.script(port: endpoint.port, token: endpoint.token)
+// A peek, never a prompt — see LocalhostBridgeBootstrap.script.
+let webRtcAllowed = try core.permissionAuthorizationStatus(
+    request: .remote(RemotePermissionRequest(permission: .webRtc))
+) == .authorized
+let bootstrapScript = LocalhostBridgeBootstrap.script(
+    port: endpoint.port,
+    token: endpoint.token,
+    webRtcAllowed: webRtcAllowed
+)
 contentController.addUserScript(WKUserScript(
     source: bootstrapScript,
     injectionTime: .atDocumentStart,
@@ -266,7 +285,7 @@ contentController.addUserScript(WKUserScript(
 contentController.addUserScript(WKUserScript(
     source: try ContainerScriptBundle.load(),
     injectionTime: .atDocumentStart,
-    forMainFrameOnly: true
+    forMainFrameOnly: false
 ))
 
 let configuration = WKWebViewConfiguration()

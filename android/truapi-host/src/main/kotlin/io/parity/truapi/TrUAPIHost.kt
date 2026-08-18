@@ -408,15 +408,26 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 object LocalhostBridgeBootstrap {
     /**
      * Returns a `<script>`-injectable snippet that publishes the endpoint
-     * metadata on `window.__truapi_localhost`, exposes the legacy
+     * metadata on `window.__truapi_localhost`, the pre-resolved permission
+     * decisions on `window.__truapi_policy__`, exposes the legacy
      * `window.__HOST_API_PORT__` webview transport shape, and fires a
      * `truapi-native-ready` event. Inject at document start (before the product
      * page scripts run) so the page can dial the bridge immediately.
+     *
+     * [webRtcAllowed] must come from `permissionAuthorizationStatus` for
+     * `RemotePermission.Remote.WebRtc` — a peek, never a prompt. It is baked in
+     * as a literal because the container enforces it inside the product's own
+     * realm, where an asynchronous permission request would be forgeable:
+     * product script can hook the primitives such a request's bookkeeping
+     * relies on and resolve it itself. A settled value has nothing to steal.
+     * The consequence is that a fresh grant only takes effect once the web view
+     * reloads.
      */
-    fun script(port: UShort, token: String): String {
+    fun script(port: UShort, token: String, webRtcAllowed: Boolean): String {
         val url = "ws://127.0.0.1:$port/?t=$token"
         val safeUrl = jsStringLiteral(url)
         val safeToken = jsStringLiteral(token)
+        val safeWebRtc = if (webRtcAllowed) "true" else "false"
         return """
         (function() {
           var endpoint = { url: $safeUrl, token: $safeToken };
@@ -484,6 +495,7 @@ object LocalhostBridgeBootstrap {
           }
 
           window.__truapi_localhost = endpoint;
+          window.__truapi_policy__ = { webRtcAllowed: $safeWebRtc };
           window.__HOST_WEBVIEW_MARK__ = true;
           window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
           window.dispatchEvent(new Event('truapi-native-ready'));

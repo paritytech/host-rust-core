@@ -7,10 +7,19 @@ import type { ServiceInfo } from "@parity/truapi/playground/services-types";
 // runner's function scope), so it shows up in the method browser, ⌘K, and the
 // diagnosis alike.
 //
-// The example follows the product model — request every device permission via
-// TrUAPI first, then use the capability:
-//   1. requestDevicePermission("Camera") and ("Microphone") — device permissions;
-//   2. only once granted, getUserMedia + RTCPeerConnection.createOffer.
+// The example follows the product model — request every permission via TrUAPI
+// first, then use the capability:
+//   1. requestRemotePermission("WebRtc") — governs whether the container leaves
+//      `RTCPeerConnection` in the realm at all;
+//   2. requestDevicePermission("Camera") and ("Microphone") — device permissions;
+//   3. only once granted, getUserMedia + RTCPeerConnection.createOffer.
+//
+// The WebRtc decision is resolved by the host before the product realm exists
+// and baked into the container, because a permission request made from inside
+// that realm would be forgeable by product script. So a first-time grant cannot
+// take effect during this run: `RTCPeerConnection` stays absent until the next
+// load. Granting and re-running is the expected path, and the reason this method
+// cannot pass unattended.
 
 export const WEBRTC_SERVICE_NAME = "WebRTC";
 export const WEBRTC_METHOD_NAME = "peer_connection";
@@ -23,7 +32,16 @@ assert(
   "Not a secure context — WebRTC media capture requires HTTPS or a localhost/loopback origin.",
 );
 
-// Permission phase — request the camera and microphone through TrUAPI up front.
+// Permission phase — the WebRtc remote permission first: it decides whether the
+// container leaves RTCPeerConnection in this realm at all.
+const webRtc = await truapi.permissions.requestRemotePermission({
+  permission: { tag: "WebRtc" },
+});
+assert(webRtc.isOk(), "WebRTC permission request failed:", webRtc);
+assert(webRtc.value.granted, "WebRTC permission denied");
+console.log("WebRTC permission granted");
+
+// Then the camera and microphone through TrUAPI.
 const camera = await truapi.permissions.requestDevicePermission("Camera");
 assert(camera.isOk(), "camera permission request failed:", camera);
 assert(camera.value.granted, "camera permission denied");
@@ -37,7 +55,9 @@ console.log("microphone granted");
 // Capability phase — permissions granted, now access the capability.
 assert(
   typeof RTCPeerConnection !== "undefined",
-  "RTCPeerConnection is unavailable — the host has not wired the WebRTC bridge (fail-closed).",
+  "RTCPeerConnection is unavailable (fail-closed). The container removes it unless " +
+    "the WebRtc grant was already in place when this realm loaded, so if you just " +
+    "granted it, reload and run again.",
 );
 assert(
   typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia,
@@ -72,9 +92,10 @@ export const WEBRTC_SERVICE: ServiceInfo = {
       name: WEBRTC_METHOD_NAME,
       type: "unary",
       description:
-        "Requests camera + microphone (device permissions) through TrUAPI, " +
-        "then — once granted — opens an RTCPeerConnection and creates an " +
-        "offer with the captured media.",
+        "Requests the WebRtc remote permission plus camera + microphone " +
+        "through TrUAPI, then — once granted — opens an RTCPeerConnection and " +
+        "creates an offer with the captured media. A first-time WebRtc grant " +
+        "only takes effect after a reload.",
       exampleSource: WEBRTC_EXAMPLE_SOURCE,
     },
   ],
