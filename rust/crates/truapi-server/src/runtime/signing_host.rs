@@ -44,12 +44,12 @@ use crate::host_logic::extrinsic::{
     Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
     build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
 };
+
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
     derive_root_keypair_from_entropy,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host_logic::product_account::{
     derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
 };
@@ -57,9 +57,7 @@ use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
 use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
 use crate::runtime::auth_state::AuthStateMachine;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::CollectionCandidate;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
@@ -388,7 +386,6 @@ impl SigningHost {
     /// actually a member of is settled on chain by looking for a ring that
     /// includes each member key, not by local state. That keeps the two hosts
     /// from disagreeing about personhood.
-    #[cfg(not(target_arch = "wasm32"))]
     fn reserved_person_collection_candidates(
         &self,
         session: &AuthoritySession,
