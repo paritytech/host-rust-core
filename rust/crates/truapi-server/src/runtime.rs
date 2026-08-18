@@ -15,6 +15,7 @@ mod authority;
 pub(crate) mod bulletin_rpc;
 mod chat;
 mod identity;
+pub(crate) mod login_failure;
 mod pairing_host;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
@@ -53,6 +54,7 @@ use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::RingVrfError;
+use crate::host_logic::sso::pairing::x25519_public_key;
 use crate::runtime::bulletin_rpc::BulletinSubmitError;
 #[cfg(test)]
 use crate::subscription::Spawner;
@@ -337,6 +339,11 @@ impl ProductRuntimeHost {
             core_instance,
             chat: adapters.chat,
         }
+    }
+
+    /// Role-neutral services shared with the owning host runtime.
+    pub(crate) fn services(&self) -> &Arc<RuntimeServices> {
+        &self.services
     }
 
     /// Trusted executable kind attached to this product connection.
@@ -1314,6 +1321,9 @@ fn connected_session_ui_info(session: &SessionInfo) -> SessionUiInfo {
     SessionUiInfo {
         public_key: session.public_key,
         identity_account_id: session.identity_account_id,
+        chat_public_key: session.identity_chat_private_key.map(x25519_public_key),
+        device_enc_public_key: session.device_enc_public_key,
+        peer_statement_account_id: session.sso.as_ref().map(|sso| sso.identity_account_id),
         lite_username: session.lite_username.clone(),
         full_username: session.full_username.clone(),
     }

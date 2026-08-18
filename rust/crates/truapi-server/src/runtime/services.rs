@@ -46,6 +46,10 @@ pub(crate) struct RuntimeServices {
     statement_cache: Mutex<StatementCache>,
     /// Task spawner for background runtime work.
     pub(crate) spawner: Spawner,
+    /// Serializes the read-or-create of the persisted device encryption key.
+    /// Concurrent first-time readers would otherwise each generate a secret and
+    /// persist it, leaving peers addressing an overwritten key.
+    device_encryption_key: futures::lock::Mutex<()>,
     next_core_instance: AtomicU64,
 }
 
@@ -76,8 +80,22 @@ impl RuntimeServices {
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
             spawner,
+            device_encryption_key: futures::lock::Mutex::new(()),
             next_core_instance: AtomicU64::new(1),
         })
+    }
+
+    /// This device's persisted X25519 encryption secret, created on first use.
+    ///
+    /// The only supported way to reach the key: it bundles the serialization
+    /// guard with the read, so no caller can race another into generating a
+    /// second secret and overwriting the one peers were told to address.
+    pub(crate) async fn device_encryption_secret(&self) -> Result<[u8; 32], String> {
+        let _guard = self.device_encryption_key.lock().await;
+        crate::host_logic::device_key::read_or_create_device_encryption_secret(
+            self.platform.as_ref(),
+        )
+        .await
     }
 
     /// Allocate the next per-product-runtime id, used to scope chain follow

@@ -12,6 +12,7 @@ rust/crates/
   truapi-codegen/        rustdoc JSON → TypeScript client + Rust dispatcher
   truapi-macros/         #[wire(id = N)] proc-macro
   truapi-platform/       Host syscall traits (storage, navigation, consent, ...)
+  truapi-provider/       network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Rust runtime hosts implement; ships as WASM (browser/node)
 js/packages/
   truapi/                  @parity/truapi TS package; generated TS lives under ignored paths
@@ -21,6 +22,11 @@ js/packages/
                           WASM bundle (gitignored) under dist/wasm/web/, built via `make wasm`
 js/container/              TS lockdown container for the iOS host web view; `npm run build`
                            bundles it into ios/truapi-host/Sources/TrUAPIHost/Resources/
+ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);
+                           second product of the root Package.swift, released on its
+                           own tag (@parity/ios-provider@<v>) via its scripts/
+android/truapi-provider/   truapi-provider-android AAR; unlike truapi-host it bundles
+                           the cdylib, so consumers need no Rust toolchain
 ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh

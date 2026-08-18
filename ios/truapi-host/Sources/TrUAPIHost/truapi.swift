@@ -1960,7 +1960,7 @@ public func FfiConverterTypeHostChatActionSubscribeItem_lower(_ value: HostChatA
  * wall-clock instant (Unix milliseconds UTC). `None` fires immediately,
  * preserving prior behaviour. See [RFC 0019].
  *
- * [RFC 0019]: https://github.com/paritytech/truapi/blob/main/docs/rfcs/0019-scheduled-notifications.md
+ * [RFC 0019]: https://github.com/paritytech/host-rust-core/blob/main/docs/rfcs/0019-scheduled-notifications.md
  */
 public struct HostPushNotificationRequest: Equatable, Hashable {
     /**
@@ -5718,7 +5718,10 @@ public enum RemotePermission: Equatable, Hashable {
          */domains: [String]
     )
     /**
-     * WebRTC media access.
+     * WebRTC access. Advertised and persistable, but host enforcement is not
+     * yet implemented: the lockdown container leaves `RTCPeerConnection`
+     * available to products, and camera/microphone capture is gated by the OS
+     * permission prompts rather than by this permission.
      */
     case webRtc
     /**

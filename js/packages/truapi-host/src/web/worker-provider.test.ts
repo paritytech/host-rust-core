@@ -443,6 +443,87 @@ describe("createWebWorkerPairingHostRuntime", () => {
     provider.dispose();
   });
 
+  it("returns the session chat identity key as hex, and undefined when absent", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x77);
+    const pending = provider.getSessionChatIdentityKey();
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getSessionChatIdentityKey");
+
+    worker.emit({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    // A session that predates retention reports absence rather than an error.
+    const missing = provider.getSessionChatIdentityKey();
+    worker.emit({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: true,
+      key: undefined,
+    });
+    expect(await missing).toBeUndefined();
+
+    provider.dispose();
+  });
+
+  it("returns the device encryption key as hex and fails once disposed", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x5a);
+    const pending = provider.getDeviceEncryptionKey();
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getDeviceEncryptionKey");
+
+    worker.emit({
+      kind: "deviceEncryptionKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    const failing = provider.getDeviceEncryptionKey();
+    worker.emit({
+      kind: "deviceEncryptionKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: false,
+      error: "no device key",
+    });
+    await expect(failing).rejects.toThrow("no device key");
+
+    // A key has no safe empty value, so a closed connection rejects.
+    provider.dispose();
+    await expect(provider.getDeviceEncryptionKey()).rejects.toThrow(
+      "product connection is closed",
+    );
+  });
+
   it("forwards session activation calls and resolves their responses", async () => {
     const worker = new FakeWorker();
     const runtime = await readyRuntime(worker);

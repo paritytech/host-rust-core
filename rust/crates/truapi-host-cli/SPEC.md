@@ -726,9 +726,10 @@ Before a signing host answers a link, it:
 2. decodes the V2 handshake;
 3. derives its RFC-0022 `uid.dot` identity account;
 4. reads the pairing device Statement Store account from the proposal;
-5. finds the signer's LitePeople ring through the pairing-attestation bootstrap
-   `peopl.dot` index-1 key, scanning back from the current ring (RFC-0024
-   operational key selection uses the registry instead);
+5. finds the signer's rings through the pairing-attestation bootstrap `peopl.dot`
+   keys, index 0 for `People` and index 1 for `LitePeople`, scanning back from
+   the current ring in each (RFC-0024 operational key selection uses the
+   registry instead);
 6. grants or reuses Statement Store allowance for the identity account;
 7. grants or reuses allowance for the pairing device; and
 8. starts the real SSO responder.
@@ -814,7 +815,7 @@ A new auto account:
 6. saves a pending account record;
 7. builds and submits identity-backend registration proofs;
 8. polls `Resources.Consumers` for the final `name.discriminator`;
-9. waits for inclusion in a LitePeople ring; and
+9. waits for inclusion in a personhood ring; and
 10. marks and saves the account as attested.
 
 Identity and ring polling each allow 10 attempts with four seconds between
@@ -1378,7 +1379,7 @@ The CLI exposes events for:
 - exhausted signer-account rotation;
 - responder start/stop/failure;
 - product connection reset after session/profile replacement;
-- LitePeople ring discovery;
+- personhood ring discovery;
 - wallet and device allowance preparation/results;
 - notification scheduling/delivery/cancellation;
 - pairing link/authentication/connection/disconnection/failure;
@@ -1465,21 +1466,29 @@ It prints:
 - runtime spec version;
 - transaction version;
 - genesis hash;
-- derived bandersnatch member key;
-- current ring index;
-- matching ring details or onboarding-pending status;
+- per personhood collection, the derived bandersnatch member key and that
+  collection's current ring index;
+- per collection, matching ring details, or a single onboarding-pending line when
+  no collection includes the member key;
 - current allowance period;
 - target account;
-- free/already-allocated slot or scan error; and
-- submission result when requested.
+- per collection, the free or already-allocated slot, a scan error, or a note that
+  the chain does not offer that collection; and
+- the submission result, naming the collection the slot was taken in, when
+  requested.
+
+Each collection is a separate alias space with its own slot budget, so the scan
+reports one table per collection rather than one combined table.
 
 Without `--target`, the target is all zeroes and the command is scan-only.
 `--submit` requires an explicit 32-byte target. `0x` is optional on target
 hex.
 
-Submission uses the shared metadata-driven
-`set_statement_store_account` implementation and reuses an existing allocation
-when present.
+Submission uses the shared metadata-driven `set_statement_store_account`
+implementation, pooled across every collection whose membership the signer can
+prove. An allocation already held in any collection is reused. When every
+collection is full it replaces the globally oldest replaceable slot across all of
+them; on-demand allocation for a product reports exhaustion instead.
 
 ## 20. Exit status and shutdown
 

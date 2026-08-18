@@ -57,7 +57,7 @@ The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navig
 Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
 
 ```swift
-.package(url: "https://github.com/paritytech/truapi.git", branch: "main")
+.package(url: "https://github.com/paritytech/host-rust-core.git", branch: "main")
 ```
 
 ```swift
@@ -109,7 +109,7 @@ try runtime.trackStatementRenewalTargets([
 ])
 ```
 
-The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. Re-track raw accounts whenever the active identity changes, or renewal quietly stops covering them — a pruned target is absent from the report rather than reported as failed. There is no reader and no untrack on this surface: a host cannot list what is tracked, cannot remove a wrong entry, and cannot detect a pruned one except by noticing it missing from a report. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. There is still no reader and no untrack on this surface, so a host cannot list what is tracked or remove a wrong entry. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
 
 Then run a pass from a background task, off the main thread. It needs an active session too, which is the whole difficulty here: a `BGTaskScheduler` wake on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
@@ -117,6 +117,10 @@ Then run a pass from a background task, off the main thread. It needs an active 
 let report = try runtime.renewStatementAllowances()
 for outcome in report.outcomes {
     log("\(outcome.label): \(outcome.status)")
+}
+for label in report.pruned {
+    // Promised by a previous identity and discarded; re-track to keep it renewed.
+    log("dropped: \(label)")
 }
 if report.slotsExhausted {
     // Every slot for this period is taken and none was replaceable.
@@ -182,9 +186,12 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
     }
 
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
-    // account badge and `.loginFailed` as a retryable error. This core is a
-    // signing host — it owns the signer and never pairs — so `.pairing` and
-    // `.authenticating` are not emitted and `core.cancelLogin()` is inert.
+    // account badge and `.loginFailed` as a retryable error, unless its `kind`
+    // is `.noFreeAllowanceSlots`, which is unlikely to succeed before the
+    // period rolls over, so retry should not be the primary action. This core
+    // is a signing host — it owns the signer and never
+    // pairs — so `.pairing` and `.authenticating` are not emitted and
+    // `core.cancelLogin()` is inert.
     // Activate the session with `core.activateLocalSession(secret:...)`.
     func authStateChanged(state: AuthState) {
         DispatchQueue.main.async { /* render the state */ }
