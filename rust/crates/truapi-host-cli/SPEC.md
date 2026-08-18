@@ -1579,9 +1579,11 @@ The reports currently have identical method results apart from their title:
 
 The Chat surface does not appear: it requires a `Chat` execution, and these are
 SPA reports. Two caveats on the checked-in reports: the enumeration in 15.1
-lists 45 methods and predates later additions to the surface, and the Coin
-Payment `Details` strings still record the older `HostFailure` shape. Both
-refresh on the next `make e2e-signing-cli` / `make e2e-pairing-cli` run.
+lists 45 methods and predates later additions to the surface, and only the
+signing-host report carries measured `Unsupported` Coin Payment details — the
+pairing-host report still records the older `HostFailure` shape, because the
+pairing phase needs a personhood ring member before it runs any method. It
+refreshes on the next `make e2e-pairing-cli` run from such a signer.
 
 Recommended local verification after CLI changes:
 
