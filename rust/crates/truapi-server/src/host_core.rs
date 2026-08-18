@@ -518,8 +518,8 @@ impl SigningHostRuntime {
     ///
     /// Session control stays with the caller: `Disconnected` is reported as an
     /// outcome, never handled here.
-    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.answer_sso_message"))]
-    pub async fn answer_sso_message(
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.answer_sso_request"))]
+    pub async fn answer_sso_request(
         &self,
         message: RemoteMessage,
     ) -> SsoRequestOutcome<RemoteMessage> {
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn answer_sso_message_distinguishes_disconnect_from_ignorable_messages() {
+    fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
         use crate::host_logic::sso::messages::{
             RemoteMessage, RemoteMessageData, SignRawLegacyResponse, v1,
         };
@@ -1163,7 +1163,7 @@ mod tests {
             message_id: "m1".to_string(),
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
         };
-        let outcome = futures::executor::block_on(runtime.answer_sso_message(disconnected));
+        let outcome = futures::executor::block_on(runtime.answer_sso_request(disconnected));
         assert!(matches!(outcome, SsoRequestOutcome::Disconnected));
 
         let response_variant = RemoteMessage {
@@ -1175,12 +1175,12 @@ mod tests {
                 },
             )),
         };
-        let outcome = futures::executor::block_on(runtime.answer_sso_message(response_variant));
+        let outcome = futures::executor::block_on(runtime.answer_sso_request(response_variant));
         assert!(matches!(outcome, SsoRequestOutcome::Ignored));
     }
 
     #[test]
-    fn answer_sso_message_answers_a_request_with_a_correlated_response() {
+    fn answer_sso_request_returns_a_correlated_response() {
         use crate::host_logic::sso::messages::{
             ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
         };
@@ -1212,7 +1212,7 @@ mod tests {
                 },
             )),
         };
-        let outcome = futures::executor::block_on(runtime.answer_sso_message(request));
+        let outcome = futures::executor::block_on(runtime.answer_sso_request(request));
         let SsoRequestOutcome::Response(response) = outcome else {
             panic!("expected a response outcome");
         };

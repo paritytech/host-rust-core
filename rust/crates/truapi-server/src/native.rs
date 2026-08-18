@@ -836,7 +836,7 @@ impl NativeTrUApiHostRuntime {
                 reason: format!("undecodable RemoteMessage: {err}"),
             }
         })?;
-        Ok(match self.runtime.answer_sso_message(message).await {
+        Ok(match self.runtime.answer_sso_request(message).await {
             CoreSsoRequestOutcome::Response(response) => SsoRequestOutcome::Response {
                 message: response.encode(),
             },
