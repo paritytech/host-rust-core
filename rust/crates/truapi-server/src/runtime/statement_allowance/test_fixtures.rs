@@ -1,4 +1,5 @@
-//! Metadata fixtures shared by the allowance unit tests.
+//! Captured chain artefacts shared by the allowance unit tests: Asset Hub
+//! metadata and one storage value read against it.
 
 use std::sync::LazyLock;
 

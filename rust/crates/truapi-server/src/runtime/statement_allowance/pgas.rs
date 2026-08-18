@@ -1,8 +1,10 @@
 //! Asset Hub PGAS allowance claims.
 //!
 //! Mirrors the mobile wallet flow: pick the first unclaimed daily PGAS slot for
-//! the target, prove LitePeople membership with the `AsPgas` transaction
-//! extension, and submit `Pgas.claim_pgas` on Asset Hub.
+//! the target, prove membership in the claiming collection with the `AsPgas`
+//! transaction extension, and submit `Pgas.claim_pgas` on Asset Hub. The slot
+//! budget and the alias space are both per collection, so the claim is bounded by
+//! whichever collection it proves.
 //!
 //! Two chains are involved. The ring and its revision come from the People
 //! chain, where membership lives; the claim is submitted on Asset Hub, which
