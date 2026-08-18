@@ -318,9 +318,23 @@ pub fn derive_x25519_keypair_from_entropy(entropy: &[u8], domain: &[u8]) -> ([u8
     let root = blake2b256_keyed(entropy, b"ecdh");
     let chain_code = normalize_chain_code(domain.encode());
     let secret_bytes = blake2b256_keyed(&root, &chain_code);
-    let secret = StaticSecret::from(secret_bytes);
-    let public = PublicKey::from(&secret).to_bytes();
-    (secret_bytes, public)
+    (secret_bytes, x25519_public_key(secret_bytes))
+}
+
+/// X25519 public key matching a raw 32-byte secret scalar.
+pub fn x25519_public_key(secret_bytes: [u8; 32]) -> [u8; 32] {
+    PublicKey::from(&StaticSecret::from(secret_bytes)).to_bytes()
+}
+
+/// RFC-0022 domain for the identity chat X25519 key.
+pub const CHAT_ENCRYPTION_DOMAIN: &[u8] = b"chat";
+
+/// Derive the X25519 private key addressing an identity in chat.
+///
+/// Every host holding the identity entropy derives the same key, which is what
+/// lets a wallet share it with a paired host that has no entropy of its own.
+pub fn derive_identity_chat_private_key(entropy: &[u8]) -> [u8; 32] {
+    derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN).0
 }
 
 /// Encrypt session-channel statement data with a random nonce.
@@ -587,12 +601,11 @@ fn generate_statement_store_keypair() -> Result<([u8; 64], [u8; 32]), PairingBoo
     Ok((keypair.secret.to_bytes(), keypair.public.to_bytes()))
 }
 
-fn generate_x25519_keypair() -> Result<([u8; 32], [u8; 32]), PairingBootstrapError> {
+/// Generate a random X25519 keypair as `(secret, public)`.
+pub fn generate_x25519_keypair() -> Result<([u8; 32], [u8; 32]), PairingBootstrapError> {
     let mut secret_bytes = [0u8; 32];
     getrandom::getrandom(&mut secret_bytes).map_err(PairingBootstrapError::Random)?;
-    let secret = StaticSecret::from(secret_bytes);
-    let public = PublicKey::from(&secret).to_bytes();
-    Ok((secret_bytes, public))
+    Ok((secret_bytes, x25519_public_key(secret_bytes)))
 }
 
 fn normalize_chain_code(encoded: Vec<u8>) -> [u8; 32] {

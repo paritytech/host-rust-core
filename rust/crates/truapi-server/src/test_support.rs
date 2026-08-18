@@ -234,6 +234,8 @@ pub(crate) fn session_info() -> crate::host_logic::session::SessionInfo {
             0xb8, 0xf5, 0x81, 0xaa, 0x99, 0xe3, 0x49, 0x3b, 0xf4, 0x96, 0xed, 0xf1, 0x51, 0xab,
             0xc1, 0xd7, 0x20, 0x23,
         ]),
+        identity_chat_private_key: None,
+        device_enc_public_key: None,
         lite_username: Some("alice".to_string()),
         full_username: Some("Alice Smith".to_string()),
     }
@@ -531,6 +533,13 @@ pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) ->
     )
 }
 
+/// Wallet device X25519 public key distinct from the persistent SSO key, so
+/// tests catch a session that keys device-scoped material off the SSO channel
+/// key by mistake.
+pub(crate) fn wallet_device_encryption_public_key() -> [u8; 32] {
+    pairing::x25519_public_key([9; 32])
+}
+
 fn wallet_handshake_success() -> pairing::v2::Success {
     let wallet_persistent_secret = X25519SecretKey::from([2; 32]);
     let wallet_persistent_public = X25519PublicKey::from(&wallet_persistent_secret).to_bytes();
@@ -539,7 +548,7 @@ fn wallet_handshake_success() -> pairing::v2::Success {
         root_account_id: session_info().public_key,
         identity_chat_private_key: [0x77; 32],
         sso_enc_pub_key: wallet_persistent_public,
-        device_enc_pub_key: wallet_persistent_public,
+        device_enc_pub_key: wallet_device_encryption_public_key(),
         root_entropy_source: [0x66; 32],
     }
 }

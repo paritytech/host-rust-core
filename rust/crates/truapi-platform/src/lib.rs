@@ -518,6 +518,26 @@ pub trait CoreAdmin: Send + Sync {
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus,
     ) -> Result<(), GenericError>;
+
+    /// Read the active session's X25519 chat identity private key, for hosts
+    /// that run their own P2P chat channel for the paired identity.
+    ///
+    /// The wallet derives this key from the identity root and shares it during
+    /// pairing; the core retains it verbatim, because a value derived
+    /// host-side would address an identity no existing peer can reach. `None`
+    /// when no session is active.
+    ///
+    /// Deliberately not on [`SessionUiInfo`]: that projection rides every
+    /// [`AuthState`] broadcast to all registered [`AuthPresenter`]s, so a
+    /// secret placed there would reach hosts that never asked for it.
+    async fn get_session_chat_identity_key(&self) -> Result<Option<Bytes32>, GenericError>;
+
+    /// Read this device's X25519 encryption secret, for hosts that run device
+    /// sync against the peer's [`SessionUiInfo::device_enc_public_key`].
+    ///
+    /// Generated and persisted on first read, so the returned key is stable for
+    /// the install and matches the public key peers were told to address.
+    async fn get_device_encryption_key(&self) -> Result<Bytes32, GenericError>;
 }
 
 /// Pairing-host-only administration API exposed to host UI.
@@ -644,6 +664,15 @@ pub enum CoreStorageKey {
     /// Statement-store allowance targets the signing host keeps renewed.
     #[codec(index = 8)]
     StatementRenewalTargets,
+    /// This device's long-lived X25519 encryption secret, advertised to peers
+    /// as the device encryption public key. Random rather than identity-derived
+    /// so devices restoring one identity stay individually addressable.
+    ///
+    /// Hosts must back this slot with storage scoped to the install, outliving
+    /// logout and any per-user namespacing: once it changes, peers addressing
+    /// the previous key can no longer reach this device.
+    #[codec(index = 9)]
+    DeviceEncryptionKey,
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -693,6 +722,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None),
         CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None),
         CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
+        CoreStorageKey::DeviceEncryptionKey => ("DeviceEncryptionKey", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }
@@ -925,6 +955,11 @@ mod tests {
                 "StatementRenewalTargets",
                 None,
             ),
+            (
+                CoreStorageKey::DeviceEncryptionKey,
+                "DeviceEncryptionKey",
+                None,
+            ),
         ] {
             let description = describe_core_storage_key(&key.encode()).expect("valid key");
             assert_eq!(description.kind, kind);
@@ -1131,6 +1166,17 @@ pub struct SessionUiInfo {
     pub public_key: Bytes32,
     /// Wallet identity account id used for People-chain username lookup.
     pub identity_account_id: Option<Bytes32>,
+    /// X25519 public key addressing this identity in chat. Public counterpart
+    /// of the key [`CoreAdmin::get_session_chat_identity_key`] serves.
+    pub chat_public_key: Option<Bytes32>,
+    /// X25519 public key of the wallet device that answered pairing. Hosts
+    /// running their own encrypted device-sync channel key it against this.
+    pub device_enc_public_key: Option<Bytes32>,
+    /// Statement-store account id the paired wallet signs every session-channel
+    /// statement with. Whether it is scoped to the wallet device or to the
+    /// wallet identity is the wallet's choice, so hosts must not treat it as a
+    /// device discriminator; use [`Self::device_enc_public_key`] for that.
+    pub peer_statement_account_id: Option<Bytes32>,
     /// Short username from the People-chain identity record.
     pub lite_username: Option<String>,
     /// Fully qualified username from the People-chain identity record.

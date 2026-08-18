@@ -46,7 +46,7 @@ and the lockfile. A host-runtime-only release can bump
 Commit the resulting diff and open a PR using the **release** template:
 
 ```
-https://github.com/paritytech/truapi/compare/main...<your-branch>?template=release.md
+https://github.com/paritytech/host-rust-core/compare/main...<your-branch>?template=release.md
 ```
 
 The PR title must start with `release:`. Convention:
