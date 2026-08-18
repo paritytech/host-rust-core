@@ -7,26 +7,32 @@ owner: "@johnthecat"
 
 ## Summary
 
-A two-level product manifest used by Polkadot Hosts to discover, validate, and launch product executables.
+A product's bytes live on the Bulletin chain; the manifest describes them. It is the metadata a Polkadot User Agent needs to present a product, know what it offers, and make sense of what it fetches:
+
+- **Describe the product to the user** — `displayName`, `description`, and an icon: enough to list and recognise a product before anything runs.
+- **Declare what can be interacted with** — which surfaces the product serves, and which other products may interact with it without a consent prompt.
+- **Interpret the fetched bytes** — which `kind` of executable an archive holds, its `entrypoint`, the sizes a widget renders at. Without these the archive is an undifferentiated directory of files.
+
+The format is two-level:
 
 - The **root manifest** carries product-wide metadata (displayName, icon, description) and the product's standing trust grants to other products, and lives at the product's dotNS base name. Authorship is read from dotNS itself (the on-chain owner of the name) rather than declared in the manifest.
 - One or more **executable manifests** describe individual executables (App, Widget, Worker). Each pins a product-defined version and lives at a well-known subname of the base name (`app.<product_id>.<tld>`, `widget.<product_id>.<tld>`, `worker.<product_id>.<tld>`).
 
-Manifests are JSON, stored inline in dotNS text records. Binary content lives on the Bulletin chain: the icon is addressed by a CID inside the root manifest, executable bytes by the `contenthash` record on the executable's own subname.
+Manifests are JSON, stored inline in dotNS text records. Binary content lives on the Bulletin chain.
 
 ## Motivation
 
 ### Background
 
-The Polkadot ecosystem renders third-party applications inside first-party user-agents — **Hosts** (Polkadot Desktop, Polkadot Mobile, the Polkadot Website). A third-party application is called a **Product**, owned by its developer rather than any single Host.
+Polkadot User Agents, or **Hosts** (Polkadot Desktop, Polkadot Mobile, the Polkadot Website), render third-party applications called **Products**.
 
 A product can expose one or more **modalities**, each a distinct user-facing surface:
 
 - **App** — full-screen web application.
 - **Widget** — small web application mounted on a dashboard.
 - **Pocket** — passive surfaces such as cards, tickets, or certificates, served by a background JS worker.
-- **Chat** — chat bots and chat-room integrations, also served by a background JS worker.
-- **Input** — an input surface the Host embeds in its own UI (composer, keyboard, field provider), also served by a background JS worker.
+- **Chat** — chat bots and chat-room integrations, served by a background JS worker.
+- **Input** — an input surface for contextual interactions with the Products, served by a background JS worker.
 
 A modality is delivered by an **executable**. v1 defines three executable types:
 
@@ -46,26 +52,26 @@ Two on-chain systems sit under this RFC:
 For a Host to discover, verify, and launch a product, it needs a static, on-chain, authenticated description binding a dotNS name to a specific executable revision. Without a standardized manifest, every Host invents its own discovery convention. The manifest format must therefore:
 
 1. Provide static product-wide metadata: displayName, icon, and description.
-2. Provide, for each executable, a version, and bind its subname to the artifact's bytes.
-3. Be discoverable through a storage call or JSON-RPC call to a node.
-4. Be encoded in a format any client environment can parse with off-the-shelf tooling.
-5. Fit inside dotNS text records as a single inline payload.
-6. Let a product declare which other products may interact with it without a per-call consent prompt.
+2. Let a product declare which other products may interact with it without a per-call consent prompt.
+3. Provide, for each executable, a version.
+4. Be discoverable through a storage call or JSON-RPC call to a node.
+5. Be encoded in a format any client environment can parse with off-the-shelf tooling.
+6. Fit inside dotNS text records as a single inline payload.
 7. Be versionable.
 
 ## Detailed Design
 
 ### Overview
 
-A product is rooted at a **dotNS base name** (e.g. `hackm3.dot`). The base name's text records carry the **root manifest**. Each executable is rooted at a well-known **subname** of the base name (e.g. `widget.hackm3.dot`), whose text records carry the corresponding **executable manifest**.
+A product is rooted at a **dotNS base name** (e.g. `game.dot`). The base name's text records carry the **root manifest**. Each executable is rooted at a well-known **subname** of the base name (e.g. `widget.game.dot`), whose text records carry the corresponding **executable manifest**.
 
-**Terminology.** `<product_id>` is the label portion of the base name (`hackm3` for `hackm3.dot`). `<tld>` is the top-level label the dotNS deployment declares — `dot` on mainnet, `paseo` on Paseo. The same product is `hackm3.dot` on one network and `hackm3.paseo` on another, so manifests identify products by `<product_id>` alone and never pin a TLD.
+**Terminology.** `<product_id>` is the label portion of the base name (`game` for `game.dot`). `<tld>` is the top-level label the dotNS deployment declares — `dot` on mainnet, `paseo` on Paseo. The same product is `game.dot` on one network and `game.paseo` on another, so manifests identify products by `<product_id>` alone and never pin a TLD.
 
 ```
-hackm3.dot                  → root manifest (displayName, icon, description)
-app.hackm3.dot              → executable manifest (App)
-widget.hackm3.dot           → executable manifest (Widget)
-worker.hackm3.dot           → executable manifest (Worker; serves Pocket, Chat and/or Input)
+game.dot                  → root manifest (displayName, icon, description)
+app.game.dot              → executable manifest (App)
+widget.game.dot           → executable manifest (Widget)
+worker.game.dot           → executable manifest (Worker; serves Pocket, Chat and/or Input)
 ```
 
 A Host discovers a product's executables by querying these subnames. Absence of a subname means the product does not provide that executable.
@@ -113,24 +119,25 @@ type Icon = {
 type Granted = 'all';     // The only grant v1 defines. Unrecognised values are ignored, not fatal.
 ```
 
+#### Icons
+
 The icon is always deployed on the Bulletin chain — there is no inline-icon variant in v1.
 
-**The icon is presentational and never load-bearing.** No icon failure invalidates the root manifest, makes the product undiscoverable, or blocks a launch. Concretely:
-
-- `icon.format` is outside the manifest's validity decision. A validator MUST accept a `RootManifest` whose `format` is not one of the v1 values; the Host renders a placeholder and keeps the product launchable. Hosts MUST NOT sniff or auto-correct the format.
-- An unreachable `cid` and bytes that do not decode as the declared `format` resolve identically: render a placeholder, keep the product launchable.
+**The icon is presentational and never load-bearing.** Every icon failure resolves the same way: render a placeholder, keep the product launchable.
+Two obligations follow. A validator MUST accept a `RootManifest` whose `format` is not one of the v1 values, and Hosts MUST NOT sniff or auto-correct the format.
 
 #### Trusted products
 
-Products interact through the Host — reading another product's account, asking it to sign. Each such interaction is normally a consent decision; `trustedProducts` pre-approves the ones the publisher has already judged safe, and the Host does not prompt for them.
+Products interact through the Host — reading another product's account, asking it to sign.
+Each such interaction is normally a consent decision; `trustedProducts` pre-approves the ones the publisher has already judged safe, and the Host does not prompt for them.
 
 **The grant is issued by the product being accessed.** An entry in A's manifest states what B may do *to A* — the only direction A's name can authenticate. It says nothing about what A may do to B, nor about the products B in turn trusts.
 
-- **Keys** are bare `<product_id>` labels, lowercase, with no TLD suffix: `"game"`, never `"game.dot"`. The Host appends the TLD of the network it resolves against. A key that does not resolve there is inert, not a validation error.
+- **Keys** are bare `<product_id>` labels, lowercase, with no TLD suffix: `"wallet"`, never `"wallet.dot"`. The Host appends the TLD of the network it resolves against. A key that does not resolve there is inert, not a validation error.
 - **Values** are that product's grants. v1 defines one, `all` — a wildcard for the complete set of cross-product permissions the Host mediates on this product's behalf. It is resolved against that set when the grant is used, not enumerated here, so a grant of `all` covers permissions added after it was published. Hosts MUST ignore unrecognised values, keep the recognised ones, and MUST NOT fail validation over them.
 - **Absence means no grants.** Missing field, empty record, and empty array are equivalent: prompt as usual. A product listing itself is ignored.
 
-Which interactions a Host mediates, and what the prompt looks like, are Host runtime contracts. This RFC defines only where the grants are published and how they are read.
+Which interactions a Host mediates, and what the prompt looks like, are Host runtime contracts; this RFC defines only how the grants are published and read.
 
 ### Executable manifest (v1)
 
@@ -163,7 +170,7 @@ type WidgetManifest = CommonExecutableFields & {
 type WorkerManifest = CommonExecutableFields & {
   kind: 'worker';
   entrypoint: string;                              // Path to the worker entry module inside the executable directory.
-  includes: {                                      // Which user-facing surfaces this worker serves.
+  includes: {                                      // Surfaces served; an omitted key means `false`.
     pocket?: boolean;
     chat?: boolean;
     input?: boolean;
@@ -176,7 +183,7 @@ type SemVer = [major: number, minor: number, patch: number, build?: string];
 
 - `app` — full-screen App. No extra fields beyond the common ones.
 - `widget` — `dimensions.height` is the list of grid-step heights the widget can render at; the Host picks one per layout. `width` defaults to `1` column. The grid unit and bounds belong to the Host's dashboard spec (see [Future Directions](#future-directions)). By convention `8` in `height` signals a full-screen widget; this RFC does not normalise that convention.
-- `worker` — background JS worker. `entrypoint` is the module the Host loads inside the worker. `includes` declares which user-facing surfaces this worker serves: `{ chat: true }` means a Host MAY expose "open chat" affordances for the product, `{ pocket: true }` Pocket-artifact navigation, `{ input: true }` means a Host MAY offer the product as an input surface wherever it accepts one. Every key is optional and an omitted key means `false`; any combination is valid, including all three. An `includes` with nothing true is also valid: the worker exposes no user-facing surface and runs purely as background logic — for example caching, notification scheduling, or chain bookkeeping that backs the product's other executables. A Host exposes no affordances for such a worker; it still launches and runs the background process.
+- `worker` — background JS worker. `entrypoint` is the module the Host loads inside the worker. `includes` declares which surfaces it serves.
 
 **`appVersion` is a label, not a change signal.** Hosts detect a new deployment from the subname's `contenthash`, not from this field (see [Cache invalidation](#resolving-a-product)). `appVersion` names the release for the user — "update to 1.4.0", "you declined 1.3.2" — so publishers SHOULD keep it meaningful, but nothing about resolution or caching depends on it moving.
 
@@ -246,7 +253,7 @@ Both codecs encode to a single varint byte, so a CID's encoded length is the sam
 
 #### dotNS transport
 
-**Names and nodes.** Prose in this RFC speaks in **subnames** — dotted labels like `widget.hackm3.dot`. The dotNS contract API does not: every read and write addresses a node by its **subnode**, the ENS-style namehash of the dotted label as a `bytes32`. Implementations compute `namehash(subname)` once at each call site and pass the resulting `bytes32` into the contract call. Calls that accept a parent node plus a child label (`setSubnodeOwner`, `setSubnodeResolver`) take the parent's `bytes32` namehash directly and the child label as a string; the contract derives the child subnode internally.
+**Names and nodes.** Prose in this RFC speaks in **subnames** — dotted labels like `widget.game.dot`. The dotNS contract API does not: every read and write addresses a node by its **subnode**, the ENS-style namehash of the dotted label as a `bytes32`. Implementations compute `namehash(subname)` once at each call site and pass the resulting `bytes32` into the contract call. Calls that accept a parent node plus a child label (`setSubnodeOwner`, `setSubnodeResolver`) take the parent's `bytes32` namehash directly and the child label as a string; the contract derives the child subnode internally.
 
 Every dotNS contract call is composed as ABI-encoded calldata and dispatched through the dotNS chain's `pallet-revive`:
 
@@ -278,8 +285,8 @@ The publisher reads a local config file authored and source-controlled by the de
 
 ```typescript
 type LocalProductConfig = {
-  productName: string; // dotNS base name (e.g. "hackm3.dot").
-  displayName: string; // Human-readable product name (e.g. "HackM3"). Becomes RootManifest.displayName verbatim.
+  productName: string; // dotNS base name (e.g. "game.dot").
+  displayName: string; // Human-readable product name (e.g. "Game"). Becomes RootManifest.displayName verbatim.
   description: string; // Short description of the product.
   icon: string; // Path to the icon file on disk. Uploaded to Bulletin, which stores raw bytes with no metadata — so the publisher MUST also surface the icon's format (`"jpeg"` | `"png"`) for the manifest's `Icon.format` field, either as a separate config field or by deriving it from the file extension. This RFC does not specify which approach is taken.
   trustedProducts?: Record<string, Granted[]>; // Same shape as RootManifest.trustedProducts; keys are bare product ids.
@@ -460,17 +467,11 @@ For a base name `B`:
 
 For the optional icon-byte fetch, the same gateway mechanics apply against the root manifest's `icon.cid` — no `contenthash` read, since the icon CID is carried in the manifest itself. A missing or undecodable icon is a UX degradation, not a launch blocker (see [Corner cases](#corner-cases)).
 
-**Cache invalidation.** dotNS provides no push notifications, so a Host polls. What it polls for is the **content**, not the metadata: manifests describe a product, but the thing a Host caches and must keep honest is the executable bytes, and those are identified by the subname's `contenthash`.
+**Cache invalidation.** dotNS provides no push notifications, so a Host polls — for the content, not the metadata. A Host keeps each executable's manifest fields together with the `contenthash` it resolved at; that pair is the installed executable. Re-reading `contenthash(subnode)` and comparing detects a new deployment: a different value means new bytes, an equal value means the installed copy is current, and a subname that no longer resolves is not drift. Bytes are then cacheable indefinitely by the CID that addressed them, so a fetch is needed only when the `contenthash` moves.
 
-The mechanism is a comparison of that one value:
+A re-publish therefore never has to touch the manifest JSON — the `contenthash` moves whenever the bytes do. What a Host does with an observed change, fetch it or hold the installed copy until the user accepts, is Host policy and out of scope here.
 
-1. When a Host resolves an executable it keeps the manifest fields **together with the `contenthash` it resolved at** — that pair is the installed executable.
-2. To check for a new deployment it re-reads `contenthash(subnode)` and compares. A different value means new bytes are available; an equal value means the installed copy is current. A subname that no longer resolves is not drift.
-3. Executable and icon bytes are then cacheable indefinitely, keyed by the CID that addressed them — content-addressing makes the same CID the same bytes forever, so a fetch is needed only when the `contenthash` moves.
-
-This is why nothing about a re-publish needs to touch the manifest JSON: the `contenthash` moves whenever the bytes do, independently of anything the publisher remembers to bump. What a Host does once it observes a change — fetch immediately, or hold the installed copy until the user accepts — is Host policy and out of scope here.
-
-Manifests themselves are metadata and carry no such signal — re-read them whenever it suits, on whatever schedule the Host prefers. One consequence is worth stating: a revoked trust grant lives in the root manifest, so it stays in force until that record is re-read, and Hosts SHOULD bound how long a cached `trustedProducts` is honoured.
+Manifests carry no such signal, so re-read them on whatever schedule suits. One consequence: a revoked trust grant stays in force until the root manifest is re-read, so Hosts SHOULD bound how long a cached `trustedProducts` is honoured.
 
 #### Conformance fixtures
 
@@ -485,7 +486,7 @@ A conforming Host implementation should produce well-defined behaviour for each 
 - Unknown `icon.format` → root manifest still validates; render placeholder; product remains launchable.
 - Unknown grant value in `trustedProducts` → root manifest still validates; that value is ignored, recognised values in the same entry still apply.
 - `trustedProducts` key naming a product that does not resolve → entry is inert; root manifest still validates.
-- `trustedProducts` key written with a TLD suffix (`"game.dot"` instead of `"game"`) → resolves to `game.dot.<tld>`, does not exist, entry is inert; grants nothing.
+- `trustedProducts` key written with a TLD suffix (`"wallet.dot"` instead of `"wallet"`) → resolves to `wallet.dot.<tld>`, does not exist, entry is inert; grants nothing.
 - Icon CID unreachable → render placeholder; product remains launchable.
 - Icon bytes do not decode as the declared `format` → render placeholder; product remains launchable.
 - Executable subname absent or empty `executable` text record → product does not provide that executable.
@@ -523,4 +524,6 @@ A conforming Host implementation should produce well-defined behaviour for each 
 
 ## Future Directions
 
-A manifest-aggregation RPC could eliminate the N+1 lookup pattern (one round-trip per subname) without changing the schema. A companion spec will pin down the dashboard grid (cell size, bounds, responsive behaviour) referenced by `WidgetManifest.dimensions`. Multi-widget products are deferred: a later revision will define a subname convention (e.g. `widget.<id>.<product_id>.<tld>`) and a discovery mechanism. `Granted` will gain per-capability values (account read, signing, …) alongside `all` once the Host runtime contracts name those capabilities; `all` stays the wildcard, and the array shape and the ignore-unrecognised-values rule let the narrower values land without a new `$v`.
+- `Granted` will gain per-capability values (account read, signing, …) alongside `all` once the Host runtime contracts name those capabilities; `all` stays the wildcard, and the array shape and the ignore-unrecognised-values rule let the narrower values land without a new `$v`.
+- A manifest-aggregation RPC could eliminate the N+1 lookup pattern (one round-trip per subname) without changing the schema.
+- A companion spec will pin down the dashboard grid (cell size, bounds, responsive behaviour) referenced by `WidgetManifest.dimensions`.

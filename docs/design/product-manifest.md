@@ -56,9 +56,9 @@ type WidgetManifest = CommonExecutableFields & {
 type WorkerManifest = CommonExecutableFields & {
   kind: "worker";
   entrypoint: string;
-  includes: { 
-    pocket?: boolean; 
-    chat?: boolean; 
+  includes: {
+    pocket?: boolean;
+    chat?: boolean;
     input?: boolean;
   };
 };
@@ -148,16 +148,16 @@ Running products interact through the host — reading another product's account
 sign. Normally each is a consent prompt; `trustedProducts` skips the prompt for products the
 publisher pre-approved.
 
-Grants point inward — A's manifest says what others may do **to A**:
+Grants point inward:
 
 ```
-A's manifest:  trustedProducts: { "game": ["all"] }
-               → game may act on A
-               → A gets nothing on game
-               → products game trusts get nothing on A
+A's manifest:  trustedProducts: { "wallet": ["all"] }
+               → wallet may act on A
+               → A gets nothing on wallet
+               → products wallet trusts get nothing on A
 ```
 
-Keys carry no TLD: `game`, not `game.dot`. Append the TLD of the network you resolve against
+Keys carry no TLD: `wallet`, not `wallet.dot`. Append the TLD of the network you resolve against
 before matching. Missing field, empty record, empty array all mean "prompt as usual".
 
 Two rules the host owes the user:
@@ -177,8 +177,7 @@ Two rules the host owes the user:
 | Unknown `Granted` value                  | Ignore it; manifest stays valid          |
 | `trustedProducts` key does not resolve   | Entry inert; manifest stays valid        |
 | `trustedProducts` key carries a TLD      | Does not resolve; entry inert            |
-| Icon CID unreachable                     | Render placeholder; product launchable   |
-| Icon bytes do not decode as `format`     | Render placeholder; product launchable   |
+| Icon CID unreachable, or bytes undecodable | Render placeholder; product launchable |
 | Missing executable subname               | Product does not provide that executable |
 | `kind` does not match subname label      | Skip that executable                     |
 | `contenthash` unset / non-IPFS codec     | Cannot launch that executable            |
@@ -187,14 +186,13 @@ Two rules the host owes the user:
 
 ## Caching
 
-Cache the **content**, and invalidate on the content's identity — the `contenthash`. Manifests are
-metadata about a product; they are not what has to stay fresh.
+Invalidate on the content's identity — the `contenthash`. Manifests are metadata; they are not
+what has to stay fresh.
 
 - **Executables**: store the manifest fields together with the `contenthash` you resolved at — that
-  pair is the installed executable. To check for a new deployment, re-read `contenthash(subnode)`
-  and compare; a different value means new bytes, an equal value means you are current. A subname
-  that stopped resolving is not drift. `appVersion` is for showing the user which release this is,
-  never for detecting that a release happened.
+  pair is the installed executable. To check for a new deployment, re-read `contenthash(subnode)` and compare: different means new
+  bytes, equal means you are current, no longer resolving is not drift. `appVersion` shows the user
+  which release this is; it never signals that a release happened.
 - **Icon and executable bytes**: cacheable indefinitely by CID (content-addressed; same CID = same
   bytes). Fetch only when the `contenthash` moves.
 - **Manifests**: metadata, re-read on whatever schedule suits. One exception to keep in mind — a
