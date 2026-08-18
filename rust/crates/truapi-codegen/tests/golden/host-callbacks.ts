@@ -196,6 +196,54 @@ export type CreateTransactionReview =
   | { tag: "LegacyAccount"; value: LegacyAccountTxPayload };
 
 /**
+ * Review shown before a product uses another product's registered ring-VRF key
+ * (RFC-0024).
+ *
+ * Both outputs are bearer tokens the caller can spend without the Host: a proof
+ * for its context's alias, a signature for the key itself. `message` is opaque,
+ * so nothing here establishes what the result will authorize — the decision is
+ * whether the calling product is trusted with the owner's key at all.
+ */
+export interface ForeignRingVrfKeyReview {
+  /**
+   * Product making the request.
+   */
+  callingProductId: string;
+
+  /**
+   * Registered key the request would use, owned by another product.
+   */
+  keyHandle: ProductAccountId;
+
+  /**
+   * What the key would produce.
+   */
+  keyUse: ForeignRingVrfUse;
+
+  /**
+   * Opaque message bound into the proof or signature.
+   */
+  message: Uint8Array;
+}
+
+/**
+ * What a foreign registered ring-VRF key would produce.
+ */
+export type ForeignRingVrfUse =
+  /**
+   * A ring-VRF proof, scoped to a context and a ring.
+   */
+  | {
+      tag: "Proof";
+      value: { context: ProductProofContext; ringLocation: RingLocation };
+    }
+  /**
+   * A member-key signature. Linkable to every other use of the key, with no
+   * context or ring bounding what it authorizes.
+   */
+  | { tag: "Signature"; value?: undefined };
+
+/**
  * One chain a host serves: a protocol chain role mapped to the concrete
  * chain of the host's configured environment.
  */
@@ -453,6 +501,10 @@ export type UserConfirmationReview =
    */
   | { tag: "AccountAccess"; value: AccountAccessReview }
   /**
+   * Allow a product to use another product's registered ring-VRF key.
+   */
+  | { tag: "ForeignRingVrfKey"; value: ForeignRingVrfKeyReview }
+  /**
    * Sign an RFC-0023 VRF transcript with a product account.
    */
   | { tag: "SignVrf"; value: SignVrfReview };
@@ -551,6 +603,42 @@ export const CreateTransactionReview: S.Codec<CreateTransactionReview> = S.lazy(
     S.TaggedUnion({
       Product: ProductAccountTxPayload,
       LegacyAccount: LegacyAccountTxPayload,
+    }),
+);
+
+/**
+ * Review shown before a product uses another product's registered ring-VRF key
+ * (RFC-0024).
+ *
+ * Both outputs are bearer tokens the caller can spend without the Host: a proof
+ * for its context's alias, a signature for the key itself. `message` is opaque,
+ * so nothing here establishes what the result will authorize — the decision is
+ * whether the calling product is trusted with the owner's key at all.
+ */
+export const ForeignRingVrfKeyReview: S.Codec<ForeignRingVrfKeyReview> = S.lazy(
+  (): S.Codec<ForeignRingVrfKeyReview> =>
+    S.Struct({
+      callingProductId: S.str,
+      keyHandle: ProductAccountId,
+      keyUse: ForeignRingVrfUse,
+      message: S.Bytes(),
+    }) as S.Codec<ForeignRingVrfKeyReview>,
+);
+
+/**
+ * What a foreign registered ring-VRF key would produce.
+ */
+export const ForeignRingVrfUse: S.Codec<ForeignRingVrfUse> = S.lazy(
+  (): S.Codec<ForeignRingVrfUse> =>
+    S.TaggedUnion({
+      Proof: S.Struct({
+        context: ProductProofContext,
+        ringLocation: RingLocation,
+      }) as S.Codec<{
+        context: ProductProofContext;
+        ringLocation: RingLocation;
+      }>,
+      Signature: S._void,
     }),
 );
 
@@ -736,6 +824,7 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
       ResourceAllocation: ResourceAllocationReview,
       PreimageSubmit: PreimageSubmitReview,
       AccountAccess: AccountAccessReview,
+      ForeignRingVrfKey: ForeignRingVrfKeyReview,
       SignVrf: SignVrfReview,
     }),
 );

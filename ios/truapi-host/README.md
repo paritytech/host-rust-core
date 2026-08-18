@@ -215,6 +215,12 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
     func confirmUserAction(review: UserConfirmationReview) async throws -> Bool {
         // Switch on the review variant (.signPayload, .createTransaction, ...)
         // to render the confirmation prompt with its typed fields.
+        //
+        // `.foreignRingVrfKey` is the one variant a host must not remember: it
+        // authorizes one product's use of another product's ring-VRF key for a
+        // single message, and the core asks again on every call. Show the calling
+        // product, the owning product, and whether the output is a context-scoped
+        // proof or an unscoped, linkable member-key signature.
         await MainActor.run { /* render review; */ false }
     }
 
