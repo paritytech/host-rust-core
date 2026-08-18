@@ -56,7 +56,11 @@ type WidgetManifest = CommonExecutableFields & {
 type WorkerManifest = CommonExecutableFields & {
   kind: "worker";
   entrypoint: string;
-  includes: Record<"chat" | "pocket" | "input", boolean>;
+  includes: { 
+    pocket?: boolean; 
+    chat?: boolean; 
+    input?: boolean;
+  };
 };
 
 type SemVer = [major: number, minor: number, patch: number, build?: string];
@@ -71,7 +75,9 @@ type SemVer = [major: number, minor: number, patch: number, build?: string];
 | `widget.<product_id>.<tld>` | `executable`    | Widget executable manifest |
 | `worker.<product_id>.<tld>` | `executable`    | Worker executable manifest |
 
-Absence of a subname means the product does not provide that executable.
+Absence of a subname means the product does not provide that executable. Each executable subname
+also holds an IPFS-codec `contenthash` — the Bulletin CID of its bytes, and the reason no
+executable manifest carries a CID field.
 
 ## Resolution Flow
 
@@ -92,7 +98,9 @@ A host resolves a product from its dotNS base name `B` in eight steps:
    subnode = namehash("<type>.<product_id>.<tld>")
    repeat steps 2–4 with text(subnode, "executable")
 7. (optional) Verify owner(subnode) == owner(node)
-8. Fetch executable bytes: GET <gateway>/ipfs/<cid>
+8. cid = decode(IDotnsContentResolver.contenthash(subnode))
+   └─ unset / non-IPFS codec / undecodable → cannot launch; diagnostic
+   Fetch executable bytes: GET <gateway>/ipfs/<cid>
    └─ unreachable → cannot launch that executable; surface diagnostic
    icon: same fetch against icon.cid
    └─ any failure → placeholder; product still launches
@@ -123,14 +131,16 @@ This account need not exist or hold a balance.
 
 Fixed by the Bulletin chain protocol.
 
-| Constant       | Value              | Meaning                               |
-|----------------|--------------------|---------------------------------------|
-| CID version    | `1`                | CIDv1                                 |
-| Multicodec     | `0x55` (`raw`)     | Stored bytes addressed as raw payload |
-| Multihash code | `0x12` (`sha-256`) | Hash algorithm for the CID            |
-| Digest length  | `32` bytes         | SHA-256 output size                   |
+| Constant                  | Value                    | Meaning                                |
+|---------------------------|--------------------------|----------------------------------------|
+| CID version               | `1`                      | CIDv1                                  |
+| Multihash code            | `0xb220` (`blake2b-256`) | Hash algorithm for the CID             |
+| Digest length             | `32` bytes               | BLAKE2b-256 output size                |
+| Multicodec — single blob  | `0x55` (`raw`)           | Bytes addressed as a raw payload       |
+| Multicodec — archive root | `0x70` (`dag-pb`)        | Root of a merkleized UnixFS directory  |
 
-A Bulletin CID is `CIDv1(raw, sha256(data))`.
+A one-block blob is `CIDv1(raw, blake2b-256(data))`. An executable is a CAR-packed UnixFS
+directory, so its root CID is `dag-pb` — a raw block has no links and cannot be a DAG root.
 
 ## Cross-Product Trust
 
@@ -171,11 +181,23 @@ Two rules the host owes the user:
 | Icon bytes do not decode as `format`     | Render placeholder; product launchable   |
 | Missing executable subname               | Product does not provide that executable |
 | `kind` does not match subname label      | Skip that executable                     |
+| `contenthash` unset / non-IPFS codec     | Cannot launch that executable            |
 | Executable CID unreachable               | Cannot launch that executable            |
 | Subname owner differs (strict provenance)| Skip that executable                     |
 
 ## Caching
 
-- **Manifests**: cache by base name. Detect re-publish by re-reading the text record or comparing `appVersion`. Bound the lifetime — a cached `trustedProducts` keeps revoked grants alive.
-- **Icon and executable bytes**: cacheable indefinitely by CID (content-addressed; same CID = same bytes).
+Cache the **content**, and invalidate on the content's identity — the `contenthash`. Manifests are
+metadata about a product; they are not what has to stay fresh.
+
+- **Executables**: store the manifest fields together with the `contenthash` you resolved at — that
+  pair is the installed executable. To check for a new deployment, re-read `contenthash(subnode)`
+  and compare; a different value means new bytes, an equal value means you are current. A subname
+  that stopped resolving is not drift. `appVersion` is for showing the user which release this is,
+  never for detecting that a release happened.
+- **Icon and executable bytes**: cacheable indefinitely by CID (content-addressed; same CID = same
+  bytes). Fetch only when the `contenthash` moves.
+- **Manifests**: metadata, re-read on whatever schedule suits. One exception to keep in mind — a
+  revoked trust grant only takes effect once the root manifest is re-read, so bound how long a
+  cached `trustedProducts` is honoured.
 - dotNS provides no push notifications; hosts must poll.
