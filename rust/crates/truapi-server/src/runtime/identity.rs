@@ -594,6 +594,8 @@ mod tests {
             sso: None,
             root_entropy_source: None,
             identity_account_id: Some(ACCOUNT),
+            identity_chat_private_key: None,
+            device_enc_public_key: None,
             lite_username: None,
             full_username: None,
         };

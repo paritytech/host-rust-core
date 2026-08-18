@@ -29,6 +29,7 @@ jobs:
         with:
           toolchain: nightly
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
@@ -43,6 +44,14 @@ jobs:
       - name: cargo check wasm32
         run: cargo check --target wasm32-unknown-unknown -p truapi-server
 
+      - name: cargo +nightly clippy wasm32 (truapi-provider browser backends)
+        run: cargo +nightly clippy -p truapi-provider --target wasm32-unknown-unknown --no-default-features --features "js smoldot networks" --all-targets -- -D warnings
+
+      # The native-bindings build has no `ws` backend, which makes ChainSource a
+      # single-variant enum; --all-features never exercises that shape.
+      - name: cargo +nightly clippy (truapi-provider native bindings)
+        run: cargo +nightly clippy -p truapi-provider --no-default-features --features uniffi --all-targets -- -D warnings
+
       - name: cargo +nightly fmt --check
         run: cargo +nightly fmt --check
 
@@ -51,6 +60,27 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace --all-features
+
+  wasm-provider:
+    name: truapi-provider (wasm browser tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: wasm-pack test --headless --chrome
+        run: wasm-pack test --headless --chrome rust/crates/truapi-provider --no-default-features --features "js smoldot"
 
   licenses:
     name: Dependency licenses
@@ -180,7 +210,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 30
     env:
+      # Resolving the package resolves both binary targets, whichever scheme builds.
       TRUAPI_USE_LOCAL_BINARY: "1"
+      TRUAPI_PROVIDER_USE_LOCAL_BINARY: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -205,6 +237,9 @@ jobs:
       - name: Stage it into the package
         run: ./ios/truapi-host/scripts/stage-xcframework.sh
 
+      - name: Build the simulator XCFramework for TrUAPIProvider
+        run: PROFILE=debug ./ios/truapi-provider/scripts/rebuild.sh --sim-only
+
       # Compiling the test target is the point: the hand-written conformers a
       # generated-file diff cannot see live there and in TrUAPIHost.swift.
       - name: Compile the package and its tests
@@ -214,6 +249,9 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
+
+      - name: Compile TrUAPIProvider
+        run: swift build --target TrUAPIProvider
 
   ts-client:
     name: "@parity/truapi"
@@ -427,6 +465,7 @@ jobs:
     needs:
       [
         rust,
+        wasm-provider,
         licenses,
         codegen,
         ios-bindings,
@@ -443,6 +482,7 @@ jobs:
         run: |
           results=(
             "${{ needs.rust.result }}"
+            "${{ needs.wasm-provider.result }}"
             "${{ needs.licenses.result }}"
             "${{ needs.codegen.result }}"
             "${{ needs.ios-bindings.result }}"

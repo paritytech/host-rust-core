@@ -235,6 +235,8 @@ impl<'a> SsoPairingFlow<'a> {
             sso: Some(sso),
             root_entropy_source: Some(response.success.root_entropy_source),
             identity_account_id: Some(response.success.identity_account_id),
+            identity_chat_private_key: Some(response.success.identity_chat_private_key),
+            device_enc_public_key: Some(response.success.device_enc_pub_key),
             lite_username: None,
             full_username: None,
         };
@@ -545,7 +547,7 @@ mod tests {
     use crate::test_support::{
         StubPlatform, core_storage_test_key, pairing_device_from_deeplink, peer_statement_keypair,
         runtime_config, session_info, signed_test_statement, stub_platform, subscribe_ack_frame,
-        test_spawner, wallet_handshake_statement,
+        test_spawner, wallet_device_encryption_public_key, wallet_handshake_statement,
     };
     use truapi::CallContext;
     use truapi::api::Account;
@@ -819,6 +821,28 @@ mod tests {
             peer_statement_keypair().1
         );
 
+        // The handshake shares both values once; nothing can recompute them
+        // afterwards, so pairing must retain them verbatim.
+        assert_eq!(session.identity_chat_private_key, Some([0x77; 32]));
+        // The fixture's device key differs from its SSO channel key, so this
+        // also pins that the two are not conflated.
+        assert_eq!(
+            session.device_enc_public_key,
+            Some(wallet_device_encryption_public_key())
+        );
+
+        // Public values project to host UI; the chat secret deliberately does not.
+        let ui_info = connected_session_ui_info(&session);
+        assert_eq!(
+            ui_info.chat_public_key,
+            Some(X25519PublicKey::from(&X25519SecretKey::from([0x77; 32])).to_bytes()),
+            "the projected chat public key must match the retained secret"
+        );
+        assert_eq!(
+            ui_info.peer_statement_account_id,
+            Some(peer_statement_keypair().1)
+        );
+
         let writes = session_writes
             .lock()
             .expect("session write list mutex poisoned");
@@ -935,7 +959,7 @@ mod tests {
         assert!(
             auth_states
                 .iter()
-                .any(|state| matches!(state, AuthState::LoginFailed { reason } if reason == expected_reason)),
+                .any(|state| matches!(state, AuthState::LoginFailed { reason, .. } if reason == expected_reason)),
             "wallet failure should be surfaced to the modal: {auth_states:?}"
         );
     }
@@ -1128,8 +1152,10 @@ mod tests {
             .lock()
             .expect("auth state list mutex poisoned");
         assert_eq!(auth_states.len(), 1, "states: {auth_states:?}");
-        assert!(matches!(&auth_states[0], AuthState::LoginFailed { reason }
-            if reason.contains("identity storage unavailable")));
+        assert!(
+            matches!(&auth_states[0], AuthState::LoginFailed { reason, .. }
+            if reason.contains("identity storage unavailable"))
+        );
     }
 
     #[test]

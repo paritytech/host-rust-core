@@ -385,14 +385,17 @@ public protocol HostBridge: AnyObject, Sendable {
 
     /// Observe an auth state change, in transition order: render `.pairing` as
     /// the pairing QR UI, `.connected`/`.disconnected` as the account badge,
-    /// and `.loginFailed` as a retryable error. A pairing host's session
-    /// activation reports its outcome even when it is the default
-    /// `.disconnected`, so a host that awaits activation before routing never
-    /// has to read silence as "signed out"; every other emission, and every
-    /// emission on a host role that has no session activation, happens only
-    /// when the state actually changes. Report a user dismissal of the pairing
-    /// UI through ``TrUAPIHostCore/cancelLogin()``. Invoked on the dispatcher
-    /// thread; hand the state to the main thread and return promptly.
+    /// and `.loginFailed` as a retryable error, unless its `kind` is
+    /// `.noFreeAllowanceSlots`, which is unlikely to succeed before the period
+    /// rolls over, so retry should not be the primary action. A pairing host's
+    /// session activation reports its outcome even
+    /// when it is the default `.disconnected`, so a host that awaits activation
+    /// before routing never has to read silence as "signed out"; every other
+    /// emission, and every emission on a host role that has no session
+    /// activation, happens only when the state actually changes. Report a user
+    /// dismissal of the pairing UI through ``TrUAPIHostCore/cancelLogin()``.
+    /// Invoked on the dispatcher thread; hand the state to the main thread and
+    /// return promptly.
     func authStateChanged(state: AuthState)
 
     /// Open a JSON-RPC chain connection and return a host-assigned id, or nil if unsupported.
