@@ -205,9 +205,12 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
     }
 
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
-    // account badge and `.loginFailed` as a retryable error. This core is a
-    // signing host — it owns the signer and never pairs — so `.pairing` and
-    // `.authenticating` are not emitted and `core.cancelLogin()` is inert.
+    // account badge and `.loginFailed` as a retryable error, unless its `kind`
+    // is `.noFreeAllowanceSlots`, which is unlikely to succeed before the
+    // period rolls over, so retry should not be the primary action. This core
+    // is a signing host — it owns the signer and never
+    // pairs — so `.pairing` and `.authenticating` are not emitted and
+    // `core.cancelLogin()` is inert.
     // Activate the session with `core.activateLocalSession(secret:...)`.
     func authStateChanged(state: AuthState) {
         DispatchQueue.main.async { /* render the state */ }

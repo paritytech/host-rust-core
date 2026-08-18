@@ -1023,4 +1023,27 @@ mod tests {
     fn truncated_allowance_entry_has_no_account() {
         assert!(decode_entry(&[0x42; 32]).is_none());
     }
+
+    /// Pins `reports_exhausted_period` against the renderings above: rewording
+    /// one of these variants fails here, in the file it was reworded in, rather
+    /// than silently turning the signing host's account rotation into a retry
+    /// loop. The reason it reads is the registration error wrapped in context,
+    /// so the match has to survive both the wrapping and the casing.
+    #[test]
+    fn an_exhausted_period_is_reported_whatever_wraps_it() {
+        use crate::runtime::login_failure::reports_exhausted_period;
+
+        let error = SlotError::NoFreeStatementStoreSlot { period: 7, max: 10 };
+
+        assert!(reports_exhausted_period(&error.to_string()));
+        assert!(reports_exhausted_period(&format!(
+            "allowance registration for device failed: {error}"
+        )));
+        assert!(reports_exhausted_period(
+            &SlotError::NoFreeLongTermStorageSlot { period: 7, max: 4 }.to_string()
+        ));
+        assert!(!reports_exhausted_period(
+            &SlotError::FreeSlotsAwaitingSubmission { period: 7 }.to_string()
+        ));
+    }
 }
