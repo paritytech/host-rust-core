@@ -466,6 +466,12 @@ pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
     response_id: 165,
 };
 
+/// Wire discriminants for `chain_get_chain_info`.
+pub const CHAIN_GET_CHAIN_INFO: RequestFrameIds = RequestFrameIds {
+    request_id: 166,
+    response_id: 167,
+};
+
 /// Wire discriminants for `funding_request`.
 pub const FUNDING_REQUEST: RequestFrameIds = RequestFrameIds {
     request_id: 176,
@@ -492,10 +498,6 @@ pub const FUNDING_SERVE_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
 pub const FUNDING_REPORT: RequestFrameIds = RequestFrameIds {
     request_id: 186,
     response_id: 187,
-/// Wire discriminants for `chain_get_chain_info`.
-pub const CHAIN_GET_CHAIN_INFO: RequestFrameIds = RequestFrameIds {
-    request_id: 166,
-    response_id: 167,
 };
 
 /// The full wire table. Ordering is part of the wire protocol;
@@ -762,6 +764,10 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Request(ACCOUNT_SIGN_VRF),
     },
     WireEntry {
+        method: "chain_get_chain_info",
+        kind: WireKind::Request(CHAIN_GET_CHAIN_INFO),
+    },
+    WireEntry {
         method: "funding_request",
         kind: WireKind::Request(FUNDING_REQUEST),
     },
@@ -776,7 +782,5 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "funding_report",
         kind: WireKind::Request(FUNDING_REPORT),
-        method: "chain_get_chain_info",
-        kind: WireKind::Request(CHAIN_GET_CHAIN_INFO),
     },
 ];
