@@ -1960,7 +1960,7 @@ public func FfiConverterTypeHostChatActionSubscribeItem_lower(_ value: HostChatA
  * wall-clock instant (Unix milliseconds UTC). `None` fires immediately,
  * preserving prior behaviour. See [RFC 0019].
  *
- * [RFC 0019]: https://github.com/paritytech/truapi/blob/main/docs/rfcs/0019-scheduled-notifications.md
+ * [RFC 0019]: https://github.com/paritytech/host-rust-core/blob/main/docs/rfcs/0019-scheduled-notifications.md
  */
 public struct HostPushNotificationRequest: Equatable, Hashable {
     /**

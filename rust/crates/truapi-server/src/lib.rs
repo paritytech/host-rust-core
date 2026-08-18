@@ -81,6 +81,12 @@ pub use wasm::*;
 uniffi::setup_scaffolding!();
 
 #[cfg(not(target_arch = "wasm32"))]
+uniffi::use_remote_type!(truapi::Bytes32);
+
+#[cfg(not(target_arch = "wasm32"))]
+use truapi::Bytes32;
+
+#[cfg(not(target_arch = "wasm32"))]
 truapi::uniffi_reexport_scaffolding!();
 
 #[cfg(not(target_arch = "wasm32"))]

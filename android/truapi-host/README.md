@@ -28,7 +28,7 @@ dependencies {
 }
 ```
 
-JitPack fetches the tag `0.1.0` from `paritytech/truapi`, runs `make android-publish-local` against it (driven by `jitpack.yml` at the repo root, including UniFFI binding generation), and serves the resulting AAR + POM + sources jar. First fetch takes ~1 minute while JitPack builds; subsequent consumers hit the cache.
+JitPack fetches the tag `0.1.0` from `paritytech/host-rust-core`, runs `make android-publish-local` against it (driven by `jitpack.yml` at the repo root, including UniFFI binding generation), and serves the resulting AAR + POM + sources jar. First fetch takes ~1 minute while JitPack builds; subsequent consumers hit the cache.
 
 The artifact bundles the Kotlin host adapter (`io.parity.truapi.*`) and the generated UniFFI bindings (`uniffi.truapi_server.*`). It does **not** bundle the native `libtruapi_server.so` cdylib, integrators build that per Android ABI and drop it into their app's `src/main/jniLibs/<abi>/` (see "Linking the cdylib" below).
 
@@ -290,7 +290,7 @@ src/main/jniLibs/x86_64/libtruapi_server.so
 
 Cross-build the cdylib for each Android ABI from the truapi monorepo. Two options, pick whichever fits the host app's existing toolchain:
 
-**Option A: `mozilla-rust-android-gradle` plugin.** Recommended if the host app already uses it (polkadot-app-android-v2 does, for `bandersnatch-crypto`). Vendor `paritytech/truapi` as a git submodule, add a small Gradle module that points the plugin at `rust/crates/truapi-server`:
+**Option A: `mozilla-rust-android-gradle` plugin.** Recommended if the host app already uses it (polkadot-app-android-v2 does, for `bandersnatch-crypto`). Vendor `paritytech/host-rust-core` as a git submodule, add a small Gradle module that points the plugin at `rust/crates/truapi-server`:
 
 ```kotlin
 // app/build.gradle.kts (or a dedicated :truapi-cdylib module)
@@ -327,7 +327,7 @@ Pre-built per-ABI `.so` files bundled inside the AAR are tracked as a follow-up 
 
 ## Maintainers: cutting a release
 
-JitPack builds on demand from any git tag in `paritytech/truapi`, so a release is just:
+JitPack builds on demand from any git tag in `paritytech/host-rust-core`, so a release is just:
 
 1. Bump `publicationVersion` in `android/truapi-host/build.gradle.kts`.
 2. Commit. Open a PR. Merge.
