@@ -442,7 +442,7 @@ fn validate_chat_file_name(field: &'static str, name: &str) -> Result<String, Ch
         || validated == "."
         || validated.starts_with("..")
     {
-        return Err(ChatFieldError::UnsafeCharacter { field });
+        return Err(ChatFieldError::PathComponent { field });
     }
     Ok(validated)
 }
@@ -710,6 +710,15 @@ pub enum ChatFieldError {
     /// Two entries resolved to the same value, so neither can be addressed.
     #[display("{field} must not repeat a value")]
     Duplicate {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The field names a path rather than one file. Reported separately from
+    /// [`Self::UnsafeCharacter`] because a separator or a parent reference is
+    /// neither: a product told its file name carries control characters would
+    /// go looking for one that is not there.
+    #[display("{field} must name a single file, not a path")]
+    PathComponent {
         /// Offending field name.
         field: &'static str,
     },
@@ -1754,7 +1763,7 @@ mod tests {
                     size_bytes: 1,
                     text: None,
                 })),
-                Err(ChatFieldError::UnsafeCharacter { field: "fileName" }),
+                Err(ChatFieldError::PathComponent { field: "fileName" }),
                 "{traversal:?} must be rejected"
             );
         }
