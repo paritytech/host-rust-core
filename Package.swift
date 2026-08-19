@@ -31,30 +31,6 @@ let binaryTarget: Target = useLocalBinary
         checksum: publishedBinaryChecksum
     )
 
-// Set TRUAPI_PROVIDER_USE_LOCAL_BINARY=1 to build against the locally generated
-// ios/truapi-provider/Binaries/truapi_provider.xcframework (run rebuild.sh
-// first). Separate from TRUAPI_USE_LOCAL_BINARY because the products release
-// independently: a local build of one must not require a local build of the other.
-let useLocalProviderBinary =
-    ProcessInfo.processInfo.environment["TRUAPI_PROVIDER_USE_LOCAL_BINARY"] == "1"
-
-// Set by ios/truapi-provider/scripts/publish.sh. No release exists yet, so remote
-// resolution fails on the checksum until the first publish.
-
-let providerBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-provider%400.0.0-unpublished/truapi_provider.xcframework.zip"
-let providerBinaryChecksum = "0000000000000000000000000000000000000000000000000000000000000000"
-
-let providerBinaryTarget: Target = useLocalProviderBinary
-    ? .binaryTarget(
-        name: "truapi_providerFFI_binary",
-        path: "ios/truapi-provider/Binaries/truapi_provider.xcframework"
-    )
-    : .binaryTarget(
-        name: "truapi_providerFFI_binary",
-        url: providerBinaryURL,
-        checksum: providerBinaryChecksum
-    )
-
 let package = Package(
     name: "TrUAPIHost",
     platforms: [.iOS(.v17)],
