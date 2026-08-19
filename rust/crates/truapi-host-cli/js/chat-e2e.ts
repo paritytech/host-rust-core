@@ -21,6 +21,19 @@ const ROOM_ID = "support";
 
 /** Published limits, mirrored from `truapi-platform` so a case can cross one. */
 const BODY_MAX_BYTES = 16 * 1024;
+const URL_MAX_BYTES = 2048;
+const ICON_MAX_BYTES = 64 * 1024;
+
+/**
+ * A path that arrives inside `limit` and resolves past it.
+ *
+ * "é" is two bytes and percent-encodes to six, so a quarter of the budget in
+ * leaves at roughly one and a half times it. The budget has to be measured
+ * against what the host receives for this to be refused.
+ */
+function pathThatGrowsPast(limit: number): string {
+  return "\u00e9".repeat(Math.floor(limit / 4));
+}
 
 /** Messages the host has stored so far, one JSON object per line. */
 function transcript(path: string): string[] {
@@ -32,10 +45,20 @@ function transcript(path: string): string[] {
     .filter((line) => line.length > 0);
 }
 
+/** Rooms and bots the host registered, which a refused icon must not reach. */
+function registrations(path: string): number {
+  return transcript(path).filter((line) => {
+    const kind = JSON.parse(line).kind as string;
+    return kind === "room" || kind === "bot";
+  }).length;
+}
+
 /** The payload of the last message the host stored, SCALE-encoded as hex. */
 function lastStoredPayload(path: string): string | undefined {
-  const lines = transcript(path);
-  const last = lines[lines.length - 1];
+  const messages = transcript(path).filter(
+    (line) => JSON.parse(line).kind === "message",
+  );
+  const last = messages[messages.length - 1];
   return last ? (JSON.parse(last).payload as string) : undefined;
 }
 
@@ -72,6 +95,32 @@ const REFUSED: Case[] = [
       value: {
         url: "https://files.invalid/receipt.pdf",
         fileName: "../../etc/passwd",
+        mimeType: "application/pdf",
+        sizeBytes: 1n,
+      },
+    },
+  },
+  {
+    name: "a url that carries credentials",
+    payload: {
+      tag: "File",
+      value: {
+        // `user:pass@` survives URL resolution, so a host handed this would
+        // fetch with the credentials and log them.
+        url: "https://user:pass@files.invalid/receipt.pdf",
+        fileName: "receipt.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1n,
+      },
+    },
+  },
+  {
+    name: "a url that resolves past its budget",
+    payload: {
+      tag: "File",
+      value: {
+        url: `https://files.invalid/${pathThatGrowsPast(URL_MAX_BYTES)}`,
+        fileName: "receipt.pdf",
         mimeType: "application/pdf",
         sizeBytes: 1n,
       },
@@ -180,6 +229,40 @@ export async function runChatScreeningE2e(
           `host stored ${storedPayload ?? "nothing"}, product sent ${sentPayload}`,
           startedAt,
         ),
+  );
+
+  // The icon path is where the budget was measured on the arriving string
+  // rather than the resolved one, so it gets a case of its own: the room must
+  // not reach the host at all.
+  startedAt = performance.now();
+  const roomsBefore = registrations(chatLogPath);
+  const oversizedIcon = await client.chat.createRoom({
+    roomId: "oversized-icon",
+    name: "Oversized",
+    icon: `https://icons.invalid/${pathThatGrowsPast(ICON_MAX_BYTES)}`,
+  });
+  const roomsAfter = registrations(chatLogPath);
+  rows.push(
+    oversizedIcon.isOk()
+      ? row(
+          "create_room_refuses_an_icon_that_resolves_past_its_budget",
+          "fail",
+          `accepted: ${JSON.stringify(oversizedIcon.value)}`,
+          startedAt,
+        )
+      : roomsAfter === roomsBefore
+        ? row(
+            "create_room_refuses_an_icon_that_resolves_past_its_budget",
+            "pass",
+            `${JSON.stringify(oversizedIcon.error)}; host registered no room`,
+            startedAt,
+          )
+        : row(
+            "create_room_refuses_an_icon_that_resolves_past_its_budget",
+            "fail",
+            "rejected the product, but the host registered the room",
+            startedAt,
+          ),
   );
 
   for (const refused of REFUSED) {

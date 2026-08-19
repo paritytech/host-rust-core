@@ -102,11 +102,9 @@ impl CliChatHost {
     }
 
     /// Append one accepted message to the transcript, if one is configured.
-    fn record(&self, message_id: &str, request: &HostChatPostMessageRequest) {
-        let Some(path) = self.transcript.as_ref() else {
-            return;
-        };
-        let line = serde_json::json!({
+    fn record_message(&self, message_id: &str, request: &HostChatPostMessageRequest) {
+        self.record(serde_json::json!({
+            "kind": "message",
             "messageId": message_id,
             "roomId": request.room_id,
             "variant": variant_name(&request.payload),
@@ -114,7 +112,26 @@ impl CliChatHost {
             // difference between what a product sent and what a host stored
             // hide behind the summary.
             "payload": hex::encode(request.payload.encode()),
-        });
+        }));
+    }
+
+    /// Append one accepted room or bot registration.
+    fn record_registration(&self, kind: &str, id: &str, name: &str, icon: &str) {
+        self.record(serde_json::json!({
+            "kind": kind,
+            "id": id,
+            "name": name,
+            // Icons resolve before a host sees them, so record what arrived
+            // rather than what the product typed.
+            "icon": icon,
+        }));
+    }
+
+    /// Append one line to the transcript, if one is configured.
+    fn record(&self, line: serde_json::Value) {
+        let Some(path) = self.transcript.as_ref() else {
+            return;
+        };
         let appended = OpenOptions::new()
             .create(true)
             .append(true)
@@ -156,6 +173,8 @@ impl ChatPlatform for CliChatHost {
             Self::republish(&mut state);
             ChatRoomRegistrationStatus::New
         };
+        drop(state);
+        self.record_registration("room", &request.room_id, &request.name, &request.icon);
         Ok(HostChatCreateRoomResponse { status })
     }
 
@@ -165,11 +184,13 @@ impl ChatPlatform for CliChatHost {
         request: HostChatRegisterBotRequest,
     ) -> Result<HostChatRegisterBotResponse, HostChatRegisterBotError> {
         let mut state = self.lock();
-        let status = if state.bots.insert(request.bot_id) {
+        let status = if state.bots.insert(request.bot_id.clone()) {
             ChatBotRegistrationStatus::New
         } else {
             ChatBotRegistrationStatus::Exists
         };
+        drop(state);
+        self.record_registration("bot", &request.bot_id, &request.name, &request.icon);
         Ok(HostChatRegisterBotResponse { status })
     }
 
@@ -188,7 +209,7 @@ impl ChatPlatform for CliChatHost {
         state.accepted += 1;
         let message_id = format!("m{}", state.accepted);
         drop(state);
-        self.record(&message_id, &request);
+        self.record_message(&message_id, &request);
         Ok(HostChatPostMessageResponse { message_id })
     }
 
@@ -274,12 +295,16 @@ mod tests {
         .expect("a message posts into a room this host created");
 
         assert_eq!(posted.message_id, "m1");
+        let transcript_text =
+            read_to_string(transcript.path()).expect("the transcript is readable");
         let recorded: serde_json::Value = serde_json::from_str(
-            read_to_string(transcript.path())
-                .expect("the transcript is readable")
-                .trim(),
+            transcript_text
+                .lines()
+                .next_back()
+                .expect("the message is the last line, after the room"),
         )
         .expect("each line is one JSON object");
+        assert_eq!(recorded["kind"], "message");
         assert_eq!(recorded["messageId"], "m1");
         assert_eq!(recorded["roomId"], "support");
         assert_eq!(recorded["variant"], "Text");

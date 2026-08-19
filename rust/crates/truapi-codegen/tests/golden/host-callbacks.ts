@@ -840,6 +840,14 @@ export interface ChainProvider {
  * fetch or open is restricted to `https` or an inline raster image and
  * delivered as the parser resolved it.
  *
+ * The core screens a URL's shape, not its reachability. `https://127.0.0.1`,
+ * `https://[::1]`, a private range and `https://169.254.169.254` (the cloud
+ * metadata endpoint) all pass: which networks a host is willing to fetch from
+ * depends on where that host runs, and a core that guessed would break a host
+ * serving its own media from localhost. A host that fetches these URLs owns
+ * that decision. Credentials are the exception and are refused, because
+ * `user:pass@` survives resolution into whatever the host fetches and logs.
+ *
  * `ChatFile::size_bytes` is a product assertion and is not verified against
  * the resource it names. Contextual output escaping, storage limits, and
  * anything a host derives from product-supplied values remain host-owned.

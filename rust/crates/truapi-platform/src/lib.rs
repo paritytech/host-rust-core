@@ -533,6 +533,40 @@ fn validate_chat_emoji(field: &'static str, value: &str) -> Result<String, ChatF
     Ok(normalized)
 }
 
+/// Resolve a product-supplied `https` URL to what a host will actually be
+/// handed, or reject it.
+///
+/// Both chat URL fields route through here so the budget is always measured
+/// against the resolved string. The parser percent-encodes, and a non-ASCII
+/// path triples in the process, so a value that arrives inside its cap can
+/// leave well past it.
+///
+/// Credentials are refused rather than carried: `Url::to_string` keeps
+/// `user:pass@`, so a host handed one would fetch with them and log them.
+///
+/// Which hosts are reachable is deliberately not decided here. See
+/// [`validate_chat_url`].
+fn resolve_chat_https(
+    field: &'static str,
+    trimmed: &str,
+    limit: usize,
+) -> Result<String, ChatFieldError> {
+    let parsed = Url::parse(trimmed)
+        .ok()
+        .filter(|parsed| parsed.scheme() == "https")
+        .ok_or(ChatFieldError::RejectedScheme { field })?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ChatFieldError::Credentials { field });
+    }
+    // The resolved target, not the arriving string: a host renders what the
+    // core validated, and the budget applies to what the host receives.
+    let resolved = parsed.to_string();
+    if resolved.len() > limit {
+        return Err(ChatFieldError::TooLong { field, limit });
+    }
+    Ok(resolved)
+}
+
 /// Validate a URL a host may fetch or open.
 ///
 /// The same allowlist [`validate_chat_icon`] applies, for the same reason: a
@@ -550,23 +584,7 @@ fn validate_chat_url(field: &'static str, url: &str) -> Result<String, ChatField
         return Err(ChatFieldError::UnsafeCharacter { field });
     }
     match icon_scheme(trimmed).as_deref() {
-        Some("https") => {
-            let resolved = Url::parse(trimmed)
-                .ok()
-                .filter(|parsed| parsed.scheme() == "https")
-                // The resolved target, not the arriving string: a host renders
-                // what the core validated.
-                .map(|parsed| parsed.to_string())
-                .ok_or(ChatFieldError::RejectedScheme { field })?;
-            // Measured after resolution, which percent-encodes and can grow.
-            if resolved.len() > CHAT_URL_MAX_BYTES {
-                return Err(ChatFieldError::TooLong {
-                    field,
-                    limit: CHAT_URL_MAX_BYTES,
-                });
-            }
-            Ok(resolved)
-        }
+        Some("https") => resolve_chat_https(field, trimmed, CHAT_URL_MAX_BYTES),
         // An inline image is measured against the icon budget; the link cap
         // would leave `data:` accepted but too small to carry an image.
         Some("data") if is_allowed_icon_data_url(trimmed) => {
@@ -603,11 +621,7 @@ pub fn validate_chat_icon(field: &'static str, icon: &str) -> Result<String, Cha
     }
 
     match icon_scheme(trimmed).as_deref() {
-        Some("https") => Url::parse(trimmed)
-            .ok()
-            .filter(|parsed| parsed.scheme() == "https")
-            .map(|parsed| parsed.to_string())
-            .ok_or(ChatFieldError::RejectedScheme { field }),
+        Some("https") => resolve_chat_https(field, trimmed, CHAT_ICON_MAX_BYTES),
         Some("data") if is_allowed_icon_data_url(trimmed) => Ok(trimmed.to_string()),
         _ => Err(ChatFieldError::RejectedScheme { field }),
     }
@@ -710,6 +724,12 @@ pub enum ChatFieldError {
     /// Two entries resolved to the same value, so neither can be addressed.
     #[display("{field} must not repeat a value")]
     Duplicate {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The URL carried credentials, which a host would fetch and log with.
+    #[display("{field} must not carry credentials")]
+    Credentials {
         /// Offending field name.
         field: &'static str,
     },
@@ -1770,6 +1790,85 @@ mod tests {
     }
 
     #[test]
+    fn a_url_budget_is_measured_after_resolution_on_every_field() {
+        // Percent-encoding grows a non-ASCII path threefold, so a value that
+        // arrives inside its cap can leave well past it. Measuring the arriving
+        // string alone let an icon through at three times its budget.
+        let long_path = "\u{00e9}".repeat(CHAT_ICON_MAX_BYTES / 4);
+        let icon = format!("https://icons.invalid/{long_path}");
+        assert!(icon.len() <= CHAT_ICON_MAX_BYTES, "arrives inside its cap");
+        assert!(
+            Url::parse(&icon)
+                .expect("a parsable https url")
+                .to_string()
+                .len()
+                > CHAT_ICON_MAX_BYTES,
+            "resolves past it"
+        );
+
+        assert_eq!(
+            validate_chat_icon("icon", &icon),
+            Err(ChatFieldError::TooLong {
+                field: "icon",
+                limit: CHAT_ICON_MAX_BYTES,
+            })
+        );
+
+        let message_url = format!(
+            "https://files.invalid/{}",
+            "\u{00e9}".repeat(CHAT_URL_MAX_BYTES / 4)
+        );
+        assert!(message_url.len() <= CHAT_URL_MAX_BYTES);
+        assert_eq!(
+            validate_chat_url("url", &message_url),
+            Err(ChatFieldError::TooLong {
+                field: "url",
+                limit: CHAT_URL_MAX_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn a_url_must_not_carry_credentials() {
+        // `Url::to_string` keeps `user:pass@`, so a host handed this would
+        // fetch with the credentials and log them.
+        for field_url in [
+            "https://user:pass@example.invalid/avatar.png",
+            "https://user@example.invalid/avatar.png",
+        ] {
+            assert_eq!(
+                validate_chat_icon("icon", field_url),
+                Err(ChatFieldError::Credentials { field: "icon" }),
+                "{field_url:?} must be rejected"
+            );
+            assert_eq!(
+                validate_chat_url("url", field_url),
+                Err(ChatFieldError::Credentials { field: "url" }),
+                "{field_url:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn reachability_is_the_hosts_decision_and_the_docs_say_so() {
+        // Named rather than incidental: the trait doc tells a host these pass
+        // and that fetching them is its own call. A core that guessed would
+        // break a host serving its own media from localhost, so if this ever
+        // starts rejecting, the doc has to change with it.
+        for reachable_only_by_the_host in [
+            "https://127.0.0.1:9944/rpc",
+            "https://[::1]/admin",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://10.0.0.1/internal",
+        ] {
+            assert!(
+                validate_chat_url("url", reachable_only_by_the_host).is_ok(),
+                "{reachable_only_by_the_host:?} is the host's call, not the core's"
+            );
+        }
+    }
+
+    #[test]
     fn the_published_limits_are_the_enforced_limits() {
         // `Chat::post_message`'s doc states these numbers to products in prose,
         // so a test asserting `CONST + 1` would let the constant drift away
@@ -2437,6 +2536,14 @@ pub trait PreimageHost: Send + Sync {
 /// bytes it sent. Counts and byte budgets are enforced, and any URL a host may
 /// fetch or open is restricted to `https` or an inline raster image and
 /// delivered as the parser resolved it.
+///
+/// The core screens a URL's shape, not its reachability. `https://127.0.0.1`,
+/// `https://[::1]`, a private range and `https://169.254.169.254` (the cloud
+/// metadata endpoint) all pass: which networks a host is willing to fetch from
+/// depends on where that host runs, and a core that guessed would break a host
+/// serving its own media from localhost. A host that fetches these URLs owns
+/// that decision. Credentials are the exception and are refused, because
+/// `user:pass@` survives resolution into whatever the host fetches and logs.
 ///
 /// `ChatFile::size_bytes` is a product assertion and is not verified against
 /// the resource it names. Contextual output escaping, storage limits, and
