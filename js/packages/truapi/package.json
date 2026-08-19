@@ -6,12 +6,12 @@
   "author": "Parity Technologies <admin@parity.io>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/paritytech/truapi.git",
+    "url": "git+https://github.com/paritytech/host-rust-core.git",
     "directory": "js/packages/truapi"
   },
-  "homepage": "https://github.com/paritytech/truapi#readme",
+  "homepage": "https://github.com/paritytech/host-rust-core#readme",
   "bugs": {
-    "url": "https://github.com/paritytech/truapi/issues"
+    "url": "https://github.com/paritytech/host-rust-core/issues"
   },
   "files": [
     "dist",

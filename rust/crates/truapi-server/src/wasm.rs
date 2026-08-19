@@ -776,6 +776,26 @@ impl WasmPairingHostRuntime {
         self.runtime.cancel_pairing();
     }
 
+    /// Read the active session's X25519 chat identity private key, or
+    /// `undefined` when no session is active.
+    #[wasm_bindgen(js_name = sessionChatIdentityKey)]
+    pub fn session_chat_identity_key(&self) -> Option<Vec<u8>> {
+        self.runtime
+            .session_chat_identity_key()
+            .map(|key| key.to_vec())
+    }
+
+    /// Read this device's X25519 encryption secret, generating and persisting
+    /// it on first read.
+    #[wasm_bindgen(js_name = deviceEncryptionKey)]
+    pub async fn device_encryption_key(&self) -> Result<Vec<u8>, JsValue> {
+        self.runtime
+            .device_encryption_key()
+            .await
+            .map(|key| key.to_vec())
+            .map_err(generic_error_to_js)
+    }
+
     /// Activate an externally persisted canonical session without writing it
     /// to core storage; resolves only after product frames may use it.
     #[wasm_bindgen(js_name = activateExternalSession)]
