@@ -16,7 +16,7 @@ A product's bytes live on the Bulletin chain; the manifest describes them. It is
 The format is two-level:
 
 - The **root manifest** carries product-wide metadata (displayName, icon, description) and the product's standing trust grants to other products, and lives at the product's dotNS base name. Authorship is read from dotNS itself (the on-chain owner of the name) rather than declared in the manifest.
-- One or more **executable manifests** describe individual executables (App, Widget, Worker). Each pins a product-defined version and lives at a well-known subname of the base name (`app.<product_id>.<tld>`, `widget.<product_id>.<tld>`, `worker.<product_id>.<tld>`).
+- One or more **executable manifests** describe individual executables (App, Widget, Funding, Worker). Each pins a product-defined version and lives at a well-known subname of the base name (`app.<product_id>.<tld>`, `widget.<product_id>.<tld>`, `funding.<product_id>.<tld>`, `worker.<product_id>.<tld>`).
 
 Manifests are JSON, stored inline in dotNS text records. Binary content lives on the Bulletin chain.
 
@@ -33,14 +33,16 @@ A product can expose one or more **modalities**, each a distinct user-facing sur
 - **Pocket** — passive surfaces such as cards, tickets, or certificates, served by a background JS worker.
 - **Chat** — chat bots and chat-room integrations, served by a background JS worker.
 - **Input** — an input surface for contextual interactions with the Products, served by a background JS worker.
+- **Funding** — a surface for moving value between the user's balance and an external rail, rendered from a web application the product publishes.
 
-A modality is delivered by an **executable**. v1 defines three executable types:
+A modality is delivered by an **executable**. v1 defines four executable types:
 
 - **App** — the web application backing the App modality.
 - **Widget** — the web application backing the Widget modality.
+- **Funding** — the web application backing the Funding modality.
 - **Worker** — a single background process. It may back any combination of Pocket, Chat, and Input, or serve no user-facing surface at all and run purely as background logic (see [Why one Worker, not per modality](#executable-manifest-v1)).
 
-Throughout this RFC, *modality* means a user-facing surface; *executable* means a deployable artifact.
+Throughout this RFC, _modality_ means a user-facing surface; _executable_ means a deployable artifact.
 
 Two on-chain systems sit under this RFC:
 
@@ -71,6 +73,7 @@ A product is rooted at a **dotNS base name** (e.g. `game.dot`). The base name's 
 game.dot                  → root manifest (displayName, icon, description)
 app.game.dot              → executable manifest (App)
 widget.game.dot           → executable manifest (Widget)
+funding.game.dot          → executable manifest (Funding)
 worker.game.dot           → executable manifest (Worker; serves Pocket, Chat and/or Input)
 ```
 
@@ -83,14 +86,14 @@ Manifests are encoded as **UTF-8 JSON** and stored **inline** in a single, well-
 The records are fixed by this RFC:
 
 | Subject                            | Record                   |
-|------------------------------------|--------------------------|
+| ---------------------------------- | ------------------------ |
 | Root manifest (on the base name)   | text record `manifest`   |
 | Executable manifest (on a subname) | text record `executable` |
 | Executable bytes (on a subname)    | `contenthash`            |
 
 Hosts MUST read exactly these records; publishers MUST write exactly these records. Keeping them distinct means a wrong-layer query (e.g. `manifest` on `app.<product_id>.<tld>`) returns an empty value instead of partially parsing a payload of the wrong shape.
 
-The split between the last two rows is deliberate: the manifest *describes* an executable, the `contenthash` *locates* it. No CID for executable bytes appears inside the JSON. Hosts MUST read an IPFS-codec `contenthash`; other codecs are not part of v1.
+The split between the last two rows is deliberate: the manifest _describes_ an executable, the `contenthash` _locates_ it. No CID for executable bytes appears inside the JSON. Hosts MUST read an IPFS-codec `contenthash`; other codecs are not part of v1.
 
 A v1 root manifest carrying no trust grants is well under 1 KB; an executable manifest is ~200 B. `trustedProducts` is the only unbounded field in v1 and counts against the same budget. Manifests fit within typical text-record budgets; the exact figure will be confirmed by the dotNS team's Proof-of-Concept (see [Unresolved Questions](#unresolved-questions)). v1 defines no preimage fallback: a manifest that cannot fit MUST be shrunk by the publisher.
 
@@ -105,18 +108,18 @@ The root manifest describes the product as a whole and is the resolution entry p
 ```typescript
 type RootManifest = {
   $v: 1;
-  displayName: string;    // Human-readable product name. UTF-8.
-  description: string;    // Short description shown in launchers/lists.
-  icon: Icon;             // Product icon used by every Host surface.
+  displayName: string; // Human-readable product name. UTF-8.
+  description: string; // Short description shown in launchers/lists.
+  icon: Icon; // Product icon used by every Host surface.
   trustedProducts?: Record<string, Granted[]>; // `<product_id>`, no TLD suffix → what that product may do to this one.
 };
 
 type Icon = {
-  cid: string;            // Bulletin-chain CID; used verbatim to fetch icon bytes.
-  format: 'jpeg' | 'png'; // Formats defined by v1. An unrecognised value is tolerated, not fatal.
+  cid: string; // Bulletin-chain CID; used verbatim to fetch icon bytes.
+  format: "jpeg" | "png"; // Formats defined by v1. An unrecognised value is tolerated, not fatal.
 };
 
-type Granted = 'all';     // The only grant v1 defines. Unrecognised values are ignored, not fatal.
+type Granted = "all"; // The only grant v1 defines. Unrecognised values are ignored, not fatal.
 ```
 
 #### Icons
@@ -131,7 +134,7 @@ Two obligations follow. A validator MUST accept a `RootManifest` whose `format` 
 Products interact through the Host — reading another product's account, asking it to sign.
 Each such interaction is normally a consent decision; `trustedProducts` pre-approves the ones the publisher has already judged safe, and the Host does not prompt for them.
 
-**The grant is issued by the product being accessed.** An entry in A's manifest states what B may do *to A* — the only direction A's name can authenticate. It says nothing about what A may do to B, nor about the products B in turn trusts.
+**The grant is issued by the product being accessed.** An entry in A's manifest states what B may do _to A_ — the only direction A's name can authenticate. It says nothing about what A may do to B, nor about the products B in turn trusts.
 
 - **Keys** are bare `<product_id>` labels, lowercase, with no TLD suffix: `"wallet"`, never `"wallet.dot"`. The Host appends the TLD of the network it resolves against. A key that does not resolve there is inert, not a validation error.
 - **Values** are that product's grants. v1 defines one, `all` — a wildcard for the complete set of cross-product permissions the Host mediates on this product's behalf. It is resolved against that set when the grant is used, not enumerated here, so a grant of `all` covers permissions added after it was published. Hosts MUST ignore unrecognised values, keep the recognised ones, and MUST NOT fail validation over them.
@@ -145,32 +148,45 @@ An executable manifest describes one deployable artifact and lives on a well-kno
 
 ```typescript
 type ExecutableManifest =
-  | AppManifest
-  | WidgetManifest
-  | WorkerManifest;
+  AppManifest | WidgetManifest | FundingManifest | WorkerManifest;
 
 type CommonExecutableFields = {
   $v: 1;
-  appVersion: SemVer;     // Product-defined SemVer of this executable.
+  appVersion: SemVer; // Product-defined SemVer of this executable.
 };
 
 type AppManifest = CommonExecutableFields & {
-  kind: 'app';
+  kind: "app";
 };
 
 type WidgetManifest = CommonExecutableFields & {
-  kind: 'widget';
-  description?: string;          // Optional tagline shown on the widget card.
+  kind: "widget";
+  description?: string; // Optional tagline shown on the widget card.
   dimensions: {
-    height: number[];            // Supported grid-step heights the widget can render at.
-    width?: number;              // Grid-step width. Optional; defaults to 1 column.
+    height: number[]; // Supported grid-step heights the widget can render at.
+    width?: number; // Grid-step width. Optional; defaults to 1 column.
   };
 };
 
+type FundingManifest = CommonExecutableFields & {
+  kind: "funding";
+  routes: FundingRoute[]; // Conversions the surface serves. Non-empty.
+};
+
+type FundingRoute = {
+  from: FundingAsset; // Source asset.
+  to: FundingAsset; // Destination asset.
+  modes: FundingMode[]; // Rails serving this pair. Non-empty.
+};
+
+type FundingAsset = "CASH" | "EUR";
+type FundingMode = "CARD" | "BANK" | "CRYPTO";
+
 type WorkerManifest = CommonExecutableFields & {
-  kind: 'worker';
-  entrypoint: string;                              // Path to the worker entry module inside the executable directory.
-  includes: {                                      // Surfaces served; an omitted key means `false`.
+  kind: "worker";
+  entrypoint: string; // Path to the worker entry module inside the executable directory.
+  includes: {
+    // Surfaces served; an omitted key means `false`.
     pocket?: boolean;
     chat?: boolean;
     input?: boolean;
@@ -183,11 +199,19 @@ type SemVer = [major: number, minor: number, patch: number, build?: string];
 
 - `app` — full-screen App. No extra fields beyond the common ones.
 - `widget` — `dimensions.height` is the list of grid-step heights the widget can render at; the Host picks one per layout. `width` defaults to `1` column. The grid unit and bounds belong to the Host's dashboard spec (see [Future Directions](#future-directions)). By convention `8` in `height` signals a full-screen widget; this RFC does not normalise that convention.
+- `funding` — the web application the Host renders when the user selects this product as a funding source. `routes` lists the conversions served, one ordered pair per direction, each with its own `modes`. The Host matches them against the funding flow at hand, tolerating unrecognised values per [Corner cases](#corner-cases). The runtime contract behind the surface is deferred to a dedicated Funding Modality RFC.
 - `worker` — background JS worker. `entrypoint` is the module the Host loads inside the worker. `includes` declares which surfaces it serves.
+
+The funding assets:
+
+| Asset ID | Description                                                                                                                                                                                                                                                                                                                                         |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CASH`   | Bearer coinage coins minted by the [coinage pallet](https://github.com/paritytech/individuality/tree/main/pallets/coinage). An instance wraps one fungible asset at one coin unit. The current deployment wraps the external asset registered under [pallet assets](https://github.com/paritytech/polkadot-sdk/tree/master/substrate/frame/assets). |
+| `EUR`    | The euro, the currency issued by the European Central Bank. Its [ISO 4217](https://www.iso.org/iso-4217-currency-codes.html) code is `EUR`.                                                                                                                                                                                                         |
 
 **`appVersion` is a label, not a change signal.** Hosts detect a new deployment from the subname's `contenthash`, not from this field (see [Cache invalidation](#resolving-a-product)). `appVersion` names the release for the user — "update to 1.4.0", "you declined 1.3.2" — so publishers SHOULD keep it meaningful, but nothing about resolution or caching depends on it moving.
 
-Publishers MUST set `kind` to match the subname label the manifest is written under: `app` under `app.<product_id>.<tld>`, `widget` under `widget.<product_id>.<tld>`, `worker` under `worker.<product_id>.<tld>`. Hosts MUST reject a manifest whose `kind` does not match the subname it was read from.
+Publishers MUST set `kind` to match the subname label the manifest is written under: `app` under `app.<product_id>.<tld>`, `widget` under `widget.<product_id>.<tld>`, `funding` under `funding.<product_id>.<tld>`, `worker` under `worker.<product_id>.<tld>`. Hosts MUST reject a manifest whose `kind` does not match the subname it was read from.
 
 **Why one Worker, not per modality.** A Worker is the product's single background process, carrying its full Host-API surface (signing, notifications, chain access, long-lived caches). Those capabilities do not split cleanly along the boundaries between Pocket, Chat, and Input, and one bundle per surface would duplicate that surface area and make the product's on-chain signing identity ambiguous. `includes` only advertises which user-facing affordances the same process serves; the executable remains a single artifact.
 
@@ -195,17 +219,18 @@ Publishers MUST set `kind` to match the subname label the manifest is written un
 
 The subname's `contenthash` record points at the bytes; this section defines what those bytes contain. Runtime APIs a Host exposes to a running executable (chain access, message passing, lifecycle hooks, etc.) are out of scope here — those belong in per-modality runtime contracts.
 
-**App and Widget.** Single-page web applications, packaged as a directory whose root contains an `index.html` file. The Host treats `index.html` as the entry point and loads it to launch the modality. Relative paths inside `index.html` (scripts, styles, images) resolve against the same Bulletin IPFS gateway root from which the executable was fetched.
+**App, Widget, and Funding.** Single-page web applications, packaged as a directory whose root contains an `index.html` file. The Host treats `index.html` as the entry point and loads it to launch the modality. Relative paths inside `index.html` (scripts, styles, images) resolve against the same Bulletin IPFS gateway root from which the executable was fetched.
 
 **Worker.** A directory of JavaScript files. The executable manifest's `entrypoint` field names the entry-point module as a path relative to the directory root (e.g. `index.js`, `src/worker.js`). The Host loads that module into a JS worker runtime to launch the modality. Other files referenced from the entry module (static imports, dynamic-import paths, asset URLs) resolve against the same Bulletin IPFS gateway root.
 
 ### Subname convention
 
-| Subname                     | Carries                    |
-|-----------------------------|----------------------------|
-| `app.<product_id>.<tld>`    | App executable manifest    |
-| `widget.<product_id>.<tld>` | Widget executable manifest |
-| `worker.<product_id>.<tld>` | Worker executable manifest |
+| Subname                      | Carries                     |
+| ---------------------------- | --------------------------- |
+| `app.<product_id>.<tld>`     | App executable manifest     |
+| `widget.<product_id>.<tld>`  | Widget executable manifest  |
+| `funding.<product_id>.<tld>` | Funding executable manifest |
+| `worker.<product_id>.<tld>`  | Worker executable manifest  |
 
 A product MAY publish any combination of these subnames; absence of a subname means the product does not provide that executable.
 
@@ -215,6 +240,7 @@ For each executable type the Host can render, it MUST query the corresponding su
 
 - **Any icon failure** — `cid` unreachable, `format` unrecognised, or bytes that do not decode as the declared `format`. Render a placeholder; do not sniff or auto-correct. The root manifest stays valid and the product remains launchable.
 - **Unrecognised grant value in `trustedProducts`.** Ignore that value and keep the recognised ones; the root manifest stays valid. Same for a key naming a product that does not resolve — the entry is inert.
+- **Unrecognised asset or mode value in the Funding manifest `routes`.** An unrecognised mode is ignored. A route whose `from` or `to` is unrecognised, or whose recognised `modes` set is empty, is inert. The manifest stays valid. If no usable route remains, the product is not offered for funding, which is not an error.
 - **Executable `contenthash` unset, non-IPFS codec, or undecodable.** That executable cannot be launched; surface a diagnostic. The product stays discoverable and its other executables still launch.
 - **Missing root manifest but present executable subnames.** Product is not discoverable; executables MUST NOT be launched.
 - **Unknown `kind` in an executable manifest.** Skip that executable rather than fail the whole product.
@@ -240,7 +266,7 @@ Everything in this list is a **parameter** the implementation accepts as input; 
 Fixed by the Bulletin chain protocol; identical across every publisher and Host.
 
 | Constant                  | Value                    | Meaning                                     |
-|---------------------------|--------------------------|---------------------------------------------|
+| ------------------------- | ------------------------ | ------------------------------------------- |
 | CID version               | `1`                      | CIDv1                                       |
 | Multihash code            | `0xb220` (`blake2b-256`) | Hash algorithm used to derive the CID       |
 | Digest length             | `32` bytes               | Output size of the BLAKE2b-256 digest       |
@@ -292,12 +318,19 @@ type LocalProductConfig = {
   trustedProducts?: Record<string, Granted[]>; // Same shape as RootManifest.trustedProducts; keys are bare product ids.
   app?: AppConfig;
   widget?: WidgetConfig;
+  funding?: FundingConfig;
   worker?: WorkerConfig;
 };
 
 type AppConfig = {
   root: string; // Path to the executable directory on disk.
   appVersion: SemVer; // Same SemVer tuple as the matching ExecutableManifest.
+};
+
+type FundingConfig = {
+  root: string; // Path to the executable directory on disk.
+  appVersion: SemVer; // Same SemVer tuple as the matching ExecutableManifest.
+  routes: FundingRoute[]; // Same shape as FundingManifest.routes. Non-empty.
 };
 
 type WidgetConfig = {
@@ -314,7 +347,8 @@ type WorkerConfig = {
   root: string; // Path to the executable directory on disk.
   appVersion: SemVer; // Same SemVer tuple as the matching ExecutableManifest.
   entrypoint: string; // Path to the worker entry module inside the executable directory.
-  includes: { // Same shape as WorkerManifest.includes; all may be false for a background-only worker.
+  includes: {
+    // Same shape as WorkerManifest.includes; all may be false for a background-only worker.
     chat?: boolean;
     pocket?: boolean;
     input?: boolean;
@@ -322,7 +356,7 @@ type WorkerConfig = {
 };
 ```
 
-Each executable field (`app`, `widget`, `worker`) is optional — omitting it means that executable is not part of this publish operation.
+Each executable field (`app`, `widget`, `funding`, `worker`) is optional — omitting it means that executable is not part of this publish operation.
 
 #### Step 2 — Validate the local config
 
@@ -331,6 +365,7 @@ The publisher validates the local config before any network I/O:
 - All referenced files (icon, executables) exist and are readable.
 - Icon `format` is one of the values allowed by `Icon.format`. This stays strict on the publishing side: Hosts tolerate an unrecognised `format`, publishers MUST NOT emit one.
 - Every `trustedProducts` key is a bare `<product_id>` label carrying no TLD suffix, and every grant value is one defined by `Granted`. Strict on the publishing side, as with the icon format: Hosts ignore unrecognised grants, publishers MUST NOT emit them.
+- `funding.routes` is non-empty, every `from` and `to` is one defined by `FundingAsset`, and every route carries a non-empty `modes` with every value one defined by `FundingMode`. Strict on the publishing side, as above: Hosts ignore unrecognised assets and modes, publishers MUST NOT emit them.
 - `appVersion` is a 3- or 4-element tuple of the right shape.
 - Each executable's kind-specific fields are present, well-typed, and satisfy schema-level constraints.
 - Pessimistic size preflight: compose the root manifest with a placeholder icon CID of the fixed encoded length (per the Constants table), and compose each executable manifest exactly — they carry no CID, so their size is already final. Abort if any composed manifest exceeds the dotNS text-record budget.
@@ -353,7 +388,7 @@ Read `IDotnsRegistry.resolver(namehash("<product_id>.<tld>"))`; if it isn't the 
 
 ##### 3.3 Subnames for each executable
 
-For each executable being published, ensure the corresponding subname (`app.<product_id>.<tld>`, `widget.<product_id>.<tld>`, or `worker.<product_id>.<tld>`) exists with the publisher as owner. If not, call `IDotnsRegistry.setSubnodeOwner({ parentNode, subLabel, parentLabel, owner })` with the publisher's address as owner.
+For each executable being published, ensure the corresponding subname (`app.<product_id>.<tld>`, `widget.<product_id>.<tld>`, `funding.<product_id>.<tld>`, or `worker.<product_id>.<tld>`) exists with the publisher as owner. If not, call `IDotnsRegistry.setSubnodeOwner({ parentNode, subLabel, parentLabel, owner })` with the publisher's address as owner.
 
 `setSubnodeOwner` installs the reverse resolver on fresh subnodes (same default as base names), so each subnode also needs its resolver redirected: call `IDotnsRegistry.setSubnodeResolver({ parentNode, subLabel, parentLabel, resolver: <content-resolver address> })` (or `setResolver(subnode, …)` once the subnode is owned by the publisher). The subnode's resolver holds both the `executable` text record and the `contenthash` written in Step 7.
 
@@ -364,7 +399,9 @@ For each executable being published, ensure the corresponding subname (`app.<pro
 Confirm the signing key is authorized to submit `TransactionStorage.store_with_cid_config(...)` extrinsics on the Bulletin chain. Read storage map `TransactionStorage.Authorizations` keyed by the enum variant `Account(<signer-address>)`:
 
 ```typescript
-const auth = await api.query.TransactionStorage.Authorizations.getValue(Enum("Account", signerAddress));
+const auth = await api.query.TransactionStorage.Authorizations.getValue(
+  Enum("Account", signerAddress),
+);
 ```
 
 The returned record has shape `{ extent: { transactions_allowance, transactions, bytes_allowance, bytes }, expiration }`, or `undefined` if the account has never been authorized. The signing key is usable iff:
@@ -386,7 +423,7 @@ TransactionStorage.store_with_cid_config({ cid: { codec, hashing }, data })
 Larger artifacts are merkleized first: bytes are chunked and arranged into a Merkle DAG with a single root CID (serialised as a CAR — Content-Addressed aRchive). Two kinds of artifacts go through the same flow:
 
 1. **The product icon.** Read the icon file from disk, merkleize (typically a single chunk for small images), and upload each chunk via `store_with_cid_config`. The resulting root CID becomes the root manifest's `icon.cid`.
-2. **Each executable.** For each executable type (App, Widget, Worker) being published, read the executable directory, merkleize into a CAR, and upload each chunk via `store_with_cid_config`. The chain does not deduplicate server-side, so the publisher MUST probe each chunk's CID against the chain or its IPFS gateway and skip any that are already present. The resulting root CID is written to that executable's subname `contenthash` in Step 7.
+2. **Each executable.** For each executable type (App, Widget, Funding, Worker) being published, read the executable directory, merkleize into a CAR, and upload each chunk via `store_with_cid_config`. The chain does not deduplicate server-side, so the publisher MUST probe each chunk's CID against the chain or its IPFS gateway and skip any that are already present. The resulting root CID is written to that executable's subname `contenthash` in Step 7.
 
 Assets that fail to upload abort the publish. Re-running the publish is safe: chunks already on-chain are re-addressable by their CID and skipped on retry.
 
@@ -395,7 +432,7 @@ Assets that fail to upload abort the publish. Re-running the publish is safe: ch
 With every CID in hand, the publisher constructs:
 
 - One **root manifest** JSON conforming to `RootManifest`, with the icon's `cid` and `format` substituted in.
-- One **executable manifest** JSON per executable conforming to the matching `AppManifest` / `WidgetManifest` / `WorkerManifest` shape. Executable manifests reference no CID; the artifact is bound to the subname's `contenthash` in Step 7.
+- One **executable manifest** JSON per executable conforming to the matching `AppManifest` / `WidgetManifest` / `FundingManifest` / `WorkerManifest` shape. Executable manifests reference no CID; the artifact is bound to the subname's `contenthash` in Step 7.
 
 All payloads start with `$v: 1`.
 
@@ -414,17 +451,19 @@ Either check failing aborts the publish before on-chain writes begin (see [Secur
 
 To enable rollback, the publisher first **snapshots** every record it will touch by reading the current value via `IDotnsContentResolver.text(node, key)` / `contenthash(node)`:
 
-| Node                                    | Record                | Snapshot of                         |
-|-----------------------------------------|-----------------------|-------------------------------------|
-| `namehash("<product_id>.<tld>")`        | text `manifest`       | Existing root manifest (if any)     |
-| `namehash("app.<product_id>.<tld>")`    | text `executable`     | Existing App executable manifest    |
-| `namehash("app.<product_id>.<tld>")`    | `contenthash`         | Existing App executable CID         |
-| `namehash("widget.<product_id>.<tld>")` | text `executable`     | Existing Widget executable manifest |
-| `namehash("widget.<product_id>.<tld>")` | `contenthash`         | Existing Widget executable CID      |
-| `namehash("worker.<product_id>.<tld>")` | text `executable`     | Existing Worker executable manifest |
-| `namehash("worker.<product_id>.<tld>")` | `contenthash`         | Existing Worker executable CID      |
+| Node                                     | Record            | Snapshot of                          |
+| ---------------------------------------- | ----------------- | ------------------------------------ |
+| `namehash("<product_id>.<tld>")`         | text `manifest`   | Existing root manifest (if any)      |
+| `namehash("app.<product_id>.<tld>")`     | text `executable` | Existing App executable manifest     |
+| `namehash("app.<product_id>.<tld>")`     | `contenthash`     | Existing App executable CID          |
+| `namehash("widget.<product_id>.<tld>")`  | text `executable` | Existing Widget executable manifest  |
+| `namehash("widget.<product_id>.<tld>")`  | `contenthash`     | Existing Widget executable CID       |
+| `namehash("funding.<product_id>.<tld>")` | text `executable` | Existing Funding executable manifest |
+| `namehash("funding.<product_id>.<tld>")` | `contenthash`     | Existing Funding executable CID      |
+| `namehash("worker.<product_id>.<tld>")`  | text `executable` | Existing Worker executable manifest  |
+| `namehash("worker.<product_id>.<tld>")`  | `contenthash`     | Existing Worker executable CID       |
 
-The table shows a publish covering all three executables; an executable absent from this publish has its rows left untouched. Empty values indicate first-time publish for that record.
+The table shows a publish covering every executable type; an executable absent from this publish has its rows left untouched. Empty values indicate first-time publish for that record.
 
 The publisher then submits one write per row: `setText(...)` carrying the newly composed JSON, and `setContenthash(...)` binding each executable's uploaded root CID to its subname. The writes are independent and SHOULD be batched into a single signed extrinsic via `Utility.batchAll`, so every record lands in a single block or the entire batch fails atomically — a manifest visible without its `contenthash` describes an executable a Host cannot fetch.
 
@@ -439,7 +478,7 @@ After all writes confirm, the publisher re-runs the resolution flow described in
 - Every executable subname's `contenthash` decodes to the root CID just uploaded for that executable.
 - The root manifest's `icon.cid` and every executable CID are reachable on the Bulletin chain. Two equivalent probes: an HTTP `HEAD <gateway>/ipfs/<cid>` returning 2xx, or an on-chain read of `TransactionStorage.TransactionByContentHash(Blake2_128_Concat(content_hash))` returning a non-empty entry. The HTTP probe is faster; the on-chain probe is authoritative.
 
-If any assertion fails, treat as a write failure: trigger the snapshot-restore path from Step 7's *Rollback on partial failure*, then abort with a diagnostic.
+If any assertion fails, treat as a write failure: trigger the snapshot-restore path from Step 7's _Rollback on partial failure_, then abort with a diagnostic.
 
 ### Host implementation
 
@@ -453,17 +492,20 @@ For a base name `B`:
 2. **Find the resolver.** Read `IDotnsRegistry.resolver(node)`. Returns the address of the resolver holding records for the node. `address(0)` → product does not exist; surface a diagnostic.
 3. **Read the root manifest.** Read `IDotnsContentResolver.text(node, "manifest")` on the resolver from step 2. Returns the inline manifest JSON string. An empty string indicates the product does not exist; this also covers the case where the resolver is still the dotNS-issued default (the reverse resolver does not implement `text`).
 4. **Parse and validate the root manifest.**
-  - Parse the string as JSON. Failure → malformed; surface a diagnostic.
-  - Validate `$v`. Unknown version → undiscoverable; surface a diagnostic and keep working for other products.
-  - Validate against the v1 `RootManifest` schema. Validation failure → malformed; do not partially trust the result.
-  - Two things are exempt and MUST NOT fail validation: an unrecognised `icon.format`, and an unrecognised grant value in `trustedProducts` (see [Root manifest (v1)](#root-manifest-v1)).
+
+- Parse the string as JSON. Failure → malformed; surface a diagnostic.
+- Validate `$v`. Unknown version → undiscoverable; surface a diagnostic and keep working for other products.
+- Validate against the v1 `RootManifest` schema. Validation failure → malformed; do not partially trust the result.
+- Two things are exempt and MUST NOT fail validation: an unrecognised `icon.format`, and an unrecognised grant value in `trustedProducts` (see [Root manifest (v1)](#root-manifest-v1)).
+
 5. **(Optional) Read the author.** Hosts that surface authorship in UI call `IDotnsRegistry.owner(node)` — a single call that returns the canonical owner. The registry transparently handles the ERC-721 fallback for second-level names, so callers do not need to distinguish that case from subnodes.
-6. **Probe executable subnames.** For each of `app.<product_id>.<tld>`, `widget.<product_id>.<tld>`, `worker.<product_id>.<tld>` whose executable type the Host can render (per [Subname convention](#subname-convention)): compute the subnode's namehash and repeat steps 2-4 against it, using `text(subnode, "executable")` instead of `text(node, "manifest")` and parsing against the matching `ExecutableManifest` variant. A subnode that does not exist (resolver `address(0)`) or has an empty text record means the product does not provide that executable — this is not an error.
+6. **Probe executable subnames.** For each of `app.<product_id>.<tld>`, `widget.<product_id>.<tld>`, `funding.<product_id>.<tld>`, `worker.<product_id>.<tld>` whose executable type the Host can render (per [Subname convention](#subname-convention)): compute the subnode's namehash and repeat steps 2-4 against it, using `text(subnode, "executable")` instead of `text(node, "manifest")` and parsing against the matching `ExecutableManifest` variant. A subnode that does not exist (resolver `address(0)`) or has an empty text record means the product does not provide that executable — this is not an error.
 7. **(Optional) Verify subname provenance.** By convention executable subnames are owned by the same account as the base name; the registry does not enforce that. A Host that needs strict provenance MUST call `owner(subnode)` for each present subname and verify equality with the base-name owner from step 5.
 8. **Fetch executable bytes before launching.** For each executable manifest the Host intends to launch:
-  - Read `contenthash(subnode)` on that subnode's resolver from step 6 and decode it to a CID. An unset slot, a non-IPFS codec, or bytes that fail to decode → cannot launch that executable; surface a diagnostic.
-  - `GET <gateway>/ipfs/<cid>` from the Bulletin IPFS gateway. A CID that cannot be fetched → cannot launch that executable; surface a diagnostic.
-  - v1 specifies no byte-level verification step (see [Unresolved Questions](#unresolved-questions)).
+
+- Read `contenthash(subnode)` on that subnode's resolver from step 6 and decode it to a CID. An unset slot, a non-IPFS codec, or bytes that fail to decode → cannot launch that executable; surface a diagnostic.
+- `GET <gateway>/ipfs/<cid>` from the Bulletin IPFS gateway. A CID that cannot be fetched → cannot launch that executable; surface a diagnostic.
+- v1 specifies no byte-level verification step (see [Unresolved Questions](#unresolved-questions)).
 
 For the optional icon-byte fetch, the same gateway mechanics apply against the root manifest's `icon.cid` — no `contenthash` read, since the icon CID is carried in the manifest itself. A missing or undecodable icon is a UX degradation, not a launch blocker (see [Corner cases](#corner-cases)).
 
@@ -492,6 +534,9 @@ A conforming Host implementation should produce well-defined behaviour for each 
 - Executable subname absent or empty `executable` text record → product does not provide that executable.
 - Executable manifest fails its `ExecutableManifest` variant schema → skip that executable.
 - Unknown `kind`, or `kind` does not match the subname label → skip that executable.
+- Unknown mode value in a Funding route → manifest still validates. The value is ignored and recognised modes still apply.
+- Funding route whose `from` or `to` is unrecognised, or whose recognised `modes` set is empty → route inert. The manifest still validates and other routes still apply.
+- Funding manifest with no usable route → manifest still validates. The product is not offered for funding.
 - Executable subname `contenthash` unset, non-IPFS codec, or undecodable → cannot launch that executable; surface a diagnostic.
 - Executable CID unreachable → cannot launch that executable; surface a diagnostic.
 - Executable subname owned by a different account than the base name (when strict provenance is enabled) → skip that executable.
@@ -500,7 +545,7 @@ A conforming Host implementation should produce well-defined behaviour for each 
 
 - **JSON over a binary codec.** Costs text-record budget that a binary format would not — accepted for parseability with off-the-shelf tooling.
 - **No oversized-manifest fallback.** A publisher who exceeds the dotNS text-record budget MUST shrink the payload.
-- **Multiple lookups per resolution.** A full resolution for a product with all three executable types costs ~11 dotNS reads plus up to 4 Bulletin fetches. Mitigate with parallelisation and caching.
+- **Multiple lookups per resolution.** A full resolution for a product with all four executable types costs ~14 dotNS reads plus up to 5 Bulletin fetches. Mitigate with parallelisation and caching.
 - **Schema evolution locks out older Hosts.** A new `$v` is invisible to Hosts that do not yet recognise it. A co-versioning scheme is left to a follow-up RFC.
 
 ## Alternatives
@@ -527,3 +572,4 @@ A conforming Host implementation should produce well-defined behaviour for each 
 - `Granted` will gain per-capability values (account read, signing, …) alongside `all` once the Host runtime contracts name those capabilities; `all` stays the wildcard, and the array shape and the ignore-unrecognised-values rule let the narrower values land without a new `$v`.
 - A manifest-aggregation RPC could eliminate the N+1 lookup pattern (one round-trip per subname) without changing the schema.
 - A companion spec will pin down the dashboard grid (cell size, bounds, responsive behaviour) referenced by `WidgetManifest.dimensions`.
+- `FundingAsset` will grow beyond `CASH` and `EUR`, and `FundingMode` beyond `CARD`, `BANK`, and `CRYPTO`. A dedicated Funding Modality RFC will define the runtime contract behind the Funding surface: intents, progress reporting, and observation of funds on the network. The route shape and the ignore-unrecognised-values rule let new assets and modes land without a new `$v`.
