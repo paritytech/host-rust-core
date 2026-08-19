@@ -169,6 +169,12 @@ jobs:
       - name: Check committed iOS bindings are current
         run: ./ios/truapi-host/scripts/sync-bindings.sh --check
 
+      # The provider ships its own UniFFI surface and its own committed
+      # bindings; `rebuild.sh` overwrites them in place, so only this check
+      # can fail on drift.
+      - name: Check committed TrUAPIProvider bindings are current
+        run: make provider-swift-check
+
   ios-changes:
     name: iOS change filter
     runs-on: ubuntu-latest
@@ -197,7 +203,7 @@ jobs:
             exit 0
           fi
           if git diff --name-only HEAD^1 HEAD \
-            | grep -qE '^(ios/|Package\.swift$|Makefile$|rust/crates/truapi-server/src/native)'; then
+            | grep -qE '^(ios/|Package\.swift$|Makefile$|rust/crates/truapi-server/src/native|rust/crates/truapi-provider/)'; then
             echo "ios=true" >> "$GITHUB_OUTPUT"
           else
             echo "ios=false" >> "$GITHUB_OUTPUT"

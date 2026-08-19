@@ -701,12 +701,12 @@ public protocol ChainMessageListener: AnyObject, Sendable {
     /**
      * Called for each JSON-RPC response or notification string.
      */
-    func onMessage(message: String) 
+    func onMessage(message: String) throws 
     
     /**
      * Called once the connection's response stream ends.
      */
-    func onClosed() 
+    func onClosed() throws 
     
 }
 /**
@@ -769,7 +769,7 @@ open class ChainMessageListenerImpl: ChainMessageListener, @unchecked Sendable {
     /**
      * Called for each JSON-RPC response or notification string.
      */
-open func onMessage(message: String)  {try! rustCall() {
+open func onMessage(message: String)throws   {try rustCallWithError(FfiConverterTypeChainProviderError_lift) {
         uniffiCallStatus in
     uniffi_truapi_provider_fn_method_chainmessagelistener_on_message(
             self.uniffiCloneHandle(),
@@ -781,7 +781,7 @@ open func onMessage(message: String)  {try! rustCall() {
     /**
      * Called once the connection's response stream ends.
      */
-open func onClosed()  {try! rustCall() {
+open func onClosed()throws   {try rustCallWithError(FfiConverterTypeChainProviderError_lift) {
         uniffiCallStatus in
     uniffi_truapi_provider_fn_method_chainmessagelistener_on_closed(
             self.uniffiCloneHandle(),uniffiCallStatus
@@ -828,17 +828,18 @@ fileprivate struct UniffiCallbackInterfaceChainMessageListener {
                 guard let uniffiObj = try? FfiConverterTypeChainMessageListener.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return uniffiObj.onMessage(
+                return try uniffiObj.onMessage(
                      message: try FfiConverterString.lift(message)
                 )
             }
 
             
             let writeReturn = { () }
-            uniffiTraitInterfaceCall(
+            uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
-                writeReturn: writeReturn
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeChainProviderError_lower
             )
         },
         onClosed: { (
@@ -851,16 +852,17 @@ fileprivate struct UniffiCallbackInterfaceChainMessageListener {
                 guard let uniffiObj = try? FfiConverterTypeChainMessageListener.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return uniffiObj.onClosed(
+                return try uniffiObj.onClosed(
                 )
             }
 
             
             let writeReturn = { () }
-            uniffiTraitInterfaceCall(
+            uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
-                writeReturn: writeReturn
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeChainProviderError_lower
             )
         }
     )
@@ -1108,6 +1110,14 @@ enum ChainProviderError: Swift.Error, Equatable, Hashable, Foundation.LocalizedE
      * The genesis hash was not exactly 32 bytes.
      */
     case BadGenesis
+    /**
+     * The host's listener failed in a way it did not declare.
+     */
+    case Listener(
+        /**
+         * Human-readable failure reason.
+         */reason: String
+    )
 
     
 
@@ -1141,6 +1151,9 @@ public struct FfiConverterTypeChainProviderError: FfiConverterRustBuffer {
             reason: try FfiConverterString.read(from: &buf)
             )
         case 2: return .BadGenesis
+        case 3: return .Listener(
+            reason: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1161,6 +1174,11 @@ public struct FfiConverterTypeChainProviderError: FfiConverterRustBuffer {
         case .BadGenesis:
             writeInt(&buf, Int32(2))
         
+        
+        case let .Listener(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(reason, into: &buf)
+            
         }
     }
 }
@@ -1201,10 +1219,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_provider_checksum_method_chainconnection_send() != 52883) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_message() != 65048) {
+    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_message() != 2156) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_closed() != 39748) {
+    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_closed() != 1058) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_provider_checksum_method_chainprovider_connect() != 16550) {
