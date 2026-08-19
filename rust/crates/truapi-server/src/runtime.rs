@@ -42,7 +42,7 @@ use web_time::Instant;
 
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::bulletin::preimage_key;
-use crate::host_logic::dotns::{NavigateDecision, parse_navigate};
+use crate::host_logic::dotns::{NavigateDecision, external_host, parse_navigate};
 use crate::host_logic::features::{chain_info, feature_supported, supported_chains};
 use crate::host_logic::permissions::PermissionsService;
 #[cfg(test)]
@@ -814,9 +814,28 @@ impl System for ProductRuntimeHost {
                     v01::HostNavigateToError::Unknown { reason },
                 )));
             }
+            // dotNS and localhost resolve back into the host's own product
+            // surface, which is already gated by the product sandbox. Neither
+            // reaches an arbitrary internet host, so neither consumes a grant.
             NavigateDecision::DotName { canonical_url, .. }
             | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
-            NavigateDecision::External { url } => url,
+            // An `http(s)` URL hands an arbitrary host the referrer, the shape
+            // of the URL, and whatever the product put in it, so it needs the
+            // same per-domain grant that gates outbound access to that host.
+            // The other allowed schemes are app handoffs with no authorizable
+            // domain (`external_host` returns `None`) and pass straight through.
+            NavigateDecision::External { url } => {
+                if let Some(host) = external_host(&url) {
+                    self.require_remote_permission(
+                        v01::RemotePermission::Remote {
+                            domains: vec![host],
+                        },
+                        HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied),
+                    )
+                    .await?;
+                }
+                url
+            }
         };
         self.platform
             .navigate_to(resolved)
@@ -2177,7 +2196,7 @@ impl Chat for ProductRuntimeHost {
         request.icon =
             validate_chat_icon("icon", &request.icon).map_err(chat_create_room_field_error)?;
         platform
-            .create_room(&self.product, request)
+            .create_chat_room(&self.product, request)
             .await
             .map(HostChatCreateRoomResponse::V1)
             .map_err(|error| CallError::Domain(HostChatCreateRoomError::V1(error)))
@@ -2198,7 +2217,7 @@ impl Chat for ProductRuntimeHost {
         request.icon =
             validate_chat_icon("icon", &request.icon).map_err(chat_register_bot_field_error)?;
         platform
-            .register_bot(&self.product, request)
+            .register_chat_bot(&self.product, request)
             .await
             .map(HostChatRegisterBotResponse::V1)
             .map_err(|error| CallError::Domain(HostChatRegisterBotError::V1(error)))
@@ -2211,8 +2230,23 @@ impl Chat for ProductRuntimeHost {
         };
         Subscription::new(Box::pin(
             platform
-                .subscribe_rooms(&self.product)
-                .map(HostChatListSubscribeItem::V1),
+                .subscribe_chat_rooms(&self.product)
+                .filter_map(|item| async {
+                    // TODO: preserve platform stream errors as terminal
+                    // subscription interrupts once subscription items can carry
+                    // in-stream failures. Until then a dropped error freezes the
+                    // product's room list on its last value, so record why.
+                    match item {
+                        Ok(item) => Some(HostChatListSubscribeItem::V1(item)),
+                        Err(error) => {
+                            warn!(
+                                reason = %error.reason,
+                                "chat room list platform stream failed"
+                            );
+                            None
+                        }
+                    }
+                }),
         ))
     }
 
@@ -2235,7 +2269,7 @@ impl Chat for ProductRuntimeHost {
                 ))
             })?;
         platform
-            .post_message(&self.product, request)
+            .post_chat_message(&self.product, request)
             .await
             .map(HostChatPostMessageResponse::V1)
             .map_err(|error| CallError::Domain(HostChatPostMessageError::V1(error)))
@@ -2719,8 +2753,15 @@ impl Theme for ProductRuntimeHost {
         let stream = self.platform.subscribe_theme().filter_map(|item| async {
             // TODO: preserve platform stream errors as terminal
             // subscription interrupts once subscription items can carry
-            // in-stream failures.
-            item.ok().map(HostThemeSubscribeItem::V1)
+            // in-stream failures. Until then a dropped error freezes the
+            // product's theme on its last value, so record why.
+            match item {
+                Ok(item) => Some(HostThemeSubscribeItem::V1(item)),
+                Err(error) => {
+                    warn!(reason = %error.reason, "theme platform stream failed");
+                    None
+                }
+            }
         });
         Subscription::new(Box::pin(stream))
     }
@@ -2905,7 +2946,7 @@ mod tests {
 
     #[truapi::async_trait]
     impl truapi_platform::ChatPlatform for RecordingChatPlatform {
-        async fn create_room(
+        async fn create_chat_room(
             &self,
             _product: &ProductContext,
             request: truapi::latest::HostChatCreateRoomRequest,
@@ -2922,7 +2963,7 @@ mod tests {
             })
         }
 
-        async fn register_bot(
+        async fn register_chat_bot(
             &self,
             _product: &ProductContext,
             request: truapi::latest::HostChatRegisterBotRequest,
@@ -2939,7 +2980,7 @@ mod tests {
             })
         }
 
-        async fn post_message(
+        async fn post_chat_message(
             &self,
             _product: &ProductContext,
             request: truapi::latest::HostChatPostMessageRequest,
@@ -2956,11 +2997,13 @@ mod tests {
             })
         }
 
-        fn subscribe_rooms(
+        fn subscribe_chat_rooms(
             &self,
             _product: &ProductContext,
-        ) -> futures::stream::BoxStream<'static, truapi::latest::HostChatListSubscribeItem>
-        {
+        ) -> futures::stream::BoxStream<
+            'static,
+            Result<truapi::latest::HostChatListSubscribeItem, truapi::latest::GenericError>,
+        > {
             Box::pin(futures::stream::empty())
         }
     }
@@ -3245,6 +3288,151 @@ mod tests {
             })) => {}
             other => panic!("expected Unknown navigate error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn navigate_to_external_denies_without_a_remote_grant() {
+        let platform = Arc::new(StubPlatform {
+            remote_permission_denied: true,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+        let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+            url: "https://example.com/page".to_string(),
+        });
+
+        let err = futures::executor::block_on(host.navigate_to(&cx, request)).unwrap_err();
+        match err {
+            CallError::Domain(HostNavigateToError::V1(
+                v01::HostNavigateToError::PermissionDenied,
+            )) => {}
+            other => panic!("expected navigate permission denial, got {other:?}"),
+        }
+        assert!(
+            platform
+                .navigations
+                .lock()
+                .expect("navigation list mutex poisoned")
+                .is_empty(),
+            "a denied navigation must not reach the platform"
+        );
+    }
+
+    #[test]
+    fn navigate_to_external_prompts_for_the_host_then_reuses_the_grant() {
+        let platform = Arc::new(StubPlatform::default());
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+
+        for path in ["https://example.com/first", "https://example.com/second"] {
+            let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                url: path.to_string(),
+            });
+            assert_eq!(
+                futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
+                HostNavigateToResponse::V1
+            );
+        }
+
+        let asked = platform
+            .remote_permission_requests
+            .lock()
+            .expect("remote permission list mutex poisoned")
+            .clone();
+        assert_eq!(
+            asked,
+            vec![v01::RemotePermissionRequest {
+                permission: v01::RemotePermission::Remote {
+                    domains: vec!["example.com".to_string()],
+                },
+            }],
+            "the gate asks once, for the target host, and the grant covers later paths"
+        );
+        assert_eq!(
+            platform
+                .navigations
+                .lock()
+                .expect("navigation list mutex poisoned")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn navigate_to_dotns_and_localhost_bypass_the_remote_gate() {
+        // Both resolve back into the host's own product surface, so a denied
+        // remote permission must not block in-ecosystem navigation.
+        let platform = Arc::new(StubPlatform {
+            remote_permission_denied: true,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+
+        for url in ["mytestapp.dot", "localhost:3000"] {
+            let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                url: url.to_string(),
+            });
+            assert_eq!(
+                futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
+                HostNavigateToResponse::V1,
+                "{url} must not consume a remote grant"
+            );
+        }
+        assert!(
+            platform
+                .remote_permission_requests
+                .lock()
+                .expect("remote permission list mutex poisoned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn navigate_to_handoff_schemes_bypass_the_remote_gate() {
+        // Only `http(s)` reaches a domain a grant can name. The other allowed
+        // schemes hand the URL to another app, so a denying platform must not
+        // turn them into a permission error.
+        let platform = Arc::new(StubPlatform {
+            remote_permission_denied: true,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+
+        let handoffs = [
+            "mailto:someone@example.com",
+            "tel:+15551234567",
+            "polkadot://1exampleaddress",
+            "dot:transfer",
+        ];
+        for url in handoffs {
+            let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                url: url.to_string(),
+            });
+            assert_eq!(
+                futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
+                HostNavigateToResponse::V1,
+                "{url} has no authorizable domain and must reach the platform"
+            );
+        }
+        assert!(
+            platform
+                .remote_permission_requests
+                .lock()
+                .expect("remote permission list mutex poisoned")
+                .is_empty(),
+            "a hostless scheme must not consume a grant"
+        );
+        assert_eq!(
+            platform
+                .navigations
+                .lock()
+                .expect("navigation list mutex poisoned")
+                .len(),
+            handoffs.len()
+        );
     }
 
     #[test]

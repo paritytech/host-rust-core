@@ -10,16 +10,33 @@
 //! Identity disclosure is also represented as a product-scoped authorization,
 //! but the prompt itself is handled by the account runtime because it uses the
 //! richer user-confirmation surface rather than the device/remote callbacks.
+//!
+//! Domain grants (`RemotePermission::Remote`) are the one request that does not
+//! occupy a single slot. A product may ask for several domains at once, while
+//! enforcement — outbound navigation, and any future outbound-request gate —
+//! only ever asks about one host. So a grant is stored as one authorization per
+//! domain pattern, and a lookup for a concrete host resolves through the
+//! RFC 0002 candidate list ([`remote_domain_candidates`]), letting the most
+//! specific stored decision win.
+//!
+//! A denial is not symmetric with that. "No" to a set of domains is not "no" to
+//! each of them — the user was never asked the narrower question — so a
+//! multi-domain denial is recorded against the exact set that was asked about
+//! instead of fanning out. The bundle stays answered, so the same request does
+//! not re-prompt, while a later request naming one of those domains on its own
+//! still gets a prompt. A one-domain prompt has no narrower question left, and
+//! its set-shaped key is that domain's key, so it persists per-domain with no
+//! special case.
 
 use parity_scale_codec::{Decode, Encode};
 
 use truapi::latest::{
-    GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse,
+    GenericError, HostDevicePermissionRequest, HostDevicePermissionResponse, RemotePermission,
     RemotePermissionRequest, RemotePermissionResponse,
 };
 use truapi_platform::{
     CoreStorage, CoreStorageKey, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
-    Permissions,
+    Permissions, remote_domain_candidates,
 };
 
 /// Persisted answer for a single permission request. Keep `Authorized` at
@@ -50,6 +67,36 @@ impl From<bool> for StoredAuthorizationStatus {
             Self::Denied
         }
     }
+}
+
+/// Domain patterns a remote request covers, or `None` when the request is not a
+/// domain grant and so occupies a single slot of its own.
+fn requested_domains(request: &RemotePermissionRequest) -> Option<&[String]> {
+    match &request.permission {
+        RemotePermission::Remote { domains } => Some(domains),
+        _ => None,
+    }
+}
+
+/// A domain bundle as a request, for the key that answers it as a whole.
+fn remote_bundle_request(domains: &[String]) -> RemotePermissionRequest {
+    RemotePermissionRequest {
+        permission: RemotePermission::Remote {
+            domains: domains.to_vec(),
+        },
+    }
+}
+
+/// What the stored per-domain decisions alone say about a bundle.
+enum BundleResolution {
+    /// Every domain in the bundle has a stored grant.
+    Authorized,
+    /// At least one domain has a stored denial, which denies the bundle: the
+    /// product asked to reach all of them.
+    Denied,
+    /// Nothing is denied, and these domains have no decision of their own —
+    /// exactly the set a prompt would put to the user.
+    Undecided(Vec<String>),
 }
 
 /// Coordinator that inspects persisted state first, falls back to the
@@ -85,15 +132,78 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
 
     /// Returns the stored authorization status for a remote permission without
     /// prompting.
+    ///
+    /// A domain bundle is authorized only when every domain in it is; a single
+    /// denial denies the bundle, because the product asked to reach all of them.
     pub async fn peek_remote(
         &self,
         request: &RemotePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        authorization_status(
-            self.storage,
-            CoreStorageKey::remote_permission_authorization(self.product_id, request),
+        let Some(domains) = requested_domains(request) else {
+            return authorization_status(
+                self.storage,
+                CoreStorageKey::remote_permission_authorization(self.product_id, request),
+            )
+            .await;
+        };
+        // An empty bundle grants access to nothing. Reporting it as authorized
+        // would let a malformed request read as a grant, so fail closed.
+        if domains.is_empty() {
+            return Ok(PermissionAuthorizationStatus::Denied);
+        }
+        match self.resolve_domains(domains).await? {
+            BundleResolution::Authorized => Ok(PermissionAuthorizationStatus::Authorized),
+            BundleResolution::Denied => Ok(PermissionAuthorizationStatus::Denied),
+            // Nothing per-domain covers the rest, so the remaining question is
+            // whether this exact set has already been refused.
+            BundleResolution::Undecided(undecided) => {
+                authorization_status(self.storage, self.bundle_key(&undecided)).await
+            }
+        }
+    }
+
+    /// Resolve a bundle against the per-domain decisions alone.
+    async fn resolve_domains(&self, domains: &[String]) -> Result<BundleResolution, GenericError> {
+        let mut undecided = Vec::new();
+        for domain in domains {
+            match self.stored_domain_status(domain).await? {
+                PermissionAuthorizationStatus::Denied => return Ok(BundleResolution::Denied),
+                PermissionAuthorizationStatus::NotDetermined => undecided.push(domain.clone()),
+                PermissionAuthorizationStatus::Authorized => {}
+            }
+        }
+        if undecided.is_empty() {
+            Ok(BundleResolution::Authorized)
+        } else {
+            Ok(BundleResolution::Undecided(undecided))
+        }
+    }
+
+    /// Key holding the answer to a bundle taken as a whole, which is where a
+    /// multi-domain denial lives. For one domain this is that domain's own key.
+    fn bundle_key(&self, domains: &[String]) -> CoreStorageKey {
+        CoreStorageKey::remote_permission_authorization(
+            self.product_id,
+            &remote_bundle_request(domains),
         )
-        .await
+    }
+
+    /// Stored decision covering one concrete host or pattern.
+    ///
+    /// Walks [`remote_domain_candidates`] most-specific-first and returns the
+    /// first stored decision, so an explicit grant for `api.example.com`
+    /// survives a denial of `*.example.com` and vice versa.
+    async fn stored_domain_status(
+        &self,
+        domain: &str,
+    ) -> Result<PermissionAuthorizationStatus, GenericError> {
+        for candidate in remote_domain_candidates(domain) {
+            let key = CoreStorageKey::remote_domain_authorization(self.product_id, &candidate);
+            if let Some(stored) = peek_stored(self.storage, key).await? {
+                return Ok(stored.into());
+            }
+        }
+        Ok(PermissionAuthorizationStatus::NotDetermined)
     }
 
     /// Returns the stored authorization status for a permission request
@@ -154,6 +264,25 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
                 CoreStorageKey::device_permission_authorization(self.product_id, permission)
             }
             PermissionAuthorizationRequest::Remote(request) => {
+                // This is the host's per-domain surface: it names the patterns it
+                // means, so it writes each one. It also writes the set-shaped
+                // slot, because a stored multi-domain denial lives there and
+                // would otherwise survive an explicit reset of the same domains.
+                if let Some(domains) = requested_domains(request) {
+                    for domain in domains {
+                        set_authorization_status(
+                            self.storage,
+                            CoreStorageKey::remote_domain_authorization(self.product_id, domain),
+                            status,
+                        )
+                        .await?;
+                    }
+                    if domains.len() > 1 {
+                        set_authorization_status(self.storage, self.bundle_key(domains), status)
+                            .await?;
+                    }
+                    return Ok(());
+                }
                 CoreStorageKey::remote_permission_authorization(self.product_id, request)
             }
             PermissionAuthorizationRequest::IdentityDisclosure => {
@@ -188,21 +317,71 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
 
     /// Returns the cached remote authorization if any, otherwise prompts the
     /// platform's `remote_permission` callback and persists the answer.
+    ///
+    /// For a domain bundle the prompt covers only the domains with no stored
+    /// decision. Re-asking about an already-granted domain would let one denial
+    /// revoke it, and re-asking about a denied one contradicts the prompt-once
+    /// rule. A grant is written per domain; a denial of more than one domain is
+    /// written against the set, per the asymmetry in the module docs.
     pub async fn check_or_prompt_remote(
         &self,
         request: RemotePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
-        let key = CoreStorageKey::remote_permission_authorization(self.product_id, &request);
-        if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
+        let Some(domains) = requested_domains(&request).map(<[String]>::to_vec) else {
+            let key = CoreStorageKey::remote_permission_authorization(self.product_id, &request);
+            if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
+                return Ok(cached.into());
+            }
+            // See `check_or_prompt_device`: persist only a genuine user decision;
+            // transient callback errors leave the authorization ask/default.
+            let authorization = match self.prompt.remote_permission(request).await {
+                Ok(RemotePermissionResponse { granted }) => granted.into(),
+                Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
+            };
+            return self.persist_decision(key, authorization).await;
+        };
+
+        if domains.is_empty() {
+            return Ok(PermissionAuthorizationStatus::Denied);
+        }
+
+        let undecided = match self.resolve_domains(&domains).await? {
+            BundleResolution::Authorized => return Ok(PermissionAuthorizationStatus::Authorized),
+            BundleResolution::Denied => return Ok(PermissionAuthorizationStatus::Denied),
+            BundleResolution::Undecided(undecided) => undecided,
+        };
+        // A refusal of this exact set is already an answer to this exact prompt.
+        let bundle_key = self.bundle_key(&undecided);
+        if let Some(cached) = peek_stored(self.storage, bundle_key.clone()).await? {
             return Ok(cached.into());
         }
-        // See `check_or_prompt_device`: persist only a genuine user decision;
-        // transient callback errors leave the authorization ask/default.
-        let authorization = match self.prompt.remote_permission(request).await {
-            Ok(RemotePermissionResponse { granted }) => granted.into(),
+
+        let authorization = match self
+            .prompt
+            .remote_permission(remote_bundle_request(&undecided))
+            .await
+        {
+            Ok(RemotePermissionResponse { granted }) => StoredAuthorizationStatus::from(granted),
             Err(_) => return Ok(PermissionAuthorizationStatus::NotDetermined),
         };
-        self.persist_decision(key, authorization).await
+        match authorization {
+            // Each granted domain is independently reachable afterwards, and
+            // enforcement only ever looks one host up, so a grant fans out.
+            StoredAuthorizationStatus::Authorized => {
+                for domain in &undecided {
+                    self.persist_decision(
+                        CoreStorageKey::remote_domain_authorization(self.product_id, domain),
+                        authorization,
+                    )
+                    .await?;
+                }
+                Ok(authorization.into())
+            }
+            // A denial answers only the question that was asked.
+            StoredAuthorizationStatus::Denied => {
+                self.persist_decision(bundle_key, authorization).await
+            }
+        }
     }
 
     /// Persist a fresh user decision and return its public status.
@@ -303,6 +482,9 @@ mod tests {
         remote_answers: Mutex<Vec<bool>>,
         device_calls: AtomicUsize,
         remote_calls: AtomicUsize,
+        /// Domain bundles the remote callback was actually asked about, in call
+        /// order, so a test can assert which subset reached the user.
+        remote_domains_asked: Mutex<Vec<Vec<String>>>,
     }
 
     impl ScriptedPrompt {
@@ -312,7 +494,12 @@ mod tests {
                 remote_answers: Mutex::new(remote_answers),
                 device_calls: AtomicUsize::new(0),
                 remote_calls: AtomicUsize::new(0),
+                remote_domains_asked: Mutex::new(Vec::new()),
             }
+        }
+
+        fn domains_asked(&self) -> Vec<Vec<String>> {
+            futures::executor::block_on(self.remote_domains_asked.lock()).clone()
         }
     }
 
@@ -334,9 +521,12 @@ mod tests {
 
         async fn remote_permission(
             &self,
-            _request: RemotePermissionRequest,
+            request: RemotePermissionRequest,
         ) -> Result<RemotePermissionResponse, GenericError> {
             self.remote_calls.fetch_add(1, Ordering::SeqCst);
+            if let RemotePermission::Remote { domains } = &request.permission {
+                self.remote_domains_asked.lock().await.push(domains.clone());
+            }
             let granted = self
                 .remote_answers
                 .lock()
@@ -344,6 +534,14 @@ mod tests {
                 .pop()
                 .expect("ScriptedPrompt ran out of remote answers");
             Ok(v01::RemotePermissionResponse { granted })
+        }
+    }
+
+    fn remote_domains(domains: &[&str]) -> RemotePermissionRequest {
+        RemotePermissionRequest {
+            permission: RemotePermission::Remote {
+                domains: domains.iter().map(|domain| domain.to_string()).collect(),
+            },
         }
     }
 
@@ -383,6 +581,343 @@ mod tests {
         assert_eq!(first, PermissionAuthorizationStatus::Denied);
         assert_eq!(second, PermissionAuthorizationStatus::Denied);
         assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// The defect this storage model exists to fix: a product grants a bundle,
+    /// then enforcement asks about one host in it. Keying the bundle as a set
+    /// made that lookup miss and re-prompt, so a granted domain read as
+    /// undecided forever.
+    #[test]
+    fn a_bundle_grant_is_visible_to_a_single_domain_lookup() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        let granted = futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["a.example.com", "b.example.com"])),
+        )
+        .unwrap();
+        assert_eq!(granted, PermissionAuthorizationStatus::Authorized);
+
+        for domain in ["a.example.com", "b.example.com"] {
+            assert_eq!(
+                futures::executor::block_on(service.peek_remote(&remote_domains(&[domain])))
+                    .unwrap(),
+                PermissionAuthorizationStatus::Authorized,
+                "{domain} was granted as part of the bundle"
+            );
+            assert_eq!(
+                futures::executor::block_on(
+                    service.check_or_prompt_remote(remote_domains(&[domain]))
+                )
+                .unwrap(),
+                PermissionAuthorizationStatus::Authorized,
+            );
+        }
+        assert_eq!(
+            prompt.remote_calls.load(Ordering::SeqCst),
+            1,
+            "a domain already covered by the bundle must not re-prompt"
+        );
+    }
+
+    #[test]
+    fn a_wildcard_grant_covers_one_subdomain_level_only() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["*.example.com"])),
+        )
+        .unwrap();
+
+        assert_eq!(
+            futures::executor::block_on(service.peek_remote(&remote_domains(&["api.example.com"])))
+                .unwrap(),
+            PermissionAuthorizationStatus::Authorized
+        );
+        // RFC 0002: a wildcard spans exactly one label, so a two-level host is
+        // still undecided and the bare parent is not covered either.
+        for uncovered in ["deep.api.example.com", "example.com"] {
+            assert_eq!(
+                futures::executor::block_on(service.peek_remote(&remote_domains(&[uncovered])))
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined,
+                "{uncovered} is outside a single-level wildcard"
+            );
+        }
+    }
+
+    #[test]
+    fn the_most_specific_stored_decision_wins() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        // Deny the whole wildcard, then allow one host under it explicitly.
+        futures::executor::block_on(service.set_authorization_status(
+            &PermissionAuthorizationRequest::Remote(remote_domains(&["*.example.com"])),
+            PermissionAuthorizationStatus::Denied,
+        ))
+        .unwrap();
+        futures::executor::block_on(service.set_authorization_status(
+            &PermissionAuthorizationRequest::Remote(remote_domains(&["api.example.com"])),
+            PermissionAuthorizationStatus::Authorized,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            futures::executor::block_on(service.peek_remote(&remote_domains(&["api.example.com"])))
+                .unwrap(),
+            PermissionAuthorizationStatus::Authorized,
+            "an explicit host grant outranks a denied parent wildcard"
+        );
+        assert_eq!(
+            futures::executor::block_on(
+                service.peek_remote(&remote_domains(&["other.example.com"]))
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::Denied,
+            "a host with no decision of its own inherits the wildcard denial"
+        );
+    }
+
+    #[test]
+    fn a_prompt_covers_only_undetermined_domains_and_never_revokes_a_grant() {
+        let storage = MemStorage::default();
+        // Answers pop from the end: grant first, then deny.
+        let prompt = ScriptedPrompt::new(vec![], vec![false, true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&["a.com"])))
+            .unwrap();
+        let second = futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["a.com", "b.com"])),
+        )
+        .unwrap();
+
+        assert_eq!(
+            prompt.domains_asked(),
+            vec![vec!["a.com".to_string()], vec!["b.com".to_string()]],
+            "the second prompt must ask only about the undecided domain"
+        );
+        assert_eq!(
+            second,
+            PermissionAuthorizationStatus::Denied,
+            "the bundle needs every domain, so one denial denies it"
+        );
+        assert_eq!(
+            futures::executor::block_on(service.peek_remote(&remote_domains(&["a.com"]))).unwrap(),
+            PermissionAuthorizationStatus::Authorized,
+            "denying b.com must not revoke the existing a.com grant"
+        );
+    }
+
+    #[test]
+    fn a_multi_domain_denial_leaves_the_narrower_question_askable() {
+        let storage = MemStorage::default();
+        // Answers pop from the end: deny the pair, then grant the single domain.
+        let prompt = ScriptedPrompt::new(vec![], vec![true, false]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        let pair = remote_domains(&["api.coingecko.com", "analytics.vendor.com"]);
+        assert_eq!(
+            futures::executor::block_on(service.check_or_prompt_remote(pair.clone())).unwrap(),
+            PermissionAuthorizationStatus::Denied
+        );
+        assert_eq!(
+            futures::executor::block_on(service.check_or_prompt_remote(pair.clone())).unwrap(),
+            PermissionAuthorizationStatus::Denied,
+        );
+        assert_eq!(
+            prompt.remote_calls.load(Ordering::SeqCst),
+            1,
+            "the refused set is answered and must not be re-asked"
+        );
+
+        // Refusing the pair is not refusing either domain on its own: that is a
+        // question the user was never put, so it stays open.
+        for domain in ["api.coingecko.com", "analytics.vendor.com"] {
+            assert_eq!(
+                futures::executor::block_on(service.peek_remote(&remote_domains(&[domain])))
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined,
+                "{domain} was never refused by itself"
+            );
+        }
+        assert_eq!(
+            futures::executor::block_on(
+                service.check_or_prompt_remote(remote_domains(&["api.coingecko.com"]))
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::Authorized,
+        );
+        assert_eq!(
+            prompt.domains_asked(),
+            vec![
+                vec![
+                    "api.coingecko.com".to_string(),
+                    "analytics.vendor.com".to_string(),
+                ],
+                vec!["api.coingecko.com".to_string()],
+            ],
+        );
+    }
+
+    #[test]
+    fn a_tld_wildcard_grant_is_consulted_like_any_other_pattern() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&["*.com"])))
+            .unwrap();
+
+        // A pattern that can be granted but never read would leave the product
+        // prompting for every host under a wildcard the user already approved.
+        assert_eq!(
+            futures::executor::block_on(service.peek_remote(&remote_domains(&["example.com"])))
+                .unwrap(),
+            PermissionAuthorizationStatus::Authorized
+        );
+        assert_eq!(
+            futures::executor::block_on(
+                service.check_or_prompt_remote(remote_domains(&["example.com"]))
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::Authorized
+        );
+        assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_grant_covers_every_spelling_of_the_granted_host() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["Bücher.example"])),
+        )
+        .unwrap();
+
+        // Enforcement normalizes a live URL host the same way the grant was
+        // keyed, so no spelling of the same site opens a second prompt.
+        for spelling in [
+            "bücher.example",
+            "xn--bcher-kva.example",
+            "XN--BCHER-KVA.example.",
+        ] {
+            assert_eq!(
+                futures::executor::block_on(service.peek_remote(&remote_domains(&[spelling])))
+                    .unwrap(),
+                PermissionAuthorizationStatus::Authorized,
+                "{spelling} is the granted host"
+            );
+        }
+        assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_denied_domain_short_circuits_the_bundle_without_prompting() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![false]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&["a.com"])))
+            .unwrap();
+        let second = futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["a.com", "b.com"])),
+        )
+        .unwrap();
+
+        assert_eq!(second, PermissionAuthorizationStatus::Denied);
+        assert_eq!(
+            prompt.remote_calls.load(Ordering::SeqCst),
+            1,
+            "a stored denial is not re-asked"
+        );
+    }
+
+    #[test]
+    fn an_empty_domain_bundle_is_denied_without_prompting() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        assert_eq!(
+            futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&[])))
+                .unwrap(),
+            PermissionAuthorizationStatus::Denied
+        );
+        assert_eq!(
+            futures::executor::block_on(service.peek_remote(&remote_domains(&[]))).unwrap(),
+            PermissionAuthorizationStatus::Denied
+        );
+        assert_eq!(prompt.remote_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn clearing_a_bundle_clears_each_domain_it_names() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+
+        futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["a.com", "b.com"])),
+        )
+        .unwrap();
+        futures::executor::block_on(service.set_authorization_status(
+            &PermissionAuthorizationRequest::Remote(remote_domains(&["a.com", "b.com"])),
+            PermissionAuthorizationStatus::NotDetermined,
+        ))
+        .unwrap();
+
+        for domain in ["a.com", "b.com"] {
+            assert_eq!(
+                futures::executor::block_on(service.peek_remote(&remote_domains(&[domain])))
+                    .unwrap(),
+                PermissionAuthorizationStatus::NotDetermined,
+                "{domain} must be revocable through the bundle it was granted in"
+            );
+        }
+    }
+
+    #[test]
+    fn resetting_a_bundle_clears_a_recorded_denial() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![false]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        let pair = remote_domains(&["a.com", "b.com"]);
+
+        futures::executor::block_on(service.check_or_prompt_remote(pair.clone())).unwrap();
+        futures::executor::block_on(service.set_authorization_status(
+            &PermissionAuthorizationRequest::Remote(pair.clone()),
+            PermissionAuthorizationStatus::NotDetermined,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            futures::executor::block_on(service.peek_remote(&pair)).unwrap(),
+            PermissionAuthorizationStatus::NotDetermined,
+            "the host's reset must also reach the slot a set denial lives in"
+        );
+    }
+
+    #[test]
+    fn remote_domain_grants_are_scoped_to_one_product() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot");
+        futures::executor::block_on(service.check_or_prompt_remote(remote_domains(&["a.com"])))
+            .unwrap();
+
+        let other = PermissionsService::new(&storage, &prompt, "other.dot");
+        assert_eq!(
+            futures::executor::block_on(other.peek_remote(&remote_domains(&["a.com"]))).unwrap(),
+            PermissionAuthorizationStatus::NotDetermined
+        );
     }
 
     #[test]
