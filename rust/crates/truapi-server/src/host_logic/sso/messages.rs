@@ -92,6 +92,21 @@ pub enum RemoteMessageData {
     V1(v1::RemoteMessage),
 }
 
+/// Outcome of answering one SSO remote message on behalf of a caller that
+/// owns the session transport. Generic over the response representation:
+/// the typed runtime layer carries a decoded [`RemoteMessage`], the FFI
+/// boundary carries its SCALE encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SsoRequestOutcome<T> {
+    /// Response to post back over the session.
+    Response(T),
+    /// The peer ended the session; the caller tears down its transport and
+    /// records. The core holds no per-peer state to clear.
+    Disconnected,
+    /// Not a request (a `*Response` variant); nothing to do.
+    Ignored,
+}
+
 /// Signing request flavor sent to the signing host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum SigningRequest {
@@ -1111,7 +1126,7 @@ pub fn decode_incoming_sso_request(
     }
 }
 
-fn decode_remote_message(message: &[u8]) -> Result<RemoteMessage, String> {
+pub(crate) fn decode_remote_message(message: &[u8]) -> Result<RemoteMessage, String> {
     let mut input = message;
     let decoded = RemoteMessage::decode(&mut input)
         .map_err(|error| format!("invalid SSO remote message: {error}"))?;

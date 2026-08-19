@@ -68,7 +68,7 @@ pub use signing_host::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, respond_to_pairing,
+    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
 };
 
 use authority::{
@@ -6583,7 +6583,7 @@ mod tests {
             1
         );
         let message = submitted_remote_message(&platform, &session);
-        assert_eq!(message.message_id, "truapi:sso:disconnect");
+        assert_eq!(message.message_id.len(), 8, "opaque nanoid message id");
         assert!(matches!(
             message.data,
             RemoteMessageData::V1(v1::RemoteMessage::Disconnected)

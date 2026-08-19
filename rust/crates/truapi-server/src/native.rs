@@ -30,9 +30,14 @@ use truapi_platform::{
 use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::NavigateDecision;
+use crate::host_logic::sso::messages::{
+    RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
+    decode_remote_message, v1,
+};
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererSubscription};
+use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
@@ -116,6 +121,28 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotApp,
     /// Development Polkadot app.
     PolkadotAppDev,
+}
+
+/// FFI projection of the canonical
+/// [`SsoRequestOutcome`](crate::host_logic::sso::messages::SsoRequestOutcome),
+/// concrete because UniFFI cannot export generics.
+///
+/// Variants carry SCALE-encoded wire bytes rather than decoded Rust types because
+/// the wallet forwards encodings verbatim and never constructs them — the opaque
+/// bytes are the correct boundary representation here.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SsoRequestOutcome {
+    /// SCALE-encoded response to post back over the session.
+    Response {
+        /// SCALE-encoded `RemoteMessage` response ready to submit over the
+        /// session statement store.
+        message: Vec<u8>,
+    },
+    /// The peer ended the session; the wallet tears down its transport and
+    /// records (host entry, device record, device-removed broadcast).
+    Disconnected,
+    /// Not a request; nothing to post.
+    Ignored,
 }
 
 /// Native runtime configuration supplied before product calls are handled.
@@ -820,6 +847,43 @@ impl NativeTrUApiHostRuntime {
                 .activate_local_session_with_identity(secret, lite_username),
         )
         .map_err(Into::into)
+    }
+
+    /// Answer one decrypted SSO remote message from a wallet-managed
+    /// statement-store session.
+    ///
+    /// `message` is one SCALE-encoded `RemoteMessage` exactly as decrypted from
+    /// the session statement. The bytes are deliberately opaque at this
+    /// boundary: the wallet forwards wire encodings verbatim and never
+    /// constructs them. Session control and transport stay with the wallet —
+    /// `Disconnected` is reported, never handled here. Confirmation-gated
+    /// requests await `confirm_user_action`, so this can take arbitrarily long.
+    pub async fn handle_sso_request(
+        &self,
+        message: Vec<u8>,
+    ) -> Result<SsoRequestOutcome, HostRejection> {
+        let message =
+            decode_remote_message(&message).map_err(|reason| HostRejection::Rejected { reason })?;
+        Ok(match self.runtime.answer_sso_request(message).await {
+            CoreSsoRequestOutcome::Response(response) => SsoRequestOutcome::Response {
+                message: response.encode(),
+            },
+            CoreSsoRequestOutcome::Disconnected => SsoRequestOutcome::Disconnected,
+            CoreSsoRequestOutcome::Ignored => SsoRequestOutcome::Ignored,
+        })
+    }
+
+    /// Build the SCALE-encoded `Disconnected` message a wallet posts over a
+    /// session it is ending. Each call carries a fresh opaque message id,
+    /// like every outgoing SSO message; receivers detect disconnect by
+    /// message variant, not id. Posting and record cleanup stay with the
+    /// wallet.
+    pub fn prepare_disconnect_request(&self) -> Vec<u8> {
+        RemoteMessage {
+            message_id: sso_message_id(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+        }
+        .encode()
     }
 
     /// Notify the shared chain adapter of one JSON-RPC response.
@@ -3228,6 +3292,95 @@ mod tests {
         assert_eq!(permission_response.payload.value, vec![0x00, 0x00, 0x01]);
 
         core.stop_ws_bridge();
+    }
+
+    fn native_host_runtime_no_session() -> Arc<NativeTrUApiHostRuntime> {
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
+            .expect("host runtime config should be valid")
+    }
+
+    #[test]
+    fn handle_sso_request_rejects_undecodable_bytes() {
+        let runtime = native_host_runtime_no_session();
+        let result =
+            futures::executor::block_on(runtime.handle_sso_request(vec![0xFF, 0xFF, 0xFF]));
+        assert!(result.is_err(), "garbage bytes must be a decode error");
+    }
+
+    #[test]
+    fn handle_sso_request_reports_disconnect_as_marker() {
+        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
+        use parity_scale_codec::Encode;
+        let runtime = native_host_runtime_no_session();
+        let disconnected = RemoteMessage {
+            message_id: "m1".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+        };
+        let outcome =
+            futures::executor::block_on(runtime.handle_sso_request(disconnected.encode()))
+                .expect("decodable message");
+        assert!(matches!(outcome, SsoRequestOutcome::Disconnected));
+    }
+
+    #[test]
+    fn handle_sso_request_reencodes_a_request_response() {
+        use crate::host_logic::sso::messages::{
+            ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
+        };
+        use parity_scale_codec::{Decode, Encode};
+        // The default test config carries a local session secret, so the
+        // runtime is activated at construction.
+        let runtime = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let request = RemoteMessage {
+            message_id: "m9".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeRequest(
+                ProductSubtreeRequest {
+                    product_id: "browse.dot".to_string(),
+                },
+            )),
+        };
+        let outcome = futures::executor::block_on(runtime.handle_sso_request(request.encode()))
+            .expect("decodable message");
+        let SsoRequestOutcome::Response { message } = outcome else {
+            panic!("expected a response outcome");
+        };
+        let response =
+            RemoteMessage::decode(&mut message.as_slice()).expect("valid response encoding");
+        assert_eq!(response.message_id, "m9:response");
+        let RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(payload)) =
+            response.data
+        else {
+            panic!("expected a product subtree response payload");
+        };
+        assert_eq!(payload.responding_to, "m9");
+        assert!(payload.product_public_key.is_ok());
+    }
+
+    #[test]
+    fn prepare_disconnect_request_round_trips_with_fresh_ids() {
+        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
+        use parity_scale_codec::Decode;
+        let runtime = native_host_runtime_no_session();
+        let bytes = runtime.prepare_disconnect_request();
+        let message = RemoteMessage::decode(&mut bytes.as_slice()).expect("valid encoding");
+        assert_eq!(message.message_id.len(), 8, "opaque nanoid message id");
+        assert!(matches!(
+            message.data,
+            RemoteMessageData::V1(v1::RemoteMessage::Disconnected)
+        ));
+        let second = RemoteMessage::decode(&mut runtime.prepare_disconnect_request().as_slice())
+            .expect("valid encoding");
+        assert_ne!(
+            message.message_id, second.message_id,
+            "each disconnect message carries its own id"
+        );
     }
 
     #[test]

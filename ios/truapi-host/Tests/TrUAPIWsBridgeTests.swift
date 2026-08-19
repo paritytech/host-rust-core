@@ -83,6 +83,14 @@ final class StubHostBridge: HostBridge {
     func devicePermission(request _: HostDevicePermissionRequest) async throws -> Bool { false }
     func remotePermission(request _: RemotePermission) async throws -> Bool { false }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
+    func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
+    func localStorageRead(key: String) throws -> Data? { try storage.read(key: key) }
+    
+    func localStorageWrite(key: String, value: Data) throws {
+        try storage.write(key: key, value: value)
+    }
+    
+    func localStorageClear(key: String) throws { try storage.clear(key: key) }
 }
 
 // Conforms to `ChatHostBridge` so a new requirement there fails this job.
