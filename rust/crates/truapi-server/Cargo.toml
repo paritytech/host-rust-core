@@ -59,6 +59,8 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 sha2 = "0.10"
 merlin = "3"
 parking_lot = "0.12"
+frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
+scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 
 tracing = "0.1"
 # `registry` + `std` only: pulls the Registry + per-layer filter/reload, but
@@ -76,8 +78,6 @@ tokio-tungstenite = { version = "0.21", default-features = false, features = ["h
 uniffi.workspace = true
 subxt = { version = "0.50.3", default-features = false, features = ["native"] }
 subxt-rpcs = { version = "0.50.3", default-features = false, features = ["jsonrpsee", "native"] }
-frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
-scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures-timer = { version = "3", features = ["wasm-bindgen"] }
@@ -89,8 +89,6 @@ wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
 send_wrapper = { version = "0.6", features = ["futures"] }
 web-time = "1"
-frame-metadata = { version = "23", default-features = false, features = ["std", "current", "decode"] }
-scale-info = { version = "2.11", default-features = false, features = ["decode"] }
 web-sys = { version = "0.3", features = ["console"] }
 
 [dev-dependencies]

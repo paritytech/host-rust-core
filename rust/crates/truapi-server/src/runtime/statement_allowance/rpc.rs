@@ -1,4 +1,4 @@
-//! Host-backed JSON-RPC helpers for statement-store allowance registration.
+//! JSON-RPC helpers for People-chain and Bulletin allowance allocation.
 
 use core::time::Duration;
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use super::StatementAllowanceError;
 /// Timeout for an allowance registration extrinsic to reach a block.
 const SUBMIT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Error from the native JSON-RPC surface used by allowance allocation.
+/// Error from the JSON-RPC surface used by allowance allocation.
 #[derive(Debug, Error)]
 pub enum RpcError {
     /// Opening a direct RPC URL failed.

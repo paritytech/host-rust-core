@@ -9,8 +9,8 @@
 //! Implemented: local session lifecycle, raw-bytes signing, extrinsic-payload
 //! signing, v4 transaction construction (payload fields and extensions arrive
 //! pre-encoded, so no chain metadata is needed), RFC-0007 product entropy,
-//! bandersnatch ring-VRF aliases and membership proofs, and product-scoped
-//! Statement Store and Bulletin allowance keys (native only).
+//! bandersnatch ring-VRF aliases and membership proofs, native Statement Store
+//! allowance keys, and cross-target Bulletin allowance keys.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod allowance_renewal;

@@ -198,10 +198,10 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
   exponent, and revision reads to one finalized block before creating a proof.
   Extrinsic-payload signing and v4 transaction construction work from
   pre-encoded payload fields, so no chain metadata is needed;
-  statement-store and Bulletin allowance allocation are native-only (wasm
-  builds report them as unavailable) and do need metadata, which they take from
-  the `RuntimeServices`-owned per-chain cache rather than re-reading it per
-  call.
+  Bulletin allowance allocation works on native and wasm hosts, while
+  statement-store allowance allocation remains native-only. Both need runtime
+  metadata, which they take from the `RuntimeServices`-owned per-chain cache
+  rather than re-reading it per call.
 
 `host_logic` stays pure: the orchestrators above call into it for codecs,
 session/SSO crypto, key derivation, and permission policy, while all I/O
