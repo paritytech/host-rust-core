@@ -6,8 +6,9 @@ use indoc::{formatdoc, writedoc};
 
 use crate::platform::{PlatformDefinition, PlatformInner, PlatformMethod, PlatformTrait};
 use crate::platform_callbacks::{
-    composed_traits, platform_trait_names, raw_callback_field_name, raw_callback_name,
-    raw_callback_wire_name, snake_case, stream_item, trait_object_return_name,
+    callback_namespace, composed_traits, optional_trait_names, platform_trait_names,
+    raw_callback_field_name, raw_callback_name, raw_callback_wire_name, snake_case, stream_item,
+    trait_object_return_name,
 };
 use crate::rustdoc::{ApiDefinition, TypeDef, TypeDefKind, TypeRef, VariantFields};
 
@@ -18,6 +19,7 @@ pub fn generate_wasm_bridge(
     let ctx = BridgeCtx::new(definition, api);
     let traits = composed_traits(definition);
     let trait_names = platform_trait_names(definition);
+    let optional_traits = optional_trait_names(definition);
     validate_errors(&traits, &ctx)?;
     let mut out = String::new();
     writedoc!(
@@ -37,21 +39,29 @@ pub fn generate_wasm_bridge(
 
         use super::{{
             WasmPlatform, call_js_function, decode_bytes, decode_js_item, generic, get_function,
-            invoke_bool, invoke_bytes_return, invoke_js_subscription, invoke_optional_bytes_return,
-            invoke_unit, parse_optional_bytes_item,
+            get_optional_function, invoke_bool, invoke_bytes_return, invoke_js_subscription,
+            invoke_optional_bytes_return, invoke_unit, missing_callback, parse_optional_bytes_item,
         }};
 
         /// JS-side callbacks invoked by the wasm platform bridge. Methods with
         /// Rust default bodies are still required here because the generated TS
         /// adapter resolves optional host callbacks before constructing this
         /// raw callback object.
+        ///
+        /// Callbacks of an optional capability trait are replaced by a throwing
+        /// stub when the host omits the group. The core never reaches them: it
+        /// only holds an adapter for a capability whose `has_*` accessor is
+        /// true, and answers the rest with `Unsupported`.
         pub(super) struct JsBridge {{
         "#,
     )
     .unwrap();
 
-    for field in bridge_fields(&traits, &trait_names) {
+    for field in bridge_fields(&traits, &trait_names, &optional_traits) {
         writeln!(out, "    pub(super) {}: Function,", field.field_name).unwrap();
+    }
+    for namespace in optional_namespaces(&traits, &optional_traits) {
+        writeln!(out, "    pub(super) {namespace}_present: bool,").unwrap();
     }
     out.push_str("}\n\n");
 
@@ -64,15 +74,52 @@ pub fn generate_wasm_bridge(
         "#,
     )
     .unwrap();
-    for field in bridge_fields(&traits, &trait_names) {
-        writeln!(
+    for field in bridge_fields(&traits, &trait_names, &optional_traits) {
+        if field.optional {
+            writeln!(
+                out,
+                "            {}: get_optional_function(callbacks, \"{}\")?\n                .unwrap_or_else(|| missing_callback(\"{}\")),",
+                field.field_name, field.raw_name, field.raw_name
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                out,
+                "            {}: get_function(callbacks, \"{}\")?,",
+                field.field_name, field.raw_name
+            )
+            .unwrap();
+        }
+    }
+    for namespace in optional_namespaces(&traits, &optional_traits) {
+        let probes = bridge_fields(&traits, &trait_names, &optional_traits)
+            .into_iter()
+            .filter(|field| field.namespace.as_deref() == Some(namespace.as_str()))
+            .map(|field| {
+                format!(
+                    "get_optional_function(callbacks, \"{}\")?.is_some()",
+                    field.raw_name
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n                && ");
+        writeln!(out, "            {namespace}_present: {probes},").unwrap();
+    }
+    out.push_str("        })\n    }\n");
+    for namespace in optional_namespaces(&traits, &optional_traits) {
+        writedoc!(
             out,
-            "            {}: get_function(callbacks, \"{}\")?,",
-            field.field_name, field.raw_name
+            r#"
+            
+                /// Whether the host supplied every `{namespace}` callback.
+                pub(super) fn has_{namespace}(&self) -> bool {{
+                    self.{namespace}_present
+                }}
+            "#,
         )
         .unwrap();
     }
-    out.push_str("        })\n    }\n}\n\n");
+    out.push_str("}\n\n");
 
     let mut parse_fns = BTreeMap::new();
     for trait_def in traits {
@@ -160,18 +207,37 @@ impl<'a> BridgeCtx<'a> {
 struct BridgeField {
     field_name: String,
     raw_name: String,
+    optional: bool,
+    namespace: Option<String>,
+}
+
+/// Callback namespaces of the optional capability traits, in emission order.
+fn optional_namespaces(
+    traits: &[&PlatformTrait],
+    optional_traits: &BTreeSet<String>,
+) -> Vec<String> {
+    traits
+        .iter()
+        .filter(|trait_def| optional_traits.contains(&trait_def.name))
+        .map(|trait_def| snake_case(&callback_namespace(&trait_def.name)))
+        .collect()
 }
 
 fn bridge_fields(
     traits: &[&PlatformTrait],
     platform_trait_names: &BTreeSet<String>,
+    optional_traits: &BTreeSet<String>,
 ) -> Vec<BridgeField> {
     let mut fields = Vec::new();
     for trait_def in traits {
+        let optional = optional_traits.contains(&trait_def.name);
+        let namespace = optional.then(|| snake_case(&callback_namespace(&trait_def.name)));
         for method in &trait_def.methods {
             fields.push(BridgeField {
                 field_name: raw_callback_field_name(trait_def, method, platform_trait_names),
                 raw_name: raw_callback_wire_name(trait_def, method, platform_trait_names),
+                optional,
+                namespace: namespace.clone(),
             });
         }
     }
@@ -397,8 +463,9 @@ fn rust_params(method: &PlatformMethod, ctx: &BridgeCtx<'_>) -> Result<String> {
         .params
         .iter()
         .map(|param| {
+            let reference = if param.borrowed { "&" } else { "" };
             Ok(format!(
-                "{}: {}",
+                "{}: {reference}{}",
                 param.name,
                 rust_type(&param.type_ref, ctx)?
             ))

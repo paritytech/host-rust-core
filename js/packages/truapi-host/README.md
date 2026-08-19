@@ -4,13 +4,6 @@ WASM-backed TrUAPI host runtime. It embeds the `truapi-server` Rust core (compil
 behind a Web Worker provider, plus per-environment integration entry points. It is the
 counterpart to the native Android/iOS host shells.
 
-`executionKind: "Chat"` is accepted by the runtime config but not served: the
-Chat modality reaches products through a host-supplied `ChatPlatform` adapter,
-which only the native (UniFFI) entrypoints can install. A JS host that opens a
-`Chat` execution gets a provider whose Chat requests answer unsupported; its
-subscriptions end empty, which is indistinguishable from a healthy close.
-Tracked in paritytech/host-rust-core#383.
-
 ## Entry points
 
 The package exposes tree-shakeable subpath exports — import only what your environment needs:
@@ -85,6 +78,33 @@ webpack hosts get the same result from `compression-webpack-plugin`. Skipping
 this ships the full 1.4 MB `.wasm` where about 600 kB (gzip) or 470 kB (brotli)
 would do — and a server configured with `gzip_static` but no dynamic `gzip on`
 has no fallback.
+
+## Optional capabilities
+
+`HostCallbacks` groups are required except those listed on the Rust
+`OptionalPlatform` super-trait, which are emitted as optional members. Omit one
+and the core answers its product calls with `Unsupported`; supply it and the
+whole group must be implemented:
+
+```ts
+const callbacks: HostCallbacks = {
+  navigation,
+  notifications,
+  // ...required groups...
+  chat, // optional: leave it out and chat products get `Unsupported`
+};
+```
+
+Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
+reported to the worker in its `init` message, so the core sees the same
+capability set on both sides of the boundary.
+
+`chat` is **outbound-only** from a JS host today: a host can create rooms, post
+messages and serve the room list, but cannot deliver an incoming message.
+Publishing a chat action is native-only, so `Chat/action_subscribe` yields a
+subscription that never emits, which a product cannot tell apart from a quiet
+room. Custom-message rendering is native-only for the same reason. The inbound
+path is tracked in [#422](https://github.com/paritytech/host-rust-core/issues/422).
 
 ## Generated WASM artefacts
 

@@ -8,15 +8,27 @@ use crate::rustdoc::TypeRef;
 /// Traits the platform surface actually composes: the super trait's
 /// constituents when one exists, otherwise every collected trait.
 pub(crate) fn composed_traits(definition: &PlatformDefinition) -> Vec<&PlatformTrait> {
-    let composed: BTreeSet<String> = match &definition.super_trait {
+    let mut composed: BTreeSet<String> = match &definition.super_trait {
         Some(s) => s.composes.iter().cloned().collect(),
         None => definition.traits.iter().map(|t| t.name.clone()).collect(),
     };
+    composed.extend(optional_trait_names(definition));
     definition
         .traits
         .iter()
         .filter(|t| composed.contains(&t.name))
         .collect()
+}
+
+/// Capability trait names a host may omit, taken from the `OptionalPlatform`
+/// super-trait. A host that supplies none of a trait's callbacks is not
+/// broken: the core answers the matching product calls with `Unsupported`.
+pub(crate) fn optional_trait_names(definition: &PlatformDefinition) -> BTreeSet<String> {
+    definition
+        .optional_super_trait
+        .as_ref()
+        .map(|s| s.composes.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// JS-side callback name for a platform method (camelCase of the Rust name).
@@ -103,7 +115,7 @@ pub(crate) fn raw_callback_adapter_name(
 /// Callback-object namespace for a trait: its name with the role suffix
 /// (`Provider`, `Presenter`, `Host`) stripped, lower-cased first letter.
 pub(crate) fn callback_namespace(trait_name: &str) -> String {
-    let stem = ["Provider", "Presenter", "Host"]
+    let stem = ["Provider", "Presenter", "Host", "Platform"]
         .into_iter()
         .find_map(|suffix| trait_name.strip_suffix(suffix))
         .unwrap_or(trait_name);
