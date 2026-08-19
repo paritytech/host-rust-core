@@ -225,7 +225,8 @@ pub struct HostChatPostMessageRequest {
 /// Result of posting a message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostChatPostMessageResponse {
-    /// Assigned message ID.
+    /// Host-assigned message id, and the correlation key for any action the
+    /// message carries: a trigger names it in [`ActionTrigger::message_id`].
     pub message_id: String,
 }
 
@@ -245,7 +246,8 @@ pub enum HostChatPostMessageError {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ActionTrigger {
-    /// Message containing the action.
+    /// Message containing the action, as returned by `Chat::post_message` in
+    /// [`HostChatPostMessageResponse::message_id`].
     pub message_id: String,
     /// Which action was triggered.
     pub action_id: String,

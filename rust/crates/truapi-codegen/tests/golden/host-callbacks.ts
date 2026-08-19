@@ -831,11 +831,18 @@ export interface ChainProvider {
  * storage and UI. Optional: a host that omits it leaves Chat requests
  * answered `Unsupported`. See `OptionalPlatform`.
  *
- * On `create_chat_room` and `register_chat_bot` the core bounds ids, names and
- * icons, NFC-normalizes them, screens control and bidi characters, and
- * restricts an icon to `https` or an inline raster image. Contextual output
- * escaping, storage limits, and every `post_chat_message` field remain
- * host-owned.
+ * The core bounds and screens the product-supplied fields it forwards. Ids,
+ * names and icons on `create_chat_room`, `register_chat_bot` and
+ * `post_chat_message` are NFC-normalized and rejected for control and bidi
+ * characters. Message bodies are bounded and screened but pass through
+ * byte-for-byte, keeping line breaks and tabs, so a product reads back the
+ * bytes it sent. Counts and byte budgets are enforced, and any URL a host may
+ * fetch or open is restricted to `https` or an inline raster image and
+ * delivered as the parser resolved it.
+ *
+ * `ChatFile::size_bytes` is a product assertion and is not verified against
+ * the resource it names. Contextual output escaping, storage limits, and
+ * anything a host derives from product-supplied values remain host-owned.
  */
 export interface ChatPlatform {
   /**

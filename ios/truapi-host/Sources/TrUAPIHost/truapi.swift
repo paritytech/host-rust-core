@@ -604,7 +604,8 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
  */
 public struct ActionTrigger: Equatable, Hashable {
     /**
-     * Message containing the action.
+     * Message containing the action, as returned by `Chat::post_message` in
+     * [`HostChatPostMessageResponse::message_id`].
      */
     public var messageId: String
     /**
@@ -620,7 +621,8 @@ public struct ActionTrigger: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * Message containing the action.
+         * Message containing the action, as returned by `Chat::post_message` in
+         * [`HostChatPostMessageResponse::message_id`].
          */messageId: String,
         /**
          * Which action was triggered.
