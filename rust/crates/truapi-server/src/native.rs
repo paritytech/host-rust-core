@@ -17,7 +17,7 @@ use futures::executor::ThreadPool;
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::Encode;
 use truapi::{Bytes32, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
@@ -31,7 +31,8 @@ use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::NavigateDecision;
 use crate::host_logic::sso::messages::{
-    RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome, v1,
+    RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
+    decode_remote_message, v1,
 };
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
@@ -834,11 +835,8 @@ impl NativeTrUApiHostRuntime {
         &self,
         message: Vec<u8>,
     ) -> Result<SsoRequestOutcome, HostRejection> {
-        let message = RemoteMessage::decode(&mut message.as_slice()).map_err(|err| {
-            HostRejection::Rejected {
-                reason: format!("undecodable RemoteMessage: {err}"),
-            }
-        })?;
+        let message =
+            decode_remote_message(&message).map_err(|reason| HostRejection::Rejected { reason })?;
         Ok(match self.runtime.answer_sso_request(message).await {
             CoreSsoRequestOutcome::Response(response) => SsoRequestOutcome::Response {
                 message: response.encode(),

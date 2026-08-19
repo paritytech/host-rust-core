@@ -1126,7 +1126,7 @@ pub fn decode_incoming_sso_request(
     }
 }
 
-fn decode_remote_message(message: &[u8]) -> Result<RemoteMessage, String> {
+pub(crate) fn decode_remote_message(message: &[u8]) -> Result<RemoteMessage, String> {
     let mut input = message;
     let decoded = RemoteMessage::decode(&mut input)
         .map_err(|error| format!("invalid SSO remote message: {error}"))?;
