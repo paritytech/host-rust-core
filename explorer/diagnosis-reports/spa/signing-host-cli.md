@@ -27,12 +27,12 @@
 | `Chain/get_spec_properties` | ✅ |  |
 | `Chain/broadcast_transaction` | ✅ |  |
 | `Chain/stop_transaction` | ✅ |  |
-| `Coin Payment/create_purse` | ❌ | createPurse failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
-| `Coin Payment/query_purse` | ❌ | queryPurse failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
+| `Coin Payment/create_purse` | ❌ | createPurse failed: { "error": { "tag": "Unsupported" } } |
+| `Coin Payment/query_purse` | ❌ | queryPurse failed: { "error": { "tag": "Unsupported" } } |
 | `Coin Payment/rebalance_purse` | ❌ | Subscription interrupted |
 | `Coin Payment/delete_purse` | ❌ | Subscription interrupted |
-| `Coin Payment/create_receivable` | ❌ | createReceivable failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
-| `Coin Payment/create_cheque` | ❌ | createCheque failed: { "error": { "tag": "HostFailure", "value": { "reason": "unavailable" } } } |
+| `Coin Payment/create_receivable` | ❌ | createReceivable failed: { "error": { "tag": "Unsupported" } } |
+| `Coin Payment/create_cheque` | ❌ | createCheque failed: { "error": { "tag": "Unsupported" } } |
 | `Coin Payment/deposit` | ❌ | Subscription interrupted |
 | `Coin Payment/refund` | ❌ | Subscription interrupted |
 | `Coin Payment/listen_for_payment` | ❌ | Subscription interrupted |

@@ -215,6 +215,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       kind: "init",
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
+      capabilities: { chat: false },
     });
 
     worker.emit({ kind: "ready" });
@@ -230,6 +231,23 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(typeof provider.disconnectSession).toBe("function");
 
     provider.dispose();
+  });
+
+  it("reports the chat capability to the worker when the host serves it", async () => {
+    const worker = new FakeWorker();
+    void createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        chat: { createChatRoom: async () => ({ status: "New" }) },
+      }),
+      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+    );
+
+    worker.emit({ kind: "loaded" });
+
+    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
+      chat: true,
+    });
   });
 
   it("creates multiple product cores on one worker runtime", async () => {

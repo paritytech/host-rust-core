@@ -27,6 +27,9 @@ pub struct PlatformDefinition {
     pub types: Vec<TypeDef>,
     /// Composite super-trait (`Platform: Storage + Navigation + ...`), if any.
     pub super_trait: Option<PlatformSuperTrait>,
+    /// Composite super-trait of capabilities a host may omit
+    /// (`OptionalPlatform: ChatPlatform + ...`), if any.
+    pub optional_super_trait: Option<PlatformSuperTrait>,
 }
 
 /// Single capability trait extracted from the platform crate.
@@ -61,8 +64,12 @@ pub struct PlatformMethod {
 pub struct PlatformParam {
     /// Parameter name as written in the trait method signature.
     pub name: String,
-    /// Parameter type expressed as a [`TypeRef`].
+    /// Parameter type expressed as a [`TypeRef`]. References are resolved to
+    /// the referent; [`Self::borrowed`] records that the signature borrowed it.
     pub type_ref: TypeRef,
+    /// Whether the trait method takes this parameter by reference. Rust
+    /// emitters must reproduce the `&`; TS has no equivalent and ignores it.
+    pub borrowed: bool,
 }
 
 /// Return shape after stripping async-trait `Pin<Box<dyn Future<Output = T>>>`
@@ -108,6 +115,7 @@ pub fn extract(krate: &Crate) -> Result<PlatformDefinition> {
 
     let mut traits = Vec::new();
     let mut super_trait = None;
+    let mut optional_super_trait = None;
     for item_id in &trait_ids {
         let item = krate
             .index
@@ -124,10 +132,15 @@ pub fn extract(krate: &Crate) -> Result<PlatformDefinition> {
             .with_context(|| format!("Trait `{name}` missing rustdoc trait body"))?;
 
         if is_super_trait(trait_inner) {
-            if super_trait.is_some() {
-                bail!("Multiple super-traits with method-less bodies found; only one is supported");
+            let slot = if name == OPTIONAL_SUPER_TRAIT {
+                &mut optional_super_trait
+            } else {
+                &mut super_trait
+            };
+            if slot.is_some() {
+                bail!("Multiple `{name}` super-traits found; only one is supported");
             }
-            super_trait = Some(extract_super_trait(&name, item, trait_inner)?);
+            *slot = Some(extract_super_trait(&name, item, trait_inner)?);
             continue;
         }
 
@@ -147,6 +160,7 @@ pub fn extract(krate: &Crate) -> Result<PlatformDefinition> {
         traits,
         types,
         super_trait,
+        optional_super_trait,
     })
 }
 
@@ -312,6 +326,10 @@ fn collect_local_trait_ids(krate: &Crate) -> BTreeSet<String> {
     out
 }
 
+/// Name of the method-less super-trait listing capabilities a host may omit.
+/// Every other method-less super-trait composes the required surface.
+pub(crate) const OPTIONAL_SUPER_TRAIT: &str = "OptionalPlatform";
+
 fn is_super_trait(trait_inner: &serde_json::Value) -> bool {
     let no_methods = trait_inner
         .get("items")
@@ -439,6 +457,7 @@ fn extract_method(item: &Item, names: &NameContext) -> Result<Option<PlatformMet
             params.push(PlatformParam {
                 name: param_name,
                 type_ref,
+                borrowed: ty.get("borrowed_ref").is_some(),
             });
         }
     }
@@ -766,6 +785,7 @@ mod tests {
                         name: "Shared".to_string(),
                         args: Vec::new(),
                     },
+                    borrowed: false,
                 }],
                 return_shape: PlatformReturn {
                     is_async: false,

@@ -371,8 +371,12 @@ fn golden_host_callbacks_ts() {
         "SUBSCRIPTION_NAMES",
     ));
     for name in generated_names {
+        // Callbacks of an optional capability bind through the optional getter;
+        // either way the bridge must name every callback the worker proxies.
         assert!(
-            wasm_bridge_actual.contains(&format!("get_function(callbacks, \"{name}\")?")),
+            wasm_bridge_actual.contains(&format!("get_function(callbacks, \"{name}\")?"))
+                || wasm_bridge_actual
+                    .contains(&format!("get_optional_function(callbacks, \"{name}\")?")),
             "generated wasm bridge must bind worker callback `{name}`"
         );
     }
