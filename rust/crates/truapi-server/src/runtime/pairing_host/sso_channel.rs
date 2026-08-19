@@ -189,7 +189,7 @@ impl PairingHost {
             .sso
             .as_ref()
             .ok_or_else(|| "No SSO session state".to_string())?;
-        let message_id = "truapi:sso:disconnect".to_string();
+        let message_id = sso_message_id();
         let message = RemoteMessage {
             message_id: message_id.clone(),
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
