@@ -28,16 +28,17 @@ uniffi::use_remote_type!(truapi::Bytes32);
 
 use truapi::Bytes32;
 use truapi::latest::{
-    AllocatableResource, ChainIdentifier, GenericError, HostChatCreateRoomError,
-    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
-    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
-    HostDevicePermissionRequest, HostDevicePermissionResponse, HostFeatureSupportedRequest,
-    HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
-    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
-    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, NotificationId, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RemotePermission, RemotePermissionRequest,
-    RemotePermissionResponse, RingLocation, ThemeVariant,
+    AllocatableResource, ChainIdentifier, FundingAmount, FundingDirection, FundingRail,
+    GenericError, HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
+    HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
+    HostChatPostMessageResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
+    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostFundingStatusSubscribeItem,
+    HostLocalStorageReadError, HostNavigateToError, HostPushNotificationRequest,
+    HostPushNotificationResponse, HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
+    NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
+    RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
+    ThemeVariant,
 };
 use truapi::v01::HostAccountSignVrfRequest;
 use url::Url;
@@ -1172,6 +1173,72 @@ pub trait ChatPlatform: Send + Sync {
         &self,
         product: &ProductContext,
     ) -> BoxStream<'static, HostChatListSubscribeItem>;
+}
+
+/// On-chain address a funding session settles against.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct FundingAddress {
+    /// Account funds are delivered to, or drawn from.
+    pub account: Bytes32,
+    /// Genesis hash of the chain the session settles on.
+    pub genesis_hash: Bytes32,
+}
+
+/// Host-implemented surface for the funding modality.
+///
+/// Supplied separately from [`Platform`], and only by hosts that provide the
+/// modality, exactly as [`ChatPlatform`] is.
+#[async_trait]
+pub trait FundingPlatform: Send + Sync {
+    /// Present the funding surface for an opened session and report how the
+    /// user left it. Leaving is not cancelling: the session continues in the
+    /// core, and the host may present it again.
+    async fn present_funding(&self, intent: String) -> Result<(), GenericError>;
+
+    /// Resolve the address a session settles against.
+    ///
+    /// Host-side because it derives from host-owned balance state. Inbound the
+    /// host mints a fresh target per session; outbound it names the account the
+    /// release is debited from.
+    async fn resolve_funding_address(&self, intent: String)
+    -> Result<FundingAddress, GenericError>;
+}
+
+/// Funding status the core projects for host UI.
+///
+/// The core owns every transition; hosts render the current state and derive
+/// funding UI from nothing else. Mirrors [`AuthPresenter`].
+pub trait FundingPresenter: Send + Sync {
+    /// Observe a session's status change. Default is a no-op for hosts that
+    /// render no funding UI.
+    fn funding_session_changed(&self, intent: String, status: HostFundingStatusSubscribeItem) {
+        let _ = (intent, status);
+    }
+}
+
+/// Funding administration exposed to host UI.
+///
+/// Not part of the product-facing wire surface. The balance card's own controls
+/// and a product's `funding.request` converge on this one implementation, so
+/// there is a single path into the modality.
+#[async_trait]
+pub trait FundingAdmin: Send + Sync {
+    /// Open the modality on the host's own behalf. Returns the session id.
+    async fn request_funding(
+        &self,
+        direction: FundingDirection,
+        rail: FundingRail,
+        amount: FundingAmount,
+    ) -> Result<String, GenericError>;
+
+    /// Re-present a session the user left. Reads current status from the core
+    /// rather than from anything the dismissed surface held.
+    async fn restore_funding_session(&self, intent: String) -> Result<(), GenericError>;
+
+    /// Sessions still in flight, for rebuilding the docked pill and the pending
+    /// balance row after a cold start.
+    async fn active_funding_sessions(&self) -> Result<Vec<String>, GenericError>;
 }
 
 /// Combined platform interface. A host must provide all capability traits.

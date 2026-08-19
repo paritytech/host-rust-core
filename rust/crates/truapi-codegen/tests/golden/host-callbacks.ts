@@ -25,6 +25,9 @@ import {
 } from "@parity/truapi";
 
 import type {
+  FundingAmount,
+  FundingDirection,
+  FundingRail,
   GenericError,
   HostChatCreateRoomRequest,
   HostChatCreateRoomResponse,
@@ -34,6 +37,7 @@ import type {
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
+  HostFundingStatusSubscribeItem,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
   NotificationId,
@@ -194,6 +198,21 @@ export type CreateTransactionReview =
    * Legacy-account transaction request.
    */
   | { tag: "LegacyAccount"; value: LegacyAccountTxPayload };
+
+/**
+ * On-chain address a funding session settles against.
+ */
+export interface FundingAddress {
+  /**
+   * Account funds are delivered to, or drawn from.
+   */
+  account: Bytes32;
+
+  /**
+   * Genesis hash of the chain the session settles on.
+   */
+  genesisHash: Bytes32;
+}
 
 /**
  * One chain a host serves: a protocol chain role mapped to the concrete
@@ -552,6 +571,17 @@ export const CreateTransactionReview: S.Codec<CreateTransactionReview> = S.lazy(
 );
 
 /**
+ * On-chain address a funding session settles against.
+ */
+export const FundingAddress: S.Codec<FundingAddress> = S.lazy(
+  (): S.Codec<FundingAddress> =>
+    S.Struct({
+      account: Bytes32,
+      genesisHash: Bytes32,
+    }) as S.Codec<FundingAddress>,
+);
+
+/**
  * One chain a host serves: a protocol chain role mapped to the concrete
  * chain of the host's configured environment.
  */
@@ -872,6 +902,77 @@ export interface Features {
    * resolves `get_chain_info` requests against it.
    */
   supportedChains(): Promise<HostChainSet>;
+}
+
+/**
+ * Funding administration exposed to host UI.
+ *
+ * Not part of the product-facing wire surface. The balance card's own controls
+ * and a product's `funding.request` converge on this one implementation, so
+ * there is a single path into the modality.
+ */
+export interface FundingAdmin {
+  /**
+   * Open the modality on the host's own behalf. Returns the session id.
+   */
+  requestFunding(
+    direction: FundingDirection,
+    rail: FundingRail,
+    amount: FundingAmount,
+  ): Promise<string>;
+
+  /**
+   * Re-present a session the user left. Reads current status from the core
+   * rather than from anything the dismissed surface held.
+   */
+  restoreFundingSession(intent: string): Promise<void>;
+
+  /**
+   * Sessions still in flight, for rebuilding the docked pill and the pending
+   * balance row after a cold start.
+   */
+  activeFundingSessions(): Promise<Array<string>>;
+}
+
+/**
+ * Host-implemented surface for the funding modality.
+ *
+ * Supplied separately from `Platform`, and only by hosts that provide the
+ * modality, exactly as `ChatPlatform` is.
+ */
+export interface FundingPlatform {
+  /**
+   * Present the funding surface for an opened session and report how the
+   * user left it. Leaving is not cancelling: the session continues in the
+   * core, and the host may present it again.
+   */
+  presentFunding(intent: string): Promise<void>;
+
+  /**
+   * Resolve the address a session settles against.
+   *
+   * Host-side because it derives from host-owned balance state. Inbound the
+   * host mints a fresh target per session; outbound it names the account the
+   * release is debited from.
+   */
+  resolveFundingAddress(intent: string): Promise<FundingAddress>;
+}
+
+/**
+ * Funding status the core projects for host UI.
+ *
+ * The core owns every transition; hosts render the current state and derive
+ * funding UI from nothing else. Mirrors `AuthPresenter`.
+ */
+export interface FundingPresenter {
+  /**
+   * Observe a session's status change. Default is a no-op for hosts that
+   * render no funding UI.
+   */
+  fundingSessionChanged?(
+    intent: string,
+    status: HostFundingStatusSubscribeItem,
+  ): void;
 }
 
 /**
