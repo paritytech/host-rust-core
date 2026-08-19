@@ -42,6 +42,34 @@ default, so starting either host does not reserve a TCP port. Pass
 `--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
 this is required for browser clients, which cannot open filesystem sockets.
 
+### Browser products
+
+A browser product reaches that socket through `@parity/truapi`'s sandbox. Start
+the host on a fixed port, and point the product at it before anything else
+touches the client:
+
+```bash
+truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id my-product.dot
+```
+
+```ts
+import { connectWebSocketHost } from "@parity/truapi/sandbox";
+
+connectWebSocketHost("ws://127.0.0.1:9955");
+```
+
+The product is then detected as hosted and holds the real product account for
+its own `.dot` name, so signing, statements, entropy, permissions and storage
+all take their production code paths with no phone involved. `--product-id` is
+not optional: the host derives the product account from it and refuses to *sign*
+for any other product id, and a mismatch only surfaces later, as a
+`PermissionDenied` on the first signature.
+
+Two players on one machine means two hosts, each with its own session and port
+(`--session bob --frame-listen 127.0.0.1:9956`), and a second product instance
+pointed at the second port. Sessions isolate the signer, the storage and the
+permissions.
+
 The signing host opens an interactive terminal where you can paste a pairing
 link, type `/pair <link>`, run `/script`, or use `/help` to discover the
 available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
