@@ -27,7 +27,10 @@ type Icon = {
   format: "jpeg" | "png"; // v1 formats; an unrecognised value is tolerated, not fatal
 };
 
-type Granted = "all";     // only v1 grant; unrecognised values are tolerated, not fatal
+type Granted =            // v1 grants; unrecognised values are tolerated, not fatal
+  | "all"                 // wildcard: every mediated interaction, present and future
+  | "storage"             // read this product's host-local storage
+  | "context";            // read this product's account and the identity behind it
 ```
 
 ### Executable Manifest
@@ -145,8 +148,8 @@ directory, so its root CID is `dag-pb` — a raw block has no links and cannot b
 ## Cross-Product Trust
 
 Running products interact through the host — reading another product's account, asking it to
-sign. Normally each is a consent prompt; `trustedProducts` skips the prompt for products the
-publisher pre-approved.
+sign. Normally each is a consent prompt; `trustedProducts` skips the prompt for the scopes the
+publisher pre-approved, per product.
 
 Grants point inward:
 
@@ -156,6 +159,20 @@ A's manifest:  trustedProducts: { "wallet": ["all"] }
                → A gets nothing on wallet
                → products wallet trusts get nothing on A
 ```
+
+Each entry's value list scopes the grant:
+
+```
+trustedProducts: {
+  "wallet":  ["all"],                  → every mediated interaction, now and later
+  "tracker": ["storage"],              → storage reads promptless; account reads still prompt
+  "hub":     ["storage", "context"]    → both, and no more when a fourth scope is defined
+}
+```
+
+`all` is a superset, not a peer, so `["all", "storage"]` is just `["all"]` — never treat a narrow
+value as carving something out of the wildcard. The list is a set: ignore order, collapse
+duplicates. A scope you do not implement is an unrecognised value, so prompt for it.
 
 Keys carry no TLD: `wallet`, not `wallet.dot`. Append the TLD of the network you resolve against
 before matching. Missing field, empty record, empty array all mean "prompt as usual".
@@ -174,7 +191,7 @@ Two rules the host owes the user:
 | Unknown `$v`                             | Undiscoverable; skip, surface diagnostic |
 | Malformed JSON / schema validation fail  | Do not launch; surface diagnostic        |
 | Unknown `icon.format`                    | Placeholder; never sniff or auto-correct |
-| Unknown `Granted` value                  | Ignore it; manifest stays valid          |
+| Unknown `Granted` value                  | Ignore it; prompt. Manifest stays valid  |
 | `trustedProducts` key does not resolve   | Entry inert; manifest stays valid        |
 | `trustedProducts` key carries a TLD      | Does not resolve; entry inert            |
 | Icon CID unreachable, or bytes undecodable | Render placeholder; product launchable |
