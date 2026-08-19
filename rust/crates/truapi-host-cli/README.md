@@ -474,6 +474,47 @@ own, unauthenticated. Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
 
+## Serving a dev server (one process, no terminal)
+
+`signing-host --serve` runs the host as a background service instead of a
+terminal UI, so a dev server or test harness can supervise it:
+
+```bash
+truapi-host signing-host --serve \
+  --frame-listen 127.0.0.1:9955 \
+  --product-id myapp.dot \
+  --auto-accept
+```
+
+It needs no TTY, initialises the signer, and stays up until stopped. Output is
+one line per event:
+
+```
+✓ Paired with headlessyvqhet.43
+✓ Signing host ready
+• Listening for product frames
+  ws://127.0.0.1:9955
+• Serving product frames until stopped
+  ws://127.0.0.1:9955
+  Confirmations are approved automatically
+```
+
+Wait for `Serving product frames until stopped` before pointing a product at the
+endpoint. That line is last in every case, and it is the only one that means
+both halves are up: the frame socket accepts connections well before a signer
+exists, and `Signing host ready` can arrive either side of it depending on
+whether the session was cached or is being registered. A first run registers a
+lite username and the statement-store allowance on-chain, which can take
+minutes.
+
+Stopping it: Ctrl-C is handled, so the host logs its own shutdown. `SIGTERM`
+ends the process, which is what a supervising dev server sends.
+
+`--auto-accept` is effectively required, because a process with no terminal has
+nowhere to prompt: confirmations are denied instead, and the startup line says
+so. `--serve` cannot be combined with `--script` or `exec`, which are the
+one-shot modes.
+
 ## Scope / gaps
 
 - **Chain methods** route to real `wss://` nodes from the selected `--network`.
