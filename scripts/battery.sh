@@ -45,6 +45,7 @@ cd "$ROOT"
 unset DYLD_LIBRARY_PATH
 
 SCRIPT="rust/crates/truapi-host-cli/js/scripts/battery.ts"
+CHAT_SCRIPT="rust/crates/truapi-host-cli/js/scripts/chat-battery.ts"
 PRODUCT_ID="truapi-playground.dot"
 REPORTS="explorer/diagnosis-reports/spa"
 LOG_DIR="target/battery"
@@ -56,6 +57,7 @@ CARGO_ARGS=()
 HOST_ARGS=()
 RUN_SIGNING=1
 RUN_PAIRING=1
+RUN_CHAT=0
 
 usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
@@ -65,6 +67,9 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --signing-host) RUN_PAIRING=0 ;;
     --pairing-host) RUN_SIGNING=0 ;;
+    # Chat is its own phase: it needs a Chat-execution connection, which the
+    # generated Spa battery cannot open, and it writes no diagnosis report.
+    --chat-host) RUN_SIGNING=0; RUN_PAIRING=0; RUN_CHAT=1 ;;
     --release) CARGO_ARGS+=(--release); PROFILE_DIR="release" ;;
     --product-id)
       [ $# -ge 2 ] || { echo "battery: --product-id needs a value" >&2; exit 2; }
@@ -183,6 +188,26 @@ signing_phase() {
   return "$rc"
 }
 
+chat_phase() {
+  local log="$LOG_DIR/chat-host-cli.log"
+  echo "battery: chat phase (host messages $LOG_DIR/chat-host-messages.jsonl)"
+  # What the host was actually handed. The cases read it to tell a core
+  # rejection apart from a host that stored the content and then refused.
+  export TRUAPI_CHAT_LOG="$ROOT/$LOG_DIR/chat-host-messages.jsonl"
+  rm -f "$TRUAPI_CHAT_LOG"
+  "$HOST" signing-host \
+    --product-id "$PRODUCT_ID" \
+    --execution-kind chat \
+    --script "$CHAT_SCRIPT" \
+    --auto-accept \
+    ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &
+  local host_pid=$! rc=0
+  start_watchdog "$host_pid" "chat phase"
+  wait "$host_pid" || rc=$?
+  stop_watchdog
+  return "$rc"
+}
+
 pairing_phase() {
   local log="$LOG_DIR/pairing-host-cli.log"
   local signer_log="$LOG_DIR/pairing-host-cli-signer.log"
@@ -255,6 +280,7 @@ pairing_phase() {
 
 SIGNING_RC="skipped"
 PAIRING_RC="skipped"
+CHAT_RC="skipped"
 
 if [ "$RUN_SIGNING" = 1 ]; then
   SIGNING_RC=0
@@ -266,8 +292,14 @@ if [ "$RUN_PAIRING" = 1 ]; then
   pairing_phase || PAIRING_RC=$?
 fi
 
+if [ "$RUN_CHAT" = 1 ]; then
+  CHAT_RC=0
+  chat_phase || CHAT_RC=$?
+fi
+
 echo
-echo "battery: signing-host exit=$SIGNING_RC · pairing-host exit=$PAIRING_RC"
+echo "battery: signing-host exit=$SIGNING_RC · pairing-host exit=$PAIRING_RC · chat-host exit=$CHAT_RC"
 echo "battery: reports under $REPORTS/, logs under $LOG_DIR/"
 [ "$SIGNING_RC" = 0 ] || [ "$SIGNING_RC" = "skipped" ] || exit "$SIGNING_RC"
 [ "$PAIRING_RC" = 0 ] || [ "$PAIRING_RC" = "skipped" ] || exit "$PAIRING_RC"
+[ "$CHAT_RC" = 0 ] || [ "$CHAT_RC" = "skipped" ] || exit "$CHAT_RC"
