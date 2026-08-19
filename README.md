@@ -88,6 +88,12 @@ container bundle (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
+On iOS, a wallet host that manages its own statement-store SSO session can call
+`handleSsoRequest` (routes one decrypted remote message through the core,
+returning a typed outcome: response bytes to post back, a disconnect marker, or
+ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
+for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
+session-record cleanup remain on the wallet side.
 
 ### JS Host SDKs
 

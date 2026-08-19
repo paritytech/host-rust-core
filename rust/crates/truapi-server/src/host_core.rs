@@ -27,9 +27,10 @@ use truapi_platform::{
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
+use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
 use crate::runtime::{
     ChatConnection, LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost,
-    ResponderExit, RuntimeServices, SigningHostRole, respond_to_pairing,
+    ResponderExit, RuntimeServices, SigningHostRole, answer_remote_message, respond_to_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -531,6 +532,32 @@ impl SigningHostRuntime {
         respond_to_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
             .await
             .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Answer one decrypted SSO remote message with this signing host.
+    ///
+    /// Session control stays with the caller: `Disconnected` is reported as an
+    /// outcome, never handled here.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.answer_sso_request"))]
+    pub async fn answer_sso_request(
+        &self,
+        message: RemoteMessage,
+    ) -> SsoRequestOutcome<RemoteMessage> {
+        let RemoteMessageData::V1(request) = message.data;
+        if matches!(request, v1::RemoteMessage::Disconnected) {
+            return SsoRequestOutcome::Disconnected;
+        }
+        match answer_remote_message(
+            &self.services,
+            &self.signing_host,
+            message.message_id,
+            request,
+        )
+        .await
+        {
+            Some(answer) => SsoRequestOutcome::Response(answer.response),
+            None => SsoRequestOutcome::Ignored,
+        }
     }
 }
 
@@ -1181,5 +1208,97 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn answer_sso_request_distinguishes_disconnect_from_ignorable_messages() {
+        use crate::host_logic::sso::messages::{
+            RemoteMessage, RemoteMessageData, SignRawLegacyResponse, v1,
+        };
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        const ENTROPY: [u8; 32] = [0xab; 32];
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+        )
+        .expect("signing host config is valid");
+        let runtime =
+            SigningHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner());
+        futures::executor::block_on(runtime.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let disconnected = RemoteMessage {
+            message_id: "m1".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+        };
+        let outcome = futures::executor::block_on(runtime.answer_sso_request(disconnected));
+        assert!(matches!(outcome, SsoRequestOutcome::Disconnected));
+
+        let response_variant = RemoteMessage {
+            message_id: "m2".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(
+                SignRawLegacyResponse {
+                    responding_to: "m2".to_string(),
+                    signature: Ok(vec![]),
+                },
+            )),
+        };
+        let outcome = futures::executor::block_on(runtime.answer_sso_request(response_variant));
+        assert!(matches!(outcome, SsoRequestOutcome::Ignored));
+    }
+
+    #[test]
+    fn answer_sso_request_returns_a_correlated_response() {
+        use crate::host_logic::sso::messages::{
+            ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
+        };
+        use truapi_platform::{HostInfo, PlatformInfo, SigningHostConfig};
+
+        const ENTROPY: [u8; 32] = [0xab; 32];
+
+        let config = SigningHostConfig::new(
+            HostInfo {
+                name: "Polkadot Mobile".to_string(),
+                icon: None,
+                version: None,
+            },
+            PlatformInfo::default(),
+            [0; 32],
+            [0xbb; 32],
+        )
+        .expect("signing host config is valid");
+        let runtime =
+            SigningHostRuntime::new(Arc::new(StubPlatform::default()), config, test_spawner());
+        futures::executor::block_on(runtime.activate_local_session(ENTROPY.to_vec()))
+            .expect("activation succeeds");
+
+        let request = RemoteMessage {
+            message_id: "m3".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeRequest(
+                ProductSubtreeRequest {
+                    product_id: "browse.dot".to_string(),
+                },
+            )),
+        };
+        let outcome = futures::executor::block_on(runtime.answer_sso_request(request));
+        let SsoRequestOutcome::Response(response) = outcome else {
+            panic!("expected a response outcome");
+        };
+        assert_eq!(response.message_id, "m3:response");
+        let RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(payload)) =
+            response.data
+        else {
+            panic!("expected a product subtree response payload");
+        };
+        assert_eq!(payload.responding_to, "m3");
+        assert!(payload.product_public_key.is_ok());
     }
 }
