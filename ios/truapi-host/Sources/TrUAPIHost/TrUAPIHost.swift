@@ -434,6 +434,12 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     func createRoom(roomId: String, name: String, icon: String) throws
         -> ChatRoomRegistrationStatus
 
+    /// Register or resolve a native product Chat bot. The core has bounded and
+    /// normalized these arguments and screened the icon scheme; escaping them
+    /// for the surface that renders them is still the host's job.
+    func registerBot(botId: String, name: String, icon: String) throws
+        -> ChatBotRegistrationStatus
+
     /// Persist a text message in native Chat storage.
     func postTextMessage(roomId: String, text: String) throws -> String
 
@@ -481,6 +487,16 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
     ) throws -> ChatRoomRegistrationStatus {
         try withHostRejection {
             try bridge.createRoom(roomId: roomId, name: name, icon: icon)
+        }
+    }
+
+    func registerBot(
+        botId: String,
+        name: String,
+        icon: String
+    ) throws -> ChatBotRegistrationStatus {
+        try withHostRejection {
+            try bridge.registerBot(botId: botId, name: name, icon: icon)
         }
     }
 
@@ -745,6 +761,24 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
 
     public func activateLocalSession(secret: Data, liteUsername: String? = nil) throws {
         try inner.activateLocalSession(secret: secret, liteUsername: liteUsername)
+    }
+
+    /// Answer one decrypted SSO remote message from the wallet-managed
+    /// statement-store session. `message` is one SCALE-encoded
+    /// `RemoteMessage` exactly as decrypted. `.response` carries the
+    /// SCALE-encoded reply to post back over the same session;
+    /// `.disconnected` means the peer ended the session (perform native
+    /// teardown); `.ignored` means the message was not a request.
+    /// Confirmation-gated requests await `confirmUserAction`, so this can
+    /// take arbitrarily long — call from a `Task`, never the main thread.
+    public func handleSsoRequest(message: Data) async throws -> SsoRequestOutcome {
+        try await inner.handleSsoRequest(message: message)
+    }
+
+    /// Build the SCALE-encoded `Disconnected` message to post over a
+    /// session the wallet is ending; record cleanup stays with the wallet.
+    public func prepareDisconnectRequest() -> Data {
+        inner.prepareDisconnectRequest()
     }
 
     public func notifyChainResponse(connectionId: UInt32, json: String) {

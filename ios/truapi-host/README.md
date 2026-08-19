@@ -57,7 +57,7 @@ The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navig
 Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
 
 ```swift
-.package(url: "https://github.com/paritytech/truapi.git", branch: "main")
+.package(url: "https://github.com/paritytech/host-rust-core.git", branch: "main")
 ```
 
 ```swift
@@ -95,6 +95,25 @@ The core's `Permissions` platform trait has two methods, and so does `HostCallba
 - `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+
+## SSO session handling
+
+`TrUAPIHostRuntime` exposes two methods for wallet-owned SSO sessions. Meaningful request answering requires `activateLocalSession` to have been called first; `prepareDisconnectRequest` needs no session.
+
+```swift
+func handleSsoRequest(message: Data) async throws -> SsoRequestOutcome
+func prepareDisconnectRequest() -> Data
+```
+
+`handleSsoRequest(message:)` takes one SCALE-encoded `RemoteMessage` exactly as decrypted from the statement-store session and routes it through the Rust core. The returned `SsoRequestOutcome` is the generated UniFFI enum (no Swift mirror):
+
+- `.response(message:)` — SCALE-encoded reply; post it back over the same session.
+- `.disconnected` — the peer ended the session; tear down the transport and records on the wallet side.
+- `.ignored` — the message was not a request; nothing to post.
+
+Confirmation-gated requests suspend on `confirmUserAction`, so `handleSsoRequest` can take arbitrarily long. Always call it from a `Task`, never the main thread.
+
+`prepareDisconnectRequest()` returns the SCALE-encoded `Disconnected` message to post when the wallet is ending the session. Posting and record cleanup (host entry, device record, device-removed broadcast) stay with the wallet.
 
 ## Statement-store allowance renewal
 

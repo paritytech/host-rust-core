@@ -33,15 +33,21 @@ constructor, so a context off the wire carries a normalized product id.
   preimage actions before the core asks the paired wallet.
 - `ThemeHost`: stream the host theme into the runtime.
 - `PreimageHost`: submit and look up preimages through the host-selected backend.
-- `ChatPlatform`: create product-scoped native chat rooms, post messages into
-  them, and stream the product's room list.
+- `ChatPlatform`: create product-scoped native chat rooms, register product
+  chat bots, post messages into rooms, and stream the product's room list.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above except `ChatPlatform`, which a host supplies separately and only
-when it provides the Chat modality.
+traits above except `ChatPlatform`, which `OptionalPlatform` lists instead: a
+host supplies it only when it serves the Chat modality, and the core answers
+Chat calls `Unsupported` otherwise. Codegen reads `OptionalPlatform` to emit
+each listed capability as an optional group on the host-callback surface.
 
 ## Core-Owned Admin API
 
 `CoreAdmin` is not part of the host-provided `Platform` callback surface. It is
 the core-owned control API exposed to host UI for logout, pairing cancellation,
 session-store refresh, and permission administration.
+
+It also serves the session's X25519 chat identity private key. Public session
+material a host needs to address the identity or the paired device travels on
+`SessionUiInfo` instead; only the secret requires this deliberate call.

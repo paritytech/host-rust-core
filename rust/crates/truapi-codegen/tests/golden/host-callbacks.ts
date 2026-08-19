@@ -31,6 +31,8 @@ import type {
   HostChatListSubscribeItem,
   HostChatPostMessageRequest,
   HostChatPostMessageResponse,
+  HostChatRegisterBotRequest,
+  HostChatRegisterBotResponse,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
@@ -155,7 +157,17 @@ export type CoreStorageKey =
   /**
    * Statement-store allowance targets the signing host keeps renewed.
    */
-  | { tag: "StatementRenewalTargets"; value?: undefined };
+  | { tag: "StatementRenewalTargets"; value?: undefined }
+  /**
+   * This device's long-lived X25519 encryption secret, advertised to peers
+   * as the device encryption public key. Random rather than identity-derived
+   * so devices restoring one identity stay individually addressable.
+   *
+   * Hosts must back this slot with storage scoped to the install, outliving
+   * logout and any per-user namespacing: once it changes, peers addressing
+   * the previous key can no longer reach this device.
+   */
+  | { tag: "DeviceEncryptionKey"; value?: undefined };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -343,6 +355,26 @@ export interface SessionUiInfo {
    * Wallet identity account id used for People-chain username lookup.
    */
   identityAccountId?: Bytes32;
+
+  /**
+   * X25519 public key addressing this identity in chat. Public counterpart
+   * of the key `CoreAdmin::get_session_chat_identity_key` serves.
+   */
+  chatPublicKey?: Bytes32;
+
+  /**
+   * X25519 public key of the wallet device that answered pairing. Hosts
+   * running their own encrypted device-sync channel key it against this.
+   */
+  deviceEncPublicKey?: Bytes32;
+
+  /**
+   * Statement-store account id the paired wallet signs every session-channel
+   * statement with. Whether it is scoped to the wallet device or to the
+   * wallet identity is the wallet's choice, so hosts must not treat it as a
+   * device discriminator; use `Self::device_enc_public_key` for that.
+   */
+  peerStatementAccountId?: Bytes32;
 
   /**
    * Short username from the People-chain identity record.
@@ -536,6 +568,7 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         rootPublicKey: Uint8Array;
       }>,
       StatementRenewalTargets: S._void,
+      DeviceEncryptionKey: S._void,
     }),
 );
 
@@ -684,6 +717,9 @@ export const SessionUiInfo: S.Codec<SessionUiInfo> = S.lazy(
     S.Struct({
       publicKey: Bytes32,
       identityAccountId: S.Option(Bytes32),
+      chatPublicKey: S.Option(Bytes32),
+      deviceEncPublicKey: S.Option(Bytes32),
+      peerStatementAccountId: S.Option(Bytes32),
       liteUsername: S.Option(S.str),
       fullUsername: S.Option(S.str),
     }) as S.Codec<SessionUiInfo>,
@@ -791,22 +827,39 @@ export interface ChainProvider {
 }
 
 /**
- * Host-implemented adapter through which product Chat calls reach native
- * storage and UI.
+ * Host-implemented adapter through which product Chat calls reach host
+ * storage and UI. Optional: a host that omits it leaves Chat requests
+ * answered `Unsupported`. See `OptionalPlatform`.
+ *
+ * On `create_chat_room` and `register_chat_bot` the core bounds ids, names and
+ * icons, NFC-normalizes them, screens control and bidi characters, and
+ * restricts an icon to `https` or an inline raster image. Contextual output
+ * escaping, storage limits, and every `post_chat_message` field remain
+ * host-owned.
  */
 export interface ChatPlatform {
   /**
    * Create or resolve a product-scoped native chat room.
    */
-  createRoom(
+  createChatRoom(
     product: ProductContext,
     request: HostChatCreateRoomRequest,
   ): Promise<HostChatCreateRoomResponse>;
 
   /**
-   * Persist a product-authored message in a native chat room.
+   * Register or resolve a product-scoped native chat bot. Host-owned in the
+   * same way rooms are.
    */
-  postMessage(
+  registerChatBot(
+    product: ProductContext,
+    request: HostChatRegisterBotRequest,
+  ): Promise<HostChatRegisterBotResponse>;
+
+  /**
+   * Persist a product-authored message in a native chat room. A host that
+   * cannot store a given content variant reports a domain error for it.
+   */
+  postChatMessage(
     product: ProductContext,
     request: HostChatPostMessageRequest,
   ): Promise<HostChatPostMessageResponse>;
@@ -814,9 +867,9 @@ export interface ChatPlatform {
   /**
    * Emit the current product-scoped room list and later replacements.
    */
-  subscribeRooms(
+  subscribeChatRooms(
     product: ProductContext,
-  ): AsyncIterable<HostChatListSubscribeItem>;
+  ): AsyncIterable<Result<HostChatListSubscribeItem, GenericError>>;
 }
 
 /**
@@ -856,6 +909,30 @@ export interface CoreAdmin {
     request: PermissionAuthorizationRequest,
     status: PermissionAuthorizationStatus,
   ): Promise<void>;
+
+  /**
+   * Read the active session's X25519 chat identity private key, for hosts
+   * that run their own P2P chat channel for the paired identity.
+   *
+   * The wallet derives this key from the identity root and shares it during
+   * pairing; the core retains it verbatim, because a value derived
+   * host-side would address an identity no existing peer can reach. ``undefined``
+   * when no session is active.
+   *
+   * Deliberately not on `SessionUiInfo`: that projection rides every
+   * `AuthState` broadcast to all registered `AuthPresenter`s, so a
+   * secret placed there would reach hosts that never asked for it.
+   */
+  getSessionChatIdentityKey(): Promise<Bytes32 | undefined>;
+
+  /**
+   * Read this device's X25519 encryption secret, for hosts that run device
+   * sync against the peer's `SessionUiInfo::device_enc_public_key`.
+   *
+   * Generated and persisted on first read, so the returned key is stable for
+   * the install and matches the public key peers were told to address.
+   */
+  getDeviceEncryptionKey(): Promise<Bytes32>;
 }
 
 /**
@@ -1050,7 +1127,9 @@ export interface UserConfirmation {
 }
 
 /**
- * Combined platform interface. A host must provide all capability traits.
+ * Combined platform interface. A host must provide every capability trait
+ * listed here. Members marked optional may be omitted; the core answers their
+ * product calls with `Unsupported`. See `OptionalPlatform`.
  */
 export interface HostCallbacks {
   navigation: Navigation;
@@ -1064,6 +1143,7 @@ export interface HostCallbacks {
   userConfirmation: UserConfirmation;
   theme: ThemeHost;
   preimage: PreimageHost;
+  chat?: ChatPlatform;
 }
 
 export interface RequiredHostCallbacks {
@@ -1078,4 +1158,5 @@ export interface RequiredHostCallbacks {
   userConfirmation: Required<UserConfirmation>;
   theme: Required<ThemeHost>;
   preimage: Required<PreimageHost>;
+  chat?: Required<ChatPlatform>;
 }

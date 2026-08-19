@@ -28,6 +28,9 @@ const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
 pub(crate) struct RuntimeServices {
     /// Host platform backing all syscalls.
     pub(crate) platform: Arc<dyn Platform>,
+    /// Host chat adapter, when the host serves the Chat capability. `None`
+    /// makes every product chat call resolve as `Unsupported`.
+    pub(crate) chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -46,6 +49,10 @@ pub(crate) struct RuntimeServices {
     statement_cache: Mutex<StatementCache>,
     /// Task spawner for background runtime work.
     pub(crate) spawner: Spawner,
+    /// Serializes the read-or-create of the persisted device encryption key.
+    /// Concurrent first-time readers would otherwise each generate a secret and
+    /// persist it, leaving peers addressing an overwritten key.
+    device_encryption_key: futures::lock::Mutex<()>,
     next_core_instance: AtomicU64,
 }
 
@@ -68,6 +75,7 @@ impl RuntimeServices {
         let bulletin = BulletinRpc::new(chain.clone(), bulletin_chain_genesis_hash);
         Arc::new(Self {
             platform,
+            chat_platform: None,
             chain,
             statement_store,
             bulletin,
@@ -76,8 +84,45 @@ impl RuntimeServices {
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
             spawner,
+            device_encryption_key: futures::lock::Mutex::new(()),
             next_core_instance: AtomicU64::new(1),
         })
+    }
+
+    /// Same as [`Self::new`], with the host's chat adapter installed.
+    pub(crate) fn with_chat_platform(
+        platform: Arc<dyn Platform>,
+        people_chain_genesis_hash: [u8; 32],
+        bulletin_chain_genesis_hash: [u8; 32],
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    ) -> Arc<Self> {
+        let services = Self::new(
+            platform,
+            people_chain_genesis_hash,
+            bulletin_chain_genesis_hash,
+            spawner,
+        );
+        let Some(chat_platform) = chat_platform else {
+            return services;
+        };
+        let mut services = Arc::try_unwrap(services)
+            .unwrap_or_else(|_| unreachable!("services are not shared before this point"));
+        services.chat_platform = Some(chat_platform);
+        Arc::new(services)
+    }
+
+    /// This device's persisted X25519 encryption secret, created on first use.
+    ///
+    /// The only supported way to reach the key: it bundles the serialization
+    /// guard with the read, so no caller can race another into generating a
+    /// second secret and overwriting the one peers were told to address.
+    pub(crate) async fn device_encryption_secret(&self) -> Result<[u8; 32], String> {
+        let _guard = self.device_encryption_key.lock().await;
+        crate::host_logic::device_key::read_or_create_device_encryption_secret(
+            self.platform.as_ref(),
+        )
+        .await
     }
 
     /// Allocate the next per-product-runtime id, used to scope chain follow
