@@ -35,8 +35,7 @@ let package = Package(
     name: "TrUAPIHost",
     platforms: [.iOS(.v17)],
     products: [
-        .library(name: "TrUAPIHost", targets: ["TrUAPIHost"]),
-        .library(name: "TrUAPIProvider", targets: ["TrUAPIProvider"]),
+        .library(name: "TrUAPIHost", targets: ["TrUAPIHost"])
     ],
     targets: [
         .systemLibrary(
@@ -70,18 +69,6 @@ let package = Package(
             name: "TrUAPIHostTests",
             dependencies: ["TrUAPIHost"],
             path: "ios/truapi-host/Tests"
-        ),
-        .systemLibrary(
-            name: "truapi_providerFFI",
-            path: "ios/truapi-provider/Sources/truapi_providerFFI/include",
-            pkgConfig: nil,
-            providers: []
-        ),
-        providerBinaryTarget,
-        .target(
-            name: "TrUAPIProvider",
-            dependencies: ["truapi_providerFFI", "truapi_providerFFI_binary"],
-            path: "ios/truapi-provider/Sources/TrUAPIProvider"
         ),
     ]
 )
