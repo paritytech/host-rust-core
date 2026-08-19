@@ -31,7 +31,10 @@ pub enum HostDevicePermissionRequest {
     /// Clipboard access.
     #[display("clipboard")]
     Clipboard,
-    /// Opening URLs outside the host.
+    /// Handing a URL to the operating system, leaving the host application
+    /// entirely. Requestable and persistable, but the core enforces nothing with
+    /// it: *which* hosts a product may send the user to is
+    /// `RemotePermission::Remote`, wherever the destination ends up opening.
     #[display("open URL")]
     OpenUrl,
     /// Biometric authentication.
@@ -46,10 +49,16 @@ pub enum HostDevicePermissionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum RemotePermission {
-    /// Outbound HTTP/WebSocket access to a set of domains.
+    /// Reaching a set of domains: outbound HTTP/WebSocket access, and sending
+    /// the user out to one of them with `navigate_to`.
+    ///
+    /// One grant per host covers both, because both hand the same third party
+    /// the same thing: that the user is here, and whatever the product puts in
+    /// the URL. Splitting them would put the same question to the user twice.
     #[display("access to {}", domains.join(", "))]
     Remote {
-        /// Domain patterns requested by the product.
+        /// Domain patterns requested by the product. Each is an exact host, a
+        /// single-level wildcard (`*.example.com`), or `*` for any host.
         domains: Vec<String>,
     },
     /// WebRTC access. Advertised and persistable, but host enforcement is not

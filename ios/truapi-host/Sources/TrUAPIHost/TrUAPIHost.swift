@@ -530,7 +530,7 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         } catch let error as HostRejection {
             throw error
         } catch {
-            throw HostRejection.Rejected(reason: error.localizedDescription)
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
         }
     }
 }
@@ -673,7 +673,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostRejection {
             throw error
         } catch {
-            throw HostRejection.Rejected(reason: error.localizedDescription)
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
         }
     }
 
@@ -683,7 +683,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostRejection {
             throw error
         } catch {
-            throw HostRejection.Rejected(reason: error.localizedDescription)
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
         }
     }
 
@@ -693,7 +693,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostNavigateRejection {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: error.localizedDescription))
+            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
         }
     }
 
@@ -703,7 +703,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostNavigateRejection {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: error.localizedDescription))
+            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
         }
     }
 
@@ -713,7 +713,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostStorageError {
             throw error
         } catch {
-            throw HostStorageError.Storage(.unknown(reason: error.localizedDescription))
+            throw HostStorageError.Storage(.unknown(reason: hostRejectionReason(error)))
         }
     }
 }
@@ -1100,6 +1100,33 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     }
 
 }
+/// Reason text for an error a host threw from a callback.
+///
+/// A value that is not a `LocalizedError` has no author-written description,
+/// and `localizedDescription` renders it as "The operation couldn't be
+/// completed. (Module.Type error 1.)" — which names the host's module and says
+/// nothing about the failure. A plain value's `String(describing:)` prints its
+/// stored properties, so only the type name crosses to the product.
+private func hostRejectionReason(_ error: Error) -> String {
+    let reason: String
+    if let described = (error as? LocalizedError)?.errorDescription {
+        reason = described
+    } else if type(of: error) is NSError.Type {
+        // Foundation writes these, and the text describes the failure rather
+        // than the host's internals.
+        reason = error.localizedDescription
+    } else {
+        // A plain value's `String(describing:)` prints its stored properties,
+        // so only the type name crosses to the product.
+        reason = String(describing: type(of: error))
+    }
+    return String(reason.prefix(hostRejectionReasonMaxCharacters))
+}
+
+/// Bounded: the reason reaches the product, and a host message can carry a
+/// whole failed statement.
+private let hostRejectionReasonMaxCharacters = 256
+
 private func customRendererStream(
     _ subscribe: (CustomRendererStreamObserver) throws -> NativeCustomRendererSubscription
 ) throws -> AsyncThrowingStream<CustomRendererNode, Error> {

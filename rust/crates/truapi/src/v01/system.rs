@@ -18,8 +18,10 @@ pub enum HostFeatureSupportedRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostNavigateToError {
-    /// User denied the navigation prompt.
-    #[display("navigation denied by user")]
+    /// The target host is not authorized for outbound access: the user answered
+    /// no to the prompt, a stored decision already refused it, or no prompt
+    /// could be put to the user.
+    #[display("navigation to this host is not authorized")]
     PermissionDenied,
     /// Catch-all.
     #[display("{reason}")]
