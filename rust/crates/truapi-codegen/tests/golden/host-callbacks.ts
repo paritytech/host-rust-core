@@ -147,7 +147,15 @@ export type CoreStorageKey =
   /**
    * Wallet-bound RFC-0010 AutoSigning capabilities for the active pairing.
    */
-  | { tag: "AutoSigningKeys"; value?: undefined };
+  | { tag: "AutoSigningKeys"; value?: undefined }
+  /**
+   * Funding sessions still in flight.
+   *
+   * Core-owned so durability is a runtime property rather than something
+   * each host reimplements: a session interrupted by app death resumes its
+   * own arrival watch on relaunch.
+   */
+  | { tag: "FundingSessions"; value?: undefined };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -515,6 +523,7 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         productId: string;
       }>,
       AutoSigningKeys: S._void,
+      FundingSessions: S._void,
     }),
 );
 

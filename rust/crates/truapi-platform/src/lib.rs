@@ -605,6 +605,12 @@ pub enum CoreStorageKey {
     },
     /// Wallet-bound RFC-0010 AutoSigning capabilities for the active pairing.
     AutoSigningKeys,
+    /// Funding sessions still in flight.
+    ///
+    /// Core-owned so durability is a runtime property rather than something
+    /// each host reimplements: a session interrupted by app death resumes its
+    /// own arrival watch on relaunch.
+    FundingSessions,
 }
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
 ///
@@ -651,6 +657,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::LastProcessedPairingStatement => ("LastProcessedPairingStatement", None),
         CoreStorageKey::AutoSigningKey { product_id } => ("AutoSigningKey", Some(product_id)),
         CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None),
+        CoreStorageKey::FundingSessions => ("FundingSessions", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }

@@ -10,6 +10,7 @@ pub mod dotns;
 pub mod entropy;
 pub mod extrinsic;
 pub mod features;
+pub mod funding;
 pub mod identity;
 pub mod permissions;
 pub mod product_account;
