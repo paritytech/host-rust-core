@@ -47,8 +47,9 @@ No Rust toolchain is needed: the xcframework carries the compiled crate, and the
 Everything is generated from [`ffi.rs`](../../rust/crates/truapi-provider/src/ffi.rs):
 
 - `ChainProvider` — construct **one per process** and share it. Every connection runs on the single embedded light client, so they share sync, peers, and warm state while keeping their own request queue and response stream. `connect(genesisHash:listener:)` resolves the network from the bundled catalog (relay wiring and statement-store placement included), so the 32-byte genesis hash is the only argument.
-- `ChainMessageListener` — the host implements it; `onMessage(message:)` receives each JSON-RPC response and notification, `onClosed()` fires once the stream ends. Both may throw: a listener that throws stops the pump for that connection rather than being called again for every response, and an error it does not declare is reported as `.listener(reason:)` instead of aborting the process.
+- `ChainMessageListener` — the host implements it; `onMessage(message:)` receives each JSON-RPC response and notification, `onClosed(reason:)` fires once the pump stops and names why. Both may throw: a listener that throws stops the pump for that connection rather than being called again for every response, and an error it does not declare is reported as `.listener(reason:)` instead of aborting the process.
 - `ChainConnection` — `send(request:)` queues a request, `disconnect()` tears the connection down.
+- `ChainCloseReason` — `.streamEnded` when the response stream ended, which includes your own `disconnect()` coming back to you, and `.listenerFailed(reason:)` when your listener rejected a message and the connection was closed for it. It says why the pump stopped, not whether you should reconnect; carry an `@unknown default`, since variants may be added. `reason` on `.listenerFailed` is bounded to 256 characters. Reconnect from another thread: `connect(genesisHash:listener:)` refuses to run inside a listener callback and returns `.connect(reason:)` if you try, while `send(request:)` and `disconnect()` on an existing connection are fine there.
 - `ChainProviderError` — `.connect(reason:)` when the genesis is outside the catalog or the transport fails, `.badGenesis` when the hash is not 32 bytes, `.listener(reason:)` when the host's listener failed in a way it did not declare.
 
 ## Architecture
@@ -79,8 +80,18 @@ final class Responses: ChainMessageListener, @unchecked Sendable {
         DispatchQueue.main.async { /* decode and render */ }
     }
 
-    func onClosed() throws {
-        DispatchQueue.main.async { /* the stream ended: drop the connection */ }
+    func onClosed(reason: ChainCloseReason) throws {
+        // Reached whichever way the connection ended, including your own
+        // disconnect(). Reconnect on your own intent, not on this alone.
+        switch reason {
+        case .streamEnded:
+            DispatchQueue.main.async { /* drop the connection */ }
+        case .listenerFailed(let reason):
+            // This listener rejected a message and the connection closed for it.
+            DispatchQueue.main.async { print("chain listener failed: \(reason)") }
+        @unknown default:
+            DispatchQueue.main.async { /* drop the connection */ }
+        }
     }
 }
 
