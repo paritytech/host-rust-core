@@ -84,3 +84,29 @@ final class StubHostBridge: HostBridge {
     func remotePermission(request _: RemotePermission) async throws -> Bool { false }
     func featureSupported(request _: HostFeatureSupportedRequest) async throws -> Bool { true }
 }
+
+// Conforms to `ChatHostBridge` so a new requirement there fails this job.
+// Every member is written out: the protocol supplies no defaults.
+final class StubChatHostBridge: ChatHostBridge {
+    func createRoom(
+        roomId _: String,
+        name _: String,
+        icon _: String
+    ) throws -> ChatRoomRegistrationStatus { .new }
+
+    func registerBot(
+        botId _: String,
+        name _: String,
+        icon _: String
+    ) throws -> ChatBotRegistrationStatus { .new }
+
+    func postTextMessage(roomId _: String, text _: String) throws -> String { "message-id" }
+
+    func postCustomMessage(
+        roomId _: String,
+        messageType _: String,
+        payload _: Data
+    ) throws -> String { "message-id" }
+
+    func listRooms() throws -> [ChatRoom] { [] }
+}

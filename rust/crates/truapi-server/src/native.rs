@@ -508,8 +508,8 @@ pub trait HostCallbacks: Send + Sync {
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
 /// pass an implementation to
 /// [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
-/// simply pass `None`. Callbacks run inline on the dispatcher thread and must
-/// return promptly without blocking.
+/// simply pass `None`. Callbacks run inline on the process-wide dispatch pool
+/// shared by every product execution, so one that blocks stalls the others.
 #[uniffi::export(rust, foreign)]
 pub trait NativeChatCallbacks: Send + Sync {
     /// Create or resolve a native product Chat room.
@@ -519,6 +519,14 @@ pub trait NativeChatCallbacks: Send + Sync {
         name: String,
         icon: String,
     ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection>;
+
+    /// Register or resolve a native product Chat bot.
+    fn register_bot(
+        &self,
+        bot_id: String,
+        name: String,
+        icon: String,
+    ) -> Result<v01::ChatBotRegistrationStatus, HostRejection>;
 
     /// Persist a text message in native Chat storage.
     fn post_text_message(&self, room_id: String, text: String) -> Result<String, HostRejection>;
@@ -1786,6 +1794,23 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         Ok(v01::HostChatCreateRoomResponse { status })
     }
 
+    async fn register_bot(
+        &self,
+        _product: &ProductContext,
+        request: v01::HostChatRegisterBotRequest,
+    ) -> Result<v01::HostChatRegisterBotResponse, v01::HostChatRegisterBotError> {
+        let status = self
+            .chat
+            .register_bot(request.bot_id, request.name, request.icon)
+            .map_err(|error| v01::HostChatRegisterBotError::Unknown {
+                reason: error.to_string(),
+            })?;
+
+        // No room-list republish: a bot identity is not a room. A host that
+        // joins the bot to one signals that via `notify_chat_rooms_changed`.
+        Ok(v01::HostChatRegisterBotResponse { status })
+    }
+
     async fn post_message(
         &self,
         _product: &ProductContext,
@@ -1926,7 +1951,10 @@ mod tests {
 
     struct EventCallbacks {
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
-        chat_created_rooms: Mutex<Vec<String>>,
+        chat_created_rooms: Mutex<Vec<(String, String, String)>>,
+        chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
+        chat_registered_bots: Mutex<Vec<(String, String, String)>>,
+        chat_bot_rejection: Mutex<Option<String>>,
         chat_posted_text: Mutex<Vec<(String, String)>>,
         theme: Mutex<v01::HostThemeSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
@@ -1942,6 +1970,9 @@ mod tests {
             Self {
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
+                chat_bot_status: Mutex::new(v01::ChatBotRegistrationStatus::New),
+                chat_registered_bots: Mutex::new(Vec::new()),
+                chat_bot_rejection: Mutex::new(None),
                 chat_posted_text: Mutex::new(Vec::new()),
                 theme: Mutex::new(v01::HostThemeSubscribeItem {
                     name: v01::ThemeName::Default,
@@ -2069,17 +2100,41 @@ mod tests {
         fn create_room(
             &self,
             room_id: String,
-            _name: String,
-            _icon: String,
+            name: String,
+            icon: String,
         ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
             self.chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
-                .push(room_id);
+                .push((room_id, name, icon));
             Ok(*self
                 .chat_room_status
                 .lock()
                 .expect("room status mutex poisoned"))
+        }
+
+        fn register_bot(
+            &self,
+            bot_id: String,
+            name: String,
+            icon: String,
+        ) -> Result<v01::ChatBotRegistrationStatus, HostRejection> {
+            if let Some(reason) = self
+                .chat_bot_rejection
+                .lock()
+                .expect("bot rejection mutex poisoned")
+                .clone()
+            {
+                return Err(HostRejection::Rejected { reason });
+            }
+            self.chat_registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .push((bot_id, name, icon));
+            Ok(*self
+                .chat_bot_status
+                .lock()
+                .expect("bot status mutex poisoned"))
         }
 
         fn post_text_message(
@@ -2104,11 +2159,13 @@ mod tests {
         }
 
         fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
-            let mut room_ids = self
+            let mut room_ids: Vec<String> = self
                 .chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
-                .clone();
+                .iter()
+                .map(|(room_id, _, _)| room_id.clone())
+                .collect();
             room_ids.sort();
             room_ids.dedup();
             Ok(room_ids
@@ -2404,6 +2461,188 @@ mod tests {
     }
 
     #[test]
+    fn native_chat_adapter_rejects_the_message_variants_it_cannot_persist() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: Arc::new(NativeEventBus::default()),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        let reaction = v01::ChatReaction {
+            message_id: "message-1".to_string(),
+            emoji: "🎲".to_string(),
+        };
+        // `NativeChatCallbacks` persists text and custom messages only; the
+        // rest must surface a typed error rather than be dropped.
+        let unsupported = [
+            v01::ChatMessageContent::RichText(v01::ChatRichText {
+                text: None,
+                media: Vec::new(),
+            }),
+            v01::ChatMessageContent::Actions(v01::ChatActions {
+                text: None,
+                actions: Vec::new(),
+                layout: v01::ChatActionLayout::Column,
+            }),
+            v01::ChatMessageContent::File(v01::ChatFile {
+                url: "https://example.invalid/f".to_string(),
+                file_name: "f".to_string(),
+                mime_type: "text/plain".to_string(),
+                size_bytes: 1,
+                text: None,
+            }),
+            v01::ChatMessageContent::Reaction(reaction.clone()),
+            v01::ChatMessageContent::ReactionRemoved(reaction),
+        ];
+
+        for payload in unsupported {
+            let error = futures::executor::block_on(truapi_platform::ChatPlatform::post_message(
+                &platform,
+                &product,
+                v01::HostChatPostMessageRequest {
+                    room_id: "support".to_string(),
+                    payload: payload.clone(),
+                },
+            ))
+            .expect_err("the native adapter cannot persist this variant");
+            assert!(
+                matches!(error, v01::HostChatPostMessageError::Unknown { .. }),
+                "{payload:?} must report a typed error"
+            );
+        }
+
+        assert!(
+            callbacks
+                .chat_posted_text
+                .lock()
+                .expect("posted text mutex poisoned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_chat_adapter_surfaces_a_bot_registration_rejection() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: Arc::new(NativeEventBus::default()),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        *callbacks
+            .chat_bot_rejection
+            .lock()
+            .expect("bot rejection mutex poisoned") = Some("keychain locked".to_string());
+
+        let error = futures::executor::block_on(truapi_platform::ChatPlatform::register_bot(
+            &platform,
+            &product,
+            v01::HostChatRegisterBotRequest {
+                bot_id: "flipper".to_string(),
+                name: "Flipper".to_string(),
+                icon: String::new(),
+            },
+        ))
+        .expect_err("a host rejection must not be reported as a successful registration");
+
+        // A swallowed rejection would reach the product as `New` for a bot
+        // that does not exist.
+        assert_eq!(
+            error,
+            v01::HostChatRegisterBotError::Unknown {
+                reason: "keychain locked".to_string(),
+            }
+        );
+        assert!(
+            callbacks
+                .chat_registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_chat_adapter_preserves_bot_status_and_leaves_rooms_alone() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let events = Arc::new(NativeEventBus::default());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: events.clone(),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        let request = v01::HostChatRegisterBotRequest {
+            bot_id: "flipper".to_string(),
+            name: "Flipper".to_string(),
+            icon: String::new(),
+        };
+
+        let mut rooms = truapi_platform::ChatPlatform::subscribe_rooms(&platform, &product);
+        assert!(
+            futures::executor::block_on(rooms.next())
+                .expect("initial room list")
+                .rooms
+                .is_empty()
+        );
+
+        let registered = futures::executor::block_on(truapi_platform::ChatPlatform::register_bot(
+            &platform,
+            &product,
+            request.clone(),
+        ))
+        .unwrap();
+
+        *callbacks
+            .chat_bot_status
+            .lock()
+            .expect("bot status mutex poisoned") = v01::ChatBotRegistrationStatus::Exists;
+        let existing = futures::executor::block_on(truapi_platform::ChatPlatform::register_bot(
+            &platform, &product, request,
+        ))
+        .unwrap();
+
+        assert_eq!(registered.status, v01::ChatBotRegistrationStatus::New);
+        assert_eq!(existing.status, v01::ChatBotRegistrationStatus::Exists);
+        assert_eq!(
+            callbacks
+                .chat_registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .as_slice(),
+            &[
+                ("flipper".to_string(), "Flipper".to_string(), String::new()),
+                ("flipper".to_string(), "Flipper".to_string(), String::new()),
+            ]
+        );
+
+        // Registering a bot is not a room change. Polled without blocking so an
+        // unexpected replacement fails instead of parking on a live sender.
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        assert!(matches!(
+            rooms.as_mut().poll_next(&mut cx),
+            core::task::Poll::Pending
+        ));
+
+        // Still live for genuine room changes.
+        events.notify_chat_rooms_changed(vec![v01::ChatRoom {
+            room_id: "support".to_string(),
+            participating_as: v01::ChatRoomParticipation::Bot,
+        }]);
+        assert_eq!(
+            futures::executor::block_on(rooms.next())
+                .expect("genuine room change")
+                .rooms
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn native_chat_adapter_preserves_room_status_and_message_room() {
         let callbacks = Arc::new(EventCallbacks::new());
         let platform = ChatCallbackPlatform {
@@ -2465,7 +2704,10 @@ mod tests {
                 .lock()
                 .expect("created rooms mutex poisoned")
                 .as_slice(),
-            &["support", "support"]
+            &[
+                ("support".to_string(), "Support".to_string(), String::new()),
+                ("support".to_string(), "Support".to_string(), String::new()),
+            ]
         );
         assert_eq!(
             callbacks

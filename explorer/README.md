@@ -16,7 +16,7 @@ Because the matrix is regenerated from `diagnosis-reports/` on every `dev` / `bu
 
 ### Data shape
 
-[`src/data/compatibility-types.ts`](src/data/compatibility-types.ts) holds the schema. Each method row carries one `pass | fail | null` entry per host column; `null` means the method was absent from (or skipped in) that host's report. Methods with no measurement on any host are dropped from the matrix. Columns are labelled by host mode (`Web` / `Desktop` / `Android` / `iOS`); when two reports share a mode, the filename disambiguates the label.
+[`src/data/compatibility-types.ts`](src/data/compatibility-types.ts) holds the schema. Each method row carries one `pass | fail | null` entry per host column; `null` means the method was absent from (or skipped in) that host's report. Methods with no measurement on any host carry no matrix row, and each compatibility section renders them as unreported gaps for its execution kind. Columns are labelled by host mode (`Web` / `Desktop` / `Android` / `iOS`); when two reports share a mode, the filename disambiguates the label.
 
 ### Standalone CLI
 

@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import { Check, ChevronDown, Minus, X } from "lucide-react";
-import type { VersionEntry } from "../data/types";
+import type { ProductExecutionKind, VersionEntry } from "../data/types";
 import { methodPath } from "../data/registry";
 import { chatCompatibility, compatibility } from "../data/compatibility";
 import type {
@@ -88,6 +88,7 @@ export default function CompatibilityPage() {
         <CompatibilitySection
           title="SPA compatibility"
           description="API coverage measured from the visible SPA execution."
+          execution="Spa"
           matrix={compatibility}
           version={version}
           expandedId={expandedId}
@@ -96,6 +97,7 @@ export default function CompatibilityPage() {
         <CompatibilitySection
           title="Chat compatibility"
           description="Chat API coverage measured from the product's native Chat worker."
+          execution="Chat"
           matrix={chatCompatibility}
           version={version}
           expandedId={expandedId}
@@ -109,6 +111,7 @@ export default function CompatibilityPage() {
 function CompatibilitySection({
   title,
   description,
+  execution,
   matrix,
   version,
   expandedId,
@@ -116,6 +119,7 @@ function CompatibilitySection({
 }: {
   title: string;
   description: string;
+  execution: ProductExecutionKind;
   matrix: CompatibilityMatrix;
   version: VersionEntry;
   expandedId: string | null;
@@ -149,27 +153,28 @@ function CompatibilitySection({
           </thead>
           <tbody>
             {version.services
+              .filter((service) =>
+                execution === "Chat"
+                  ? service.requiredExecution === "Chat"
+                  : service.requiredExecution === undefined,
+              )
               .map((service) => ({
                 name: service.name,
-                // Only methods the matrix actually measured. Methods absent from
-                // the matrix (e.g. skipped services) are dropped, and a service
-                // left with none is not rendered at all.
-                methods: service.methods.flatMap((m) => {
+                // Every generated method, measured or not. A method with no
+                // matrix row renders as not-reported across all hosts rather
+                // than vanishing, so an unexercised method reads as a gap
+                // instead of shrinking the denominator.
+                methods: service.methods.map((m) => {
                   const id = `${service.name}/${m.name}`;
                   const row = byId.get(id);
-                  return row
-                    ? [
-                        {
-                          name: m.name,
-                          id,
-                          results: row.results,
-                          details: row.details,
-                        },
-                      ]
-                    : [];
+                  return {
+                    name: m.name,
+                    id,
+                    results: row?.results,
+                    details: row?.details,
+                  };
                 }),
               }))
-              .filter((service) => service.methods.length > 0)
               .map((service, i) => (
                 <ServiceRows
                   key={service.name}

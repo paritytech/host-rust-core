@@ -31,6 +31,8 @@ import type {
   HostChatListSubscribeItem,
   HostChatPostMessageRequest,
   HostChatPostMessageResponse,
+  HostChatRegisterBotRequest,
+  HostChatRegisterBotResponse,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
@@ -826,7 +828,15 @@ export interface ChainProvider {
 
 /**
  * Host-implemented adapter through which product Chat calls reach native
- * storage and UI.
+ * storage and UI. Installed separately from `Platform`, and only by the
+ * native entrypoints: a WASM/JS host cannot supply one, so requests from a
+ * `Chat` execution created there answer unsupported and its subscriptions end
+ * empty, which a product cannot tell from a healthy close.
+ *
+ * On `create_room` and `register_bot` the core bounds ids, names and icons,
+ * NFC-normalizes them, screens control and bidi characters, and restricts an
+ * icon to `https` or an inline raster image. Contextual output escaping,
+ * storage limits, and every `post_message` field remain host-owned.
  */
 export interface ChatPlatform {
   /**
@@ -838,7 +848,17 @@ export interface ChatPlatform {
   ): Promise<HostChatCreateRoomResponse>;
 
   /**
-   * Persist a product-authored message in a native chat room.
+   * Register or resolve a product-scoped native chat bot. Host-owned in the
+   * same way rooms are.
+   */
+  registerBot(
+    product: ProductContext,
+    request: HostChatRegisterBotRequest,
+  ): Promise<HostChatRegisterBotResponse>;
+
+  /**
+   * Persist a product-authored message in a native chat room. A host that
+   * cannot store a given content variant reports a domain error for it.
    */
   postMessage(
     product: ProductContext,

@@ -442,6 +442,12 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     func createRoom(roomId: String, name: String, icon: String) throws
         -> ChatRoomRegistrationStatus
 
+    /// Register or resolve a native product Chat bot. The core has bounded and
+    /// normalized these arguments and screened the icon scheme; escaping them
+    /// for the surface that renders them is still the host's job.
+    func registerBot(botId: String, name: String, icon: String) throws
+        -> ChatBotRegistrationStatus
+
     /// Persist a text message in native Chat storage.
     func postTextMessage(roomId: String, text: String) throws -> String
 
@@ -489,6 +495,16 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
     ) throws -> ChatRoomRegistrationStatus {
         try withHostRejection {
             try bridge.createRoom(roomId: roomId, name: name, icon: icon)
+        }
+    }
+
+    func registerBot(
+        botId: String,
+        name: String,
+        icon: String
+    ) throws -> ChatBotRegistrationStatus {
+        try withHostRejection {
+            try bridge.registerBot(botId: botId, name: name, icon: icon)
         }
     }
 

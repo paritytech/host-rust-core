@@ -249,7 +249,7 @@ check: ## Full verification suite (build, fmt, clippy, test, TS tests, playgroun
 	cargo test --workspace --all-features --all-targets
 	cd $(TRUAPI_PKG) && npm run build && npm test
 	cd $(HOST_WASM_PKG) && npm install --no-fund --no-audit && npm run build && npm test
-	cd $(PLAYGROUND) && yarn build && yarn lint
+	cd $(PLAYGROUND) && yarn build && yarn lint && yarn test:unit
 
 clean: ## Remove local build/test artifacts without deleting dependencies.
 	cargo clean

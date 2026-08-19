@@ -1226,7 +1226,7 @@ surface.
 | System | Handshake, feature query, and no-op navigation. |
 | Theme | One `Dark` subscription value. |
 | Chat | Typed unavailable/empty-subscription behavior. |
-| Coin Payment | Typed unavailable/interrupted-subscription behavior. |
+| Coin Payment | Typed unsupported/interrupted-subscription behavior. |
 | Payment | Typed unsupported/interrupted-subscription behavior. |
 
 ### 15.1 Exact reported methods
@@ -1282,10 +1282,11 @@ reports:
 
 Deliberately unavailable methods:
 
-- all five product-initiated Chat methods; the host-initiated custom-render
-  subscription is also unused because the CLI has no native Chat UI;
-- all nine generated Coin Payment methods; and
-- all four generated Payment methods.
+- all six product-initiated Chat methods, because the CLI installs no
+  `ChatPlatform`; the host-initiated custom-render subscription is also unused
+  because the CLI has no native Chat UI;
+- all nine Coin Payment methods, which answer `CallError::Unsupported`; and
+- all four Payment methods, which answer typed `Unknown` domain errors.
 
 A successful `System/feature_supported` call resolves the queried chain against
 the host's chain set, the same set `Chain/get_chain_info` answers from, so it
@@ -1666,11 +1667,17 @@ The implementation is covered by:
 
 The reports currently have identical method results apart from their title:
 
-- 45 implemented-success methods;
-- 6 unavailable Chat surface entries (five product-initiated methods plus the
-  host-initiated custom-render subscription);
-- 9 unavailable Coin Payment methods; and
-- 4 unavailable Payment methods.
+- 65 rows: 52 succeeding methods and 13 failing ones;
+- 9 Coin Payment methods, which answer `CallError::Unsupported`; and
+- 4 Payment methods, which answer a typed `Unknown` domain error.
+
+The Chat surface does not appear: it requires a `Chat` execution, and these are
+SPA reports. Two caveats on the checked-in reports: the enumeration in 15.1
+lists 45 methods and predates later additions to the surface, and only the
+signing-host report carries measured `Unsupported` Coin Payment details — the
+pairing-host report still records the older `HostFailure` shape, because the
+pairing phase needs a personhood ring member before it runs any method. It
+refreshes on the next `make e2e-pairing-cli` run from such a signer.
 
 Recommended local verification after CLI changes:
 
