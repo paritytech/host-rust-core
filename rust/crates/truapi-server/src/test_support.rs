@@ -64,6 +64,12 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 pub(crate) struct StubPlatform {
     pub(crate) remote_permission_denied: bool,
+    /// Every `remote_permission` request, in order, so a test can assert which
+    /// domains reached the prompt and that a stored grant suppresses a re-ask.
+    pub(crate) remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
+    /// URLs handed to `navigate_to`. Empty means the gate blocked before the
+    /// platform was ever reached.
+    pub(crate) navigations: Arc<Mutex<Vec<String>>>,
     pub(crate) account_alias_confirmed: bool,
     pub(crate) account_alias_error: Option<&'static str>,
     pub(crate) create_proof_confirmed: bool,
@@ -859,7 +865,11 @@ pub(crate) fn core_storage_test_key(key: CoreStorageKey) -> String {
 
 #[truapi_platform::async_trait]
 impl PlatformNavigation for StubPlatform {
-    async fn navigate_to(&self, _url: String) -> Result<(), v01::HostNavigateToError> {
+    async fn navigate_to(&self, url: String) -> Result<(), v01::HostNavigateToError> {
+        self.navigations
+            .lock()
+            .expect("navigation list mutex poisoned")
+            .push(url);
         Ok(())
     }
 }
@@ -899,8 +909,12 @@ impl PlatformPermissions for StubPlatform {
 
     async fn remote_permission(
         &self,
-        _request: v01::RemotePermissionRequest,
+        request: v01::RemotePermissionRequest,
     ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+        self.remote_permission_requests
+            .lock()
+            .expect("remote permission list mutex poisoned")
+            .push(request);
         Ok(v01::RemotePermissionResponse {
             granted: !self.remote_permission_denied,
         })

@@ -41,7 +41,7 @@ use truapi::latest::{
     RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
-use url::Url;
+use url::{Host, Url};
 
 /// Role-neutral runtime configuration supplied by the embedding host.
 #[non_exhaustive]
@@ -934,6 +934,26 @@ impl CoreStorageKey {
         }
     }
 
+    /// Persisted authorization key for a single domain pattern inside a
+    /// product's remote-access grant.
+    ///
+    /// A product may request several domains at once, but enforcement asks
+    /// about one host at a time, so each pattern gets its own slot: a
+    /// multi-domain grant is stored as one key per pattern and stays visible to
+    /// a later single-host lookup. The key is a one-element
+    /// [`RemotePermission::Remote`] set, so this shares the encoding — and the
+    /// [`normalize_remote_domain`] canonicalization — of the bundle form.
+    pub fn remote_domain_authorization(product_id: &str, domain: &str) -> Self {
+        Self::remote_permission_authorization(
+            product_id,
+            &RemotePermissionRequest {
+                permission: RemotePermission::Remote {
+                    domains: vec![domain.to_string()],
+                },
+            },
+        )
+    }
+
     /// Persisted authorization key for product-scoped identity disclosure.
     pub fn identity_disclosure_authorization(product_id: &str) -> Self {
         Self::PermissionAuthorization {
@@ -954,15 +974,77 @@ impl CoreStorageKey {
     }
 }
 
+/// Canonical storage form for one remote-access domain pattern.
+///
+/// Both ends of a domain lookup have to agree byte for byte — the pattern a
+/// grant is keyed under and the host enforcement derives from a live URL — so
+/// both run this one rule: IDNA ASCII form, lower-cased, trailing root dot
+/// dropped, leading `*.` wildcard marker preserved. Without it a trailing-dot
+/// FQDN or a non-ASCII host would open a second slot for the same site and
+/// prompt twice.
+///
+/// Input the URL host parser rejects as a domain falls back to an NFC-folded
+/// lowercase form, so an unusual pattern still keys consistently rather than
+/// being dropped.
+pub fn normalize_remote_domain(domain: &str) -> String {
+    let trimmed = domain.trim();
+    let (wildcard, rest) = match trimmed.strip_prefix("*.") {
+        Some(rest) => ("*.", rest),
+        None => ("", trimmed),
+    };
+    let without_root_dot = rest.strip_suffix('.').unwrap_or(rest);
+    let normalized = match Host::parse(without_root_dot) {
+        Ok(host) => host.to_string(),
+        Err(_) => without_root_dot.nfc().collect::<String>().to_lowercase(),
+    };
+    format!("{wildcard}{normalized}")
+}
+
+/// Stored domain patterns that would authorize outbound access to `host`,
+/// ordered most specific first.
+///
+/// Implements the RFC 0002 matching rules: an exact host match, a single-level
+/// wildcard over the host's immediate parent, and the universal wildcard. Two
+/// consequences worth holding onto, because both are load-bearing:
+///
+/// - A wildcard spans exactly one label. `*.example.com` authorizes
+///   `api.example.com` but not `deep.api.example.com`, whose only wildcard
+///   candidate is `*.api.example.com`.
+/// - A bare parent domain is never a candidate. Granting `example.com` does not
+///   extend to `api.example.com`; that needs the explicit host or the wildcard.
+///
+/// Every pattern a product can be granted is consulted here, including a
+/// TLD-level one such as `*.com` or `*.dot`. Narrowing the candidate list
+/// instead would store such a grant and then never read it, so the product
+/// would keep prompting for every host under a pattern the user already
+/// approved. Breadth is the prompt's problem: RFC 0002 already puts the duty of
+/// spelling out how wide `*` is on the host UI, and a TLD wildcard belongs in
+/// the same sentence.
+///
+/// Ordering is the precedence rule for the caller: the most specific stored
+/// decision wins, so an explicit grant for one host survives a denial of its
+/// parent wildcard, and vice versa.
+pub fn remote_domain_candidates(host: &str) -> Vec<String> {
+    let normalized = normalize_remote_domain(host);
+    let mut candidates = vec![normalized.clone()];
+    if let Some((_label, parent)) = normalized.split_once('.') {
+        candidates.push(format!("*.{parent}"));
+    }
+    candidates.push("*".to_string());
+    candidates.dedup();
+    candidates
+}
+
 fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissionRequest {
     let permission = match &request.permission {
         RemotePermission::Remote { domains } => {
-            // DNS domains are case-insensitive, so a logically-identical bundle
-            // requested with different casing or duplicate entries must
-            // canonicalize to one key (no spurious re-prompt).
+            // A logically-identical bundle requested with different casing,
+            // spelling or duplicate entries must canonicalize to one key (no
+            // spurious re-prompt), under the same rule enforcement applies to a
+            // single host.
             let mut canonical: Vec<String> = domains
                 .iter()
-                .map(|domain| domain.to_ascii_lowercase())
+                .map(|domain| normalize_remote_domain(domain))
                 .collect();
             canonical.sort();
             canonical.dedup();
@@ -1144,6 +1226,103 @@ mod tests {
         assert_ne!(identity, other_product_identity);
         assert_ne!(account_access, other_target);
         assert_ne!(account_access, camera);
+    }
+
+    #[test]
+    fn remote_domain_candidates_follow_rfc_0002_wildcard_rules() {
+        assert_eq!(
+            remote_domain_candidates("api.example.com"),
+            ["api.example.com", "*.example.com", "*"]
+        );
+        // A wildcard spans one label, so the two-level host's only wildcard is
+        // over its immediate parent. `*.example.com` must NOT appear here.
+        assert_eq!(
+            remote_domain_candidates("deep.api.example.com"),
+            ["deep.api.example.com", "*.api.example.com", "*"]
+        );
+        // A TLD-level wildcard is a pattern a product can be granted, so it is
+        // consulted like any other. Leaving it out would store the grant and
+        // then keep prompting for every host under it.
+        assert_eq!(
+            remote_domain_candidates("example.com"),
+            ["example.com", "*.com", "*"]
+        );
+        assert_eq!(
+            remote_domain_candidates("wallet.dot"),
+            ["wallet.dot", "*.dot", "*"]
+        );
+        // A single-label host has no parent to wildcard over.
+        assert_eq!(remote_domain_candidates("localhost"), ["localhost", "*"]);
+        // A stored pattern resolves to itself, not to a duplicated entry.
+        assert_eq!(
+            remote_domain_candidates("*.example.com"),
+            ["*.example.com", "*"]
+        );
+        assert_eq!(remote_domain_candidates("*"), ["*"]);
+        assert_eq!(
+            remote_domain_candidates("API.Example.COM"),
+            ["api.example.com", "*.example.com", "*"]
+        );
+    }
+
+    #[test]
+    fn remote_domain_normalization_is_shared_by_both_ends_of_a_lookup() {
+        // The forms enforcement can hand in from a real URL host all collapse
+        // onto the one key a grant is stored under.
+        for spelling in ["API.Example.COM", "api.example.com.", "  api.example.com  "] {
+            assert_eq!(normalize_remote_domain(spelling), "api.example.com");
+        }
+        // IDNA: a non-ASCII host and its punycode spelling are one site, so
+        // they must be one slot and one prompt.
+        assert_eq!(
+            normalize_remote_domain("Bücher.example"),
+            "xn--bcher-kva.example"
+        );
+        assert_eq!(
+            normalize_remote_domain("xn--bcher-kva.example"),
+            "xn--bcher-kva.example"
+        );
+        // The wildcard marker is not part of the host and survives untouched.
+        assert_eq!(normalize_remote_domain("*.Example.COM"), "*.example.com");
+        assert_eq!(
+            normalize_remote_domain("*.Bücher.example"),
+            "*.xn--bcher-kva.example"
+        );
+        assert_eq!(normalize_remote_domain("*"), "*");
+        // A canonicalized bundle keys the same as the candidate list built from
+        // a live host, which is what makes the grant visible to enforcement.
+        assert_eq!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "API.Example.COM."),
+            CoreStorageKey::remote_domain_authorization(
+                "product.dot",
+                &remote_domain_candidates("api.example.com.")[0]
+            )
+        );
+    }
+
+    #[test]
+    fn remote_domain_authorization_key_matches_the_one_element_bundle() {
+        // Enforcement keys a single host; a product granting that one domain
+        // must land in the same slot, or the grant is invisible to the gate.
+        assert_eq!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "Example.COM"),
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                &RemotePermissionRequest {
+                    permission: RemotePermission::Remote {
+                        domains: vec!["example.com".to_string()],
+                    },
+                }
+            )
+        );
+        assert_ne!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "example.com"),
+            CoreStorageKey::remote_domain_authorization("product.dot", "*.example.com")
+        );
+        assert_ne!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "example.com"),
+            CoreStorageKey::remote_domain_authorization("other.dot", "example.com")
+        );
     }
 
     #[test]
