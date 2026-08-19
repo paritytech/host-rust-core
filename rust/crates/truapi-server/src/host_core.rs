@@ -1262,6 +1262,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
         )
         .expect("signing host config is valid");
         let runtime =
@@ -1307,6 +1308,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
         )
         .expect("signing host config is valid");
         let runtime =
