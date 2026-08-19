@@ -452,10 +452,25 @@ HOST_CLI_SIGNER_MNEMONIC="spin battle …" truapi-host signing-host --deeplink '
 truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 ```
 
-Both hosts take `--network` (default `paseo-next-v2`). The network preset owns
-the identity backend URL, the People, Bulletin and Asset Hub RPCs, and their
-genesis hashes; there is
-no public `--statement-store` flag. Both also accept `--frame-listen <address>`
+Both hosts take `--network`, either `paseo-next-v2` (default) or `previewnet`.
+The network preset owns the identity backend URL, the People, Bulletin and Asset
+Hub RPCs, and their genesis hashes; there is
+no public `--statement-store` flag. Pick `previewnet` when a product's runtime
+descriptors target previewnet, so its statements, its host chain routes and its
+own chain reads all land on one network. Sessions are per preset, so each network
+gets its own signer identity on the same machine.
+
+One limit on `previewnet` today: its identity backend requires a bearer token for
+write requests, so auto-provisioning a fresh lite username fails with
+
+```
+username registration failed (401 Unauthorized): Missing Authorization Header
+```
+
+Reads against it work, and everything that does not go through the backend works
+normally, so use `--mnemonic` (or `HOST_CLI_SIGNER_MNEMONIC`) with an account that
+already carries a previewnet username. `paseo-next-v2` still provisions on its
+own, unauthenticated. Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
 
