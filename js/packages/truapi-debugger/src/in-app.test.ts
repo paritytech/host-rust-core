@@ -1,0 +1,658 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  encodeWireMessage,
+  TRUAPI_CODEC_VERSION,
+  TRUAPI_WIRE_SCHEMA_HASH,
+  VersionedHostAccountGetRequest,
+} from "@parity/truapi";
+import * as W from "@parity/truapi/wire-table";
+import { Window } from "happy-dom";
+
+import { createInAppDebugger, type InAppFrameIdentity } from "./in-app.js";
+import { WIRE_ENVELOPE_VERSION } from "./ingest.js";
+import {
+  INSPECTOR_LAYOUT_CSS,
+  INSPECTOR_SHELL_CSS,
+} from "./inspector-styles.js";
+import { computeTraceStats, createDebugSession } from "./session.js";
+import { renderOperationRow } from "./trace-render.js";
+import { wireTraceToView } from "./trace-view.js";
+
+function frameBytes(
+  id: number,
+  value: number[] = [0],
+  requestId = "p:1",
+): Uint8Array {
+  const r = encodeWireMessage({
+    requestId,
+    payload: { id, value: new Uint8Array(value) },
+  });
+  if (r.isErr()) throw r.error;
+  return r.value;
+}
+
+/** A real, decodable account-get request wire message (non-sensitive). */
+function accountGetRequestBytes(): Uint8Array {
+  const value = VersionedHostAccountGetRequest.enc({
+    tag: "V1",
+    value: {
+      productAccountId: {
+        dotNsIdentifier: "alice.dot",
+        derivationIndex: { tag: "Index", value: 0 },
+      },
+    },
+  });
+  const r = encodeWireMessage({
+    requestId: "p:1",
+    payload: { id: W.ACCOUNT_GET_ACCOUNT.request, value },
+  });
+  if (r.isErr()) throw r.error;
+  return r.value;
+}
+
+/**
+ * The wire identity a feeding host stamps when it was built against THIS
+ * debugger's wire table — the only state in which the panel decodes a payload.
+ */
+const ATTESTED: InAppFrameIdentity = {
+  v: WIRE_ENVELOPE_VERSION,
+  codec: TRUAPI_CODEC_VERSION,
+  schema: TRUAPI_WIRE_SCHEMA_HASH,
+};
+
+/** Selector lists of every rule in a stylesheet (no nested at-rules in ours). */
+function ruleSelectors(css: string): string[] {
+  return [...css.matchAll(/([^{}]+)\{[^{}]*\}/g)].map((m) =>
+    (m[1] ?? "").trim(),
+  );
+}
+
+describe("createInAppDebugger", () => {
+  // The mount is a real interactive panel now (querySelector, dataset, event
+  // listeners), so it needs a real DOM rather than a stand-in.
+  /* eslint-disable @typescript-eslint/no-explicit-any -- install a DOM global */
+  const g = globalThis as any;
+  const original = g.document;
+  let win: Window;
+  beforeAll(() => {
+    win = new Window();
+    g.document = win.document;
+  });
+  afterAll(() => {
+    g.document = original;
+  });
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  /** A detached container to mount into. */
+  const container = (): HTMLElement =>
+    win.document.createElement("div") as unknown as HTMLElement;
+
+  /**
+   * A container attached to the document, so `getComputedStyle` resolves the
+   * mount's injected stylesheet against it.
+   */
+  const attached = (): HTMLElement => {
+    const el = container();
+    win.document.body.append(el as unknown as Node & ChildNode);
+    return el;
+  };
+
+  /** Click the first operation row of a mounted panel. */
+  const openFirstOp = (el: HTMLElement): void => {
+    const row = el.querySelector<HTMLElement>(".td-op");
+    expect(row).not.toBeNull();
+    row?.click();
+  };
+
+  test("feeds frames in-process and decodes by default", () => {
+    const dbg = createInAppDebugger(); // decode ON by default (dev-only tool)
+
+    // Two frames of one op, fed exactly as dotli's tap would (raw SCALE bytes).
+    // The request leg carries a real, decodable account-get payload.
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      ATTESTED,
+    );
+
+    expect(dbg.session.traceEngine.traces()).toHaveLength(1);
+    expect(dbg.session.decodeValues).toBe(true); // decodes by default
+
+    // The drill-down surfaces the decoded value.
+    const detail = dbg.session.frameDetail("p:1", 0, "shop.dot");
+    expect(detail?.kind).toBe("decoded");
+
+    const el = container();
+    const dispose = dbg.mount(el);
+    // Rendered by the shared renderer — the method resolved via the wire table.
+    expect(el.querySelector(".ins-list")?.innerHTML).toContain(
+      "account.getAccount",
+    );
+    dispose();
+    expect(el.children).toHaveLength(0);
+  });
+
+  test("a formerly-sensitive op shows its payload like any other (no redaction)", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame(
+      "shop.dot",
+      "out",
+      frameBytes(W.SIGNING_SIGN_RAW.request, [1, 2]),
+      ATTESTED,
+    );
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.SIGNING_SIGN_RAW.response),
+      ATTESTED,
+    );
+
+    const el = attached();
+    const dispose = dbg.mount(el);
+    openFirstOp(el);
+    const html = el.querySelector(".ins-detail")?.innerHTML ?? "";
+
+    // No denylist: the panel shows this op's payload — decoded, or the raw hex
+    // when the codec can't type it — exactly as it would any other method.
+    expect(html).toContain("signing.signRaw");
+    expect(html).toContain(`<pre class="td-detail-pre">`);
+    expect(html).not.toContain("payload not shown");
+    expect(html.toLowerCase()).not.toContain("redact");
+
+    dispose();
+    el.remove();
+  });
+
+  test("decodeValues:false keeps the mount payload-blind (bytes only)", () => {
+    const dbg = createInAppDebugger({ decodeValues: false });
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    expect(dbg.session.decodeValues).toBe(false);
+    expect(dbg.session.frameDetail("p:1", 0, "shop.dot")?.kind).toBe("bytes");
+  });
+
+  test("the mount renders the full inspector chrome, not a bare list", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      ATTESTED,
+    );
+
+    const el = container();
+    const dispose = dbg.mount(el);
+
+    // The pieces that made the standalone look like a Network tab and were
+    // absent here: a top bar with filter + sort, the aggregate strip, the
+    // list/detail split, and a status bar.
+    for (const selector of [
+      ".ins-top",
+      ".ins-filter",
+      ".ins-sort",
+      ".ins-summary",
+      ".ins-body",
+      ".ins-list",
+      ".ins-split",
+      ".ins-detail",
+      ".ins-status",
+    ]) {
+      expect(el.querySelector(selector)).not.toBeNull();
+    }
+    // The strip reports real aggregates rather than a placeholder.
+    expect(el.querySelector(".ins-summary")?.innerHTML).toContain("ops");
+    expect(el.querySelector(".ins-summary")?.className).not.toContain("empty");
+
+    dispose();
+  });
+
+  test("selecting an operation opens its frames in the detail pane", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      ATTESTED,
+    );
+
+    const el = container();
+    const dispose = dbg.mount(el);
+
+    const detail = el.querySelector(".ins-detail");
+    expect(detail?.innerHTML).toContain("Select an operation");
+
+    openFirstOp(el);
+
+    // The drill-down replaces the placeholder, and the row reads as selected.
+    expect(detail?.innerHTML).not.toContain("Select an operation");
+    expect(detail?.innerHTML).toContain("account.getAccount");
+    expect(el.querySelector(".td-op.selected")).not.toBeNull();
+
+    dispose();
+  });
+
+  test("the filter narrows the operation list", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      ATTESTED,
+    );
+
+    const el = container();
+    const dispose = dbg.mount(el);
+    expect(el.querySelectorAll(".td-op")).toHaveLength(1);
+
+    const filter = el.querySelector<HTMLInputElement>(".ins-filter");
+    expect(filter).not.toBeNull();
+    if (filter !== null) {
+      filter.value = "signing.signRaw";
+      filter.dispatchEvent(new win.Event("input") as unknown as Event);
+    }
+    expect(el.querySelectorAll(".td-op")).toHaveLength(0);
+    expect(el.querySelector(".ins-list")?.innerHTML).toContain("no operations");
+
+    dispose();
+  });
+
+  // --- wire identity ------------------------------------------------------
+
+  test("an unattested frame is grouped but never decoded", () => {
+    const dbg = createInAppDebugger();
+    // No identity: exactly the 3-arg call an embed makes today.
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes());
+
+    expect(dbg.decodeTrusted("shop.dot")).toBe(false);
+    expect(dbg.decodeTrusted()).toBe(false);
+
+    const el = attached();
+    const dispose = dbg.mount(el);
+
+    // Payload-blind grouping needs no wire contract, so the op still lists.
+    expect(el.querySelector(".ins-list")?.innerHTML).toContain(
+      "account.getAccount",
+    );
+    // ...and the panel says the names may be wrong, as the standalone does.
+    expect(el.querySelector(".ins-list")?.innerHTML).toContain(
+      "declared no wire contract",
+    );
+    expect(el.querySelector(".ins-status")?.innerHTML).toContain(
+      "wire identity unconfirmed",
+    );
+
+    openFirstOp(el);
+    const html = el.querySelector(".ins-detail")?.innerHTML ?? "";
+    // The value is NOT surfaced: the feeder's frame ids are not attested to mean
+    // what this debugger's table says they mean.
+    expect(html).not.toContain("alice.dot");
+    expect(html).toContain("payload not shown");
+
+    dispose();
+    el.remove();
+  });
+
+  test("an attested frame decodes in the panel", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+
+    expect(dbg.decodeTrusted("shop.dot")).toBe(true);
+
+    const el = attached();
+    const dispose = dbg.mount(el);
+    openFirstOp(el);
+    expect(el.querySelector(".ins-detail")?.innerHTML).toContain("alice.dot");
+    expect(el.querySelector(".ins-list")?.innerHTML).not.toContain("⚠");
+
+    dispose();
+    el.remove();
+  });
+
+  test("a mismatched wire schema refuses decode and banners the drift", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), {
+      ...ATTESTED,
+      schema: "0000000000000000",
+    });
+
+    expect(dbg.decodeTrusted("shop.dot")).toBe(false);
+
+    const el = attached();
+    const dispose = dbg.mount(el);
+    openFirstOp(el);
+    expect(el.querySelector(".ins-detail")?.innerHTML).not.toContain(
+      "alice.dot",
+    );
+    expect(el.querySelector(".ins-list")?.innerHTML).toContain(
+      "differs from this debugger's",
+    );
+    expect(el.querySelector(".ins-status")?.innerHTML).toContain(
+      "codec mismatch",
+    );
+
+    dispose();
+    el.remove();
+  });
+
+  test("one mismatching frame marks the channel untrusted for good", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    expect(dbg.decodeTrusted("shop.dot")).toBe(true);
+    // A later frame declaring a different codec version: sticky refusal.
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      { ...ATTESTED, codec: TRUAPI_CODEC_VERSION + 1 },
+    );
+    expect(dbg.decodeTrusted("shop.dot")).toBe(false);
+  });
+
+  test("a payload-blind mount needs no attestation (nothing decodes anyway)", () => {
+    const dbg = createInAppDebugger({ decodeValues: false });
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes());
+    expect(dbg.decodeTrusted("shop.dot")).toBe(true);
+  });
+
+  // --- one shared aggregate ----------------------------------------------
+
+  test("the summary strip reports the whole shared aggregate", () => {
+    // maxFramesPerTrace: 1 forces a `truncated` op; the malformed frame and the
+    // unanswered subscription supply the other health tallies.
+    const dbg = createInAppDebugger({ maxFramesPerTrace: 1 });
+    dbg.handleFrame(
+      "shop.dot",
+      "out",
+      frameBytes(W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start, [0], "p:9"),
+      { ...ATTESTED, dropped: 3 },
+    );
+    dbg.handleFrame("shop.dot", "in", new Uint8Array([0xff, 0xff, 0xff]), ATTESTED);
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      ATTESTED,
+    );
+
+    // The shared roll-up over the same views is the reference: the strip must
+    // agree with it rather than compute its own subset.
+    const stats = computeTraceStats(
+      dbg.session.traceEngine
+        .traces()
+        .map((t) => wireTraceToView(t, dbg.session.methodNames)),
+    );
+    expect(stats.malformed).toBe(1);
+    expect(stats.truncated).toBe(1);
+    expect(stats.subscriptions).toBe(1);
+    expect(stats.liveSubscriptions).toBe(1);
+    expect(stats.out).toBeGreaterThan(0);
+    expect(stats.in).toBeGreaterThan(0);
+
+    const el = container();
+    const dispose = dbg.mount(el);
+    const html = el.querySelector(".ins-summary")?.innerHTML ?? "";
+
+    for (const label of [
+      "ops",
+      "frames",
+      "data",
+      "subs",
+      "avg op",
+      "malformed",
+      "orphaned",
+      "retry storms",
+      "truncated",
+      "evicted",
+      "dropped",
+    ]) {
+      expect(html).toContain(`class="k">${label}</span>`);
+    }
+    // The tallies the bespoke strip omitted entirely.
+    expect(html).toContain(
+      `<span class="n">${String(stats.malformed)}</span><span class="k">malformed</span>`,
+    );
+    expect(html).toContain(
+      `<span class="n">${String(stats.truncated)}</span><span class="k">truncated</span>`,
+    );
+    expect(html).toContain(
+      `<span class="n">3</span><span class="k">dropped</span>`,
+    );
+    // The in/out split and the observed maximum.
+    expect(html).toContain(`${String(stats.out)}▶ ${String(stats.in)}◀`);
+    expect(html).toContain("max ");
+
+    dispose();
+  });
+
+  // --- retention ---------------------------------------------------------
+
+  test("session retention caps reach the trace engine", () => {
+    const session = createDebugSession({ maxTraces: 2 });
+    for (const requestId of ["p:1", "p:2", "p:3"]) {
+      session.handleEnvelope({
+        channelId: "shop.dot",
+        dir: "out",
+        frame: frameBytes(W.ACCOUNT_GET_ACCOUNT.request, [0], requestId),
+      });
+    }
+    expect(session.traceEngine.traces()).toHaveLength(2);
+    expect(session.traceEngine.evictedTraces()).toBe(1);
+  });
+
+  test("the embed retains less than the standalone engine's default", () => {
+    const dbg = createInAppDebugger();
+    for (let i = 0; i < 200; i++) {
+      dbg.handleFrame(
+        "shop.dot",
+        "out",
+        frameBytes(W.ACCOUNT_GET_ACCOUNT.request, [0], `p:${String(i)}`),
+        ATTESTED,
+      );
+    }
+    // The engine default is 256 ops × 1 MiB of retained payload each; inside the
+    // observed app's own tab that ceiling is the product's crash.
+    expect(dbg.session.traceEngine.traces().length).toBeLessThanOrEqual(128);
+    expect(dbg.session.traceEngine.evictedTraces()).toBeGreaterThan(0);
+  });
+
+  // --- containment -------------------------------------------------------
+
+  test("a throwing session cannot break the product's frame path", () => {
+    const dbg = createInAppDebugger();
+    // The embed's tap runs in the host's own send/receive path, so a throw here
+    // would surface to the product as a protocol failure.
+    dbg.session.handleEnvelope = () => {
+      throw new Error("boom");
+    };
+    expect(() => {
+      dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    }).not.toThrow();
+  });
+
+  test("every injected rule is confined to the mount root", () => {
+    const dbg = createInAppDebugger();
+    const el = container();
+    const dispose = dbg.mount(el);
+
+    const css = el.querySelector("style")?.textContent ?? "";
+    expect(css).not.toBe("");
+    const leaked = ruleSelectors(css)
+      .flatMap((list) => list.split(","))
+      .map((s) => s.trim())
+      .filter((s) => s !== "" && !s.startsWith(".td-inapp"));
+    expect(leaked).toEqual([]);
+
+    dispose();
+  });
+
+  test("the panel does not restyle the host application's own markup", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+
+    const el = attached();
+    const dispose = dbg.mount(el);
+
+    // The host application's own debug panel uses the same `td-*` class names
+    // (they are lifted from it), so a global rule restyles it.
+    const hostPanel = win.document.createElement("div");
+    hostPanel.className = "td-op";
+    hostPanel.innerHTML = `<span class="td-op-meta">host panel</span>`;
+    win.document.body.append(hostPanel);
+
+    const inside = el.querySelector(".td-op-meta");
+    const outside = hostPanel.querySelector(".td-op-meta");
+    expect(inside).not.toBeNull();
+    expect(outside).not.toBeNull();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- happy-dom element types
+    const colorOf = (node: any): string =>
+      win.getComputedStyle(node).color ?? "";
+    // The panel's own rows are styled; the host's identically-classed markup is
+    // untouched by anything the panel injected.
+    expect(colorOf(inside)).not.toBe("");
+    expect(colorOf(outside)).toBe("");
+    expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- happy-dom element types
+      win.getComputedStyle(hostPanel as any).cursor ?? "",
+    ).not.toBe("pointer");
+
+    hostPanel.remove();
+    dispose();
+    el.remove();
+  });
+
+  // --- refresh cost ------------------------------------------------------
+
+  test("an unchanged open op is not re-decoded on every refresh", () => {
+    const dbg = createInAppDebugger();
+    dbg.handleFrame("shop.dot", "out", accountGetRequestBytes(), ATTESTED);
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      ATTESTED,
+    );
+
+    const el = container();
+    const dispose = dbg.mount(el);
+
+    let decodes = 0;
+    const real = dbg.session.decodedFrames.bind(dbg.session);
+    dbg.session.decodedFrames = ((...args: Parameters<typeof real>) => {
+      decodes += 1;
+      return real(...args);
+    }) as typeof dbg.session.decodedFrames;
+
+    openFirstOp(el);
+    expect(decodes).toBe(1);
+    const rendered = el.querySelector(".ins-detail")?.innerHTML ?? "";
+
+    // Three more render passes with nothing about the op changed: re-decoding and
+    // re-hexing every frame here is ~50ms of blocked main thread per second, in
+    // the product's own tab, for an identical result.
+    const filter = el.querySelector<HTMLInputElement>(".ins-filter");
+    for (let i = 0; i < 3; i++) {
+      filter?.dispatchEvent(new win.Event("input") as unknown as Event);
+    }
+    expect(decodes).toBe(1);
+    expect(el.querySelector(".ins-detail")?.innerHTML).toBe(rendered);
+
+    // A new frame on the open op DOES refresh it.
+    dbg.handleFrame(
+      "shop.dot",
+      "in",
+      frameBytes(W.ACCOUNT_GET_ACCOUNT.response),
+      ATTESTED,
+    );
+    filter?.dispatchEvent(new win.Event("input") as unknown as Event);
+    expect(decodes).toBe(2);
+
+    dispose();
+  });
+
+  // --- style precedence --------------------------------------------------
+
+  test("a live-and-waiting op's meta reads waiting-amber, not live-green", () => {
+    const dbg = createInAppDebugger();
+    // A subscription start with nothing back: live (no stop) AND waiting
+    // (orphaned opener). Both classes land on the same row.
+    dbg.handleFrame(
+      "shop.dot",
+      "out",
+      frameBytes(W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.start),
+      ATTESTED,
+    );
+    const trace = dbg.session.traceEngine.traces()[0];
+    expect(trace).toBeDefined();
+    const view = wireTraceToView(trace!, dbg.session.methodNames);
+    const rowHtml = renderOperationRow(view, { now: Date.now() + 5000 });
+    expect(rowHtml).toContain("td-op-live");
+    expect(rowHtml).toContain("td-op-waiting");
+
+    const style = win.document.createElement("style");
+    style.textContent = INSPECTOR_SHELL_CSS;
+    const holder = win.document.createElement("div");
+    holder.innerHTML = rowHtml;
+    win.document.body.append(style, holder);
+
+    // A stalled op must read as a problem: the waiting colour has to beat the
+    // live one, whatever order the two rules are declared in.
+    const meta = holder.querySelector(".td-op-meta");
+    expect(meta).not.toBeNull();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- happy-dom element types
+    expect(win.getComputedStyle(meta as any).color).toBe("#fbbf24");
+
+    style.remove();
+    holder.remove();
+  });
+});
+
+describe("waiting beats live in the cascade", () => {
+  /**
+   * An unanswered subscription carries BOTH `td-op-live` and `td-op-waiting`, so
+   * the two rules collide on the same element. The amber wait has to win: green
+   * says "healthy and streaming", which is the opposite of what an unanswered
+   * opener means. Asserting the COMPUTED colour rather than source order is the
+   * point - the previous rule pair was ordered wrongly at equal specificity, so
+   * the amber was dead and no assertion on the stylesheet text would have caught
+   * it.
+   */
+  test("a row that is both live and waiting computes amber, not green", () => {
+    const win = new Window();
+    const doc = win.document;
+    const style = doc.createElement("style");
+    style.textContent = `${INSPECTOR_SHELL_CSS}\n${INSPECTOR_LAYOUT_CSS}`;
+    doc.head.appendChild(style);
+
+    const row = doc.createElement("div");
+    row.className = "td-op td-op-sub td-op-live td-op-waiting";
+    const meta = doc.createElement("span");
+    meta.className = "td-op-meta";
+    row.appendChild(meta);
+    doc.body.appendChild(row);
+
+    // Amber, not the green a healthy live subscription gets.
+    expect(win.getComputedStyle(meta as never).color).toBe("#fbbf24");
+  });
+
+  test("a live row that is NOT waiting still computes green", () => {
+    const win = new Window();
+    const doc = win.document;
+    const style = doc.createElement("style");
+    style.textContent = `${INSPECTOR_SHELL_CSS}\n${INSPECTOR_LAYOUT_CSS}`;
+    doc.head.appendChild(style);
+
+    const row = doc.createElement("div");
+    row.className = "td-op td-op-sub td-op-live";
+    const meta = doc.createElement("span");
+    meta.className = "td-op-meta";
+    row.appendChild(meta);
+    doc.body.appendChild(row);
+
+    expect(win.getComputedStyle(meta as never).color).toBe("#4ade80");
+  });
+});
