@@ -16,6 +16,8 @@
 //! - **An observed state is never overridden by a reported one.** Reports say
 //!   when to look and what to display. They never decide what happened.
 
+pub mod watch;
+
 use parity_scale_codec::{Decode, Encode};
 use truapi::latest::{
     FundingAmount, FundingDirection, FundingFailure, FundingIntentId, FundingRail,
