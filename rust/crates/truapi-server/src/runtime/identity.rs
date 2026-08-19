@@ -311,7 +311,9 @@ mod tests {
 
     use super::*;
     use crate::chain_runtime::{RuntimeChainProvider, RuntimeFailure};
-    use crate::host_logic::dotns_gateway::{account_to_h160, dispatcher_address_key, selector};
+    use crate::host_logic::dotns_gateway::{
+        account_to_h160, dispatcher_address_key, selector, timestamp_now_key,
+    };
     use crate::subscription::thread_per_subscription_spawner;
     use async_trait::async_trait;
     use futures::StreamExt;
@@ -371,18 +373,36 @@ mod tests {
         out
     }
 
-    /// A `(string label, uint64 mintedAt)[]` return value with one element.
-    fn abi_pending_claims(label: &str, minted_at: u64) -> Vec<u8> {
-        [
-            abi_word(32).to_vec(),
-            abi_word(1).to_vec(),
-            abi_word(32).to_vec(),
-            abi_word(64).to_vec(),
-            abi_word(minted_at).to_vec(),
-            abi_string_tail(label),
-        ]
-        .concat()
+    /// A `(string label, uint64 mintedAt)[]` return value.
+    fn abi_pending_claims(claims: &[(&str, u64)]) -> Vec<u8> {
+        let structs: Vec<Vec<u8>> = claims
+            .iter()
+            .map(|(label, minted_at)| {
+                [
+                    abi_word(64).to_vec(),
+                    abi_word(*minted_at).to_vec(),
+                    abi_string_tail(label),
+                ]
+                .concat()
+            })
+            .collect();
+        let mut out = abi_word(32).to_vec();
+        out.extend_from_slice(&abi_word(claims.len() as u64));
+        let mut offset = 32 * claims.len();
+        for element in &structs {
+            out.extend_from_slice(&abi_word(offset as u64));
+            offset += element.len();
+        }
+        for element in structs {
+            out.extend_from_slice(&element);
+        }
+        out
     }
+
+    /// Chain time the scripted `Timestamp.Now` reports, in seconds.
+    const NOW_SECS: u64 = 1_800_000_000;
+    /// The scripted controller's `reservationDuration()`.
+    const RESERVATION_DURATION: u64 = 604_800;
 
     /// `ReviveApi_call` output carrying successful return `data`.
     fn contract_result(data: &[u8]) -> Vec<u8> {
@@ -408,7 +428,14 @@ mod tests {
             (CONTROLLER, s) if s == selector("pendingClaims(address)") => {
                 // The user argument is the mapped H160 of the identity account.
                 assert_eq!(&input[16..36], account_to_h160(&ACCOUNT));
-                abi_pending_claims("alice01", 42)
+                // One live claim and one that lapsed a second ago.
+                abi_pending_claims(&[
+                    ("alice01", NOW_SECS - 10),
+                    ("stale01", NOW_SECS - RESERVATION_DURATION - 1),
+                ])
+            }
+            (CONTROLLER, s) if s == selector("reservationDuration()") => {
+                abi_word(RESERVATION_DURATION).to_vec()
             }
             (CONTROLLER, s) if s == selector("protocolRegistry()") => abi_address(&REGISTRY),
             (REGISTRY, s) if s == selector("get(bytes32)") => abi_address(&FACTORY),
@@ -499,6 +526,13 @@ mod tests {
                     let mut frames = vec![response(
                         json!({"result": "started", "operationId": operation_id}),
                     )];
+                    if key_bytes == timestamp_now_key() {
+                        frames.push(follow_event(json!({
+                            "event": "operationStorageItems",
+                            "operationId": operation_id,
+                            "items": [{"key": key, "value": format!("0x{}", hex::encode((NOW_SECS * 1_000).to_le_bytes()))}]
+                        })));
+                    }
                     if key_bytes == dispatcher_address_key() {
                         frames.push(follow_event(json!({
                             "event": "operationStorageItems",
@@ -626,11 +660,11 @@ mod tests {
             .iter()
             .filter(|request| request.contains("chainHead_v1_call"))
             .count();
-        // TARGET, pendingClaims, protocolRegistry, get(storeFactory),
-        // getLabelStore, tld, one short getLabels page.
+        // TARGET, pendingClaims, reservationDuration, protocolRegistry,
+        // get(storeFactory), getLabelStore, tld, one short getLabels page.
         assert_eq!(
-            calls, 7,
-            "the discovery and label chain is exactly seven views"
+            calls, 8,
+            "the discovery and label chain is exactly eight views"
         );
     }
 }

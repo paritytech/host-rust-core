@@ -289,7 +289,7 @@ startup:
 - `--account` with `--session`;
 - `--account` with `--lite-username-prefix` or `--reserved-username`; and
 - a `--reserved-username` that is not a full-person base label (lowercase ASCII
-  letters only, at most 32 bytes).
+  letters only, 6 to 32 bytes).
 
 The same conflicts apply when the mnemonic came from
 `HOST_CLI_SIGNER_MNEMONIC`.

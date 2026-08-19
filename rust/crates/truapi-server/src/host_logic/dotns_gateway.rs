@@ -308,18 +308,7 @@ fn word(data: &[u8], index: usize) -> Result<&[u8], DotnsContractError> {
 
 /// Interprets an ABI word as a right-aligned usize offset or length.
 fn word_usize(data: &[u8], index: usize) -> Result<usize, DotnsContractError> {
-    let bytes = word(data, index)?;
-    if bytes[..24].iter().any(|b| *b != 0) {
-        return Err(DotnsContractError::Abi {
-            context: "oversized word",
-        });
-    }
-    let value = u64::from_be_bytes(
-        bytes[24..]
-            .try_into()
-            .expect("8-byte tail of a 32-byte word; qed"),
-    );
-    usize::try_from(value).map_err(|_| DotnsContractError::Abi {
+    usize::try_from(word_u64(data, index)?).map_err(|_| DotnsContractError::Abi {
         context: "oversized word",
     })
 }
@@ -372,8 +361,8 @@ pub fn decode_string_array(data: &[u8]) -> Result<Vec<String>, DotnsContractErro
 }
 
 /// Decodes `DotnsPopController.pendingClaims(address)`, an ABI
-/// `(string label, uint64 mintedAt)[]`. Returns the labels.
-pub fn decode_pending_claims_array(data: &[u8]) -> Result<Vec<String>, DotnsContractError> {
+/// `(string label, uint64 mintedAt)[]`, as `(label, minted_at)` pairs.
+pub fn decode_pending_claims_array(data: &[u8]) -> Result<Vec<(String, u64)>, DotnsContractError> {
     let array_at = word_usize(data, 0)?;
     let array = data.get(array_at..).ok_or(DotnsContractError::Abi {
         context: "claims offset",
@@ -390,9 +379,31 @@ pub fn decode_pending_claims_array(data: &[u8]) -> Result<Vec<String>, DotnsCont
                     .ok_or(DotnsContractError::Abi {
                         context: "claim offset",
                     })?;
-            decode_string_at(claim, word_usize(claim, 0)?)
+            let label = decode_string_at(claim, word_usize(claim, 0)?)?;
+            let minted_at = word_u64(claim, 1)?;
+            Ok((label, minted_at))
         })
         .collect()
+}
+
+/// Decodes a single `uint64` (or narrower) return value.
+pub fn decode_u64(data: &[u8]) -> Result<u64, DotnsContractError> {
+    word_u64(data, 0)
+}
+
+/// Reads the 32-byte ABI word at `index` as a `u64`; wider values are an error.
+fn word_u64(data: &[u8], index: usize) -> Result<u64, DotnsContractError> {
+    let bytes = word(data, index)?;
+    if bytes[..24].iter().any(|b| *b != 0) {
+        return Err(DotnsContractError::Abi {
+            context: "oversized word",
+        });
+    }
+    Ok(u64::from_be_bytes(
+        bytes[24..]
+            .try_into()
+            .expect("8-byte tail of a 32-byte word; qed"),
+    ))
 }
 
 /// Usernames of one account as recorded by the dotNS contracts.
@@ -417,6 +428,12 @@ pub struct DotnsIdentity {
 /// Lite and public names share one namespace on the contract side, so a public
 /// name ending in two digits is indistinguishable from a flattened lite name
 /// here; the contract documents that ambiguity as accepted.
+///
+/// TODO(dotns): the full username is the first letters-only label, which a
+/// self-registered or purchased name older than the gateway name can win.
+/// `chatKey(node)` proves gateway provenance but survives transfers, so it is
+/// not a filter either. Once `DotnsPopController` exposes
+/// `usernameNodeOf(address)`, read the full username from it instead.
 pub fn classify_labels<I>(labels: I) -> DotnsIdentity
 where
     I: IntoIterator,
@@ -467,22 +484,15 @@ pub fn is_full_person_label(label: &str) -> bool {
         && label.chars().all(|c| c.is_ascii_lowercase())
 }
 
-/// Shortest base a person can register: `PopRules` classifies bases of five
-/// characters or fewer as reserved for governance.
+/// Shortest base a person can register or reserve: `PopRules` classifies bases
+/// of five characters or fewer as reserved for governance.
 pub const MIN_PERSON_LABEL_LEN: usize = 6;
-/// Lengths `PopRules.reserveBaseName` accepts for a reserved base name.
-pub const RESERVED_LABEL_LEN: core::ops::RangeInclusive<usize> = 6..=8;
 
-/// Whether `label` can be registered as a full-person username: the pallet's
-/// [`is_full_person_label`] plus the `PopRules` length tier.
+/// Whether `label` can be registered as a full-person username, or reserved
+/// for a later claim through the gateway (`PopRules.reserveBaseNameForPop`):
+/// the pallet's [`is_full_person_label`] plus the governance-reserved tier.
 pub fn is_registrable_full_label(label: &str) -> bool {
     is_full_person_label(label) && label.len() >= MIN_PERSON_LABEL_LEN
-}
-
-/// Whether `label` can be reserved for a later full-person claim: the pallet's
-/// [`is_full_person_label`] plus the `PopRules` reservation length band.
-pub fn is_reservable_base_label(label: &str) -> bool {
-    is_full_person_label(label) && RESERVED_LABEL_LEN.contains(&label.len())
 }
 
 /// Whether `value` is a dotted lite username, `stem.NN`: a DNS-label stem, one
@@ -575,7 +585,9 @@ pub async fn discover_pop_controller<T: DotnsTransport + ?Sized>(
 ///
 /// Two sources are merged. The controller's pending claims hold gateway-minted
 /// names the user has not settled into a `LabelStore` yet (`claimLabelStore`);
-/// those come first. The user's `LabelStore`, when deployed, holds every name
+/// those come first. A claim older than the controller's `reservationDuration`
+/// is lapsed — `claimLabelStore` skips it and `expirePendingClaim` will sweep
+/// it — so it is not a username here either, whether or not it has been swept. The user's `LabelStore`, when deployed, holds every name
 /// written for them: gateway names once settled, plus public registrations and
 /// incoming transfers. Store labels carry the network TLD (`alice01.paseo`),
 /// which is stripped here; subnames (`app.alice`) are dropped.
@@ -746,7 +758,9 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
 }
 
 /// Gateway-minted labels of `user` still waiting for `claimLabelStore`, from
-/// `DotnsPopController.pendingClaims(address)`.
+/// `DotnsPopController.pendingClaims(address)`, without the entries that have
+/// lapsed (`mintedAt + reservationDuration < now`, the controller's own
+/// `_isExpired`; `now` is `Timestamp.Now` at the pinned block).
 async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     controller: &[u8; 20],
@@ -756,8 +770,42 @@ async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
         .view(controller, call_address("pendingClaims(address)", user))
         .await
         .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
-    decode_pending_claims_array(&output)
-        .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))
+    let claims = decode_pending_claims_array(&output)
+        .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
+    if claims.is_empty() {
+        return Ok(Vec::new());
+    }
+    let duration_output = transport
+        .view(controller, call_no_args("reservationDuration()"))
+        .await
+        .map_err(|err| format!("DotnsPopController.reservationDuration: {err}"))?;
+    let duration = decode_u64(&duration_output)
+        .map_err(|err| format!("DotnsPopController.reservationDuration: {err}"))?;
+    let now = chain_time_secs(transport).await?;
+    Ok(claims
+        .into_iter()
+        .filter(|(_, minted_at)| !claim_lapsed(*minted_at, duration, now))
+        .map(|(label, _)| label)
+        .collect())
+}
+
+/// Whether a pending claim minted at `minted_at` has lapsed at chain time
+/// `now`, mirroring `DotnsPopController._isExpired`.
+fn claim_lapsed(minted_at: u64, duration: u64, now: u64) -> bool {
+    minted_at.saturating_add(duration) < now
+}
+
+/// Asset Hub chain time in Unix seconds, from `Timestamp.Now` (milliseconds).
+async fn chain_time_secs<T: DotnsTransport + ?Sized>(transport: &mut T) -> Result<u64, String> {
+    let value = transport
+        .storage(timestamp_now_key())
+        .await?
+        .ok_or("Timestamp.Now is unset")?;
+    let millis: [u8; 8] = value
+        .as_slice()
+        .try_into()
+        .map_err(|_| "Timestamp.Now is not a u64".to_string())?;
+    Ok(u64::from_le_bytes(millis) / 1000)
 }
 
 /// `DotnsGateway.DispatcherAddress` storage key.
@@ -1053,12 +1101,22 @@ mod tests {
         claims.extend_from_slice(&struct_b);
         assert_eq!(
             decode_pending_claims_array(&claims).unwrap(),
-            vec!["alice01".to_string(), "bob".to_string()]
+            vec![("alice01".to_string(), 42), ("bob".to_string(), 7)]
         );
         assert_eq!(
             decode_pending_claims_array(&[abi_word(0x20), abi_word(0)].concat()).unwrap(),
-            Vec::<String>::new()
+            Vec::<(String, u64)>::new()
         );
+        assert_eq!(decode_u64(&abi_word(604_800)).unwrap(), 604_800);
+        assert!(decode_u64(&[0xff; 32]).is_err());
+    }
+
+    #[test]
+    fn a_pending_claim_lapses_after_the_reservation_duration() {
+        // DotnsPopController._isExpired: mintedAt + reservationDuration < now.
+        assert!(!claim_lapsed(1_000, 100, 1_100));
+        assert!(claim_lapsed(1_000, 100, 1_101));
+        assert!(!claim_lapsed(u64::MAX, 100, u64::MAX));
     }
 
     #[test]
@@ -1100,15 +1158,12 @@ mod tests {
         assert!(!is_full_person_label("Alice"));
         assert!(!is_full_person_label(""));
 
-        // PopRules tiers: five letters or fewer are governance-reserved; a
-        // reservation is six to eight.
-        assert!(is_registrable_full_label("georgex"));
+        // PopRules: five letters or fewer are governance-reserved; longer
+        // bases can be registered and reserved alike.
+        assert!(is_registrable_full_label("george"));
+        assert!(is_registrable_full_label("georgeabc"));
         assert!(is_registrable_full_label(&"a".repeat(32)));
         assert!(!is_registrable_full_label("alice"));
-        assert!(is_reservable_base_label("george"));
-        assert!(is_reservable_base_label("georgeab"));
-        assert!(!is_reservable_base_label("georg"));
-        assert!(!is_reservable_base_label("georgeabc"));
         assert!(!is_full_person_label("alice.bc"));
         assert!(!is_full_person_label("-alice"));
         assert!(!is_full_person_label(&"a".repeat(33)));
