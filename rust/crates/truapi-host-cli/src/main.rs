@@ -14,6 +14,7 @@
 mod accounts;
 mod attestation;
 mod chain;
+mod chat;
 mod frame_server;
 mod network;
 mod platform;
@@ -36,7 +37,7 @@ use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use truapi_platform::{HostInfo, PlatformInfo};
+use truapi_platform::{ChatPlatform, HostInfo, PlatformInfo, ProductExecutionKind};
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
@@ -205,8 +206,36 @@ enum Command {
     },
 }
 
+/// Execution kind the CLI serves a product as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ExecutionKind {
+    /// Ordinary product. Chat requests answer `Denied`, as they do on any
+    /// host that does not serve chat.
+    Spa,
+    /// Chat product, served by the CLI's in-memory chat host.
+    Chat,
+}
+
+impl ExecutionKind {
+    fn context(self) -> ProductExecutionKind {
+        match self {
+            Self::Spa => ProductExecutionKind::Spa,
+            Self::Chat => ProductExecutionKind::Chat,
+        }
+    }
+
+    /// The chat host to install, if this kind serves chat at all.
+    fn chat_host(self) -> Option<Arc<chat::CliChatHost>> {
+        matches!(self, Self::Chat).then(chat::CliChatHost::from_env)
+    }
+}
+
 #[derive(Args)]
 struct PairingHostArgs {
+    /// Execution kind the served product runs as. `chat` installs the CLI's
+    /// in-memory chat host; `spa` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start the terminal UI.
     #[arg(long)]
     script: Option<PathBuf>,
@@ -230,6 +259,10 @@ struct PairingHostArgs {
 
 #[derive(Args)]
 struct SigningHostArgs {
+    /// Execution kind the served product runs as. `chat` installs the CLI's
+    /// in-memory chat host; `spa` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start an interactive shell.
     #[arg(long)]
     script: Option<PathBuf>,
@@ -753,7 +786,8 @@ async fn run_pairing_host(
     }
     let network = args.network.config();
     let base_path = args.base_path.unwrap_or_else(default_base_path);
-    let product = frame_server::ProductSelection::new(args.product_id)?;
+    let product =
+        frame_server::ProductSelection::new(args.product_id, args.execution_kind.context())?;
     let product_id = product.current();
     let storage_paths = CliStoragePaths::pairing(base_path.join(network.id));
     let (terminal_ui, ui_handle) = if interactive {
@@ -780,7 +814,13 @@ async fn run_pairing_host(
     )
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
-    let pairing_runtime = Arc::new(PairingHostRuntime::new(platform, config, tokio_spawner()));
+    let chat_host = args.execution_kind.chat_host();
+    let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
+        platform,
+        config,
+        tokio_spawner(),
+        chat_host.map(|chat| chat as Arc<dyn ChatPlatform>),
+    ));
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -848,7 +888,10 @@ async fn run_signing_host(
     let exec_command = exec_input
         .as_deref()
         .map(|input| parse_command(input).unwrap_or_else(|error| invalid_invocation(error)));
-    let product = frame_server::ProductSelection::new(args.product_id.clone())?;
+    let product = frame_server::ProductSelection::new(
+        args.product_id.clone(),
+        args.execution_kind.context(),
+    )?;
     let product_id = product.current();
     let network = args.network.config();
     let base_path = args.base_path.clone().unwrap_or_else(default_base_path);
@@ -997,6 +1040,9 @@ struct SigningHostSession {
     lite_username_prefix: Option<String>,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
+    /// Set when this host serves a chat product. Held across runtime rebuilds
+    /// so switching session keeps the rooms and messages already posted.
+    chat: Option<Arc<chat::CliChatHost>>,
 }
 
 fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> String {
@@ -1078,12 +1124,14 @@ async fn start_signing_host(
         signer = Some(explicit_signer);
     }
     let approval = approval_policy(args.auto_accept);
+    let chat = args.execution_kind.chat_host();
     let runtime = build_signing_runtime(
         network,
         storage_profile.path,
         storage_profile.product_storage_dir,
         approval,
         ui.clone(),
+        chat.clone(),
     )?;
     let runtime_factory = frame_server::SwitchableSigningRuntime::new(runtime.clone());
     let last_script = profile
@@ -1140,6 +1188,7 @@ async fn start_signing_host(
         lite_username_prefix: normalized(args.lite_username_prefix.clone()),
         approval,
         ui,
+        chat,
     })
 }
 
@@ -1149,6 +1198,7 @@ fn build_signing_runtime(
     product_storage_dir: PathBuf,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
+    chat: Option<Arc<chat::CliChatHost>>,
 ) -> Result<Arc<SigningHostRuntime>> {
     let platform = CliPlatform::new(
         network,
@@ -1163,7 +1213,12 @@ fn build_signing_runtime(
         network.bulletin_genesis,
     )
     .context("invalid signing host config")?;
-    let runtime = Arc::new(SigningHostRuntime::new(platform, config, tokio_spawner()));
+    let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
+        platform,
+        config,
+        tokio_spawner(),
+        chat.map(|chat| chat as Arc<dyn ChatPlatform>),
+    ));
     runtime.start_statement_allowance_renewal();
     Ok(runtime)
 }
@@ -1325,6 +1380,7 @@ fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
         promoted.product_storage_dir.clone(),
         session.approval,
         session.ui.clone(),
+        session.chat.clone(),
     )?;
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
@@ -1684,6 +1740,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         profile.product_storage_dir.clone(),
         session.approval,
         session.ui.clone(),
+        session.chat.clone(),
     )?;
     let available_sessions = session.catalog.list()?;
 
