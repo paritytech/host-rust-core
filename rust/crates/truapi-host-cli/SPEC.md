@@ -1124,11 +1124,11 @@ environment (`/api/v1/version` reports `"environment": "staging"`).
 | --- | --- |
 | Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x3138c6d4ce58c760047a413c2a930e919b4673a841ab4890de59aac3bd037f3d` |
+| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x2778b1c94c4362e49a54be57d3056bc714f3712e4486625312704ffb74eb973d` |
+| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210` |
+| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
