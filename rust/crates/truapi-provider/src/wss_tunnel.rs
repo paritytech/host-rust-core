@@ -48,15 +48,19 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 /// that share a hostname share a single listener.
 static TUNNELS: OnceLock<Mutex<HashMap<(String, u16), Tunnel>>> = OnceLock::new();
 
-/// A loopback listener and whether its accept loop is still running.
-#[derive(Clone)]
+/// A running tunnel: the loopback port it listens on, and whether its accept
+/// loop is still running.
 struct Tunnel {
+    /// Loopback port the accept loop is bound to.
     local: u16,
+    /// Cleared when the accept loop ends, so a dead port is never reused.
     alive: Arc<AtomicBool>,
 }
 
-/// Clears a tunnel's `alive` flag however its accept loop ends, including by
-/// panic, so a dead listener is never handed out as live.
+/// Clears a tunnel's `alive` flag when its accept loop ends, so a dead port is
+/// never handed out as live. A guard rather than a store at each exit because
+/// the loop has four of them. It also covers an unwind, but the release profile
+/// sets `panic = "abort"`, so that is a property of test builds only.
 struct AliveUntilDropped(Arc<AtomicBool>);
 
 impl Drop for AliveUntilDropped {
@@ -229,7 +233,8 @@ fn ensure_tunnel(host: &str, port: u16) -> Option<u16> {
 ///
 /// Accept errors are transient (a descriptor limit, a peer that vanished between
 /// the SYN and the accept), so the loop reports and continues. Only losing the
-/// listener itself ends it, which is what [`ensure_tunnel`] probes for.
+/// listener itself ends it, which drops [`AliveUntilDropped`] and is how
+/// [`ensure_tunnel`] learns the tunnel is gone.
 fn run_tunnel(listener: std::net::TcpListener, host: String, port: u16) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -354,11 +359,12 @@ fn tls_config() -> Arc<ClientConfig> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Ordering, TUNNELS, ensure_tunnel, lock, rewrite_host, tunnel_address, tunnel_wss_bootnodes,
+        AliveUntilDropped, Arc, AtomicBool, Ordering, TUNNELS, ensure_tunnel, lock, rewrite_host,
+        tunnel_address, tunnel_wss_bootnodes,
     };
 
     /// Reuse is what makes one listener serve every chain naming the same
-    /// upstream, so it has to hold without dialling the port to find out.
+    /// upstream.
     #[test]
     fn a_live_tunnel_is_reused_rather_than_rebound() {
         let host = "reuse.test.invalid";
@@ -368,30 +374,66 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    /// The case the `alive` flag exists for: handing back a port whose accept
-    /// loop has ended would make every later dial fail with nothing listening.
+    /// The producer half: whatever ends the accept loop must clear the flag, or
+    /// `ensure_tunnel` keeps handing out a port nothing is listening on. Drives
+    /// `AliveUntilDropped` itself rather than setting the flag by hand, so
+    /// removing the guard fails this.
+    #[test]
+    fn the_guard_clears_the_flag_when_the_loop_ends() {
+        let alive = Arc::new(AtomicBool::new(true));
+        let owned = Arc::clone(&alive);
+
+        std::thread::spawn(move || {
+            let _guard = AliveUntilDropped(owned);
+        })
+        .join()
+        .expect("guard thread");
+
+        assert!(
+            !alive.load(Ordering::Acquire),
+            "the accept loop ended but the tunnel still reads as alive"
+        );
+    }
+
+    /// The case the flag exists for. Asserts the replacement is live rather than
+    /// that its port differs: a genuinely dead tunnel releases its port, which
+    /// the kernel may hand straight back, so port inequality is not the property.
     #[test]
     fn a_dead_tunnel_is_replaced() {
         let host = "dead.test.invalid";
-        let live = ensure_tunnel(host, 443).expect("bind a tunnel");
-
-        // Mark it dead exactly as `AliveUntilDropped` does when the loop ends.
-        {
-            let tunnels = TUNNELS.get().expect("tunnel map initialised");
-            let guard = lock(tunnels);
-            guard
-                .get(&(host.to_owned(), 443))
-                .expect("the tunnel just created")
-                .alive
-                .store(false, Ordering::Release);
-        }
+        ensure_tunnel(host, 443).expect("bind a tunnel");
+        mark_dead(host, 443);
 
         let replacement = ensure_tunnel(host, 443).expect("rebind after death");
 
-        assert_ne!(
-            replacement, live,
-            "a dead tunnel must be rebound, not handed out again"
-        );
+        assert_eq!(Some(replacement), live_port(host, 443));
+    }
+
+    /// A tunnel already marked dead is never handed back.
+    #[test]
+    fn a_dead_tunnel_is_not_reused() {
+        let host = "stale.test.invalid";
+        let dead = ensure_tunnel(host, 443).expect("bind a tunnel");
+        mark_dead(host, 443);
+
+        assert_ne!(live_port(host, 443), Some(dead));
+    }
+
+    fn mark_dead(host: &str, port: u16) {
+        let tunnels = TUNNELS.get().expect("tunnel map initialised");
+        lock(tunnels)
+            .get(&(host.to_owned(), port))
+            .expect("the tunnel just created")
+            .alive
+            .store(false, Ordering::Release);
+    }
+
+    /// The cached port, or `None` when the entry is absent or marked dead.
+    fn live_port(host: &str, port: u16) -> Option<u16> {
+        let tunnels = TUNNELS.get().expect("tunnel map initialised");
+        let guard = lock(tunnels);
+        let tunnel = guard.get(&(host.to_owned(), port))?;
+        tunnel.alive.load(Ordering::Acquire).then_some(tunnel.local)
     }
 
     /// Distinct upstreams must not share a listener, or a chain would be relayed

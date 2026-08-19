@@ -69,17 +69,14 @@ pub(crate) fn redacted(url: &url::Url) -> String {
         return url.to_string();
     }
 
-    // Both setters reject a cannot-be-a-base URL. Serializing the clone anyway
-    // would emit the credentials this function exists to remove, so fall back to
-    // the parts that cannot carry userinfo.
-    let mut redacted = url.clone();
-    if redacted.set_username("").is_err() || redacted.set_password(None).is_err() {
-        return match redacted.host_str() {
-            Some(host) => format!("{}://{host}", redacted.scheme()),
-            None => redacted.scheme().to_string(),
-        };
-    }
-    redacted.to_string()
+    // Both setters reject only a URL with no host, an empty domain, or the
+    // `file` scheme. None of those can carry userinfo, so any URL reaching here
+    // has already returned above and the discarded results cannot hide a
+    // credential.
+    let mut stripped = url.clone();
+    let _ = stripped.set_username("");
+    let _ = stripped.set_password(None);
+    stripped.to_string()
 }
 
 impl std::error::Error for ProviderError {}
@@ -227,7 +224,7 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "ws"))]
-mod redaction_tests {
+mod ws_tests {
     use super::redacted;
 
     #[test]
