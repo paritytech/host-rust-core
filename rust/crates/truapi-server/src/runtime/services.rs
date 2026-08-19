@@ -10,11 +10,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
 use crate::runtime::bulletin_rpc::BulletinRpc;
+use crate::runtime::funding::FundingRegistry;
 use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
-use truapi_platform::{JsonRpcConnection, Platform};
+use truapi_platform::{FundingPlatform, JsonRpcConnection, Platform};
 
 /// Upper bound on the in-core preimage cache. The cache is a bridge until
 /// content propagates to the lookup backend, not a store, so it stays small.
@@ -42,6 +43,13 @@ pub(crate) struct RuntimeServices {
     statement_cache: Mutex<StatementCache>,
     /// Task spawner for background runtime work.
     pub(crate) spawner: Spawner,
+    /// Host-global funding sessions. Shared rather than product-scoped: a
+    /// session opened by host UI is watched by whichever product declared the
+    /// intent.
+    pub(crate) funding: Arc<FundingRegistry>,
+    /// Host surface that presents funding sessions, when the host provides the
+    /// modality. Installed after construction, like the native chat adapter.
+    funding_platform: Mutex<Option<Arc<dyn FundingPlatform>>>,
     next_core_instance: AtomicU64,
 }
 
@@ -70,8 +78,26 @@ impl RuntimeServices {
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
             spawner,
+            funding: Arc::new(FundingRegistry::new()),
+            funding_platform: Mutex::new(None),
             next_core_instance: AtomicU64::new(1),
         })
+    }
+
+    /// Attach the host surface that presents funding sessions.
+    pub(crate) fn install_funding_platform(&self, platform: Arc<dyn FundingPlatform>) {
+        *self
+            .funding_platform
+            .lock()
+            .expect("funding platform mutex poisoned") = Some(platform);
+    }
+
+    /// The installed funding surface, if the host provides the modality.
+    pub(crate) fn funding_platform(&self) -> Option<Arc<dyn FundingPlatform>> {
+        self.funding_platform
+            .lock()
+            .expect("funding platform mutex poisoned")
+            .clone()
     }
 
     /// Allocate the next per-product-runtime id, used to scope chain follow

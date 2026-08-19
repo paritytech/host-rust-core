@@ -34,6 +34,24 @@ const SILENT_WINDOW_MS: u64 = 30 * 60 * 1_000;
 /// Window extension granted by any provider report.
 const REPORTING_WINDOW_MS: u64 = 6 * 60 * 60 * 1_000;
 
+/// The declared shape of a funding request, before a session exists.
+///
+/// Grouped rather than passed as loose arguments because these five travel
+/// together everywhere: from the intent, into the session, into the handoff.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FundingIntent {
+    /// Product that declared the intent, or empty for host UI.
+    pub owner_product_id: String,
+    /// Which way value crosses the boundary.
+    pub direction: FundingDirection,
+    /// External side the user picked.
+    pub rail: FundingRail,
+    /// Amount sought, in the session's own asset.
+    pub amount: FundingAmount,
+    /// Opaque caller context, returned verbatim on the terminal item.
+    pub resume: Option<Vec<u8>>,
+}
+
 /// What the core knows about one session, independent of any host surface.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct FundingSession {
@@ -114,6 +132,9 @@ impl FundingStage {
 /// Why a session could not accept a transition.
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 pub enum FundingSessionError {
+    /// No session with that identifier.
+    #[display("no such funding session")]
+    NotFound,
     /// The session already reached a terminal stage.
     #[display("funding session already settled")]
     AlreadySettled,
@@ -136,22 +157,14 @@ pub enum FundingSessionError {
 
 impl FundingSession {
     /// Open a session in [`FundingStage::Created`].
-    pub fn new(
-        intent: FundingIntentId,
-        owner_product_id: String,
-        direction: FundingDirection,
-        rail: FundingRail,
-        amount: FundingAmount,
-        resume: Option<Vec<u8>>,
-        now_ms: u64,
-    ) -> Self {
+    pub fn new(id: FundingIntentId, declared: FundingIntent, now_ms: u64) -> Self {
         Self {
-            intent,
-            owner_product_id,
-            direction,
-            rail,
-            amount,
-            resume,
+            intent: id,
+            owner_product_id: declared.owner_product_id,
+            direction: declared.direction,
+            rail: declared.rail,
+            amount: declared.amount,
+            resume: declared.resume,
             stage: FundingStage::Created,
             opened_at_ms: now_ms,
             deadline_ms: now_ms.saturating_add(SILENT_WINDOW_MS),
@@ -286,6 +299,24 @@ impl FundingSession {
     }
 }
 
+/// Current unix time in milliseconds. Session deadlines and the provider
+/// window are both millisecond-stamped on the wire, so the clock matches.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn current_unix_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Current unix time in milliseconds on wasm32, sourced from the JS clock.
+#[cfg(target_arch = "wasm32")]
+pub fn current_unix_millis() -> u64 {
+    js_sys::Date::now() as u64
+}
+
 /// Read every persisted session.
 pub async fn load_sessions(
     storage: &(impl CoreStorage + ?Sized),
@@ -394,11 +425,13 @@ mod tests {
     fn inbound() -> FundingSession {
         FundingSession::new(
             "fs_1".to_string(),
-            OWNER.to_string(),
-            FundingDirection::In,
-            FundingRail::BankOrCard,
-            100,
-            Some(b"cart-42".to_vec()),
+            FundingIntent {
+                owner_product_id: OWNER.to_string(),
+                direction: FundingDirection::In,
+                rail: FundingRail::BankOrCard,
+                amount: 100,
+                resume: Some(b"cart-42".to_vec()),
+            },
             NOW,
         )
     }
@@ -406,11 +439,13 @@ mod tests {
     fn outbound() -> FundingSession {
         FundingSession::new(
             "fs_2".to_string(),
-            OWNER.to_string(),
-            FundingDirection::Out,
-            FundingRail::BankOrCard,
-            250,
-            None,
+            FundingIntent {
+                owner_product_id: OWNER.to_string(),
+                direction: FundingDirection::Out,
+                rail: FundingRail::BankOrCard,
+                amount: 250,
+                resume: None,
+            },
             NOW,
         )
     }

@@ -536,6 +536,45 @@ impl HostAdmin {
             .set_permission_authorization_status(request, status)
             .await
     }
+
+    /// Attach the host surfaces that present funding and render its status.
+    #[instrument(skip_all, fields(runtime.method = "host_admin.install_funding_surfaces"))]
+    pub fn install_funding_surfaces(
+        &self,
+        platform: Arc<dyn truapi_platform::FundingPlatform>,
+        presenter: Option<Arc<dyn truapi_platform::FundingPresenter>>,
+    ) {
+        self.product_runtime
+            .install_funding_surfaces(platform, presenter);
+    }
+
+    /// Load persisted funding sessions after a cold start.
+    #[instrument(skip_all, fields(runtime.method = "host_admin.hydrate_funding"))]
+    pub async fn hydrate_funding(&self) -> Result<(), v01::GenericError> {
+        self.product_runtime.hydrate_funding().await
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::FundingAdmin for HostAdmin {
+    async fn request_funding(
+        &self,
+        direction: v01::FundingDirection,
+        rail: v01::FundingRail,
+        amount: v01::FundingAmount,
+    ) -> Result<String, v01::GenericError> {
+        self.product_runtime
+            .open_funding_for_host(direction, rail, amount)
+            .await
+    }
+
+    async fn restore_funding_session(&self, intent: String) -> Result<(), v01::GenericError> {
+        self.product_runtime.restore_funding_for_host(intent).await
+    }
+
+    async fn active_funding_sessions(&self) -> Result<Vec<String>, v01::GenericError> {
+        self.product_runtime.active_funding_for_host().await
+    }
 }
 
 #[truapi_platform::async_trait]

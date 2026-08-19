@@ -14,6 +14,8 @@ mod authority;
 /// In-core Bulletin preimage submission over the shared Subxt client.
 pub(crate) mod bulletin_rpc;
 mod chat;
+/// Host-global registry of funding sessions and their subscribers.
+pub(crate) mod funding;
 mod identity;
 mod pairing_host;
 /// Role-neutral runtime services shared by product-facing runtimes.
@@ -72,6 +74,7 @@ use authority::{
     SignRawAuthorityRequest,
 };
 
+use crate::host_logic::funding::{FundingIntent, current_unix_millis};
 use futures::{FutureExt, StreamExt, pin_mut};
 #[cfg(test)]
 use parity_scale_codec::Encode;
@@ -116,6 +119,17 @@ use truapi::versioned::chat::{
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
+};
+use truapi::versioned::funding::{
+    HostFundingError as VersionedHostFundingError,
+    HostFundingReportRequest as VersionedHostFundingReportRequest,
+    HostFundingReportResponse as VersionedHostFundingReportResponse,
+    HostFundingRequest as VersionedHostFundingRequest,
+    HostFundingResponse as VersionedHostFundingResponse,
+    HostFundingServingError as VersionedHostFundingServingError,
+    HostFundingSessionError as VersionedHostFundingSessionError,
+    HostFundingStatusSubscribeItem as VersionedHostFundingStatusSubscribeItem,
+    HostFundingStatusSubscribeRequest as VersionedHostFundingStatusSubscribeRequest,
 };
 use truapi::versioned::local_storage::{
     HostLocalStorageClearError, HostLocalStorageClearRequest, HostLocalStorageClearResponse,
@@ -1922,6 +1936,110 @@ impl ProductRuntimeHost {
     pub(crate) fn detach_chat(&self) {
         self.chat.detach();
     }
+
+    /// Attach the host surfaces that present funding and render its status.
+    pub(crate) fn install_funding_surfaces(
+        &self,
+        platform: Arc<dyn truapi_platform::FundingPlatform>,
+        presenter: Option<Arc<dyn truapi_platform::FundingPresenter>>,
+    ) {
+        self.services.install_funding_platform(platform);
+        if let Some(presenter) = presenter {
+            self.services.funding.install_presenter(presenter);
+        }
+    }
+
+    /// Load persisted funding sessions, expiring any that outlived their
+    /// deadline while the app was not running.
+    pub(crate) async fn hydrate_funding(&self) -> Result<(), v01::GenericError> {
+        self.services
+            .funding
+            .hydrate(self.platform.as_ref(), current_unix_millis())
+            .await
+            .map_err(funding_generic_error)
+    }
+
+    /// Open a session on the host's own behalf, from the balance card rather
+    /// than from a product.
+    pub(crate) async fn open_funding_for_host(
+        &self,
+        direction: v01::FundingDirection,
+        rail: v01::FundingRail,
+        amount: v01::FundingAmount,
+    ) -> Result<String, v01::GenericError> {
+        let platform = self
+            .services
+            .funding_platform()
+            .ok_or_else(|| v01::GenericError {
+                reason: "host does not provide the funding modality".to_string(),
+            })?;
+        let session = self
+            .services
+            .funding
+            .open(
+                self.platform.as_ref(),
+                FundingIntent {
+                    // Host UI is not a product, so no `resume` context exists
+                    // and none is disclosed on the terminal item.
+                    owner_product_id: String::new(),
+                    direction,
+                    rail,
+                    amount,
+                    resume: None,
+                },
+                current_unix_millis(),
+            )
+            .await
+            .map_err(funding_generic_error)?;
+        platform.present_funding(session.intent.clone()).await?;
+        Ok(session.intent)
+    }
+
+    /// Re-present a session the user left, reading current status from the core
+    /// rather than from anything the dismissed surface held.
+    pub(crate) async fn restore_funding_for_host(
+        &self,
+        intent: String,
+    ) -> Result<(), v01::GenericError> {
+        let platform = self
+            .services
+            .funding_platform()
+            .ok_or_else(|| v01::GenericError {
+                reason: "host does not provide the funding modality".to_string(),
+            })?;
+        if self.services.funding.get(&intent).is_none() {
+            return Err(v01::GenericError {
+                reason: "no such funding session".to_string(),
+            });
+        }
+        platform.present_funding(intent).await
+    }
+
+    /// Sessions still in flight, sweeping any that fell due first so host UI
+    /// never rebuilds a pill for a session that has already timed out.
+    pub(crate) async fn active_funding_for_host(&self) -> Result<Vec<String>, v01::GenericError> {
+        let now = current_unix_millis();
+        self.services
+            .funding
+            .expire_due(self.platform.as_ref(), now)
+            .await
+            .map_err(funding_generic_error)?;
+        Ok(self
+            .services
+            .funding
+            .active()
+            .into_iter()
+            .map(|session| session.intent)
+            .collect())
+    }
+}
+
+fn funding_generic_error(
+    error: crate::host_logic::funding::FundingSessionError,
+) -> v01::GenericError {
+    v01::GenericError {
+        reason: error.to_string(),
+    }
 }
 
 #[truapi_platform::async_trait]
@@ -1982,7 +2100,135 @@ impl Chat for ProductRuntimeHost {
 #[truapi::async_trait]
 impl CoinPayment for ProductRuntimeHost {}
 #[truapi::async_trait]
-impl Funding for ProductRuntimeHost {}
+impl Funding for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "funding.request"))]
+    async fn request(
+        &self,
+        _cx: &CallContext,
+        request: VersionedHostFundingRequest,
+    ) -> Result<VersionedHostFundingResponse, CallError<VersionedHostFundingError>> {
+        let VersionedHostFundingRequest::V1(request) = request;
+        let platform = self
+            .services
+            .funding_platform()
+            .ok_or(CallError::Unsupported)?;
+
+        // The rail is chosen on the host surface, not by the caller: which
+        // rails exist in the user's market is host knowledge, so an intent
+        // opens without one and the sheet fills it in.
+        let session = self
+            .services
+            .funding
+            .open(
+                self.platform.as_ref(),
+                FundingIntent {
+                    owner_product_id: self.product.product_id.clone(),
+                    direction: request.direction,
+                    rail: v01::FundingRail::ExternalWallet,
+                    amount: request.amount.unwrap_or_default(),
+                    resume: request.resume,
+                },
+                current_unix_millis(),
+            )
+            .await
+            .map_err(funding_request_error)?;
+
+        platform
+            .present_funding(session.intent.clone())
+            .await
+            .map_err(|error| {
+                CallError::Domain(VersionedHostFundingError::V1(
+                    v01::HostFundingError::Unknown {
+                        reason: error.reason,
+                    },
+                ))
+            })?;
+
+        Ok(VersionedHostFundingResponse::V1(v01::HostFundingResponse {
+            intent: session.intent,
+        }))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "funding.status_subscribe"))]
+    async fn status_subscribe(
+        &self,
+        _cx: &CallContext,
+        request: VersionedHostFundingStatusSubscribeRequest,
+    ) -> Result<
+        Subscription<VersionedHostFundingStatusSubscribeItem>,
+        CallError<VersionedHostFundingSessionError>,
+    > {
+        let VersionedHostFundingStatusSubscribeRequest::V1(request) = request;
+        let stream = self
+            .services
+            .funding
+            .subscribe(&request.intent, &self.product.product_id)
+            .ok_or_else(|| {
+                CallError::Domain(VersionedHostFundingSessionError::V1(
+                    v01::HostFundingSessionError::NotFound,
+                ))
+            })?;
+        Ok(Subscription::new(Box::pin(
+            stream.map(VersionedHostFundingStatusSubscribeItem::V1),
+        )))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "funding.report"))]
+    async fn report(
+        &self,
+        _cx: &CallContext,
+        request: VersionedHostFundingReportRequest,
+    ) -> Result<VersionedHostFundingReportResponse, CallError<VersionedHostFundingServingError>>
+    {
+        let VersionedHostFundingReportRequest::V1(report) = request;
+        let intent = funding_report_intent(&report).to_string();
+        self.services
+            .funding
+            .mutate(self.platform.as_ref(), &intent, |session| {
+                session.apply_report(&report)
+            })
+            .await
+            .map_err(funding_serving_error)?;
+        Ok(VersionedHostFundingReportResponse::V1)
+    }
+}
+
+/// Session id a provider report addresses.
+fn funding_report_intent(report: &v01::HostFundingReportRequest) -> &str {
+    match report {
+        v01::HostFundingReportRequest::SettlementTarget { intent, .. }
+        | v01::HostFundingReportRequest::InProgress { intent, .. }
+        | v01::HostFundingReportRequest::Deposited { intent }
+        | v01::HostFundingReportRequest::Bridging { intent }
+        | v01::HostFundingReportRequest::Sent { intent }
+        | v01::HostFundingReportRequest::Failed { intent, .. } => intent,
+    }
+}
+
+fn funding_request_error(
+    error: crate::host_logic::funding::FundingSessionError,
+) -> CallError<VersionedHostFundingError> {
+    CallError::Domain(VersionedHostFundingError::V1(
+        v01::HostFundingError::Unknown {
+            reason: error.to_string(),
+        },
+    ))
+}
+
+fn funding_serving_error(
+    error: crate::host_logic::funding::FundingSessionError,
+) -> CallError<VersionedHostFundingServingError> {
+    use crate::host_logic::funding::FundingSessionError as Session;
+
+    CallError::Domain(VersionedHostFundingServingError::V1(match error {
+        Session::NotFound => v01::HostFundingServingError::NotAssigned,
+        Session::AlreadySettled => v01::HostFundingServingError::AlreadySettled,
+        Session::WrongDirection => v01::HostFundingServingError::OutOfOrder,
+        other => v01::HostFundingServingError::Unknown {
+            reason: other.to_string(),
+        },
+    }))
+}
 #[truapi::async_trait]
 impl Payment for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "payment.balance_subscribe"))]
