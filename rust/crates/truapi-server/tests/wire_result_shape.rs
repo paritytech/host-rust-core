@@ -497,3 +497,27 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         "stopped subscription must emit no further frames"
     );
 }
+
+/// Coin Payment answers `Unsupported` rather than the trait default's
+/// `HostFailure`, which a product's retry logic reads as transient.
+#[test]
+fn coin_payment_request_reports_unsupported_on_the_wire() {
+    let core = make_core();
+    let request = truapi::versioned::coin_payment::HostCoinPaymentQueryPurseRequest::V1(
+        v01::HostCoinPaymentQueryPurseRequest {
+            purse: v01::MAIN_PURSE,
+        },
+    );
+    let ids = request_ids("coin_payment_query_purse").expect("known request method");
+    let frame = ProtocolMessage {
+        request_id: "p:coin".into(),
+        payload: Payload {
+            id: ids.request_id,
+            value: request.encode(),
+        },
+    };
+    let response = dispatch(&core, frame);
+    assert_eq!(response.payload.id, ids.response_id);
+    // [V1 disc=0x00][Err disc=0x01][CallError::Unsupported=0x02], and nothing more.
+    assert_eq!(response.payload.value, vec![0x00u8, 0x01u8, 0x02u8]);
+}

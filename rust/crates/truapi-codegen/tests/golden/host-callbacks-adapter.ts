@@ -11,6 +11,8 @@ import {
   HostChatListSubscribeItem,
   HostChatPostMessageRequest,
   HostChatPostMessageResponse,
+  HostChatRegisterBotRequest,
+  HostChatRegisterBotResponse,
   HostDevicePermissionRequest,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
@@ -43,6 +45,10 @@ export interface RawCallbacks {
   authStateChanged(state: Uint8Array): void;
   chainConnect: ChainConnect;
   createChatRoom?(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  registerChatBot?(
     product: Uint8Array,
     request: Uint8Array,
   ): Promise<Uint8Array>;
@@ -96,6 +102,13 @@ export function createWasmRawCallbacks(
               await chat.createChatRoom(
                 ProductContext.dec(product),
                 HostChatCreateRoomRequest.dec(request),
+              ),
+            ),
+          registerChatBot: async (product, request) =>
+            HostChatRegisterBotResponse.enc(
+              await chat.registerChatBot(
+                ProductContext.dec(product),
+                HostChatRegisterBotRequest.dec(request),
               ),
             ),
           postChatMessage: async (product, request) =>

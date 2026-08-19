@@ -420,7 +420,7 @@ pub(super) fn statement_subscription_stream(
 }
 
 /// Fresh opaque message id for one SSO request.
-pub(super) fn sso_message_id() -> String {
+pub(crate) fn sso_message_id() -> String {
     nanoid::nanoid!(8)
 }
 

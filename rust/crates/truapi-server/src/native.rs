@@ -30,9 +30,14 @@ use truapi_platform::{
 use crate::SigningHostRuntime;
 use crate::host_logic::dotns;
 pub use crate::host_logic::dotns::NavigateDecision;
+use crate::host_logic::sso::messages::{
+    RemoteMessage, RemoteMessageData, SsoRequestOutcome as CoreSsoRequestOutcome,
+    decode_remote_message, v1,
+};
 #[cfg(feature = "ws-bridge")]
 use crate::native_renderer::observe_renderer;
 use crate::native_renderer::{NativeCustomRendererObserver, NativeCustomRendererSubscription};
+use crate::runtime::sso_remote::sso_message_id;
 use crate::subscription::Spawner;
 #[cfg(feature = "ws-bridge")]
 use crate::ws_bridge::{BridgeLogger, WsBridge, WsBridgeEndpoint, WsBridgeStartError};
@@ -116,6 +121,28 @@ pub enum NativePairingDeeplinkScheme {
     PolkadotApp,
     /// Development Polkadot app.
     PolkadotAppDev,
+}
+
+/// FFI projection of the canonical
+/// [`SsoRequestOutcome`](crate::host_logic::sso::messages::SsoRequestOutcome),
+/// concrete because UniFFI cannot export generics.
+///
+/// Variants carry SCALE-encoded wire bytes rather than decoded Rust types because
+/// the wallet forwards encodings verbatim and never constructs them — the opaque
+/// bytes are the correct boundary representation here.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SsoRequestOutcome {
+    /// SCALE-encoded response to post back over the session.
+    Response {
+        /// SCALE-encoded `RemoteMessage` response ready to submit over the
+        /// session statement store.
+        message: Vec<u8>,
+    },
+    /// The peer ended the session; the wallet tears down its transport and
+    /// records (host entry, device record, device-removed broadcast).
+    Disconnected,
+    /// Not a request; nothing to post.
+    Ignored,
 }
 
 /// Native runtime configuration supplied before product calls are handled.
@@ -489,8 +516,8 @@ pub trait HostCallbacks: Send + Sync {
 /// Native Chat storage and UI adapter. Hosts that support the Chat modality
 /// pass an implementation to
 /// [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
-/// simply pass `None`. Callbacks run inline on the dispatcher thread and must
-/// return promptly without blocking.
+/// simply pass `None`. Callbacks run inline on the process-wide dispatch pool
+/// shared by every product execution, so one that blocks stalls the others.
 #[uniffi::export(rust, foreign)]
 pub trait NativeChatCallbacks: Send + Sync {
     /// Create or resolve a native product Chat room.
@@ -500,6 +527,14 @@ pub trait NativeChatCallbacks: Send + Sync {
         name: String,
         icon: String,
     ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection>;
+
+    /// Register or resolve a native product Chat bot.
+    fn register_bot(
+        &self,
+        bot_id: String,
+        name: String,
+        icon: String,
+    ) -> Result<v01::ChatBotRegistrationStatus, HostRejection>;
 
     /// Persist a text message in native Chat storage.
     fn post_text_message(&self, room_id: String, text: String) -> Result<String, HostRejection>;
@@ -793,6 +828,43 @@ impl NativeTrUApiHostRuntime {
                 .activate_local_session_with_identity(secret, lite_username),
         )
         .map_err(Into::into)
+    }
+
+    /// Answer one decrypted SSO remote message from a wallet-managed
+    /// statement-store session.
+    ///
+    /// `message` is one SCALE-encoded `RemoteMessage` exactly as decrypted from
+    /// the session statement. The bytes are deliberately opaque at this
+    /// boundary: the wallet forwards wire encodings verbatim and never
+    /// constructs them. Session control and transport stay with the wallet —
+    /// `Disconnected` is reported, never handled here. Confirmation-gated
+    /// requests await `confirm_user_action`, so this can take arbitrarily long.
+    pub async fn handle_sso_request(
+        &self,
+        message: Vec<u8>,
+    ) -> Result<SsoRequestOutcome, HostRejection> {
+        let message =
+            decode_remote_message(&message).map_err(|reason| HostRejection::Rejected { reason })?;
+        Ok(match self.runtime.answer_sso_request(message).await {
+            CoreSsoRequestOutcome::Response(response) => SsoRequestOutcome::Response {
+                message: response.encode(),
+            },
+            CoreSsoRequestOutcome::Disconnected => SsoRequestOutcome::Disconnected,
+            CoreSsoRequestOutcome::Ignored => SsoRequestOutcome::Ignored,
+        })
+    }
+
+    /// Build the SCALE-encoded `Disconnected` message a wallet posts over a
+    /// session it is ending. Each call carries a fresh opaque message id,
+    /// like every outgoing SSO message; receivers detect disconnect by
+    /// message variant, not id. Posting and record cleanup stay with the
+    /// wallet.
+    pub fn prepare_disconnect_request(&self) -> Vec<u8> {
+        RemoteMessage {
+            message_id: sso_message_id(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+        }
+        .encode()
     }
 
     /// Notify the shared chain adapter of one JSON-RPC response.
@@ -1767,6 +1839,23 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         Ok(v01::HostChatCreateRoomResponse { status })
     }
 
+    async fn register_chat_bot(
+        &self,
+        _product: &ProductContext,
+        request: v01::HostChatRegisterBotRequest,
+    ) -> Result<v01::HostChatRegisterBotResponse, v01::HostChatRegisterBotError> {
+        let status = self
+            .chat
+            .register_bot(request.bot_id, request.name, request.icon)
+            .map_err(|error| v01::HostChatRegisterBotError::Unknown {
+                reason: error.to_string(),
+            })?;
+
+        // No room-list republish: a bot identity is not a room. A host that
+        // joins the bot to one signals that via `notify_chat_rooms_changed`.
+        Ok(v01::HostChatRegisterBotResponse { status })
+    }
+
     async fn post_chat_message(
         &self,
         _product: &ProductContext,
@@ -1907,7 +1996,10 @@ mod tests {
 
     struct EventCallbacks {
         chat_room_status: Mutex<v01::ChatRoomRegistrationStatus>,
-        chat_created_rooms: Mutex<Vec<String>>,
+        chat_created_rooms: Mutex<Vec<(String, String, String)>>,
+        chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
+        chat_registered_bots: Mutex<Vec<(String, String, String)>>,
+        chat_bot_rejection: Mutex<Option<String>>,
         chat_posted_text: Mutex<Vec<(String, String)>>,
         theme: Mutex<v01::HostThemeSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
@@ -1923,6 +2015,9 @@ mod tests {
             Self {
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
                 chat_created_rooms: Mutex::new(Vec::new()),
+                chat_bot_status: Mutex::new(v01::ChatBotRegistrationStatus::New),
+                chat_registered_bots: Mutex::new(Vec::new()),
+                chat_bot_rejection: Mutex::new(None),
                 chat_posted_text: Mutex::new(Vec::new()),
                 theme: Mutex::new(v01::HostThemeSubscribeItem {
                     name: v01::ThemeName::Default,
@@ -2050,17 +2145,41 @@ mod tests {
         fn create_room(
             &self,
             room_id: String,
-            _name: String,
-            _icon: String,
+            name: String,
+            icon: String,
         ) -> Result<v01::ChatRoomRegistrationStatus, HostRejection> {
             self.chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
-                .push(room_id);
+                .push((room_id, name, icon));
             Ok(*self
                 .chat_room_status
                 .lock()
                 .expect("room status mutex poisoned"))
+        }
+
+        fn register_bot(
+            &self,
+            bot_id: String,
+            name: String,
+            icon: String,
+        ) -> Result<v01::ChatBotRegistrationStatus, HostRejection> {
+            if let Some(reason) = self
+                .chat_bot_rejection
+                .lock()
+                .expect("bot rejection mutex poisoned")
+                .clone()
+            {
+                return Err(HostRejection::Rejected { reason });
+            }
+            self.chat_registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .push((bot_id, name, icon));
+            Ok(*self
+                .chat_bot_status
+                .lock()
+                .expect("bot status mutex poisoned"))
         }
 
         fn post_text_message(
@@ -2085,11 +2204,13 @@ mod tests {
         }
 
         fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
-            let mut room_ids = self
+            let mut room_ids: Vec<String> = self
                 .chat_created_rooms
                 .lock()
                 .expect("created rooms mutex poisoned")
-                .clone();
+                .iter()
+                .map(|(room_id, _, _)| room_id.clone())
+                .collect();
             room_ids.sort();
             room_ids.dedup();
             Ok(room_ids
@@ -2387,6 +2508,189 @@ mod tests {
     }
 
     #[test]
+    fn native_chat_adapter_rejects_the_message_variants_it_cannot_persist() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: Arc::new(NativeEventBus::default()),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        let reaction = v01::ChatReaction {
+            message_id: "message-1".to_string(),
+            emoji: "🎲".to_string(),
+        };
+        // `NativeChatCallbacks` persists text and custom messages only; the
+        // rest must surface a typed error rather than be dropped.
+        let unsupported = [
+            v01::ChatMessageContent::RichText(v01::ChatRichText {
+                text: None,
+                media: Vec::new(),
+            }),
+            v01::ChatMessageContent::Actions(v01::ChatActions {
+                text: None,
+                actions: Vec::new(),
+                layout: v01::ChatActionLayout::Column,
+            }),
+            v01::ChatMessageContent::File(v01::ChatFile {
+                url: "https://example.invalid/f".to_string(),
+                file_name: "f".to_string(),
+                mime_type: "text/plain".to_string(),
+                size_bytes: 1,
+                text: None,
+            }),
+            v01::ChatMessageContent::Reaction(reaction.clone()),
+            v01::ChatMessageContent::ReactionRemoved(reaction),
+        ];
+
+        for payload in unsupported {
+            let error =
+                futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+                    &platform,
+                    &product,
+                    v01::HostChatPostMessageRequest {
+                        room_id: "support".to_string(),
+                        payload: payload.clone(),
+                    },
+                ))
+                .expect_err("the native adapter cannot persist this variant");
+            assert!(
+                matches!(error, v01::HostChatPostMessageError::Unknown { .. }),
+                "{payload:?} must report a typed error"
+            );
+        }
+
+        assert!(
+            callbacks
+                .chat_posted_text
+                .lock()
+                .expect("posted text mutex poisoned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_chat_adapter_surfaces_a_bot_registration_rejection() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: Arc::new(NativeEventBus::default()),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        *callbacks
+            .chat_bot_rejection
+            .lock()
+            .expect("bot rejection mutex poisoned") = Some("keychain locked".to_string());
+
+        let error = futures::executor::block_on(truapi_platform::ChatPlatform::register_chat_bot(
+            &platform,
+            &product,
+            v01::HostChatRegisterBotRequest {
+                bot_id: "flipper".to_string(),
+                name: "Flipper".to_string(),
+                icon: String::new(),
+            },
+        ))
+        .expect_err("a host rejection must not be reported as a successful registration");
+
+        // A swallowed rejection would reach the product as `New` for a bot
+        // that does not exist.
+        assert_eq!(
+            error,
+            v01::HostChatRegisterBotError::Unknown {
+                reason: "keychain locked".to_string(),
+            }
+        );
+        assert!(
+            callbacks
+                .chat_registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_chat_adapter_preserves_bot_status_and_leaves_rooms_alone() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let events = Arc::new(NativeEventBus::default());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: events.clone(),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        let request = v01::HostChatRegisterBotRequest {
+            bot_id: "flipper".to_string(),
+            name: "Flipper".to_string(),
+            icon: String::new(),
+        };
+
+        let mut rooms = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
+        assert!(
+            futures::executor::block_on(rooms.next())
+                .expect("initial room list")
+                .expect("room list is not an error")
+                .rooms
+                .is_empty()
+        );
+
+        let registered = futures::executor::block_on(
+            truapi_platform::ChatPlatform::register_chat_bot(&platform, &product, request.clone()),
+        )
+        .unwrap();
+
+        *callbacks
+            .chat_bot_status
+            .lock()
+            .expect("bot status mutex poisoned") = v01::ChatBotRegistrationStatus::Exists;
+        let existing = futures::executor::block_on(
+            truapi_platform::ChatPlatform::register_chat_bot(&platform, &product, request),
+        )
+        .unwrap();
+
+        assert_eq!(registered.status, v01::ChatBotRegistrationStatus::New);
+        assert_eq!(existing.status, v01::ChatBotRegistrationStatus::Exists);
+        assert_eq!(
+            callbacks
+                .chat_registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .as_slice(),
+            &[
+                ("flipper".to_string(), "Flipper".to_string(), String::new()),
+                ("flipper".to_string(), "Flipper".to_string(), String::new()),
+            ]
+        );
+
+        // Registering a bot is not a room change. Polled without blocking so an
+        // unexpected replacement fails instead of parking on a live sender.
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        assert!(matches!(
+            rooms.as_mut().poll_next(&mut cx),
+            core::task::Poll::Pending
+        ));
+
+        // Still live for genuine room changes.
+        events.notify_chat_rooms_changed(vec![v01::ChatRoom {
+            room_id: "support".to_string(),
+            participating_as: v01::ChatRoomParticipation::Bot,
+        }]);
+        assert_eq!(
+            futures::executor::block_on(rooms.next())
+                .expect("genuine room change")
+                .expect("room list is not an error")
+                .rooms
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn native_chat_adapter_preserves_room_status_and_message_room() {
         let callbacks = Arc::new(EventCallbacks::new());
         let platform = ChatCallbackPlatform {
@@ -2450,7 +2754,10 @@ mod tests {
                 .lock()
                 .expect("created rooms mutex poisoned")
                 .as_slice(),
-            &["support", "support"]
+            &[
+                ("support".to_string(), "Support".to_string(), String::new()),
+                ("support".to_string(), "Support".to_string(), String::new()),
+            ]
         );
         assert_eq!(
             callbacks
@@ -2971,6 +3278,95 @@ mod tests {
         assert_eq!(permission_response.payload.value, vec![0x00, 0x00, 0x01]);
 
         core.stop_ws_bridge();
+    }
+
+    fn native_host_runtime_no_session() -> Arc<NativeTrUApiHostRuntime> {
+        let mut config = native_host_runtime_config();
+        config.local_session_secret = None;
+        config.local_session_lite_username = None;
+        NativeTrUApiHostRuntime::with_runtime_config(Arc::new(EventCallbacks::new()), config)
+            .expect("host runtime config should be valid")
+    }
+
+    #[test]
+    fn handle_sso_request_rejects_undecodable_bytes() {
+        let runtime = native_host_runtime_no_session();
+        let result =
+            futures::executor::block_on(runtime.handle_sso_request(vec![0xFF, 0xFF, 0xFF]));
+        assert!(result.is_err(), "garbage bytes must be a decode error");
+    }
+
+    #[test]
+    fn handle_sso_request_reports_disconnect_as_marker() {
+        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
+        use parity_scale_codec::Encode;
+        let runtime = native_host_runtime_no_session();
+        let disconnected = RemoteMessage {
+            message_id: "m1".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+        };
+        let outcome =
+            futures::executor::block_on(runtime.handle_sso_request(disconnected.encode()))
+                .expect("decodable message");
+        assert!(matches!(outcome, SsoRequestOutcome::Disconnected));
+    }
+
+    #[test]
+    fn handle_sso_request_reencodes_a_request_response() {
+        use crate::host_logic::sso::messages::{
+            ProductSubtreeRequest, RemoteMessage, RemoteMessageData, v1,
+        };
+        use parity_scale_codec::{Decode, Encode};
+        // The default test config carries a local session secret, so the
+        // runtime is activated at construction.
+        let runtime = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let request = RemoteMessage {
+            message_id: "m9".to_string(),
+            data: RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeRequest(
+                ProductSubtreeRequest {
+                    product_id: "browse.dot".to_string(),
+                },
+            )),
+        };
+        let outcome = futures::executor::block_on(runtime.handle_sso_request(request.encode()))
+            .expect("decodable message");
+        let SsoRequestOutcome::Response { message } = outcome else {
+            panic!("expected a response outcome");
+        };
+        let response =
+            RemoteMessage::decode(&mut message.as_slice()).expect("valid response encoding");
+        assert_eq!(response.message_id, "m9:response");
+        let RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(payload)) =
+            response.data
+        else {
+            panic!("expected a product subtree response payload");
+        };
+        assert_eq!(payload.responding_to, "m9");
+        assert!(payload.product_public_key.is_ok());
+    }
+
+    #[test]
+    fn prepare_disconnect_request_round_trips_with_fresh_ids() {
+        use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, v1};
+        use parity_scale_codec::Decode;
+        let runtime = native_host_runtime_no_session();
+        let bytes = runtime.prepare_disconnect_request();
+        let message = RemoteMessage::decode(&mut bytes.as_slice()).expect("valid encoding");
+        assert_eq!(message.message_id.len(), 8, "opaque nanoid message id");
+        assert!(matches!(
+            message.data,
+            RemoteMessageData::V1(v1::RemoteMessage::Disconnected)
+        ));
+        let second = RemoteMessage::decode(&mut runtime.prepare_disconnect_request().as_slice())
+            .expect("valid encoding");
+        assert_ne!(
+            message.message_id, second.message_id,
+            "each disconnect message carries its own id"
+        );
     }
 
     #[test]

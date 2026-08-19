@@ -29,6 +29,7 @@ pub(super) struct JsBridge {
     pub(super) auth_state_changed: Function,
     pub(super) chain_connect: Function,
     pub(super) create_chat_room: Function,
+    pub(super) register_chat_bot: Function,
     pub(super) post_chat_message: Function,
     pub(super) subscribe_chat_rooms: Function,
     pub(super) read_core_storage: Function,
@@ -57,6 +58,8 @@ impl JsBridge {
             chain_connect: get_function(callbacks, "chainConnect")?,
             create_chat_room: get_optional_function(callbacks, "createChatRoom")?
                 .unwrap_or_else(|| missing_callback("createChatRoom")),
+            register_chat_bot: get_optional_function(callbacks, "registerChatBot")?
+                .unwrap_or_else(|| missing_callback("registerChatBot")),
             post_chat_message: get_optional_function(callbacks, "postChatMessage")?
                 .unwrap_or_else(|| missing_callback("postChatMessage")),
             subscribe_chat_rooms: get_optional_function(callbacks, "subscribeChatRooms")?
@@ -78,6 +81,7 @@ impl JsBridge {
             subscribe_theme: get_function(callbacks, "subscribeTheme")?,
             confirm_user_action: get_function(callbacks, "confirmUserAction")?,
             chat_present: get_optional_function(callbacks, "createChatRoom")?.is_some()
+                && get_optional_function(callbacks, "registerChatBot")?.is_some()
                 && get_optional_function(callbacks, "postChatMessage")?.is_some()
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
         })
@@ -121,6 +125,27 @@ impl truapi_platform::ChatPlatform for WasmPlatform {
             "createChatRoom response did not decode",
         )
         .map_err(|reason| v01::HostChatCreateRoomError::Unknown { reason })
+    }
+
+    async fn register_chat_bot(
+        &self,
+        product: &truapi_platform::ProductContext,
+        request: v01::HostChatRegisterBotRequest,
+    ) -> Result<v01::HostChatRegisterBotResponse, v01::HostChatRegisterBotError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.register_chat_bot,
+            vec![
+                Uint8Array::from(product.encode().as_slice()).into(),
+                Uint8Array::from(request.encode().as_slice()).into(),
+            ],
+        )
+        .await
+        .map_err(|reason| v01::HostChatRegisterBotError::Unknown { reason })?;
+        decode_bytes::<v01::HostChatRegisterBotResponse>(
+            bytes,
+            "registerChatBot response did not decode",
+        )
+        .map_err(|reason| v01::HostChatRegisterBotError::Unknown { reason })
     }
 
     async fn post_chat_message(

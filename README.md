@@ -88,6 +88,12 @@ container bundle (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
+On iOS, a wallet host that manages its own statement-store SSO session can call
+`handleSsoRequest` (routes one decrypted remote message through the core,
+returning a typed outcome: response bytes to post back, a disconnect marker, or
+ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
+for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
+session-record cleanup remain on the wallet side.
 
 ### JS Host SDKs
 
@@ -200,7 +206,9 @@ does not provision or pair a signer-bot user.
 
 To exercise the shared-core Chat path with the first-party TrUAPI Playground
 worker, build and serve the local product, install its worker into the
-simulator app's product storage, and open its native Chat application:
+simulator app's product storage, and open its native Chat application. The
+worker drives all six Chat methods, so a host without bot registration reports
+that row red:
 
 ```bash
 make ios-chat-run
