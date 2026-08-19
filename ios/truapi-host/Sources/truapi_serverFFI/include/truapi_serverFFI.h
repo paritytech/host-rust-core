@@ -406,21 +406,28 @@ typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod0)(uint64_t, Rust
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD1
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD1
-typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod1)(uint64_t, RustBuffer, RustBuffer, RustBuffer* _Nonnull,
+typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod1)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD2
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD2
-typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod2)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull,
+typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod2)(uint64_t, RustBuffer, RustBuffer, RustBuffer* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD3
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD3
-typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod3)(uint64_t, RustBuffer* _Nonnull,
+typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod3)(uint64_t, RustBuffer, RustBuffer, RustBuffer, RustBuffer* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD4
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CHAT_CALLBACKS_METHOD4
+typedef void (*UniffiCallbackInterfaceNativeChatCallbacksMethod4)(uint64_t, RustBuffer* _Nonnull,
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -470,9 +477,10 @@ typedef struct UniffiVTableCallbackInterfaceNativeChatCallbacks {
     UniffiCallbackInterfaceFree _Nonnull uniffiFree;
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceNativeChatCallbacksMethod0 _Nonnull createRoom;
-    UniffiCallbackInterfaceNativeChatCallbacksMethod1 _Nonnull postTextMessage;
-    UniffiCallbackInterfaceNativeChatCallbacksMethod2 _Nonnull postCustomMessage;
-    UniffiCallbackInterfaceNativeChatCallbacksMethod3 _Nonnull listRooms;
+    UniffiCallbackInterfaceNativeChatCallbacksMethod1 _Nonnull registerBot;
+    UniffiCallbackInterfaceNativeChatCallbacksMethod2 _Nonnull postTextMessage;
+    UniffiCallbackInterfaceNativeChatCallbacksMethod3 _Nonnull postCustomMessage;
+    UniffiCallbackInterfaceNativeChatCallbacksMethod4 _Nonnull listRooms;
 } UniffiVTableCallbackInterfaceNativeChatCallbacks;
 
 #endif
@@ -614,6 +622,11 @@ void uniffi_truapi_server_fn_init_callback_vtable_nativechatcallbacks(const Unif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVECHATCALLBACKS_CREATE_ROOM
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVECHATCALLBACKS_CREATE_ROOM
 RustBuffer uniffi_truapi_server_fn_method_nativechatcallbacks_create_room(uint64_t ptr, RustBuffer room_id, RustBuffer name, RustBuffer icon, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVECHATCALLBACKS_REGISTER_BOT
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVECHATCALLBACKS_REGISTER_BOT
+RustBuffer uniffi_truapi_server_fn_method_nativechatcallbacks_register_bot(uint64_t ptr, RustBuffer bot_id, RustBuffer name, RustBuffer icon, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_FN_METHOD_NATIVECHATCALLBACKS_POST_TEXT_MESSAGE
@@ -1322,6 +1335,12 @@ uint16_t uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear(
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECHATCALLBACKS_CREATE_ROOM
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECHATCALLBACKS_CREATE_ROOM
 uint16_t uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECHATCALLBACKS_REGISTER_BOT
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECHATCALLBACKS_REGISTER_BOT
+uint16_t uniffi_truapi_server_checksum_method_nativechatcallbacks_register_bot(void
 
 );
 #endif

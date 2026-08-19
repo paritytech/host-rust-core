@@ -4,8 +4,10 @@ import {
   type DiagnosisResult,
 } from "../shared/diagnosis";
 
+/** Pinned against the generated service metadata by `chat-diagnosis.test.ts`. */
 export const CHAT_DIAGNOSIS_METHODS = [
   "Chat/create_room",
+  "Chat/register_bot",
   "Chat/list_subscribe",
   "Chat/post_message",
   "Chat/action_subscribe",

@@ -1101,6 +1101,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_filter_denies_chat_register_bot_on_spa_connection() {
+        let sink = Arc::new(RecordingSink::default());
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            sink.clone(),
+        );
+        let ids = crate::frame::request_ids("chat_register_bot").expect("known Chat request");
+        let request = truapi::versioned::chat::HostChatRegisterBotRequest::V1(
+            v01::HostChatRegisterBotRequest {
+                bot_id: "bot".into(),
+                name: "Bot".into(),
+                icon: String::new(),
+            },
+        );
+        let frame = ProtocolMessage {
+            request_id: "chat:bot".into(),
+            payload: Payload {
+                id: ids.request_id,
+                value: request.encode(),
+            },
+        };
+
+        futures::executor::block_on(runtime.receive_frame(frame.encode())).unwrap();
+
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
+        assert_eq!(response.payload.id, ids.response_id);
+        let expected = crate::frame::encode_versioned_err_payload(
+            truapi::CallError::<truapi::versioned::chat::HostChatRegisterBotError>::Denied,
+            1,
+        );
+        assert_eq!(response.payload.value, expected);
+    }
+
+    #[test]
     fn generated_filter_denies_chat_subscription_on_spa_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
