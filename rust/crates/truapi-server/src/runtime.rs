@@ -2177,6 +2177,16 @@ impl ProductRuntimeHost {
     pub(crate) fn detach_chat(&self) {
         self.chat.detach();
     }
+
+    /// Buffer one host-authored Chat action for this connection's product,
+    /// behind the same access policy as every other Chat entry point.
+    pub(crate) fn publish_chat_action(
+        &self,
+        action: truapi::versioned::chat::HostChatActionSubscribeItem,
+    ) -> Result<(), crate::host_core::ProductRuntimeError> {
+        self.native_chat_platform()?;
+        self.chat.publish_action(action)
+    }
 }
 
 #[truapi_platform::async_trait]
@@ -3013,7 +3023,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();
@@ -3096,7 +3106,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();
@@ -3180,7 +3190,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();

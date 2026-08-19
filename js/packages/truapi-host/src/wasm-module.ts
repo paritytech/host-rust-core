@@ -5,11 +5,36 @@
 
 import type { PermissionAuthorizationRuntime } from "./worker-permission-authorization.js";
 
+/** Cancellable observation of one custom-message render instance. */
+export interface WorkerCustomRendererSubscription {
+  cancel(): void;
+  free(): void;
+}
+
 /** One product-scoped core inside the worker. */
 export interface WorkerProductRuntime {
   receiveFrame(frame: Uint8Array): Promise<void>;
   dispose(): void;
   free(): void;
+  /**
+   * Publish a SCALE-encoded `HostChatActionSubscribeItem` into this
+   * connection's action stream. Throws when the connection may not reach Chat.
+   */
+  publishChatAction(action: Uint8Array): void;
+  /**
+   * Start the host-initiated render subscription for one stored custom Chat
+   * message. `onUpdate` receives each SCALE-encoded `CustomRendererNode`, then
+   * exactly one of `onComplete` (last tree stands) or `onError` (the product
+   * could not serve the render; the last tree is partial).
+   */
+  renderCustomMessage(
+    messageId: string,
+    messageType: string,
+    payload: Uint8Array,
+    onUpdate: (node: Uint8Array) => void,
+    onComplete: () => void,
+    onError: (reason: string) => void,
+  ): WorkerCustomRendererSubscription;
 }
 
 /** The long-lived pairing-host runtime product cores are created from. */

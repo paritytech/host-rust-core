@@ -62,7 +62,7 @@ public struct RuntimeConfig: Sendable {
 
     public init(
         productId: String,
-        executionKind: ProductExecutionKind = .spa,
+        executionKind: ProductExecutionKind = .app,
         hostName: String,
         hostIcon: String? = nil,
         hostVersion: String? = nil,
@@ -878,7 +878,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func notifyChatRoomsChanged(rooms: [ChatRoom])
 }
 
-/// One SPA or Chat executable connected to a shared host runtime.
+/// One App, Widget, or Worker executable connected to a shared host runtime.
 public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sendable {
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks
@@ -1155,4 +1155,18 @@ private final class CustomRendererStreamObserver: NativeCustomRendererObserver, 
     func onComplete() {
         continuation.finish()
     }
+
+    /// The product could not serve the render, so the last tree yielded is
+    /// partial. Finishing with an error keeps that distinct from a clean end.
+    func onError(reason: String) {
+        continuation.finish(throwing: CustomRendererStreamError(reason: reason))
+    }
+}
+
+/// A render the product declined or could not encode.
+public struct CustomRendererStreamError: Error, CustomStringConvertible {
+    /// Why the product ended the render.
+    public let reason: String
+
+    public var description: String { reason }
 }

@@ -321,8 +321,14 @@ export interface ProductContext {
 
 /**
  * Trusted kind of product executable attached to a TrUAPI connection.
+ *
+ * Mirrors the executable kinds a product manifest declares. The variants are
+ * capability classes: a connection reaches an execution-gated service only
+ * when its kind matches exactly, so `App` and `Widget` carry the same
+ * capability and differ only in how the host presents them, and `Worker` is
+ * the only kind that may serve the Chat modality.
  */
-export type ProductExecutionKind = "Spa" | "Chat";
+export type ProductExecutionKind = "App" | "Widget" | "Worker";
 
 /**
  * Review shown before allocating resources for a product. Names the
@@ -689,9 +695,15 @@ export const ProductContext: S.Codec<ProductContext> = S.lazy(
 
 /**
  * Trusted kind of product executable attached to a TrUAPI connection.
+ *
+ * Mirrors the executable kinds a product manifest declares. The variants are
+ * capability classes: a connection reaches an execution-gated service only
+ * when its kind matches exactly, so `App` and `Widget` carry the same
+ * capability and differ only in how the host presents them, and `Worker` is
+ * the only kind that may serve the Chat modality.
  */
 export const ProductExecutionKind: S.Codec<ProductExecutionKind> = S.lazy(
-  (): S.Codec<ProductExecutionKind> => S.Status("Spa", "Chat"),
+  (): S.Codec<ProductExecutionKind> => S.Status("App", "Widget", "Worker"),
 );
 
 /**

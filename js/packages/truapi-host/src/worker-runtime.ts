@@ -27,6 +27,13 @@ import type {
 } from "./wasm-module.js";
 import { errorMessage } from "./error.js";
 import {
+  handlePublishChatAction,
+  handleRenderCustomMessageStart,
+  stopRender,
+  stopRendersForCore,
+  type RenderSubscriptions,
+} from "./worker-chat.js";
+import {
   dispatchChainResponse,
   dispatchSubscriptionError,
   dispatchSubscriptionItem,
@@ -176,6 +183,8 @@ function buildCoreCallbacks(coreId: number) {
 
 let runtime: WorkerPairingHostRuntime | null = null;
 const cores = new Map<number, WorkerProductRuntime>();
+/** Live custom-message render subscriptions, keyed by main-thread render id. */
+const renders: RenderSubscriptions = new Map();
 let wasm: WasmModuleShape | null = null;
 
 (async () => {
@@ -358,6 +367,30 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       );
       break;
     }
+    case "publishChatAction":
+      handlePublishChatAction(
+        cores.get(msg.coreId),
+        postToMain,
+        msg.coreId,
+        msg.requestId,
+        msg.action,
+      );
+      break;
+    case "renderCustomMessageStart":
+      handleRenderCustomMessageStart(
+        cores.get(msg.coreId),
+        postToMain,
+        renders,
+        msg.coreId,
+        msg.renderId,
+        msg.messageId,
+        msg.messageType,
+        msg.payload,
+      );
+      break;
+    case "renderCustomMessageStop":
+      stopRender(renders, msg.renderId);
+      break;
     case "disposeCore":
       disposeCore(msg.coreId);
       break;
@@ -385,6 +418,8 @@ function disposeCore(coreId: number): void {
   const core = cores.get(coreId);
   if (!core) return;
   cores.delete(coreId);
+  // A render subscription outliving its core would call into freed wasm.
+  stopRendersForCore(renders, coreId);
   try {
     core.dispose();
     core.free();

@@ -808,13 +808,27 @@ impl ProductRuntimeControl {
         Ok(&self.runtime)
     }
 
+    /// Publish one host-authored Chat action into this connection's action
+    /// stream, buffering it until the product subscribes.
+    pub fn publish_chat_action(
+        &self,
+        action: v01::HostChatActionSubscribeItem,
+    ) -> Result<(), ProductRuntimeError> {
+        self.runtime()?.publish_chat_action(
+            truapi::versioned::chat::HostChatActionSubscribeItem::V1(action),
+        )
+    }
+
     /// Request custom-message UI from this connection's product renderer.
     pub fn render_custom_message(
         &self,
         message_id: String,
         message_type: String,
         payload: Vec<u8>,
-    ) -> Result<truapi::Subscription<v01::CustomRendererNode>, ProductRuntimeError> {
+    ) -> Result<
+        truapi::Subscription<Result<v01::CustomRendererNode, v01::GenericError>>,
+        ProductRuntimeError,
+    > {
         self.runtime()?.native_chat_platform()?;
         let request = truapi::versioned::chat::ProductChatCustomMessageRenderRequest::V1(
             v01::ProductChatCustomMessageRenderRequest {
@@ -829,8 +843,10 @@ impl ProductRuntimeControl {
             transport,
             request,
         )
-        .map(|item| match item {
-            truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
+        .map(|item| {
+            item.map(|item| match item {
+                truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
+            })
         });
         Ok(truapi::Subscription::new(Box::pin(stream)))
     }
@@ -1076,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn spa_connection_rejects_native_custom_rendering() {
+    fn app_connection_rejects_custom_rendering() {
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
             Arc::new(StubPlatform::default()),
@@ -1095,7 +1111,34 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_request_on_spa_connection() {
+    fn app_connection_rejects_publishing_a_chat_action() {
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+
+        assert!(matches!(
+            runtime
+                .control()
+                .publish_chat_action(v01::HostChatActionSubscribeItem {
+                    room_id: "support".into(),
+                    peer: "myapp.dot".into(),
+                    payload: v01::ChatActionPayload::ActionTriggered(v01::ActionTrigger {
+                        message_id: "message".into(),
+                        action_id: "vote".into(),
+                        payload: None,
+                    }),
+                }),
+            Err(ProductRuntimeError::Denied)
+        ));
+    }
+
+    #[test]
+    fn generated_filter_denies_chat_request_on_app_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -1135,7 +1178,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_register_bot_on_spa_connection() {
+    fn generated_filter_denies_chat_register_bot_on_app_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -1175,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_subscription_on_spa_connection() {
+    fn generated_filter_denies_chat_subscription_on_app_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(

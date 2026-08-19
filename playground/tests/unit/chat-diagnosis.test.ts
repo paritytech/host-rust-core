@@ -6,8 +6,8 @@ import { CHAT_DIAGNOSIS_METHODS, ChatDiagnosis } from "../../worker/diagnosis";
 describe("ChatDiagnosis", () => {
   // Expectation comes from codegen, so a missing method fails here.
   test("covers every generated Chat method", () => {
-    const generated = servicesForExecution(generatedServices, "Chat")
-      .filter((service) => service.requiredExecution === "Chat")
+    const generated = servicesForExecution(generatedServices, "Worker")
+      .filter((service) => service.requiredExecution === "Worker")
       .flatMap((service) =>
         service.methods.map((method) => `${service.name}/${method.name}`),
       );

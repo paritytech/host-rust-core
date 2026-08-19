@@ -257,6 +257,13 @@ typedef void (*UniffiCallbackInterfaceNativeCustomRendererObserverMethod1)(uint6
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CUSTOM_RENDERER_OBSERVER_METHOD2
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_NATIVE_CUSTOM_RENDERER_OBSERVER_METHOD2
+typedef void (*UniffiCallbackInterfaceNativeCustomRendererObserverMethod2)(uint64_t, RustBuffer, void* _Nonnull,
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_HOST_CALLBACKS_METHOD0
 typedef void (*UniffiCallbackInterfaceHostCallbacksMethod0)(uint64_t, RustBuffer, RustBuffer, void* _Nonnull,
@@ -439,6 +446,7 @@ typedef struct UniffiVTableCallbackInterfaceNativeCustomRendererObserver {
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceNativeCustomRendererObserverMethod0 _Nonnull onUpdate;
     UniffiCallbackInterfaceNativeCustomRendererObserverMethod1 _Nonnull onComplete;
+    UniffiCallbackInterfaceNativeCustomRendererObserverMethod2 _Nonnull onError;
 } UniffiVTableCallbackInterfaceNativeCustomRendererObserver;
 
 #endif
@@ -1653,6 +1661,12 @@ uint16_t uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_up
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECUSTOMRENDEREROBSERVER_ON_COMPLETE
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECUSTOMRENDEREROBSERVER_ON_COMPLETE
 uint16_t uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete(void
+
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECUSTOMRENDEREROBSERVER_ON_ERROR
+#define UNIFFI_FFIDEF_UNIFFI_TRUAPI_SERVER_CHECKSUM_METHOD_NATIVECUSTOMRENDEREROBSERVER_ON_ERROR
+uint16_t uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_error(void
 
 );
 #endif

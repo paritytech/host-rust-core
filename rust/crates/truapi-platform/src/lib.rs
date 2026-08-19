@@ -109,14 +109,22 @@ pub struct ProductContext {
 }
 
 /// Trusted kind of product executable attached to a TrUAPI connection.
+///
+/// Mirrors the executable kinds a product manifest declares. The variants are
+/// capability classes: a connection reaches an execution-gated service only
+/// when its kind matches exactly, so `App` and `Widget` carry the same
+/// capability and differ only in how the host presents them, and `Worker` is
+/// the only kind that may serve the Chat modality.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ProductExecutionKind {
-    /// Visible single-page application entrypoint such as `app/index.html`.
+    /// Visible full-page entrypoint such as `app/index.html`.
     #[default]
-    Spa,
-    /// Headless worker executable that provides the Chat modality.
-    Chat,
+    App,
+    /// Visible embedded surface such as a dashboard card.
+    Widget,
+    /// Headless executable that serves the Chat modality.
+    Worker,
 }
 
 /// Host metadata.
@@ -210,7 +218,7 @@ impl ProductContext {
     /// Build a product context, validating fields whose representation cannot
     /// be made invalid by Rust types alone.
     pub fn new(product_id: String) -> Result<Self, RuntimeConfigValidationError> {
-        Self::new_with_execution(product_id, ProductExecutionKind::Spa)
+        Self::new_with_execution(product_id, ProductExecutionKind::App)
     }
 
     /// Build a product context for a host-selected executable kind.
@@ -1067,21 +1075,22 @@ mod tests {
     #[test]
     fn product_context_encoding_matches_the_generated_host_codec() {
         // The generated TS host codec is
-        // `S.Struct({productId: S.str, executionKind: S.Status("Spa", "Chat")})`,
+        // `S.Struct({productId: S.str, executionKind: S.Status("App", "Widget", "Worker")})`,
         // so the field order and the variant indices below are the wire
         // contract every JS host decodes against. The JS half of this pair is
         // `product context encoding matches the Rust platform codec` in
         // `js/packages/truapi-host/src/host-callbacks-adapter.test.ts`, which
         // asserts the same bytes through that generated codec.
-        assert_eq!(ProductExecutionKind::Spa.encode(), [0]);
-        assert_eq!(ProductExecutionKind::Chat.encode(), [1]);
+        assert_eq!(ProductExecutionKind::App.encode(), [0]);
+        assert_eq!(ProductExecutionKind::Widget.encode(), [1]);
+        assert_eq!(ProductExecutionKind::Worker.encode(), [2]);
 
         let context =
-            ProductContext::new_with_execution("app.dot".to_string(), ProductExecutionKind::Chat)
+            ProductContext::new_with_execution("app.dot".to_string(), ProductExecutionKind::Worker)
                 .expect("product id is valid");
         assert_eq!(
             context.encode(),
-            [28, b'a', b'p', b'p', b'.', b'd', b'o', b't', 1]
+            [28, b'a', b'p', b'p', b'.', b'd', b'o', b't', 2]
         );
         assert_eq!(
             ProductContext::decode(&mut context.encode().as_slice()),
@@ -1095,7 +1104,7 @@ mod tests {
         // apply the same product-id policy as the constructor so decoding
         // cannot mint a context with an unscoped or empty product id.
         for product_id in ["evil.com", "", "  "] {
-            let frame = (product_id.to_string(), ProductExecutionKind::Spa).encode();
+            let frame = (product_id.to_string(), ProductExecutionKind::App).encode();
             assert!(
                 ProductContext::decode(&mut frame.as_slice()).is_err(),
                 "{product_id:?} must not decode into a ProductContext"
@@ -1108,7 +1117,7 @@ mod tests {
         // Derivation and product-scoped storage are keyed by `product_id`, so
         // a non-canonical id off the wire has to land in the same scope the
         // constructor would produce rather than opening a second one.
-        let frame = ("App.DOT".to_string(), ProductExecutionKind::Spa).encode();
+        let frame = ("App.DOT".to_string(), ProductExecutionKind::App).encode();
         let decoded = ProductContext::decode(&mut frame.as_slice()).expect("product id normalizes");
         assert_eq!(decoded.product_id, "app.dot");
         assert_eq!(

@@ -666,7 +666,7 @@ impl NativeTrUApiHostRuntime {
             product_control: Arc::new(Mutex::new(None)),
         });
 
-        if product.execution_kind == ProductExecutionKind::Chat {
+        if product.execution_kind == ProductExecutionKind::Worker {
             let previous = self
                 .chat_executions
                 .lock()
@@ -2307,7 +2307,7 @@ mod tests {
     fn native_runtime_config(product_id: &str) -> NativeRuntimeConfig {
         NativeRuntimeConfig {
             product_id: product_id.to_string(),
-            execution_kind: ProductExecutionKind::Spa,
+            execution_kind: ProductExecutionKind::App,
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
@@ -2356,7 +2356,7 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
-                native_execution_config("shared.dot", ProductExecutionKind::Spa),
+                native_execution_config("shared.dot", ProductExecutionKind::App),
             )
             .expect("SPA execution should open");
         let chat_host = Arc::new(EventCallbacks::new());
@@ -2364,7 +2364,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
-                native_execution_config("shared.dot", ProductExecutionKind::Chat),
+                native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
             .expect("Chat execution should open");
 
@@ -2380,7 +2380,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
-                native_execution_config("shared.dot", ProductExecutionKind::Chat),
+                native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
             .expect("replacement Chat execution should open");
         assert!(matches!(
@@ -2404,7 +2404,7 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
-                native_execution_config("chat-product.dot", ProductExecutionKind::Chat),
+                native_execution_config("chat-product.dot", ProductExecutionKind::Worker),
             )
             .expect("Chat execution should open");
 
@@ -2553,9 +2553,11 @@ mod tests {
             chat: callbacks,
             events: events.clone(),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let mut stream = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
 
         let first = futures::executor::block_on(stream.next())
@@ -2585,9 +2587,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let reaction = v01::ChatReaction {
             message_id: "message-1".to_string(),
             emoji: "🎲".to_string(),
@@ -2648,9 +2652,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         *callbacks
             .chat_bot_rejection
             .lock()
@@ -2692,9 +2698,11 @@ mod tests {
             chat: callbacks.clone(),
             events: events.clone(),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let request = v01::HostChatRegisterBotRequest {
             bot_id: "flipper".to_string(),
             name: "Flipper".to_string(),
@@ -2768,9 +2776,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let request = v01::HostChatCreateRoomRequest {
             room_id: "support".to_string(),
             name: "Support".to_string(),
@@ -2893,7 +2903,7 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
-                native_execution_config("chain.dot", ProductExecutionKind::Spa),
+                native_execution_config("chain.dot", ProductExecutionKind::App),
             )
             .expect("SPA execution should open");
         let mut shared_responses = host.events.register_chain(41);

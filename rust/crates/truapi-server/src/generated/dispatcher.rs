@@ -50,7 +50,9 @@ pub(crate) fn chat_custom_message_render(
     subscriptions: &HostInitiatedSubscriptionManager,
     transport: Arc<dyn Transport>,
     request: versioned::chat::ProductChatCustomMessageRenderRequest,
-) -> truapi::Subscription<versioned::chat::ProductChatCustomMessageRenderItem> {
+) -> truapi::Subscription<
+    Result<versioned::chat::ProductChatCustomMessageRenderItem, truapi::latest::GenericError>,
+> {
     subscriptions.start(
         wire_table::CHAT_CUSTOM_MESSAGE_RENDER,
         parity_scale_codec::Encode::encode(&request),
@@ -895,7 +897,7 @@ where
     P: Chat + Send + Sync + 'static,
 {
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(
             wire_table::CHAT_CREATE_ROOM,
@@ -937,7 +939,7 @@ where
         );
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(
             wire_table::CHAT_REGISTER_BOT,
@@ -979,7 +981,7 @@ where
         );
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_subscription(
             wire_table::CHAT_LIST_SUBSCRIBE,
@@ -1001,7 +1003,7 @@ where
         );
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(
             wire_table::CHAT_POST_MESSAGE,
@@ -1043,7 +1045,7 @@ where
         );
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host;
         dispatcher.on_subscription(
             wire_table::CHAT_ACTION_SUBSCRIBE,

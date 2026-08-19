@@ -98,6 +98,21 @@ export type MainToWorker =
     }
   | { kind: "getSessionChatIdentityKey"; requestId: number }
   | { kind: "getDeviceEncryptionKey"; requestId: number }
+  | {
+      kind: "publishChatAction";
+      coreId: number;
+      requestId: number;
+      action: Uint8Array;
+    }
+  | {
+      kind: "renderCustomMessageStart";
+      coreId: number;
+      renderId: number;
+      messageId: string;
+      messageType: string;
+      payload: Uint8Array;
+    }
+  | { kind: "renderCustomMessageStop"; renderId: number }
   | { kind: "callbackResponse"; requestId: number; ok: true; value: unknown }
   | { kind: "callbackResponse"; requestId: number; ok: false; error: string }
   | { kind: "subscriptionItem"; subId: number; value: unknown }
@@ -199,6 +214,18 @@ export type WorkerToMain =
       ok: false;
       error: string;
     }
+  | { kind: "publishChatActionResponse"; requestId: number; ok: true }
+  | {
+      kind: "publishChatActionResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  /** One replacement tree, as a SCALE-encoded `CustomRendererNode`. */
+  | { kind: "renderCustomMessageItem"; renderId: number; node: Uint8Array }
+  /** The product ended the render stream; no further items follow. */
+  | { kind: "renderCustomMessageComplete"; renderId: number }
+  | { kind: "renderCustomMessageError"; renderId: number; error: string }
   | {
       kind: "callbackRequest";
       requestId: number;

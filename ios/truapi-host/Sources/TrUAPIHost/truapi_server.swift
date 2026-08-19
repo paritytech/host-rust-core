@@ -5808,9 +5808,16 @@ public protocol NativeCustomRendererObserver: AnyObject, Sendable {
     func onUpdate(node: CustomRendererNode)
 
     /**
-     * Report that the renderer stream ended.
+     * Report that the renderer stream ended without drawing further trees.
+     * The last tree delivered stands.
      */
     func onComplete()
+
+    /**
+     * Report that the product could not serve this render. The last tree
+     * delivered, if any, is partial and must not be treated as final.
+     */
+    func onError(reason: String)
 
 }
 
@@ -5872,6 +5879,30 @@ fileprivate struct UniffiCallbackInterfaceNativeCustomRendererObserver {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onComplete(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onError: { (
+            uniffiHandle: UInt64,
+            reason: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onError(
+                     reason: try FfiConverterString.lift(reason)
                 )
             }
 
@@ -6639,7 +6670,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_update() != 1079) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 43817) {
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 32694) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_error() != 21230) {
         return InitializationResult.apiChecksumMismatch
     }
 
