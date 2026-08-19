@@ -464,8 +464,12 @@ struct ResponseResult {
     reason: Option<String>,
 }
 
-struct AnsweredRemoteMessage {
-    response: RemoteMessage,
+/// Result of answering one remote message: the response envelope and an
+/// optional pre-classified outcome for logging.
+pub(crate) struct AnsweredRemoteMessage {
+    /// Response to post back over the session transport.
+    pub(crate) response: RemoteMessage,
+    /// Pre-classified outcome summary for SSO transcript logging (outcome code and error reason).
     response_result: Option<ResponseResult>,
 }
 
@@ -649,7 +653,7 @@ fn response_cli_summary(
 
 /// Answer one application-level request message; `None` for message kinds
 /// that take no response (responses echoed by the peer, unknown variants).
-async fn answer_remote_message(
+pub(crate) async fn answer_remote_message(
     services: &Arc<RuntimeServices>,
     signing_host: &Arc<SigningHost>,
     message_id: String,

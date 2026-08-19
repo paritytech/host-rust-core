@@ -4,6 +4,13 @@ WASM-backed TrUAPI host runtime. It embeds the `truapi-server` Rust core (compil
 behind a Web Worker provider, plus per-environment integration entry points. It is the
 counterpart to the native Android/iOS host shells.
 
+`executionKind: "Chat"` is accepted by the runtime config but not served: the
+Chat modality reaches products through a host-supplied `ChatPlatform` adapter,
+which only the native (UniFFI) entrypoints can install. A JS host that opens a
+`Chat` execution gets a provider whose Chat requests answer unsupported; its
+subscriptions end empty, which is indistinguishable from a healthy close.
+Tracked in paritytech/host-rust-core#383.
+
 ## Entry points
 
 The package exposes tree-shakeable subpath exports — import only what your environment needs:
