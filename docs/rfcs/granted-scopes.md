@@ -53,7 +53,6 @@ A separate field per scope (a foreign-storage record beside `trustedProducts`) s
 ## Unresolved Questions
 
 1. Is `context` the right name? `account` says it more directly, and `context` sits awkwardly beside the `context` parameter [RFC 0020][0020] removed from `create_transaction`.
-2. Should `storage` get a write counterpart here rather than leaving writes on `all`?
 
 [manifest]: product-manifest.md
 [0020]: 0020-create-transaction.md
