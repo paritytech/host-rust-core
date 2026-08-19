@@ -1183,6 +1183,10 @@ pub struct FundingAddress {
     pub account: Bytes32,
     /// Genesis hash of the chain the session settles on.
     pub genesis_hash: Bytes32,
+    /// Assets-pallet id when the balance lives there, `None` for the chain's
+    /// native balance. The core needs this to know which storage map to read;
+    /// `FundingAsset` is opaque to products, so only the host can supply it.
+    pub asset_id: Option<u32>,
 }
 
 /// Host-implemented surface for the funding modality.

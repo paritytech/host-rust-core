@@ -12,6 +12,8 @@
 //! whether the change came from a provider report, an arrival observation, or
 //! expiry.
 
+pub(crate) mod arrival;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

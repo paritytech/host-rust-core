@@ -1992,6 +1992,7 @@ impl ProductRuntimeHost {
             .await
             .map_err(funding_generic_error)?;
         platform.present_funding(session.intent.clone()).await?;
+        self.spawn_arrival_watch(session.intent.clone(), session.direction);
         Ok(session.intent)
     }
 
@@ -2031,6 +2032,43 @@ impl ProductRuntimeHost {
             .into_iter()
             .map(|session| session.intent)
             .collect())
+    }
+
+    /// Resolve the destination and spawn the arrival watch for an inbound
+    /// session.
+    ///
+    /// Spawned rather than awaited: resolving an address and reading a baseline
+    /// balance are both RPC round-trips, and neither should delay handing the
+    /// screen to the provider. Outbound sessions have nothing to watch for —
+    /// their terminal state is the release the host itself performs.
+    fn spawn_arrival_watch(&self, intent: String, direction: v01::FundingDirection) {
+        if direction != v01::FundingDirection::In {
+            return;
+        }
+        let Some(platform) = self.services.funding_platform() else {
+            return;
+        };
+        let chain = self.services.chain.clone();
+        let registry = self.services.funding.clone();
+        let storage = self.platform.clone();
+        let spawner = self.services.spawner.clone();
+        spawner(
+            async move {
+                match platform.resolve_funding_address(intent.clone()).await {
+                    Ok(address) => {
+                        funding::arrival::watch_for_arrival(
+                            chain, registry, storage, intent, address,
+                        )
+                        .await;
+                    }
+                    Err(error) => tracing::warn!(
+                        reason = %error.reason,
+                        "funding destination could not be resolved; no arrival watch"
+                    ),
+                }
+            }
+            .boxed(),
+        );
     }
 }
 
@@ -2143,6 +2181,8 @@ impl Funding for ProductRuntimeHost {
                     },
                 ))
             })?;
+
+        self.spawn_arrival_watch(session.intent.clone(), session.direction);
 
         Ok(VersionedHostFundingResponse::V1(v01::HostFundingResponse {
             intent: session.intent,

@@ -212,6 +212,13 @@ export interface FundingAddress {
    * Genesis hash of the chain the session settles on.
    */
   genesisHash: Bytes32;
+
+  /**
+   * Assets-pallet id when the balance lives there, ``undefined`` for the chain's
+   * native balance. The core needs this to know which storage map to read;
+   * `FundingAsset` is opaque to products, so only the host can supply it.
+   */
+  assetId?: number;
 }
 
 /**
@@ -578,6 +585,7 @@ export const FundingAddress: S.Codec<FundingAddress> = S.lazy(
     S.Struct({
       account: Bytes32,
       genesisHash: Bytes32,
+      assetId: S.Option(S.u32),
     }) as S.Codec<FundingAddress>,
 );
 
