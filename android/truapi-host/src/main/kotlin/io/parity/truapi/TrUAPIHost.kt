@@ -26,7 +26,10 @@
 
 package io.parity.truapi
 
+import kotlinx.coroutines.CancellationException
 import uniffi.truapi.HostDevicePermissionRequest
+import uniffi.truapi.HostLocalStorageReadError
+import uniffi.truapi.HostNavigateToError
 import uniffi.truapi.HostFeatureSupportedRequest
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
@@ -330,74 +333,134 @@ interface HostBridge {
     val coreStorage: HostCoreStorage
 }
 
+// A host that throws an exception type its callback does not declare crosses
+// the FFI as an unexpected callback error. The Rust core converts those rather
+// than aborting, but the reason it receives is then a raw JVM description, so
+// each adapter funnels host throws into the declared type here.
+
+// Bounded: this reaches the product as the rejection reason, and a host
+// message can carry a whole failed statement.
+private fun hostRejectionReason(error: Throwable): String =
+    (error.message ?: error.toString()).take(HOST_REJECTION_REASON_MAX_CHARS)
+
+private const val HOST_REJECTION_REASON_MAX_CHARS = 256
+
+private inline fun <T> withHostRejection(operation: () -> T): T =
+    try {
+        operation()
+    } catch (rejection: HostRejection) {
+        throw rejection
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        throw HostRejection.Rejected(hostRejectionReason(error)).apply { initCause(error) }
+    }
+
+private inline fun <T> withNavigateRejection(operation: () -> T): T =
+    try {
+        operation()
+    } catch (rejection: HostNavigateRejection) {
+        throw rejection
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        throw HostNavigateRejection.Navigate(
+            HostNavigateToError.Unknown(hostRejectionReason(error)),
+        ).apply { initCause(error) }
+    }
+
+private inline fun <T> withStorageException(operation: () -> T): T =
+    try {
+        operation()
+    } catch (storage: HostStorageException) {
+        throw storage
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        throw HostStorageException.Storage(
+            HostLocalStorageReadError.Unknown(hostRejectionReason(error)),
+        ).apply { initCause(error) }
+    }
+
 /**
  * Adapter from the public [HostBridge] surface to the generated UniFFI
  * [HostCallbacks] interface. Keeps the public API stable even if uniffi-bindgen
  * renames generated symbols.
  */
 private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallbacks {
-    override fun onCoreLog(marker: String, detail: String) =
-        bridge.onCoreLog(marker, detail)
+    // The core declares this and `authStateChanged` infallible, so uniffi has
+    // no error type to convert a throw into and panics -- which aborts under
+    // `panic = "abort"`. Neither may let a host exception reach the FFI.
+    override fun onCoreLog(marker: String, detail: String) {
+        runCatching { bridge.onCoreLog(marker, detail) }
+    }
 
     override suspend fun navigateTo(url: String) =
-        bridge.navigateTo(url)
+        withNavigateRejection { bridge.navigateTo(url) }
 
     override suspend fun pushNotification(request: HostPushNotificationRequest): UInt =
-        bridge.pushNotification(request)
+        withHostRejection { bridge.pushNotification(request) }
 
     override fun cancelNotification(id: UInt) =
-        bridge.cancelNotification(id)
+        withHostRejection { bridge.cancelNotification(id) }
 
     override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean =
-        bridge.devicePermission(request)
+        withHostRejection { bridge.devicePermission(request) }
 
     override suspend fun remotePermission(request: RemotePermission): Boolean =
-        bridge.remotePermission(request)
+        withHostRejection { bridge.remotePermission(request) }
 
-    override fun authStateChanged(state: AuthState) =
-        bridge.authStateChanged(state)
+    override fun authStateChanged(state: AuthState) {
+        try {
+            bridge.authStateChanged(state)
+        } catch (error: Throwable) {
+            runCatching {
+                bridge.onCoreLog("host.auth_state_changed.threw", error.stackTraceToString())
+            }
+        }
+    }
 
     override fun coreStorageRead(key: ByteArray): ByteArray? =
-        bridge.coreStorage.read(key)
+        withHostRejection { bridge.coreStorage.read(key) }
 
     override fun coreStorageWrite(key: ByteArray, value: ByteArray) =
-        bridge.coreStorage.write(key, value)
+        withHostRejection { bridge.coreStorage.write(key, value) }
 
     override fun coreStorageClear(key: ByteArray) =
-        bridge.coreStorage.clear(key)
+        withHostRejection { bridge.coreStorage.clear(key) }
 
     override fun chainConnect(genesisHash: ByteArray): UInt? =
-        bridge.chainConnect(genesisHash)
+        withHostRejection { bridge.chainConnect(genesisHash) }
 
     override fun chainSend(connectionId: UInt, request: String) =
-        bridge.chainSend(connectionId, request)
+        withHostRejection { bridge.chainSend(connectionId, request) }
 
     override fun chainClose(connectionId: UInt) =
-        bridge.chainClose(connectionId)
+        withHostRejection { bridge.chainClose(connectionId) }
 
     override suspend fun confirmUserAction(review: UserConfirmationReview): Boolean =
-        bridge.confirmUserAction(review)
+        withHostRejection { bridge.confirmUserAction(review) }
 
     override suspend fun lookupPreimage(key: ByteArray): ByteArray? =
-        bridge.lookupPreimage(key)
+        withHostRejection { bridge.lookupPreimage(key) }
 
     override fun currentTheme(): HostThemeSubscribeItem =
-        bridge.currentTheme()
+        withHostRejection { bridge.currentTheme() }
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
-        bridge.featureSupported(request)
+        withHostRejection { bridge.featureSupported(request) }
 
     override fun supportedChains(): HostChainSet =
-        bridge.supportedChains()
+        withHostRejection { bridge.supportedChains() }
 
     override fun localStorageRead(key: String): ByteArray? =
-        bridge.storage.read(key)
+        withStorageException { bridge.storage.read(key) }
 
     override fun localStorageWrite(key: String, value: ByteArray) =
-        bridge.storage.write(key, value)
+        withStorageException { bridge.storage.write(key, value) }
 
     override fun localStorageClear(key: String) =
-        bridge.storage.clear(key)
+        withStorageException { bridge.storage.clear(key) }
 }
 
 /**

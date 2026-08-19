@@ -60,6 +60,16 @@ pub enum HostStorageError {
     Storage(v01::HostLocalStorageReadError),
 }
 
+impl From<uniffi::UnexpectedUniFFICallbackError> for HostStorageError {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        HostStorageError::Storage(v01::HostLocalStorageReadError::Unknown { reason: err.reason })
+    }
+}
+
 impl From<HostStorageError> for v01::HostLocalStorageReadError {
     fn from(err: HostStorageError) -> Self {
         let HostStorageError::Storage(err) = err;
@@ -93,6 +103,16 @@ impl From<HostRejection> for v01::GenericError {
     }
 }
 
+impl From<uniffi::UnexpectedUniFFICallbackError> for HostRejection {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        HostRejection::Rejected { reason: err.reason }
+    }
+}
+
 impl From<v01::GenericError> for HostRejection {
     fn from(err: v01::GenericError) -> Self {
         HostRejection::Rejected { reason: err.reason }
@@ -112,6 +132,16 @@ pub enum HostNavigateRejection {
     /// Canonical navigation failure payload.
     #[error("{0}")]
     Navigate(v01::HostNavigateToError),
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for HostNavigateRejection {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        HostNavigateRejection::Navigate(v01::HostNavigateToError::Unknown { reason: err.reason })
+    }
 }
 
 /// Native-friendly SSO deeplink scheme.
@@ -1925,6 +1955,47 @@ mod tests {
                 "a {len}-byte account id must be rejected, and report its length"
             );
         }
+    }
+
+    #[test]
+    fn an_unexpected_foreign_error_converts_instead_of_panicking() {
+        // A host that throws an exception its trait does not declare lands in
+        // `try_convert_unexpected_callback_error`. Without a `From` impl the
+        // generic converter panics, and `panic = "abort"` turns that into a
+        // process abort on the shipping build.
+        let reason = "android.database.sqlite.SQLiteFullException";
+        let rejection = <HostRejection as uniffi::ConvertError<crate::UniFfiTag>>::
+            try_convert_unexpected_callback_error(
+                uniffi::UnexpectedUniFFICallbackError::new(reason),
+            )
+            .expect("an unexpected foreign error must convert");
+        let HostRejection::Rejected { reason: converted } = rejection;
+        assert_eq!(converted, reason);
+
+        let storage = <HostStorageError as uniffi::ConvertError<crate::UniFfiTag>>::
+            try_convert_unexpected_callback_error(
+                uniffi::UnexpectedUniFFICallbackError::new(reason),
+            )
+            .expect("an unexpected foreign error must convert");
+        assert_eq!(
+            v01::HostLocalStorageReadError::from(storage),
+            v01::HostLocalStorageReadError::Unknown {
+                reason: reason.to_string(),
+            }
+        );
+
+        let navigate = <HostNavigateRejection as uniffi::ConvertError<crate::UniFfiTag>>::
+            try_convert_unexpected_callback_error(
+                uniffi::UnexpectedUniFFICallbackError::new(reason),
+            )
+            .expect("an unexpected foreign error must convert");
+        let HostNavigateRejection::Navigate(navigate) = navigate;
+        assert_eq!(
+            navigate,
+            v01::HostNavigateToError::Unknown {
+                reason: reason.to_string(),
+            }
+        );
     }
 
     /// The renewal account is derived from `product_id`, and a product

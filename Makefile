@@ -93,6 +93,7 @@ PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.so
 endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
+PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-check
 
 uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
 	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
@@ -214,6 +215,23 @@ android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish t
 # the light client alone.
 PROVIDER_KOTLIN_OUT := android/truapi-provider/src/main/kotlin/generated
 PROVIDER_JNILIBS := android/truapi-provider/src/main/jniLibs
+
+provider-swift: ## Generate the TrUAPIProvider Swift bindings into target/uniffi-provider-swift-out (no Xcode, no iOS targets).
+	$(CARGO) build -p truapi-provider --profile codegen --no-default-features --features uniffi
+	rm -rf $(PROVIDER_SWIFT_TMP)
+	mkdir -p $(PROVIDER_SWIFT_TMP)
+	$(CARGO) run -p uniffi-bindgen-cli -- generate \
+		--library $(PROVIDER_CDYLIB) \
+		--language swift \
+		--out-dir $(PROVIDER_SWIFT_TMP)
+
+provider-swift-check: provider-swift ## Fail if the committed TrUAPIProvider bindings are stale.
+	@diff -u ios/truapi-provider/Sources/TrUAPIProvider/truapi_provider.swift \
+		$(PROVIDER_SWIFT_TMP)/truapi_provider.swift \
+		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/truapi_providerFFI.h \
+		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.h \
+		&& echo "Committed TrUAPIProvider bindings are current." \
+		|| { echo "Committed TrUAPIProvider bindings are stale: run 'make provider-ios'."; exit 1; }
 
 provider-ios: ## Build the TrUAPIProvider Swift bindings + xcframework (adds --sim-only via SIM_ONLY=1).
 	bash ios/truapi-provider/scripts/rebuild.sh $(if $(SIM_ONLY),--sim-only,)

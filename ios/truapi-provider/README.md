@@ -47,9 +47,9 @@ No Rust toolchain is needed: the xcframework carries the compiled crate, and the
 Everything is generated from [`ffi.rs`](../../rust/crates/truapi-provider/src/ffi.rs):
 
 - `ChainProvider` — construct **one per process** and share it. Every connection runs on the single embedded light client, so they share sync, peers, and warm state while keeping their own request queue and response stream. `connect(genesisHash:listener:)` resolves the network from the bundled catalog (relay wiring and statement-store placement included), so the 32-byte genesis hash is the only argument.
-- `ChainMessageListener` — the host implements it; `onMessage(message:)` receives each JSON-RPC response and notification, `onClosed()` fires once the stream ends.
+- `ChainMessageListener` — the host implements it; `onMessage(message:)` receives each JSON-RPC response and notification, `onClosed()` fires once the stream ends. Both may throw: a listener that throws stops the pump for that connection rather than being called again for every response, and an error it does not declare is reported as `.listener(reason:)` instead of aborting the process.
 - `ChainConnection` — `send(request:)` queues a request, `disconnect()` tears the connection down.
-- `ChainProviderError` — `.connect(reason:)` when the genesis is outside the catalog or the transport fails, `.badGenesis` when the hash is not 32 bytes.
+- `ChainProviderError` — `.connect(reason:)` when the genesis is outside the catalog or the transport fails, `.badGenesis` when the hash is not 32 bytes, `.listener(reason:)` when the host's listener failed in a way it did not declare.
 
 ## Architecture
 
@@ -74,12 +74,12 @@ import Foundation
 import TrUAPIProvider
 
 final class Responses: ChainMessageListener, @unchecked Sendable {
-    func onMessage(message: String) {
+    func onMessage(message: String) throws {
         // A JSON-RPC response or subscription notification, verbatim from smoldot.
         DispatchQueue.main.async { /* decode and render */ }
     }
 
-    func onClosed() {
+    func onClosed() throws {
         DispatchQueue.main.async { /* the stream ended: drop the connection */ }
     }
 }
