@@ -169,6 +169,7 @@ scripts/battery.sh --signing-host   # direct phase only
 scripts/battery.sh --pairing-host   # paired phase only
 make e2e-signing-cli                # same direct signing-host phase
 make e2e-pairing-cli                # same paired pairing-host phase
+make e2e-chat-cli                   # chat content screening against a chat signing-host
 ```
 
 To run the playground locally:
