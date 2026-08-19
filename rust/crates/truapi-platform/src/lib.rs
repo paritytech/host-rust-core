@@ -1510,20 +1510,19 @@ pub trait PreimageHost: Send + Sync {
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, GenericError>>;
 }
 
-/// Host-implemented adapter through which product Chat calls reach native
-/// storage and UI. Installed separately from [`Platform`], and only by the
-/// native entrypoints: a WASM/JS host cannot supply one, so requests from a
-/// `Chat` execution created there answer unsupported and its subscriptions end
-/// empty, which a product cannot tell from a healthy close.
+/// Host-implemented adapter through which product Chat calls reach host
+/// storage and UI. Optional: a host that omits it leaves Chat requests
+/// answered `Unsupported`. See [`OptionalPlatform`].
 ///
-/// On `create_room` and `register_bot` the core bounds ids, names and icons,
-/// NFC-normalizes them, screens control and bidi characters, and restricts an
-/// icon to `https` or an inline raster image. Contextual output escaping,
-/// storage limits, and every `post_message` field remain host-owned.
+/// On `create_chat_room` and `register_chat_bot` the core bounds ids, names and
+/// icons, NFC-normalizes them, screens control and bidi characters, and
+/// restricts an icon to `https` or an inline raster image. Contextual output
+/// escaping, storage limits, and every `post_chat_message` field remain
+/// host-owned.
 #[async_trait]
 pub trait ChatPlatform: Send + Sync {
     /// Create or resolve a product-scoped native chat room.
-    async fn create_room(
+    async fn create_chat_room(
         &self,
         product: &ProductContext,
         request: HostChatCreateRoomRequest,
@@ -1531,7 +1530,7 @@ pub trait ChatPlatform: Send + Sync {
 
     /// Register or resolve a product-scoped native chat bot. Host-owned in the
     /// same way rooms are.
-    async fn register_bot(
+    async fn register_chat_bot(
         &self,
         product: &ProductContext,
         request: HostChatRegisterBotRequest,
@@ -1539,20 +1538,22 @@ pub trait ChatPlatform: Send + Sync {
 
     /// Persist a product-authored message in a native chat room. A host that
     /// cannot store a given content variant reports a domain error for it.
-    async fn post_message(
+    async fn post_chat_message(
         &self,
         product: &ProductContext,
         request: HostChatPostMessageRequest,
     ) -> Result<HostChatPostMessageResponse, HostChatPostMessageError>;
 
     /// Emit the current product-scoped room list and later replacements.
-    fn subscribe_rooms(
+    fn subscribe_chat_rooms(
         &self,
         product: &ProductContext,
-    ) -> BoxStream<'static, HostChatListSubscribeItem>;
+    ) -> BoxStream<'static, Result<HostChatListSubscribeItem, GenericError>>;
 }
 
-/// Combined platform interface. A host must provide all capability traits.
+/// Combined platform interface. A host must provide every capability trait
+/// listed here. Members marked optional may be omitted; the core answers their
+/// product calls with `Unsupported`. See [`OptionalPlatform`].
 pub trait Platform:
     Navigation
     + Notifications
@@ -1582,3 +1583,11 @@ impl<T> Platform for T where
         + PreimageHost
 {
 }
+
+/// Capability traits a host may serve but is not required to. A host that
+/// omits one is not broken: the core answers the corresponding product calls
+/// with `Unsupported`. Codegen reads this list to emit each capability as an
+/// optional group on the host-callback surface.
+pub trait OptionalPlatform: ChatPlatform {}
+
+impl<T> OptionalPlatform for T where T: ChatPlatform {}

@@ -2178,7 +2178,7 @@ impl Chat for ProductRuntimeHost {
         request.icon =
             validate_chat_icon("icon", &request.icon).map_err(chat_create_room_field_error)?;
         platform
-            .create_room(&self.product, request)
+            .create_chat_room(&self.product, request)
             .await
             .map(HostChatCreateRoomResponse::V1)
             .map_err(|error| CallError::Domain(HostChatCreateRoomError::V1(error)))
@@ -2199,7 +2199,7 @@ impl Chat for ProductRuntimeHost {
         request.icon =
             validate_chat_icon("icon", &request.icon).map_err(chat_register_bot_field_error)?;
         platform
-            .register_bot(&self.product, request)
+            .register_chat_bot(&self.product, request)
             .await
             .map(HostChatRegisterBotResponse::V1)
             .map_err(|error| CallError::Domain(HostChatRegisterBotError::V1(error)))
@@ -2212,8 +2212,23 @@ impl Chat for ProductRuntimeHost {
         };
         Subscription::new(Box::pin(
             platform
-                .subscribe_rooms(&self.product)
-                .map(HostChatListSubscribeItem::V1),
+                .subscribe_chat_rooms(&self.product)
+                .filter_map(|item| async {
+                    // TODO: preserve platform stream errors as terminal
+                    // subscription interrupts once subscription items can carry
+                    // in-stream failures. Until then a dropped error freezes the
+                    // product's room list on its last value, so record why.
+                    match item {
+                        Ok(item) => Some(HostChatListSubscribeItem::V1(item)),
+                        Err(error) => {
+                            warn!(
+                                reason = %error.reason,
+                                "chat room list platform stream failed"
+                            );
+                            None
+                        }
+                    }
+                }),
         ))
     }
 
@@ -2236,7 +2251,7 @@ impl Chat for ProductRuntimeHost {
                 ))
             })?;
         platform
-            .post_message(&self.product, request)
+            .post_chat_message(&self.product, request)
             .await
             .map(HostChatPostMessageResponse::V1)
             .map_err(|error| CallError::Domain(HostChatPostMessageError::V1(error)))
@@ -2720,8 +2735,15 @@ impl Theme for ProductRuntimeHost {
         let stream = self.platform.subscribe_theme().filter_map(|item| async {
             // TODO: preserve platform stream errors as terminal
             // subscription interrupts once subscription items can carry
-            // in-stream failures.
-            item.ok().map(HostThemeSubscribeItem::V1)
+            // in-stream failures. Until then a dropped error freezes the
+            // product's theme on its last value, so record why.
+            match item {
+                Ok(item) => Some(HostThemeSubscribeItem::V1(item)),
+                Err(error) => {
+                    warn!(reason = %error.reason, "theme platform stream failed");
+                    None
+                }
+            }
         });
         Subscription::new(Box::pin(stream))
     }
@@ -2906,7 +2928,7 @@ mod tests {
 
     #[truapi::async_trait]
     impl truapi_platform::ChatPlatform for RecordingChatPlatform {
-        async fn create_room(
+        async fn create_chat_room(
             &self,
             _product: &ProductContext,
             request: truapi::latest::HostChatCreateRoomRequest,
@@ -2923,7 +2945,7 @@ mod tests {
             })
         }
 
-        async fn register_bot(
+        async fn register_chat_bot(
             &self,
             _product: &ProductContext,
             request: truapi::latest::HostChatRegisterBotRequest,
@@ -2940,7 +2962,7 @@ mod tests {
             })
         }
 
-        async fn post_message(
+        async fn post_chat_message(
             &self,
             _product: &ProductContext,
             request: truapi::latest::HostChatPostMessageRequest,
@@ -2957,11 +2979,13 @@ mod tests {
             })
         }
 
-        fn subscribe_rooms(
+        fn subscribe_chat_rooms(
             &self,
             _product: &ProductContext,
-        ) -> futures::stream::BoxStream<'static, truapi::latest::HostChatListSubscribeItem>
-        {
+        ) -> futures::stream::BoxStream<
+            'static,
+            Result<truapi::latest::HostChatListSubscribeItem, truapi::latest::GenericError>,
+        > {
             Box::pin(futures::stream::empty())
         }
     }

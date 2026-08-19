@@ -13,6 +13,7 @@ import type { GenericError } from "@parity/truapi";
 import {
   createWorkerRawCallbacks,
   type CallbackName,
+  type OptionalCapabilities,
 } from "./generated/worker-callbacks.js";
 import {
   handleGetPermissionAuthorizationStatus,
@@ -151,12 +152,15 @@ function chainConnect(
 }
 
 /** Build the host-level callback object passed to the WASM runtime. */
-function buildRawCallbacks() {
-  return createWorkerRawCallbacks({
-    callbackRequest,
-    startSubscription,
-    chainConnect,
-  });
+function buildRawCallbacks(capabilities: OptionalCapabilities) {
+  return createWorkerRawCallbacks(
+    {
+      callbackRequest,
+      startSubscription,
+      chainConnect,
+    },
+    capabilities,
+  );
 }
 
 function buildCoreCallbacks(coreId: number) {
@@ -205,7 +209,7 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       wasm.setLogLevel?.(msg.logLevel);
       try {
         runtime = new wasm.WasmPairingHostRuntime(
-          buildRawCallbacks(),
+          buildRawCallbacks(msg.capabilities),
           msg.hostConfig,
         );
         postToMain({ kind: "ready" });
