@@ -52,13 +52,14 @@ pub mod latest {
 
     pub use crate::v01::{
         AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ContextualAlias,
-        DerivationIndex, GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
-        ProductAccountId, ProductProofContext, RawPayload, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RingLocation, RuntimeApi, RuntimeSpec, RuntimeType,
-        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
-        StorageResultItem, ThemeVariant, TxPayloadExtension,
+        DerivationIndex, FundingAmount, FundingAsset, FundingDelivery, FundingDirection,
+        FundingFailure, FundingIntentId, FundingRail, FundingServeTarget, GenericError,
+        HostSignPayloadData, NotificationId, OperationStartedResult, ProductAccountId,
+        ProductProofContext, RawPayload, RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
+        RuntimeApi, RuntimeSpec, RuntimeType, SignedStatement, Statement, StatementProof,
+        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeVariant, TxPayloadExtension,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -109,6 +110,29 @@ pub mod latest {
     /// Feature-support query result.
     pub type HostFeatureSupportedResponse =
         LatestOf<versioned::system::HostFeatureSupportedResponse>;
+    /// Funding intent declaration.
+    pub type HostFundingRequest = LatestOf<versioned::funding::HostFundingRequest>;
+    /// Accepted funding intent.
+    pub type HostFundingResponse = LatestOf<versioned::funding::HostFundingResponse>;
+    /// Funding intent failure.
+    pub type HostFundingError = LatestOf<versioned::funding::HostFundingError>;
+    /// Request to watch a funding session.
+    pub type HostFundingStatusSubscribeRequest =
+        LatestOf<versioned::funding::HostFundingStatusSubscribeRequest>;
+    /// Progress of a funding session.
+    pub type HostFundingStatusSubscribeItem =
+        LatestOf<versioned::funding::HostFundingStatusSubscribeItem>;
+    /// Funding session lookup failure.
+    pub type HostFundingSessionError = LatestOf<versioned::funding::HostFundingSessionError>;
+    /// Funding intent handed to a provider.
+    pub type HostFundingServeSubscribeItem =
+        LatestOf<versioned::funding::HostFundingServeSubscribeItem>;
+    /// Provider serve-subscription failure.
+    pub type HostFundingServeError = LatestOf<versioned::funding::HostFundingServeError>;
+    /// Provider report on a funding session.
+    pub type HostFundingReportRequest = LatestOf<versioned::funding::HostFundingReportRequest>;
+    /// Provider report failure.
+    pub type HostFundingServingError = LatestOf<versioned::funding::HostFundingServingError>;
     /// Local storage operation error.
     pub type HostLocalStorageReadError =
         LatestOf<versioned::local_storage::HostLocalStorageReadError>;
