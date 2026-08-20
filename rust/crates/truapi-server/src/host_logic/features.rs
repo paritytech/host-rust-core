@@ -65,6 +65,7 @@ mod tests {
     fn paseo_set() -> HostChainSet {
         HostChainSet {
             network: "paseo".to_string(),
+            tld: Some("paseo".to_string()),
             chains: vec![
                 HostChainEntry {
                     identifier: ChainIdentifier::AssetHub,
@@ -174,6 +175,7 @@ mod genesis_lookup_tests {
     fn set() -> HostChainSet {
         HostChainSet {
             network: "paseo".to_string(),
+            tld: Some("paseo".to_string()),
             chains: vec![HostChainEntry {
                 identifier: ChainIdentifier::AssetHub,
                 genesis_hash: [0xab; 32],

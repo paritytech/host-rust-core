@@ -77,8 +77,9 @@ const MAX_SERVED_REQUEST_IDS: usize = 1024;
 
 fn derive_responder_identity(
     entropy: &[u8],
+    dotns_tld: &str,
 ) -> Result<(ResponderIdentity, [u8; 32]), ProductAccountError> {
-    let statement = derive_identity_keypair(entropy)?;
+    let statement = derive_identity_keypair(entropy, dotns_tld)?;
     let (encryption_secret_key, encryption_public_key) =
         derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
     let identity_chat_private_key = derive_identity_chat_private_key(entropy);
@@ -230,11 +231,13 @@ pub(crate) async fn respond_to_pairing(
         .root_entropy()
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
     // Product accounts and the SSO statement identity derive from the
-    // canonical root key; the identity is the RFC-0022 uid.dot default account.
+    // canonical root key; the identity is the RFC-0022 uid.{tld} default
+    // account.
     let root = derive_root_keypair_from_entropy(&entropy)
         .map_err(|err| format!("root account derivation failed: {err}"))?;
-    let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
-        .map_err(|err| format!("responder identity derivation failed: {err}"))?;
+    let (identity, identity_chat_private_key) =
+        derive_responder_identity(&entropy, &services.dotns_tld)
+            .map_err(|err| format!("responder identity derivation failed: {err}"))?;
     let device_enc_pub_key = x25519_public_key(services.device_encryption_secret().await?);
     let session = establish_responder_session_info(
         &identity,
@@ -1590,6 +1593,7 @@ mod tests {
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             test_spawner(),
+            "dot".to_string(),
         );
         let signing_host = SigningHost::new(services.clone());
         futures::executor::block_on(signing_host.activate_local_session(ENTROPY.to_vec()))
@@ -1716,7 +1720,7 @@ mod tests {
             .unwrap()
             .identity_account_id
             .unwrap();
-        let (identity, _) = derive_responder_identity(&ENTROPY).unwrap();
+        let (identity, _) = derive_responder_identity(&ENTROPY, "dot").unwrap();
         assert_eq!(identity.statement_public_key, local_identity);
 
         let (_, host_encryption_public_key) =
@@ -1966,7 +1970,7 @@ mod tests {
             create_transaction_confirmed: true,
             ..StubPlatform::default()
         }));
-        let identity = derive_identity_keypair(&ENTROPY).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY, "dot").unwrap();
         let payload = api::LegacyAccountTxPayload {
             signer: identity.public.to_bytes(),
             genesis_hash: [0xaa; 32],

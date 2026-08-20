@@ -30,7 +30,8 @@ use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
 use crate::runtime::{
     ChatConnection, LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost,
-    ResponderExit, RuntimeServices, SigningHostRole, answer_remote_message, respond_to_pairing,
+    ResponderExit, RuntimeServices, SigningHostRole, answer_remote_message, dotns_tld,
+    respond_to_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -117,6 +118,7 @@ impl PairingHostRuntime {
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            dotns_tld(&config.host),
             chat_platform,
         );
         let pairing_host = PairingHostRole::new(services.clone(), config);
@@ -405,6 +407,7 @@ impl SigningHostRuntime {
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
+            dotns_tld(&config.host),
             chat_platform,
         );
         let signing_host = SigningHostRole::new(services.clone());

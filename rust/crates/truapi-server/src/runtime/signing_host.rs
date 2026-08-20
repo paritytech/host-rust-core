@@ -150,6 +150,7 @@ impl SigningHost {
             [0; 32],
             [0xbb; 32],
             crate::test_support::test_spawner(),
+            "dot".to_string(),
         );
         Arc::new(Self {
             services,
@@ -302,7 +303,7 @@ impl SigningHost {
 
     fn identity_keypair(&self) -> Result<schnorrkel::Keypair, AuthorityError> {
         let entropy = self.root_entropy()?;
-        derive_identity_keypair(&entropy).map_err(product_authority_error)
+        derive_identity_keypair(&entropy, &self.services.dotns_tld).map_err(product_authority_error)
     }
 
     fn install_local_session(&self, secret: Zeroizing<Vec<u8>>, session: SessionInfo) {
@@ -398,11 +399,11 @@ impl SigningHost {
         Ok(vec![
             CollectionCandidate {
                 collection: PersonhoodCollection::People,
-                entropy: derive_full_person_ring_vrf_entropy(&root),
+                entropy: derive_full_person_ring_vrf_entropy(&root, &self.services.dotns_tld),
             },
             CollectionCandidate {
                 collection: PersonhoodCollection::LitePeople,
-                entropy: derive_lite_person_ring_vrf_entropy(&root),
+                entropy: derive_lite_person_ring_vrf_entropy(&root, &self.services.dotns_tld),
             },
         ])
     }
@@ -1311,6 +1312,7 @@ mod tests {
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             test_spawner(),
+            "dot".to_string(),
         );
         let signing_host = SigningHostRole::new(services.clone());
         (services, signing_host)
@@ -1649,7 +1651,7 @@ mod tests {
             .expect("activation succeeds");
 
         let session = authority.current_session().expect("active session");
-        let identity = derive_identity_keypair(&ENTROPY)
+        let identity = derive_identity_keypair(&ENTROPY, "dot")
             .expect("uid.dot identity derivation")
             .public
             .to_bytes();
@@ -2094,7 +2096,7 @@ mod tests {
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
         let cx = CallContext::default();
-        let identity = derive_identity_keypair(&ENTROPY).unwrap();
+        let identity = derive_identity_keypair(&ENTROPY, "dot").unwrap();
         let request = |account| SignRawAuthorityRequest::LegacyAccount {
             account,
             request: v01::HostSignRawWithLegacyAccountRequest {

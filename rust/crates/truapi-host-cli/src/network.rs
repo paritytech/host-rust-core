@@ -25,6 +25,7 @@ impl Network {
         match self {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
+                tld: "paseo",
                 identity_backend_base: "https://identity-backend-next.parity-testnet.parity.io/api/v1",
                 people_ws: "wss://paseo-people-next-system-rpc.polkadot.io",
                 bulletin_ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
@@ -42,6 +43,7 @@ impl Network {
             },
             Self::Previewnet => NetworkConfig {
                 id: "previewnet",
+                tld: "test",
                 identity_backend_base: "https://polkadot-app-stg.parity.io/api/v1",
                 people_ws: "wss://previewnet.substrate.dev/people",
                 bulletin_ws: "wss://previewnet.substrate.dev/bulletin",
@@ -113,6 +115,8 @@ const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkConfig {
     pub id: &'static str,
+    /// dotNS TLD the network's registry declares, mirroring its `tld()` view.
+    pub tld: &'static str,
     pub identity_backend_base: &'static str,
     pub people_ws: &'static str,
     #[allow(dead_code)]
@@ -155,6 +159,7 @@ impl NetworkConfig {
     pub fn host_chain_set(&self) -> HostChainSet {
         HostChainSet {
             network: self.id.to_string(),
+            tld: Some(self.tld.to_string()),
             chains: vec![
                 HostChainEntry {
                     identifier: ChainIdentifier::People,

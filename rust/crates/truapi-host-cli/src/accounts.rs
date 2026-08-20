@@ -374,7 +374,7 @@ async fn create_auto_account(
     let mnemonic = Mnemonic::generate(12)
         .context("generate BIP-39 mnemonic")?
         .to_string();
-    let identity = identity_from_mnemonic(&mnemonic)?;
+    let identity = identity_from_mnemonic(&mnemonic, network.tld)?;
 
     for attempt in 0..8 {
         let lite_username = generated_username(username_prefix, attempt);
@@ -408,7 +408,7 @@ async fn create_auto_account(
         );
 
         record.lite_username = attest_record(network, &record).await?;
-        wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+        wait_for_ring_membership(network.people_ws, &identity.entropy, network.tld).await?;
         record.attested = true;
         store.upsert(record.clone());
         store.save()?;
@@ -423,16 +423,19 @@ async fn ensure_record_ready(
     network: NetworkConfig,
     record: &AccountRecord,
 ) -> Result<AccountRecord> {
-    let identity = identity_from_mnemonic(&record.mnemonic)?;
+    let identity = identity_from_mnemonic(&record.mnemonic, network.tld)?;
     let mut record = record.clone();
     if !record.attested {
         record.lite_username = attest_record(network, &record).await?;
         record.attested = true;
     } else {
-        record.lite_username =
-            attestation::registered_lite_username(network.people_ws, &identity.entropy)
-                .await
-                .with_context(|| format!("resolve Lite username for account {}", record.name))?;
+        record.lite_username = attestation::registered_lite_username(
+            network.people_ws,
+            &identity.entropy,
+            network.tld,
+        )
+        .await
+        .with_context(|| format!("resolve Lite username for account {}", record.name))?;
     }
     if store
         .get(network.id, &record.name)
@@ -441,7 +444,7 @@ async fn ensure_record_ready(
         store.upsert(record.clone());
         store.save()?;
     }
-    wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
+    wait_for_ring_membership(network.people_ws, &identity.entropy, network.tld).await?;
     Ok(record)
 }
 
@@ -452,6 +455,7 @@ async fn attest_record(network: NetworkConfig, record: &AccountRecord) -> Result
         people_ws: network.people_ws.to_string(),
         entropy,
         username_base: record.lite_username.clone(),
+        dotns_tld: network.tld.to_string(),
     })
     .await
     .with_context(|| format!("attest account {}", record.name))?;
@@ -473,24 +477,24 @@ fn resolved_lite_username(username: &str) -> bool {
 /// Every personhood collection candidate for `entropy`, widest slot budget first.
 ///
 /// Both are always offered; membership is settled on chain, not from local state.
-pub(crate) fn collection_candidates(entropy: &[u8]) -> Vec<alloc::CollectionCandidate> {
+pub(crate) fn collection_candidates(entropy: &[u8], tld: &str) -> Vec<alloc::CollectionCandidate> {
     vec![
         alloc::CollectionCandidate {
             collection: PersonhoodCollection::People,
-            entropy: derive_full_person_ring_vrf_entropy(entropy),
+            entropy: derive_full_person_ring_vrf_entropy(entropy, tld),
         },
         alloc::CollectionCandidate {
             collection: PersonhoodCollection::LitePeople,
-            entropy: derive_lite_person_ring_vrf_entropy(entropy),
+            entropy: derive_lite_person_ring_vrf_entropy(entropy, tld),
         },
     ]
 }
 
-async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()> {
+async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8], tld: &str) -> Result<()> {
     const MAX_ATTEMPTS: usize = 10;
     const SLEEP: Duration = Duration::from_secs(4);
 
-    let candidates = collection_candidates(entropy);
+    let candidates = collection_candidates(entropy, tld);
     let mut metadata = None;
     for attempt in 1..=MAX_ATTEMPTS {
         crate::terminal_ui::update_activity(
@@ -587,10 +591,10 @@ struct SignerIdentity {
     address: String,
 }
 
-fn identity_from_mnemonic(mnemonic: &str) -> Result<SignerIdentity> {
+fn identity_from_mnemonic(mnemonic: &str, tld: &str) -> Result<SignerIdentity> {
     let entropy = mnemonic_entropy(mnemonic)?;
-    let candidate = derive_identity_keypair(&entropy)
-        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let candidate = derive_identity_keypair(&entropy, tld)
+        .map_err(|err| anyhow::anyhow!("identity derivation failed: {err}"))?;
     let public_key = candidate.public.to_bytes();
     Ok(SignerIdentity {
         entropy,

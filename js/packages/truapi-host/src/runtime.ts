@@ -92,6 +92,11 @@ export interface ProductRuntimeConfig {
     /** URI scheme used for wallet pairing deeplinks. */
     deeplinkScheme: string;
   };
+  /**
+   * dotNS TLD of the host's configured network, scoping the reserved
+   * built-in derivations. Defaults to `dot`.
+   */
+  dotnsTld?: string;
 }
 
 export interface TrUApiProductProvider extends WireProvider, CoreAdmin {

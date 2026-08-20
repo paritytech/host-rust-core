@@ -3893,6 +3893,11 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
      * Optional lite username attached to the local signing-host session.
      */
     public var localSessionLiteUsername: String?
+    /**
+     * dotNS TLD of the host's configured network, scoping the reserved
+     * built-in derivations. `None` means `dot`.
+     */
+    public var dotnsTld: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3923,7 +3928,11 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
          */localSessionSecret: Data?,
         /**
          * Optional lite username attached to the local signing-host session.
-         */localSessionLiteUsername: String?) {
+         */localSessionLiteUsername: String?,
+        /**
+         * dotNS TLD of the host's configured network, scoping the reserved
+         * built-in derivations. `None` means `dot`.
+         */dotnsTld: String?) {
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
@@ -3933,6 +3942,7 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
         self.bulletinChainGenesisHash = bulletinChainGenesisHash
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
+        self.dotnsTld = dotnsTld
     }
 
 
@@ -3959,7 +3969,8 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
                 bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
                 localSessionSecret: FfiConverterOptionData.read(from: &buf),
-                localSessionLiteUsername: FfiConverterOptionString.read(from: &buf)
+                localSessionLiteUsername: FfiConverterOptionString.read(from: &buf),
+                dotnsTld: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -3973,6 +3984,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterData.write(value.bulletinChainGenesisHash, into: &buf)
         FfiConverterOptionData.write(value.localSessionSecret, into: &buf)
         FfiConverterOptionString.write(value.localSessionLiteUsername, into: &buf)
+        FfiConverterOptionString.write(value.dotnsTld, into: &buf)
     }
 }
 
@@ -4113,6 +4125,11 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
      * Deeplink scheme used in pairing QR payloads.
      */
     public var pairingDeeplinkScheme: NativePairingDeeplinkScheme
+    /**
+     * dotNS TLD of the host's configured network, scoping the reserved
+     * built-in derivations. `None` means `dot`.
+     */
+    public var dotnsTld: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -4152,7 +4169,11 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          */localSessionLiteUsername: String?,
         /**
          * Deeplink scheme used in pairing QR payloads.
-         */pairingDeeplinkScheme: NativePairingDeeplinkScheme) {
+         */pairingDeeplinkScheme: NativePairingDeeplinkScheme,
+        /**
+         * dotNS TLD of the host's configured network, scoping the reserved
+         * built-in derivations. `None` means `dot`.
+         */dotnsTld: String?) {
         self.productId = productId
         self.executionKind = executionKind
         self.hostName = hostName
@@ -4165,6 +4186,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
         self.localSessionSecret = localSessionSecret
         self.localSessionLiteUsername = localSessionLiteUsername
         self.pairingDeeplinkScheme = pairingDeeplinkScheme
+        self.dotnsTld = dotnsTld
     }
 
 
@@ -4194,7 +4216,8 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
                 bulletinChainGenesisHash: FfiConverterData.read(from: &buf),
                 localSessionSecret: FfiConverterOptionData.read(from: &buf),
                 localSessionLiteUsername: FfiConverterOptionString.read(from: &buf),
-                pairingDeeplinkScheme: FfiConverterTypeNativePairingDeeplinkScheme.read(from: &buf)
+                pairingDeeplinkScheme: FfiConverterTypeNativePairingDeeplinkScheme.read(from: &buf),
+                dotnsTld: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -4211,6 +4234,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterOptionData.write(value.localSessionSecret, into: &buf)
         FfiConverterOptionString.write(value.localSessionLiteUsername, into: &buf)
         FfiConverterTypeNativePairingDeeplinkScheme.write(value.pairingDeeplinkScheme, into: &buf)
+        FfiConverterOptionString.write(value.dotnsTld, into: &buf)
     }
 }
 
@@ -4978,6 +5002,14 @@ enum NativeRuntimeConfigError: Swift.Error, Equatable, Hashable, Foundation.Loca
          */reason: String
     )
     /**
+     * Configured dotNS TLD is not a recognized entry.
+     */
+    case UnknownDotnsTld(
+        /**
+         * Rejected TLD value.
+         */tld: String
+    )
+    /**
      * Host icon URL used a non-HTTPS scheme.
      */
     case InsecureHostIcon(
@@ -5050,16 +5082,19 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
         case 4: return .InvalidHostIcon(
             reason: try FfiConverterString.read(from: &buf)
             )
-        case 5: return .InsecureHostIcon(
+        case 5: return .UnknownDotnsTld(
+            tld: try FfiConverterString.read(from: &buf)
+            )
+        case 6: return .InsecureHostIcon(
             scheme: try FfiConverterString.read(from: &buf)
             )
-        case 6: return .InvalidDeeplinkScheme(
+        case 7: return .InvalidDeeplinkScheme(
             scheme: try FfiConverterString.read(from: &buf)
             )
-        case 7: return .InvalidProductId(
+        case 8: return .InvalidProductId(
             productId: try FfiConverterString.read(from: &buf)
             )
-        case 8: return .LocalSessionActivation(
+        case 9: return .LocalSessionActivation(
             reason: try FfiConverterString.read(from: &buf)
             )
 
@@ -5094,23 +5129,28 @@ public struct FfiConverterTypeNativeRuntimeConfigError: FfiConverterRustBuffer {
             FfiConverterString.write(reason, into: &buf)
 
 
-        case let .InsecureHostIcon(scheme):
+        case let .UnknownDotnsTld(tld):
             writeInt(&buf, Int32(5))
-            FfiConverterString.write(scheme, into: &buf)
+            FfiConverterString.write(tld, into: &buf)
 
 
-        case let .InvalidDeeplinkScheme(scheme):
+        case let .InsecureHostIcon(scheme):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(scheme, into: &buf)
 
 
-        case let .InvalidProductId(productId):
+        case let .InvalidDeeplinkScheme(scheme):
             writeInt(&buf, Int32(7))
+            FfiConverterString.write(scheme, into: &buf)
+
+
+        case let .InvalidProductId(productId):
+            writeInt(&buf, Int32(8))
             FfiConverterString.write(productId, into: &buf)
 
 
         case let .LocalSessionActivation(reason):
-            writeInt(&buf, Int32(8))
+            writeInt(&buf, Int32(9))
             FfiConverterString.write(reason, into: &buf)
 
         }

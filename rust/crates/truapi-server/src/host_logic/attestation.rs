@@ -82,13 +82,14 @@ pub fn build_lite_registration(
     entropy: &[u8],
     verifier_account_id: [u8; 32],
     username_base: &str,
+    dotns_tld: &str,
 ) -> Result<LiteRegistration, LiteRegistrationError> {
     // Registration, local activation, and the SSO responder all use the
-    // RFC-0022 `uid.dot` default product account.
-    let candidate = derive_identity_keypair(entropy)?;
+    // RFC-0022 `uid.{tld}` default product account.
+    let candidate = derive_identity_keypair(entropy, dotns_tld)?;
     let candidate_public_key = candidate.public.to_bytes();
 
-    let vrf_entropy = derive_lite_person_ring_vrf_entropy(entropy);
+    let vrf_entropy = derive_lite_person_ring_vrf_entropy(entropy, dotns_tld);
     let vrf_secret = BandersnatchVrfVerifiable::new_secret(vrf_entropy);
     let ring_vrf_key = BandersnatchVrfVerifiable::member_from_secret(&vrf_secret);
 
@@ -172,13 +173,16 @@ mod tests {
     #[test]
     fn registration_params_have_expected_shapes_and_verify() {
         let verifier = [0x11u8; 32];
-        let reg = build_lite_registration(&ENTROPY, verifier, "headlesstester").unwrap();
+        let reg = build_lite_registration(&ENTROPY, verifier, "headlesstester", "dot").unwrap();
         assert_eq!(
             reg.candidate_public_key,
-            derive_identity_keypair(&ENTROPY).unwrap().public.to_bytes(),
+            derive_identity_keypair(&ENTROPY, "dot")
+                .unwrap()
+                .public
+                .to_bytes(),
             "registration uses the canonical uid.dot identity account"
         );
-        let lite_entropy = derive_lite_person_ring_vrf_entropy(&ENTROPY);
+        let lite_entropy = derive_lite_person_ring_vrf_entropy(&ENTROPY, "dot");
         assert_eq!(
             reg.ring_vrf_key,
             BandersnatchVrfVerifiable::member_from_secret(&BandersnatchVrfVerifiable::new_secret(
@@ -266,8 +270,8 @@ mod tests {
     #[test]
     fn registration_is_deterministic_per_entropy_and_username() {
         let verifier = [0x22u8; 32];
-        let first = build_lite_registration(&ENTROPY, verifier, "aliceheadless").unwrap();
-        let again = build_lite_registration(&ENTROPY, verifier, "aliceheadless").unwrap();
+        let first = build_lite_registration(&ENTROPY, verifier, "aliceheadless", "dot").unwrap();
+        let again = build_lite_registration(&ENTROPY, verifier, "aliceheadless", "dot").unwrap();
         assert_eq!(first.candidate_public_key, again.candidate_public_key);
         assert_eq!(first.ring_vrf_key, again.ring_vrf_key);
         assert_eq!(first.candidate_account_id, again.candidate_account_id);

@@ -54,6 +54,9 @@ pub struct HostRuntimeConfig {
     pub host_info: HostInfo,
     /// Platform metadata.
     pub platform_info: PlatformInfo,
+    /// dotNS TLD of the host's configured network, scoping the reserved
+    /// built-in derivations (`uid.{tld}`, `peopl.{tld}`). `None` means `dot`.
+    pub dotns_tld: Option<String>,
 }
 
 /// Pairing-host runtime configuration supplied by the embedding host.
@@ -162,11 +165,29 @@ impl HostRuntimeConfig {
         Ok(Self {
             host_info,
             platform_info,
+            dotns_tld: None,
         })
+    }
+
+    /// Scope the reserved built-in derivations to `tld`, the dotNS TLD the
+    /// host's network declares. Must be a recognized entry of [`DOTNS_TLDS`].
+    pub fn with_dotns_tld(mut self, tld: String) -> Result<Self, RuntimeConfigValidationError> {
+        if !DOTNS_TLDS.contains(&tld.as_str()) {
+            return Err(RuntimeConfigValidationError::UnknownDotnsTld { tld });
+        }
+        self.dotns_tld = Some(tld);
+        Ok(self)
     }
 }
 
 impl PairingHostConfig {
+    /// Scope the reserved built-in derivations to `tld`. See
+    /// [`HostRuntimeConfig::with_dotns_tld`].
+    pub fn with_dotns_tld(mut self, tld: String) -> Result<Self, RuntimeConfigValidationError> {
+        self.host = self.host.with_dotns_tld(tld)?;
+        Ok(self)
+    }
+
     /// Build a pairing-host runtime config, validating fields whose
     /// representation cannot be made invalid by Rust types alone.
     pub fn new(
@@ -193,6 +214,13 @@ impl PairingHostConfig {
 }
 
 impl SigningHostConfig {
+    /// Scope the reserved built-in derivations to `tld`. See
+    /// [`HostRuntimeConfig::with_dotns_tld`].
+    pub fn with_dotns_tld(mut self, tld: String) -> Result<Self, RuntimeConfigValidationError> {
+        self.host = self.host.with_dotns_tld(tld)?;
+        Ok(self)
+    }
+
     /// Build a signing-host runtime config, validating fields whose
     /// representation cannot be made invalid by Rust types alone.
     pub fn new(
@@ -802,6 +830,12 @@ pub enum RuntimeConfigValidationError {
         /// Actual URL scheme.
         scheme: String,
     },
+    /// Configured dotNS TLD is not a recognized [`DOTNS_TLDS`] entry.
+    #[display("dotns_tld must be one of the recognized dotNS TLDs, got {tld:?}")]
+    UnknownDotnsTld {
+        /// Rejected TLD value.
+        tld: String,
+    },
     /// Pairing deeplink scheme included a URL separator.
     #[display("pairing_deeplink_scheme must not include ://, got {scheme:?}")]
     InvalidDeeplinkScheme {
@@ -1068,6 +1102,9 @@ pub struct HostChainEntry {
 pub struct HostChainSet {
     /// Ecosystem the host is configured for, e.g. "polkadot", "paseo".
     pub network: String,
+    /// dotNS TLD the network's registry declares via its `tld()` view, e.g.
+    /// `dot`, `paseo`, `test`. `None` when the host does not know it.
+    pub tld: Option<String>,
     /// Chains this host serves, keyed by protocol role.
     pub chains: Vec<HostChainEntry>,
 }

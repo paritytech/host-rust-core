@@ -14,7 +14,9 @@ use crate::dispatcher::Dispatcher;
 use crate::frame::ProtocolMessage;
 use crate::generated::dispatcher;
 use crate::host_logic::session::SessionState;
-use crate::runtime::{PairingHostRole, ProductAuthority, ProductRuntimeHost, RuntimeServices};
+use crate::runtime::{
+    PairingHostRole, ProductAuthority, ProductRuntimeHost, RuntimeServices, dotns_tld,
+};
 use crate::subscription::Spawner;
 use crate::transport::Transport;
 
@@ -60,6 +62,7 @@ impl TrUApiCore {
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            dotns_tld(&host_config.host),
         );
         let pairing_host = PairingHostRole::new(services.clone(), host_config);
         pairing_host.clone().start_session_store_sync(spawner);
