@@ -66,9 +66,18 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for ChainProviderError {
 /// New variants may be added, so a Swift host should carry an `@unknown
 /// default` and a Kotlin host an `else` branch.
 ///
-/// Reconnecting is done from another thread: a listener callback runs on the
-/// pump thread, and `ChainProvider::connect` refuses to run there. `send` and
-/// `disconnect` on an existing connection are fine from a callback.
+/// Reconnecting is done from another thread, and a serial one: a listener
+/// callback runs on the pump thread, and `ChainProvider::connect` refuses to
+/// run there. Hopping to a concurrent queue lets reconnects run in parallel,
+/// and each one costs a thread plus a chain-spec parse.
+///
+/// Do not re-queue work with `send` from `on_closed`. By then the connection
+/// is closed either way: `close()` is what ended the stream on `StreamEnded`,
+/// and the pump closes it before reporting `ListenerFailed`. `send` on a
+/// closed connection is dropped silently, with no error and no frame for the
+/// request's id, so a consumer correlating by id would wait forever. From `on_message`, where the
+/// connection is still open, `send` behaves normally. `disconnect` is
+/// idempotent and safe to call from either callback.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum ChainCloseReason {
     /// The response stream ended.
@@ -101,18 +110,19 @@ thread_local! {
 }
 
 /// Marks the pump thread for the length of one connection's pumping.
-struct PumpGuard;
+struct PumpGuard(bool);
 
 impl PumpGuard {
     fn enter() -> Self {
-        PUMPING.set(true);
-        Self
+        Self(PUMPING.replace(true))
     }
 }
 
 impl Drop for PumpGuard {
     fn drop(&mut self) {
-        PUMPING.set(false);
+        // Restore rather than clear: the spawn site and `pump_responses` both
+        // hold one, and an inner drop must not clear the outer's flag.
+        PUMPING.set(self.0);
     }
 }
 
@@ -198,8 +208,14 @@ impl ChainProvider {
         // Named for crash reports, and fallible: under EAGAIN the unnamed
         // `thread::spawn` panics, which this method has a `Result` to avoid.
         std::thread::Builder::new()
-            .name("truapi-chain-pump".to_string())
-            .spawn(move || block_on(pump_responses(responses, pumped, listener)))
+            .name("truapi-pump".to_string())
+            .spawn(move || {
+                // Entered here, not inside `pump_responses`: the guard must outlive
+                // the future, because dropping `listener` releases the foreign object
+                // and runs its destructor on this thread, still inside `block_on`.
+                let _pumping = PumpGuard::enter();
+                block_on(pump_responses(responses, pumped, listener))
+            })
             .map_err(|error| ChainProviderError::Connect {
                 reason: format!("could not start the response pump: {error}"),
             })?;
@@ -229,6 +245,9 @@ async fn pump_responses(
             if let Some(connection) = connection.upgrade() {
                 connection.close();
             }
+            // Load-bearing, not redundant with the `From` impl: a listener that
+            // throws a *declared* `ChainProviderError` is lifted by uniffi directly,
+            // never crossing that impl, so this is the only bound on that path.
             reason = ChainCloseReason::ListenerFailed {
                 reason: bounded_reason(error.to_string()),
             };
@@ -504,6 +523,27 @@ mod tests {
         );
     }
 
+    /// The spawn site and `pump_responses` both hold a guard, so an inner drop
+    /// must restore rather than clear: the outer one has to survive the drop of
+    /// the listener `Arc`, which runs foreign destructor code on this thread
+    /// while `block_on` is still entered.
+    #[test]
+    fn a_nested_pump_guard_does_not_clear_the_outer_flag() {
+        assert!(!PUMPING.get());
+        let outer = PumpGuard::enter();
+        assert!(PUMPING.get());
+        {
+            let _inner = PumpGuard::enter();
+            assert!(PUMPING.get());
+        }
+        assert!(
+            PUMPING.get(),
+            "an inner guard's drop must not clear a flag the outer guard still owns"
+        );
+        drop(outer);
+        assert!(!PUMPING.get());
+    }
+
     #[test]
     fn connecting_from_a_listener_callback_is_refused_rather_than_aborting() {
         // The pump thread is already inside `block_on`, and `connect` blocks
@@ -580,7 +620,7 @@ mod tests {
             delivered: Mutex::new(Vec::new()),
             closed: Mutex::new(None),
             closes: Mutex::new(0),
-            reason: "\u{4e2d}".repeat(CLOSE_REASON_MAX_CHARS * 4),
+            reason: format!("HEAD{}", "\u{1f600}".repeat(CLOSE_REASON_MAX_CHARS * 2)),
         });
         let connection = Arc::new(ClosingConnection {
             closed: Mutex::new(false),
@@ -602,9 +642,41 @@ mod tests {
             reason.len() > CLOSE_REASON_MAX_CHARS,
             "counted in characters, not bytes"
         );
+        // The head is what names the failure, so a bound that kept the tail
+        // would leave a host with an anonymous string.
+        assert!(
+            reason.starts_with("HEAD"),
+            "the bound keeps the head, not the tail"
+        );
+        // Astral chars are two UTF-16 code units each, so a bound counted in
+        // those would land on half as many scalars.
+        assert!(
+            reason.encode_utf16().count() > CLOSE_REASON_MAX_CHARS,
+            "counted in scalar values, not UTF-16 code units"
+        );
         // The number is the contract a host reads in the doc, so pin the value
         // and not only the relationship to itself.
         assert_eq!(CLOSE_REASON_MAX_CHARS, 256);
+    }
+
+    /// The impl exists so an undeclared foreign exception becomes a rejection
+    /// instead of the generic converter's panic, which `panic = "abort"` would
+    /// turn into a process kill. It also bounds the reason on that path.
+    #[test]
+    fn an_undeclared_foreign_error_converts_and_is_bounded() {
+        let thrown = format!("HEAD{}", "\u{1f600}".repeat(CLOSE_REASON_MAX_CHARS * 2));
+        let error =
+            ChainProviderError::from(uniffi::UnexpectedUniFFICallbackError::new(thrown.clone()));
+
+        let ChainProviderError::Listener { reason } = error else {
+            panic!("an undeclared foreign error is reported as a listener rejection");
+        };
+        assert_eq!(reason.chars().count(), CLOSE_REASON_MAX_CHARS);
+        assert!(reason.starts_with("HEAD"), "the bound keeps the head");
+        assert!(
+            thrown.chars().count() > CLOSE_REASON_MAX_CHARS,
+            "the fixture has to exceed the bound for this to mean anything"
+        );
     }
 
     #[test]

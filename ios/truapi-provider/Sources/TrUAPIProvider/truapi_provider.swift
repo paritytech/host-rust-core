@@ -1106,9 +1106,18 @@ public func FfiConverterTypeChainProvider_lower(_ value: ChainProvider) -> UInt6
  * New variants may be added, so a Swift host should carry an `@unknown
  * default` and a Kotlin host an `else` branch.
  *
- * Reconnecting is done from another thread: a listener callback runs on the
- * pump thread, and `ChainProvider::connect` refuses to run there. `send` and
- * `disconnect` on an existing connection are fine from a callback.
+ * Reconnecting is done from another thread, and a serial one: a listener
+ * callback runs on the pump thread, and `ChainProvider::connect` refuses to
+ * run there. Hopping to a concurrent queue lets reconnects run in parallel,
+ * and each one costs a thread plus a chain-spec parse.
+ *
+ * Do not re-queue work with `send` from `on_closed`. By then the connection
+ * is closed either way: `close()` is what ended the stream on `StreamEnded`,
+ * and the pump closes it before reporting `ListenerFailed`. `send` on a
+ * closed connection is dropped silently, with no error and no frame for the
+ * request's id, so a consumer correlating by id would wait forever. From `on_message`, where the
+ * connection is still open, `send` behaves normally. `disconnect` is
+ * idempotent and safe to call from either callback.
  */
 
 public enum ChainCloseReason: Equatable, Hashable {
