@@ -74,6 +74,81 @@ Run the package tests against an iOS simulator (the xcframework has no macOS sli
 xcodebuild test -scheme TrUAPIHost -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
 
+## Chat
+
+A host serving the Chat modality implements `ChatHostBridge` and opens the
+execution with `ProductExecutionKind.chat`. Hosts without it pass nothing and
+Chat calls answer unsupported.
+
+```swift
+// Called from a shared dispatch pool, so the backing store must be
+// thread-safe, and a slow call here stalls other product executions.
+final class MyChatBridge: ChatHostBridge, @unchecked Sendable {
+    private let store: ChatStore
+
+    init(store: ChatStore) { self.store = store }
+
+    func createRoom(roomId: String, name: String, icon: String) throws
+        -> ChatRoomRegistrationStatus
+    {
+        store.putRoom(roomId, name: name, icon: icon) ? .new : .exists
+    }
+
+    func registerBot(botId: String, name: String, icon: String) throws
+        -> ChatBotRegistrationStatus
+    {
+        store.putBot(botId, name: name, icon: icon) ? .new : .exists
+    }
+
+    func postMessage(roomId: String, content: ChatMessageContent) throws -> String {
+        if case .file = content {
+            // Declining a variant is how a host opts out of rendering one.
+            // Throw `HostRejection.Rejected` (or a `LocalizedError`) so the
+            // product receives your reason rather than a bare type name.
+            throw HostRejection.Rejected(reason: "this host cannot render file cards")
+        }
+        return store.append(roomId, content: content)
+    }
+
+    func listRooms() throws -> [ChatRoom] { store.rooms() }
+}
+
+let runtime = try TrUAPIHostRuntime(
+    bridge: bridge,
+    runtimeConfig: HostRuntimeConfig(
+        hostName: "My Chat Host",
+        peopleChainGenesisHash: peopleChainGenesisHash,   // exactly 32 bytes
+        bulletinChainGenesisHash: bulletinChainGenesisHash
+    )
+)
+// Chat needs an active session; without one every Chat call answers denied.
+try runtime.activateLocalSession(secret: secret)
+
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(productId: "chat.dot", executionKind: .chat),
+    chat: MyChatBridge(store: store)
+)
+let endpoint = try execution.startWsBridge()
+```
+
+The core bounds and screens the product-supplied fields it forwards — ids,
+names, icons, message bodies, URLs, and the action and media counts. Ids and
+names are also normalized; a message body is bounded and screened but passed
+through byte-for-byte, and `ChatFile.sizeBytes` is product-asserted and
+unverified. Contextual output escaping is the host's job.
+
+The id `postMessage` returns is the correlation key `ActionTrigger.messageId`
+carries back, so it must name that message for as long as the host stores it.
+Ids arriving *in* a `Reaction` or `ReactionRemoved` are product-chosen and
+untrusted: they may name a message in another room, or one that never existed.
+
+On the execution: `publishChatAction` delivers a user's action back to the
+product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
+republishes the room list; `renderCustomMessage` returns a stream of typed UI
+for a stored custom message; and `sessionChatIdentityKey` reads the session's
+X25519 chat identity private key, which must not be logged or persisted.
+
 ## Architecture
 
 ```text

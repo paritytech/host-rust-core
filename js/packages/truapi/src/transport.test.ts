@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
-import { createIframeProvider, createMessagePortProvider } from "./transport.js";
+import {
+    createIframeProvider,
+    createMessagePortProvider,
+    createWebSocketProvider,
+} from "./transport.js";
 
 /**
  * Install a minimal stub for the global `window` used by `createIframeProvider`.
@@ -139,5 +143,75 @@ describe("createMessagePortProvider", () => {
 
         // Free the receiver port so the runtime exits cleanly.
         port2.close();
+    });
+});
+
+describe("createWebSocketProvider", () => {
+    const servers: ReturnType<typeof Bun.serve>[] = [];
+
+    afterEach(() => {
+        for (const server of servers.splice(0)) server.stop(true);
+    });
+
+    /** Echo server on a loopback port, standing in for a host's frame socket. */
+    function echoServer() {
+        const server = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request, server) {
+                if (server.upgrade(request)) return;
+                return new Response("websocket upgrade required", { status: 426 });
+            },
+            websocket: {
+                message(socket, message) {
+                    socket.send(message);
+                },
+            },
+        });
+        servers.push(server);
+        return `ws://127.0.0.1:${server.port}`;
+    }
+
+    it("queues frames posted before the socket opens", async () => {
+        const provider = createWebSocketProvider(echoServer());
+        const received: Uint8Array[] = [];
+        const first = new Promise<void>((resolve) => {
+            provider.subscribe((message) => {
+                received.push(message);
+                if (received.length === 2) resolve();
+            });
+        });
+
+        // Both posted while still connecting, so both have to be buffered.
+        provider.postMessage(Uint8Array.from([1, 2, 3]));
+        provider.postMessage(Uint8Array.from([4, 5]));
+        await provider.opened;
+        await first;
+
+        expect(received.map((frame) => Array.from(frame))).toEqual([
+            [1, 2, 3],
+            [4, 5],
+        ]);
+        provider.dispose();
+    });
+
+    it("reports a server close to close subscribers", async () => {
+        const url = echoServer();
+        const provider = createWebSocketProvider(url);
+        await provider.opened;
+
+        const closed = new Promise<Error>((resolve) => {
+            provider.subscribeClose?.(resolve);
+        });
+        for (const server of servers.splice(0)) server.stop(true);
+
+        expect((await closed).message).toContain(url);
+    });
+
+    it("rejects `opened` when the endpoint is not there", async () => {
+        // Port 1 on loopback is never a frame server, so the connect fails.
+        const provider = createWebSocketProvider("ws://127.0.0.1:1");
+        await expect(provider.opened).rejects.toThrow();
+        expect(() => provider.postMessage(Uint8Array.from([1]))).toThrow();
     });
 });

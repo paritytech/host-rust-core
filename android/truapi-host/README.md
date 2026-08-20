@@ -50,6 +50,80 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
 - `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, local-session activation, permission-authorization status, and native change notifications for session storage, theme, and preimage updates.
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
+- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
+- `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
+
+## Chat
+
+A host serving the Chat modality implements `ChatHostBridge` (`createRoom`, `registerBot`, `postMessage`, `listRooms`) and opens the execution with `ProductExecutionKind.CHAT`:
+
+```kotlin
+import io.parity.truapi.*
+import uniffi.truapi.ChatBotRegistrationStatus
+import uniffi.truapi.ChatMessageContent
+import uniffi.truapi.ChatRoom
+import uniffi.truapi.ChatRoomParticipation
+import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi_server.HostRejection
+
+// Called from a shared dispatch pool, so the backing store must be
+// thread-safe, and a slow call here stalls other product executions.
+class MyChatBridge(private val store: ChatStore) : ChatHostBridge {
+    override fun createRoom(roomId: String, name: String, icon: String) =
+        if (store.putRoom(roomId, name, icon)) ChatRoomRegistrationStatus.NEW
+        else ChatRoomRegistrationStatus.EXISTS
+
+    override fun registerBot(botId: String, name: String, icon: String) =
+        if (store.putBot(botId, name, icon)) ChatBotRegistrationStatus.NEW
+        else ChatBotRegistrationStatus.EXISTS
+
+    override fun postMessage(roomId: String, content: ChatMessageContent): String {
+        if (content is ChatMessageContent.File) {
+            // Declining a variant is how a host opts out of rendering one.
+            throw HostRejection.Rejected("this host cannot render file cards")
+        }
+        return store.append(roomId, content)
+    }
+
+    override fun listRooms(): List<ChatRoom> = store.rooms()
+}
+
+val runtime = TrUAPIHostRuntime(
+    bridge = bridge,
+    runtimeConfig = HostRuntimeConfig(
+        hostName = "My Chat Host",
+        peopleChainGenesisHash = peopleChainGenesisHash,   // exactly 32 bytes
+        bulletinChainGenesisHash = bulletinChainGenesisHash,
+    ),
+)
+// Chat needs an active session; without one every Chat call answers `Denied`.
+runtime.activateLocalSession(secret)
+
+val execution = runtime.openProductExecution(
+    bridge = bridge,
+    configuration = ProductExecutionConfig("chat.dot", ProductExecutionKind.CHAT),
+    chat = MyChatBridge(store),
+)
+val endpoint = execution.startWsBridge()
+webView.evaluateJavascript(
+    LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
+    null,
+)
+```
+
+Chat requires an active session: `openProductExecution` succeeds without one,
+but every Chat call then answers `Denied` until `activateLocalSession` or SSO
+pairing completes.
+
+The core bounds and screens the product-supplied fields it forwards — ids,
+names, icons, message bodies, URLs, and the action and media counts. Ids and
+names are also normalized; a message body is bounded and screened but passed
+through byte-for-byte, and `ChatFile.size_bytes` is product-asserted and
+unverified. Contextual output escaping is the host's job.
+
+`postMessage` receives any `ChatMessageContent` variant; throw from it for one this host cannot render. The id it returns is the correlation key `ActionTrigger.messageId` carries back, so it must name that message for as long as the host stores it.
+
+On the execution: `publishChatAction` delivers a user's action back to the product (buffered until it subscribes), `notifyChatRoomsChanged` republishes the room list, `renderCustomMessage` returns a `Flow` of typed UI for a stored custom message, and `sessionChatIdentityKey` reads the session's X25519 chat identity key.
 
 ## Architecture
 
@@ -371,3 +445,7 @@ the generator. The `codegen` profile is required because uniffi-bindgen scans
 the cdylib's exported metadata symbols, which the `release` profile strips — a
 plain `--release` build produces a stripped library and no bindings. (`make
 uniffi` regenerates the Swift bindings; use `make uniffi-kotlin` for Android.)
+
+No CI job compiles this package. After changing `TrUAPIHost.kt` or the UniFFI
+surface it wraps, run `make android-check` locally — it regenerates the Kotlin
+bindings and compiles the module against them.

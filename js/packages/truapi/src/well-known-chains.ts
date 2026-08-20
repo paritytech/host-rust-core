@@ -22,3 +22,17 @@ export const PASEO_NEXT_V2_INDIVIDUALITY = {
   genesis:
     "0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
 } as const satisfies WellKnownChain;
+
+export const PREVIEWNET_ASSET_HUB = {
+  name: "Previewnet Hub",
+  network: "Testnet",
+  genesis:
+    "0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659",
+} as const satisfies WellKnownChain;
+
+export const PREVIEWNET_INDIVIDUALITY = {
+  name: "Previewnet Individuality",
+  network: "Testnet",
+  genesis:
+    "0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220",
+} as const satisfies WellKnownChain;

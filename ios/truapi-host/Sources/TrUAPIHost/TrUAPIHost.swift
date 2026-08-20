@@ -439,10 +439,19 @@ public protocol HostBridge: AnyObject, Sendable {
 }
 
 /// Native Chat storage and UI surface. Implement and pass to
-/// ``TrUAPIHostRuntime/openProductExecution(bridge:chat:configuration:)``
+/// ``TrUAPIHostRuntime/openProductExecution(bridge:configuration:chat:)``
 /// when the host supports the Chat modality; hosts without it pass nothing.
+/// Native Chat storage and UI surface, called from the process-wide dispatch
+/// pool shared by every product execution: implementations must be safe to
+/// enter concurrently, and one that blocks stalls the others.
+///
+/// Throw ``HostRejection`` (or an error conforming to `LocalizedError`) to
+/// decline a call. A plain `Error` reaches the product as its type name alone,
+/// because a value's stored properties would otherwise cross to it.
 public protocol ChatHostBridge: AnyObject, Sendable {
-    /// Create or resolve a native product Chat room.
+    /// Create or resolve a native product Chat room. The core has bounded and
+    /// normalized these arguments and screened the icon scheme; escaping them
+    /// for the surface that renders them is still the host's job.
     func createRoom(roomId: String, name: String, icon: String) throws
         -> ChatRoomRegistrationStatus
 
@@ -452,15 +461,18 @@ public protocol ChatHostBridge: AnyObject, Sendable {
     func registerBot(botId: String, name: String, icon: String) throws
         -> ChatBotRegistrationStatus
 
-    /// Persist a text message in native Chat storage.
-    func postTextMessage(roomId: String, text: String) throws -> String
-
-    /// Persist a custom message in native Chat storage.
-    func postCustomMessage(
-        roomId: String,
-        messageType: String,
-        payload: Data
-    ) throws -> String
+    /// Persist a product-authored message in native Chat storage. Throw for a
+    /// content variant this host cannot render.
+    ///
+    /// The core has bounded and screened every field, but a body passes
+    /// through byte-for-byte and `ChatFile.sizeBytes` is an unverified product
+    /// assertion, so escaping and sizing remain the host's job.
+    ///
+    /// The returned id is what `ActionTrigger.messageId` carries back, so it
+    /// must name this message for as long as the host stores it. An id
+    /// arriving in a `reaction` or `reactionRemoved` is product-chosen and
+    /// untrusted: it may name a message in another room, or none at all.
+    func postMessage(roomId: String, content: ChatMessageContent) throws -> String
 
     /// Return the current product-scoped native Chat rooms.
     func listRooms() throws -> [ChatRoom]
@@ -512,23 +524,9 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         }
     }
 
-    func postTextMessage(roomId: String, text: String) throws -> String {
+    func postMessage(roomId: String, content: ChatMessageContent) throws -> String {
         try withHostRejection {
-            try bridge.postTextMessage(roomId: roomId, text: text)
-        }
-    }
-
-    func postCustomMessage(
-        roomId: String,
-        messageType: String,
-        payload: Data
-    ) throws -> String {
-        try withHostRejection {
-            try bridge.postCustomMessage(
-                roomId: roomId,
-                messageType: messageType,
-                payload: payload
-            )
+            try bridge.postMessage(roomId: roomId, content: content)
         }
     }
 
@@ -542,7 +540,7 @@ private final class ChatCallbackAdapter: NativeChatCallbacks, @unchecked Sendabl
         } catch let error as HostRejection {
             throw error
         } catch {
-            throw HostRejection.Rejected(reason: error.localizedDescription)
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
         }
     }
 }
@@ -685,7 +683,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostRejection {
             throw error
         } catch {
-            throw HostRejection.Rejected(reason: error.localizedDescription)
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
         }
     }
 
@@ -695,7 +693,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostRejection {
             throw error
         } catch {
-            throw HostRejection.Rejected(reason: error.localizedDescription)
+            throw HostRejection.Rejected(reason: hostRejectionReason(error))
         }
     }
 
@@ -705,7 +703,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostNavigateRejection {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: error.localizedDescription))
+            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
         }
     }
 
@@ -715,7 +713,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostNavigateRejection {
             throw error
         } catch {
-            throw HostNavigateRejection.Navigate(.unknown(reason: error.localizedDescription))
+            throw HostNavigateRejection.Navigate(.unknown(reason: hostRejectionReason(error)))
         }
     }
 
@@ -725,7 +723,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
         } catch let error as HostStorageError {
             throw error
         } catch {
-            throw HostStorageError.Storage(.unknown(reason: error.localizedDescription))
+            throw HostStorageError.Storage(.unknown(reason: hostRejectionReason(error)))
         }
     }
 }
@@ -750,8 +748,8 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     /// modality omit it.
     public func openProductExecution(
         bridge: HostBridge,
-        chat: ChatHostBridge? = nil,
-        configuration: ProductExecutionConfig
+        configuration: ProductExecutionConfig,
+        chat: ChatHostBridge? = nil
     ) throws -> TrUAPIProductExecution {
         let adapter = HostCallbackAdapter(bridge: bridge)
         let chatAdapter = chat.map { ChatCallbackAdapter(bridge: $0) }
@@ -888,6 +886,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
     func notifyChatRoomsChanged(rooms: [ChatRoom])
+    func sessionChatIdentityKey() throws -> Data?
 }
 
 /// One SPA or Chat executable connected to a shared host runtime.
@@ -968,6 +967,10 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func notifyChainClosed(connectionId: UInt32) {
         inner.notifyChainClosed(connectionId: connectionId)
+    }
+
+    public func sessionChatIdentityKey() throws -> Data? {
+        try inner.sessionChatIdentityKey()
     }
 
     public func notifyChatRoomsChanged(rooms: [ChatRoom]) {
@@ -1112,6 +1115,33 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     }
 
 }
+/// Reason text for an error a host threw from a callback.
+///
+/// A value that is not a `LocalizedError` has no author-written description,
+/// and `localizedDescription` renders it as "The operation couldn't be
+/// completed. (Module.Type error 1.)" — which names the host's module and says
+/// nothing about the failure. That string reaches the product, so prefer what
+/// the host actually wrote.
+private func hostRejectionReason(_ error: Error) -> String {
+    let reason: String
+    if let described = (error as? LocalizedError)?.errorDescription {
+        reason = described
+    } else if type(of: error) is NSError.Type {
+        // Foundation writes these, and the text describes the failure rather
+        // than the host's internals.
+        reason = error.localizedDescription
+    } else {
+        // A plain value's `String(describing:)` prints its stored properties,
+        // so only the type name crosses to the product.
+        reason = String(describing: type(of: error))
+    }
+    return String(reason.prefix(hostRejectionReasonMaxCharacters))
+}
+
+/// Bounded: the reason reaches the product, and a host message can carry a
+/// whole failed statement.
+private let hostRejectionReasonMaxCharacters = 256
+
 private func customRendererStream(
     _ subscribe: (CustomRendererStreamObserver) throws -> NativeCustomRendererSubscription
 ) throws -> AsyncThrowingStream<CustomRendererNode, Error> {
