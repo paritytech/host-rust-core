@@ -1,11 +1,23 @@
-# RFC-0028: Host allowance administration
+---
+title: "Host allowance administration"
+type: feature
+status: draft
+author: "@filippovecchiato"
+created: 2026-08-20
+---
+
+# Feature — Host allowance administration on `HostAdmin`
 
 |                 |                                                                                                          |
 | --------------- | -------------------------------------------------------------------------------------------------------- |
-| **RFC Number**  | 28                                                                                                       |
 | **Start Date**  | 2026-08-20                                                                                               |
 | **Description** | A non-secret host-facing surface on `HostAdmin` for administering product allowances, with an explicit host origin so host-initiated work is distinguishable from a product request |
 | **Authors**     | Filippo Vecchiato                                                                                         |
+
+This is a feature proposal rather than a numbered RFC: it adds no product-facing
+protocol method and changes nothing in `rust/crates/truapi/`. The surface is
+host-side, which the crate invariants place in `truapi-platform` and
+`truapi-server`.
 
 ## Summary
 
@@ -20,7 +32,7 @@ prompt to administer their own allowances.
 
 ## Motivation
 
-[RFC-0010](0010-allowance.md) settled that products never manage slot tables, and
+[RFC-0010](../rfcs/0010-allowance.md) settled that products never manage slot tables, and
 stated the consequence in its requirements: "allowance is entirely the Host's
 concern". The product-facing half of that landed as
 `host_request_resource_allocation`. The host-facing half did not. `HostAdmin`
@@ -84,7 +96,7 @@ Three costs follow, and the third is the one that matters.
    close that window, because the runtime is the only party that knows which call
    it originated.
 
-That third cost is the argument for this RFC. The rest is duplication; this is a
+That third cost is the argument for this proposal. The rest is duplication; this is a
 consent decision made by pattern-matching because the API offers no way to state
 it.
 
