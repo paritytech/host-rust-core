@@ -388,6 +388,31 @@ mod tests {
                 expected: Expected::Reject,
             },
             TestCase {
+                name: "test bare",
+                input: "browse.test",
+                expected: dot("browse.test", ""),
+            },
+            TestCase {
+                name: "test mixed case with path",
+                input: "Browse.TEST/Path",
+                expected: dot("browse.test", "Path"),
+            },
+            TestCase {
+                name: "polkadot scheme test host",
+                input: "polkadot://currenthost.test/browse.test",
+                expected: dot("currenthost.test", "browse.test"),
+            },
+            TestCase {
+                name: "test with port is rejected",
+                input: "https://x.test:8443/path",
+                expected: Expected::Reject,
+            },
+            TestCase {
+                name: "test with userinfo is rejected",
+                input: "https://user:pass@x.test/path",
+                expected: Expected::Reject,
+            },
+            TestCase {
                 name: "trim whitespace",
                 input: "  mytestapp.dot/path  ",
                 expected: dot("mytestapp.dot", "path"),
