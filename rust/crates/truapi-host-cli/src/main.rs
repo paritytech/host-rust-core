@@ -219,8 +219,8 @@ enum ExecutionKind {
 impl ExecutionKind {
     fn context(self) -> ProductExecutionKind {
         match self {
-            Self::Spa => ProductExecutionKind::Spa,
-            Self::Chat => ProductExecutionKind::Chat,
+            Self::Spa => ProductExecutionKind::App,
+            Self::Chat => ProductExecutionKind::Worker,
         }
     }
 

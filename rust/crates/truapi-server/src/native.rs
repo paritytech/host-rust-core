@@ -2698,9 +2698,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let connection = crate::runtime::ChatConnection::new();
 
         let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
@@ -2769,9 +2771,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         *callbacks
             .chat_post_rejection
             .lock()

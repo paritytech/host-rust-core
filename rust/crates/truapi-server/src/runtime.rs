@@ -3058,7 +3058,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();
