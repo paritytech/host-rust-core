@@ -37,12 +37,11 @@ Three motivations argue for a well defined design:
 - Distinct identities per TLD reduce confusion across Polkadot App versions
   and web domains, because what the user sees named differently is also keyed
   differently.
-
-The Individuality runtime takes this side for ring contexts:
-[`build_product_context`](https://github.com/paritytech/individuality/blob/be61b7720e5345afff53f28b924f8bc129938e24/support/src/context.rs#L61-L80)
-hashes the preimage `product/{name}.{tld}/{suffix}`, with the network suffix
-an explicit argument. A host that derived ring contexts TLD-free would
-disagree with the chain.
+- The Individuality runtime takes this side for ring contexts:
+  [`build_product_context`](https://github.com/paritytech/individuality/blob/be61b7720e5345afff53f28b924f8bc129938e24/support/src/context.rs#L61-L80)
+  hashes the preimage `product/{name}.{tld}/{suffix}`, with the network suffix
+  an explicit argument. A host that derived ring contexts TLD-free would
+  disagree with the chain.
 
 ## Convention
 
