@@ -22,6 +22,28 @@ namehash("example.dot") = keccak256(namehash("dot") ++ keccak256("example"))
                         = 0x50cef3746492e11fe07821077c650ed11a908315a91b3a85b4a12afd21249605
 ```
 
+#### Motivation
+
+Three motivations argue for a well defined design:
+
+- A test product must not be able to act as the mainnet product. If identity
+  ignores the TLD, `game.test` controls the same accounts, permissions, and
+  storage as `game.dot`, and a throwaway test deployment can mislead users
+  when using real value.
+- A developer who reuses one root mnemonic across networks gets the same
+  product addresses on every network when identity ignores the TLD, which
+  links their activity across networks. Deriving with the TLD keeps those
+  address spaces unlinkable.
+- Distinct identities per TLD reduce confusion across Polkadot App versions
+  and web domains, because what the user sees named differently is also keyed
+  differently.
+
+The Individuality runtime takes this side for ring contexts:
+[`build_product_context`](https://github.com/paritytech/individuality/blob/be61b7720e5345afff53f28b924f8bc129938e24/support/src/context.rs#L61-L80)
+hashes the preimage `product/{name}.{tld}/{suffix}`, with the network suffix
+an explicit argument. A host that derived ring contexts TLD-free would
+disagree with the chain.
+
 ## Convention
 
 Each network declares its own TLD, fixed at registry initialisation and
@@ -31,19 +53,18 @@ of the DotNS protocol registry. The protocol owns the bare label, and the TLD
 is appended when a label is rendered as a full name, so the same label is
 served differently per network.
 
-The served, TLD-full form is for routing only. For identity, the host
-normalizes once through
-[`normalize_product_identifier`](../../rust/crates/truapi-platform/src/lib.rs):
-trim, NFC-normalize, lowercase, strip the recognized TLD listed in
-`DOTNS_TLDS`. `localhost` and `localhost:{port}` pass through. Everything else
-is rejected. All uses above except navigation and username display take the
-canonical result.
+The identity is the full served name, TLD included. `game.test` and
+`game.dot` are different products with different accounts, ring contexts,
+entropy, permissions, and storage. Hosts MUST NOT strip or rewrite the TLD
+when deriving or scoping, so nothing carries over between networks implicitly.
+A product graduating from testnet to mainnet starts fresh, and any carry-over
+MUST be an explicit migration.
 
-The label is the identity, the TLD is routing. Hosts MUST derive and scope by
-the TLD-free canonical form, so a product keeps its accounts, aliases,
-permissions, and storage when it graduates from testnet to mainnet or the user
-switches networks. ENS gets the same continuity with one `.eth` everywhere
-plus a disposable `.test`.
+The host still normalizes the spelling once, through
+[`normalize_product_identifier`](../../rust/crates/truapi-platform/src/lib.rs):
+trim, NFC-normalize, lowercase. A name MUST end in a TLD the host recognizes
+(`DOTNS_TLDS`), with `localhost` and `localhost:{port}` accepted for
+development. Everything else is rejected.
 
 Every party that derives keys MUST apply the identical normalization. The
 [mobile Account Holder](https://github.com/Polkadot-Community-Foundation/polkadot-app-ios-v2)
@@ -57,13 +78,28 @@ drifts, so it MUST NOT be reimplemented outside
 and the
 [reserved-id table](../../rust/crates/truapi-server/src/host_logic/product_account.rs).
 
+#### Open Questions
+
+- The built-in identifiers `uid.dot` and `peopl.dot` are pinned to `.dot` on
+  every network, which gives the user one shared identity account and
+  personhood domain across networks. Consistency with this convention says
+  `uid.{tld}` per network, but that re-pins the mobile interop vectors and
+  needs the Account Holder to move in lockstep.
+- The recognized TLD list is compiled in (`DOTNS_TLDS`) while the registry
+  already exposes the truth per network through `tld()`. The host should
+  eventually learn the TLD from its configured network instead of a hardcoded
+  list.
+- Graduation needs its own design: a product that wants to carry state from
+  testnet to mainnet needs a registered migration or alias, not implicit
+  identity.
+
 #### Use Cases
 
 | Use Case                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Navigation              | A host resolves the name a user typed or followed into the content it should load, via [`NavigateDecision`](../../rust/crates/truapi-server/src/host_logic/dotns.rs). This is the only use that keeps the served name intact, TLD included, because here the name is an address.                                                                                                                                                                                                        |
-| Product accounts        | The account tree of a product hangs off its identifier: `//product//{nameId}/{index}` ([RFC-0022](../rfcs/0022-account-derivations.md)), implemented in [`product_account.rs`](../../rust/crates/truapi-server/src/host_logic/product_account.rs). The built-ins `uid` and `peopl` are reserved identifiers in the same tree.                                                                                                                                                           |
+| Navigation              | A host resolves the name a user typed or followed into the content it should load, via [`NavigateDecision`](../../rust/crates/truapi-server/src/host_logic/dotns.rs). Here the name is an address rather than an identity, and it is used verbatim.                                                                                                                                                                                                                                     |
+| Product accounts        | The account tree of a product hangs off its identifier: `//product//{nameId}/{index}` ([RFC-0022](../rfcs/0022-account-derivations.md)), implemented in [`product_account.rs`](../../rust/crates/truapi-server/src/host_logic/product_account.rs). The built-ins `uid.dot` and `peopl.dot` are reserved identifiers in the same tree.                                                                                                                                                           |
 | Ring contexts           | A personhood proof carries the identifier of the product it was made for, so no other product can replay it. [The ring-VRF signer](../../rust/crates/truapi-server/src/runtime/signing_host/ring_vrf.rs) builds the proof context ([RFC-0004](../rfcs/0004-ringlocation-redesign.md)), and the [ring-VRF registry](../../rust/crates/truapi-server/src/runtime/ring_vrf_registry.rs) records which keys belong to which identifier ([RFC-0024](../rfcs/0024-personhood-as-product.md)). |
 | Per-product entropy     | Each product gets deterministic secret material ([RFC-0007](../rfcs/0007-derive-entropy.md)), and the identifier is what separates one product entropy space from another, in [`entropy.rs`](../../rust/crates/truapi-server/src/host_logic/entropy.rs).                                                                                                                                                                                                                                |
 | Permissions and storage | Everything a host remembers about a product, from consent grants to stored values, sits under a `CoreStorageKey` built from the identifier, in [`truapi-platform`](../../rust/crates/truapi-platform/src/lib.rs).                                                                                                                                                                                                                                                                       |
-| User identity           | The primary username a product may request ([RFC-0015](../rfcs/0015-get-user-id.md)) is itself a name identifier, and it points at the `uid` identity account in [`product_account.rs`](../../rust/crates/truapi-server/src/host_logic/product_account.rs).                                                                                                                                                                                                                             |
+| User identity           | The primary username a product may request ([RFC-0015](../rfcs/0015-get-user-id.md)) is itself a name identifier, and it points at the `uid.dot` identity account in [`product_account.rs`](../../rust/crates/truapi-server/src/host_logic/product_account.rs).                                                                                                                                                                                                                             |

@@ -24,7 +24,7 @@ A proof is a bearer token for its context's alias and a signature is a bearer to
 
 **Personhood is welded into the Host.** RFC-0004 §"Host member-key selection" requires every Host to define the PoP ring collection internally, choose a member key corresponding to the requested `RingLocation`, fall back to the PoP key when correspondence is undeterminable, and tiebreak stably. `truapi-server` implements exactly that with the ring identities compiled in (`rust/crates/truapi-server/src/runtime/signing_host/ring_vrf.rs`: `FULL_PERSON_COLLECTION`, `LITE_PERSON_COLLECTION`, `enum PersonKey { Full, Lite }`). So every change to how a person key is derived, registered, renewed, or recovered is a Host release.
 
-A personhood product must instead own the full and light keys — under RFC-0022, the `peopl` domain of the ring-VRF tree — while telling the Host and Account Holder enough to keep serving the app's own personhood-dependent features, and lending its keys and aliases to other products. The binding constraint across all of it: **no consumer may know which key is used**, not the app and not a calling product.
+A personhood product must instead own the full and light keys — under RFC-0022, the `peopl.dot` domain of the ring-VRF tree — while telling the Host and Account Holder enough to keep serving the app's own personhood-dependent features, and lending its keys and aliases to other products. The binding constraint across all of it: **no consumer may know which key is used**, not the app and not a calling product.
 
 **The obstacle** is that the member keys serve three overlapping classes of work, and only one is not extractable:
 
@@ -108,7 +108,7 @@ fn list_ring_vrf_keys(
 - **Registration declares intent, not membership.** It means "this is the key I will use for that ring", not "the user is a person"; membership is still discovered only by attempting a proof, which returns `NotMember` (RFC-0004). This keeps the registry from being a personhood oracle.
 - **The public key is owner-visible by default, permissioned cross-product**, because a member public key is linkable across every ring it appears in.
 
-RFC-0022 already pins `//peopl//index_bytes(0)` as the full personhood key and `index_bytes(1)` as the light one. Under this RFC those constants are the personhood product's own implementation detail, expressed to everyone else as two registry entries.
+RFC-0022 already pins `//peopl.dot//index_bytes(0)` as the full personhood key and `index_bytes(1)` as the light one. Under this RFC those constants are the personhood product's own implementation detail, expressed to everyone else as two registry entries.
 
 ### Proofs, aliases, and signatures take an explicit key handle
 
@@ -186,18 +186,18 @@ enum RingVrfSignErr {
 
 ### Cross-product discovery
 
-A game product producing a proof with the full personhood key, under its own airdrop context — abstracted by the product SDK, not the Host. It works because `peopl` has allowlisted `game`; see [Using a foreign key](#using-a-foreign-key-means-trusting-the-caller).
+A game product producing a proof with the full personhood key, under its own airdrop context — abstracted by the product SDK, not the Host. It works because `peopl.dot` has allowlisted `game.dot`; see [Using a foreign key](#using-a-foreign-key-means-trusting-the-caller).
 
 ```mermaid
 sequenceDiagram
-  participant G as game
+  participant G as game.dot
   participant H as Host
-  participant P as peopl registry
+  participant P as peopl.dot registry
 
-  G->>H: list_ring_vrf_keys("peopl", Anonymized)
-  H-->>G: [ { handle: (peopl, ?), rings: [People, PeopleLite] } ]
+  G->>H: list_ring_vrf_keys("peopl.dot", Anonymized)
+  H-->>G: [ { handle: (peopl.dot, ?), rings: [People, PeopleLite] } ]
   G->>G: select the entry whose rings contain the People ring
-  G->>H: create_account_proof(handle, game/airdrop, People, message)
+  G->>H: create_account_proof(handle, game.dot/airdrop, People, message)
   H-->>G: proof + contextual_alias + ring_index + ring_revision
 ```
 
@@ -205,7 +205,7 @@ sequenceDiagram
 
 No product needs "try full, fall back to light" today, so this RFC does not specify one. If a product ever does, the fallback belongs in the **product SDK**, not in the Host and not reimplemented per product — the Host no longer has the information to choose, and duplicating the retry across consumers is how the selection contract became fragile in the first place.
 
-**No product should assume a key index of another product.** The index is the owner's implementation detail; consumers select by declared `RingLocation` and treat the handle as opaque. Hardcoding `(peopl, 0)` breaks the moment the owner adds a key.
+**No product should assume a key index of another product.** The index is the owner's implementation detail; consumers select by declared `RingLocation` and treat the handle as opaque. Hardcoding `(peopl.dot, 0)` breaks the moment the owner adds a key.
 
 This is a **convention, not an enforceable rule**, and the RFC does not pretend otherwise. The index is part of the handle, so any caller that can list the registry can read it and hardcode it; `Anonymized` disclosure withholds the member public key, not the index. Hiding the index would mean the handle could no longer name a derivation slot, which is the whole point of it. So this lands as an implementation note for the **product SDK**, which should expose selection-by-ring and never surface a raw index to product code.
 
@@ -335,7 +335,7 @@ A Host holding a current registry snapshot answers `list` locally. `RingVrfProof
 
 > **A Host MUST NOT derive a member secret for a `(product, index)` pair absent from its registry.**
 
-This needs saying because domain entropy makes derivation _unconditional_: given the entropy of `//peopl`, a Host can compute the member secret at index 7, or 4711, or any other, since derivation is pure arithmetic and nothing about holding the entropy distinguishes a meaningful index from a meaningless one. The registry supplies that distinction. Serve an unregistered index and the phone has no record the key exists — it cannot include it in slot assignment, list it in the inventory, or answer "what is this key used for". So the entropy lets a Host **derive** a key the registry already lists; only registration, which always reaches the phone, brings one into **existence**.
+This needs saying because domain entropy makes derivation _unconditional_: given the entropy of `//peopl.dot`, a Host can compute the member secret at index 7, or 4711, or any other, since derivation is pure arithmetic and nothing about holding the entropy distinguishes a meaningful index from a meaningless one. The registry supplies that distinction. Serve an unregistered index and the phone has no record the key exists — it cannot include it in slot assignment, list it in the inventory, or answer "what is this key used for". So the entropy lets a Host **derive** a key the registry already lists; only registration, which always reaches the phone, brings one into **existence**.
 
 #### Answering while the phone is backgrounded
 
@@ -363,7 +363,7 @@ AutoSigning {
 - **Cross-product key use is an all-or-nothing trust decision.** An allowlisted product can do anything the owner's key can do — prove under any context, sign any message — when what an owner wants to express is narrower. The blind-signing risk is contained by whom the owner trusts rather than by what the caller can ask for, which is why this is explicitly an interim position.
 - **Bundling ring VRF entropy into AutoSigning widens one grant.** "Sign transactions without prompting me" and "produce personhood proofs offline" become one decision, and the second is arguably the stronger. Accepted deliberately: two grants would mean two authorization surfaces for what the user experiences as one relationship.
 - **The registry is new distributed state**, agreed between the registering product, the caching Host, and the owning Account Holder; a stale Host returns `KeyNotRegistered` for a key that exists. Idempotent registration and a single authority keep it diagnosable, but it replaces a compile-time constant.
-- **Registration leaks intent.** An anonymized listing still says "`peopl` has a key it intends for the People ring" — not proof of membership, but a consumer learns the user has attempted full personhood before any proof is requested. The one privacy cost accepted for cheap discovery.
+- **Registration leaks intent.** An anonymized listing still says "`peopl.dot` has a key it intends for the People ring" — not proof of membership, but a consumer learns the user has attempted full personhood before any proof is requested. The one privacy cost accepted for cheap discovery.
 - **The silent happy path depends on the manifest RFC**: until the allowlist exists, each cross-product call in the alias flow produces a one-time prompt.
 - **The key handle overloads `ProductAccountId`**, which now names both an sr25519 product account and a ring VRF slot in a different tree at the same `(product, index)`.
 
@@ -379,7 +379,7 @@ AutoSigning {
 ## Prior Art and References
 
 - [RFC-0004 — Redesign `account_create_account_proof`](0004-ringlocation-redesign.md) — `RingLocation`, `ProductProofContext`, the context derivation, and the member-key selection contract this RFC deletes. Its "Out of scope: explicit member-key management … left to a future RFC" is this RFC.
-- **RFC-0022 — Account key derivations** ([PR #296](https://github.com/paritytech/host-rust-core/pull/296)) — the ring-VRF tree, `Either<u32, [u8; 32]>` indices, the reserved `peopl` identity, and the `AutoSigning` payload this RFC extends. Its deferral of well-known alias accounts is resolved here.
+- **RFC-0022 — Account key derivations** ([PR #296](https://github.com/paritytech/host-rust-core/pull/296)) — the ring-VRF tree, `Either<u32, [u8; 32]>` indices, the reserved `peopl.dot` identity, and the `AutoSigning` payload this RFC extends. Its deferral of well-known alias accounts is resolved here.
 - **RFC-0023 — sr25519 VRF signing for product accounts** ([PR #301](https://github.com/paritytech/host-rust-core/pull/301)) — the complementary non-member path, where this RFC's ring VRF path serves members.
 - [RFC-0020 — `signing_create_transaction` and its AP mirror](0020-create-transaction.md) — the pattern of specifying a TrUAPI call together with its AP companion, followed here.
 - [RFC-0010 — W3S Allowance Management](0010-allowance.md) — AutoSigning and the PGAS / Bulletin / SSS flows that consume the person key.
