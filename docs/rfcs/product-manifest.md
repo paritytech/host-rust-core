@@ -170,15 +170,9 @@ type WidgetManifest = CommonExecutableFields & {
 
 type FundingManifest = CommonExecutableFields & {
   kind: "funding";
-  routes: FundingRoute[]; // Destination assets the surface serves. Non-empty.
+  modes: FundingMode[]; // Rails the surface supports. Non-empty.
 };
 
-type FundingRoute = {
-  to: FundingAsset; // Destination asset.
-  modes: FundingMode[]; // Rails serving this asset. Non-empty.
-};
-
-type FundingAsset = "CASH" | "EUR";
 type FundingMode = "CARD" | "BANK" | "CRYPTO";
 
 type WorkerManifest = CommonExecutableFields & {
@@ -198,15 +192,8 @@ type SemVer = [major: number, minor: number, patch: number, build?: string];
 
 - `app` — full-screen App. No extra fields beyond the common ones.
 - `widget` — `dimensions.height` is the list of grid-step heights the widget can render at; the Host picks one per layout. `width` defaults to `1` column. The grid unit and bounds belong to the Host's dashboard spec (see [Future Directions](#future-directions)). By convention `8` in `height` signals a full-screen widget; this RFC does not normalise that convention.
-- `funding` — the web application the Host renders when the user selects this product as a funding source. `routes` lists the destination assets the surface can fund, each with its own `modes`. The Host matches them against the funding flow at hand, tolerating unrecognised values per [Corner cases](#corner-cases). The runtime contract behind the surface is deferred to a dedicated Funding Modality RFC.
+- `funding` — the web application the Host renders when the user selects this product as a funding source. `modes` lists the rails the surface supports; the Host matches them against the funding flow at hand, tolerating unrecognised values per [Corner cases](#corner-cases). The runtime contract behind the surface is deferred to a dedicated Funding Modality RFC.
 - `worker` — background JS worker. `entrypoint` is the module the Host loads inside the worker. `includes` declares which surfaces it serves.
-
-The funding assets:
-
-| Asset ID | Description                                                                                                                                                                                                                                                                                                                                         |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CASH`   | Bearer coinage coins minted by the [coinage pallet](https://github.com/paritytech/individuality/tree/main/pallets/coinage). An instance wraps one fungible asset at one coin unit. The current deployment wraps the external asset registered under [pallet assets](https://github.com/paritytech/polkadot-sdk/tree/master/substrate/frame/assets). |
-| `EUR`    | The euro, the currency issued by the European Central Bank. Its [ISO 4217](https://www.iso.org/iso-4217-currency-codes.html) code is `EUR`.                                                                                                                                                                                                         |
 
 **`appVersion` is a label, not a change signal.** Hosts detect a new deployment from the subname's `contenthash`, not from this field (see [Cache invalidation](#resolving-a-product)). `appVersion` names the release for the user — "update to 1.4.0", "you declined 1.3.2" — so publishers SHOULD keep it meaningful, but nothing about resolution or caching depends on it moving.
 
@@ -230,7 +217,7 @@ A product MAY publish any combination of the executable subnames listed in [Over
 
 - **Any icon failure** — `cid` unreachable, `format` unrecognised, or bytes that do not decode as the declared `format`. Render a placeholder; do not sniff or auto-correct. The root manifest stays valid and the product remains launchable.
 - **Unrecognised grant value in `trustedProducts`.** Ignore that value and keep the recognised ones; the root manifest stays valid. Same for a key naming a product that does not resolve — the entry is inert.
-- **Unrecognised asset or mode value in the Funding manifest `routes`.** An unrecognised mode is ignored. A route whose `to` is unrecognised, or whose recognised `modes` set is empty, is inert. The manifest stays valid. If no usable route remains, the product is not offered for funding, which is not an error.
+- **Unrecognised mode value in the Funding manifest `modes`.** Ignore that value and keep the recognised ones; the manifest stays valid. If no recognised mode remains, the product is not offered for funding — this is not an error.
 - **Executable `contenthash` unset, non-IPFS codec, or undecodable.** That executable cannot be launched; surface a diagnostic. The product stays discoverable and its other executables still launch.
 - **Missing root manifest but present executable subnames.** Product is not discoverable; executables MUST NOT be launched.
 - **Unknown `kind` in an executable manifest.** Skip that executable rather than fail the whole product.
@@ -317,12 +304,12 @@ Each executable config mirrors the matching `ExecutableManifest` variant — the
 
 #### Step 2 — Validate the local config
 
-The publisher validates the local config before any network I/O. Validation is strict where Hosts are tolerant: Hosts ignore unrecognised icon formats, grants, funding assets, and funding modes; publishers MUST NOT emit them.
+The publisher validates the local config before any network I/O. Validation is strict where Hosts are tolerant: Hosts ignore unrecognised icon formats, grants, and funding modes; publishers MUST NOT emit them.
 
 - All referenced files (icon, executables) exist and are readable.
 - Icon `format` is one of the values allowed by `Icon.format`.
 - Every `trustedProducts` key is a bare `<product_id>` label carrying no TLD suffix, and every grant value is one defined by `Granted`.
-- `funding.routes` is non-empty, every `to` is one defined by `FundingAsset`, and every route carries a non-empty `modes` with every value one defined by `FundingMode`.
+- `funding.modes` is non-empty and every value is one defined by `FundingMode`.
 - `appVersion` is a 3- or 4-element tuple of the right shape.
 - Each executable's kind-specific fields are present, well-typed, and satisfy schema-level constraints.
 - Pessimistic size preflight: compose the root manifest with a placeholder icon CID of the fixed encoded length (per the Constants table), and compose each executable manifest exactly — they carry no CID, so their size is already final. Abort if any composed manifest exceeds the dotNS text-record budget.
@@ -510,4 +497,4 @@ Every corner case above, and every failure named in the resolution flow, is a co
 - `Granted` will gain per-capability values (account read, signing, …) alongside `all` once the Host runtime contracts name those capabilities; `all` stays the wildcard, and the array shape and the ignore-unrecognised-values rule let the narrower values land without a new `$v`.
 - A manifest-aggregation RPC could eliminate the N+1 lookup pattern (one round-trip per subname) without changing the schema.
 - A companion spec will pin down the dashboard grid (cell size, bounds, responsive behaviour) referenced by `WidgetManifest.dimensions`.
-- `FundingAsset` will grow beyond `CASH` and `EUR`, and `FundingMode` beyond `CARD`, `BANK`, and `CRYPTO`. A dedicated Funding Modality RFC will define the runtime contract behind the Funding surface: intents, progress reporting, and observation of funds on the network. The route shape and the ignore-unrecognised-values rule let new assets and modes land without a new `$v`.
+- `FundingMode` will grow beyond `CARD`, `BANK`, and `CRYPTO`. A dedicated Funding Modality RFC will define the runtime contract behind the Funding surface: intents, progress reporting, and observation of funds on the network. The array shape and the ignore-unrecognised-values rule let new modes land without a new `$v`.
