@@ -13,9 +13,17 @@ on:
         default: ""
   # Push a `truapi-provider-dev` or `truapi-provider-dev-<suffix>` tag to publish
   # a dev snapshot; the part after `truapi-provider-dev-` becomes the dist-tag suffix.
+  # A push to main that changes the bundled chain specs publishes a snapshot on
+  # its own, so a merged spec refresh reaches npm without a manual tag. The
+  # paths filter is not evaluated for tag pushes, so it does not narrow the tag
+  # trigger above.
   push:
     tags:
       - "truapi-provider-dev*"
+    branches:
+      - main
+    paths:
+      - "rust/crates/truapi-provider/networks/**"
 
 permissions:
   contents: read
