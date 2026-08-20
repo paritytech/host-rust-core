@@ -1120,9 +1120,9 @@ selection files.
 
 ### 14.1 Network presets
 
-Two presets are selectable with `--network`: `paseo-next-v2` (default) and
-`previewnet`. Every preset is a test network; the account store keeps BIP-39
-entropy for disposable test identities only.
+`--network` selects one of two presets. `paseo-next-v2` is the default. Every
+preset is a test network; the account store keeps BIP-39 entropy for
+disposable test identities only.
 
 Auto-account onboarding (§12.3) needs an identity backend that records the
 lite username on the dotNS gateway. The `paseo-next-v2` backend answers
@@ -1131,7 +1131,7 @@ new auto accounts cannot be onboarded there until that changes; the CLI reports
 it and points at `previewnet`, whose backend has the gateway enabled. Reads
 (`identity-check`, session usernames) work on both presets.
 
-`paseo-next-v2`:
+#### `paseo-next-v2`
 
 | Purpose | Value |
 | --- | --- |
@@ -1143,17 +1143,32 @@ it and points at `previewnet`, whose backend has the gateway enabled. Reads
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
 | Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
 
-`previewnet`:
+#### `previewnet`
+
+The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
+nextv2 later, and it is where products with previewnet descriptors do their
+on-chain testing. Its identity backend is the same service on its staging
+environment (`/api/v1/version` reports `"environment": "staging"`).
 
 | Purpose | Value |
 | --- | --- |
 | Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x3138c6d4ce58c760047a413c2a930e919b4673a841ab4890de59aac3bd037f3d` |
+| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x2778b1c94c4362e49a54be57d3056bc714f3712e4486625312704ffb74eb973d` |
+| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210` |
+| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
+
+Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
+signer provisioned on one preset is not visible from the other. Two presets means
+two identities on one machine, which is deliberate: the lite username and the
+statement-store allowance are per chain.
+
+The backend's username routes are bearer-gated; the CLI mints the access token
+itself through the backend's `auth/challenges` → `auth/token` handshake
+(§12.3), or takes one from `HOST_CLI_IDENTITY_BACKEND_TOKEN`, so auto-managed
+account creation works here.
 
 There are no public endpoint override flags. `HOST_CLI_IDENTITY_BACKEND_BASE`
 replaces only the identity backend base URL (§21).

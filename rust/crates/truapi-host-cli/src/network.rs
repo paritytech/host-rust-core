@@ -13,9 +13,9 @@ pub enum Network {
     #[value(name = "paseo-next-v2")]
     #[default]
     PaseoNextV2,
-    /// Previewnet, the app team's staging testnet. It runs the same Asset Hub
-    /// runtime (and dotNS gateway) as paseo-next-v2 behind its own chains and
-    /// identity backend.
+    /// Named for the id the playground and dotli already use for this network
+    /// (`VITE_NETWORKS=paseo-next-v2,previewnet`), so `HostChainSet::network`
+    /// reads the same string a product sees everywhere else.
     #[value(name = "previewnet")]
     Previewnet,
 }
@@ -105,7 +105,7 @@ const PASEO_BULLETIN: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210",
+        "627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659",
     ),
     ws: "wss://previewnet.substrate.dev/asset-hub",
     required_for_host: true,
@@ -113,7 +113,7 @@ const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "3138c6d4ce58c760047a413c2a930e919b4673a841ab4890de59aac3bd037f3d",
+        "34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220",
     ),
     ws: "wss://previewnet.substrate.dev/people",
     required_for_host: true,
@@ -121,7 +121,7 @@ const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
 
 const PREVIEWNET_BULLETIN: ChainEndpoint = ChainEndpoint {
     genesis: hex_literal_genesis(
-        "2778b1c94c4362e49a54be57d3056bc714f3712e4486625312704ffb74eb973d",
+        "1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89",
     ),
     ws: "wss://previewnet.substrate.dev/bulletin",
     required_for_host: true,
@@ -359,11 +359,24 @@ mod tests {
         const WELL_KNOWN_CHAINS: &str =
             include_str!("../../../../js/packages/truapi/src/well-known-chains.ts");
 
-        let config = Network::PaseoNextV2.config();
-        for (export, expected) in [
-            ("PASEO_NEXT_V2_INDIVIDUALITY", config.people_genesis),
-            ("PASEO_NEXT_V2_ASSET_HUB", config.asset_hub_genesis),
-        ] {
+        // Every preset needs its pair here: a product on previewnet signs
+        // `CheckGenesis` over the TypeScript constant just as one on nextv2 does.
+        let exports: Vec<(String, [u8; 32])> = Network::value_variants()
+            .iter()
+            .flat_map(|network| {
+                let config = network.config();
+                let prefix = match network {
+                    Network::PaseoNextV2 => "PASEO_NEXT_V2",
+                    Network::Previewnet => "PREVIEWNET",
+                };
+                [
+                    (format!("{prefix}_INDIVIDUALITY"), config.people_genesis),
+                    (format!("{prefix}_ASSET_HUB"), config.asset_hub_genesis),
+                ]
+            })
+            .collect();
+
+        for (export, expected) in &exports {
             let declaration = WELL_KNOWN_CHAINS
                 .split_once(&format!("export const {export} ="))
                 .unwrap_or_else(|| panic!("{export} is no longer exported"))
@@ -384,6 +397,22 @@ mod tests {
     /// store is only safe for disposable identities, so no preset may point at a
     /// production network. If this fails because a real network was added,
     /// rework the account store rather than relaxing the assertion.
+    /// Hosts a preset may route to. Every entry is a disposable test deployment:
+    /// `paseo`/`testnet` name the Paseo testnets and their backends,
+    /// `previewnet.substrate.dev` is the previewnet parachain set, and
+    /// `polkadot-app-stg.parity.io` is the identity backend's staging
+    /// environment (`/api/v1/version` reports `"environment": "staging"`).
+    ///
+    /// An allowlist rather than a substring rule, because the rule this test
+    /// exists for is "no production network", and a production host can contain
+    /// any substring. Adding a preset means adding its hosts here on purpose.
+    const TEST_NETWORK_MARKERS: &[&str] = &[
+        "paseo",
+        "testnet",
+        "previewnet.substrate.dev",
+        "polkadot-app-stg.parity.io",
+    ];
+
     #[test]
     fn every_preset_is_a_test_network() {
         for network in Network::value_variants() {
@@ -399,7 +428,7 @@ mod tests {
 
             for route in routes {
                 assert!(
-                    ["paseo", "testnet", "previewnet", "-stg."]
+                    TEST_NETWORK_MARKERS
                         .iter()
                         .any(|marker| route.contains(marker)),
                     "preset `{}` routes to a host that is not a recognised test \
@@ -481,7 +510,10 @@ mod tests {
                 checked += 1;
                 // The chain's own name has to name the role, or a role pointed at
                 // the wrong preset chain passes every other assertion here.
-                // Previewnet's People chain calls itself "Individuality Local".
+                // Both spellings the People role answers to: Paseo's chain calls
+                // itself "People", previewnet's calls itself "Individuality
+                // Local", and `PASEO_NEXT_V2_INDIVIDUALITY` shows the two names
+                // are one role.
                 let expected_in_name: &[&str] = match entry.identifier {
                     ChainIdentifier::People => &["People", "Individuality"],
                     ChainIdentifier::Bulletin => &["Bulletin"],
@@ -490,10 +522,11 @@ mod tests {
                 };
                 if !expected_in_name
                     .iter()
-                    .any(|needle| chain_name.contains(needle))
+                    .any(|expected| chain_name.contains(expected))
                 {
                     drifted.push(format!(
-                        "{} serves {:?} from {ws}, which calls itself {chain_name:?}",
+                        "{} serves {:?} from {ws}, which calls itself \
+                         {chain_name:?} and names none of {expected_in_name:?}",
                         config.id, entry.identifier
                     ));
                 } else if entry.genesis_hash == reported {

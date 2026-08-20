@@ -51,16 +51,17 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier,
-        ChatBotRegistrationStatus, ChatRoomRegistrationStatus, ContextualAlias, DerivationIndex,
-        GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey,
-        RuntimeApi, RuntimeSpec, RuntimeType, SignedStatement, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeName, ThemeVariant,
-        TxPayloadExtension,
+        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
+        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
+        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
+        ContextualAlias, DerivationIndex, GenericError, HostSignPayloadData, NotificationId,
+        OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
+        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
+        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
+        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
+        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension,
     };
 
     /// Latest payload type of a versioned envelope.

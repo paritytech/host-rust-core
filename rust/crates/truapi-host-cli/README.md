@@ -43,6 +43,34 @@ default, so starting either host does not reserve a TCP port. Pass
 `--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
 this is required for browser clients, which cannot open filesystem sockets.
 
+### Browser products
+
+A browser product reaches that socket through `@parity/truapi`'s sandbox. Start
+the host on a fixed port, and point the product at it before anything else
+touches the client:
+
+```bash
+truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id my-product.dot
+```
+
+```ts
+import { connectWebSocketHost } from "@parity/truapi/sandbox";
+
+connectWebSocketHost("ws://127.0.0.1:9955");
+```
+
+The product is then detected as hosted and holds the real product account for
+its own `.dot` name, so signing, statements, entropy, permissions and storage
+all take their production code paths with no phone involved. `--product-id` is
+not optional: the host derives the product account from it and refuses to *sign*
+for any other product id, and a mismatch only surfaces later, as a
+`PermissionDenied` on the first signature.
+
+Two players on one machine means two hosts, each with its own session and port
+(`--session bob --frame-listen 127.0.0.1:9956`), and a second product instance
+pointed at the second port. Sessions isolate the signer, the storage and the
+permissions.
+
 The signing host opens an interactive terminal where you can paste a pairing
 link, type `/pair <link>`, run `/script`, or use `/help` to discover the
 available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
@@ -278,6 +306,7 @@ Six scripts ship under `js/scripts/`:
   scripts/battery.sh --pairing-host     # paired phase only
   make e2e-signing-cli                  # direct phase only
   make e2e-pairing-cli                  # paired phase only
+  make e2e-chat-cli                     # chat phase only
   scripts/battery.sh --release          # release binary
   scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
   ```
@@ -427,18 +456,63 @@ HOST_CLI_SIGNER_MNEMONIC="spin battle …" truapi-host signing-host --deeplink '
 truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 ```
 
-Every command takes `--network` (default `paseo-next-v2`; `previewnet` is the
-other preset, and the only one whose identity backend currently onboards new
-auto accounts through the dotNS gateway). The network preset owns
-the identity backend URL, the People, Bulletin and Asset Hub RPCs, and their
-genesis hashes; there is
-no public `--statement-store` flag. `HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
+Both hosts take `--network`, either `paseo-next-v2` (default) or `previewnet`.
+The network preset owns the identity backend URL, the People, Bulletin and Asset
+Hub RPCs, and their genesis hashes; there is
+no public `--statement-store` flag. Pick `previewnet` when a product's runtime
+descriptors target previewnet, so its statements, its host chain routes and its
+own chain reads all land on one network — it is also the only preset whose
+identity backend currently onboards new auto accounts through the dotNS gateway
+(the CLI mints the backend's bearer token itself; SPEC.md §12.3). Sessions are
+per preset, so each network gets its own signer identity on the same machine.
+`HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
 the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
 supplies its bearer token instead of the CLI minting one; and
 `HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
 discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
+
+## Serving a dev server (one process, no terminal)
+
+`signing-host --serve` runs the host as a background service instead of a
+terminal UI, so a dev server or test harness can supervise it:
+
+```bash
+truapi-host signing-host --serve \
+  --frame-listen 127.0.0.1:9955 \
+  --product-id myapp.dot \
+  --auto-accept
+```
+
+It needs no TTY, initialises the signer, and stays up until stopped. Output is
+one line per event:
+
+```
+✓ Paired with headlessyvqhet.43
+✓ Signing host ready
+• Listening for product frames
+  ws://127.0.0.1:9955
+• Serving product frames until stopped
+  ws://127.0.0.1:9955
+  Confirmations are approved automatically
+```
+
+Wait for `Serving product frames until stopped` before pointing a product at the
+endpoint. That line is last in every case, and it is the only one that means
+both halves are up: the frame socket accepts connections well before a signer
+exists, and `Signing host ready` can arrive either side of it depending on
+whether the session was cached or is being registered. A first run registers a
+lite username and the statement-store allowance on-chain, which can take
+minutes.
+
+Stopping it: Ctrl-C is handled, so the host logs its own shutdown. `SIGTERM`
+ends the process, which is what a supervising dev server sends.
+
+`--auto-accept` is effectively required, because a process with no terminal has
+nowhere to prompt: confirmations are denied instead, and the startup line says
+so. `--serve` cannot be combined with `--script` or `exec`, which are the
+one-shot modes.
 
 ## Scope / gaps
 

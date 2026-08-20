@@ -15,6 +15,7 @@
 mod accounts;
 mod attestation;
 mod chain;
+mod chat;
 mod dotns_read;
 mod frame_server;
 mod network;
@@ -39,7 +40,7 @@ use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use truapi_platform::{HostInfo, PlatformInfo};
+use truapi_platform::{ChatPlatform, HostInfo, PlatformInfo, ProductExecutionKind};
 use truapi_server::host_logic::dotns_gateway::{
     MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
 };
@@ -234,8 +235,36 @@ enum Command {
     },
 }
 
+/// Execution kind the CLI serves a product as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ExecutionKind {
+    /// Ordinary product. Chat requests answer `Denied`, as they do on any
+    /// host that does not serve chat.
+    Spa,
+    /// Chat product, served by the CLI's in-memory chat host.
+    Chat,
+}
+
+impl ExecutionKind {
+    fn context(self) -> ProductExecutionKind {
+        match self {
+            Self::Spa => ProductExecutionKind::Spa,
+            Self::Chat => ProductExecutionKind::Chat,
+        }
+    }
+
+    /// The chat host to install, if this kind serves chat at all.
+    fn chat_host(self) -> Option<Arc<chat::CliChatHost>> {
+        matches!(self, Self::Chat).then(chat::CliChatHost::from_env)
+    }
+}
+
 #[derive(Args)]
 struct PairingHostArgs {
+    /// Execution kind the served product runs as. `chat` installs the CLI's
+    /// in-memory chat host; `spa` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start the terminal UI.
     #[arg(long)]
     script: Option<PathBuf>,
@@ -259,6 +288,10 @@ struct PairingHostArgs {
 
 #[derive(Args)]
 struct SigningHostArgs {
+    /// Execution kind the served product runs as. `chat` installs the CLI's
+    /// in-memory chat host; `spa` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start an interactive shell.
     #[arg(long)]
     script: Option<PathBuf>,
@@ -301,6 +334,13 @@ struct SigningHostArgs {
     /// Approve every confirmation without prompting on the CLI.
     #[arg(long)]
     auto_accept: bool,
+    /// Serve product frames without a terminal UI and stay up until stopped.
+    /// Needs no TTY, so a dev server can supervise this process: the frame
+    /// endpoint and every lifecycle event are logged one line at a time, and
+    /// the signer is ready once "Signing host ready" is printed. Pair it with
+    /// `--auto-accept`, because a process with no terminal cannot prompt.
+    #[arg(long)]
+    serve: bool,
     /// Execute one slash command without starting the terminal UI.
     #[command(subcommand)]
     action: Option<SigningHostAction>,
@@ -807,7 +847,8 @@ async fn run_pairing_host(
     }
     let network = args.network.config();
     let base_path = args.base_path.unwrap_or_else(default_base_path);
-    let product = frame_server::ProductSelection::new(args.product_id)?;
+    let product =
+        frame_server::ProductSelection::new(args.product_id, args.execution_kind.context())?;
     let product_id = product.current();
     let storage_paths = CliStoragePaths::pairing(base_path.join(network.id));
     let (terminal_ui, ui_handle) = if interactive {
@@ -835,7 +876,13 @@ async fn run_pairing_host(
     )
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
-    let pairing_runtime = Arc::new(PairingHostRuntime::new(platform, config, tokio_spawner()));
+    let chat_host = args.execution_kind.chat_host();
+    let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
+        platform,
+        config,
+        tokio_spawner(),
+        chat_host.map(|chat| chat as Arc<dyn ChatPlatform>),
+    ));
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -894,16 +941,19 @@ async fn run_signing_host(
         .action
         .as_ref()
         .map(|SigningHostAction::Exec { command }| command.clone());
-    let interactive = args.script.is_none() && exec_input.is_none();
+    let interactive = args.script.is_none() && exec_input.is_none() && !args.serve;
     if interactive && !terminal_ui::is_interactive_terminal() {
         invalid_invocation(
-            "interactive signing-host requires a TTY; use `signing-host exec '/script path.ts'` or --script",
+            "interactive signing-host requires a TTY; use --serve to run headless, or `signing-host exec '/script path.ts'`, or --script",
         );
     }
     let exec_command = exec_input
         .as_deref()
         .map(|input| parse_command(input).unwrap_or_else(|error| invalid_invocation(error)));
-    let product = frame_server::ProductSelection::new(args.product_id.clone())?;
+    let product = frame_server::ProductSelection::new(
+        args.product_id.clone(),
+        args.execution_kind.context(),
+    )?;
     let product_id = product.current();
     let network = args.network.config();
     let base_path = args.base_path.clone().unwrap_or_else(default_base_path);
@@ -947,21 +997,7 @@ async fn run_signing_host(
         let script_frame_url = frame_url.clone();
         let initial_deeplink = args.deeplink.clone();
         let status = with_frame_server(runtime_for_frames, product, frame_server, async move {
-            let mut responder = None;
-            if let Some(deeplink) = initial_deeplink {
-                prepare_pairing_response(&mut session, &deeplink).await?;
-                let runtime = session.runtime.clone();
-                responder = Some(tokio::spawn(async move {
-                    match runtime.respond_to_pairing(&deeplink).await {
-                        Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
-                            outcome: format!("{exit:?}"),
-                        }),
-                        Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
-                            reason: err.reason,
-                        }),
-                    }
-                }));
-            }
+            let responder = spawn_pairing_responder(&mut session, initial_deeplink).await?;
             ensure_signer(&mut session).await?;
             let status = script_runner::run(
                 &script_frame_url,
@@ -981,6 +1017,31 @@ async fn run_signing_host(
         std::process::exit(code);
     }
 
+    if args.serve {
+        let serve_deeplink = args.deeplink.clone();
+        let serve_frame_url = frame_url.clone();
+        let auto_accept = args.auto_accept;
+        return with_frame_server(
+            runtime_for_frames,
+            product.clone(),
+            frame_server,
+            async move {
+                let responder = spawn_pairing_responder(&mut session, serve_deeplink).await?;
+                ensure_signer(&mut session).await?;
+                terminal_ui::output_event(SystemEvent::ServeReady {
+                    url: serve_frame_url,
+                    auto_accept,
+                });
+                wait_for_shutdown().await;
+                if let Some(responder) = responder {
+                    responder.abort();
+                }
+                Ok(())
+            },
+        )
+        .await;
+    }
+
     let initial_deeplink = args.deeplink.clone();
     if let Some(command) = exec_command {
         return with_frame_server(
@@ -988,22 +1049,7 @@ async fn run_signing_host(
             product.clone(),
             frame_server,
             async move {
-                let responder = if let Some(deeplink) = initial_deeplink {
-                    prepare_pairing_response(&mut session, &deeplink).await?;
-                    let runtime = session.runtime.clone();
-                    Some(tokio::spawn(async move {
-                        match runtime.respond_to_pairing(&deeplink).await {
-                            Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
-                                outcome: format!("{exit:?}"),
-                            }),
-                            Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
-                                reason: err.reason,
-                            }),
-                        }
-                    }))
-                } else {
-                    None
-                };
+                let responder = spawn_pairing_responder(&mut session, initial_deeplink).await?;
                 let result = execute_non_interactive_command(
                     &mut session,
                     &frame_url,
@@ -1057,6 +1103,9 @@ struct SigningHostSession {
     reserved_username: Option<String>,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
+    /// Set when this host serves a chat product. Held across runtime rebuilds
+    /// so switching session keeps the rooms and messages already posted.
+    chat: Option<Arc<chat::CliChatHost>>,
 }
 
 fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> String {
@@ -1139,12 +1188,14 @@ async fn start_signing_host(
         signer = Some(explicit_signer);
     }
     let approval = approval_policy(args.auto_accept);
+    let chat = args.execution_kind.chat_host();
     let runtime = build_signing_runtime(
         network,
         storage_profile.path,
         storage_profile.product_storage_dir,
         approval,
         ui.clone(),
+        chat.clone(),
     )?;
     let runtime_factory = frame_server::SwitchableSigningRuntime::new(runtime.clone());
     let last_script = profile
@@ -1202,6 +1253,7 @@ async fn start_signing_host(
         reserved_username: normalized(args.reserved_username.clone()),
         approval,
         ui,
+        chat,
     })
 }
 
@@ -1211,6 +1263,7 @@ fn build_signing_runtime(
     product_storage_dir: PathBuf,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
+    chat: Option<Arc<chat::CliChatHost>>,
 ) -> Result<Arc<SigningHostRuntime>> {
     let platform = CliPlatform::new(
         network,
@@ -1226,7 +1279,12 @@ fn build_signing_runtime(
         network.asset_hub_genesis,
     )
     .context("invalid signing host config")?;
-    let runtime = Arc::new(SigningHostRuntime::new(platform, config, tokio_spawner()));
+    let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
+        platform,
+        config,
+        tokio_spawner(),
+        chat.map(|chat| chat as Arc<dyn ChatPlatform>),
+    ));
     runtime.start_statement_allowance_renewal();
     Ok(runtime)
 }
@@ -1246,6 +1304,12 @@ fn validate_signing_args(args: &SigningHostArgs) -> Result<()> {
     let prefix = normalized(args.lite_username_prefix.clone());
     if args.script.is_some() && args.action.is_some() {
         bail!("--script cannot be combined with the exec subcommand");
+    }
+    if args.serve && args.script.is_some() {
+        bail!("--serve cannot be combined with --script");
+    }
+    if args.serve && args.action.is_some() {
+        bail!("--serve cannot be combined with the exec subcommand");
     }
     if mnemonic.is_some() && account.is_some() {
         bail!("--account cannot be used when --mnemonic or HOST_CLI_SIGNER_MNEMONIC is set");
@@ -1314,6 +1378,42 @@ where
     result
 }
 
+/// Answer a pairing deeplink in the background, when one was given. The caller
+/// aborts the returned task once its own work is done.
+async fn spawn_pairing_responder(
+    session: &mut SigningHostSession,
+    deeplink: Option<String>,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    let Some(deeplink) = deeplink else {
+        return Ok(None);
+    };
+    prepare_pairing_response(session, &deeplink).await?;
+    let runtime = session.runtime.clone();
+    Ok(Some(tokio::spawn(async move {
+        match runtime.respond_to_pairing(&deeplink).await {
+            Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
+                outcome: format!("{exit:?}"),
+            }),
+            Err(err) => {
+                terminal_ui::output_event(SystemEvent::SigningHostError { reason: err.reason })
+            }
+        }
+    })))
+}
+
+/// Park until the operator stops the process. Ctrl-C is awaited so the host owns
+/// its own shutdown; SIGTERM keeps its default action and ends the process.
+async fn wait_for_shutdown() {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        // Nothing to await without a signal handler, so stay up and serve until
+        // the process is killed rather than exiting as soon as it starts.
+        terminal_ui::output_event(SystemEvent::SigningHostError {
+            reason: format!("ctrl-c handling unavailable: {error}"),
+        });
+        std::future::pending::<()>().await;
+    }
+}
+
 async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
     if session.signer.is_some() {
         return Ok(());
@@ -1364,6 +1464,7 @@ fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
         promoted.product_storage_dir.clone(),
         session.approval,
         session.ui.clone(),
+        session.chat.clone(),
     )?;
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
@@ -1725,6 +1826,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         profile.product_storage_dir.clone(),
         session.approval,
         session.ui.clone(),
+        session.chat.clone(),
     )?;
     let available_sessions = session.catalog.list()?;
 
@@ -2512,6 +2614,73 @@ mod cli_tests {
                 .to_string()
                 .contains("--script cannot be combined")
         );
+    }
+
+    #[test]
+    fn signing_host_serve_needs_no_tty_and_refuses_one_shot_modes() {
+        let cli = Cli::try_parse_from([
+            "truapi-host",
+            "signing-host",
+            "--serve",
+            "--frame-listen",
+            "127.0.0.1:9955",
+            "--auto-accept",
+        ])
+        .expect("serve should parse");
+        let Command::SigningHost(args) = cli.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(args.serve);
+        assert!(validate_signing_args(&args).is_ok());
+
+        let with_script = Cli::try_parse_from([
+            "truapi-host",
+            "signing-host",
+            "--serve",
+            "--script",
+            "smoke.ts",
+        ])
+        .expect("serve with a script should parse");
+        let Command::SigningHost(args) = with_script.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(
+            validate_signing_args(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("--serve cannot be combined with --script")
+        );
+
+        let with_exec =
+            Cli::try_parse_from(["truapi-host", "signing-host", "--serve", "exec", "/help"])
+                .expect("serve with exec should parse");
+        let Command::SigningHost(args) = with_exec.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(
+            validate_signing_args(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("--serve cannot be combined with the exec subcommand")
+        );
+    }
+
+    #[test]
+    fn serve_ready_names_the_endpoint_and_the_approval_policy() {
+        let prompting = terminal_ui::SystemEvent::ServeReady {
+            url: "ws://127.0.0.1:9955".to_string(),
+            auto_accept: false,
+        }
+        .human();
+        assert!(prompting.contains("ws://127.0.0.1:9955"));
+        assert!(prompting.contains("--auto-accept"));
+
+        let accepting = terminal_ui::SystemEvent::ServeReady {
+            url: "ws://127.0.0.1:9955".to_string(),
+            auto_accept: true,
+        }
+        .human();
+        assert!(accepting.contains("approved automatically"));
     }
 
     #[test]

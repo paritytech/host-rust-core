@@ -60,6 +60,16 @@ pub enum HostStorageError {
     Storage(v01::HostLocalStorageReadError),
 }
 
+impl From<uniffi::UnexpectedUniFFICallbackError> for HostStorageError {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        HostStorageError::Storage(v01::HostLocalStorageReadError::Unknown { reason: err.reason })
+    }
+}
+
 impl From<HostStorageError> for v01::HostLocalStorageReadError {
     fn from(err: HostStorageError) -> Self {
         let HostStorageError::Storage(err) = err;
@@ -93,6 +103,16 @@ impl From<HostRejection> for v01::GenericError {
     }
 }
 
+impl From<uniffi::UnexpectedUniFFICallbackError> for HostRejection {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        HostRejection::Rejected { reason: err.reason }
+    }
+}
+
 impl From<v01::GenericError> for HostRejection {
     fn from(err: v01::GenericError) -> Self {
         HostRejection::Rejected { reason: err.reason }
@@ -112,6 +132,16 @@ pub enum HostNavigateRejection {
     /// Canonical navigation failure payload.
     #[error("{0}")]
     Navigate(v01::HostNavigateToError),
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for HostNavigateRejection {
+    fn from(err: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        tracing::warn!(
+            reason = %err.reason,
+            "host callback threw an undeclared error; reporting it as a rejection"
+        );
+        HostNavigateRejection::Navigate(v01::HostNavigateToError::Unknown { reason: err.reason })
+    }
 }
 
 /// Native-friendly SSO deeplink scheme.
@@ -555,15 +585,17 @@ pub trait NativeChatCallbacks: Send + Sync {
         icon: String,
     ) -> Result<v01::ChatBotRegistrationStatus, HostRejection>;
 
-    /// Persist a text message in native Chat storage.
-    fn post_text_message(&self, room_id: String, text: String) -> Result<String, HostRejection>;
-
-    /// Persist a custom message in native Chat storage.
-    fn post_custom_message(
+    /// Persist a product-authored message in native Chat storage. A host that
+    /// cannot render a given content variant returns a rejection for it.
+    ///
+    /// The returned id is what [`ActionTrigger::message_id`] carries back, so
+    /// it must name this message for as long as the host stores it.
+    ///
+    /// [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
+    fn post_message(
         &self,
         room_id: String,
-        message_type: String,
-        payload: Vec<u8>,
+        content: v01::ChatMessageContent,
     ) -> Result<String, HostRejection>;
 
     /// Return the current product-scoped native Chat room list.
@@ -1880,23 +1912,12 @@ impl truapi_platform::ChatPlatform for ChatCallbackPlatform {
         _product: &ProductContext,
         request: v01::HostChatPostMessageRequest,
     ) -> Result<v01::HostChatPostMessageResponse, v01::HostChatPostMessageError> {
-        let message_id = match request.payload {
-            v01::ChatMessageContent::Text { text } => {
-                self.chat.post_text_message(request.room_id, text)
-            }
-            v01::ChatMessageContent::Custom(custom) => {
-                self.chat
-                    .post_custom_message(request.room_id, custom.message_type, custom.payload)
-            }
-            _ => {
-                return Err(v01::HostChatPostMessageError::Unknown {
-                    reason: "native Chat adapter supports text and custom messages".to_string(),
-                });
-            }
-        }
-        .map_err(|error| v01::HostChatPostMessageError::Unknown {
-            reason: error.to_string(),
-        })?;
+        let message_id = self
+            .chat
+            .post_message(request.room_id, request.payload)
+            .map_err(|error| v01::HostChatPostMessageError::Unknown {
+                reason: error.to_string(),
+            })?;
         Ok(v01::HostChatPostMessageResponse { message_id })
     }
 
@@ -1944,6 +1965,47 @@ mod tests {
                 "a {len}-byte account id must be rejected, and report its length"
             );
         }
+    }
+
+    #[test]
+    fn an_unexpected_foreign_error_converts_instead_of_panicking() {
+        // A host that throws an exception its trait does not declare lands in
+        // `try_convert_unexpected_callback_error`. Without a `From` impl the
+        // generic converter panics, and `panic = "abort"` turns that into a
+        // process abort on the shipping build.
+        let reason = "android.database.sqlite.SQLiteFullException";
+        let rejection = <HostRejection as uniffi::ConvertError<crate::UniFfiTag>>::
+            try_convert_unexpected_callback_error(
+                uniffi::UnexpectedUniFFICallbackError::new(reason),
+            )
+            .expect("an unexpected foreign error must convert");
+        let HostRejection::Rejected { reason: converted } = rejection;
+        assert_eq!(converted, reason);
+
+        let storage = <HostStorageError as uniffi::ConvertError<crate::UniFfiTag>>::
+            try_convert_unexpected_callback_error(
+                uniffi::UnexpectedUniFFICallbackError::new(reason),
+            )
+            .expect("an unexpected foreign error must convert");
+        assert_eq!(
+            v01::HostLocalStorageReadError::from(storage),
+            v01::HostLocalStorageReadError::Unknown {
+                reason: reason.to_string(),
+            }
+        );
+
+        let navigate = <HostNavigateRejection as uniffi::ConvertError<crate::UniFfiTag>>::
+            try_convert_unexpected_callback_error(
+                uniffi::UnexpectedUniFFICallbackError::new(reason),
+            )
+            .expect("an unexpected foreign error must convert");
+        let HostNavigateRejection::Navigate(navigate) = navigate;
+        assert_eq!(
+            navigate,
+            v01::HostNavigateToError::Unknown {
+                reason: reason.to_string(),
+            }
+        );
     }
 
     /// The renewal account is derived from `product_id`, and a product
@@ -2019,7 +2081,8 @@ mod tests {
         chat_bot_status: Mutex<v01::ChatBotRegistrationStatus>,
         chat_registered_bots: Mutex<Vec<(String, String, String)>>,
         chat_bot_rejection: Mutex<Option<String>>,
-        chat_posted_text: Mutex<Vec<(String, String)>>,
+        chat_post_rejection: Mutex<Option<String>>,
+        chat_posted: Mutex<Vec<(String, v01::ChatMessageContent)>>,
         theme: Mutex<v01::HostThemeSubscribeItem>,
         preimages: Mutex<PreimageFixtureEntries>,
         auth_states: Mutex<Vec<AuthState>>,
@@ -2037,7 +2100,8 @@ mod tests {
                 chat_bot_status: Mutex::new(v01::ChatBotRegistrationStatus::New),
                 chat_registered_bots: Mutex::new(Vec::new()),
                 chat_bot_rejection: Mutex::new(None),
-                chat_posted_text: Mutex::new(Vec::new()),
+                chat_post_rejection: Mutex::new(None),
+                chat_posted: Mutex::new(Vec::new()),
                 theme: Mutex::new(v01::HostThemeSubscribeItem {
                     name: v01::ThemeName::Default,
                     variant: v01::ThemeVariant::Light,
@@ -2201,25 +2265,27 @@ mod tests {
                 .expect("bot status mutex poisoned"))
         }
 
-        fn post_text_message(
+        fn post_message(
             &self,
             room_id: String,
-            text: String,
+            content: v01::ChatMessageContent,
         ) -> Result<String, HostRejection> {
-            self.chat_posted_text
+            if let Some(reason) = self
+                .chat_post_rejection
                 .lock()
-                .expect("posted text mutex poisoned")
-                .push((room_id, text));
-            Ok("message-id".to_string())
-        }
-
-        fn post_custom_message(
-            &self,
-            _room_id: String,
-            _message_type: String,
-            _payload: Vec<u8>,
-        ) -> Result<String, HostRejection> {
-            Ok("message-id".to_string())
+                .expect("post rejection mutex poisoned")
+                .clone()
+            {
+                return Err(HostRejection::Rejected { reason });
+            }
+            let mut posted = self
+                .chat_posted
+                .lock()
+                .expect("posted messages mutex poisoned");
+            posted.push((room_id, content));
+            // Distinct per message: a correlation assertion must not pass on a
+            // constant the host happens to return every time.
+            Ok(format!("message-{}", posted.len()))
         }
 
         fn list_rooms(&self) -> Result<Vec<v01::ChatRoom>, HostRejection> {
@@ -2508,9 +2574,7 @@ mod tests {
                 .unwrap();
         let mut stream = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
 
-        let first = futures::executor::block_on(stream.next())
-            .unwrap()
-            .expect("initial room list");
+        let first = ready_rooms(stream.as_mut(), "initial room list");
         events.notify_chat_rooms_changed(vec![v01::ChatRoom {
             room_id: "support".to_string(),
             participating_as: v01::ChatRoomParticipation::Bot,
@@ -2528,8 +2592,29 @@ mod tests {
         );
     }
 
+    /// What a room-list subscription yields: a replacement, or the host's
+    /// failure to produce one.
+    type RoomListItem = Result<v01::HostChatListSubscribeItem, v01::GenericError>;
+
+    /// Reads a room list the subscription has already emitted.
+    ///
+    /// Polled without blocking on purpose: both the eager snapshot and a
+    /// notified replacement are sent before this runs, so a subscription that
+    /// stopped emitting one fails here rather than parking on a live sender
+    /// and timing the job out.
+    fn ready_rooms(
+        mut rooms: core::pin::Pin<&mut (dyn futures::Stream<Item = RoomListItem> + Send)>,
+        what: &str,
+    ) -> v01::HostChatListSubscribeItem {
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        match rooms.as_mut().poll_next(&mut cx) {
+            core::task::Poll::Ready(Some(Ok(item))) => item,
+            other => panic!("{what} must be ready, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn native_chat_adapter_rejects_the_message_variants_it_cannot_persist() {
+    fn native_chat_adapter_forwards_every_message_variant() {
         let callbacks = Arc::new(EventCallbacks::new());
         let platform = ChatCallbackPlatform {
             chat: callbacks.clone(),
@@ -2540,11 +2625,16 @@ mod tests {
                 .unwrap();
         let reaction = v01::ChatReaction {
             message_id: "message-1".to_string(),
-            emoji: "🎲".to_string(),
+            emoji: "\u{1f3b2}".to_string(),
         };
-        // `NativeChatCallbacks` persists text and custom messages only; the
-        // rest must surface a typed error rather than be dropped.
-        let unsupported = [
+        // Every variant the protocol advertises reaches the host, so a product
+        // can post the `Actions` that `action_subscribe` later reports back.
+        // An added variant stops `validate_chat_message_content` compiling,
+        // which is what forces this list to be revisited.
+        let variants = [
+            v01::ChatMessageContent::Text {
+                text: "hello".to_string(),
+            },
             v01::ChatMessageContent::RichText(v01::ChatRichText {
                 text: None,
                 media: Vec::new(),
@@ -2563,30 +2653,165 @@ mod tests {
             }),
             v01::ChatMessageContent::Reaction(reaction.clone()),
             v01::ChatMessageContent::ReactionRemoved(reaction),
+            v01::ChatMessageContent::Custom(v01::ChatCustomMessage {
+                message_type: "vote".to_string(),
+                payload: vec![1, 2],
+            }),
         ];
 
-        for payload in unsupported {
-            let error =
-                futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
-                    &platform,
-                    &product,
-                    v01::HostChatPostMessageRequest {
-                        room_id: "support".to_string(),
-                        payload: payload.clone(),
-                    },
-                ))
-                .expect_err("the native adapter cannot persist this variant");
-            assert!(
-                matches!(error, v01::HostChatPostMessageError::Unknown { .. }),
-                "{payload:?} must report a typed error"
-            );
+        for payload in &variants {
+            futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+                &platform,
+                &product,
+                v01::HostChatPostMessageRequest {
+                    room_id: "support".to_string(),
+                    payload: payload.clone(),
+                },
+            ))
+            .unwrap_or_else(|error| panic!("{payload:?} must reach the host: {error:?}"));
         }
 
+        let posted = callbacks
+            .chat_posted
+            .lock()
+            .expect("posted messages mutex poisoned")
+            .clone();
+        // Asserts the room alongside the content: routing the room correctly
+        // for `Text` while misrouting the rest must not pass.
+        assert_eq!(
+            posted,
+            variants
+                .iter()
+                .map(|content| ("support".to_string(), content.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_posted_action_set_round_trips_to_the_product_that_posted_it() {
+        // The loop the widened variant set exists to enable: a product posts
+        // `Actions`, a user triggers one, and the product reads the trigger
+        // back. The halves travel different paths -- `post_message` through the
+        // chat adapter, `ActionTriggered` through the connection -- so this
+        // covers what the core owns: that an `Actions` set reaches the host,
+        // and that the trigger naming the returned id arrives unaltered.
+        // Reusing that id is the host's half of the contract, documented on
+        // `NativeChatCallbacks::post_message` and not enforceable here.
+        let callbacks = Arc::new(EventCallbacks::new());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: Arc::new(NativeEventBus::default()),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        let connection = crate::runtime::ChatConnection::new();
+
+        let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+            &platform,
+            &product,
+            v01::HostChatPostMessageRequest {
+                room_id: "support".to_string(),
+                payload: v01::ChatMessageContent::Actions(v01::ChatActions {
+                    text: Some("pick one".to_string()),
+                    actions: vec![v01::ChatAction {
+                        action_id: "approve".to_string(),
+                        title: "Approve".to_string(),
+                    }],
+                    layout: v01::ChatActionLayout::Column,
+                }),
+            },
+        ))
+        .expect("an action set must reach the host");
+
+        let mut actions = connection.subscribe_actions();
+        connection
+            .publish_action(truapi::versioned::chat::HostChatActionSubscribeItem::V1(
+                v01::HostChatActionSubscribeItem {
+                    room_id: "support".to_string(),
+                    peer: "alice".to_string(),
+                    payload: v01::ChatActionPayload::ActionTriggered(v01::ActionTrigger {
+                        message_id: posted.message_id.clone(),
+                        action_id: "approve".to_string(),
+                        payload: None,
+                    }),
+                },
+            ))
+            .expect("a trigger on a live subscription must be delivered");
+
+        let mut cx = core::task::Context::from_waker(futures::task::noop_waker_ref());
+        let delivered = match actions.poll_next_unpin(&mut cx) {
+            core::task::Poll::Ready(Some(item)) => item,
+            other => panic!("a published trigger must be ready, got {other:?}"),
+        };
+        let truapi::versioned::chat::HostChatActionSubscribeItem::V1(delivered) = delivered;
+        let v01::ChatActionPayload::ActionTriggered(trigger) = delivered.payload else {
+            panic!(
+                "expected an ActionTriggered payload, got {:?}",
+                delivered.payload
+            );
+        };
+
+        // The action set really reached the host, in the room it named.
+        assert_eq!(
+            callbacks
+                .chat_posted
+                .lock()
+                .expect("posted messages mutex poisoned")
+                .len(),
+            1
+        );
+        // The id the product must match on to find the message it posted.
+        assert_eq!(trigger.message_id, posted.message_id);
+        assert_eq!(trigger.action_id, "approve");
+    }
+
+    #[test]
+    fn native_chat_adapter_surfaces_a_message_rejection() {
+        let callbacks = Arc::new(EventCallbacks::new());
+        let platform = ChatCallbackPlatform {
+            chat: callbacks.clone(),
+            events: Arc::new(NativeEventBus::default()),
+        };
+        let product =
+            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
+                .unwrap();
+        *callbacks
+            .chat_post_rejection
+            .lock()
+            .expect("post rejection mutex poisoned") =
+            Some("cannot render a file card".to_string());
+
+        let error = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
+            &platform,
+            &product,
+            v01::HostChatPostMessageRequest {
+                room_id: "support".to_string(),
+                payload: v01::ChatMessageContent::File(v01::ChatFile {
+                    url: "https://example.invalid/f".to_string(),
+                    file_name: "f".to_string(),
+                    mime_type: "text/plain".to_string(),
+                    size_bytes: 1,
+                    text: None,
+                }),
+            },
+        ))
+        .expect_err("a host rejection must not be reported as a stored message");
+
+        // Declining a variant is how a host that cannot render one opts out,
+        // so a swallowed rejection would hand the product a message id for
+        // something that was never persisted.
+        assert_eq!(
+            error,
+            v01::HostChatPostMessageError::Unknown {
+                reason: "cannot render a file card".to_string(),
+            }
+        );
         assert!(
             callbacks
-                .chat_posted_text
+                .chat_posted
                 .lock()
-                .expect("posted text mutex poisoned")
+                .expect("posted messages mutex poisoned")
                 .is_empty()
         );
     }
@@ -2653,9 +2878,7 @@ mod tests {
 
         let mut rooms = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
         assert!(
-            futures::executor::block_on(rooms.next())
-                .expect("initial room list")
-                .expect("room list is not an error")
+            ready_rooms(rooms.as_mut(), "initial room list")
                 .rooms
                 .is_empty()
         );
@@ -2702,9 +2925,7 @@ mod tests {
             participating_as: v01::ChatRoomParticipation::Bot,
         }]);
         assert_eq!(
-            futures::executor::block_on(rooms.next())
-                .expect("genuine room change")
-                .expect("room list is not an error")
+            ready_rooms(rooms.as_mut(), "a genuine room change")
                 .rooms
                 .len(),
             1
@@ -2728,9 +2949,7 @@ mod tests {
         };
         let mut rooms = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
         assert!(
-            futures::executor::block_on(rooms.next())
-                .expect("initial room list")
-                .expect("room list is not an error")
+            ready_rooms(rooms.as_mut(), "initial room list")
                 .rooms
                 .is_empty()
         );
@@ -2741,9 +2960,7 @@ mod tests {
             request.clone(),
         ))
         .unwrap();
-        let updated_rooms = futures::executor::block_on(rooms.next())
-            .expect("created room replacement")
-            .expect("room list is not an error");
+        let updated_rooms = ready_rooms(rooms.as_mut(), "the created room replacement");
         *callbacks
             .chat_room_status
             .lock()
@@ -2768,7 +2985,7 @@ mod tests {
         assert_eq!(updated_rooms.rooms.len(), 1);
         assert_eq!(updated_rooms.rooms[0].room_id, "support");
         assert_eq!(existing.status, v01::ChatRoomRegistrationStatus::Exists);
-        assert_eq!(posted.message_id, "message-id");
+        assert_eq!(posted.message_id, "message-1");
         assert_eq!(
             callbacks
                 .chat_created_rooms
@@ -2782,11 +2999,16 @@ mod tests {
         );
         assert_eq!(
             callbacks
-                .chat_posted_text
+                .chat_posted
                 .lock()
-                .expect("posted text mutex poisoned")
+                .expect("posted messages mutex poisoned")
                 .as_slice(),
-            &[("second-room".to_string(), "Echo: hello".to_string())]
+            &[(
+                "second-room".to_string(),
+                v01::ChatMessageContent::Text {
+                    text: "Echo: hello".to_string(),
+                },
+            )]
         );
     }
 
