@@ -61,10 +61,18 @@ pub enum RemotePermission {
         /// single-level wildcard (`*.example.com`), or `*` for any host.
         domains: Vec<String>,
     },
-    /// WebRTC access. Advertised and persistable, but host enforcement is not
-    /// yet implemented: the lockdown container leaves `RTCPeerConnection`
-    /// available to products, and camera/microphone capture is gated by the OS
-    /// permission prompts rather than by this permission.
+    /// WebRTC access.
+    ///
+    /// Enforced inside the product's own realm rather than at a network layer:
+    /// ICE reaches an arbitrary host over UDP, so no content rule list, request
+    /// interceptor, or CSP directive observes it. A host peeks this decision
+    /// before the product realm exists and the lockdown container removes
+    /// `RTCPeerConnection` — and its vendor-prefixed aliases — unless the answer
+    /// was an explicit grant. Resolving it up front is what makes the gate
+    /// unforgeable, and it means a fresh grant applies from the next load.
+    ///
+    /// Camera and microphone capture is gated by the OS permission prompts and
+    /// [`HostDevicePermissionRequest`], not by this permission.
     #[display("WebRTC connections")]
     WebRtc,
     /// Submitting transactions on behalf of the user via `remote_chain_transaction_broadcast`.

@@ -246,8 +246,8 @@ res.match(
 );
 ```
 
-`--product-id` (a dotNS name ending in `.dot` or `.paseo`, or a `localhost`
-identifier; default
+`--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.test`, or a
+`localhost` identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
 WebSockets so clients reconnect with a new product context; the network,

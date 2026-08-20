@@ -849,6 +849,19 @@ impl NativeTrUApiHostRuntime {
         self.runtime.next_statement_renewal_delay()
     }
 
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `None` until a pass has run, which is "not yet" rather than healthy.
+    /// [`Self::start_statement_allowance_renewal`] has no return value, so a host
+    /// driving the loop reads its result here: `slots_exhausted` on the last pass
+    /// means a period filled up and an allowance went unrenewed, which is the one
+    /// outcome retrying cannot fix and a person may need telling about.
+    pub fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::statement_allowance::renewal::StatementRenewalReport> {
+        self.runtime.last_statement_renewal_report()
+    }
+
     /// Activate or replace the process-wide local signing session.
     pub fn activate_local_session(
         &self,
@@ -1284,6 +1297,19 @@ impl NativeTrUApiCore {
         targets: Vec<NativeStatementRenewalTarget>,
     ) -> Result<(), NativeRenewalTargetError> {
         self.host.track_statement_renewal_targets(targets)
+    }
+
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `None` until a pass has run, which is "not yet" rather than healthy.
+    /// [`Self::start_statement_allowance_renewal`] has no return value, so a host
+    /// driving the loop reads its result here: `slots_exhausted` on the last pass
+    /// means a period filled up and an allowance went unrenewed, which is the one
+    /// outcome retrying cannot fix and a person may need telling about.
+    pub fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::statement_allowance::renewal::StatementRenewalReport> {
+        self.host.last_statement_renewal_report()
     }
 
     /// Run one renewal pass now and report what each tracked target got.
