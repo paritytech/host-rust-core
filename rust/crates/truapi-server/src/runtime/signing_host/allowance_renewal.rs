@@ -105,6 +105,12 @@ pub(super) struct RenewalState {
     /// allocation cannot drop another's entry.
     ledger_lock: Mutex<()>,
     loop_started: AtomicBool,
+    /// The most recent pass, so a host that drives the in-process loop can read
+    /// what it achieved. The loop computes a report on every tick and has no
+    /// caller to hand it to, and exhaustion is the outcome a host most needs to
+    /// act on. A blocking lock rather than an async one: every use is a clone or
+    /// a store with no await in between.
+    last_report: std::sync::Mutex<Option<StatementRenewalReport>>,
 }
 
 impl RenewalState {
@@ -114,6 +120,19 @@ impl RenewalState {
 
     fn ledger_lock(&self) -> &Mutex<()> {
         &self.ledger_lock
+    }
+
+    /// Record the pass a host has not seen the return value of.
+    fn record_report(&self, report: &StatementRenewalReport) {
+        if let Ok(mut last) = self.last_report.lock() {
+            *last = Some(report.clone());
+        }
+    }
+
+    /// The most recent pass the loop ran. `None` until one has run, which a host
+    /// should read as "not yet" rather than as healthy.
+    pub(super) fn last_report(&self) -> Option<StatementRenewalReport> {
+        self.last_report.lock().ok().and_then(|last| last.clone())
     }
 }
 
@@ -418,20 +437,36 @@ async fn run_tick(services: &Arc<RuntimeServices>, signing_host: &SigningHost) {
         debug!("skipping statement-store renewal tick; no active session");
         return;
     }
-    match renew_now(services, signing_host).await {
-        Ok(report) if report.slots_exhausted => {
-            warn!(
-                period = report.period,
-                "statement-store renewal hit slot exhaustion"
-            );
-        }
+    absorb_tick(
+        &signing_host.renewal,
+        renew_now(services, signing_host).await,
+    );
+}
+
+/// Record and log what one tick achieved.
+///
+/// Split out from [`run_tick`] so the recording is reachable without a runtime: a
+/// loop that logged but forgot to record would leave a host unable to see
+/// exhaustion, and that is exactly the wiring worth a test.
+fn absorb_tick(state: &RenewalState, result: Result<StatementRenewalReport, String>) {
+    match result {
         Ok(report) => {
-            info!(
-                period = report.period,
-                targets = report.outcomes.len(),
-                "statement-store renewal pass complete"
-            );
+            if report.slots_exhausted {
+                warn!(
+                    period = report.period,
+                    "statement-store renewal hit slot exhaustion"
+                );
+            } else {
+                info!(
+                    period = report.period,
+                    targets = report.outcomes.len(),
+                    "statement-store renewal pass complete"
+                );
+            }
+            state.record_report(&report);
         }
+        // A tick that could not run leaves the previous pass readable rather than
+        // replacing it with nothing: "the last thing we know" beats "no idea".
         Err(reason) => warn!(%reason, "statement-store renewal tick failed"),
     }
 }
@@ -559,6 +594,84 @@ mod tests {
             targets.sort_by_key(|target| format!("{target:?}"));
             assert_eq!(targets, vec![product("a.dot"), product("b.dot")]);
         });
+    }
+
+    /// The in-process loop returns nothing, so a host reads what a pass achieved
+    /// from the recorded report. Recording only in the direct path would leave a
+    /// loop-driven host unable to see exhaustion at all.
+    #[test]
+    fn the_last_report_is_readable_once_a_pass_has_run() {
+        let state = RenewalState::default();
+        assert!(
+            state.last_report().is_none(),
+            "no pass has run, which is not the same as a healthy one"
+        );
+
+        absorb_tick(
+            &state,
+            Ok(StatementRenewalReport {
+                period: 7,
+                outcomes: Vec::new(),
+                pruned: Vec::new(),
+                slots_exhausted: true,
+            }),
+        );
+
+        let seen = state.last_report().expect("a pass has run");
+        assert_eq!(seen.period, 7);
+        assert!(
+            seen.slots_exhausted,
+            "exhaustion is the outcome a host most needs to read back"
+        );
+    }
+
+    /// Only the newest matters: a host reads this on resume and wants the state
+    /// now, not the first exhaustion it ever hit.
+    #[test]
+    fn the_last_report_keeps_the_newest_pass() {
+        let state = RenewalState::default();
+        for period in [7, 8] {
+            absorb_tick(
+                &state,
+                Ok(StatementRenewalReport {
+                    period,
+                    outcomes: Vec::new(),
+                    pruned: Vec::new(),
+                    slots_exhausted: period == 7,
+                }),
+            );
+        }
+
+        let seen = state.last_report().expect("a pass has run");
+        assert_eq!(seen.period, 8);
+        assert!(
+            !seen.slots_exhausted,
+            "the older exhaustion should not stick"
+        );
+    }
+
+    /// A tick that could not run at all must not erase the last pass a host has
+    /// not read yet.
+    #[test]
+    fn a_failed_tick_leaves_the_previous_report_readable() {
+        let state = RenewalState::default();
+        absorb_tick(
+            &state,
+            Ok(StatementRenewalReport {
+                period: 7,
+                outcomes: Vec::new(),
+                pruned: Vec::new(),
+                slots_exhausted: true,
+            }),
+        );
+
+        absorb_tick(&state, Err("no active session".to_string()));
+
+        let seen = state
+            .last_report()
+            .expect("the earlier pass is still there");
+        assert_eq!(seen.period, 7);
+        assert!(seen.slots_exhausted);
     }
 
     /// Pruning rewrites the whole ledger, so it has to hold the lock across its

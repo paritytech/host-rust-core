@@ -865,6 +865,17 @@ class TrUAPIHostCore private constructor(
      */
     fun nextStatementRenewalDelay(): java.time.Duration = inner.nextStatementRenewalDelay()
 
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `null` until a pass has run, which is "not yet" rather than healthy.
+     * [startStatementAllowanceRenewal] returns nothing, so a host driving the loop
+     * reads its result here. `slotsExhausted` on the last pass means a period
+     * filled up and an allowance went unrenewed, which retrying cannot fix and a
+     * person may need telling about.
+     */
+    fun lastStatementRenewalReport(): StatementRenewalReport? = inner.lastStatementRenewalReport()
+
     /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)
     fun permissionAuthorizationStatus(

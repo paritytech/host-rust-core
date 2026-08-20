@@ -2848,6 +2848,17 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
+
+    /**
      * The in-process loop's own cadence, capped at an hour. An allowance stays
      * usable for `Resources.StmtStoreGraceWindow` past its boundary, 48 hours
      * on `paseo-next-v2`, so a host scheduling one wake-up per period has ample
@@ -3099,6 +3110,24 @@ open func disconnect()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -3424,6 +3453,17 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func handleSsoRequest(message: Data) async throws  -> SsoRequestOutcome
 
     /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
+
+    /**
      * The in-process loop's own cadence: at most an hour, tightening to land
      * just after the next period boundary.
      *
@@ -3614,6 +3654,24 @@ open func handleSsoRequest(message: Data)async throws  -> SsoRequestOutcome  {
             liftFunc: FfiConverterTypeSsoRequestOutcome_lift,
             errorHandler: FfiConverterTypeHostRejection_lift
         )
+}
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -6048,6 +6106,30 @@ fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeStatementRenewalReport: FfiConverterRustBuffer {
+    typealias SwiftType = StatementRenewalReport?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeStatementRenewalReport.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeStatementRenewalReport.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeBytes32: FfiConverterRustBuffer {
     typealias SwiftType = Bytes32?
 
@@ -6506,6 +6588,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_last_statement_renewal_report() != 25210) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 13069) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6561,6 +6646,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_handle_sso_request() != 21060) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_last_statement_renewal_report() != 40119) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 33452) {

@@ -181,6 +181,23 @@ if (report.slotsExhausted) {
 
 One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed run is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
 
+### Answering the scheduler
+
+A pass reports per target and only throws when it could not run at all, so decide from the report rather than from the absence of an exception:
+
+- every status `Registered` or `AlreadyAllocated`: `Result.success()`.
+- any status `Failed`: `Result.retry()`. The grace window means the retry can wait for the worker's own backoff rather than a tight loop.
+- any status `SkippedExhausted`, or `report.slotsExhausted`: `Result.success()`. Retrying cannot free a slot, only time or a replacement can, so a retry here only burns the worker's budget. It does mean an allowance went unrenewed, so tell the person rather than only logging it.
+- an exception carrying `Disconnected` before a session is restored: not ready rather than failed. Restore a session and let the next run take it.
+
+Scheduling is one of three layers, and only the first needs the OS:
+
+1. a `WorkManager` run, which is the only one that covers an app nobody opens.
+2. a pass on session activation, which covers an app somebody does.
+3. on-demand allocation, which registers a product's own account for the current period when that product asks for a statement-store allowance and none is held. That covers the asking product, not the rest of the ledger, so it narrows the window rather than closing it.
+
+`lastStatementRenewalReport()` returns the most recent pass the in-process loop ran, or `null` if none has, which is "not yet" rather than healthy. The loop returns nothing to its caller, so this is where a host driving it reads what it achieved; checking on resume is enough to catch an exhausted period. A direct `renewStatementAllowances()` hands back its own report and does not write here.
+
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
 
 An account id must be exactly 32 bytes. Anything else throws `NativeRenewalTargetException.InvalidAccountId` before any chain work happens.

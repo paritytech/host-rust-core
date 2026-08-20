@@ -305,6 +305,7 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func renewStatementAllowances() throws -> StatementRenewalReport
     func startStatementAllowanceRenewal()
     func nextStatementRenewalDelay() -> TimeInterval
+    func lastStatementRenewalReport() -> StatementRenewalReport?
 }
 
 /// Product-scoped key-value storage provided by the embedding host.
@@ -826,6 +827,17 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     public func nextStatementRenewalDelay() -> TimeInterval {
         inner.nextStatementRenewalDelay()
     }
+
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `nil` until a pass has run, which is "not yet" rather than healthy.
+    /// ``startStatementAllowanceRenewal()`` returns nothing, so a host driving the
+    /// loop reads its result here. `slotsExhausted` on the last pass means a
+    /// period filled up and an allowance went unrenewed, which retrying cannot
+    /// fix and a person may need telling about.
+    public func lastStatementRenewalReport() -> StatementRenewalReport? {
+        inner.lastStatementRenewalReport()
+    }
 }
 
 /// An account renewal should keep allowed on the Statement Store.
@@ -1064,6 +1076,17 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
     /// ``TrUAPIHostRuntime/nextStatementRenewalDelay()``.
     public func nextStatementRenewalDelay() -> TimeInterval {
         inner.nextStatementRenewalDelay()
+    }
+
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `nil` until a pass has run, which is "not yet" rather than healthy.
+    /// ``startStatementAllowanceRenewal()`` returns nothing, so a host driving the
+    /// loop reads its result here. `slotsExhausted` on the last pass means a
+    /// period filled up and an allowance went unrenewed, which retrying cannot
+    /// fix and a person may need telling about.
+    public func lastStatementRenewalReport() -> StatementRenewalReport? {
+        inner.lastStatementRenewalReport()
     }
 
     /// Read a stored permission authorization status without prompting.
