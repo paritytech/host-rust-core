@@ -22,7 +22,7 @@ namehash("example.dot") = keccak256(namehash("dot") ++ keccak256("example"))
                         = 0x50cef3746492e11fe07821077c650ed11a908315a91b3a85b4a12afd21249605
 ```
 
-#### Motivation
+## Motivation
 
 Three motivations argue for a well defined design:
 
