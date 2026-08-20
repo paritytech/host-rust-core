@@ -28,7 +28,7 @@ use subxt::utils::{AccountId32, MultiSignature};
 pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
 pub use sso_responder::ResponderExit;
-pub(crate) use sso_responder::respond_to_pairing;
+pub(crate) use sso_responder::{answer_remote_message, respond_to_pairing};
 
 use super::authority::{
     AccountAliasAuthorityRequest, AuthorityError, AuthoritySession, BulletinAllowanceKey,
@@ -539,12 +539,13 @@ impl SigningHost {
     pub(crate) async fn renew_statement_allowances(
         &self,
     ) -> Result<crate::runtime::statement_allowance::renewal::StatementRenewalReport, String> {
-        let report = allowance_renewal::renew_now(&self.services, self).await?;
-        self.renewal.record_report(&report);
-        Ok(report)
+        allowance_renewal::renew_now(&self.services, self).await
     }
 
-    /// The most recent renewal pass, from the loop or a direct call.
+    /// The most recent pass the in-process loop ran.
+    ///
+    /// A direct call to [`Self::renew_statement_allowances`] returns its own
+    /// report, so only the loop needs somewhere to leave one.
     pub(crate) fn last_statement_renewal_report(
         &self,
     ) -> Option<crate::runtime::statement_allowance::renewal::StatementRenewalReport> {

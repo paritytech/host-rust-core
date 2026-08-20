@@ -123,14 +123,14 @@ impl RenewalState {
     }
 
     /// Record the pass a host has not seen the return value of.
-    pub(super) fn record_report(&self, report: &StatementRenewalReport) {
+    fn record_report(&self, report: &StatementRenewalReport) {
         if let Ok(mut last) = self.last_report.lock() {
             *last = Some(report.clone());
         }
     }
 
-    /// The most recent pass, from either the loop or a direct call. `None` until
-    /// one has run, which a host should read as "not yet" rather than as healthy.
+    /// The most recent pass the loop ran. `None` until one has run, which a host
+    /// should read as "not yet" rather than as healthy.
     pub(super) fn last_report(&self) -> Option<StatementRenewalReport> {
         self.last_report.lock().ok().and_then(|last| last.clone())
     }

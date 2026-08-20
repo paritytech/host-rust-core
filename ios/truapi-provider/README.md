@@ -24,14 +24,14 @@ The bindings are committed build outputs; the xcframework is **gitignored** and 
                                 # (URL + checksum)
 ```
 
-Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the `ChainProvider` methods, `ChainMessageListener`, `ChainProviderError` — or after a chain-spec refresh, and commit the regenerated bindings together with the source change. Pass `--sim-only` (or `make provider-ios SIM_ONLY=1`) to skip the device slice while iterating; `publish.sh` refuses a simulator-only xcframework.
+Run `rebuild.sh` after changing anything in the crate's `uniffi` surface — the `ChainProvider` methods, `ChainMessageListener`, `ChainProviderError`, `ChainCloseReason` — or after a chain-spec refresh, and commit the regenerated bindings together with the source change. Pass `--sim-only` (or `make provider-ios SIM_ONLY=1`) to skip the device slice while iterating; `publish.sh` refuses a simulator-only xcframework.
 
 ## Integrating in an iOS app
 
 Add the package as an SPM dependency and link the `TrUAPIProvider` product into the app target:
 
 ```swift
-.package(url: "https://github.com/paritytech/truapi.git", branch: "main")
+.package(url: "https://github.com/paritytech/host-rust-core.git", branch: "main")
 ```
 
 ```swift
@@ -47,9 +47,10 @@ No Rust toolchain is needed: the xcframework carries the compiled crate, and the
 Everything is generated from [`ffi.rs`](../../rust/crates/truapi-provider/src/ffi.rs):
 
 - `ChainProvider` — construct **one per process** and share it. Every connection runs on the single embedded light client, so they share sync, peers, and warm state while keeping their own request queue and response stream. `connect(genesisHash:listener:)` resolves the network from the bundled catalog (relay wiring and statement-store placement included), so the 32-byte genesis hash is the only argument.
-- `ChainMessageListener` — the host implements it; `onMessage(message:)` receives each JSON-RPC response and notification, `onClosed()` fires once the stream ends.
+- `ChainMessageListener` — the host implements it; `onMessage(message:)` receives each JSON-RPC response and notification, `onClosed(reason:)` fires once the pump stops and names why. Both may throw: a listener that throws stops the pump for that connection rather than being called again for every response, and an error it does not declare is reported as `.listener(reason:)` instead of aborting the process.
 - `ChainConnection` — `send(request:)` queues a request, `disconnect()` tears the connection down.
-- `ChainProviderError` — `.connect(reason:)` when the genesis is outside the catalog or the transport fails, `.badGenesis` when the hash is not 32 bytes.
+- `ChainCloseReason` — `.streamEnded` when the response stream ended, which includes your own `disconnect()` coming back to you, and `.listenerFailed(reason:)` when your listener rejected a message and the connection was closed for it. It says why the pump stopped, not whether you should reconnect; carry an `@unknown default`, since variants may be added. That is source compatibility only: adding a variant does not change the `on_closed` checksum, so bindings older than the binary pass the integrity check and then fail to decode the reason, which surfaces as `onClosed` never firing. Regenerate bindings and binary together. `reason` on `.listenerFailed` is bounded to 256 Unicode scalar values, so it can measure more than 256 in Swift's `Character` count and up to 1024 bytes. Reconnect from a *serial* queue off the pump thread: `connect(genesisHash:listener:)` refuses to run inside a listener callback and throws `.connect(reason:)` if you try. Do not re-queue work with `send(request:)` from `onClosed(reason:)`: the connection is already closed by then, and `send` on a closed connection is dropped silently, with no error and no response frame.
+- `ChainProviderError` — `.connect(reason:)` when the genesis is outside the catalog or the transport fails, `.badGenesis` when the hash is not 32 bytes, `.listener(reason:)` when the host's listener failed in a way it did not declare.
 
 ## Architecture
 
@@ -74,13 +75,23 @@ import Foundation
 import TrUAPIProvider
 
 final class Responses: ChainMessageListener, @unchecked Sendable {
-    func onMessage(message: String) {
+    func onMessage(message: String) throws {
         // A JSON-RPC response or subscription notification, verbatim from smoldot.
         DispatchQueue.main.async { /* decode and render */ }
     }
 
-    func onClosed() {
-        DispatchQueue.main.async { /* the stream ended: drop the connection */ }
+    func onClosed(reason: ChainCloseReason) throws {
+        // Reached whichever way the connection ended, including your own
+        // disconnect(). Reconnect on your own intent, not on this alone.
+        switch reason {
+        case .streamEnded:
+            DispatchQueue.main.async { /* drop the connection */ }
+        case .listenerFailed(let reason):
+            // This listener rejected a message and the connection closed for it.
+            DispatchQueue.main.async { print("chain listener failed: \(reason)") }
+        @unknown default:
+            DispatchQueue.main.async { /* drop the connection */ }
+        }
     }
 }
 

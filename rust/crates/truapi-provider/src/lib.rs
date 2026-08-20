@@ -8,7 +8,7 @@
 //!
 //! Per-target backend matrix:
 //!
-//! - `ws` feature — [`ChainSource::RpcNode`], a remote JSON-RPC node over
+//! - `ws` feature — `ChainSource::RpcNode`, a remote JSON-RPC node over
 //!   WebSocket. On native targets it runs on a jsonrpsee transport and needs
 //!   an ambient tokio runtime; on `wasm32` the same API is served by the
 //!   browser's `WebSocket`.
@@ -22,7 +22,7 @@
 //! - `networks` feature — a bundled catalog so `connect(genesis_hash)`
 //!   resolves the whole network (relay wiring + statement placement included)
 //!   from the genesis hash alone, with no prior registration.
-//! - `js` feature — a JavaScript-facing API ([`js`]) on `wasm32`, so web
+//! - `js` feature — a JavaScript-facing API (the `js` module) on `wasm32`, so web
 //!   hosts can consume the provider directly without a Rust caller.
 
 // The `uniffi` feature pulls in UniFFI's generated scaffolding, which contains

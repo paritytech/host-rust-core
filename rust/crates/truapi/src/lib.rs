@@ -51,15 +51,17 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ContextualAlias,
-        DerivationIndex, GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey,
-        RuntimeApi, RuntimeSpec, RuntimeType, SignedStatement, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeName, ThemeVariant,
-        TxPayloadExtension,
+        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
+        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
+        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
+        ContextualAlias, DerivationIndex, GenericError, HostSignPayloadData, NotificationId,
+        OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
+        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
+        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
+        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
+        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -76,6 +78,12 @@ pub mod latest {
     pub type HostChatCreateRoomResponse = LatestOf<versioned::chat::HostChatCreateRoomResponse>;
     /// Native chat room creation failure.
     pub type HostChatCreateRoomError = LatestOf<versioned::chat::HostChatCreateRoomError>;
+    /// Native chat bot registration request.
+    pub type HostChatRegisterBotRequest = LatestOf<versioned::chat::HostChatRegisterBotRequest>;
+    /// Native chat bot registration result.
+    pub type HostChatRegisterBotResponse = LatestOf<versioned::chat::HostChatRegisterBotResponse>;
+    /// Native chat bot registration failure.
+    pub type HostChatRegisterBotError = LatestOf<versioned::chat::HostChatRegisterBotError>;
     /// Current native room list for a product.
     pub type HostChatListSubscribeItem = LatestOf<versioned::chat::HostChatListSubscribeItem>;
     /// Native chat message posting request.

@@ -340,7 +340,7 @@ use `exec '/script <path>'` instead. `/copy` is unavailable. `/clear` and
 
 Accepted product identifiers are:
 
-- a name ending in a dotNS TLD (`.dot` or `.paseo`);
+- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.test`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 
@@ -1097,9 +1097,11 @@ selection files.
 
 ## 14. Network and transport
 
-### 14.1 Network preset
+### 14.1 Network presets
 
-v0.1 supports only `paseo-next-v2`.
+`--network` selects one of two presets. `paseo-next-v2` is the default.
+
+#### `paseo-next-v2`
 
 | Purpose | Value |
 | --- | --- |
@@ -1110,6 +1112,34 @@ v0.1 supports only `paseo-next-v2`.
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
 | Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
+
+#### `previewnet`
+
+The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
+nextv2 later, and it is where products with previewnet descriptors do their
+on-chain testing. Its identity backend is the same service on its staging
+environment (`/api/v1/version` reports `"environment": "staging"`).
+
+| Purpose | Value |
+| --- | --- |
+| Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
+| People RPC | `wss://previewnet.substrate.dev/people` |
+| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
+| Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
+| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
+| Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
+| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
+
+Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
+signer provisioned on one preset is not visible from the other. Two presets means
+two identities on one machine, which is deliberate: the lite username and the
+statement-store allowance are per chain.
+
+`previewnet`'s identity backend requires a bearer token for write requests, which
+the CLI does not send, so auto-managed account creation fails there with
+`401 Unauthorized (Missing Authorization Header)`. Reads against the backend
+succeed, and every non-backend path is unaffected, so a `previewnet` signer needs
+`--mnemonic` for an account that already holds a username on that chain.
 
 There are no public endpoint override flags.
 
@@ -1180,7 +1210,7 @@ surface.
 | System | Handshake, feature query, and no-op navigation. |
 | Theme | One `Dark` subscription value. |
 | Chat | Typed unavailable/empty-subscription behavior. |
-| Coin Payment | Typed unavailable/interrupted-subscription behavior. |
+| Coin Payment | Typed unsupported/interrupted-subscription behavior. |
 | Payment | Typed unsupported/interrupted-subscription behavior. |
 
 ### 15.1 Exact reported methods
@@ -1236,10 +1266,11 @@ reports:
 
 Deliberately unavailable methods:
 
-- all five product-initiated Chat methods; the host-initiated custom-render
-  subscription is also unused because the CLI has no native Chat UI;
-- all nine generated Coin Payment methods; and
-- all four generated Payment methods.
+- all six product-initiated Chat methods, because the CLI installs no
+  `ChatPlatform`; the host-initiated custom-render subscription is also unused
+  because the CLI has no native Chat UI;
+- all nine Coin Payment methods, which answer `CallError::Unsupported`; and
+- all four Payment methods, which answer typed `Unknown` domain errors.
 
 A successful `System/feature_supported` call resolves the queried chain against
 the host's chain set, the same set `Chain/get_chain_info` answers from, so it
@@ -1572,11 +1603,17 @@ The implementation is covered by:
 
 The reports currently have identical method results apart from their title:
 
-- 45 implemented-success methods;
-- 6 unavailable Chat surface entries (five product-initiated methods plus the
-  host-initiated custom-render subscription);
-- 9 unavailable Coin Payment methods; and
-- 4 unavailable Payment methods.
+- 65 rows: 52 succeeding methods and 13 failing ones;
+- 9 Coin Payment methods, which answer `CallError::Unsupported`; and
+- 4 Payment methods, which answer a typed `Unknown` domain error.
+
+The Chat surface does not appear: it requires a `Chat` execution, and these are
+SPA reports. Two caveats on the checked-in reports: the enumeration in 15.1
+lists 45 methods and predates later additions to the surface, and only the
+signing-host report carries measured `Unsupported` Coin Payment details — the
+pairing-host report still records the older `HostFailure` shape, because the
+pairing phase needs a personhood ring member before it runs any method. It
+refreshes on the next `make e2e-pairing-cli` run from such a signer.
 
 Recommended local verification after CLI changes:
 

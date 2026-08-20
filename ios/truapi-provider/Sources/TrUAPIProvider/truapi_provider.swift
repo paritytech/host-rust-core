@@ -701,12 +701,12 @@ public protocol ChainMessageListener: AnyObject, Sendable {
     /**
      * Called for each JSON-RPC response or notification string.
      */
-    func onMessage(message: String) 
+    func onMessage(message: String) throws 
     
     /**
-     * Called once the connection's response stream ends.
+     * Called once the connection has closed, whichever way it ended.
      */
-    func onClosed() 
+    func onClosed(reason: ChainCloseReason) throws 
     
 }
 /**
@@ -769,7 +769,7 @@ open class ChainMessageListenerImpl: ChainMessageListener, @unchecked Sendable {
     /**
      * Called for each JSON-RPC response or notification string.
      */
-open func onMessage(message: String)  {try! rustCall() {
+open func onMessage(message: String)throws   {try rustCallWithError(FfiConverterTypeChainProviderError_lift) {
         uniffiCallStatus in
     uniffi_truapi_provider_fn_method_chainmessagelistener_on_message(
             self.uniffiCloneHandle(),
@@ -779,12 +779,13 @@ open func onMessage(message: String)  {try! rustCall() {
 }
     
     /**
-     * Called once the connection's response stream ends.
+     * Called once the connection has closed, whichever way it ended.
      */
-open func onClosed()  {try! rustCall() {
+open func onClosed(reason: ChainCloseReason)throws   {try rustCallWithError(FfiConverterTypeChainProviderError_lift) {
         uniffiCallStatus in
     uniffi_truapi_provider_fn_method_chainmessagelistener_on_closed(
-            self.uniffiCloneHandle(),uniffiCallStatus
+            self.uniffiCloneHandle(),
+        FfiConverterTypeChainCloseReason_lower(reason),uniffiCallStatus
     )
 }
 }
@@ -828,21 +829,23 @@ fileprivate struct UniffiCallbackInterfaceChainMessageListener {
                 guard let uniffiObj = try? FfiConverterTypeChainMessageListener.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return uniffiObj.onMessage(
+                return try uniffiObj.onMessage(
                      message: try FfiConverterString.lift(message)
                 )
             }
 
             
             let writeReturn = { () }
-            uniffiTraitInterfaceCall(
+            uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
-                writeReturn: writeReturn
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeChainProviderError_lower
             )
         },
         onClosed: { (
             uniffiHandle: UInt64,
+            reason: RustBuffer,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -851,16 +854,18 @@ fileprivate struct UniffiCallbackInterfaceChainMessageListener {
                 guard let uniffiObj = try? FfiConverterTypeChainMessageListener.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return uniffiObj.onClosed(
+                return try uniffiObj.onClosed(
+                     reason: try FfiConverterTypeChainCloseReason_lift(reason)
                 )
             }
 
             
             let writeReturn = { () }
-            uniffiTraitInterfaceCall(
+            uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
-                writeReturn: writeReturn
+                writeReturn: writeReturn,
+                lowerError: FfiConverterTypeChainProviderError_lower
             )
         }
     )
@@ -1089,6 +1094,124 @@ public func FfiConverterTypeChainProvider_lower(_ value: ChainProvider) -> UInt6
 
 
 /**
+ * Why the pump stopped delivering a connection's responses.
+ *
+ * This says what the core observed, not whether a reconnect is wanted. On the
+ * light-client path a response stream ends only when the connection is closed,
+ * including by this host's own `disconnect()` or by dropping the handle, so
+ * `StreamEnded` is usually the host's own teardown coming back to it. A host
+ * that reconnects on it without checking its own intent will reconnect to a
+ * connection it deliberately closed.
+ *
+ * New variants may be added, so a Swift host should carry an `@unknown
+ * default` and a Kotlin host an `else` branch.
+ *
+ * Reconnecting is done from another thread, and a serial one: a listener
+ * callback runs on the pump thread, and `ChainProvider::connect` refuses to
+ * run there. Hopping to a concurrent queue lets reconnects run in parallel,
+ * and each one costs a thread plus a chain-spec parse.
+ *
+ * Do not re-queue work with `send` from `on_closed`. By then the connection
+ * is closed either way: `close()` is what ended the stream on `StreamEnded`,
+ * and the pump closes it before reporting `ListenerFailed`. `send` on a
+ * closed connection is dropped silently, with no error and no frame for the
+ * request's id, so a consumer correlating by id would wait forever. From `on_message`, where the
+ * connection is still open, `send` behaves normally. `disconnect` is
+ * idempotent and safe to call from either callback.
+ */
+
+public enum ChainCloseReason: Equatable, Hashable {
+    
+    /**
+     * The response stream ended.
+     *
+     * Every connection this crate hands a host runs on the embedded light
+     * client, and that stream ends only when the connection is closed, so in
+     * practice this is your own teardown arriving back: `disconnect()`, or
+     * dropping the handle. It is not a report that the peer went away.
+     */
+    case streamEnded
+    /**
+     * This listener returned an error from `on_message`, so the connection was
+     * closed under it.
+     *
+     * A listener that rejects frames while it is shutting down reports this
+     * even when the host asked for the teardown: `on_message` blocks in
+     * foreign code, so a `disconnect()` can land while a frame is already in
+     * flight, and rejecting that frame is a listener failure like any other.
+     */
+    case listenerFailed(
+        /**
+         * What the listener reported, bounded to 256 characters. For logs
+         * and diagnostics: a
+         * host that needs to branch on its own failure modes should track them
+         * where it raised them.
+         */reason: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ChainCloseReason: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChainCloseReason: FfiConverterRustBuffer {
+    typealias SwiftType = ChainCloseReason
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChainCloseReason {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .streamEnded
+        
+        case 2: return .listenerFailed(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ChainCloseReason, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .streamEnded:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .listenerFailed(reason):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChainCloseReason_lift(_ buf: RustBuffer) throws -> ChainCloseReason {
+    return try FfiConverterTypeChainCloseReason.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChainCloseReason_lower(_ value: ChainCloseReason) -> RustBuffer {
+    return FfiConverterTypeChainCloseReason.lower(value)
+}
+
+
+
+/**
  * Errors surfaced to the foreign caller.
  */
 public 
@@ -1108,6 +1231,14 @@ enum ChainProviderError: Swift.Error, Equatable, Hashable, Foundation.LocalizedE
      * The genesis hash was not exactly 32 bytes.
      */
     case BadGenesis
+    /**
+     * The host's listener failed in a way it did not declare.
+     */
+    case Listener(
+        /**
+         * Human-readable failure reason.
+         */reason: String
+    )
 
     
 
@@ -1141,6 +1272,9 @@ public struct FfiConverterTypeChainProviderError: FfiConverterRustBuffer {
             reason: try FfiConverterString.read(from: &buf)
             )
         case 2: return .BadGenesis
+        case 3: return .Listener(
+            reason: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1161,6 +1295,11 @@ public struct FfiConverterTypeChainProviderError: FfiConverterRustBuffer {
         case .BadGenesis:
             writeInt(&buf, Int32(2))
         
+        
+        case let .Listener(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(reason, into: &buf)
+            
         }
     }
 }
@@ -1201,10 +1340,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_provider_checksum_method_chainconnection_send() != 52883) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_message() != 65048) {
+    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_message() != 2156) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_closed() != 39748) {
+    if (uniffi_truapi_provider_checksum_method_chainmessagelistener_on_closed() != 45188) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_provider_checksum_method_chainprovider_connect() != 16550) {

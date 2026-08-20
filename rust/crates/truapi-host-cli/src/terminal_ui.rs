@@ -110,6 +110,10 @@ pub enum SystemEvent {
     FramesListening {
         url: String,
     },
+    ServeReady {
+        url: String,
+        auto_accept: bool,
+    },
     SigningHostReady,
     SigningHostNeedsSession,
     SigningHostAccountExhausted {
@@ -1282,6 +1286,18 @@ impl App {
                 "Listening for product frames".to_string(),
                 Some(url),
             ),
+            SystemEvent::ServeReady { url, auto_accept } => self.notice(
+                NoticeTone::Info,
+                "Serving product frames until stopped".to_string(),
+                Some(format!(
+                    "{url}\n{}",
+                    if auto_accept {
+                        "Confirmations are approved automatically"
+                    } else {
+                        "Confirmations will be denied: there is no terminal to prompt on, so pass --auto-accept"
+                    }
+                )),
+            ),
             SystemEvent::SigningHostReady => self.activity(
                 "signer".to_string(),
                 "Signing host ready".to_string(),
@@ -1630,18 +1646,18 @@ impl App {
             (false, KeyCode::Tab) => {
                 self.editor.accept_completion();
             }
-            (false, KeyCode::Enter) if busy => {
-                if !self.editor.text().trim().is_empty() {
-                    self.notice(
-                        NoticeTone::Warning,
-                        "A command is already running".to_string(),
-                        Some(
-                            "Press Ctrl-C to cancel it before submitting another command."
-                                .to_string(),
-                        ),
-                    );
-                }
+            (false, KeyCode::Enter) if busy && !self.editor.text().trim().is_empty() => {
+                self.notice(
+                    NoticeTone::Warning,
+                    "A command is already running".to_string(),
+                    Some(
+                        "Press Ctrl-C to cancel it before submitting another command.".to_string(),
+                    ),
+                );
             }
+            // Enter on an empty prompt while busy is swallowed: falling through to
+            // the submit arm would accept a completion or submit mid-command.
+            (false, KeyCode::Enter) if busy => {}
             (false, KeyCode::Enter) => {
                 let text = self.editor.text();
                 let completions = self.editor.completions();

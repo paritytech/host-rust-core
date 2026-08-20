@@ -15,8 +15,9 @@ The playground is an interactive reference for the SPA-compatible TrUAPI surface
 - **Diagnosis view**: runs the SPA surface and produces a copy-pasteable markdown report per host. The explorer's Compatibility page aggregates those into a cross-host matrix. See [Diagnosis](#diagnosis).
 - **Wiring status**: methods that are not yet bound are flagged "Not supported" so you can see protocol coverage at a glance.
 - **Chat diagnosis**: the same build emits `out/worker/index.js`, a native Chat
-  application that tests room creation and idempotency, live room-list updates,
-  text and custom messages, user actions, and host-initiated custom-render streams. It
+  application that tests room creation and idempotency, bot registration and
+  idempotency, live room-list updates, text and custom messages, user actions,
+  and host-initiated custom-render streams. It
   displays live results in Chat and posts a Chat-only Markdown report after
   `!diagnose` completes the action check.
 

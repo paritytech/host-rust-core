@@ -310,6 +310,12 @@ fn type_is_empty<R: TypeResolver>(type_id: R::TypeId, types: &R) -> bool {
 }
 
 /// Check that `bytes` traverse `type_id` and leave nothing over.
+///
+/// `decode_with_visitor` applies no depth limit, and here the recursion depth
+/// is set by product-supplied bytes against a type graph that lives in chain
+/// metadata rather than in any Rust definition. That is safe only while the
+/// extension types stay flat, which they are today; a recursive extension type
+/// would need the bound that guards decoding elsewhere.
 fn traverse_exactly<R: TypeResolver>(
     bytes: &[u8],
     type_id: R::TypeId,

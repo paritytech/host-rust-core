@@ -31,6 +31,8 @@ import type {
   HostChatListSubscribeItem,
   HostChatPostMessageRequest,
   HostChatPostMessageResponse,
+  HostChatRegisterBotRequest,
+  HostChatRegisterBotResponse,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
@@ -825,22 +827,54 @@ export interface ChainProvider {
 }
 
 /**
- * Host-implemented adapter through which product Chat calls reach native
- * storage and UI.
+ * Host-implemented adapter through which product Chat calls reach host
+ * storage and UI. Optional: a host that omits it leaves Chat requests
+ * answered `Unsupported`. See `OptionalPlatform`.
+ *
+ * The core bounds and screens the product-supplied fields it forwards. Ids,
+ * names and icons on `create_chat_room`, `register_chat_bot` and
+ * `post_chat_message` are NFC-normalized and rejected for control and bidi
+ * characters. Message bodies are bounded and screened but pass through
+ * byte-for-byte, keeping line breaks and tabs, so a product reads back the
+ * bytes it sent. Counts and byte budgets are enforced, and any URL a host may
+ * fetch or open is restricted to `https` or an inline raster image and
+ * delivered as the parser resolved it.
+ *
+ * The core screens a URL's shape, not its reachability. `https://127.0.0.1`,
+ * `https://[::1]`, a private range and `https://169.254.169.254` (the cloud
+ * metadata endpoint) all pass: which networks a host is willing to fetch from
+ * depends on where that host runs, and a core that guessed would break a host
+ * serving its own media from localhost. A host that fetches these URLs owns
+ * that decision. Credentials are the exception and are refused, because
+ * `user:pass@` survives resolution into whatever the host fetches and logs.
+ *
+ * `ChatFile::size_bytes` is a product assertion and is not verified against
+ * the resource it names. Contextual output escaping, storage limits, and
+ * anything a host derives from product-supplied values remain host-owned.
  */
 export interface ChatPlatform {
   /**
    * Create or resolve a product-scoped native chat room.
    */
-  createRoom(
+  createChatRoom(
     product: ProductContext,
     request: HostChatCreateRoomRequest,
   ): Promise<HostChatCreateRoomResponse>;
 
   /**
-   * Persist a product-authored message in a native chat room.
+   * Register or resolve a product-scoped native chat bot. Host-owned in the
+   * same way rooms are.
    */
-  postMessage(
+  registerChatBot(
+    product: ProductContext,
+    request: HostChatRegisterBotRequest,
+  ): Promise<HostChatRegisterBotResponse>;
+
+  /**
+   * Persist a product-authored message in a native chat room. A host that
+   * cannot store a given content variant reports a domain error for it.
+   */
+  postChatMessage(
     product: ProductContext,
     request: HostChatPostMessageRequest,
   ): Promise<HostChatPostMessageResponse>;
@@ -848,9 +882,9 @@ export interface ChatPlatform {
   /**
    * Emit the current product-scoped room list and later replacements.
    */
-  subscribeRooms(
+  subscribeChatRooms(
     product: ProductContext,
-  ): AsyncIterable<HostChatListSubscribeItem>;
+  ): AsyncIterable<Result<HostChatListSubscribeItem, GenericError>>;
 }
 
 /**
@@ -1108,7 +1142,9 @@ export interface UserConfirmation {
 }
 
 /**
- * Combined platform interface. A host must provide all capability traits.
+ * Combined platform interface. A host must provide every capability trait
+ * listed here. Members marked optional may be omitted; the core answers their
+ * product calls with `Unsupported`. See `OptionalPlatform`.
  */
 export interface HostCallbacks {
   navigation: Navigation;
@@ -1122,6 +1158,7 @@ export interface HostCallbacks {
   userConfirmation: UserConfirmation;
   theme: ThemeHost;
   preimage: PreimageHost;
+  chat?: ChatPlatform;
 }
 
 export interface RequiredHostCallbacks {
@@ -1136,4 +1173,5 @@ export interface RequiredHostCallbacks {
   userConfirmation: Required<UserConfirmation>;
   theme: Required<ThemeHost>;
   preimage: Required<PreimageHost>;
+  chat?: Required<ChatPlatform>;
 }

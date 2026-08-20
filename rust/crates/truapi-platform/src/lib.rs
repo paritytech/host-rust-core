@@ -14,6 +14,8 @@
 //! Async capability traits use `async_trait` so the combined [`Platform`]
 //! surface can be used as a trait object by the runtime.
 
+use std::collections::BTreeSet;
+
 use futures::stream::BoxStream;
 use parity_scale_codec::{Decode, Encode};
 use unicode_normalization::UnicodeNormalization;
@@ -28,19 +30,21 @@ uniffi::use_remote_type!(truapi::Bytes32);
 
 use truapi::Bytes32;
 use truapi::latest::{
-    AllocatableResource, ChainIdentifier, GenericError, HostChatCreateRoomError,
-    HostChatCreateRoomRequest, HostChatCreateRoomResponse, HostChatListSubscribeItem,
-    HostChatPostMessageError, HostChatPostMessageRequest, HostChatPostMessageResponse,
-    HostDevicePermissionRequest, HostDevicePermissionResponse, HostFeatureSupportedRequest,
-    HostFeatureSupportedResponse, HostLocalStorageReadError, HostNavigateToError,
-    HostPushNotificationRequest, HostPushNotificationResponse, HostSignPayloadRequest,
-    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
+    AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
+    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
+    HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
+    HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
+    HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
+    HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
+    HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
+    HostNavigateToError, HostPushNotificationRequest, HostPushNotificationResponse,
+    HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
     NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
     RemotePermission, RemotePermissionRequest, RemotePermissionResponse, RingLocation,
 };
 use truapi::v01::HostAccountSignVrfRequest;
-use url::Url;
+use url::{Host, Url};
 
 /// Role-neutral runtime configuration supplied by the embedding host.
 #[non_exhaustive]
@@ -247,7 +251,9 @@ pub fn is_product_identifier(identifier: &str) -> bool {
 }
 
 /// Top-level domains that dotNS deployments register product names under.
-pub const DOTNS_TLDS: &[&str] = &["dot", "paseo"];
+/// Each network declares its own, so the set spans every network a host can
+/// be pointed at rather than just the production one.
+pub const DOTNS_TLDS: &[&str] = &["dot", "paseo", "test"];
 
 /// Whether `normalized` ends in one of [`DOTNS_TLDS`]. Expects an
 /// already-lowercased host with no trailing root dot.
@@ -274,6 +280,498 @@ pub fn normalize_product_identifier(
             product_id: product_id.to_string(),
         })
     }
+}
+
+/// Largest accepted length for a product-supplied chat identifier or display
+/// name, in bytes.
+pub const CHAT_FIELD_MAX_BYTES: usize = 256;
+
+/// Largest accepted length for a product-supplied chat icon, in bytes. Wide
+/// enough for a `data:` thumbnail, far below the transport frame cap.
+pub const CHAT_ICON_MAX_BYTES: usize = 64 * 1024;
+
+/// Inline image media types a chat icon may carry. SVG is excluded: it can
+/// carry script.
+const ALLOWED_ICON_DATA_TYPES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+];
+
+/// Normalize a product-supplied chat room or bot identifier.
+///
+/// Screened harder than a display name, mirroring
+/// [`normalize_product_identifier`]: an identifier is matched, not read, so it
+/// also rejects the invisible characters a name legitimately needs — joiners,
+/// variation selectors, soft hyphens and non-ASCII spaces — which would
+/// otherwise let two distinct ids render identically.
+pub fn normalize_chat_identifier(field: &'static str, id: &str) -> Result<String, ChatFieldError> {
+    let normalized = normalize_chat_text(field, id)?;
+    if normalized.is_empty() {
+        return Err(ChatFieldError::Empty { field });
+    }
+    if normalized.chars().any(is_identifier_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(normalized)
+}
+
+/// Validate a product-supplied chat display name.
+pub fn validate_chat_name(field: &'static str, name: &str) -> Result<String, ChatFieldError> {
+    normalize_chat_text(field, name)
+}
+
+/// Trim, NFC-normalize and screen one product-supplied chat string.
+///
+/// The byte budget applies to the normalized value, which is what a host
+/// receives: NFC can expand the input.
+fn normalize_chat_text(field: &'static str, value: &str) -> Result<String, ChatFieldError> {
+    let normalized = value.trim().nfc().collect::<String>();
+    if normalized.len() > CHAT_FIELD_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_FIELD_MAX_BYTES,
+        });
+    }
+    if normalized.chars().any(is_display_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(normalized)
+}
+
+/// Largest accepted length for a product-supplied message body, in bytes.
+pub const CHAT_BODY_MAX_BYTES: usize = 16 * 1024;
+
+/// Largest accepted length for a product-supplied message URL, in bytes.
+pub const CHAT_URL_MAX_BYTES: usize = 2048;
+
+/// Largest accepted number of action buttons on one message.
+pub const CHAT_ACTIONS_MAX: usize = 32;
+
+/// Largest accepted number of media items on one message.
+pub const CHAT_MEDIA_MAX: usize = 32;
+
+/// Largest accepted size for a custom message payload, in bytes.
+pub const CHAT_CUSTOM_PAYLOAD_MAX_BYTES: usize = 256 * 1024;
+
+/// Validate and normalize product-supplied message content.
+///
+/// Every field here is authored by the product and rendered by the host. Names
+/// and identifiers get the treatment [`validate_chat_name`] and
+/// [`validate_chat_icon`] give a room: bounded, NFC-normalized, and screened
+/// for characters that let two values render alike. A body is bounded and
+/// screened but otherwise untouched, because it is content rather than a
+/// label. Anything a host may fetch or open is restricted to schemes an
+/// allowlist recognizes.
+///
+/// The counts matter as much as the byte budgets: the transport frame cap
+/// alone allows millions of action buttons in one call.
+pub fn validate_chat_message_content(
+    content: ChatMessageContent,
+) -> Result<ChatMessageContent, ChatFieldError> {
+    use ChatMessageContent as Content;
+    Ok(match content {
+        Content::Text { text } => Content::Text {
+            text: validate_chat_body("text", &text)?,
+        },
+        Content::RichText(rich) => Content::RichText(ChatRichText {
+            text: rich
+                .text
+                .map(|t| validate_chat_body("text", &t))
+                .transpose()?,
+            media: validate_chat_media("media", rich.media)?,
+        }),
+        Content::Actions(actions) => {
+            if actions.actions.len() > CHAT_ACTIONS_MAX {
+                return Err(ChatFieldError::TooMany {
+                    field: "actions",
+                    limit: CHAT_ACTIONS_MAX,
+                });
+            }
+            Content::Actions(ChatActions {
+                text: actions
+                    .text
+                    .map(|t| validate_chat_body("text", &t))
+                    .transpose()?,
+                actions: validate_chat_actions(actions.actions)?,
+                layout: actions.layout,
+            })
+        }
+        Content::File(file) => Content::File(ChatFile {
+            url: validate_chat_url("url", &file.url)?,
+            file_name: validate_chat_file_name("fileName", &file.file_name)?,
+            mime_type: validate_chat_name("mimeType", &file.mime_type)?,
+            size_bytes: file.size_bytes,
+            text: file
+                .text
+                .map(|t| validate_chat_body("text", &t))
+                .transpose()?,
+        }),
+        Content::Reaction(reaction) => Content::Reaction(validate_chat_reaction(reaction)?),
+        Content::ReactionRemoved(reaction) => {
+            Content::ReactionRemoved(validate_chat_reaction(reaction)?)
+        }
+        Content::Custom(custom) => {
+            if custom.payload.len() > CHAT_CUSTOM_PAYLOAD_MAX_BYTES {
+                return Err(ChatFieldError::TooLong {
+                    field: "payload",
+                    limit: CHAT_CUSTOM_PAYLOAD_MAX_BYTES,
+                });
+            }
+            Content::Custom(ChatCustomMessage {
+                message_type: normalize_chat_identifier("messageType", &custom.message_type)?,
+                payload: custom.payload,
+            })
+        }
+    })
+}
+
+/// Validate a product-supplied file name.
+///
+/// Screened as a display name, because a bidi override reverses the extension a
+/// host shows on a download affordance, and additionally as a path component:
+/// a host that joins this onto a cache directory must not be handed separators
+/// or a parent reference.
+fn validate_chat_file_name(field: &'static str, name: &str) -> Result<String, ChatFieldError> {
+    let validated = validate_chat_name(field, name)?;
+    if validated.is_empty() {
+        return Err(ChatFieldError::Empty { field });
+    }
+    if validated.contains(['/', '\\', ':'])
+        || validated == ".."
+        || validated == "."
+        || validated.starts_with("..")
+    {
+        return Err(ChatFieldError::PathComponent { field });
+    }
+    Ok(validated)
+}
+
+/// Validate one message's action buttons.
+///
+/// Ids are normalized, which can map two spellings onto one key, so the
+/// normalized set is checked for collisions: a product shipping both `approve`
+/// and ` approve ` would otherwise get one button, and a trigger naming that
+/// key could not say which was pressed.
+fn validate_chat_actions(actions: Vec<ChatAction>) -> Result<Vec<ChatAction>, ChatFieldError> {
+    let mut seen = BTreeSet::new();
+    actions
+        .into_iter()
+        .map(|action| {
+            let action_id = normalize_chat_identifier("actionId", &action.action_id)?;
+            if !seen.insert(action_id.clone()) {
+                return Err(ChatFieldError::Duplicate { field: "actionId" });
+            }
+            Ok(ChatAction {
+                action_id,
+                title: validate_chat_name("title", &action.title)?,
+            })
+        })
+        .collect()
+}
+
+/// Validate a reaction: the message it names is an identifier, matched rather
+/// than read, so it is screened like one.
+fn validate_chat_reaction(reaction: ChatReaction) -> Result<ChatReaction, ChatFieldError> {
+    Ok(ChatReaction {
+        message_id: normalize_chat_identifier("messageId", &reaction.message_id)?,
+        emoji: validate_chat_emoji("emoji", &reaction.emoji)?,
+    })
+}
+
+fn validate_chat_media(
+    field: &'static str,
+    media: Vec<ChatMedia>,
+) -> Result<Vec<ChatMedia>, ChatFieldError> {
+    if media.len() > CHAT_MEDIA_MAX {
+        return Err(ChatFieldError::TooMany {
+            field,
+            limit: CHAT_MEDIA_MAX,
+        });
+    }
+    media
+        .into_iter()
+        .map(|item| {
+            Ok(ChatMedia {
+                url: validate_chat_url("url", &item.url)?,
+            })
+        })
+        .collect()
+}
+
+/// Bound and screen a product-authored message body.
+///
+/// A body is opaque content rather than a label, so unlike a name it is
+/// neither trimmed nor NFC-normalized: a product that hashes, signs or
+/// echo-compares what it sent reads back the same bytes, and leading
+/// indentation in a code block survives.
+fn validate_chat_body(field: &'static str, value: &str) -> Result<String, ChatFieldError> {
+    if value.len() > CHAT_BODY_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_BODY_MAX_BYTES,
+        });
+    }
+    if value.chars().any(is_body_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(value.to_string())
+}
+
+/// Bound and screen a product-supplied reaction emoji.
+fn validate_chat_emoji(field: &'static str, value: &str) -> Result<String, ChatFieldError> {
+    let normalized = value.trim().nfc().collect::<String>();
+    if normalized.len() > CHAT_FIELD_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_FIELD_MAX_BYTES,
+        });
+    }
+    if normalized.chars().any(is_emoji_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    Ok(normalized)
+}
+
+/// Resolve a product-supplied `https` URL to what a host will actually be
+/// handed, or reject it.
+///
+/// Both chat URL fields route through here so the budget is always measured
+/// against the resolved string. The parser percent-encodes, and a non-ASCII
+/// path triples in the process, so a value that arrives inside its cap can
+/// leave well past it.
+///
+/// Credentials are refused rather than carried: `Url::to_string` keeps
+/// `user:pass@`, so a host handed one would fetch with them and log them.
+///
+/// Which hosts are reachable is deliberately not decided here. See
+/// [`validate_chat_url`].
+fn resolve_chat_https(
+    field: &'static str,
+    trimmed: &str,
+    limit: usize,
+) -> Result<String, ChatFieldError> {
+    let parsed = Url::parse(trimmed)
+        .ok()
+        .filter(|parsed| parsed.scheme() == "https")
+        .ok_or(ChatFieldError::RejectedScheme { field })?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ChatFieldError::Credentials { field });
+    }
+    // The resolved target, not the arriving string: a host renders what the
+    // core validated, and the budget applies to what the host receives.
+    let resolved = parsed.to_string();
+    if resolved.len() > limit {
+        return Err(ChatFieldError::TooLong { field, limit });
+    }
+    Ok(resolved)
+}
+
+/// Validate a URL a host may fetch or open.
+///
+/// The same allowlist [`validate_chat_icon`] applies, for the same reason: a
+/// URL parser reaches a scheme through whitespace, tabs and NUL that a prefix
+/// comparison does not, so `javascript:` and `file:` must be excluded by what
+/// is permitted rather than by what is named.
+fn validate_chat_url(field: &'static str, url: &str) -> Result<String, ChatFieldError> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err(ChatFieldError::Empty { field });
+    }
+    // Screened before parsing: the parser drops tabs and newlines, so a string
+    // it accepts is not the string a host would render.
+    if trimmed.chars().any(is_display_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+    match icon_scheme(trimmed).as_deref() {
+        Some("https") => resolve_chat_https(field, trimmed, CHAT_URL_MAX_BYTES),
+        // An inline image is measured against the icon budget; the link cap
+        // would leave `data:` accepted but too small to carry an image.
+        Some("data") if is_allowed_icon_data_url(trimmed) => {
+            if trimmed.len() > CHAT_ICON_MAX_BYTES {
+                return Err(ChatFieldError::TooLong {
+                    field,
+                    limit: CHAT_ICON_MAX_BYTES,
+                });
+            }
+            Ok(trimmed.to_string())
+        }
+        _ => Err(ChatFieldError::RejectedScheme { field }),
+    }
+}
+
+/// Validate a product-supplied chat icon: absent, an `https` URL, or an inline
+/// image in [`ALLOWED_ICON_DATA_TYPES`].
+///
+/// An allowlist rather than a denylist, because a URL parser reaches a scheme
+/// through whitespace, tabs and NUL that a prefix comparison does not.
+pub fn validate_chat_icon(field: &'static str, icon: &str) -> Result<String, ChatFieldError> {
+    let trimmed = icon.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if trimmed.len() > CHAT_ICON_MAX_BYTES {
+        return Err(ChatFieldError::TooLong {
+            field,
+            limit: CHAT_ICON_MAX_BYTES,
+        });
+    }
+    if trimmed.chars().any(is_display_unsafe) {
+        return Err(ChatFieldError::UnsafeCharacter { field });
+    }
+
+    match icon_scheme(trimmed).as_deref() {
+        Some("https") => resolve_chat_https(field, trimmed, CHAT_ICON_MAX_BYTES),
+        Some("data") if is_allowed_icon_data_url(trimmed) => Ok(trimmed.to_string()),
+        _ => Err(ChatFieldError::RejectedScheme { field }),
+    }
+}
+
+/// Scheme a URL parser would resolve, with the characters parsers ignore
+/// removed so `java\tscript:` and a leading NUL cannot hide one.
+fn icon_scheme(candidate: &str) -> Option<String> {
+    let stripped: String = candidate
+        .chars()
+        .filter(|character| !character.is_whitespace() && *character != '\u{0}')
+        .collect();
+    let (scheme, _) = stripped.split_once(':')?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
+        return None;
+    }
+    Some(scheme.to_ascii_lowercase())
+}
+
+/// Whether an inline image declares an allowed media type. The media type is
+/// read the way a data-URL processor reads it: whitespace-insensitive.
+fn is_allowed_icon_data_url(candidate: &str) -> bool {
+    let Some(rest) = candidate
+        .char_indices()
+        .find(|(_, c)| *c == ':')
+        .map(|(index, _)| &candidate[index + 1..])
+    else {
+        return false;
+    };
+    let media_type: String = rest
+        .split(&[',', ';'][..])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    ALLOWED_ICON_DATA_TYPES.contains(&media_type.as_str())
+}
+
+/// Invisible characters an identifier must not carry. A display name keeps
+/// these: ZWJ builds emoji sequences and ZWNJ is required by Persian.
+fn is_identifier_unsafe(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00ad}'                        // soft hyphen
+            | '\u{200c}' | '\u{200d}'     // ZWNJ, ZWJ
+            | '\u{2060}'..='\u{2064}'     // word joiner, invisible operators
+            | '\u{fe00}'..='\u{fe0f}'     // variation selectors
+    ) || (character.is_whitespace() && character != ' ')
+}
+
+/// Line breaks and tabs a message body legitimately carries. A body is written
+/// text, so these are content; every other character
+/// [`is_display_unsafe`] rejects still applies.
+fn is_body_unsafe(character: char) -> bool {
+    if matches!(character, '\n' | '\r' | '\t') {
+        return false;
+    }
+    is_display_unsafe(character)
+}
+
+/// Tag characters encode the subdivision flags, so a picked reaction keeps
+/// them where a display label would not.
+fn is_emoji_unsafe(character: char) -> bool {
+    if matches!(character, '\u{e0020}'..='\u{e007f}') {
+        return false;
+    }
+    is_display_unsafe(character)
+}
+
+/// Control characters and bidi overrides let two distinct values render alike.
+fn is_display_unsafe(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{200b}'
+                | '\u{061c}'
+                | '\u{2028}' | '\u{2029}'   // line and paragraph separators
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}'
+                | '\u{e0000}'..='\u{e007f}'
+        )
+}
+
+/// Rejection of a product-supplied chat field.
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
+pub enum ChatFieldError {
+    /// The field is required and arrived blank.
+    #[display("{field} must not be empty")]
+    Empty {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// Two entries resolved to the same value, so neither can be addressed.
+    #[display("{field} must not repeat a value")]
+    Duplicate {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The URL carried credentials, which a host would fetch and log with.
+    #[display("{field} must not carry credentials")]
+    Credentials {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The field names a path rather than one file. Reported separately from
+    /// [`Self::UnsafeCharacter`] because a separator or a parent reference is
+    /// neither: a product told its file name carries control characters would
+    /// go looking for one that is not there.
+    #[display("{field} must name a single file, not a path")]
+    PathComponent {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The field carried more entries than are accepted.
+    #[display("{field} must not carry more than {limit} entries")]
+    TooMany {
+        /// Offending field name.
+        field: &'static str,
+        /// Largest accepted number of entries.
+        limit: usize,
+    },
+    /// The field exceeded its byte budget.
+    #[display("{field} must be at most {limit} bytes")]
+    TooLong {
+        /// Offending field name.
+        field: &'static str,
+        /// Accepted maximum.
+        limit: usize,
+    },
+    /// The field carried characters that make values indistinguishable.
+    #[display("{field} must not contain control or bidirectional characters")]
+    UnsafeCharacter {
+        /// Offending field name.
+        field: &'static str,
+    },
+    /// The icon carried a scheme a host must not render.
+    #[display("{field} carries a scheme that cannot be rendered")]
+    RejectedScheme {
+        /// Offending field name.
+        field: &'static str,
+    },
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), RuntimeConfigValidationError> {
@@ -750,6 +1248,26 @@ impl CoreStorageKey {
         }
     }
 
+    /// Persisted authorization key for a single domain pattern inside a
+    /// product's remote-access grant.
+    ///
+    /// A product may request several domains at once, but enforcement asks
+    /// about one host at a time, so each pattern gets its own slot: a
+    /// multi-domain grant is stored as one key per pattern and stays visible to
+    /// a later single-host lookup. The key is a one-element
+    /// [`RemotePermission::Remote`] set, so this shares the encoding — and the
+    /// [`normalize_remote_domain`] canonicalization — of the bundle form.
+    pub fn remote_domain_authorization(product_id: &str, domain: &str) -> Self {
+        Self::remote_permission_authorization(
+            product_id,
+            &RemotePermissionRequest {
+                permission: RemotePermission::Remote {
+                    domains: vec![domain.to_string()],
+                },
+            },
+        )
+    }
+
     /// Persisted authorization key for product-scoped identity disclosure.
     pub fn identity_disclosure_authorization(product_id: &str) -> Self {
         Self::PermissionAuthorization {
@@ -770,15 +1288,77 @@ impl CoreStorageKey {
     }
 }
 
+/// Canonical storage form for one remote-access domain pattern.
+///
+/// Both ends of a domain lookup have to agree byte for byte — the pattern a
+/// grant is keyed under and the host enforcement derives from a live URL — so
+/// both run this one rule: IDNA ASCII form, lower-cased, trailing root dot
+/// dropped, leading `*.` wildcard marker preserved. Without it a trailing-dot
+/// FQDN or a non-ASCII host would open a second slot for the same site and
+/// prompt twice.
+///
+/// Input the URL host parser rejects as a domain falls back to an NFC-folded
+/// lowercase form, so an unusual pattern still keys consistently rather than
+/// being dropped.
+pub fn normalize_remote_domain(domain: &str) -> String {
+    let trimmed = domain.trim();
+    let (wildcard, rest) = match trimmed.strip_prefix("*.") {
+        Some(rest) => ("*.", rest),
+        None => ("", trimmed),
+    };
+    let without_root_dot = rest.strip_suffix('.').unwrap_or(rest);
+    let normalized = match Host::parse(without_root_dot) {
+        Ok(host) => host.to_string(),
+        Err(_) => without_root_dot.nfc().collect::<String>().to_lowercase(),
+    };
+    format!("{wildcard}{normalized}")
+}
+
+/// Stored domain patterns that would authorize outbound access to `host`,
+/// ordered most specific first.
+///
+/// Implements the RFC 0002 matching rules: an exact host match, a single-level
+/// wildcard over the host's immediate parent, and the universal wildcard. Two
+/// consequences worth holding onto, because both are load-bearing:
+///
+/// - A wildcard spans exactly one label. `*.example.com` authorizes
+///   `api.example.com` but not `deep.api.example.com`, whose only wildcard
+///   candidate is `*.api.example.com`.
+/// - A bare parent domain is never a candidate. Granting `example.com` does not
+///   extend to `api.example.com`; that needs the explicit host or the wildcard.
+///
+/// Every pattern a product can be granted is consulted here, including a
+/// TLD-level one such as `*.com` or `*.dot`. Narrowing the candidate list
+/// instead would store such a grant and then never read it, so the product
+/// would keep prompting for every host under a pattern the user already
+/// approved. Breadth is the prompt's problem: RFC 0002 already puts the duty of
+/// spelling out how wide `*` is on the host UI, and a TLD wildcard belongs in
+/// the same sentence.
+///
+/// Ordering is the precedence rule for the caller: the most specific stored
+/// decision wins, so an explicit grant for one host survives a denial of its
+/// parent wildcard, and vice versa.
+pub fn remote_domain_candidates(host: &str) -> Vec<String> {
+    let normalized = normalize_remote_domain(host);
+    let mut candidates = vec![normalized.clone()];
+    if let Some((_label, parent)) = normalized.split_once('.') {
+        candidates.push(format!("*.{parent}"));
+    }
+    candidates.push("*".to_string());
+    candidates.dedup();
+    candidates
+}
+
 fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissionRequest {
     let permission = match &request.permission {
         RemotePermission::Remote { domains } => {
-            // DNS domains are case-insensitive, so a logically-identical bundle
-            // requested with different casing or duplicate entries must
-            // canonicalize to one key (no spurious re-prompt).
+            // A logically-identical bundle requested with different casing,
+            // spelling or duplicate entries must canonicalize to one key (no
+            // spurious re-prompt), under the same rule enforcement applies to a
+            // single host.
             let mut canonical: Vec<String> = domains
                 .iter()
-                .map(|domain| domain.to_ascii_lowercase())
+                .map(|domain| normalize_remote_domain(domain))
                 .collect();
             canonical.sort();
             canonical.dedup();
@@ -792,6 +1372,539 @@ fn canonical_remote_request(request: &RemotePermissionRequest) -> RemotePermissi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file_with_url(url: &str) -> ChatMessageContent {
+        ChatMessageContent::File(ChatFile {
+            url: url.to_string(),
+            file_name: "report.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 1,
+            text: None,
+        })
+    }
+
+    #[test]
+    fn a_message_url_is_screened_like_an_icon() {
+        // The icon field already rejects these. A file card is fetched or
+        // opened the same way, so the same allowlist applies.
+        for hostile in [
+            "javascript:alert(document.cookie)",
+            "file:///etc/passwd",
+            "content://com.host.provider/secret",
+            "data:image/svg+xml,<svg onload=alert(1)>",
+        ] {
+            assert_eq!(
+                validate_chat_message_content(file_with_url(hostile)),
+                Err(ChatFieldError::RejectedScheme { field: "url" }),
+                "{hostile} must be rejected"
+            );
+        }
+
+        // Characters a URL parser drops are rejected before it runs, so the
+        // string a host renders is the string the scheme check ran against.
+        for smuggled in [
+            "java\tscript:alert(1)",
+            "\u{0}javascript:alert(1)",
+            "https:/\t/evil.invalid/x",
+            "https://\u{200b}evil.invalid/x",
+            "https://example.invalid/\u{202e}gpj.exe",
+        ] {
+            assert_eq!(
+                validate_chat_message_content(file_with_url(smuggled)),
+                Err(ChatFieldError::UnsafeCharacter { field: "url" }),
+                "{smuggled} must be rejected"
+            );
+        }
+
+        // What reaches the host is what the parser resolved.
+        assert_eq!(
+            validate_chat_message_content(file_with_url("https://example.invalid")),
+            Ok(file_with_url("https://example.invalid/"))
+        );
+    }
+
+    #[test]
+    fn a_file_name_cannot_reverse_its_own_extension() {
+        // A bidi override renders `invoice<RLO>gnp.exe` as `invoiceexe.png`
+        // on the download affordance the host draws.
+        let spoofed = ChatMessageContent::File(ChatFile {
+            url: "https://example.invalid/f".to_string(),
+            file_name: "invoice\u{202e}gnp.exe".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 1,
+            text: None,
+        });
+        assert_eq!(
+            validate_chat_message_content(spoofed),
+            Err(ChatFieldError::UnsafeCharacter { field: "fileName" })
+        );
+    }
+
+    #[test]
+    fn message_content_is_bounded_by_count_and_by_bytes() {
+        let too_many = ChatMessageContent::Actions(ChatActions {
+            text: None,
+            actions: (0..CHAT_ACTIONS_MAX + 1)
+                .map(|index| ChatAction {
+                    action_id: format!("a{index}"),
+                    title: "go".to_string(),
+                })
+                .collect(),
+            layout: truapi::latest::ChatActionLayout::Column,
+        });
+        assert_eq!(
+            validate_chat_message_content(too_many),
+            Err(ChatFieldError::TooMany {
+                field: "actions",
+                limit: CHAT_ACTIONS_MAX,
+            })
+        );
+
+        let too_long = ChatMessageContent::Text {
+            text: "x".repeat(CHAT_BODY_MAX_BYTES + 1),
+        };
+        assert_eq!(
+            validate_chat_message_content(too_long),
+            Err(ChatFieldError::TooLong {
+                field: "text",
+                limit: CHAT_BODY_MAX_BYTES,
+            })
+        );
+
+        let too_much_media = ChatMessageContent::RichText(ChatRichText {
+            text: None,
+            media: (0..CHAT_MEDIA_MAX + 1)
+                .map(|_| ChatMedia {
+                    url: "https://example.invalid/m".to_string(),
+                })
+                .collect(),
+        });
+        assert_eq!(
+            validate_chat_message_content(too_much_media),
+            Err(ChatFieldError::TooMany {
+                field: "media",
+                limit: CHAT_MEDIA_MAX,
+            })
+        );
+    }
+
+    #[test]
+    fn a_message_body_carries_the_text_a_person_typed() {
+        // A chat message is written text: line breaks and tabs are content,
+        // and the bytes must survive so a product can echo-compare them.
+        let markdown = "# Report\n\n| a | b |\n| - | - |\n\tindented\n";
+        assert_eq!(
+            validate_chat_message_content(ChatMessageContent::Text {
+                text: markdown.to_string(),
+            }),
+            Ok(ChatMessageContent::Text {
+                text: markdown.to_string(),
+            })
+        );
+
+        // Neither trimmed nor NFC-normalized.
+        let unnormalized = "  cafe\u{301}  ";
+        assert_eq!(
+            validate_chat_message_content(ChatMessageContent::Text {
+                text: unnormalized.to_string(),
+            }),
+            Ok(ChatMessageContent::Text {
+                text: unnormalized.to_string(),
+            })
+        );
+
+        // The bidi and zero-width screen still applies.
+        assert_eq!(
+            validate_chat_message_content(ChatMessageContent::Text {
+                text: "pay \u{202e}yletamitigel".to_string(),
+            }),
+            Err(ChatFieldError::UnsafeCharacter { field: "text" })
+        );
+    }
+
+    #[test]
+    fn a_reaction_keeps_the_emoji_a_person_picked() {
+        // Subdivision flags encode as tag characters, which a display label
+        // rejects and a picked glyph must not.
+        for emoji in [
+            "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}",
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "\u{2764}\u{fe0f}",
+            "\u{1f1ee}\u{1f1f3}",
+        ] {
+            assert_eq!(
+                validate_chat_message_content(ChatMessageContent::Reaction(ChatReaction {
+                    message_id: "message-1".to_string(),
+                    emoji: emoji.to_string(),
+                })),
+                Ok(ChatMessageContent::Reaction(ChatReaction {
+                    message_id: "message-1".to_string(),
+                    emoji: emoji.to_string(),
+                })),
+                "{emoji:?} must survive"
+            );
+        }
+    }
+
+    #[test]
+    fn every_screened_field_rejects_its_own_hostile_value() {
+        // One case per screen, so removing any single one fails a test.
+        let media = ChatMessageContent::RichText(ChatRichText {
+            text: None,
+            media: vec![ChatMedia {
+                url: "javascript:alert(1)".to_string(),
+            }],
+        });
+        assert_eq!(
+            validate_chat_message_content(media),
+            Err(ChatFieldError::RejectedScheme { field: "url" })
+        );
+
+        let action = ChatMessageContent::Actions(ChatActions {
+            text: None,
+            actions: vec![ChatAction {
+                action_id: "app\u{200d}rove".to_string(),
+                title: "Approve".to_string(),
+            }],
+            layout: truapi::latest::ChatActionLayout::Column,
+        });
+        assert_eq!(
+            validate_chat_message_content(action),
+            Err(ChatFieldError::UnsafeCharacter { field: "actionId" })
+        );
+
+        let mime = ChatMessageContent::File(ChatFile {
+            url: "https://example.invalid/f".to_string(),
+            file_name: "f".to_string(),
+            mime_type: "text/\u{202e}nialp".to_string(),
+            size_bytes: 1,
+            text: None,
+        });
+        assert_eq!(
+            validate_chat_message_content(mime),
+            Err(ChatFieldError::UnsafeCharacter { field: "mimeType" })
+        );
+
+        let custom_type = ChatMessageContent::Custom(ChatCustomMessage {
+            message_type: "  ".to_string(),
+            payload: Vec::new(),
+        });
+        assert_eq!(
+            validate_chat_message_content(custom_type),
+            Err(ChatFieldError::Empty {
+                field: "messageType"
+            })
+        );
+
+        let payload = ChatMessageContent::Custom(ChatCustomMessage {
+            message_type: "vote".to_string(),
+            payload: vec![0; CHAT_CUSTOM_PAYLOAD_MAX_BYTES + 1],
+        });
+        assert_eq!(
+            validate_chat_message_content(payload),
+            Err(ChatFieldError::TooLong {
+                field: "payload",
+                limit: CHAT_CUSTOM_PAYLOAD_MAX_BYTES,
+            })
+        );
+
+        let emoji = ChatMessageContent::Reaction(ChatReaction {
+            message_id: "message-1".to_string(),
+            emoji: "\u{202e}".to_string(),
+        });
+        assert_eq!(
+            validate_chat_message_content(emoji),
+            Err(ChatFieldError::UnsafeCharacter { field: "emoji" })
+        );
+
+        // The removal variant screens the same fields as the addition.
+        let removed = ChatMessageContent::ReactionRemoved(ChatReaction {
+            message_id: "  ".to_string(),
+            emoji: "\u{1f3b2}".to_string(),
+        });
+        assert_eq!(
+            validate_chat_message_content(removed),
+            Err(ChatFieldError::Empty { field: "messageId" })
+        );
+
+        // Every optional body, not just the one `Text` carries.
+        let bidi = "pay \u{202e}yletamitigel".to_string();
+        let bodies = [
+            ChatMessageContent::RichText(ChatRichText {
+                text: Some(bidi.clone()),
+                media: Vec::new(),
+            }),
+            ChatMessageContent::Actions(ChatActions {
+                text: Some(bidi.clone()),
+                actions: Vec::new(),
+                layout: truapi::latest::ChatActionLayout::Column,
+            }),
+            ChatMessageContent::File(ChatFile {
+                url: "https://example.invalid/f".to_string(),
+                file_name: "f".to_string(),
+                mime_type: "text/plain".to_string(),
+                size_bytes: 1,
+                text: Some(bidi),
+            }),
+        ];
+        for body in bodies {
+            assert_eq!(
+                validate_chat_message_content(body.clone()),
+                Err(ChatFieldError::UnsafeCharacter { field: "text" }),
+                "{body:?} must screen its body"
+            );
+        }
+
+        let title = ChatMessageContent::Actions(ChatActions {
+            text: None,
+            actions: vec![ChatAction {
+                action_id: "approve".to_string(),
+                title: "Approve\u{202e}".to_string(),
+            }],
+            layout: truapi::latest::ChatActionLayout::Column,
+        });
+        assert_eq!(
+            validate_chat_message_content(title),
+            Err(ChatFieldError::UnsafeCharacter { field: "title" })
+        );
+    }
+
+    #[test]
+    fn an_icon_is_screened_and_resolved_like_a_message_url() {
+        // `validate_chat_icon` shares the url path's screen and resolution, and
+        // is reached from `create_room` and `register_bot` rather than here.
+        assert_eq!(
+            validate_chat_icon("icon", "https://example.invalid/\u{202e}gpj.exe"),
+            Err(ChatFieldError::UnsafeCharacter { field: "icon" })
+        );
+        assert_eq!(
+            validate_chat_icon("icon", "https://example.invalid").unwrap(),
+            "https://example.invalid/"
+        );
+        assert_eq!(validate_chat_icon("icon", "  ").unwrap(), "");
+    }
+
+    #[test]
+    fn a_name_cannot_break_its_own_line() {
+        // U+2028 and U+2029 are Zl/Zp, not Cc, so `char::is_control` misses
+        // them -- yet they break a line exactly like the `\n` this rejects,
+        // which is what hides an extension on a one-line download affordance.
+        for separator in ['\u{2028}', '\u{2029}'] {
+            let spoofed = ChatMessageContent::File(ChatFile {
+                url: "https://example.invalid/f".to_string(),
+                file_name: format!("invoice.pdf{separator}        .exe"),
+                mime_type: "application/pdf".to_string(),
+                size_bytes: 1,
+                text: None,
+            });
+            assert_eq!(
+                validate_chat_message_content(spoofed),
+                Err(ChatFieldError::UnsafeCharacter { field: "fileName" }),
+                "{separator:?} must be rejected in a name"
+            );
+        }
+    }
+
+    #[test]
+    fn a_url_budget_applies_to_what_the_host_receives() {
+        // Resolution percent-encodes, so a URL measured on arrival can land
+        // nearly three times over budget.
+        // Each of these is 3 bytes raw and 9 percent-encoded, so the arriving
+        // string fits the budget and the resolved one does not.
+        let padded = format!("https://example.invalid/{}", "\u{4e00}".repeat(300));
+        assert!(padded.len() <= CHAT_URL_MAX_BYTES);
+        assert_eq!(
+            validate_chat_message_content(file_with_url(&padded)),
+            Err(ChatFieldError::TooLong {
+                field: "url",
+                limit: CHAT_URL_MAX_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn action_ids_that_normalize_alike_are_rejected() {
+        // Normalization maps these onto one key. Accepting both would give the
+        // user two buttons whose trigger the product cannot tell apart.
+        let colliding = ChatMessageContent::Actions(ChatActions {
+            text: None,
+            actions: vec![
+                ChatAction {
+                    action_id: "approve".to_string(),
+                    title: "Approve".to_string(),
+                },
+                ChatAction {
+                    action_id: " approve ".to_string(),
+                    title: "Reject".to_string(),
+                },
+            ],
+            layout: truapi::latest::ChatActionLayout::Column,
+        });
+        assert_eq!(
+            validate_chat_message_content(colliding),
+            Err(ChatFieldError::Duplicate { field: "actionId" })
+        );
+
+        // A literal repeat is the same defect without the normalization step.
+        let repeated = ChatMessageContent::Actions(ChatActions {
+            text: None,
+            actions: vec![
+                ChatAction {
+                    action_id: "approve".to_string(),
+                    title: "Approve".to_string(),
+                },
+                ChatAction {
+                    action_id: "approve".to_string(),
+                    title: "Reject".to_string(),
+                },
+            ],
+            layout: truapi::latest::ChatActionLayout::Column,
+        });
+        assert_eq!(
+            validate_chat_message_content(repeated),
+            Err(ChatFieldError::Duplicate { field: "actionId" })
+        );
+    }
+
+    #[test]
+    fn a_file_name_cannot_address_a_path() {
+        // A host joining this onto a cache directory must not be handed a
+        // separator or a parent reference.
+        for traversal in [
+            "../../../../data/data/io.parity.wallet/files/session.json",
+            "..",
+            "a/b.txt",
+            "a\\b.txt",
+            "C:evil.exe",
+        ] {
+            assert_eq!(
+                validate_chat_message_content(ChatMessageContent::File(ChatFile {
+                    url: "https://example.invalid/f".to_string(),
+                    file_name: traversal.to_string(),
+                    mime_type: "application/pdf".to_string(),
+                    size_bytes: 1,
+                    text: None,
+                })),
+                Err(ChatFieldError::PathComponent { field: "fileName" }),
+                "{traversal:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_url_budget_is_measured_after_resolution_on_every_field() {
+        // Percent-encoding grows a non-ASCII path threefold, so a value that
+        // arrives inside its cap can leave well past it. Measuring the arriving
+        // string alone let an icon through at three times its budget.
+        let long_path = "\u{00e9}".repeat(CHAT_ICON_MAX_BYTES / 4);
+        let icon = format!("https://icons.invalid/{long_path}");
+        assert!(icon.len() <= CHAT_ICON_MAX_BYTES, "arrives inside its cap");
+        assert!(
+            Url::parse(&icon)
+                .expect("a parsable https url")
+                .to_string()
+                .len()
+                > CHAT_ICON_MAX_BYTES,
+            "resolves past it"
+        );
+
+        assert_eq!(
+            validate_chat_icon("icon", &icon),
+            Err(ChatFieldError::TooLong {
+                field: "icon",
+                limit: CHAT_ICON_MAX_BYTES,
+            })
+        );
+
+        let message_url = format!(
+            "https://files.invalid/{}",
+            "\u{00e9}".repeat(CHAT_URL_MAX_BYTES / 4)
+        );
+        assert!(message_url.len() <= CHAT_URL_MAX_BYTES);
+        assert_eq!(
+            validate_chat_url("url", &message_url),
+            Err(ChatFieldError::TooLong {
+                field: "url",
+                limit: CHAT_URL_MAX_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn a_url_must_not_carry_credentials() {
+        // `Url::to_string` keeps `user:pass@`, so a host handed this would
+        // fetch with the credentials and log them.
+        for field_url in [
+            "https://user:pass@example.invalid/avatar.png",
+            "https://user@example.invalid/avatar.png",
+        ] {
+            assert_eq!(
+                validate_chat_icon("icon", field_url),
+                Err(ChatFieldError::Credentials { field: "icon" }),
+                "{field_url:?} must be rejected"
+            );
+            assert_eq!(
+                validate_chat_url("url", field_url),
+                Err(ChatFieldError::Credentials { field: "url" }),
+                "{field_url:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn reachability_is_the_hosts_decision_and_the_docs_say_so() {
+        // Named rather than incidental: the trait doc tells a host these pass
+        // and that fetching them is its own call. A core that guessed would
+        // break a host serving its own media from localhost, so if this ever
+        // starts rejecting, the doc has to change with it.
+        for reachable_only_by_the_host in [
+            "https://127.0.0.1:9944/rpc",
+            "https://[::1]/admin",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://10.0.0.1/internal",
+        ] {
+            assert!(
+                validate_chat_url("url", reachable_only_by_the_host).is_ok(),
+                "{reachable_only_by_the_host:?} is the host's call, not the core's"
+            );
+        }
+    }
+
+    #[test]
+    fn the_published_limits_are_the_enforced_limits() {
+        // `Chat::post_message`'s doc states these numbers to products in prose,
+        // so a test asserting `CONST + 1` would let the constant drift away
+        // from the contract without failing.
+        assert_eq!(CHAT_BODY_MAX_BYTES, 16 * 1024);
+        assert_eq!(CHAT_URL_MAX_BYTES, 2048);
+        assert_eq!(CHAT_ACTIONS_MAX, 32);
+        assert_eq!(CHAT_MEDIA_MAX, 32);
+        assert_eq!(CHAT_CUSTOM_PAYLOAD_MAX_BYTES, 256 * 1024);
+        assert_eq!(CHAT_FIELD_MAX_BYTES, 256);
+    }
+
+    #[test]
+    fn a_reaction_names_its_message_as_an_identifier() {
+        // `message_id` addresses a message the way `room_id` addresses a room,
+        // so it gets the identifier screen rather than the display one.
+        let confusable = ChatMessageContent::Reaction(ChatReaction {
+            message_id: "message\u{200d}-1".to_string(),
+            emoji: "\u{1f3b2}".to_string(),
+        });
+        assert_eq!(
+            validate_chat_message_content(confusable),
+            Err(ChatFieldError::UnsafeCharacter { field: "messageId" })
+        );
+
+        let blank = ChatMessageContent::Reaction(ChatReaction {
+            message_id: "   ".to_string(),
+            emoji: "\u{1f3b2}".to_string(),
+        });
+        assert_eq!(
+            validate_chat_message_content(blank),
+            Err(ChatFieldError::Empty { field: "messageId" })
+        );
+    }
 
     #[test]
     fn auth_session_storage_key_has_stable_encoding() {
@@ -960,6 +2073,103 @@ mod tests {
         assert_ne!(identity, other_product_identity);
         assert_ne!(account_access, other_target);
         assert_ne!(account_access, camera);
+    }
+
+    #[test]
+    fn remote_domain_candidates_follow_rfc_0002_wildcard_rules() {
+        assert_eq!(
+            remote_domain_candidates("api.example.com"),
+            ["api.example.com", "*.example.com", "*"]
+        );
+        // A wildcard spans one label, so the two-level host's only wildcard is
+        // over its immediate parent. `*.example.com` must NOT appear here.
+        assert_eq!(
+            remote_domain_candidates("deep.api.example.com"),
+            ["deep.api.example.com", "*.api.example.com", "*"]
+        );
+        // A TLD-level wildcard is a pattern a product can be granted, so it is
+        // consulted like any other. Leaving it out would store the grant and
+        // then keep prompting for every host under it.
+        assert_eq!(
+            remote_domain_candidates("example.com"),
+            ["example.com", "*.com", "*"]
+        );
+        assert_eq!(
+            remote_domain_candidates("wallet.dot"),
+            ["wallet.dot", "*.dot", "*"]
+        );
+        // A single-label host has no parent to wildcard over.
+        assert_eq!(remote_domain_candidates("localhost"), ["localhost", "*"]);
+        // A stored pattern resolves to itself, not to a duplicated entry.
+        assert_eq!(
+            remote_domain_candidates("*.example.com"),
+            ["*.example.com", "*"]
+        );
+        assert_eq!(remote_domain_candidates("*"), ["*"]);
+        assert_eq!(
+            remote_domain_candidates("API.Example.COM"),
+            ["api.example.com", "*.example.com", "*"]
+        );
+    }
+
+    #[test]
+    fn remote_domain_normalization_is_shared_by_both_ends_of_a_lookup() {
+        // The forms enforcement can hand in from a real URL host all collapse
+        // onto the one key a grant is stored under.
+        for spelling in ["API.Example.COM", "api.example.com.", "  api.example.com  "] {
+            assert_eq!(normalize_remote_domain(spelling), "api.example.com");
+        }
+        // IDNA: a non-ASCII host and its punycode spelling are one site, so
+        // they must be one slot and one prompt.
+        assert_eq!(
+            normalize_remote_domain("Bücher.example"),
+            "xn--bcher-kva.example"
+        );
+        assert_eq!(
+            normalize_remote_domain("xn--bcher-kva.example"),
+            "xn--bcher-kva.example"
+        );
+        // The wildcard marker is not part of the host and survives untouched.
+        assert_eq!(normalize_remote_domain("*.Example.COM"), "*.example.com");
+        assert_eq!(
+            normalize_remote_domain("*.Bücher.example"),
+            "*.xn--bcher-kva.example"
+        );
+        assert_eq!(normalize_remote_domain("*"), "*");
+        // A canonicalized bundle keys the same as the candidate list built from
+        // a live host, which is what makes the grant visible to enforcement.
+        assert_eq!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "API.Example.COM."),
+            CoreStorageKey::remote_domain_authorization(
+                "product.dot",
+                &remote_domain_candidates("api.example.com.")[0]
+            )
+        );
+    }
+
+    #[test]
+    fn remote_domain_authorization_key_matches_the_one_element_bundle() {
+        // Enforcement keys a single host; a product granting that one domain
+        // must land in the same slot, or the grant is invisible to the gate.
+        assert_eq!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "Example.COM"),
+            CoreStorageKey::remote_permission_authorization(
+                "product.dot",
+                &RemotePermissionRequest {
+                    permission: RemotePermission::Remote {
+                        domains: vec!["example.com".to_string()],
+                    },
+                }
+            )
+        );
+        assert_ne!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "example.com"),
+            CoreStorageKey::remote_domain_authorization("product.dot", "*.example.com")
+        );
+        assert_ne!(
+            CoreStorageKey::remote_domain_authorization("product.dot", "example.com"),
+            CoreStorageKey::remote_domain_authorization("other.dot", "example.com")
+        );
     }
 
     #[test]
@@ -1316,32 +2526,65 @@ pub trait PreimageHost: Send + Sync {
     ) -> BoxStream<'static, Result<Option<Vec<u8>>, GenericError>>;
 }
 
-/// Host-implemented adapter through which product Chat calls reach native
-/// storage and UI.
+/// Host-implemented adapter through which product Chat calls reach host
+/// storage and UI. Optional: a host that omits it leaves Chat requests
+/// answered `Unsupported`. See [`OptionalPlatform`].
+///
+/// The core bounds and screens the product-supplied fields it forwards. Ids,
+/// names and icons on `create_chat_room`, `register_chat_bot` and
+/// `post_chat_message` are NFC-normalized and rejected for control and bidi
+/// characters. Message bodies are bounded and screened but pass through
+/// byte-for-byte, keeping line breaks and tabs, so a product reads back the
+/// bytes it sent. Counts and byte budgets are enforced, and any URL a host may
+/// fetch or open is restricted to `https` or an inline raster image and
+/// delivered as the parser resolved it.
+///
+/// The core screens a URL's shape, not its reachability. `https://127.0.0.1`,
+/// `https://[::1]`, a private range and `https://169.254.169.254` (the cloud
+/// metadata endpoint) all pass: which networks a host is willing to fetch from
+/// depends on where that host runs, and a core that guessed would break a host
+/// serving its own media from localhost. A host that fetches these URLs owns
+/// that decision. Credentials are the exception and are refused, because
+/// `user:pass@` survives resolution into whatever the host fetches and logs.
+///
+/// `ChatFile::size_bytes` is a product assertion and is not verified against
+/// the resource it names. Contextual output escaping, storage limits, and
+/// anything a host derives from product-supplied values remain host-owned.
 #[async_trait]
 pub trait ChatPlatform: Send + Sync {
     /// Create or resolve a product-scoped native chat room.
-    async fn create_room(
+    async fn create_chat_room(
         &self,
         product: &ProductContext,
         request: HostChatCreateRoomRequest,
     ) -> Result<HostChatCreateRoomResponse, HostChatCreateRoomError>;
 
-    /// Persist a product-authored message in a native chat room.
-    async fn post_message(
+    /// Register or resolve a product-scoped native chat bot. Host-owned in the
+    /// same way rooms are.
+    async fn register_chat_bot(
+        &self,
+        product: &ProductContext,
+        request: HostChatRegisterBotRequest,
+    ) -> Result<HostChatRegisterBotResponse, HostChatRegisterBotError>;
+
+    /// Persist a product-authored message in a native chat room. A host that
+    /// cannot store a given content variant reports a domain error for it.
+    async fn post_chat_message(
         &self,
         product: &ProductContext,
         request: HostChatPostMessageRequest,
     ) -> Result<HostChatPostMessageResponse, HostChatPostMessageError>;
 
     /// Emit the current product-scoped room list and later replacements.
-    fn subscribe_rooms(
+    fn subscribe_chat_rooms(
         &self,
         product: &ProductContext,
-    ) -> BoxStream<'static, HostChatListSubscribeItem>;
+    ) -> BoxStream<'static, Result<HostChatListSubscribeItem, GenericError>>;
 }
 
-/// Combined platform interface. A host must provide all capability traits.
+/// Combined platform interface. A host must provide every capability trait
+/// listed here. Members marked optional may be omitted; the core answers their
+/// product calls with `Unsupported`. See [`OptionalPlatform`].
 pub trait Platform:
     Navigation
     + Notifications
@@ -1371,3 +2614,11 @@ impl<T> Platform for T where
         + PreimageHost
 {
 }
+
+/// Capability traits a host may serve but is not required to. A host that
+/// omits one is not broken: the core answers the corresponding product calls
+/// with `Unsupported`. Codegen reads this list to emit each capability as an
+/// optional group on the host-callback surface.
+pub trait OptionalPlatform: ChatPlatform {}
+
+impl<T> OptionalPlatform for T where T: ChatPlatform {}

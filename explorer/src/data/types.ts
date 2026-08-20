@@ -17,9 +17,14 @@ export interface MethodInfo {
   errorType?: string;
 }
 
+/** Trusted executable kind required to reach a service. */
+export type ProductExecutionKind = "Spa" | "Chat";
+
 /** A grouping of related methods. */
 export interface ServiceInfo {
   name: string;
+  /** Executable kind the host must attach, or unrestricted when absent. */
+  requiredExecution?: ProductExecutionKind;
   methods: MethodInfo[];
 }
 
