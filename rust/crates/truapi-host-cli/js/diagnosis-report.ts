@@ -31,6 +31,23 @@ export function cliDiagnosisReportMetadata(
   }
 }
 
+/**
+ * Report metadata for the same CLI host serving a Chat execution.
+ *
+ * The aggregator picks the matrix from the parent directory, so a chat report
+ * belongs under `diagnosis-reports/chat/`; the title carries the modality too,
+ * matching `chat/ios.md`.
+ */
+export function cliChatDiagnosisReportMetadata(
+  role: string | undefined,
+): CliDiagnosisReportMetadata {
+  const spa = cliDiagnosisReportMetadata(role);
+  return {
+    filename: spa.filename,
+    title: spa.title.replace(/ Diagnosis$/, " Chat Diagnosis"),
+  };
+}
+
 /** Render the same Markdown matrix used by the playground diagnosis reports. */
 export function renderDiagnosisReport(
   title: string,

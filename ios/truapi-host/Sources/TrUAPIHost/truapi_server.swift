@@ -1958,14 +1958,15 @@ public protocol NativeChatCallbacks: AnyObject, Sendable {
     func registerBot(botId: String, name: String, icon: String) throws  -> ChatBotRegistrationStatus
 
     /**
-     * Persist a text message in native Chat storage.
+     * Persist a product-authored message in native Chat storage. A host that
+     * cannot render a given content variant returns a rejection for it.
+     *
+     * The returned id is what [`ActionTrigger::message_id`] carries back, so
+     * it must name this message for as long as the host stores it.
+     *
+     * [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
      */
-    func postTextMessage(roomId: String, text: String) throws  -> String
-
-    /**
-     * Persist a custom message in native Chat storage.
-     */
-    func postCustomMessage(roomId: String, messageType: String, payload: Data) throws  -> String
+    func postMessage(roomId: String, content: ChatMessageContent) throws  -> String
 
     /**
      * Return the current product-scoped native Chat room list.
@@ -2064,30 +2065,21 @@ open func registerBot(botId: String, name: String, icon: String)throws  -> ChatB
 }
 
     /**
-     * Persist a text message in native Chat storage.
+     * Persist a product-authored message in native Chat storage. A host that
+     * cannot render a given content variant returns a rejection for it.
+     *
+     * The returned id is what [`ActionTrigger::message_id`] carries back, so
+     * it must name this message for as long as the host stores it.
+     *
+     * [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
      */
-open func postTextMessage(roomId: String, text: String)throws  -> String  {
+open func postMessage(roomId: String, content: ChatMessageContent)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativechatcallbacks_post_text_message(
+    uniffi_truapi_server_fn_method_nativechatcallbacks_post_message(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(roomId),
-        FfiConverterString.lower(text),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Persist a custom message in native Chat storage.
-     */
-open func postCustomMessage(roomId: String, messageType: String, payload: Data)throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativechatcallbacks_post_custom_message(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(roomId),
-        FfiConverterString.lower(messageType),
-        FfiConverterData.lower(payload),uniffiCallStatus
+        FfiConverterTypeChatMessageContent_lower(content),uniffiCallStatus
     )
 })
 }
@@ -2190,10 +2182,10 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
                 lowerError: FfiConverterTypeHostRejection_lower
             )
         },
-        postTextMessage: { (
+        postMessage: { (
             uniffiHandle: UInt64,
             roomId: RustBuffer,
-            text: RustBuffer,
+            content: RustBuffer,
             uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -2202,38 +2194,9 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
                 guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return try uniffiObj.postTextMessage(
+                return try uniffiObj.postMessage(
                      roomId: try FfiConverterString.lift(roomId),
-                     text: try FfiConverterString.lift(text)
-                )
-            }
-
-
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeHostRejection_lower
-            )
-        },
-        postCustomMessage: { (
-            uniffiHandle: UInt64,
-            roomId: RustBuffer,
-            messageType: RustBuffer,
-            payload: RustBuffer,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> String in
-                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.postCustomMessage(
-                     roomId: try FfiConverterString.lift(roomId),
-                     messageType: try FfiConverterString.lift(messageType),
-                     payload: try FfiConverterData.lift(payload)
+                     content: try FfiConverterTypeChatMessageContent_lift(content)
                 )
             }
 
@@ -6517,13 +6480,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_register_bot() != 59357) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_text_message() != 49314) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_message() != 56893) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_custom_message() != 28844) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 37616) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 21374) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_device_encryption_key() != 18707) {

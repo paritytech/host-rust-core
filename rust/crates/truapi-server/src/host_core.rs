@@ -375,17 +375,37 @@ pub struct SigningHostRuntime {
 
 impl SigningHostRuntime {
     /// Build a long-lived signing-host runtime around a platform implementation.
+    /// Chat is answered `Unsupported`; [`Self::with_chat_platform`] serves it.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.new"))]
     pub fn new<P>(platform: Arc<P>, config: SigningHostConfig, spawner: Spawner) -> Self
     where
         P: Platform + 'static,
     {
+        Self::with_chat_platform(platform, config, spawner, None)
+    }
+
+    /// Build a signing-host runtime that serves Chat through `chat_platform`.
+    ///
+    /// The pairing host has had this since chat reached the core; a signing
+    /// host needs it for the same reason a native host does, and without it no
+    /// runnable host in this repo can serve a chat product at all.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.with_chat_platform"))]
+    pub fn with_chat_platform<P>(
+        platform: Arc<P>,
+        config: SigningHostConfig,
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn ChatPlatform>>,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
         let platform: Arc<dyn Platform> = platform;
-        let services = RuntimeServices::new(
+        let services = RuntimeServices::with_chat_platform(
             platform,
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
+            chat_platform,
         );
         let signing_host = SigningHostRole::new(services.clone());
         Self {

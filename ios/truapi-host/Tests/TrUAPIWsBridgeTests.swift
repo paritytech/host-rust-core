@@ -107,13 +107,9 @@ final class StubChatHostBridge: ChatHostBridge {
         icon _: String
     ) throws -> ChatBotRegistrationStatus { .new }
 
-    func postTextMessage(roomId _: String, text _: String) throws -> String { "message-id" }
-
-    func postCustomMessage(
-        roomId _: String,
-        messageType _: String,
-        payload _: Data
-    ) throws -> String { "message-id" }
+    func postMessage(roomId _: String, content _: ChatMessageContent) throws -> String {
+        "message-id"
+    }
 
     func listRooms() throws -> [ChatRoom] { [] }
 }

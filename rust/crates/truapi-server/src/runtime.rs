@@ -190,11 +190,11 @@ use truapi::{CallContext, CallError, CancellationReason, Subscription};
 use truapi::{latest, v01};
 use truapi_platform::Platform;
 use truapi_platform::{
-    AccountAccessReview, CreateTransactionReview, IdentityDisclosureReview,
+    AccountAccessReview, ChatFieldError, CreateTransactionReview, IdentityDisclosureReview,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
     ProductContext, ProductStorageKey, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
     SignRawReview, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
-    validate_chat_icon, validate_chat_name,
+    validate_chat_icon, validate_chat_message_content, validate_chat_name,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -2272,13 +2272,11 @@ impl Chat for ProductRuntimeHost {
         // The same normalization create_room applied, so a product's own
         // spelling of a room id still resolves to the stored room.
         request.room_id =
-            normalize_chat_identifier("roomId", &request.room_id).map_err(|error| {
-                CallError::Domain(HostChatPostMessageError::V1(
-                    v01::HostChatPostMessageError::Unknown {
-                        reason: error.to_string(),
-                    },
-                ))
-            })?;
+            normalize_chat_identifier("roomId", &request.room_id).map_err(chat_post_field_error)?;
+        // Content is product-authored and host-rendered, so it gets the same
+        // treatment the room fields get rather than reaching a host raw.
+        request.payload =
+            validate_chat_message_content(request.payload).map_err(chat_post_field_error)?;
         platform
             .post_chat_message(&self.product, request)
             .await
@@ -2306,6 +2304,27 @@ fn chat_register_bot_field_error(
             reason: error.to_string(),
         },
     ))
+}
+
+/// Fields whose rejection a product resolves by sending less content, and the
+/// only ones the fieldless `MessageTooLarge` can describe.
+const CHAT_SIZED_CONTENT_FIELDS: [&str; 2] = ["text", "payload"];
+
+/// Maps a rejected `post_message` field onto the wire error, reporting a size
+/// rejection as the size variant the protocol declares for it.
+fn chat_post_field_error(error: ChatFieldError) -> CallError<HostChatPostMessageError> {
+    let payload = match error {
+        // `MessageTooLarge` names no field, so it is reserved for the content
+        // a product shrinks by sending less. Every other rejection reports
+        // through `Unknown`, whose reason names the field and its limit.
+        ChatFieldError::TooLong { field, .. } if CHAT_SIZED_CONTENT_FIELDS.contains(&field) => {
+            v01::HostChatPostMessageError::MessageTooLarge
+        }
+        error => v01::HostChatPostMessageError::Unknown {
+            reason: error.to_string(),
+        },
+    };
+    CallError::Domain(HostChatPostMessageError::V1(payload))
 }
 
 /// Report a rejected chat room field as a room-creation domain error.
@@ -2953,6 +2972,7 @@ mod tests {
         registered_bots: Mutex<Vec<String>>,
         created_rooms: Mutex<Vec<String>>,
         posted_rooms: Mutex<Vec<String>>,
+        posted_payloads: Mutex<Vec<v01::ChatMessageContent>>,
     }
 
     #[truapi::async_trait]
@@ -3003,6 +3023,10 @@ mod tests {
                 .lock()
                 .expect("posted rooms mutex poisoned")
                 .push(request.room_id);
+            self.posted_payloads
+                .lock()
+                .expect("posted payloads mutex poisoned")
+                .push(request.payload);
             Ok(truapi::latest::HostChatPostMessageResponse {
                 message_id: "message-id".to_string(),
             })
@@ -3017,6 +3041,148 @@ mod tests {
         > {
             Box::pin(futures::stream::empty())
         }
+    }
+
+    #[test]
+    fn chat_post_message_screens_content_before_it_reaches_a_host() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Chat,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+        install_pairing_session(&host, session_info());
+
+        let post = |payload: v01::ChatMessageContent| {
+            futures::executor::block_on(Chat::post_message(
+                &host,
+                &CallContext::default(),
+                HostChatPostMessageRequest::V1(v01::HostChatPostMessageRequest {
+                    room_id: "support".to_string(),
+                    payload,
+                }),
+            ))
+        };
+
+        // The screen runs at this entrypoint, not only in the helper: a host
+        // must never be handed a scheme it would fetch or open.
+        let rejected = post(v01::ChatMessageContent::File(v01::ChatFile {
+            url: "javascript:alert(document.cookie)".to_string(),
+            file_name: "f".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 1,
+            text: None,
+        }))
+        .expect_err("a javascript: file url must not reach the host");
+        assert!(matches!(
+            rejected,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::Unknown { .. }
+            ))
+        ));
+
+        // A body over budget reports the size variant the protocol declares.
+        let too_large = post(v01::ChatMessageContent::Text {
+            text: "x".repeat(truapi_platform::CHAT_BODY_MAX_BYTES + 1),
+        })
+        .expect_err("an over-budget body must not reach the host");
+        assert!(matches!(
+            too_large,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::MessageTooLarge
+            ))
+        ));
+
+        // The payload arm of the size variant, which the body arm does not cover.
+        let big_payload = post(v01::ChatMessageContent::Custom(v01::ChatCustomMessage {
+            message_type: "vote".to_string(),
+            payload: vec![0; truapi_platform::CHAT_CUSTOM_PAYLOAD_MAX_BYTES + 1],
+        }))
+        .expect_err("an over-budget custom payload must not reach the host");
+        assert!(matches!(
+            big_payload,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::MessageTooLarge
+            ))
+        ));
+
+        // An over-long room id is not an over-large message.
+        let long_room = futures::executor::block_on(Chat::post_message(
+            &host,
+            &CallContext::default(),
+            HostChatPostMessageRequest::V1(v01::HostChatPostMessageRequest {
+                room_id: "r".repeat(truapi_platform::CHAT_FIELD_MAX_BYTES + 1),
+                payload: v01::ChatMessageContent::Text {
+                    text: "hi".to_string(),
+                },
+            }),
+        ))
+        .expect_err("an over-long room id must be rejected");
+        assert!(matches!(
+            long_room,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::Unknown { .. }
+            ))
+        ));
+
+        assert!(
+            chat_platform
+                .posted_rooms
+                .lock()
+                .expect("posted rooms mutex poisoned")
+                .is_empty(),
+            "nothing rejected may reach the host"
+        );
+
+        // The validated value is what the host receives, not the arriving one:
+        // running the screen and discarding its result would pass every
+        // rejection assertion above.
+        post(v01::ChatMessageContent::Reaction(v01::ChatReaction {
+            message_id: "  cafe\u{301}  ".to_string(),
+            emoji: "\u{1f3b2}".to_string(),
+        }))
+        .expect("a normalizable reaction is accepted");
+        post(v01::ChatMessageContent::File(v01::ChatFile {
+            url: "https://example.invalid".to_string(),
+            file_name: "f".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 1,
+            text: None,
+        }))
+        .expect("a resolvable file url is accepted");
+        assert_eq!(
+            chat_platform
+                .posted_payloads
+                .lock()
+                .expect("posted payloads mutex poisoned")
+                .as_slice(),
+            &[
+                v01::ChatMessageContent::Reaction(v01::ChatReaction {
+                    message_id: "caf\u{e9}".to_string(),
+                    emoji: "\u{1f3b2}".to_string(),
+                }),
+                v01::ChatMessageContent::File(v01::ChatFile {
+                    url: "https://example.invalid/".to_string(),
+                    file_name: "f".to_string(),
+                    mime_type: "text/plain".to_string(),
+                    size_bytes: 1,
+                    text: None,
+                }),
+            ]
+        );
     }
 
     #[test]
