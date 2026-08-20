@@ -677,6 +677,31 @@ fn ring_vrf_admin_error(
     }
 }
 
+/// Why the host, rather than a product, asked for an allowance operation.
+///
+/// Carried through to tracing and available to host policy: a first-ever grant
+/// may warrant a prompt where routine maintenance does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostAllowanceOrigin {
+    /// Warming allowances so a product's first call does not stall.
+    StartupReadiness,
+    /// Re-checking allowances as the host returns to the foreground.
+    ForegroundRenewal,
+    /// Re-acquiring an allowance after a failure or rejection.
+    Recovery,
+}
+
+impl HostAllowanceOrigin {
+    /// Stable lowercase tag for tracing and correlation ids.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StartupReadiness => "startup-readiness",
+            Self::ForegroundRenewal => "foreground-renewal",
+            Self::Recovery => "recovery",
+        }
+    }
+}
+
 /// Product-scoped administration handle for host UI.
 ///
 /// Host UI should use this when it needs to inspect or update core-owned state
@@ -733,6 +758,26 @@ impl HostAdmin {
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
         self.product_runtime
             .permission_authorization_statuses(requests)
+            .await
+    }
+
+    /// Allocate product-scoped resources on the host's own initiative.
+    ///
+    /// The product-facing `ResourceAllocation` confirmation review is not
+    /// raised: it exists to put a product's request to the user, and no
+    /// product is asking. A host that wants to prompt for its own maintenance
+    /// work decides that itself, using `origin` to tell the cases apart.
+    ///
+    /// Returns one outcome per requested resource, in request order. No key
+    /// material crosses this boundary.
+    #[instrument(skip_all, fields(runtime.method = "host_admin.allocate_allowances"))]
+    pub async fn allocate_allowances(
+        &self,
+        resources: Vec<v01::AllocatableResource>,
+        origin: HostAllowanceOrigin,
+    ) -> Result<Vec<v01::AllocationOutcome>, v01::GenericError> {
+        self.product_runtime
+            .allocate_resources_for_host(resources, origin)
             .await
     }
 
