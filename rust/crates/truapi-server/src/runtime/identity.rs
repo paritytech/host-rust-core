@@ -35,9 +35,9 @@ use truapi::latest::{
     StorageQueryType,
 };
 
-/// Budget for the whole Asset Hub lookup: best block, controller discovery, the
-/// contract walk and the label pages of a large store, well over a dozen
-/// round trips on one follow.
+/// Budget for the whole username resolution of one session: every attempt for
+/// the identity account plus the root-key fallback share it, so a slow or dead
+/// endpoint delays session installation by at most this long.
 const LOOKUP_BUDGET: Duration = Duration::from_secs(45);
 /// Budget for one step of it: opening the follow, one storage read, one
 /// contract view. A step that stalls this long is not going to answer.
@@ -61,27 +61,43 @@ pub(super) async fn resolve_session_identity_with_chain(
         return session;
     }
 
-    let preferred_account = session.identity_account_id.unwrap_or(session.public_key);
-    if lookup_and_apply(
-        chain,
-        asset_hub_chain_genesis_hash,
-        preferred_account,
-        &mut session,
-        "identity",
-    )
-    .await
-        == LookupOutcome::NoRecord
-        && preferred_account != session.public_key
     {
-        let public_key = session.public_key;
-        lookup_and_apply(
-            chain,
-            asset_hub_chain_genesis_hash,
-            public_key,
-            &mut session,
-            "root identity",
-        )
-        .await;
+        let budget = futures_timer::Delay::new(LOOKUP_BUDGET).fuse();
+        pin_mut!(budget);
+        let resolve = async {
+            let preferred_account = session.identity_account_id.unwrap_or(session.public_key);
+            if lookup_and_apply(
+                chain,
+                asset_hub_chain_genesis_hash,
+                preferred_account,
+                &mut session,
+                "identity",
+            )
+            .await
+                == LookupOutcome::NoRecord
+                && preferred_account != session.public_key
+            {
+                let public_key = session.public_key;
+                lookup_and_apply(
+                    chain,
+                    asset_hub_chain_genesis_hash,
+                    public_key,
+                    &mut session,
+                    "root identity",
+                )
+                .await;
+            }
+        }
+        .fuse();
+        pin_mut!(resolve);
+        futures::select! {
+            () = resolve => {}
+            () = budget => {
+                warn!(
+                    "dotNS username resolution ran out of budget; the session installs without one"
+                );
+            }
+        }
     }
 
     session
@@ -144,16 +160,16 @@ async fn lookup_and_apply(
 }
 
 /// Resolves `account_id`'s usernames from the dotNS contracts at a fresh Asset
-/// Hub head, under one overall time budget. Returns `None` when the gateway is not
-/// deployed. Also returns `None` when the account holds no labels.
+/// Hub head. Each step carries [`OPERATION_TIMEOUT`]; the caller's
+/// [`LOOKUP_BUDGET`] bounds the whole resolution. Returns `None` when the
+/// gateway is not deployed. Also returns `None` when the account holds no
+/// labels.
 #[instrument(skip_all, fields(runtime.method = "session.identity.lookup"))]
 async fn lookup_dotns_identity(
     chain: &ChainRuntime,
     asset_hub_chain_genesis_hash: [u8; 32],
     account_id: [u8; 32],
 ) -> Result<Option<DotnsIdentity>, String> {
-    let timeout = futures_timer::Delay::new(LOOKUP_BUDGET).fuse();
-    pin_mut!(timeout);
     let lookup = async {
         let mut lookup =
             DotnsLookup::pinned_to_best_block(chain, asset_hub_chain_genesis_hash, account_id)
@@ -169,10 +185,7 @@ async fn lookup_dotns_identity(
     }
     .fuse();
     pin_mut!(lookup);
-    futures::select! {
-        value = lookup => value,
-        () = timeout => Err("dotNS identity lookup timed out".to_string()),
-    }
+    lookup.await
 }
 
 /// One pinned-block context for the dotNS lookup steps. It owns the

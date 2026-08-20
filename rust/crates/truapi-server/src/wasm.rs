@@ -515,7 +515,6 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
-    let asset_hub = get_required_object(value, "assetHub", "runtimeConfig.assetHub")?;
 
     SigningHostConfig::new(
         HostInfo {
@@ -540,11 +539,6 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
             &bulletin,
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
-        )?,
-        get_required_bytes32_at(
-            &asset_hub,
-            "genesisHash",
-            "runtimeConfig.assetHub.genesisHash",
         )?,
     )
     .map_err(runtime_config_validation_to_js)

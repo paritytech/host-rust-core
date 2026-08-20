@@ -1276,7 +1276,6 @@ fn build_signing_runtime(
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
-        network.asset_hub_genesis,
     )
     .context("invalid signing host config")?;
     let runtime = Arc::new(SigningHostRuntime::with_chat_platform(

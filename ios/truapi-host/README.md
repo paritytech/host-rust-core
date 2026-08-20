@@ -333,7 +333,6 @@ let runtimeConfig = RuntimeConfig(
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),
     bulletinChainGenesisHash: Data(repeating: 0, count: 32),
-    assetHubChainGenesisHash: Data(repeating: 0, count: 32),
     pairingDeeplinkScheme: .polkadotApp
 )
 let core = try TrUAPIHostCore(callbacks: callbacks, runtimeConfig: runtimeConfig)

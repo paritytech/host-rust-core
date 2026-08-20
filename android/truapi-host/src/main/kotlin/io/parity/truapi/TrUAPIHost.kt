@@ -109,9 +109,8 @@ enum class ProductExecutionKind {
  *
  * [hostName], [hostIcon], [hostVersion], [platformType], and [platformVersion]
  * describe the host to the wallet during SSO pairing.
- * [peopleChainGenesisHash], [bulletinChainGenesisHash] and
- * [assetHubChainGenesisHash] must each be exactly 32 bytes. [localSessionSecret]
- * optionally activates a local signing session
+ * [peopleChainGenesisHash] and [bulletinChainGenesisHash] must each be exactly
+ * 32 bytes. [localSessionSecret] optionally activates a local signing session
  * from host-held BIP-39 entropy (no SSO pairing needed).
  */
 data class RuntimeConfig(
@@ -124,7 +123,6 @@ data class RuntimeConfig(
     val platformVersion: String? = null,
     val peopleChainGenesisHash: ByteArray,
     val bulletinChainGenesisHash: ByteArray,
-    val assetHubChainGenesisHash: ByteArray,
     val localSessionSecret: ByteArray? = null,
     val localSessionLiteUsername: String? = null,
     val pairingDeeplinkScheme: PairingDeeplinkScheme = PairingDeeplinkScheme.POLKADOT_APP,
@@ -140,7 +138,6 @@ data class RuntimeConfig(
             platformVersion = platformVersion,
             peopleChainGenesisHash = peopleChainGenesisHash,
             bulletinChainGenesisHash = bulletinChainGenesisHash,
-            assetHubChainGenesisHash = assetHubChainGenesisHash,
             localSessionSecret = localSessionSecret,
             localSessionLiteUsername = localSessionLiteUsername,
             pairingDeeplinkScheme = pairingDeeplinkScheme.toNative(),
@@ -158,7 +155,6 @@ data class RuntimeConfig(
             platformVersion == other.platformVersion &&
             peopleChainGenesisHash.contentEquals(other.peopleChainGenesisHash) &&
             bulletinChainGenesisHash.contentEquals(other.bulletinChainGenesisHash) &&
-            assetHubChainGenesisHash.contentEquals(other.assetHubChainGenesisHash) &&
             // Compare nullability explicitly so null (no session) is distinct
             // from an empty secret (invalid input) — matching hashCode, which
             // hashes null to 0 and an empty array to 1.
@@ -177,7 +173,6 @@ data class RuntimeConfig(
         result = 31 * result + (platformVersion?.hashCode() ?: 0)
         result = 31 * result + peopleChainGenesisHash.contentHashCode()
         result = 31 * result + bulletinChainGenesisHash.contentHashCode()
-        result = 31 * result + assetHubChainGenesisHash.contentHashCode()
         result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
         result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
         result = 31 * result + pairingDeeplinkScheme.hashCode()

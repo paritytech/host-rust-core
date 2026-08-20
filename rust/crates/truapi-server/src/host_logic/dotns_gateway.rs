@@ -33,17 +33,10 @@ pub const RESERVE_MSG_PREFIX: &[u8] = b"pop:dotns-gateway:reserve";
 ///
 /// `pallet_revive` rejects unmapped signed origins with `AccountUnmapped`.
 /// Eth-derived accounts — trailing 12 bytes `0xEE` — are implicitly mapped.
-/// They need no on-chain state. Views therefore work from this synthetic
-/// account on any network.
-pub const VIEW_CALL_ORIGIN: [u8; 32] = {
-    let mut origin = [0xEEu8; 32];
-    let mut i = 0;
-    while i < 20 {
-        origin[i] = 0;
-        i += 1;
-    }
-    origin
-};
+/// They need no on-chain state, so views work from this synthetic account on
+/// any network. The address half is non-zero: a revert is read as an answer
+/// here, and Solidity guards commonly reject `address(0)` outright.
+pub const VIEW_CALL_ORIGIN: [u8; 32] = [0xEE; 32];
 
 /// Builds the payload the candidate signs to authorize a lite-name
 /// reservation.
@@ -334,6 +327,19 @@ pub fn decode_string(data: &[u8]) -> Result<String, DotnsContractError> {
     decode_string_at(data, word_usize(data, 0)?)
 }
 
+/// Decodes a single `bool` return value.
+pub fn decode_bool(data: &[u8]) -> Result<bool, DotnsContractError> {
+    let bytes = word(data, 0)?;
+    if bytes[..31].iter().any(|b| *b != 0) {
+        return Err(DotnsContractError::Abi { context: "bool" });
+    }
+    match bytes[31] {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DotnsContractError::Abi { context: "bool" }),
+    }
+}
+
 /// Decodes a single `address` return value.
 pub fn decode_address(data: &[u8]) -> Result<[u8; 20], DotnsContractError> {
     let bytes = word(data, 0)?;
@@ -608,7 +614,8 @@ pub async fn resolve_labels<T: DotnsTransport + ?Sized>(
 
     let registry_output = transport
         .view(controller, call_no_args("protocolRegistry()"))
-        .await?;
+        .await
+        .map_err(|err| format!("DotnsPopController.protocolRegistry: {err}"))?;
     let registry = decode_address(&registry_output)
         .map_err(|err| format!("DotnsPopController.protocolRegistry(): {err}"))?;
 
@@ -617,13 +624,15 @@ pub async fn resolve_labels<T: DotnsTransport + ?Sized>(
             &registry,
             call_bytes32("get(bytes32)", &registry_key("storeFactory")),
         )
-        .await?;
+        .await
+        .map_err(|err| format!("ProtocolRegistry.get(storeFactory): {err}"))?;
     let factory = decode_address(&factory_output)
         .map_err(|err| format!("ProtocolRegistry.get(storeFactory): {err}"))?;
 
     let store_output = transport
         .view(&factory, call_address("getLabelStore(address)", &user))
-        .await?;
+        .await
+        .map_err(|err| format!("StoreFactory.getLabelStore: {err}"))?;
     let store = decode_address(&store_output)
         .map_err(|err| format!("StoreFactory.getLabelStore: {err}"))?;
     if store == [0u8; 20] {
@@ -642,7 +651,8 @@ pub async fn resolve_labels<T: DotnsTransport + ?Sized>(
                     LABEL_PAGE_LIMIT,
                 ),
             )
-            .await?;
+            .await
+            .map_err(|err| format!("LabelStore.getLabels: {err}"))?;
         let stored = decode_string_array(&labels_output)
             .map_err(|err| format!("LabelStore.getLabels: {err}"))?;
         let short_page = (stored.len() as u64) < LABEL_PAGE_LIMIT;
@@ -683,19 +693,47 @@ fn bare_store_label<'a>(label: &'a str, tld: &str) -> Option<&'a str> {
 const TLD_WITHOUT_VIEW: &str = ".dot";
 
 /// The network TLD with its leading dot (`.paseo`), read from
-/// `ProtocolRegistry.tld()`. A registry without that view reverts, which
-/// yields [`TLD_WITHOUT_VIEW`]; any other failure is an error, since guessing
-/// the TLD would drop every label carrying the real one.
+/// `ProtocolRegistry.tld()`. A registry without that view reverts; the fall
+/// back to [`TLD_WITHOUT_VIEW`] is then verified rather than guessed —
+/// `DotnsRegistry.recordExists(namehash("dot"))` must hold the TLD's own
+/// record, or the resolution errors. Any other failure is an error: a wrong
+/// TLD would drop every label carrying the real one.
 async fn network_tld<T: DotnsTransport + ?Sized>(
     transport: &mut T,
     registry: &[u8; 20],
 ) -> Result<String, String> {
     match transport.view(registry, call_no_args("tld()")).await {
         Ok(output) => {
-            decode_string(&output).map_err(|err| format!("ProtocolRegistry.tld(): {err}"))
+            return decode_string(&output).map_err(|err| format!("ProtocolRegistry.tld(): {err}"));
         }
-        Err(DotnsViewError::Reverted(_)) => Ok(TLD_WITHOUT_VIEW.to_string()),
-        Err(DotnsViewError::Failed(reason)) => Err(format!("ProtocolRegistry.tld(): {reason}")),
+        Err(DotnsViewError::Reverted(_)) => {}
+        Err(DotnsViewError::Failed(reason)) => {
+            return Err(format!("ProtocolRegistry.tld(): {reason}"));
+        }
+    }
+    let dotns_registry_output = transport
+        .view(
+            registry,
+            call_bytes32("get(bytes32)", &registry_key("registry")),
+        )
+        .await
+        .map_err(|err| format!("ProtocolRegistry.get(registry): {err}"))?;
+    let dotns_registry = decode_address(&dotns_registry_output)
+        .map_err(|err| format!("ProtocolRegistry.get(registry): {err}"))?;
+    let exists_output = transport
+        .view(
+            &dotns_registry,
+            call_bytes32("recordExists(bytes32)", &tld_node(TLD_WITHOUT_VIEW)),
+        )
+        .await
+        .map_err(|err| format!("DotnsRegistry.recordExists: {err}"))?;
+    if decode_bool(&exists_output).map_err(|err| format!("DotnsRegistry.recordExists: {err}"))? {
+        Ok(TLD_WITHOUT_VIEW.to_string())
+    } else {
+        Err(format!(
+            "ProtocolRegistry has no tld() view and the registry holds no record for \
+             {TLD_WITHOUT_VIEW:?}; the network TLD cannot be determined"
+        ))
     }
 }
 
@@ -766,10 +804,21 @@ async fn pending_claim_labels<T: DotnsTransport + ?Sized>(
     controller: &[u8; 20],
     user: &[u8; 20],
 ) -> Result<Vec<String>, String> {
-    let output = transport
+    // A revert is the controller's answer: no readable pending claims. The
+    // store is a separate source, so it is still read.
+    let output = match transport
         .view(controller, call_address("pendingClaims(address)", user))
         .await
-        .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
+    {
+        Ok(output) => output,
+        Err(DotnsViewError::Reverted(reason)) => {
+            warn!(%reason, "DotnsPopController.pendingClaims reverted; reading the store only");
+            return Ok(Vec::new());
+        }
+        Err(DotnsViewError::Failed(reason)) => {
+            return Err(format!("DotnsPopController.pendingClaims: {reason}"));
+        }
+    };
     let claims = decode_pending_claims_array(&output)
         .map_err(|err| format!("DotnsPopController.pendingClaims: {err}"))?;
     if claims.is_empty() {
@@ -941,6 +990,7 @@ mod tests {
         assert_eq!(hex::encode(selector("TARGET()")), "cc1f2afa");
         assert_eq!(hex::encode(selector("pendingClaims(address)")), "ca78533d");
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
+        assert_eq!(hex::encode(selector("recordExists(bytes32)")), "f79fe538");
         assert_eq!(hex::encode(selector("ownerOf(uint256)")), "6352211e");
     }
 
@@ -1112,6 +1162,16 @@ mod tests {
     }
 
     #[test]
+    fn bool_words_decode_strictly() {
+        assert!(decode_bool(&abi_word(1)).unwrap());
+        assert!(!decode_bool(&abi_word(0)).unwrap());
+        assert!(decode_bool(&abi_word(2)).is_err());
+        let mut high = abi_word(1);
+        high[5] = 1;
+        assert!(decode_bool(&high).is_err());
+    }
+
+    #[test]
     fn a_pending_claim_lapses_after_the_reservation_duration() {
         // DotnsPopController._isExpired: mintedAt + reservationDuration < now.
         assert!(!claim_lapsed(1_000, 100, 1_100));
@@ -1178,11 +1238,16 @@ mod tests {
         assert!(!is_dotted_lite_username(&format!("{}.01", "a".repeat(31))));
     }
 
-    /// A transport whose every view answers with one scripted result.
-    struct OneAnswer(fn() -> Result<Vec<u8>, DotnsViewError>);
+    /// A transport answering views by selector: `tld()` with a scripted
+    /// result, `get(bytes32)` with a registry address, `recordExists(bytes32)`
+    /// with a scripted bool.
+    struct ScriptedTld {
+        tld: fn() -> Result<Vec<u8>, DotnsViewError>,
+        dot_record_exists: bool,
+    }
 
     #[truapi_platform::async_trait]
-    impl DotnsTransport for OneAnswer {
+    impl DotnsTransport for ScriptedTld {
         async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
             Ok(None)
         }
@@ -1190,34 +1255,67 @@ mod tests {
         async fn view(
             &mut self,
             _dest: &[u8; 20],
-            _input: Vec<u8>,
+            input: Vec<u8>,
         ) -> Result<Vec<u8>, DotnsViewError> {
-            (self.0)()
+            let sel: [u8; 4] = input[..4].try_into().expect("selector prefix; qed");
+            if sel == selector("tld()") {
+                (self.tld)()
+            } else if sel == selector("get(bytes32)") {
+                let mut word = [0u8; 32];
+                word[12..].copy_from_slice(&[0xd0; 20]);
+                Ok(word.to_vec())
+            } else if sel == selector("recordExists(bytes32)") {
+                assert_eq!(&input[4..36], &tld_node(TLD_WITHOUT_VIEW));
+                Ok(abi_word(self.dot_record_exists as u64).to_vec())
+            } else {
+                panic!("unscripted view {}", hex::encode(sel));
+            }
         }
     }
 
     #[test]
-    fn the_tld_falls_back_only_when_the_view_reverts() {
+    fn the_tld_falls_back_only_when_the_view_reverts_and_the_record_exists() {
         let registry = [0x9e; 20];
+        fn reverted() -> Result<Vec<u8>, DotnsViewError> {
+            Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+                detail: "(empty)".to_string(),
+            }))
+        }
+
         let served = futures::executor::block_on(network_tld(
-            &mut OneAnswer(|| Ok([abi_word(32).to_vec(), abi_string(".paseo")].concat())),
+            &mut ScriptedTld {
+                tld: || Ok([abi_word(32).to_vec(), abi_string(".paseo")].concat()),
+                dot_record_exists: false,
+            },
             &registry,
         ));
         assert_eq!(served.as_deref(), Ok(".paseo"));
 
-        let reverted = futures::executor::block_on(network_tld(
-            &mut OneAnswer(|| {
-                Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
-                    detail: "(empty)".to_string(),
-                }))
-            }),
+        // The fallback is verified: the registry must hold the ".dot" record.
+        let verified = futures::executor::block_on(network_tld(
+            &mut ScriptedTld {
+                tld: reverted,
+                dot_record_exists: true,
+            },
             &registry,
         ));
-        assert_eq!(reverted.as_deref(), Ok(TLD_WITHOUT_VIEW));
+        assert_eq!(verified.as_deref(), Ok(TLD_WITHOUT_VIEW));
+
+        let unverified = futures::executor::block_on(network_tld(
+            &mut ScriptedTld {
+                tld: reverted,
+                dot_record_exists: false,
+            },
+            &registry,
+        ));
+        assert!(unverified.is_err(), "{unverified:?}");
 
         // A transport failure is not an answer: no guessing.
         let failed = futures::executor::block_on(network_tld(
-            &mut OneAnswer(|| Err(DotnsViewError::Failed("timed out".to_string()))),
+            &mut ScriptedTld {
+                tld: || Err(DotnsViewError::Failed("timed out".to_string())),
+                dot_record_exists: true,
+            },
             &registry,
         ));
         assert!(failed.is_err(), "{failed:?}");

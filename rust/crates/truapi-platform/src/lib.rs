@@ -91,10 +91,6 @@ pub struct SigningHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
-    /// Asset Hub genesis hash. Not read by the local-signing paths, which take
-    /// the session's usernames from the host; retained for parity with
-    /// [`PairingHostConfig`], where it drives the dotNS username lookup.
-    pub asset_hub_chain_genesis_hash: [u8; 32],
 }
 
 /// Product identity attached to one product-facing TrUAPI connection.
@@ -208,13 +204,11 @@ impl SigningHostConfig {
         platform_info: PlatformInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
-        asset_hub_chain_genesis_hash: [u8; 32],
     ) -> Result<Self, RuntimeConfigValidationError> {
         Ok(Self {
             host: HostRuntimeConfig::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
-            asset_hub_chain_genesis_hash,
         })
     }
 }

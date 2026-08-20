@@ -314,7 +314,6 @@ val runtimeConfig = RuntimeConfig(
     hostIcon = "https://host.example/icon.png",
     peopleChainGenesisHash = ByteArray(32),
     bulletinChainGenesisHash = ByteArray(32),
-    assetHubChainGenesisHash = ByteArray(32),
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.
     localSessionSecret = null,

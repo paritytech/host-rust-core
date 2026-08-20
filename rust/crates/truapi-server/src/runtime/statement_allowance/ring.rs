@@ -327,6 +327,10 @@ enum MemberRingPosition {
 /// Reads the ring index `member` is included in for `collection`, from
 /// `Members.Members`, pinned to block `at`. Errors when the member has no
 /// record. Errors too when the member is not `Included` yet.
+///
+/// TODO(#334): second reader of `Members.Members` next to the subxt-typed one
+/// in `signing_host/ring_vrf.rs`; converge them (they also differ on
+/// non-`Included` members — this errors, that one skips).
 pub async fn read_member_ring_index_at(
     rpc: &RpcClient,
     metadata: &Metadata,
