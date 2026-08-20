@@ -173,7 +173,7 @@ product-facing `ResourceAllocation` call but does not raise that call's
 confirmation review, which exists to put a *product's* request to the user. A
 host that wants to prompt for its own maintenance work decides that itself, and
 `HostAllowanceOrigin` says which lifecycle moment asked. See
-[the host allowance administration proposal](../../../docs/features/host-allowance-admin.md).
+[RFC-0028](../../../docs/rfcs/0028-host-allowance-admin.md).
 
 The embedder builds a role handle, `PairingHostRuntime::new(...)` or
 `SigningHostRuntime::new(...)`, then calls `product_runtime(product, sink)` for

@@ -10,4 +10,3 @@ created: 2026-03-13
 
 | Title | Status | Author | PR  |
 | ----- | ------ | ------ | --- |
-| [Host allowance administration on `HostAdmin`](host-allowance-admin.md) | draft | @filippovecchiato | — |
