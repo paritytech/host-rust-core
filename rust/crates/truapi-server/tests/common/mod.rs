@@ -135,6 +135,7 @@ impl Features for WireShapePlatform {
     async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
         Ok(truapi_platform::HostChainSet {
             network: "paseo".to_string(),
+            tld: Some("paseo".to_string()),
             chains: vec![truapi_platform::HostChainEntry {
                 identifier: v01::ChainIdentifier::AssetHub,
                 genesis_hash: [0xaa; 32],

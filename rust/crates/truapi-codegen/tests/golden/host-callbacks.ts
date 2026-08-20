@@ -233,6 +233,12 @@ export interface HostChainSet {
   network: string;
 
   /**
+   * dotNS TLD the network's registry declares via its `tld()` view, e.g.
+   * `dot`, `paseo`, `test`. ``undefined`` when the host does not know it.
+   */
+  tld?: string;
+
+  /**
    * Chains this host serves, keyed by protocol role.
    */
   chains: Array<HostChainEntry>;
@@ -615,6 +621,7 @@ export const HostChainSet: S.Codec<HostChainSet> = S.lazy(
   (): S.Codec<HostChainSet> =>
     S.Struct({
       network: S.str,
+      tld: S.Option(S.str),
       chains: S.Vector(HostChainEntry),
     }) as S.Codec<HostChainSet>,
 );

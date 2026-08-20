@@ -2187,6 +2187,7 @@ mod tests {
         fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
             Ok(truapi_platform::HostChainSet {
                 network: "paseo".to_string(),
+                tld: Some("paseo".to_string()),
                 chains: Vec::new(),
             })
         }
@@ -3212,6 +3213,7 @@ mod tests {
             fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
                 Ok(truapi_platform::HostChainSet {
                     network: "paseo".to_string(),
+                    tld: Some("paseo".to_string()),
                     chains: Vec::new(),
                 })
             }
@@ -3360,6 +3362,7 @@ mod tests {
             fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, HostRejection> {
                 Ok(truapi_platform::HostChainSet {
                     network: "paseo".to_string(),
+                    tld: Some("paseo".to_string()),
                     chains: Vec::new(),
                 })
             }

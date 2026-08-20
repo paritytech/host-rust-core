@@ -1069,6 +1069,9 @@ pub struct HostChainEntry {
 pub struct HostChainSet {
     /// Ecosystem the host is configured for, e.g. "polkadot", "paseo".
     pub network: String,
+    /// dotNS TLD the network's registry declares via its `tld()` view, e.g.
+    /// `dot`, `paseo`, `test`. `None` when the host does not know it.
+    pub tld: Option<String>,
     /// Chains this host serves, keyed by protocol role.
     pub chains: Vec<HostChainEntry>,
 }

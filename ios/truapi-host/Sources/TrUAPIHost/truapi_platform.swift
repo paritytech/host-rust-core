@@ -859,6 +859,11 @@ public struct HostChainSet: Equatable, Hashable {
      */
     public var network: String
     /**
+     * dotNS TLD the network's registry declares via its `tld()` view, e.g.
+     * `dot`, `paseo`, `test`. `None` when the host does not know it.
+     */
+    public var tld: String?
+    /**
      * Chains this host serves, keyed by protocol role.
      */
     public var chains: [HostChainEntry]
@@ -870,9 +875,14 @@ public struct HostChainSet: Equatable, Hashable {
          * Ecosystem the host is configured for, e.g. "polkadot", "paseo".
          */network: String,
         /**
+         * dotNS TLD the network's registry declares via its `tld()` view, e.g.
+         * `dot`, `paseo`, `test`. `None` when the host does not know it.
+         */tld: String?,
+        /**
          * Chains this host serves, keyed by protocol role.
          */chains: [HostChainEntry]) {
         self.network = network
+        self.tld = tld
         self.chains = chains
     }
 
@@ -893,12 +903,14 @@ public struct FfiConverterTypeHostChainSet: FfiConverterRustBuffer {
         return
             try HostChainSet(
                 network: FfiConverterString.read(from: &buf),
+                tld: FfiConverterOptionString.read(from: &buf),
                 chains: FfiConverterSequenceTypeHostChainEntry.read(from: &buf)
         )
     }
 
     public static func write(_ value: HostChainSet, into buf: inout [UInt8]) {
         FfiConverterString.write(value.network, into: &buf)
+        FfiConverterOptionString.write(value.tld, into: &buf)
         FfiConverterSequenceTypeHostChainEntry.write(value.chains, into: &buf)
     }
 }
