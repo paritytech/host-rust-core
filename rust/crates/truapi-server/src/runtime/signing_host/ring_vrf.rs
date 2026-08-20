@@ -13,7 +13,7 @@ use crate::host_logic::sso::messages::RingVrfError;
 use async_trait::async_trait;
 use subxt::dynamic;
 use subxt::ext::scale_decode::DecodeAsType;
-use truapi::v01::{ProductProofContext, RingLocation, RingLocationJunction};
+use truapi::v01::{DerivationIndex, ProductProofContext, RingLocation, RingLocationJunction};
 use verifiable::GenerateVerifiable;
 use verifiable::ring::RingDomainSize;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
@@ -212,7 +212,26 @@ impl RingResolver for ChainRingResolver {
     }
 }
 
+const RAW_CONTEXT_ENV: &str = "TRUAPI_RAW_PROOF_CONTEXT";
+const RAW_CONTEXT_PRODUCT_ID: &str = "raw:";
+
+fn raw_context_override(context: &ProductProofContext) -> Option<[u8; 32]> {
+    if context.product_id != RAW_CONTEXT_PRODUCT_ID {
+        return None;
+    }
+    if std::env::var(RAW_CONTEXT_ENV).as_deref() != Ok("1") {
+        return None;
+    }
+    match context.suffix {
+        DerivationIndex::Raw(bytes) => Some(bytes),
+        DerivationIndex::Index(_) => None,
+    }
+}
+
 pub(in crate::runtime) fn context_bytes(context: &ProductProofContext) -> [u8; 32] {
+    if let Some(raw) = raw_context_override(context) {
+        return raw;
+    }
     let suffix = derivation_index_bytes(&context.suffix);
     let mut input = Vec::with_capacity(9 + context.product_id.len() + suffix.len());
     input.extend_from_slice(b"product/");
