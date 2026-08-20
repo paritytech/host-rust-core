@@ -251,7 +251,9 @@ pub fn is_product_identifier(identifier: &str) -> bool {
 }
 
 /// Top-level domains that dotNS deployments register product names under.
-pub const DOTNS_TLDS: &[&str] = &["dot", "paseo"];
+/// Each network declares its own, so the set spans every network a host can
+/// be pointed at rather than just the production one.
+pub const DOTNS_TLDS: &[&str] = &["dot", "paseo", "test"];
 
 /// Whether `normalized` ends in one of [`DOTNS_TLDS`]. Expects an
 /// already-lowercased host with no trailing root dot.
