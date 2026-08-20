@@ -99,6 +99,11 @@ export type MainToWorker =
   | { kind: "getSessionChatIdentityKey"; requestId: number }
   | { kind: "getDeviceEncryptionKey"; requestId: number }
   | {
+      kind: "getProductSubtreePublicKey";
+      requestId: number;
+      productId: string;
+    }
+  | {
       kind: "publishChatAction";
       coreId: number;
       requestId: number;
@@ -198,6 +203,18 @@ export type WorkerToMain =
     }
   | {
       kind: "sessionChatIdentityKeyResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "productSubtreePublicKeyResponse";
+      requestId: number;
+      ok: true;
+      key: Uint8Array | undefined;
+    }
+  | {
+      kind: "productSubtreePublicKeyResponse";
       requestId: number;
       ok: false;
       error: string;

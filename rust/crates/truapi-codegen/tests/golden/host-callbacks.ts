@@ -976,6 +976,22 @@ export interface CoreAdmin {
    * the install and matches the public key peers were told to address.
    */
   getDeviceEncryptionKey(): Promise<Bytes32>;
+
+  /**
+   * Read `product_id`'s hard-subtree public key as the core already holds it
+   * for the active session, so a host can name the account a review will
+   * sign with instead of showing a bare derivation path.
+   *
+   * Answers from what a pairing host has cached or persisted and from what a
+   * signing host derives locally. It never asks the Account Holder, because
+   * a remote request has no timeout of its own and would leave a host
+   * drawing a review waiting on a phone that may be asleep.
+   *
+   * ``undefined`` when no session is active, or when a pairing host has not yet
+   * been told this product's subtree. Derive account public keys from the
+   * answer with `deriveProductAccountPublicKey`.
+   */
+  getProductSubtreePublicKey(productId: string): Promise<Bytes32 | undefined>;
 }
 
 /**

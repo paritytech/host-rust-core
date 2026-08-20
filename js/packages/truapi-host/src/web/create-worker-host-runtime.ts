@@ -78,6 +78,9 @@ export interface WorkerPairingHostRuntime {
   ): Promise<void>;
   getSessionChatIdentityKey(): Promise<Uint8Array | undefined>;
   getDeviceEncryptionKey(): Promise<Uint8Array>;
+  getProductSubtreePublicKey(
+    productId: string,
+  ): Promise<Uint8Array | undefined>;
   setLogLevel(level: LogLevel): void;
   dispose(): void;
 }
@@ -142,6 +145,13 @@ interface RuntimeState {
     number,
     { resolve: (key: Uint8Array) => void; reject: (error: Error) => void }
   >;
+  pendingProductSubtreePublicKeys: Map<
+    number,
+    {
+      resolve: (key: Uint8Array | undefined) => void;
+      reject: (error: Error) => void;
+    }
+  >;
   pendingChatActions: Map<
     number,
     { resolve: () => void; reject: (error: Error) => void }
@@ -173,6 +183,7 @@ let nextDisconnectRequestId = 0;
 let nextPermissionAuthorizationRequestId = 0;
 let nextSessionChatIdentityKeyRequestId = 0;
 let nextDeviceEncryptionKeyRequestId = 0;
+let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
 let nextChatActionRequestId = 0;
 let nextCustomRenderId = 0;
@@ -482,6 +493,19 @@ function handleSessionChatIdentityKeyResponse(
   );
 }
 
+function handleProductSubtreePublicKeyResponse(
+  state: RuntimeState,
+  msg:
+    | { requestId: number; ok: true; key: Uint8Array | undefined }
+    | { requestId: number; ok: false; error: string },
+): void {
+  settlePending(
+    state.pendingProductSubtreePublicKeys,
+    msg.requestId,
+    msg.ok ? { ok: true, value: msg.key } : { ok: false, error: msg.error },
+  );
+}
+
 function handleDeviceEncryptionKeyResponse(
   state: RuntimeState,
   msg:
@@ -503,6 +527,7 @@ function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingSessionChatIdentityKeys, error);
   rejectAll(state.pendingDeviceEncryptionKeys, error);
+  rejectAll(state.pendingProductSubtreePublicKeys, error);
   rejectAll(state.pendingChatActions, error);
   for (const [renderId, sink] of [...state.customRenders]) {
     state.customRenders.delete(renderId);
@@ -631,6 +656,7 @@ export function createWebWorkerPairingHostRuntime(
       pendingPermissionAuthorizationStatusBatches: new Map(),
       pendingSetPermissionAuthorizationStatuses: new Map(),
       pendingSessionChatIdentityKeys: new Map(),
+      pendingProductSubtreePublicKeys: new Map(),
       pendingDeviceEncryptionKeys: new Map(),
       pendingChatActions: new Map(),
       customRenders: new Map(),
@@ -697,6 +723,9 @@ export function createWebWorkerPairingHostRuntime(
           break;
         case "deviceEncryptionKeyResponse":
           handleDeviceEncryptionKeyResponse(state, msg);
+          break;
+        case "productSubtreePublicKeyResponse":
+          handleProductSubtreePublicKeyResponse(state, msg);
           break;
         case "publishChatActionResponse":
           settlePending(
@@ -954,6 +983,21 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         (requestId) => ({ kind: "getDeviceEncryptionKey", requestId }),
       );
     },
+    getProductSubtreePublicKey(
+      productId: string,
+    ): Promise<Uint8Array | undefined> {
+      return sendWorkerRequest<Uint8Array | undefined>(
+        state,
+        state.pendingProductSubtreePublicKeys,
+        () => ++nextProductSubtreePublicKeyRequestId,
+        undefined,
+        (requestId) => ({
+          kind: "getProductSubtreePublicKey",
+          requestId,
+          productId,
+        }),
+      );
+    },
     notifySessionStoreChanged(): void {
       if (state.disposed) return;
       state.worker.postMessage({
@@ -1111,6 +1155,13 @@ function buildProvider(
         throw new Error("product connection is closed");
       }
       return bytesToHex(await runtime.getDeviceEncryptionKey());
+    },
+    async getProductSubtreePublicKey(
+      productId: string,
+    ): Promise<Bytes32 | undefined> {
+      if (core.disposed) return undefined;
+      const key = await runtime.getProductSubtreePublicKey(productId);
+      return key && bytesToHex(key);
     },
     getPermissionAuthorizationStatus(request) {
       if (core.disposed) return Promise.resolve("NotDetermined");

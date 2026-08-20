@@ -1020,6 +1020,19 @@ impl NativeProductExecution {
         )?)
     }
 
+    /// Read a product's hard-subtree public key as the core already holds it,
+    /// for hosts naming the account a review will sign with. `None` when no
+    /// session is active or the Account Holder has not been asked for this
+    /// product yet. Never asks the Account Holder.
+    pub fn product_subtree_public_key(
+        &self,
+        product_id: String,
+    ) -> Result<Option<Bytes32>, HostRejection> {
+        Ok(futures::executor::block_on(
+            self.admin().get_product_subtree_public_key(product_id),
+        )?)
+    }
+
     /// Push a host theme replacement to this execution's subscriptions.
     pub fn notify_theme_changed(&self, theme: v01::HostThemeSubscribeItem) {
         self.events.notify_theme_changed(theme);

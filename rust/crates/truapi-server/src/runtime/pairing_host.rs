@@ -1079,6 +1079,31 @@ impl PairingHost {
         true
     }
 
+    /// Read a product subtree public key from the memory cache, falling back to
+    /// the slot an earlier launch persisted. `None` when neither holds it.
+    ///
+    /// This is the consent-free half of the resolution order. Splitting it out
+    /// lets a host read what the core already knows without the wire request
+    /// that follows a miss, which has no timeout of its own.
+    pub(super) async fn known_product_subtree(
+        &self,
+        session: &SessionInfo,
+        cache_key: (SsoSessionKey, String),
+    ) -> Option<[u8; 32]> {
+        let lifecycle_epoch = self.current_session_lifecycle_epoch();
+        if let Some(public_key) = self
+            .product_subtrees
+            .lock()
+            .expect("product subtree cache mutex poisoned")
+            .get(&cache_key)
+            .copied()
+        {
+            return Some(public_key);
+        }
+        self.stored_product_subtree(session, lifecycle_epoch, cache_key)
+            .await
+    }
+
     /// Read a product subtree public key persisted by an earlier launch, and
     /// re-populate the memory cache from it. `None` when nothing is stored.
     pub(super) async fn stored_product_subtree(
@@ -1985,6 +2010,17 @@ impl PairingHost {
             .await
     }
 
+    async fn known_product_subtree_public_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Option<[u8; 32]> {
+        let session = self.current_private_session(session).ok()?;
+        let sso = session.sso.as_ref()?;
+        let cache_key = (SsoSessionKey::from_session(sso), product_id);
+        self.known_product_subtree(&session, cache_key).await
+    }
+
     async fn sign_vrf(
         &self,
         cx: &CallContext,
@@ -2395,6 +2431,14 @@ impl ProductAuthority for PairingHost {
         product_id: String,
     ) -> Result<[u8; 32], AuthorityError> {
         PairingHost::product_subtree_public_key(self, cx, session, product_id).await
+    }
+
+    async fn known_product_subtree_public_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Option<[u8; 32]> {
+        PairingHost::known_product_subtree_public_key(self, session, product_id).await
     }
 
     async fn sign_vrf(

@@ -2481,6 +2481,14 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
+     * Read a product's hard-subtree public key as the core already holds it,
+     * for hosts naming the account a review will sign with. `None` when no
+     * session is active or the Account Holder has not been asked for this
+     * product yet. Never asks the Account Holder.
+     */
+    func productSubtreePublicKey(productId: String) throws  -> Bytes32?
+
+    /**
      * Publish one native Chat action, buffering it until the product
      * connection subscribes.
      */
@@ -2662,6 +2670,22 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
     uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
             self.uniffiCloneHandle(),
         FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Read a product's hard-subtree public key as the core already holds it,
+     * for hosts naming the account a review will sign with. `None` when no
+     * session is active or the Account Holder has not been asked for this
+     * product yet. Never asks the Account Holder.
+     */
+open func productSubtreePublicKey(productId: String)throws  -> Bytes32?  {
+    return try  FfiConverterOptionTypeBytes32.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_product_subtree_public_key(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(productId),uniffiCallStatus
     )
 })
 }
@@ -6505,6 +6529,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_product_subtree_public_key() != 24281) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 31503) {

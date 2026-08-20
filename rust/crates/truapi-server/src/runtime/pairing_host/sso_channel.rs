@@ -305,20 +305,7 @@ impl PairingHost {
         let sso = session.sso.as_ref().ok_or(AuthorityError::Disconnected)?;
         let lifecycle_epoch = self.current_session_lifecycle_epoch();
         let cache_key = (SsoSessionKey::from_session(sso), product_id.clone());
-        if let Some(public_key) = self
-            .product_subtrees
-            .lock()
-            .expect("product subtree cache mutex poisoned")
-            .get(&cache_key)
-            .copied()
-        {
-            return Ok(public_key);
-        }
-
-        if let Some(public_key) = self
-            .stored_product_subtree(session, lifecycle_epoch, cache_key.clone())
-            .await
-        {
+        if let Some(public_key) = self.known_product_subtree(session, cache_key.clone()).await {
             return Ok(public_key);
         }
 

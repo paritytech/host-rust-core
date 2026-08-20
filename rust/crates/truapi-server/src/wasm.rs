@@ -824,6 +824,21 @@ impl WasmPairingHostRuntime {
             .map_err(generic_error_to_js)
     }
 
+    /// Read a product's hard-subtree public key as the core already holds it,
+    /// or `undefined` when no session is active or the Account Holder has not
+    /// been asked for this product yet. Never asks the Account Holder.
+    #[wasm_bindgen(js_name = productSubtreePublicKey)]
+    pub async fn product_subtree_public_key(
+        &self,
+        product_id: String,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
+        self.runtime
+            .product_subtree_public_key(&product_id)
+            .await
+            .map(|key| key.map(|key| key.to_vec()))
+            .map_err(generic_error_to_js)
+    }
+
     /// Activate an externally persisted canonical session without writing it
     /// to core storage; resolves only after product frames may use it.
     #[wasm_bindgen(js_name = activateExternalSession)]
@@ -1021,6 +1036,12 @@ impl WasmSigningHostRuntime {
     }
 }
 
+/// Soft-derive a product account public key from a product's hard-subtree key
+/// and a SCALE-encoded `DerivationIndex`.
+///
+/// The index crosses encoded rather than as a number so the chain code stays
+/// core-owned: a host that rebuilds it wrongly gets a valid-looking wrong
+/// address rather than an error.
 #[wasm_bindgen(js_name = deriveProductAccountPublicKey)]
 pub fn derive_product_account_public_key(
     product_subtree_public_key: Vec<u8>,
@@ -1038,6 +1059,8 @@ pub fn derive_product_account_public_key(
     .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
+/// Format a product account public key as the SS58 address host-spec C.6
+/// mandates, so hosts do not each pick a prefix.
 #[wasm_bindgen(js_name = productAccountAddress)]
 pub fn product_account_address(public_key: Vec<u8>) -> Result<String, JsValue> {
     let public_key = <[u8; 32]>::try_from(public_key.as_slice())

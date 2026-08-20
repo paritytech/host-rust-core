@@ -44,6 +44,9 @@ export interface WorkerPairingHostRuntime extends PermissionAuthorizationRuntime
   notifySessionStoreChanged(): void;
   sessionChatIdentityKey(): Uint8Array | undefined;
   deviceEncryptionKey(): Promise<Uint8Array>;
+  productSubtreePublicKey(
+    productId: string,
+  ): Promise<Uint8Array | undefined>;
   activateStoredSession(): Promise<void>;
   activateExternalSession(blob: Uint8Array): Promise<void>;
   resetSessionState(): Promise<void>;

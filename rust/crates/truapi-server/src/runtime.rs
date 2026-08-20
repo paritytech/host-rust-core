@@ -480,6 +480,16 @@ impl ProductRuntimeHost {
             .cache_product_subtree_for_test(session, product_id, public_key);
     }
 
+    /// Read what the authority already holds for a product subtree, without
+    /// asking the Account Holder.
+    #[cfg(test)]
+    pub(crate) async fn test_known_product_subtree(&self, product_id: &str) -> Option<[u8; 32]> {
+        let session = self.authority.current_session()?;
+        self.authority
+            .known_product_subtree_public_key(&session, product_id.to_string())
+            .await
+    }
+
     /// Disconnect this runtime from its paired signing host.
     #[cfg(test)]
     #[instrument(skip_all, fields(runtime.method = "account.disconnect"))]
@@ -3843,6 +3853,37 @@ mod tests {
         assert_eq!(
             hex::encode(inner.account.public_key),
             "1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c"
+        );
+    }
+
+    #[test]
+    fn a_known_product_subtree_answers_without_asking_the_wallet() {
+        let platform = Arc::new(StubPlatform::default());
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, sso_session_info());
+
+        futures::executor::block_on(async {
+            assert_eq!(
+                host.test_known_product_subtree("myapp.dot").await,
+                Some(test_product_subtree("myapp.dot"))
+            );
+            assert_eq!(host.test_known_product_subtree("other.dot").await, None);
+        });
+
+        // The miss is the assertion that matters. Asking the Account Holder
+        // means submitting an SSO statement, and that wait has no timeout of
+        // its own, so a host drawing a review would block on a sleeping phone.
+        // No statement-store traffic proves the read stopped at the miss.
+        assert!(
+            platform
+                .sent_rpc
+                .lock()
+                .expect("rpc list mutex poisoned")
+                .is_empty()
         );
     }
 

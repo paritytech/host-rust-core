@@ -601,6 +601,18 @@ impl ProductAuthority for SigningHost {
             .map_err(product_authority_error)
     }
 
+    async fn known_product_subtree_public_key(
+        &self,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Option<[u8; 32]> {
+        // Local derivation from root entropy, so there is nothing to ask and
+        // no miss to report beyond the errors the shared path already returns.
+        self.product_subtree_public_key(&CallContext::default(), session, product_id)
+            .await
+            .ok()
+    }
+
     async fn sign_vrf(
         &self,
         _cx: &CallContext,

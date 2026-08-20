@@ -501,6 +501,47 @@ describe("createWebWorkerPairingHostRuntime", () => {
     provider.dispose();
   });
 
+  it("returns a product subtree key as hex and reports an unpaired product", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x31);
+    const pending = provider.getProductSubtreePublicKey("myapp.dot");
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getProductSubtreePublicKey");
+    expect(msg.productId).toBe("myapp.dot");
+
+    worker.emit({
+      kind: "productSubtreePublicKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    // The core never asks the wallet on a miss, so an unpaired product
+    // resolves absent rather than hanging on a phone that may be asleep.
+    const missing = provider.getProductSubtreePublicKey("other.dot");
+    worker.emit({
+      kind: "productSubtreePublicKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: true,
+      key: undefined,
+    });
+    expect(await missing).toBeUndefined();
+
+    provider.dispose();
+  });
+
   it("returns the device encryption key as hex and fails once disposed", async () => {
     const worker = new FakeWorker();
     const providerPromise = createProviderFromRuntime(

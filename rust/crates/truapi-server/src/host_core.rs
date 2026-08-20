@@ -23,6 +23,7 @@ use truapi_platform::ChatPlatform;
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
+    normalize_product_identifier,
 };
 
 use crate::core::TrUApiCore;
@@ -234,6 +235,16 @@ impl PairingHostRuntime {
             .device_encryption_secret()
             .await
             .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Read `product_id`'s hard-subtree public key from the cache or the
+    /// persisted slot, without asking the Account Holder.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.product_subtree_public_key"))]
+    pub async fn product_subtree_public_key(
+        &self,
+        product_id: &str,
+    ) -> Result<Option<[u8; 32]>, v01::GenericError> {
+        known_product_subtree_public_key(self.pairing_host.as_ref(), product_id).await
     }
 
     /// Clear the canonical paired session and all capability caches/storage
@@ -793,6 +804,36 @@ impl CoreAdmin for HostAdmin {
             .await
             .map_err(|reason| v01::GenericError { reason })
     }
+
+    async fn get_product_subtree_public_key(
+        &self,
+        product_id: String,
+    ) -> Result<Option<[u8; 32]>, v01::GenericError> {
+        known_product_subtree_public_key(self.authority.as_ref(), &product_id).await
+    }
+}
+
+/// Shared body of the two entry points that read a product subtree: the
+/// `CoreAdmin` method native hosts call and the pairing-host runtime method
+/// the wasm bridge wraps.
+///
+/// The identifier is normalized here because the product path normalizes
+/// before it populates the cache, so an unnormalized lookup would miss a key
+/// the core is holding.
+async fn known_product_subtree_public_key(
+    authority: &(impl ProductAuthority + ?Sized),
+    product_id: &str,
+) -> Result<Option<[u8; 32]>, v01::GenericError> {
+    let product_id =
+        normalize_product_identifier(product_id).map_err(|reason| v01::GenericError {
+            reason: reason.to_string(),
+        })?;
+    let Some(session) = authority.current_session() else {
+        return Ok(None);
+    };
+    Ok(authority
+        .known_product_subtree_public_key(&session, product_id)
+        .await)
 }
 
 /// Target-neutral host runtime wrapper.

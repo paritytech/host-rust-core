@@ -1042,6 +1042,23 @@ pub trait CoreAdmin: Send + Sync {
     /// Generated and persisted on first read, so the returned key is stable for
     /// the install and matches the public key peers were told to address.
     async fn get_device_encryption_key(&self) -> Result<Bytes32, GenericError>;
+
+    /// Read `product_id`'s hard-subtree public key as the core already holds it
+    /// for the active session, so a host can name the account a review will
+    /// sign with instead of showing a bare derivation path.
+    ///
+    /// Answers from what a pairing host has cached or persisted and from what a
+    /// signing host derives locally. It never asks the Account Holder, because
+    /// a remote request has no timeout of its own and would leave a host
+    /// drawing a review waiting on a phone that may be asleep.
+    ///
+    /// `None` when no session is active, or when a pairing host has not yet
+    /// been told this product's subtree. Derive account public keys from the
+    /// answer with `deriveProductAccountPublicKey`.
+    async fn get_product_subtree_public_key(
+        &self,
+        product_id: String,
+    ) -> Result<Option<Bytes32>, GenericError>;
 }
 
 /// Pairing-host-only administration API exposed to host UI.
