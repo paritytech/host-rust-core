@@ -78,18 +78,6 @@ drifts, so it MUST NOT be reimplemented outside
 and the
 [reserved-id table](../../rust/crates/truapi-server/src/host_logic/product_account.rs).
 
-#### Open Questions
-
-- When does the mobile Account Holder derive
-  [`uid.{tld}` and `peopl.{tld}`](../../rust/crates/truapi-server/src/host_logic/product_account.rs)
-  per network instead of its hardcoded `uid.dot`, so paired hosts on non-dot
-  networks stop diverging from it?
-- Can name validation and navigation learn the TLD from the registry `tld()`
-  view (now carried by `HostChainSet.tld`) instead of the compiled
-  [`DOTNS_TLDS`](../../rust/crates/truapi-platform/src/lib.rs) list, given
-  SCALE decode and the exported `parse_navigate` FFI have no configuration in
-  scope?
-
 #### Use Cases
 
 | Use Case                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
