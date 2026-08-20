@@ -110,6 +110,10 @@ pub enum SystemEvent {
     FramesListening {
         url: String,
     },
+    ServeReady {
+        url: String,
+        auto_accept: bool,
+    },
     SigningHostReady,
     SigningHostNeedsSession,
     SigningHostAccountExhausted {
@@ -140,12 +144,16 @@ pub enum SystemEvent {
         target: String,
         reason: String,
     },
+    AllowanceRenewalPruned {
+        target: String,
+    },
     AllowanceRenewalReport {
         period: u32,
         renewed: usize,
         fresh: usize,
         failed: usize,
         skipped: usize,
+        pruned: usize,
     },
     NotificationDelivered {
         id: u32,
@@ -1278,6 +1286,18 @@ impl App {
                 "Listening for product frames".to_string(),
                 Some(url),
             ),
+            SystemEvent::ServeReady { url, auto_accept } => self.notice(
+                NoticeTone::Info,
+                "Serving product frames until stopped".to_string(),
+                Some(format!(
+                    "{url}\n{}",
+                    if auto_accept {
+                        "Confirmations are approved automatically"
+                    } else {
+                        "Confirmations will be denied: there is no terminal to prompt on, so pass --auto-accept"
+                    }
+                )),
+            ),
             SystemEvent::SigningHostReady => self.activity(
                 "signer".to_string(),
                 "Signing host ready".to_string(),
@@ -1348,21 +1368,31 @@ impl App {
                 Some(reason),
                 ActivityState::Failed,
             ),
+            // A prune is not a failed renewal: nothing was rejected, an entry
+            // this identity never promised was discarded. Rendering it red beside
+            // chain rejections reads as an error the host should chase.
+            SystemEvent::AllowanceRenewalPruned { target } => self.activity(
+                format!("allowance:{target}"),
+                format!("{} dropped from the ledger", allowance_name(&target)),
+                Some("promised by a previous identity; re-track it to keep it renewed".to_string()),
+                ActivityState::Warning,
+            ),
             SystemEvent::AllowanceRenewalReport {
                 period,
                 renewed,
                 fresh,
                 failed,
                 skipped,
+                pruned,
             } => {
-                if renewed + fresh + failed + skipped == 0 {
+                if renewed + fresh + failed + skipped + pruned == 0 {
                     self.notice(
                         NoticeTone::Info,
                         "No tracked allowance targets".to_string(),
                         Some(format!("Statement period {period}")),
                     );
                 } else {
-                    let tone = if failed + skipped > 0 {
+                    let tone = if failed + skipped + pruned > 0 {
                         NoticeTone::Warning
                     } else {
                         NoticeTone::Success
@@ -1371,7 +1401,7 @@ impl App {
                         tone,
                         "Allowance renewal finished".to_string(),
                         Some(format!(
-                            "Period {period} · {renewed} renewed · {fresh} fresh · {failed} failed · {skipped} skipped"
+                            "Period {period} · {renewed} renewed · {fresh} fresh · {failed} failed · {skipped} skipped · {pruned} pruned"
                         )),
                     );
                 }
@@ -1616,18 +1646,18 @@ impl App {
             (false, KeyCode::Tab) => {
                 self.editor.accept_completion();
             }
-            (false, KeyCode::Enter) if busy => {
-                if !self.editor.text().trim().is_empty() {
-                    self.notice(
-                        NoticeTone::Warning,
-                        "A command is already running".to_string(),
-                        Some(
-                            "Press Ctrl-C to cancel it before submitting another command."
-                                .to_string(),
-                        ),
-                    );
-                }
+            (false, KeyCode::Enter) if busy && !self.editor.text().trim().is_empty() => {
+                self.notice(
+                    NoticeTone::Warning,
+                    "A command is already running".to_string(),
+                    Some(
+                        "Press Ctrl-C to cancel it before submitting another command.".to_string(),
+                    ),
+                );
             }
+            // Enter on an empty prompt while busy is swallowed: falling through to
+            // the submit arm would accept a completion or submit mid-command.
+            (false, KeyCode::Enter) if busy => {}
             (false, KeyCode::Enter) => {
                 let text = self.editor.text();
                 let completions = self.editor.completions();

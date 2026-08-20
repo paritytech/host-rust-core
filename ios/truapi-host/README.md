@@ -57,7 +57,7 @@ The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navig
 Add the package as an SPM dependency and link the `TrUAPIHost` product into the app target:
 
 ```swift
-.package(url: "https://github.com/paritytech/truapi.git", branch: "main")
+.package(url: "https://github.com/paritytech/host-rust-core.git", branch: "main")
 ```
 
 ```swift
@@ -72,6 +72,81 @@ Run the package tests against an iOS simulator (the xcframework has no macOS sli
 # from the repo root
 xcodebuild test -scheme TrUAPIHost -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
+
+## Chat
+
+A host serving the Chat modality implements `ChatHostBridge` and opens the
+execution with `ProductExecutionKind.chat`. Hosts without it pass nothing and
+Chat calls answer unsupported.
+
+```swift
+// Called from a shared dispatch pool, so the backing store must be
+// thread-safe, and a slow call here stalls other product executions.
+final class MyChatBridge: ChatHostBridge, @unchecked Sendable {
+    private let store: ChatStore
+
+    init(store: ChatStore) { self.store = store }
+
+    func createRoom(roomId: String, name: String, icon: String) throws
+        -> ChatRoomRegistrationStatus
+    {
+        store.putRoom(roomId, name: name, icon: icon) ? .new : .exists
+    }
+
+    func registerBot(botId: String, name: String, icon: String) throws
+        -> ChatBotRegistrationStatus
+    {
+        store.putBot(botId, name: name, icon: icon) ? .new : .exists
+    }
+
+    func postMessage(roomId: String, content: ChatMessageContent) throws -> String {
+        if case .file = content {
+            // Declining a variant is how a host opts out of rendering one.
+            // Throw `HostRejection.Rejected` (or a `LocalizedError`) so the
+            // product receives your reason rather than a bare type name.
+            throw HostRejection.Rejected(reason: "this host cannot render file cards")
+        }
+        return store.append(roomId, content: content)
+    }
+
+    func listRooms() throws -> [ChatRoom] { store.rooms() }
+}
+
+let runtime = try TrUAPIHostRuntime(
+    bridge: bridge,
+    runtimeConfig: HostRuntimeConfig(
+        hostName: "My Chat Host",
+        peopleChainGenesisHash: peopleChainGenesisHash,   // exactly 32 bytes
+        bulletinChainGenesisHash: bulletinChainGenesisHash
+    )
+)
+// Chat needs an active session; without one every Chat call answers denied.
+try runtime.activateLocalSession(secret: secret)
+
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(productId: "chat.dot", executionKind: .chat),
+    chat: MyChatBridge(store: store)
+)
+let endpoint = try execution.startWsBridge()
+```
+
+The core bounds and screens the product-supplied fields it forwards — ids,
+names, icons, message bodies, URLs, and the action and media counts. Ids and
+names are also normalized; a message body is bounded and screened but passed
+through byte-for-byte, and `ChatFile.sizeBytes` is product-asserted and
+unverified. Contextual output escaping is the host's job.
+
+The id `postMessage` returns is the correlation key `ActionTrigger.messageId`
+carries back, so it must name that message for as long as the host stores it.
+Ids arriving *in* a `Reaction` or `ReactionRemoved` are product-chosen and
+untrusted: they may name a message in another room, or one that never existed.
+
+On the execution: `publishChatAction` delivers a user's action back to the
+product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
+republishes the room list; `renderCustomMessage` returns a stream of typed UI
+for a stored custom message; and `sessionChatIdentityKey` reads the session's
+X25519 chat identity private key, which must not be logged or persisted.
 
 ## Architecture
 
@@ -95,6 +170,64 @@ The core's `Permissions` platform trait has two methods, and so does `HostCallba
 - `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+
+## SSO session handling
+
+`TrUAPIHostRuntime` exposes two methods for wallet-owned SSO sessions. Meaningful request answering requires `activateLocalSession` to have been called first; `prepareDisconnectRequest` needs no session.
+
+```swift
+func handleSsoRequest(message: Data) async throws -> SsoRequestOutcome
+func prepareDisconnectRequest() -> Data
+```
+
+`handleSsoRequest(message:)` takes one SCALE-encoded `RemoteMessage` exactly as decrypted from the statement-store session and routes it through the Rust core. The returned `SsoRequestOutcome` is the generated UniFFI enum (no Swift mirror):
+
+- `.response(message:)` — SCALE-encoded reply; post it back over the same session.
+- `.disconnected` — the peer ended the session; tear down the transport and records on the wallet side.
+- `.ignored` — the message was not a request; nothing to post.
+
+Confirmation-gated requests suspend on `confirmUserAction`, so `handleSsoRequest` can take arbitrarily long. Always call it from a `Task`, never the main thread.
+
+`prepareDisconnectRequest()` returns the SCALE-encoded `Disconnected` message to post when the wallet is ending the session. Posting and record cleanup (host entry, device record, device-removed broadcast) stay with the wallet.
+
+## Statement-store allowance renewal
+
+Statement-store allowances are granted per period, so a host has to re-register the accounts it wants to keep writing. They are not revoked the moment the period ends: `Resources.StmtStoreGraceWindow` keeps an ended period's allowances active until cleanup catches up, 48 hours on `paseo-next-v2`. The runtime owns the ledger and the registration; the app owns only the schedule.
+
+Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
+
+```swift
+try runtime.trackStatementRenewalTargets([
+    .walletSso,
+    .account(accountId: deviceStatementKey, label: "device"),
+])
+```
+
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `.walletSso` and `.productStatementAllowance` are derivation recipes, so they survive that; `.account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. There is still no reader and no untrack on this surface, so a host cannot list what is tracked or remove a wrong entry. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+
+Then run a pass from a background task, off the main thread. It needs an active session too, which is the whole difficulty here: a `BGTaskScheduler` wake on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
+
+```swift
+let report = try runtime.renewStatementAllowances()
+for outcome in report.outcomes {
+    log("\(outcome.label): \(outcome.status)")
+}
+for label in report.pruned {
+    // Promised by a previous identity and discarded; re-track to keep it renewed.
+    log("dropped: \(label)")
+}
+if report.slotsExhausted {
+    // Every slot for this period is taken and none was replaceable.
+}
+```
+
+One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed wake-up is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a `BGTaskScheduler` host should read a value under an hour as the boundary approaching rather than requesting a wake-up every hour for a pass that will almost always report `alreadyAllocated`.
+
+`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call. A pass has no cancellation, so several targets can outlast a short background budget; targets registered before the process is killed are not lost, and read back as already allocated next time.
+
+An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.InvalidAccountId` before any chain work happens.
+
+`TrUAPIHostCore` exposes the same four calls for hosts that use it instead of `TrUAPIHostRuntime`.
 
 ## Example
 
@@ -147,9 +280,12 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
     }
 
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
-    // account badge and `.loginFailed` as a retryable error. This core is a
-    // signing host — it owns the signer and never pairs — so `.pairing` and
-    // `.authenticating` are not emitted and `core.cancelLogin()` is inert.
+    // account badge and `.loginFailed` as a retryable error, unless its `kind`
+    // is `.noFreeAllowanceSlots`, which is unlikely to succeed before the
+    // period rolls over, so retry should not be the primary action. This core
+    // is a signing host — it owns the signer and never
+    // pairs — so `.pairing` and `.authenticating` are not emitted and
+    // `core.cancelLogin()` is inert.
     // Activate the session with `core.activateLocalSession(secret:...)`.
     func authStateChanged(state: AuthState) {
         DispatchQueue.main.async { /* render the state */ }

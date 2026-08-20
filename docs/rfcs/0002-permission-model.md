@@ -125,15 +125,39 @@ fn remote_permission(
 
 The return value is a single `bool`. A `true` result means all requested permissions were granted. A `false` result means the user denied at least one permission in the batch; the host MAY persist partial grants for those entries the user approved, but the function still returns `false`. Products that need to know which specific permissions were denied should call `remote_permission` with individual entries.
 
-### HTTP/WS Domain Matching Semantics
+### Domain Matching Semantics
 
-Each string entry inside `Remote(Vec<String>)` is matched against the host portion of a request URL. The matching rules are:
+`Remote(Vec<String>)` is one grant per host covering everything a product does
+with that host: outbound HTTP/WS requests, and sending the user there with
+`host_navigate_to`. Both hand the same third party the same thing — that the user
+is here, plus whatever the product puts in the URL — so they are one question,
+asked once. `DevicePermission::OpenUrl` is not part of this: it is about handing
+a URL to the operating system at all, not about which hosts are reachable.
+
+Each string entry is matched against the host portion of the URL. The matching
+rules are:
 
 - **Exact domain**: `"api.coingecko.com"` matches requests to `https://api.coingecko.com` only.
 - **Wildcard subdomain**: `"*.coingecko.com"` matches any single subdomain level, e.g. `api.coingecko.com`, `cdn.coingecko.com`, but NOT `coingecko.com` itself or `deep.api.coingecko.com` (two levels).
 - **Wildcard all**: `"*"` matches any HTTP(S) host. This is a broad grant and host implementations SHOULD present a more prominent warning to the user when this entry appears.
 
-Matching is case-insensitive. The scheme is always HTTP, HTTPS, WS or WSS.
+A pattern one label deep — `"*.com"`, `"*.dot"` — is a legal wildcard subdomain
+and is matched like any other. It is nearly as broad as `"*"`, so the prominent
+warning above applies to it too. Nothing narrower is enforced at match time: a
+pattern a host can persist is a pattern the core must consult, or a product would
+keep prompting for hosts the user already approved.
+
+Matching is case-insensitive and runs on the IDNA ASCII form of the host, so
+every spelling of the same site — case, trailing root dot, Unicode or punycode —
+resolves to one decision and one prompt.
+
+The unit of persistence is the pattern, not the requested bundle: a grant of
+`["a.example.com", "b.example.com"]` is stored as a decision for each, so it is
+visible to enforcement, which only ever asks about one host at a time. A denial
+is not symmetric. Refusing a set of domains is not refusing each of them
+individually — the user was never put the narrower question — so a multi-domain
+denial is recorded against that set. The same request does not re-prompt, and a
+later request for one of those domains alone still gets its own prompt.
 
 ### Permission Lifecycle
 
@@ -148,11 +172,18 @@ Products MAY request permissions lazily (on first use) or upfront during initial
 
 The following business methods gate on a specific `RemotePermission` and MUST internally trigger a permission prompt if the permission has not yet been resolved:
 
-| Business Method                      | Required Permission                 |
-| ------------------------------------ | ----------------------------------- |
-| `remote_chain_transaction_broadcast` | `RemotePermission::ChainSubmit`     |
-| `remote_preimage_submit`             | `RemotePermission::PreimageSubmit`  |
-| `remote_statement_store_submit`      | `RemotePermission::StatementSubmit` |
+| Business Method                      | Required Permission                       |
+| ------------------------------------ | ----------------------------------------- |
+| `remote_chain_transaction_broadcast` | `RemotePermission::ChainSubmit`           |
+| `remote_preimage_submit`             | `RemotePermission::PreimageSubmit`        |
+| `remote_statement_store_submit`      | `RemotePermission::StatementSubmit`       |
+| `host_navigate_to`                   | `RemotePermission::Remote([target host])` |
+
+`host_navigate_to` gates only an external `http`/`https` destination, on a grant
+for that one host. dotNS names and `localhost` resolve back into the host's own
+product surface and consume no grant, and the app-handoff schemes (`mailto:`,
+`tel:`, `polkadot:`, `dot:`) name no host a grant could speak about. Denial is
+reported as `HostNavigateToError::PermissionDenied`.
 
 The following business methods relate to signing and require the user's active consent via their own approval flow (e.g. a signing confirmation dialog). They return `PermissionDenied` when the user cancels or denies that confirmation — this is distinct from the remote permission system but is documented here for completeness:
 
@@ -250,7 +281,7 @@ Migration is straightforward for implementors following semantic versioning: bum
 
 2. **Permission query API**: Should there be a `remote_permission_status` / `host_device_permission_status` call that returns the current persisted state without prompting? This would allow products to check permission state on startup and adapt their UI accordingly without triggering a prompt.
 
-3. **`OpenUrl` scope**: `OpenUrl` is modelled as a device permission (single prompt, persisted). An alternative interpretation is that it should be a remote permission variant (since the destination is a URL). Which namespace is more appropriate?
+3. **`OpenUrl` scope** — settled. Which hosts a product may send the user to is `RemotePermission::Remote`, at the same per-host granularity as outbound requests to them, because it is the same disclosure to the same third party (see [Domain Matching Semantics](#domain-matching-semantics)). `OpenUrl` keeps the narrower device-permission meaning it already had — handing a URL to the operating system at all — and names no destination.
 
 4. **HTTP/WS permission enforcement point**: The RFC specifies that `RemotePermission::Remote` governs outbound HTTP/WS requests, but the transport layer routes all network calls through the Host. How the Host enforces HTTP domain matching at the transport level (interception vs. validation before handing off) is an implementation detail left unspecified — should this RFC say more?
 

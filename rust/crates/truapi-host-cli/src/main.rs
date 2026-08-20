@@ -14,6 +14,7 @@
 mod accounts;
 mod attestation;
 mod chain;
+mod chat;
 mod frame_server;
 mod network;
 mod platform;
@@ -36,7 +37,7 @@ use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use truapi_platform::{HostInfo, PlatformInfo};
+use truapi_platform::{ChatPlatform, HostInfo, PlatformInfo, ProductExecutionKind};
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
@@ -205,8 +206,36 @@ enum Command {
     },
 }
 
+/// Execution kind the CLI serves a product as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ExecutionKind {
+    /// Ordinary product. Chat requests answer `Denied`, as they do on any
+    /// host that does not serve chat.
+    Spa,
+    /// Chat product, served by the CLI's in-memory chat host.
+    Chat,
+}
+
+impl ExecutionKind {
+    fn context(self) -> ProductExecutionKind {
+        match self {
+            Self::Spa => ProductExecutionKind::Spa,
+            Self::Chat => ProductExecutionKind::Chat,
+        }
+    }
+
+    /// The chat host to install, if this kind serves chat at all.
+    fn chat_host(self) -> Option<Arc<chat::CliChatHost>> {
+        matches!(self, Self::Chat).then(chat::CliChatHost::from_env)
+    }
+}
+
 #[derive(Args)]
 struct PairingHostArgs {
+    /// Execution kind the served product runs as. `chat` installs the CLI's
+    /// in-memory chat host; `spa` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start the terminal UI.
     #[arg(long)]
     script: Option<PathBuf>,
@@ -230,6 +259,10 @@ struct PairingHostArgs {
 
 #[derive(Args)]
 struct SigningHostArgs {
+    /// Execution kind the served product runs as. `chat` installs the CLI's
+    /// in-memory chat host; `spa` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start an interactive shell.
     #[arg(long)]
     script: Option<PathBuf>,
@@ -268,6 +301,13 @@ struct SigningHostArgs {
     /// Approve every confirmation without prompting on the CLI.
     #[arg(long)]
     auto_accept: bool,
+    /// Serve product frames without a terminal UI and stay up until stopped.
+    /// Needs no TTY, so a dev server can supervise this process: the frame
+    /// endpoint and every lifecycle event are logged one line at a time, and
+    /// the signer is ready once "Signing host ready" is printed. Pair it with
+    /// `--auto-accept`, because a process with no terminal cannot prompt.
+    #[arg(long)]
+    serve: bool,
     /// Execute one slash command without starting the terminal UI.
     #[command(subcommand)]
     action: Option<SigningHostAction>,
@@ -355,13 +395,12 @@ async fn run_pgas_check(
 ) -> Result<()> {
     use std::sync::Arc;
 
-    use truapi_server::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
     use truapi_server::statement_allowance::pgas;
 
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
+    let candidates = accounts::collection_candidates(&entropy);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; a claim has to credit an account");
@@ -399,34 +438,36 @@ async fn run_pgas_check(
         hex::encode(asset_hub_state.genesis_hash),
     );
 
-    println!(
-        "bandersnatch member=0x{}",
-        hex::encode(alloc::proof::member_key(bandersnatch))
-    );
-    let current_ring = alloc::ring::read_current_ring_index(&people_rpc)
-        .await
-        .map_err(anyhow::Error::msg)?;
-    let Some(ring) = alloc::find_including_ring(
-        &people_rpc,
-        &people_metadata,
-        bandersnatch,
-        lookback.min(current_ring.saturating_add(1)),
-    )
-    .await
-    .map_err(anyhow::Error::msg)?
-    else {
-        bail!("member is not in the last {lookback} rings (onboarding pending)");
+    for candidate in &candidates {
+        println!(
+            "{} member=0x{}",
+            candidate.collection,
+            hex::encode(alloc::proof::member_key(candidate.entropy))
+        );
+    }
+    let memberships =
+        alloc::find_including_rings(&people_rpc, &people_metadata, &candidates, lookback)
+            .await
+            .map_err(anyhow::Error::msg)?;
+    for membership in &memberships {
+        println!(
+            "member INCLUDED in {} ring_index={} exponent={} members={}",
+            membership.collection(),
+            membership.ring.ring_index,
+            membership.ring.exponent,
+            membership.ring.members.len()
+        );
+    }
+    // The widest membership the signer actually holds; a claim needs exactly one.
+    let Some(membership) = memberships.first() else {
+        bail!("member is not in the last {lookback} rings of any collection (onboarding pending)");
     };
-    println!(
-        "member INCLUDED in ring_index={} exponent={} members={}",
-        ring.ring_index,
-        ring.exponent,
-        ring.members.len()
-    );
+    let ring = &membership.ring;
 
     let revision = alloc::ring::read_ring_revision(
         &people_rpc,
         &people_metadata,
+        ring.collection,
         ring.ring_index,
         &ring.block_hash,
     )
@@ -436,6 +477,7 @@ async fn run_pgas_check(
     match pgas::await_ring_revision(
         &asset_hub_rpc,
         &asset_hub_metadata,
+        ring.collection,
         ring.ring_index,
         revision,
     )
@@ -450,7 +492,8 @@ async fn run_pgas_check(
             .await
             .map_err(anyhow::Error::msg)?,
     );
-    let max = alloc::slot::max_pgas_claims(&asset_hub_metadata).map_err(anyhow::Error::msg)?;
+    let max = alloc::slot::max_pgas_claims(&asset_hub_metadata, ring.collection)
+        .map_err(anyhow::Error::msg)?;
     println!(
         "day={day} max_claims_per_day={max} target=0x{}",
         hex::encode(target)
@@ -458,7 +501,8 @@ async fn run_pgas_check(
     match alloc::slot::scan_pgas_slot_excluding(
         &asset_hub_rpc,
         &asset_hub_metadata,
-        bandersnatch,
+        ring.collection,
+        membership.entropy,
         day,
         &[],
     )
@@ -481,9 +525,9 @@ async fn run_pgas_check(
         asset_hub: &asset_hub,
         people_rpc: &people_rpc,
         people_metadata: &people_metadata,
-        entropy: bandersnatch,
+        entropy: membership.entropy,
         target: &target,
-        ring: &ring,
+        ring: &membership.ring,
     })
     .await
     .map_err(|err| anyhow::anyhow!("claim failed: {err}"))?;
@@ -511,12 +555,10 @@ async fn run_alloc_check(
     lookback: u32,
     submit: bool,
 ) -> Result<()> {
-    use truapi_server::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
-
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(&entropy);
+    let candidates = accounts::collection_candidates(&entropy);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; the all-zero default is read-only");
@@ -548,23 +590,30 @@ async fn run_alloc_check(
         hex::encode(chain_state.genesis_hash),
     );
 
-    let member = alloc::proof::member_key(bandersnatch);
-    println!("bandersnatch member=0x{}", hex::encode(member));
-    let current_ring = alloc::ring::read_current_ring_index(&rpc)
+    for candidate in &candidates {
+        println!(
+            "{} member=0x{} current_ring_index={}",
+            candidate.collection,
+            hex::encode(alloc::proof::member_key(candidate.entropy)),
+            alloc::ring::read_current_ring_index(&rpc, candidate.collection)
+                .await
+                .map_err(anyhow::Error::msg)?,
+        );
+    }
+    let memberships = alloc::find_including_rings(&rpc, &metadata, &candidates, lookback)
         .await
         .map_err(anyhow::Error::msg)?;
-    println!("current ring index={current_ring}");
-    let ring = alloc::find_including_ring(&rpc, &metadata, bandersnatch, lookback)
-        .await
-        .map_err(anyhow::Error::msg)?;
-    match &ring {
-        Some(r) => println!(
-            "member INCLUDED in ring_index={} exponent={} included_members={}",
-            r.ring_index,
-            r.exponent,
-            r.members.len(),
-        ),
-        None => println!("member NOT in the last {lookback} rings (onboarding pending)"),
+    if memberships.is_empty() {
+        println!("member NOT in the last {lookback} rings of any collection (onboarding pending)");
+    }
+    for membership in &memberships {
+        println!(
+            "member INCLUDED in {} ring_index={} exponent={} included_members={}",
+            membership.collection(),
+            membership.ring.ring_index,
+            membership.ring.exponent,
+            membership.ring.members.len(),
+        );
     }
 
     let now = std::time::SystemTime::now()
@@ -574,14 +623,79 @@ async fn run_alloc_check(
     let period = alloc::slot::current_period(now);
     println!("period={period} target=0x{}", hex::encode(target));
 
+    for candidate in &candidates {
+        if !candidate.collection.is_supported(&metadata) {
+            println!("{}: not offered by this chain", candidate.collection);
+            continue;
+        }
+        print!("{}: ", candidate.collection);
+        report_slot_scan(&rpc, &metadata, *candidate, period, &target, now).await?;
+    }
+
+    if submit {
+        if memberships.is_empty() {
+            bail!("cannot submit: member not in any ring");
+        }
+        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        match alloc::register_statement_account_pooled(
+            &rpc,
+            &metadata,
+            &chain_state,
+            &scans,
+            &memberships,
+            alloc::PooledRegistrationParams {
+                target: &target,
+                period,
+                reuse_existing: true,
+                // A diagnostic that submits behaves as it did before pooling,
+                // where a full table was replaced rather than reported.
+                allow_eviction: true,
+                protected: &[],
+            },
+        )
+        .await
+        {
+            Ok(alloc::RegistrationOutcome::Registered {
+                block_hash,
+                seq,
+                ring_index,
+                collection,
+            }) => println!(
+                "REGISTERED in {collection} seq={seq} ring_index={ring_index} block={block_hash}"
+            ),
+            Ok(alloc::RegistrationOutcome::AlreadyAllocated { seq, collection }) => {
+                println!("already allocated in {collection} at seq={seq}")
+            }
+            Err(err) => bail!("registration failed: {err}"),
+        }
+    }
+
+    Ok(())
+}
+
+/// Print one collection's slot table for `period`: the free or reusable slot, or
+/// the full table with each occupant's age against the chain clock.
+async fn report_slot_scan(
+    rpc: &alloc::rpc::RpcClient,
+    metadata: &alloc::extension::Metadata,
+    candidate: alloc::CollectionCandidate,
+    period: u32,
+    target: &[u8; 32],
+    now: u64,
+) -> Result<()> {
     match alloc::slot::scan_slot_excluding(
-        &rpc,
-        &metadata,
-        bandersnatch,
-        period,
-        &target,
-        &[],
-        true,
+        rpc,
+        metadata,
+        alloc::slot::SlotScan {
+            collection: candidate.collection,
+            entropy: candidate.entropy,
+            period,
+            target,
+            excluded: &[],
+            reuse_existing: true,
+        },
     )
     .await
     {
@@ -591,9 +705,9 @@ async fn run_alloc_check(
         }
         Ok(alloc::slot::SlotSelection::Full { max, occupied }) => {
             println!("slot scan: all {max} slots taken, none reusable");
-            let cooldown = alloc::slot::replacement_cooldown(&metadata)?;
+            let cooldown = alloc::slot::replacement_cooldown(metadata)?;
             // The runtime judges ages against its own clock, which trails ours.
-            let chain_now = alloc::slot::read_chain_now_seconds(&rpc).await?;
+            let chain_now = alloc::slot::read_chain_now_seconds(rpc).await?;
             println!(
                 "  chain clock={chain_now} (host clock is {}s ahead)",
                 now.saturating_sub(chain_now)
@@ -612,7 +726,7 @@ async fn run_alloc_check(
                     hex::encode(slot.account_id)
                 );
             }
-            match alloc::slot::replaceable_slot(&occupied, &target, chain_now, cooldown, &[]) {
+            match alloc::slot::replaceable_slot(&occupied, target, chain_now, cooldown, &[]) {
                 Some(seq) => println!("would replace seq={seq} (oldest replaceable)"),
                 None => println!("nothing replaceable: cooldown={cooldown}s"),
             }
@@ -621,36 +735,6 @@ async fn run_alloc_check(
             println!("slot scan: target already allocated at seq={seq}")
         }
         Err(err) => println!("slot scan: {err}"),
-    }
-
-    if submit {
-        let ring = ring.ok_or_else(|| anyhow::anyhow!("cannot submit: member not in any ring"))?;
-        match alloc::register_statement_account(
-            &rpc,
-            &metadata,
-            &chain_state,
-            bandersnatch,
-            alloc::RegistrationParams {
-                target: &target,
-                period,
-                ring: &ring,
-                reuse_existing: true,
-                preselected: None,
-                protected: &[],
-            },
-        )
-        .await
-        {
-            Ok(alloc::RegistrationOutcome::Registered {
-                block_hash,
-                seq,
-                ring_index,
-            }) => println!("REGISTERED seq={seq} ring_index={ring_index} block={block_hash}"),
-            Ok(alloc::RegistrationOutcome::AlreadyAllocated { seq }) => {
-                println!("already allocated at seq={seq}")
-            }
-            Err(err) => bail!("registration failed: {err}"),
-        }
     }
 
     Ok(())
@@ -702,7 +786,8 @@ async fn run_pairing_host(
     }
     let network = args.network.config();
     let base_path = args.base_path.unwrap_or_else(default_base_path);
-    let product = frame_server::ProductSelection::new(args.product_id)?;
+    let product =
+        frame_server::ProductSelection::new(args.product_id, args.execution_kind.context())?;
     let product_id = product.current();
     let storage_paths = CliStoragePaths::pairing(base_path.join(network.id));
     let (terminal_ui, ui_handle) = if interactive {
@@ -729,7 +814,13 @@ async fn run_pairing_host(
     )
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
-    let pairing_runtime = Arc::new(PairingHostRuntime::new(platform, config, tokio_spawner()));
+    let chat_host = args.execution_kind.chat_host();
+    let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
+        platform,
+        config,
+        tokio_spawner(),
+        chat_host.map(|chat| chat as Arc<dyn ChatPlatform>),
+    ));
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -788,16 +879,19 @@ async fn run_signing_host(
         .action
         .as_ref()
         .map(|SigningHostAction::Exec { command }| command.clone());
-    let interactive = args.script.is_none() && exec_input.is_none();
+    let interactive = args.script.is_none() && exec_input.is_none() && !args.serve;
     if interactive && !terminal_ui::is_interactive_terminal() {
         invalid_invocation(
-            "interactive signing-host requires a TTY; use `signing-host exec '/script path.ts'` or --script",
+            "interactive signing-host requires a TTY; use --serve to run headless, or `signing-host exec '/script path.ts'`, or --script",
         );
     }
     let exec_command = exec_input
         .as_deref()
         .map(|input| parse_command(input).unwrap_or_else(|error| invalid_invocation(error)));
-    let product = frame_server::ProductSelection::new(args.product_id.clone())?;
+    let product = frame_server::ProductSelection::new(
+        args.product_id.clone(),
+        args.execution_kind.context(),
+    )?;
     let product_id = product.current();
     let network = args.network.config();
     let base_path = args.base_path.clone().unwrap_or_else(default_base_path);
@@ -841,21 +935,7 @@ async fn run_signing_host(
         let script_frame_url = frame_url.clone();
         let initial_deeplink = args.deeplink.clone();
         let status = with_frame_server(runtime_for_frames, product, frame_server, async move {
-            let mut responder = None;
-            if let Some(deeplink) = initial_deeplink {
-                prepare_pairing_response(&mut session, &deeplink).await?;
-                let runtime = session.runtime.clone();
-                responder = Some(tokio::spawn(async move {
-                    match runtime.respond_to_pairing(&deeplink).await {
-                        Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
-                            outcome: format!("{exit:?}"),
-                        }),
-                        Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
-                            reason: err.reason,
-                        }),
-                    }
-                }));
-            }
+            let responder = spawn_pairing_responder(&mut session, initial_deeplink).await?;
             ensure_signer(&mut session).await?;
             let status = script_runner::run(
                 &script_frame_url,
@@ -875,6 +955,31 @@ async fn run_signing_host(
         std::process::exit(code);
     }
 
+    if args.serve {
+        let serve_deeplink = args.deeplink.clone();
+        let serve_frame_url = frame_url.clone();
+        let auto_accept = args.auto_accept;
+        return with_frame_server(
+            runtime_for_frames,
+            product.clone(),
+            frame_server,
+            async move {
+                let responder = spawn_pairing_responder(&mut session, serve_deeplink).await?;
+                ensure_signer(&mut session).await?;
+                terminal_ui::output_event(SystemEvent::ServeReady {
+                    url: serve_frame_url,
+                    auto_accept,
+                });
+                wait_for_shutdown().await;
+                if let Some(responder) = responder {
+                    responder.abort();
+                }
+                Ok(())
+            },
+        )
+        .await;
+    }
+
     let initial_deeplink = args.deeplink.clone();
     if let Some(command) = exec_command {
         return with_frame_server(
@@ -882,22 +987,7 @@ async fn run_signing_host(
             product.clone(),
             frame_server,
             async move {
-                let responder = if let Some(deeplink) = initial_deeplink {
-                    prepare_pairing_response(&mut session, &deeplink).await?;
-                    let runtime = session.runtime.clone();
-                    Some(tokio::spawn(async move {
-                        match runtime.respond_to_pairing(&deeplink).await {
-                            Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
-                                outcome: format!("{exit:?}"),
-                            }),
-                            Err(err) => terminal_ui::output_event(SystemEvent::SigningHostError {
-                                reason: err.reason,
-                            }),
-                        }
-                    }))
-                } else {
-                    None
-                };
+                let responder = spawn_pairing_responder(&mut session, initial_deeplink).await?;
                 let result = execute_non_interactive_command(
                     &mut session,
                     &frame_url,
@@ -950,6 +1040,9 @@ struct SigningHostSession {
     lite_username_prefix: Option<String>,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
+    /// Set when this host serves a chat product. Held across runtime rebuilds
+    /// so switching session keeps the rooms and messages already posted.
+    chat: Option<Arc<chat::CliChatHost>>,
 }
 
 fn initial_session_name(args: &SigningHostArgs, catalog: &SessionCatalog) -> String {
@@ -1031,12 +1124,14 @@ async fn start_signing_host(
         signer = Some(explicit_signer);
     }
     let approval = approval_policy(args.auto_accept);
+    let chat = args.execution_kind.chat_host();
     let runtime = build_signing_runtime(
         network,
         storage_profile.path,
         storage_profile.product_storage_dir,
         approval,
         ui.clone(),
+        chat.clone(),
     )?;
     let runtime_factory = frame_server::SwitchableSigningRuntime::new(runtime.clone());
     let last_script = profile
@@ -1093,6 +1188,7 @@ async fn start_signing_host(
         lite_username_prefix: normalized(args.lite_username_prefix.clone()),
         approval,
         ui,
+        chat,
     })
 }
 
@@ -1102,6 +1198,7 @@ fn build_signing_runtime(
     product_storage_dir: PathBuf,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
+    chat: Option<Arc<chat::CliChatHost>>,
 ) -> Result<Arc<SigningHostRuntime>> {
     let platform = CliPlatform::new(
         network,
@@ -1116,7 +1213,12 @@ fn build_signing_runtime(
         network.bulletin_genesis,
     )
     .context("invalid signing host config")?;
-    let runtime = Arc::new(SigningHostRuntime::new(platform, config, tokio_spawner()));
+    let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
+        platform,
+        config,
+        tokio_spawner(),
+        chat.map(|chat| chat as Arc<dyn ChatPlatform>),
+    ));
     runtime.start_statement_allowance_renewal();
     Ok(runtime)
 }
@@ -1136,6 +1238,12 @@ fn validate_signing_args(args: &SigningHostArgs) -> Result<()> {
     let prefix = normalized(args.lite_username_prefix.clone());
     if args.script.is_some() && args.action.is_some() {
         bail!("--script cannot be combined with the exec subcommand");
+    }
+    if args.serve && args.script.is_some() {
+        bail!("--serve cannot be combined with --script");
+    }
+    if args.serve && args.action.is_some() {
+        bail!("--serve cannot be combined with the exec subcommand");
     }
     if mnemonic.is_some() && account.is_some() {
         bail!("--account cannot be used when --mnemonic or HOST_CLI_SIGNER_MNEMONIC is set");
@@ -1187,6 +1295,42 @@ where
     result
 }
 
+/// Answer a pairing deeplink in the background, when one was given. The caller
+/// aborts the returned task once its own work is done.
+async fn spawn_pairing_responder(
+    session: &mut SigningHostSession,
+    deeplink: Option<String>,
+) -> Result<Option<tokio::task::JoinHandle<()>>> {
+    let Some(deeplink) = deeplink else {
+        return Ok(None);
+    };
+    prepare_pairing_response(session, &deeplink).await?;
+    let runtime = session.runtime.clone();
+    Ok(Some(tokio::spawn(async move {
+        match runtime.respond_to_pairing(&deeplink).await {
+            Ok(exit) => terminal_ui::output_event(SystemEvent::SigningHostExit {
+                outcome: format!("{exit:?}"),
+            }),
+            Err(err) => {
+                terminal_ui::output_event(SystemEvent::SigningHostError { reason: err.reason })
+            }
+        }
+    })))
+}
+
+/// Park until the operator stops the process. Ctrl-C is awaited so the host owns
+/// its own shutdown; SIGTERM keeps its default action and ends the process.
+async fn wait_for_shutdown() {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        // Nothing to await without a signal handler, so stay up and serve until
+        // the process is killed rather than exiting as soon as it starts.
+        terminal_ui::output_event(SystemEvent::SigningHostError {
+            reason: format!("ctrl-c handling unavailable: {error}"),
+        });
+        std::future::pending::<()>().await;
+    }
+}
+
 async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
     if session.signer.is_some() {
         return Ok(());
@@ -1236,6 +1380,7 @@ fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
         promoted.product_storage_dir.clone(),
         session.approval,
         session.ui.clone(),
+        session.chat.clone(),
     )?;
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
@@ -1348,7 +1493,7 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
 }
 
 fn is_statement_slot_exhaustion(err: &anyhow::Error) -> bool {
-    err.to_string().contains("no free StatementStore slot")
+    truapi_server::reports_exhausted_period(&err.to_string())
 }
 
 /// Best-effort: record the pairing allowance accounts in the renewal ledger so
@@ -1383,8 +1528,9 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("allowance renewal failed: {}", err.reason))?;
 
     let (mut renewed, mut fresh, mut failed, mut skipped) = (0usize, 0usize, 0usize, 0usize);
-    for (target, status) in &report.outcomes {
-        match status {
+    for outcome in &report.outcomes {
+        let target = &outcome.label;
+        match &outcome.status {
             TargetRenewalStatus::Registered { seq, block_hash } => {
                 renewed += 1;
                 terminal_ui::output_event(SystemEvent::AllowanceReady {
@@ -1413,12 +1559,18 @@ async fn run_renew(session: &mut SigningHostSession) -> Result<()> {
             TargetRenewalStatus::SkippedExhausted => skipped += 1,
         }
     }
+    for label in &report.pruned {
+        terminal_ui::output_event(SystemEvent::AllowanceRenewalPruned {
+            target: label.clone(),
+        });
+    }
     terminal_ui::output_event(SystemEvent::AllowanceRenewalReport {
         period: report.period,
         renewed,
         fresh,
         failed,
         skipped,
+        pruned: report.pruned.len(),
     });
 
     if report.slots_exhausted {
@@ -1588,6 +1740,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         profile.product_storage_dir.clone(),
         session.approval,
         session.ui.clone(),
+        session.chat.clone(),
     )?;
     let available_sessions = session.catalog.list()?;
 
@@ -1635,9 +1788,7 @@ async fn register_pairing_allowances(
     entropy: &[u8],
     deeplink: &str,
 ) -> Result<[u8; 32]> {
-    use truapi_server::host_logic::product_account::{
-        derive_identity_keypair, derive_lite_person_ring_vrf_entropy,
-    };
+    use truapi_server::host_logic::product_account::derive_identity_keypair;
     use truapi_server::host_logic::sso::pairing::{
         VersionedHandshakeProposal, decode_pairing_deeplink,
     };
@@ -1650,7 +1801,7 @@ async fn register_pairing_allowances(
         decode_pairing_deeplink(deeplink).map_err(anyhow::Error::msg)?;
     let device = proposal.device.statement_account_id;
 
-    let bandersnatch = derive_lite_person_ring_vrf_entropy(entropy);
+    let candidates = accounts::collection_candidates(entropy);
     let rpc = alloc::rpc::RpcClient::connect(statement_store_url)
         .await
         .map_err(anyhow::Error::msg)?;
@@ -1664,28 +1815,25 @@ async fn register_pairing_allowances(
     // Account provisioning waits for ring membership on a separate RPC
     // connection. A load-balanced endpoint can briefly route this fresh
     // connection to a node that has not observed the same ring yet.
-    let mut ring = None;
+    let mut memberships = Vec::new();
     for attempt in 1..=10 {
         // The signing account may be in an old ring, so scan back to genesis.
-        let current = alloc::ring::read_current_ring_index(&rpc)
+        memberships = alloc::find_including_rings(&rpc, &metadata, &candidates, u32::MAX)
             .await
             .map_err(anyhow::Error::msg)?;
-        ring = alloc::find_including_ring(&rpc, &metadata, bandersnatch, current)
-            .await
-            .map_err(anyhow::Error::msg)?;
-        if ring.is_some() {
+        if !memberships.is_empty() {
             break;
         }
         if attempt < 10 {
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         }
     }
-    let ring = ring.ok_or_else(|| {
-        anyhow::anyhow!("signing account is not a LitePeople ring member; cannot grant allowance")
-    })?;
+    let Some(widest) = memberships.first() else {
+        bail!("signing account is not in any personhood ring; cannot grant allowance");
+    };
     terminal_ui::output_event(SystemEvent::RingInfo {
-        ring_index: ring.ring_index,
-        members: ring.members.len(),
+        ring_index: widest.ring.ring_index,
+        members: widest.ring.members.len(),
     });
 
     let period = alloc::slot::current_period(
@@ -1699,17 +1847,22 @@ async fn register_pairing_allowances(
         terminal_ui::output_event(SystemEvent::AllowanceChecking {
             target: label.to_string(),
         });
-        let outcome = alloc::register_statement_account(
+        let scans = alloc::scan_collections(&rpc, &metadata, &candidates, period, &target, true)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let outcome = alloc::register_statement_account_pooled(
             &rpc,
             &metadata,
             &chain_state,
-            bandersnatch,
-            alloc::RegistrationParams {
+            &scans,
+            &memberships,
+            alloc::PooledRegistrationParams {
                 target: &target,
                 period,
-                ring: &ring,
                 reuse_existing: true,
-                preselected: None,
+                // The signing host grants its own identity and device allowances
+                // here, and replaced a full table before pooling.
+                allow_eviction: true,
                 protected: &[],
             },
         )
@@ -1724,7 +1877,7 @@ async fn register_pairing_allowances(
                 block_hash: Some(block_hash),
                 already_allocated: false,
             }),
-            alloc::RegistrationOutcome::AlreadyAllocated { seq } => {
+            alloc::RegistrationOutcome::AlreadyAllocated { seq, .. } => {
                 terminal_ui::output_event(SystemEvent::AllowanceReady {
                     target: label.to_string(),
                     sequence: seq,
@@ -2375,6 +2528,73 @@ mod cli_tests {
                 .to_string()
                 .contains("--script cannot be combined")
         );
+    }
+
+    #[test]
+    fn signing_host_serve_needs_no_tty_and_refuses_one_shot_modes() {
+        let cli = Cli::try_parse_from([
+            "truapi-host",
+            "signing-host",
+            "--serve",
+            "--frame-listen",
+            "127.0.0.1:9955",
+            "--auto-accept",
+        ])
+        .expect("serve should parse");
+        let Command::SigningHost(args) = cli.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(args.serve);
+        assert!(validate_signing_args(&args).is_ok());
+
+        let with_script = Cli::try_parse_from([
+            "truapi-host",
+            "signing-host",
+            "--serve",
+            "--script",
+            "smoke.ts",
+        ])
+        .expect("serve with a script should parse");
+        let Command::SigningHost(args) = with_script.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(
+            validate_signing_args(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("--serve cannot be combined with --script")
+        );
+
+        let with_exec =
+            Cli::try_parse_from(["truapi-host", "signing-host", "--serve", "exec", "/help"])
+                .expect("serve with exec should parse");
+        let Command::SigningHost(args) = with_exec.command else {
+            panic!("expected signing-host command");
+        };
+        assert!(
+            validate_signing_args(&args)
+                .unwrap_err()
+                .to_string()
+                .contains("--serve cannot be combined with the exec subcommand")
+        );
+    }
+
+    #[test]
+    fn serve_ready_names_the_endpoint_and_the_approval_policy() {
+        let prompting = terminal_ui::SystemEvent::ServeReady {
+            url: "ws://127.0.0.1:9955".to_string(),
+            auto_accept: false,
+        }
+        .human();
+        assert!(prompting.contains("ws://127.0.0.1:9955"));
+        assert!(prompting.contains("--auto-accept"));
+
+        let accepting = terminal_ui::SystemEvent::ServeReady {
+            url: "ws://127.0.0.1:9955".to_string(),
+            auto_accept: true,
+        }
+        .human();
+        assert!(accepting.contains("approved automatically"));
     }
 
     #[test]

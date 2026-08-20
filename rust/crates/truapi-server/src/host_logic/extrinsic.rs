@@ -310,6 +310,12 @@ fn type_is_empty<R: TypeResolver>(type_id: R::TypeId, types: &R) -> bool {
 }
 
 /// Check that `bytes` traverse `type_id` and leave nothing over.
+///
+/// `decode_with_visitor` applies no depth limit, and here the recursion depth
+/// is set by product-supplied bytes against a type graph that lives in chain
+/// metadata rather than in any Rust definition. That is safe only while the
+/// extension types stay flat, which they are today; a recursive extension type
+/// would need the bound that guards decoding elsewhere.
 fn traverse_exactly<R: TypeResolver>(
     bytes: &[u8],
     type_id: R::TypeId,
@@ -547,6 +553,7 @@ pub(crate) fn build_signed_extrinsic_v5(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use parity_scale_codec::{Compact, Decode};
     use subxt::client::{OfflineClient, OfflineClientAtBlock};
     use subxt::config::substrate::{SpecVersionForRange, SubstrateConfigBuilder};
@@ -1008,8 +1015,14 @@ pub(crate) mod tests {
         let state = fixture_chain_state();
         let call_data = fixture_call_data();
 
-        let as_resources_extra =
-            build_long_term_storage_extra(&allowance_metadata, &[0xEE; 785], 3, 9).unwrap();
+        let as_resources_extra = build_long_term_storage_extra(
+            &allowance_metadata,
+            &[0xEE; 785],
+            3,
+            9,
+            PersonhoodCollection::LitePeople,
+        )
+        .unwrap();
         let expected =
             build_unsigned_extrinsic(&allowance_metadata, &state, &call_data, &as_resources_extra)
                 .unwrap();
@@ -1219,8 +1232,14 @@ pub(crate) mod tests {
             .iter_mut()
             .find(|extension| extension.id == "AsResources")
             .unwrap()
-            .extra =
-            build_long_term_storage_extra(&allowance_metadata, &[0xEE; 785], 3, 9).unwrap();
+            .extra = build_long_term_storage_extra(
+            &allowance_metadata,
+            &[0xEE; 785],
+            3,
+            9,
+            PersonhoodCollection::LitePeople,
+        )
+        .unwrap();
 
         build_signed_extrinsic_v5(
             &test_signer(),

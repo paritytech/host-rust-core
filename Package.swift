@@ -1,11 +1,13 @@
 // swift-tools-version: 5.10
 //
-// TrUAPIHost — iOS host package for the Rust TrUAPI core, consumed as an SPM
-// git dependency (the manifest must live at the repo root for that). All
-// package sources live under ios/truapi-host/. The uniffi-generated bindings
-// and the container bundle are committed build outputs (regenerate with
-// ios/truapi-host/scripts/rebuild.sh); the xcframework is gitignored and
-// distributed as a GitHub release asset (ios/truapi-host/scripts/publish.sh).
+// TrUAPIHost — iOS host package for the Rust TrUAPI core — and TrUAPIProvider —
+// chain transport over an embedded smoldot light client with a bundled chain-spec
+// catalog — consumed as SPM git dependencies (the manifest must live at the repo
+// root for that). Package sources live under ios/truapi-host/ and
+// ios/truapi-provider/. The two products are independent and release on separate
+// tags. For both, the uniffi-generated bindings are committed build outputs
+// (regenerate with the package's scripts/rebuild.sh) while the xcframework is
+// gitignored and distributed as a GitHub release asset (scripts/publish.sh).
 
 import Foundation
 import PackageDescription
@@ -15,8 +17,8 @@ import PackageDescription
 // The published release asset remains the default for remote consumers.
 let useLocalBinary = ProcessInfo.processInfo.environment["TRUAPI_USE_LOCAL_BINARY"] == "1"
 
-let publishedBinaryURL = "https://github.com/paritytech/truapi/releases/download/%40parity%2Fios-host%400.5.0/truapi_server.xcframework.zip"
-let publishedBinaryChecksum = "3702499b6380f7d5de2a887d9d1704c8c4785030d8850b704f6b17bd0e26a7ed"
+let publishedBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-host%400.7.0/truapi_server.xcframework.zip"
+let publishedBinaryChecksum = "682149477072500511ae24bd3f631acb7614e52549ae01f87d8640304db6e5f2"
 
 let binaryTarget: Target = useLocalBinary
     ? .binaryTarget(
@@ -29,11 +31,36 @@ let binaryTarget: Target = useLocalBinary
         checksum: publishedBinaryChecksum
     )
 
+// Set TRUAPI_PROVIDER_USE_LOCAL_BINARY=1 to build against the locally generated
+// ios/truapi-provider/Binaries/truapi_provider.xcframework (run rebuild.sh
+// first). Separate from TRUAPI_USE_LOCAL_BINARY because the products release
+// independently: a local build of one must not require a local build of the other.
+let useLocalProviderBinary =
+    ProcessInfo.processInfo.environment["TRUAPI_PROVIDER_USE_LOCAL_BINARY"] == "1"
+
+// Set by ios/truapi-provider/scripts/publish.sh. No release exists yet, so remote
+// resolution fails on the checksum until the first publish.
+
+let providerBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-provider%400.7.0/truapi_provider.xcframework.zip"
+let providerBinaryChecksum = "04fd47522fad5b12048396efae5d34c40f049623678066215654a3c9166d2bb3"
+
+let providerBinaryTarget: Target = useLocalProviderBinary
+    ? .binaryTarget(
+        name: "truapi_providerFFI_binary",
+        path: "ios/truapi-provider/Binaries/truapi_provider.xcframework"
+    )
+    : .binaryTarget(
+        name: "truapi_providerFFI_binary",
+        url: providerBinaryURL,
+        checksum: providerBinaryChecksum
+    )
+
 let package = Package(
     name: "TrUAPIHost",
     platforms: [.iOS(.v17)],
     products: [
-        .library(name: "TrUAPIHost", targets: ["TrUAPIHost"])
+        .library(name: "TrUAPIHost", targets: ["TrUAPIHost"]),
+        .library(name: "TrUAPIProvider", targets: ["TrUAPIProvider"]),
     ],
     targets: [
         .systemLibrary(
@@ -67,6 +94,18 @@ let package = Package(
             name: "TrUAPIHostTests",
             dependencies: ["TrUAPIHost"],
             path: "ios/truapi-host/Tests"
+        ),
+        .systemLibrary(
+            name: "truapi_providerFFI",
+            path: "ios/truapi-provider/Sources/truapi_providerFFI/include",
+            pkgConfig: nil,
+            providers: []
+        ),
+        providerBinaryTarget,
+        .target(
+            name: "TrUAPIProvider",
+            dependencies: ["truapi_providerFFI", "truapi_providerFFI_binary"],
+            path: "ios/truapi-provider/Sources/TrUAPIProvider"
         ),
     ]
 )

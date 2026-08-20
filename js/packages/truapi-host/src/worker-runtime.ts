@@ -13,6 +13,7 @@ import type { GenericError } from "@parity/truapi";
 import {
   createWorkerRawCallbacks,
   type CallbackName,
+  type OptionalCapabilities,
 } from "./generated/worker-callbacks.js";
 import {
   handleGetPermissionAuthorizationStatus,
@@ -151,12 +152,15 @@ function chainConnect(
 }
 
 /** Build the host-level callback object passed to the WASM runtime. */
-function buildRawCallbacks() {
-  return createWorkerRawCallbacks({
-    callbackRequest,
-    startSubscription,
-    chainConnect,
-  });
+function buildRawCallbacks(capabilities: OptionalCapabilities) {
+  return createWorkerRawCallbacks(
+    {
+      callbackRequest,
+      startSubscription,
+      chainConnect,
+    },
+    capabilities,
+  );
 }
 
 function buildCoreCallbacks(coreId: number) {
@@ -205,7 +209,7 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       wasm.setLogLevel?.(msg.logLevel);
       try {
         runtime = new wasm.WasmPairingHostRuntime(
-          buildRawCallbacks(),
+          buildRawCallbacks(msg.capabilities),
           msg.hostConfig,
         );
         postToMain({ kind: "ready" });
@@ -249,8 +253,35 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     case "cancelPairing":
       runtime?.cancelPairing();
       break;
+    case "getSessionChatIdentityKey":
+      handleGetSessionChatIdentityKey(msg.requestId);
+      break;
+    case "getDeviceEncryptionKey":
+      void handleGetDeviceEncryptionKey(msg.requestId);
+      break;
     case "notifySessionStoreChanged":
       runtime?.notifySessionStoreChanged();
+      break;
+    case "activateStoredSession":
+      void handleSessionActivation(
+        msg.requestId,
+        "activateStoredSession",
+        (rt) => rt.activateStoredSession(),
+      );
+      break;
+    case "activateExternalSession": {
+      const { blob } = msg;
+      void handleSessionActivation(
+        msg.requestId,
+        "activateExternalSession",
+        (rt) => rt.activateExternalSession(blob),
+      );
+      break;
+    }
+    case "resetSessionState":
+      void handleSessionActivation(msg.requestId, "resetSessionState", (rt) =>
+        rt.resetSessionState(),
+      );
       break;
     case "getPermissionAuthorizationStatus":
       void handleGetPermissionAuthorizationStatus(
@@ -362,6 +393,33 @@ function disposeCore(coreId: number): void {
   }
 }
 
+async function handleSessionActivation(
+  requestId: number,
+  label: string,
+  activate: (runtime: WorkerPairingHostRuntime) => Promise<void>,
+): Promise<void> {
+  if (!runtime) {
+    postToMain({
+      kind: "sessionActivationResponse",
+      requestId,
+      ok: false,
+      error: `${label} received before runtime is ready`,
+    });
+    return;
+  }
+  try {
+    await activate(runtime);
+    postToMain({ kind: "sessionActivationResponse", requestId, ok: true });
+  } catch (err) {
+    postToMain({
+      kind: "sessionActivationResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
 async function handleDisconnectSession(requestId: number): Promise<void> {
   if (!runtime) {
     postToMain({
@@ -378,6 +436,60 @@ async function handleDisconnectSession(requestId: number): Promise<void> {
   } catch (err) {
     postToMain({
       kind: "disconnectSessionResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
+function handleGetSessionChatIdentityKey(requestId: number): void {
+  if (!runtime) {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: false,
+      error: "getSessionChatIdentityKey received before runtime is ready",
+    });
+    return;
+  }
+  try {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: true,
+      key: runtime.sessionChatIdentityKey(),
+    });
+  } catch (err) {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
+async function handleGetDeviceEncryptionKey(requestId: number): Promise<void> {
+  if (!runtime) {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
+      requestId,
+      ok: false,
+      error: "getDeviceEncryptionKey received before runtime is ready",
+    });
+    return;
+  }
+  try {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
+      requestId,
+      ok: true,
+      key: await runtime.deviceEncryptionKey(),
+    });
+  } catch (err) {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
       requestId,
       ok: false,
       error: errorMessage(err),

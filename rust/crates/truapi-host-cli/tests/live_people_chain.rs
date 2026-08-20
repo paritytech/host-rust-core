@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use truapi_server::statement_allowance::collection::PersonhoodCollection;
 use truapi_server::statement_allowance::{self as alloc, ChainContextCache};
 
 /// Default People-chain endpoint, kept in step with `network.rs`.
@@ -108,11 +109,14 @@ async fn scanning_a_live_period_answers_without_erroring() {
     let selection = alloc::slot::scan_slot_excluding(
         &rpc,
         &chain.metadata,
-        [0x11; 32],
-        period,
-        &[0x22; 32],
-        &[],
-        true,
+        alloc::slot::SlotScan {
+            collection: PersonhoodCollection::LitePeople,
+            entropy: [0x11; 32],
+            period,
+            target: &[0x22; 32],
+            excluded: &[],
+            reuse_existing: true,
+        },
     )
     .await
     .expect("scanning a live period is not an error");
@@ -138,11 +142,14 @@ async fn live_metadata_still_exposes_the_allowance_extension_shape() {
 
     let register = chain
         .metadata
-        .as_resources_variant_indices("RegisterStatementStoreAllowance")
+        .as_resources_variant_indices(
+            "RegisterStatementStoreAllowance",
+            PersonhoodCollection::LitePeople,
+        )
         .expect("live runtime exposes RegisterStatementStoreAllowance");
     let claim = chain
         .metadata
-        .as_resources_variant_indices("ClaimLongTermStorage")
+        .as_resources_variant_indices("ClaimLongTermStorage", PersonhoodCollection::LitePeople)
         .expect("live runtime exposes ClaimLongTermStorage");
     let period_duration = alloc::slot::long_term_storage_period_duration(&chain.metadata)
         .expect("live runtime exposes Resources.LongTermStoragePeriodDuration");
@@ -185,5 +192,91 @@ async fn live_metadata_still_exposes_the_allowance_extension_shape() {
         "live spec {}: RegisterStatementStoreAllowance={register:?} ClaimLongTermStorage={claim:?} \
          long-term-storage period={period_duration}s",
         chain.state.spec_version,
+    );
+}
+
+/// The renewal docs tell hosts one scheduled pass per period is enough because
+/// an ended period's allowances stay active for `Resources.StmtStoreGraceWindow`.
+/// That number is quoted in four places and read by no code, so this is what
+/// notices if the runtime shrinks it and the guidance stops being true.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn live_grace_window_still_leaves_a_full_period_of_slack() {
+    let rpc = connect().await;
+    let metadata = alloc::fetch_metadata(&rpc)
+        .await
+        .expect("live People metadata");
+    let grace = metadata
+        .constant_u32("Resources", "StmtStoreGraceWindow")
+        .expect("the runtime declares a statement-store grace window");
+    let period = alloc::slot::STATEMENT_STORE_PERIOD_SECONDS;
+
+    assert!(
+        u64::from(grace) >= period,
+        "grace window is {grace}s, under one {period}s period: a host waking once \
+         per period can now miss it, so the scheduling guidance in the host \
+         READMEs and on next_statement_renewal_delay needs revisiting"
+    );
+    println!("live StmtStoreGraceWindow={grace}s");
+}
+
+/// Both personhood collections have to be real on the live chain: the identifier
+/// must address an existing `Members.Collections` entry, the slot budget must be
+/// declared, and the extension must name the collection.
+///
+/// This is the only part of the full-personhood path a device without full
+/// personhood can prove. Registering into the `People` ring still needs a
+/// full-personhood account, which needs attestation this test cannot perform.
+#[tokio::test]
+#[ignore = "needs network access to a live People chain"]
+async fn both_personhood_collections_resolve_on_the_live_chain() {
+    let rpc = connect().await;
+    let cache = ChainContextCache::default();
+    let chain = cache
+        .get(&stale_scoped_client().await)
+        .await
+        .expect("read the live chain context");
+    let at = rpc.finalized_head().await.expect("read the finalized head");
+
+    for collection in PersonhoodCollection::ALL {
+        // `Collections[identifier].ring_size` only decodes if the identifier
+        // addresses a real collection, so this is what catches a wrong
+        // identifier or wrong padding.
+        let exponent = alloc::ring::read_ring_exponent(&rpc, &chain.metadata, collection, &at)
+            .await
+            .unwrap_or_else(|err| panic!("{collection} collection is absent on chain: {err}"));
+        let slots = collection
+            .slots_per_period(&chain.metadata)
+            .unwrap_or_else(|err| panic!("{collection} declares no slot budget: {err}"));
+        let ring_index = alloc::ring::read_current_ring_index(&rpc, collection)
+            .await
+            .unwrap_or_else(|err| panic!("{collection} has no current ring: {err}"));
+        let (_, variant) = chain
+            .metadata
+            .as_resources_variant_indices("RegisterStatementStoreAllowance", collection)
+            .unwrap_or_else(|err| panic!("{collection} has no extension variant: {err}"));
+
+        println!(
+            "live {collection}: slots={slots} ring_exponent={exponent} \
+             current_ring_index={ring_index} extension_variant={variant}"
+        );
+        assert!(slots > 0, "{collection} declares a zero slot budget");
+    }
+
+    // The pooled budget is what the fix delivers, so assert the two differ
+    // rather than silently reading the same constant twice.
+    let people = PersonhoodCollection::People
+        .slots_per_period(&chain.metadata)
+        .expect("People slot budget");
+    let lite = PersonhoodCollection::LitePeople
+        .slots_per_period(&chain.metadata)
+        .expect("LitePeople slot budget");
+    assert!(
+        people > lite,
+        "full personhood should carry the wider budget: People={people} LitePeople={lite}"
+    );
+    println!(
+        "live pooled budget={} (People {people} + LitePeople {lite})",
+        people + lite
     );
 }

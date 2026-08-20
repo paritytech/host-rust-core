@@ -42,6 +42,34 @@ default, so starting either host does not reserve a TCP port. Pass
 `--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
 this is required for browser clients, which cannot open filesystem sockets.
 
+### Browser products
+
+A browser product reaches that socket through `@parity/truapi`'s sandbox. Start
+the host on a fixed port, and point the product at it before anything else
+touches the client:
+
+```bash
+truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id my-product.dot
+```
+
+```ts
+import { connectWebSocketHost } from "@parity/truapi/sandbox";
+
+connectWebSocketHost("ws://127.0.0.1:9955");
+```
+
+The product is then detected as hosted and holds the real product account for
+its own `.dot` name, so signing, statements, entropy, permissions and storage
+all take their production code paths with no phone involved. `--product-id` is
+not optional: the host derives the product account from it and refuses to *sign*
+for any other product id, and a mismatch only surfaces later, as a
+`PermissionDenied` on the first signature.
+
+Two players on one machine means two hosts, each with its own session and port
+(`--session bob --frame-listen 127.0.0.1:9956`), and a second product instance
+pointed at the second port. Sessions isolate the signer, the storage and the
+permissions.
+
 The signing host opens an interactive terminal where you can paste a pairing
 link, type `/pair <link>`, run `/script`, or use `/help` to discover the
 available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
@@ -275,6 +303,7 @@ Six scripts ship under `js/scripts/`:
   scripts/battery.sh --pairing-host     # paired phase only
   make e2e-signing-cli                  # direct phase only
   make e2e-pairing-cli                  # paired phase only
+  make e2e-chat-cli                     # chat phase only
   scripts/battery.sh --release          # release binary
   scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
   ```
@@ -375,15 +404,33 @@ apply to TrUAPI targets while other third-party dependencies remain at `warn`.
 
 The real statement store enforces per-account allowance. Before pairing, the
 signing host grants it on-chain exactly as a real client does: it proves its
-LitePeople ring membership with a bandersnatch ring-VRF and submits an unsigned
+personhood ring membership with a bandersnatch ring-VRF and submits an unsigned
 General (v5) `Resources.set_statement_store_account` extrinsic for each account
 that submits statements — its RFC-0022 `uid.dot` identity account and the
 pairing host's per-pairing device key. The shared native implementation lives in
 `truapi-server/src/runtime/statement_allowance/` (metadata-driven
 signed-extension encoding, ring fetch, slot scan, ring-VRF proof, extrinsic
-assembly, submit). The signing account must be an attested LitePeople member,
-and may sit in an old ring, so the signing host scans back from the current ring
-index (slow, one-time per pairing). Auto-managed accounts are stored in
+assembly, submit). The signing account must be an attested member of at least
+one personhood collection, and may sit in an old ring, so the signing host scans
+back from the current ring index (slow, one-time per pairing).
+
+Each collection is a separate alias space with its own budget, so a signer with
+full personhood has `StmtStoreSlotsPerPeriod` slots in `People` on top of
+`LiteStmtStoreSlotsPerPeriod` in `LitePeople`. Asset Hub budgets PGAS claims the
+same way, through `Pgas.MaxClaimsPerPeriodPerPerson` and
+`MaxClaimsPerPeriodPerLitePerson`, and a claim is scanned against the budget of
+the collection it is proved against. A PGAS claim proves one collection rather
+than pooling across both, so it is bounded by that collection's budget alone.
+
+Registration pools across every collection the signer can prove, and a free slot
+anywhere is taken before any live slot is replaced. Whether a live slot may be
+replaced at all depends on the caller. The renewal pass, the pairing-time grant,
+and `alloc-check --submit` may replace, and then take the globally oldest
+replaceable slot across all collections. Allocation on behalf of a connecting
+product may not: it reports the period as exhausted, because every entry in the
+table is one of this wallet's own products and reclaiming space belongs to the
+renewal pass. `alloc-check` prints both collections' member keys, ring indices and
+slot tables. Auto-managed accounts are stored in
 `accounts.json` under `--base-path`; mnemonics are plaintext local test secrets
 and the file is written with `0600` permissions on Unix. `alloc-check` verifies
 membership and can submit a test registration.
@@ -406,12 +453,68 @@ HOST_CLI_SIGNER_MNEMONIC="spin battle …" truapi-host signing-host --deeplink '
 truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 ```
 
-Both hosts take `--network` (default `paseo-next-v2`). The network preset owns
-the identity backend URL, the People, Bulletin and Asset Hub RPCs, and their
-genesis hashes; there is
-no public `--statement-store` flag. Both also accept `--frame-listen <address>`
+Both hosts take `--network`, either `paseo-next-v2` (default) or `previewnet`.
+The network preset owns the identity backend URL, the People, Bulletin and Asset
+Hub RPCs, and their genesis hashes; there is
+no public `--statement-store` flag. Pick `previewnet` when a product's runtime
+descriptors target previewnet, so its statements, its host chain routes and its
+own chain reads all land on one network. Sessions are per preset, so each network
+gets its own signer identity on the same machine.
+
+One limit on `previewnet` today: its identity backend requires a bearer token for
+write requests, so auto-provisioning a fresh lite username fails with
+
+```
+username registration failed (401 Unauthorized): Missing Authorization Header
+```
+
+Reads against it work, and everything that does not go through the backend works
+normally, so use `--mnemonic` (or `HOST_CLI_SIGNER_MNEMONIC`) with an account that
+already carries a previewnet username. `paseo-next-v2` still provisions on its
+own, unauthenticated. Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
+
+## Serving a dev server (one process, no terminal)
+
+`signing-host --serve` runs the host as a background service instead of a
+terminal UI, so a dev server or test harness can supervise it:
+
+```bash
+truapi-host signing-host --serve \
+  --frame-listen 127.0.0.1:9955 \
+  --product-id myapp.dot \
+  --auto-accept
+```
+
+It needs no TTY, initialises the signer, and stays up until stopped. Output is
+one line per event:
+
+```
+✓ Paired with headlessyvqhet.43
+✓ Signing host ready
+• Listening for product frames
+  ws://127.0.0.1:9955
+• Serving product frames until stopped
+  ws://127.0.0.1:9955
+  Confirmations are approved automatically
+```
+
+Wait for `Serving product frames until stopped` before pointing a product at the
+endpoint. That line is last in every case, and it is the only one that means
+both halves are up: the frame socket accepts connections well before a signer
+exists, and `Signing host ready` can arrive either side of it depending on
+whether the session was cached or is being registered. A first run registers a
+lite username and the statement-store allowance on-chain, which can take
+minutes.
+
+Stopping it: Ctrl-C is handled, so the host logs its own shutdown. `SIGTERM`
+ends the process, which is what a supervising dev server sends.
+
+`--auto-accept` is effectively required, because a process with no terminal has
+nowhere to prompt: confirmations are denied instead, and the startup line says
+so. `--serve` cannot be combined with `--script` or `exec`, which are the
+one-shot modes.
 
 ## Scope / gaps
 

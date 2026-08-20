@@ -31,6 +31,8 @@ import type {
   HostChatListSubscribeItem,
   HostChatPostMessageRequest,
   HostChatPostMessageResponse,
+  HostChatRegisterBotRequest,
+  HostChatRegisterBotResponse,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
@@ -100,7 +102,7 @@ export type AuthState =
   /**
    * The last login attempt failed; show the reason and offer a retry.
    */
-  | { tag: "LoginFailed"; value: { reason: string } }
+  | { tag: "LoginFailed"; value: { kind: LoginFailureKind; reason: string } }
   /**
    * The wallet accepted the pairing request and the core is resolving and
    * persisting the session. Hosts should replace the pairing QR with an
@@ -155,7 +157,17 @@ export type CoreStorageKey =
   /**
    * Statement-store allowance targets the signing host keeps renewed.
    */
-  | { tag: "StatementRenewalTargets"; value?: undefined };
+  | { tag: "StatementRenewalTargets"; value?: undefined }
+  /**
+   * This device's long-lived X25519 encryption secret, advertised to peers
+   * as the device encryption public key. Random rather than identity-derived
+   * so devices restoring one identity stay individually addressable.
+   *
+   * Hosts must back this slot with storage scoped to the install, outliving
+   * logout and any per-user namespacing: once it changes, peers addressing
+   * the previous key can no longer reach this device.
+   */
+  | { tag: "DeviceEncryptionKey"; value?: undefined };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -235,6 +247,12 @@ export interface IdentityDisclosureReview {
    */
   productId: string;
 }
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+export type LoginFailureKind = "NoFreeAllowanceSlots" | "Other";
 
 /**
  * Permission request whose authorization status can be inspected or updated
@@ -337,6 +355,26 @@ export interface SessionUiInfo {
    * Wallet identity account id used for People-chain username lookup.
    */
   identityAccountId?: Bytes32;
+
+  /**
+   * X25519 public key addressing this identity in chat. Public counterpart
+   * of the key `CoreAdmin::get_session_chat_identity_key` serves.
+   */
+  chatPublicKey?: Bytes32;
+
+  /**
+   * X25519 public key of the wallet device that answered pairing. Hosts
+   * running their own encrypted device-sync channel key it against this.
+   */
+  deviceEncPublicKey?: Bytes32;
+
+  /**
+   * Statement-store account id the paired wallet signs every session-channel
+   * statement with. Whether it is scoped to the wallet device or to the
+   * wallet identity is the wallet's choice, so hosts must not treat it as a
+   * device discriminator; use `Self::device_enc_public_key` for that.
+   */
+  peerStatementAccountId?: Bytes32;
 
   /**
    * Short username from the People-chain identity record.
@@ -491,7 +529,10 @@ export const AuthState: S.Codec<AuthState> = S.lazy(
       Disconnected: S._void,
       Pairing: S.Struct({ deeplink: S.str }) as S.Codec<{ deeplink: string }>,
       Connected: SessionUiInfo,
-      LoginFailed: S.Struct({ reason: S.str }) as S.Codec<{ reason: string }>,
+      LoginFailed: S.Struct({
+        kind: LoginFailureKind,
+        reason: S.str,
+      }) as S.Codec<{ kind: LoginFailureKind; reason: string }>,
       Authenticating: S._void,
     }),
 );
@@ -527,6 +568,7 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         rootPublicKey: Uint8Array;
       }>,
       StatementRenewalTargets: S._void,
+      DeviceEncryptionKey: S._void,
     }),
 );
 
@@ -585,6 +627,14 @@ export const IdentityDisclosureReview: S.Codec<IdentityDisclosureReview> =
     (): S.Codec<IdentityDisclosureReview> =>
       S.Struct({ productId: S.str }) as S.Codec<IdentityDisclosureReview>,
   );
+
+/**
+ * Why a login attempt failed, for hosts that need to act on the cause rather
+ * than only display it.
+ */
+export const LoginFailureKind: S.Codec<LoginFailureKind> = S.lazy(
+  (): S.Codec<LoginFailureKind> => S.Status("NoFreeAllowanceSlots", "Other"),
+);
 
 /**
  * Permission request whose authorization status can be inspected or updated
@@ -667,6 +717,9 @@ export const SessionUiInfo: S.Codec<SessionUiInfo> = S.lazy(
     S.Struct({
       publicKey: Bytes32,
       identityAccountId: S.Option(Bytes32),
+      chatPublicKey: S.Option(Bytes32),
+      deviceEncPublicKey: S.Option(Bytes32),
+      peerStatementAccountId: S.Option(Bytes32),
       liteUsername: S.Option(S.str),
       fullUsername: S.Option(S.str),
     }) as S.Codec<SessionUiInfo>,
@@ -745,8 +798,12 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
  */
 export interface AuthPresenter {
   /**
-   * Observe an auth state change. Emitted only when the state actually
-   * changes, in transition order. Default is a no-op for hosts that
+   * Observe an auth state change, in transition order. A pairing host's
+   * session activation reports its outcome even when it is the default
+   * `Disconnected`, so a host that awaits activation before routing never
+   * has to read silence as "signed out". Every other emission, and every
+   * emission on a host role that has no session activation, happens only
+   * when the state actually changes. Default is a no-op for hosts that
    * render no auth UI.
    */
   authStateChanged?(state: AuthState): void;
@@ -770,22 +827,54 @@ export interface ChainProvider {
 }
 
 /**
- * Host-implemented adapter through which product Chat calls reach native
- * storage and UI.
+ * Host-implemented adapter through which product Chat calls reach host
+ * storage and UI. Optional: a host that omits it leaves Chat requests
+ * answered `Unsupported`. See `OptionalPlatform`.
+ *
+ * The core bounds and screens the product-supplied fields it forwards. Ids,
+ * names and icons on `create_chat_room`, `register_chat_bot` and
+ * `post_chat_message` are NFC-normalized and rejected for control and bidi
+ * characters. Message bodies are bounded and screened but pass through
+ * byte-for-byte, keeping line breaks and tabs, so a product reads back the
+ * bytes it sent. Counts and byte budgets are enforced, and any URL a host may
+ * fetch or open is restricted to `https` or an inline raster image and
+ * delivered as the parser resolved it.
+ *
+ * The core screens a URL's shape, not its reachability. `https://127.0.0.1`,
+ * `https://[::1]`, a private range and `https://169.254.169.254` (the cloud
+ * metadata endpoint) all pass: which networks a host is willing to fetch from
+ * depends on where that host runs, and a core that guessed would break a host
+ * serving its own media from localhost. A host that fetches these URLs owns
+ * that decision. Credentials are the exception and are refused, because
+ * `user:pass@` survives resolution into whatever the host fetches and logs.
+ *
+ * `ChatFile::size_bytes` is a product assertion and is not verified against
+ * the resource it names. Contextual output escaping, storage limits, and
+ * anything a host derives from product-supplied values remain host-owned.
  */
 export interface ChatPlatform {
   /**
    * Create or resolve a product-scoped native chat room.
    */
-  createRoom(
+  createChatRoom(
     product: ProductContext,
     request: HostChatCreateRoomRequest,
   ): Promise<HostChatCreateRoomResponse>;
 
   /**
-   * Persist a product-authored message in a native chat room.
+   * Register or resolve a product-scoped native chat bot. Host-owned in the
+   * same way rooms are.
    */
-  postMessage(
+  registerChatBot(
+    product: ProductContext,
+    request: HostChatRegisterBotRequest,
+  ): Promise<HostChatRegisterBotResponse>;
+
+  /**
+   * Persist a product-authored message in a native chat room. A host that
+   * cannot store a given content variant reports a domain error for it.
+   */
+  postChatMessage(
     product: ProductContext,
     request: HostChatPostMessageRequest,
   ): Promise<HostChatPostMessageResponse>;
@@ -793,9 +882,9 @@ export interface ChatPlatform {
   /**
    * Emit the current product-scoped room list and later replacements.
    */
-  subscribeRooms(
+  subscribeChatRooms(
     product: ProductContext,
-  ): AsyncIterable<HostChatListSubscribeItem>;
+  ): AsyncIterable<Result<HostChatListSubscribeItem, GenericError>>;
 }
 
 /**
@@ -835,6 +924,30 @@ export interface CoreAdmin {
     request: PermissionAuthorizationRequest,
     status: PermissionAuthorizationStatus,
   ): Promise<void>;
+
+  /**
+   * Read the active session's X25519 chat identity private key, for hosts
+   * that run their own P2P chat channel for the paired identity.
+   *
+   * The wallet derives this key from the identity root and shares it during
+   * pairing; the core retains it verbatim, because a value derived
+   * host-side would address an identity no existing peer can reach. ``undefined``
+   * when no session is active.
+   *
+   * Deliberately not on `SessionUiInfo`: that projection rides every
+   * `AuthState` broadcast to all registered `AuthPresenter`s, so a
+   * secret placed there would reach hosts that never asked for it.
+   */
+  getSessionChatIdentityKey(): Promise<Bytes32 | undefined>;
+
+  /**
+   * Read this device's X25519 encryption secret, for hosts that run device
+   * sync against the peer's `SessionUiInfo::device_enc_public_key`.
+   *
+   * Generated and persisted on first read, so the returned key is stable for
+   * the install and matches the public key peers were told to address.
+   */
+  getDeviceEncryptionKey(): Promise<Bytes32>;
 }
 
 /**
@@ -1029,7 +1142,9 @@ export interface UserConfirmation {
 }
 
 /**
- * Combined platform interface. A host must provide all capability traits.
+ * Combined platform interface. A host must provide every capability trait
+ * listed here. Members marked optional may be omitted; the core answers their
+ * product calls with `Unsupported`. See `OptionalPlatform`.
  */
 export interface HostCallbacks {
   navigation: Navigation;
@@ -1043,6 +1158,7 @@ export interface HostCallbacks {
   userConfirmation: UserConfirmation;
   theme: ThemeHost;
   preimage: PreimageHost;
+  chat?: ChatPlatform;
 }
 
 export interface RequiredHostCallbacks {
@@ -1057,4 +1173,5 @@ export interface RequiredHostCallbacks {
   userConfirmation: Required<UserConfirmation>;
   theme: Required<ThemeHost>;
   preimage: Required<PreimageHost>;
+  chat?: Required<ChatPlatform>;
 }

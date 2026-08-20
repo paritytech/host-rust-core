@@ -28,7 +28,7 @@ use subxt::utils::{AccountId32, MultiSignature};
 pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
 pub use sso_responder::ResponderExit;
-pub(crate) use sso_responder::respond_to_pairing;
+pub(crate) use sso_responder::{answer_remote_message, respond_to_pairing};
 
 use super::authority::{
     AccountAliasAuthorityRequest, AuthorityError, AuthoritySession, BulletinAllowanceKey,
@@ -44,17 +44,23 @@ use crate::host_logic::extrinsic::{
     Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
     build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::host_logic::product_account::derive_lite_person_ring_vrf_entropy;
 use crate::host_logic::product_account::{
     ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
     derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
     derive_root_keypair_from_entropy,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::{
+    derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
+};
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
 use crate::host_logic::transaction::{extrinsic_payload_extensions, extrinsic_payload_preimage};
 use crate::runtime::auth_state::AuthStateMachine;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::CollectionCandidate;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::statement_allowance::collection::PersonhoodCollection;
 use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
     create_proof, member_from_entropy, sign_from_entropy,
@@ -371,16 +377,34 @@ impl SigningHost {
             })
     }
 
-    /// Wallet-internal allowance proofs retain Android's reserved `peopl.dot/1` key.
-    /// Product-facing RFC-0024 operations resolve only explicitly registered handles.
+    /// Every personhood collection this wallet can derive allowance aliases for,
+    /// widest slot budget first.
+    ///
+    /// Wallet-internal allowance proofs use the reserved `peopl.dot` keys the
+    /// mobile hosts use. Product-facing RFC-0024 operations are unrelated: those
+    /// resolve only explicitly registered handles.
+    ///
+    /// Both entropies are always returned; which collections the person is
+    /// actually a member of is settled on chain by looking for a ring that
+    /// includes each member key, not by local state. That keeps the two hosts
+    /// from disagreeing about personhood.
     #[cfg(not(target_arch = "wasm32"))]
-    fn reserved_lite_person_entropy(
+    fn reserved_person_collection_candidates(
         &self,
         session: &AuthoritySession,
-    ) -> Result<Zeroizing<[u8; 32]>, AuthorityError> {
+    ) -> Result<Vec<CollectionCandidate>, AuthorityError> {
         self.require_current_session(session)?;
         let root = self.root_entropy()?;
-        Ok(Zeroizing::new(derive_lite_person_ring_vrf_entropy(&root)))
+        Ok(vec![
+            CollectionCandidate {
+                collection: PersonhoodCollection::People,
+                entropy: derive_full_person_ring_vrf_entropy(&root),
+            },
+            CollectionCandidate {
+                collection: PersonhoodCollection::LitePeople,
+                entropy: derive_lite_person_ring_vrf_entropy(&root),
+            },
+        ])
     }
 
     async fn registered_ring_vrf_entry(
@@ -1207,6 +1231,7 @@ mod tests {
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
     };
+    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::test_support::{StubPlatform, test_spawner};
     use truapi::api::{Account, Entropy, ResourceAllocation, Signing};
     use truapi::versioned::account::{HostAccountGetError, HostAccountGetRequest};
@@ -1376,19 +1401,32 @@ mod tests {
     }
 
     #[test]
-    fn internal_allowances_use_the_reserved_lite_person_handle() {
+    fn internal_allowances_offer_both_reserved_person_handles_widest_first() {
         let (_, authority) = signing_runtime();
         futures::executor::block_on(authority.activate_local_session(ENTROPY.to_vec()))
             .expect("activation succeeds");
         let session = authority.current_session().expect("active session");
-        let actual = authority
-            .reserved_lite_person_entropy(&session)
-            .expect("reserved key derives");
-        let expected =
-            derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(1))
-                .expect("reserved RFC-0024 handle derives");
+        let candidates = authority
+            .reserved_person_collection_candidates(&session)
+            .expect("reserved keys derive");
 
-        assert_eq!(*actual, expected);
+        // Index 0 is the full-person handle and index 1 the light-person one, and
+        // People leads so a full person spends its wider slot budget first.
+        let expected = [
+            (PersonhoodCollection::People, 0u32),
+            (PersonhoodCollection::LitePeople, 1),
+        ];
+        assert_eq!(candidates.len(), expected.len());
+        for (candidate, (collection, index)) in candidates.iter().zip(expected) {
+            assert_eq!(candidate.collection, collection);
+            assert_eq!(
+                candidate.entropy,
+                derive_ring_vrf_entropy(&ENTROPY, "peopl.dot", &v01::DerivationIndex::Index(index))
+                    .expect("reserved RFC-0024 handle derives"),
+                "{collection} candidate does not use peopl.dot/{index}",
+            );
+        }
+        assert_ne!(candidates[0].entropy, candidates[1].entropy);
     }
 
     #[test]

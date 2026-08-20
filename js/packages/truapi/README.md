@@ -128,7 +128,8 @@ the default `30_000` ms bound and the floors.
 
 ## What's in the package
 
-- **Transport providers** for `MessagePort` pipes (used by both webview hosts and iframe hosts).
+- **Transport providers** for `MessagePort` pipes (used by both webview hosts and iframe hosts)
+  and for WebSocket endpoints (used by hosts that serve frames on a loopback socket).
 - **TrUAPI transport** that handles request, response, subscription, and handshake framing.
 - **Generated domain clients and types** produced from the Rust API contract.
 - **SCALE codec helpers** used by the generated code, also re-exported for direct use.
@@ -164,6 +165,24 @@ const unsubscribe = subscribeConnectionStatus((status) => {
 | `isCorrectEnvironment(): boolean`           | Synchronous host-environment detection.         |
 | `getClientSync(): TrUApiClient \| null`     | Cached client; `null` outside a host container. |
 | `subscribeConnectionStatus(cb): () => void` | Connected / disconnected status listener.       |
+| `connectWebSocketHost(url): TrUApiClient`   | Use a host that serves frames over a WebSocket. |
+
+### Hosts on a WebSocket
+
+Some hosts serve protocol frames on a loopback WebSocket rather than injecting a `MessagePort`:
+the Rust core's `ws-bridge`, and `truapi-host signing-host --frame-listen`. Point the sandbox at
+that endpoint once, before anything else touches the client, and every export above behaves as it
+does inside a webview:
+
+```ts
+import { connectWebSocketHost } from "@parity/truapi/sandbox";
+
+connectWebSocketHost("ws://127.0.0.1:9955");
+```
+
+This is what makes a real host usable from an ordinary browser tab during development. For a
+transport without the sandbox's caching and detection, `createWebSocketProvider(url)` from the
+package root returns the bare `WireProvider`.
 
 ## Wire format
 

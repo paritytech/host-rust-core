@@ -5,7 +5,9 @@
 use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot;
-use truapi_platform::{AuthPresenter, AuthState, Platform, SessionUiInfo};
+use truapi_platform::{AuthPresenter, AuthState, LoginFailureKind, Platform, SessionUiInfo};
+
+use crate::runtime::login_failure::classify_login_failure;
 
 /// Serialized auth-state machine bound to the platform's `auth_state_changed`
 /// sink. Each transition mutates under the lock, releases it, then emits the
@@ -13,6 +15,12 @@ use truapi_platform::{AuthPresenter, AuthState, Platform, SessionUiInfo};
 /// safely re-enter the runtime (e.g. a host cancelling the login it just
 /// observed). The cancel channel for an in-flight login lives inside the
 /// in-flight login states, making its registration atomic with the transition.
+///
+/// Session activation calls [`AuthStateMachine::announce_current`] when it is
+/// done, so an activation whose outcome changed nothing — a host that boots
+/// signed out, or one whose blob failed to decode — still reports an answer the
+/// host can tell apart from "no answer yet". Only the first emission can come
+/// from an announcement; everything after it is a real change.
 #[derive(Clone)]
 pub(crate) struct AuthStateMachine {
     platform: Arc<dyn Platform>,
@@ -28,6 +36,9 @@ struct AuthStateInner {
     /// Resolves the in-flight login's cancel receiver. Present while the state
     /// is `Pairing` or `Authenticating`.
     cancel_tx: Option<oneshot::Sender<()>>,
+    /// Whether the host has observed any state yet. Gates the opening
+    /// announcement so it can only ever produce the first emission.
+    announced: bool,
 }
 
 impl AuthStateMachine {
@@ -71,6 +82,8 @@ impl AuthStateMachine {
     }
 
     /// Active login -> `LoginFailed`: the in-flight login reported a failure.
+    /// The kind is recovered from `reason`, which is the only form the wallet
+    /// reports a refusal in.
     pub(super) fn login_failed(&self, reason: String) {
         self.transition(|inner| {
             if !matches!(
@@ -80,7 +93,10 @@ impl AuthStateMachine {
                 return None;
             }
             inner.cancel_tx = None;
-            inner.state = AuthState::LoginFailed { reason };
+            inner.state = AuthState::LoginFailed {
+                kind: classify_login_failure(&reason),
+                reason,
+            };
             Some(())
         });
     }
@@ -97,7 +113,12 @@ impl AuthStateMachine {
             ) {
                 return None;
             }
-            inner.state = AuthState::LoginFailed { reason };
+            // Pre-pairing failures are the pairing host's own (device identity,
+            // bootstrap); allowance exhaustion is only ever wallet-reported.
+            inner.state = AuthState::LoginFailed {
+                kind: LoginFailureKind::Other,
+                reason,
+            };
             Some(())
         });
     }
@@ -171,11 +192,28 @@ impl AuthStateMachine {
         });
     }
 
+    /// Report the current state to a host that has not observed one yet, so a
+    /// session activation that changed nothing — because it found no session,
+    /// or because it failed before any transition could run — still answers the
+    /// host instead of leaving it in silence. A no-op once any state has been
+    /// emitted: it announces, it never repeats.
+    pub(super) fn announce_current(&self) {
+        let mut inner = self.inner.lock().expect("auth state mutex poisoned");
+        if inner.announced {
+            return;
+        }
+        inner.announced = true;
+        let state = inner.state.clone();
+        drop(inner);
+        AuthPresenter::auth_state_changed(self.platform.as_ref(), state);
+    }
+
     /// Run `apply` under the lock; when it changed the state (returned
     /// `Some`), emit the new state to the host after releasing the lock.
     fn transition<T>(&self, apply: impl FnOnce(&mut AuthStateInner) -> Option<T>) -> Option<T> {
         let mut inner = self.inner.lock().expect("auth state mutex poisoned");
         let applied = apply(&mut inner)?;
+        inner.announced = true;
         let state = inner.state.clone();
         drop(inner);
         AuthPresenter::auth_state_changed(self.platform.as_ref(), state);
@@ -187,6 +225,137 @@ impl AuthStateMachine {
 mod tests {
     use super::*;
     use crate::test_support::stub_platform;
+
+    #[test]
+    fn announcing_a_signed_out_boot_emits_disconnected_once() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+
+        machine.store_disconnected();
+        machine.announce_current();
+
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected],
+            "a host that boots signed out must be told so, not left in silence"
+        );
+
+        machine.announce_current();
+
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Disconnected],
+            "a later announcement adds nothing to a host that already has an answer"
+        );
+    }
+
+    #[test]
+    fn a_wallet_reported_exhausted_period_reaches_the_host_as_a_typed_kind() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+        let (_cancel_rx, epoch) = machine
+            .pairing_started("polkadotapp://pair".to_string())
+            .expect("login should start");
+        machine.authentication_started(epoch);
+
+        machine.login_failed("no free StatementStore slot in period 7 (max 8)".to_string());
+
+        assert_eq!(
+            platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned")
+                .last(),
+            Some(&AuthState::LoginFailed {
+                kind: LoginFailureKind::NoFreeAllowanceSlots,
+                reason: "no free StatementStore slot in period 7 (max 8)".to_string(),
+            }),
+            "a host must be able to branch on the kind without reading the reason"
+        );
+    }
+
+    #[test]
+    fn announcing_after_a_restored_session_leaves_connected_alone() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+        let session = SessionUiInfo::default();
+
+        machine.connected(&session);
+        machine.announce_current();
+
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(session)],
+            "the opening emission is the activation's outcome, not a placeholder"
+        );
+    }
+
+    #[test]
+    fn a_transition_before_the_first_activation_does_not_spend_the_announcement() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+
+        // A host may cancel a login or take a session-store tick before it
+        // activates. Neither changed the state, so neither may emit: a
+        // spurious `Disconnected` here flashes signed out at a signed-in user.
+        machine.login_cancelled();
+        machine.store_disconnected();
+
+        assert!(
+            platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned")
+                .is_empty(),
+            "only an activation announces; unrelated no-op transitions stay silent"
+        );
+
+        let session = SessionUiInfo::default();
+        machine.connected(&session);
+        machine.announce_current();
+
+        assert_eq!(
+            *platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned"),
+            vec![AuthState::Connected(session)],
+            "the restored session is the host's first and only opening state"
+        );
+    }
+
+    #[test]
+    fn a_pre_pairing_failure_is_never_reported_as_an_exhausted_period() {
+        let platform = stub_platform();
+        let machine = AuthStateMachine::new(platform.clone());
+
+        // Allowance exhaustion is only ever wallet-reported, so this path does
+        // not classify even when the text would otherwise match.
+        machine.login_failed_before_pairing(
+            "no free StatementStore slot in period 7 (max 8)".to_string(),
+        );
+
+        assert_eq!(
+            platform
+                .auth_states
+                .lock()
+                .expect("auth state list mutex poisoned")
+                .last(),
+            Some(&AuthState::LoginFailed {
+                kind: LoginFailureKind::Other,
+                reason: "no free StatementStore slot in period 7 (max 8)".to_string(),
+            })
+        );
+    }
 
     #[test]
     fn pairing_started_refuses_a_second_login_while_authenticating() {

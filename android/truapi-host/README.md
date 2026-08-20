@@ -28,7 +28,7 @@ dependencies {
 }
 ```
 
-JitPack fetches the tag `0.1.0` from `paritytech/truapi`, runs `make android-publish-local` against it (driven by `jitpack.yml` at the repo root, including UniFFI binding generation), and serves the resulting AAR + POM + sources jar. First fetch takes ~1 minute while JitPack builds; subsequent consumers hit the cache.
+JitPack fetches the tag `0.1.0` from `paritytech/host-rust-core`, runs `make android-publish-local` against it (driven by `jitpack.yml` at the repo root, including UniFFI binding generation), and serves the resulting AAR + POM + sources jar. First fetch takes ~1 minute while JitPack builds; subsequent consumers hit the cache.
 
 The artifact bundles the Kotlin host adapter (`io.parity.truapi.*`) and the generated UniFFI bindings (`uniffi.truapi_server.*`). It does **not** bundle the native `libtruapi_server.so` cdylib, integrators build that per Android ABI and drop it into their app's `src/main/jniLibs/<abi>/` (see "Linking the cdylib" below).
 
@@ -50,6 +50,80 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
 - `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, local-session activation, permission-authorization status, and native change notifications for session storage, theme, and preimage updates.
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
+- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
+- `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
+
+## Chat
+
+A host serving the Chat modality implements `ChatHostBridge` (`createRoom`, `registerBot`, `postMessage`, `listRooms`) and opens the execution with `ProductExecutionKind.CHAT`:
+
+```kotlin
+import io.parity.truapi.*
+import uniffi.truapi.ChatBotRegistrationStatus
+import uniffi.truapi.ChatMessageContent
+import uniffi.truapi.ChatRoom
+import uniffi.truapi.ChatRoomParticipation
+import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi_server.HostRejection
+
+// Called from a shared dispatch pool, so the backing store must be
+// thread-safe, and a slow call here stalls other product executions.
+class MyChatBridge(private val store: ChatStore) : ChatHostBridge {
+    override fun createRoom(roomId: String, name: String, icon: String) =
+        if (store.putRoom(roomId, name, icon)) ChatRoomRegistrationStatus.NEW
+        else ChatRoomRegistrationStatus.EXISTS
+
+    override fun registerBot(botId: String, name: String, icon: String) =
+        if (store.putBot(botId, name, icon)) ChatBotRegistrationStatus.NEW
+        else ChatBotRegistrationStatus.EXISTS
+
+    override fun postMessage(roomId: String, content: ChatMessageContent): String {
+        if (content is ChatMessageContent.File) {
+            // Declining a variant is how a host opts out of rendering one.
+            throw HostRejection.Rejected("this host cannot render file cards")
+        }
+        return store.append(roomId, content)
+    }
+
+    override fun listRooms(): List<ChatRoom> = store.rooms()
+}
+
+val runtime = TrUAPIHostRuntime(
+    bridge = bridge,
+    runtimeConfig = HostRuntimeConfig(
+        hostName = "My Chat Host",
+        peopleChainGenesisHash = peopleChainGenesisHash,   // exactly 32 bytes
+        bulletinChainGenesisHash = bulletinChainGenesisHash,
+    ),
+)
+// Chat needs an active session; without one every Chat call answers `Denied`.
+runtime.activateLocalSession(secret)
+
+val execution = runtime.openProductExecution(
+    bridge = bridge,
+    configuration = ProductExecutionConfig("chat.dot", ProductExecutionKind.CHAT),
+    chat = MyChatBridge(store),
+)
+val endpoint = execution.startWsBridge()
+webView.evaluateJavascript(
+    LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
+    null,
+)
+```
+
+Chat requires an active session: `openProductExecution` succeeds without one,
+but every Chat call then answers `Denied` until `activateLocalSession` or SSO
+pairing completes.
+
+The core bounds and screens the product-supplied fields it forwards — ids,
+names, icons, message bodies, URLs, and the action and media counts. Ids and
+names are also normalized; a message body is bounded and screened but passed
+through byte-for-byte, and `ChatFile.size_bytes` is product-asserted and
+unverified. Contextual output escaping is the host's job.
+
+`postMessage` receives any `ChatMessageContent` variant; throw from it for one this host cannot render. The id it returns is the correlation key `ActionTrigger.messageId` carries back, so it must name that message for as long as the host stores it.
+
+On the execution: `publishChatAction` delivers a user's action back to the product (buffered until it subscribes), `notifyChatRoomsChanged` republishes the room list, `renderCustomMessage` returns a `Flow` of typed UI for a stored custom message, and `sessionChatIdentityKey` reads the session's X25519 chat identity key.
 
 ## Architecture
 
@@ -73,6 +147,43 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 - `remotePermission(request)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
 Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+
+## Statement-store allowance renewal
+
+Statement-store allowances are granted per period, so a host has to re-register the accounts it wants to keep writing. They are not revoked the moment the period ends: `Resources.StmtStoreGraceWindow` keeps an ended period's allowances active until cleanup catches up, 48 hours on `paseo-next-v2`. The core owns the ledger and the registration; the app owns only the schedule.
+
+Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
+
+```kotlin
+core.trackStatementRenewalTargets(
+    listOf(
+        NativeStatementRenewalTarget.WalletSso,
+        NativeStatementRenewalTarget.Account(deviceStatementKey, "device"),
+    ),
+)
+```
+
+The ledger persists across launches, and it is append-only: there is no untrack, and an entry is dropped only when the identity that promised it changes. `WalletSso` and `ProductStatementAllowance` are derivation recipes and survive that; `Account` carries a fixed account id and does not. A dropped target is listed in `report.pruned`, which is how a host learns to re-track one and keep renewal covering it. There is still no reader and no untrack on this surface, so a host cannot list what is tracked or remove a wrong entry. Re-tracking is idempotent, so the safe habit is to re-track the full set after every identity change rather than trying to reason about what survived.
+
+Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread. It needs an active session too, which is the whole difficulty here: a worker on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
+
+```kotlin
+val report = core.renewStatementAllowances()
+report.outcomes.forEach { Log.i(TAG, "${it.label}: ${it.status}") }
+report.pruned.forEach {
+    // Promised by a previous identity and discarded; re-track to keep it renewed.
+    Log.w(TAG, "dropped: $it")
+}
+if (report.slotsExhausted) {
+    // Every slot for this period is taken and none was replaceable.
+}
+```
+
+One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed run is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
+
+`startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
+
+An account id must be exactly 32 bytes. Anything else throws `NativeRenewalTargetException.InvalidAccountId` before any chain work happens.
 
 ## Example
 
@@ -164,7 +275,10 @@ class MyBridge(private val webView: WebView) : HostBridge {
 
     // Core-owned auth state stream: render AuthState.Pairing as the pairing
     // QR sheet, connected/disconnected as the account badge, and login-failed
-    // as a retryable error. When the user closes the pairing sheet, report it
+    // as a retryable error, unless its kind is
+    // LoginFailureKind.NoFreeAllowanceSlots, which is unlikely to succeed
+    // before the period rolls over, so retry should not be the primary action.
+    // When the user closes the pairing sheet, report it
     // with `core.cancelLogin()`.
     override fun authStateChanged(state: AuthState) {
         main.post { /* render the state */ }
@@ -250,7 +364,7 @@ src/main/jniLibs/x86_64/libtruapi_server.so
 
 Cross-build the cdylib for each Android ABI from the truapi monorepo. Two options, pick whichever fits the host app's existing toolchain:
 
-**Option A: `mozilla-rust-android-gradle` plugin.** Recommended if the host app already uses it (polkadot-app-android-v2 does, for `bandersnatch-crypto`). Vendor `paritytech/truapi` as a git submodule, add a small Gradle module that points the plugin at `rust/crates/truapi-server`:
+**Option A: `mozilla-rust-android-gradle` plugin.** Recommended if the host app already uses it (polkadot-app-android-v2 does, for `bandersnatch-crypto`). Vendor `paritytech/host-rust-core` as a git submodule, add a small Gradle module that points the plugin at `rust/crates/truapi-server`:
 
 ```kotlin
 // app/build.gradle.kts (or a dedicated :truapi-cdylib module)
@@ -287,7 +401,7 @@ Pre-built per-ABI `.so` files bundled inside the AAR are tracked as a follow-up 
 
 ## Maintainers: cutting a release
 
-JitPack builds on demand from any git tag in `paritytech/truapi`, so a release is just:
+JitPack builds on demand from any git tag in `paritytech/host-rust-core`, so a release is just:
 
 1. Bump `publicationVersion` in `android/truapi-host/build.gradle.kts`.
 2. Commit. Open a PR. Merge.
@@ -318,3 +432,7 @@ the generator. The `codegen` profile is required because uniffi-bindgen scans
 the cdylib's exported metadata symbols, which the `release` profile strips — a
 plain `--release` build produces a stripped library and no bindings. (`make
 uniffi` regenerates the Swift bindings; use `make uniffi-kotlin` for Android.)
+
+No CI job compiles this package. After changing `TrUAPIHost.kt` or the UniFFI
+surface it wraps, run `make android-check` locally — it regenerates the Kotlin
+bindings and compiles the module against them.

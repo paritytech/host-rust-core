@@ -44,8 +44,8 @@ use crate::host_logic::sso::messages::{
 };
 use crate::host_logic::sso::pairing::{
     ResponderIdentity, VersionedHandshakeProposal, bootstrap_topic, decode_pairing_deeplink,
-    derive_x25519_keypair_from_entropy, encrypt_v2_handshake_response,
-    establish_responder_session_info, v2,
+    derive_identity_chat_private_key, derive_x25519_keypair_from_entropy,
+    encrypt_v2_handshake_response, establish_responder_session_info, v2, x25519_public_key,
 };
 use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
 use crate::runtime::authority::{
@@ -64,8 +64,6 @@ use crate::runtime::statement_store_rpc::StatementStoreRpcClientError;
 
 /// RFC-0022 domain for the responder's persistent SSO X25519 key.
 const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
-/// RFC-0022 domain for the identity chat X25519 key shared in the handshake.
-const CHAT_ENCRYPTION_DOMAIN: &[u8] = b"chat";
 /// Leave the product runtime one minute to receive and process the SSO response
 /// before its 300-second remote-authority deadline expires.
 #[cfg(not(target_arch = "wasm32"))]
@@ -83,8 +81,7 @@ fn derive_responder_identity(
     let statement = derive_identity_keypair(entropy)?;
     let (encryption_secret_key, encryption_public_key) =
         derive_x25519_keypair_from_entropy(entropy, SSO_ENCRYPTION_DOMAIN);
-    let (identity_chat_private_key, _) =
-        derive_x25519_keypair_from_entropy(entropy, CHAT_ENCRYPTION_DOMAIN);
+    let identity_chat_private_key = derive_identity_chat_private_key(entropy);
     Ok((
         ResponderIdentity {
             statement_secret: statement.secret.to_bytes(),
@@ -187,10 +184,10 @@ pub(super) enum AllowanceAllocationError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error("system clock before UNIX epoch")]
     SystemClockBeforeUnixEpoch,
-    /// The signing account is not in the required LitePeople ring.
+    /// The signing account is not in any personhood ring.
     #[cfg(not(target_arch = "wasm32"))]
-    #[error("signing account is not a LitePeople ring member; cannot grant {resource} allowance")]
-    MissingLitePeopleMembership {
+    #[error("signing account is not a personhood ring member; cannot grant {resource} allowance")]
+    MissingPersonhoodMembership {
         /// Resource name.
         resource: &'static str,
     },
@@ -238,6 +235,7 @@ pub(crate) async fn respond_to_pairing(
         .map_err(|err| format!("root account derivation failed: {err}"))?;
     let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
         .map_err(|err| format!("responder identity derivation failed: {err}"))?;
+    let device_enc_pub_key = x25519_public_key(services.device_encryption_secret().await?);
     let session = establish_responder_session_info(
         &identity,
         proposal.device.statement_account_id,
@@ -249,7 +247,7 @@ pub(crate) async fn respond_to_pairing(
         root_account_id: root.public.to_bytes(),
         identity_chat_private_key,
         sso_enc_pub_key: identity.encryption_public_key,
-        device_enc_pub_key: identity.encryption_public_key,
+        device_enc_pub_key,
         root_entropy_source: root_entropy_source(&entropy),
     }));
     let handshake = encrypt_v2_handshake_response(proposal.device.encryption_public_key, &success)?;
@@ -466,8 +464,12 @@ struct ResponseResult {
     reason: Option<String>,
 }
 
-struct AnsweredRemoteMessage {
-    response: RemoteMessage,
+/// Result of answering one remote message: the response envelope and an
+/// optional pre-classified outcome for logging.
+pub(crate) struct AnsweredRemoteMessage {
+    /// Response to post back over the session transport.
+    pub(crate) response: RemoteMessage,
+    /// Pre-classified outcome summary for SSO transcript logging (outcome code and error reason).
     response_result: Option<ResponseResult>,
 }
 
@@ -651,7 +653,7 @@ fn response_cli_summary(
 
 /// Answer one application-level request message; `None` for message kinds
 /// that take no response (responses echoed by the peer, unknown variants).
-async fn answer_remote_message(
+pub(crate) async fn answer_remote_message(
     services: &Arc<RuntimeServices>,
     signing_host: &Arc<SigningHost>,
     message_id: String,
@@ -920,9 +922,9 @@ pub(super) async fn allocate_statement_store_allowance(
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
     use super::allowance_renewal::{self, StatementRenewalTarget};
-    use crate::runtime::statement_allowance::slot::{SlotError, SlotSelection};
     use crate::runtime::statement_allowance::{
-        self, RegistrationParams, find_including_ring, register_statement_account,
+        self, PooledRegistrationParams, allocated_in, find_including_rings,
+        register_statement_account_pooled, scan_collections,
     };
 
     let entropy = signing_host.root_entropy()?;
@@ -932,7 +934,7 @@ pub(super) async fn allocate_statement_store_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
     let client = services
         .statement_store
         .chain_client("statement-store allowance")
@@ -948,62 +950,51 @@ pub(super) async fn allocate_statement_store_allowance(
     // submits nothing.
     let _registration = signing_host.renewal.registration_lock().lock().await;
 
-    // One scan answers both questions: whether an allowance is already recorded
-    // on chain — in which case neither a ring proof nor a submission is needed —
-    // and which slot to claim when it is not. Its result is handed to
-    // `register_statement_account` so the slots are read once, not twice.
-    let preselected = match statement_allowance::slot::scan_slot_excluding(
+    // One read of the period's slot tables, reused below rather than rescanned:
+    // when an allowance is already recorded on chain neither a proof nor a
+    // submission is needed, and a ring snapshot pages in every member key.
+    let scans = scan_collections(
         rpc,
         &chain.metadata,
-        bandersnatch,
+        &candidates,
         period,
         &target,
-        &[],
         reuse_existing,
     )
-    .await?
-    {
-        SlotSelection::AlreadyAllocated(seq) => {
-            debug!(
-                %product_id,
-                period,
-                seq,
-                "statement-store allowance already allocated"
-            );
-            return Ok(allowance.secret.to_bytes().to_vec());
-        }
-        SlotSelection::Free(seq) => seq,
-        SlotSelection::FreeSlotsExcluded => {
-            return Err(
-                StatementAllowanceError::Slot(SlotError::FreeSlotsAwaitingSubmission { period })
-                    .into(),
-            );
-        }
-        SlotSelection::Full { max, .. } => {
-            return Err(
-                StatementAllowanceError::Slot(SlotError::NoFreeStatementStoreSlot { period, max })
-                    .into(),
-            );
-        }
-    };
+    .await?;
+    if let Some((collection, seq)) = allocated_in(&scans) {
+        debug!(
+            %product_id,
+            period,
+            seq,
+            %collection,
+            "statement-store allowance already allocated"
+        );
+        return Ok(allowance.secret.to_bytes().to_vec());
+    }
 
-    let current = statement_allowance::ring::read_current_ring_index(rpc).await?;
-    let ring = find_including_ring(rpc, &chain.metadata, bandersnatch, current)
-        .await?
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+    // Every ring back to index 0, because a membership that stopped being
+    // re-included still proves against the ring that holds it.
+    let memberships = find_including_rings(rpc, &chain.metadata, &candidates, u32::MAX).await?;
+    if memberships.is_empty() {
+        return Err(AllowanceAllocationError::MissingPersonhoodMembership {
             resource: "statement-store",
-        })?;
-    let outcome = register_statement_account(
+        });
+    }
+    let outcome = register_statement_account_pooled(
         rpc,
         &chain.metadata,
         &chain.state,
-        bandersnatch,
-        RegistrationParams {
+        &scans,
+        &memberships,
+        PooledRegistrationParams {
             target: &target,
             period,
-            ring: &ring,
             reuse_existing,
-            preselected: Some(preselected),
+            // Connecting a product must not revoke another product's allowance.
+            // A full period is reported as exhaustion; reclaiming space is the
+            // renewal pass's job, which only ever replaces for its own ledger.
+            allow_eviction: false,
             protected: &[],
         },
     )
@@ -1013,19 +1004,22 @@ pub(super) async fn allocate_statement_store_allowance(
             block_hash,
             seq,
             ring_index,
+            collection,
         } => {
             debug!(
                 %product_id,
                 %block_hash,
                 seq,
                 ring_index,
+                %collection,
                 "registered statement-store allowance"
             );
         }
-        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq } => {
+        statement_allowance::RegistrationOutcome::AlreadyAllocated { seq, collection } => {
             debug!(
                 %product_id,
                 seq,
+                %collection,
                 "statement-store allowance already allocated"
             );
         }
@@ -1050,8 +1044,9 @@ pub(super) async fn allocate_bulletin_allowance(
     product_id: &str,
     policy: OnExistingAllowancePolicy,
 ) -> Result<Vec<u8>, AllowanceAllocationError> {
+    use crate::runtime::statement_allowance::collection::PersonhoodCollection;
     use crate::runtime::statement_allowance::{
-        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_ring,
+        self, claim_long_term_storage, fetch_bulletin_allowance, find_including_rings,
         wait_bulletin_authorization,
     };
 
@@ -1085,11 +1080,22 @@ pub(super) async fn allocate_bulletin_allowance(
     let session = signing_host
         .current_session()
         .ok_or(AuthorityError::Disconnected)?;
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
-    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
-    let ring = find_including_ring(people_rpc, &chain.metadata, bandersnatch, current)
-        .await?
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership {
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    // Statement-store slots and PGAS claims are each bounded by a per-collection
+    // constant, so their budgets are meant to be spent per collection. Long-term
+    // storage is bounded by `Resources.LongTermStorageClaimsPerPeriod` alone, with
+    // no per-collection variant, so the budget reads as per person. Its spent
+    // counters are still keyed by a collection-scoped alias, which means changing
+    // collection silently restarts the count at zero. Staying in the light
+    // collection keeps one person to one count; full personhood is the fallback
+    // for a device without light personhood.
+    let memberships =
+        find_including_rings(people_rpc, &chain.metadata, &candidates, u32::MAX).await?;
+    let membership = memberships
+        .iter()
+        .find(|membership| membership.collection() == PersonhoodCollection::LitePeople)
+        .or_else(|| memberships.first())
+        .ok_or(AllowanceAllocationError::MissingPersonhoodMembership {
             resource: "Bulletin",
         })?;
     let period_duration =
@@ -1102,10 +1108,10 @@ pub(super) async fn allocate_bulletin_allowance(
         people_rpc,
         &chain.metadata,
         &chain.state,
-        bandersnatch,
+        membership.entropy,
         &target,
         period,
-        &ring,
+        &membership.ring,
     )
     .await?;
     let statement_allowance::LongTermStorageOutcome::Claimed {
@@ -1171,7 +1177,7 @@ pub(super) async fn allocate_smart_contract_allowance(
     use truapi::latest::ChainIdentifier;
 
     use crate::host_logic::features;
-    use crate::runtime::statement_allowance::{self, ChainClient, find_including_ring, pgas};
+    use crate::runtime::statement_allowance::{self, ChainClient, find_including_rings, pgas};
 
     let session = signing_host
         .current_session()
@@ -1222,20 +1228,23 @@ pub(super) async fn allocate_smart_contract_allowance(
     let people_rpc = people_client.rpc();
     let people = services.chain_context.get(&people_client).await?;
 
-    let bandersnatch = *signing_host.reserved_lite_person_entropy(&session)?;
-    let current = statement_allowance::ring::read_current_ring_index(people_rpc).await?;
-    let ring = find_including_ring(people_rpc, &people.metadata, bandersnatch, current)
+    let candidates = signing_host.reserved_person_collection_candidates(&session)?;
+    // A single claim needs one collection, so take the strongest membership the
+    // person actually holds rather than assuming light personhood.
+    let membership = find_including_rings(people_rpc, &people.metadata, &candidates, u32::MAX)
         .await?
-        .ok_or(AllowanceAllocationError::MissingLitePeopleMembership { resource: "PGAS" })?;
+        .into_iter()
+        .next()
+        .ok_or(AllowanceAllocationError::MissingPersonhoodMembership { resource: "PGAS" })?;
 
     let outcome = pgas::claim_pgas(pgas::PgasClaim {
         asset_hub_rpc: asset_hub_client.rpc(),
         asset_hub: &asset_hub,
         people_rpc,
         people_metadata: &people.metadata,
-        entropy: bandersnatch,
+        entropy: membership.entropy,
         target: &target,
-        ring: &ring,
+        ring: &membership.ring,
     })
     .await?;
     debug!(
@@ -1672,7 +1681,7 @@ mod tests {
             })
             .collect();
 
-        // `find_including_ring` opens with `chain_getFinalizedHead`, so none of
+        // `find_including_rings` opens with `chain_getFinalizedHead`, so none of
         // these means no ring was resolved.
         assert_eq!(
             methods
@@ -1727,6 +1736,20 @@ mod tests {
             decode_verified_statement_data(&statement, Some(identity.statement_public_key))
                 .unwrap();
         assert_eq!(verified.signer, local_identity);
+    }
+
+    #[test]
+    fn advertised_device_key_is_independent_of_the_identity() {
+        let (services, _signing_host) = signing_fixture(Arc::new(StubPlatform::default()));
+
+        let advertised = x25519_public_key(
+            futures::executor::block_on(services.device_encryption_secret()).unwrap(),
+        );
+
+        // The regression this guards: advertising the SSO channel key as the
+        // device key makes every device sharing an identity indistinguishable.
+        let (_, sso_public) = derive_x25519_keypair_from_entropy(&ENTROPY, SSO_ENCRYPTION_DOMAIN);
+        assert_ne!(advertised, sso_public);
     }
 
     fn response_payload(answer: AnsweredRemoteMessage) -> v1::RemoteMessage {

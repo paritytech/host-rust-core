@@ -29,6 +29,7 @@
 // views into WASM memory) and frames are small, so the copy is the simpler
 // safe choice.
 
+import type { OptionalCapabilities } from "./generated/worker-callbacks.js";
 import type { LogLevel, PermissionAuthorizationStatus } from "./runtime.js";
 import type {
   CallbackName,
@@ -55,7 +56,17 @@ export type CallbackArgs = readonly unknown[];
  * host callback/subscription/chain responses requested by the worker.
  */
 export type MainToWorker =
-  | { kind: "init"; logLevel: LogLevel; hostConfig: unknown }
+  | {
+      kind: "init";
+      logLevel: LogLevel;
+      hostConfig: unknown;
+      /**
+       * Optional capabilities the main-thread host serves. The worker proxies
+       * only these, so the core sees the same capability set on both sides of
+       * the boundary.
+       */
+      capabilities: OptionalCapabilities;
+    }
   | { kind: "createCore"; coreId: number; product: unknown }
   | { kind: "disposeCore"; coreId: number }
   | { kind: "setLogLevel"; level: LogLevel }
@@ -63,6 +74,9 @@ export type MainToWorker =
   | { kind: "disconnectSession"; requestId: number }
   | { kind: "cancelPairing" }
   | { kind: "notifySessionStoreChanged" }
+  | { kind: "activateStoredSession"; requestId: number }
+  | { kind: "activateExternalSession"; requestId: number; blob: Uint8Array }
+  | { kind: "resetSessionState"; requestId: number }
   | {
       kind: "getPermissionAuthorizationStatus";
       productId: string;
@@ -82,6 +96,8 @@ export type MainToWorker =
       request: Uint8Array;
       status: PermissionAuthorizationStatus;
     }
+  | { kind: "getSessionChatIdentityKey"; requestId: number }
+  | { kind: "getDeviceEncryptionKey"; requestId: number }
   | { kind: "callbackResponse"; requestId: number; ok: true; value: unknown }
   | { kind: "callbackResponse"; requestId: number; ok: false; error: string }
   | { kind: "subscriptionItem"; subId: number; value: unknown }
@@ -108,6 +124,18 @@ export type WorkerToMain =
   | { kind: "disconnectSessionResponse"; requestId: number; ok: true }
   | {
       kind: "disconnectSessionResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  /**
+   * Shared reply for `activateStoredSession`, `activateExternalSession` and
+   * `resetSessionState`: all three settle as a bare success or a failure
+   * reason.
+   */
+  | { kind: "sessionActivationResponse"; requestId: number; ok: true }
+  | {
+      kind: "sessionActivationResponse";
       requestId: number;
       ok: false;
       error: string;
@@ -143,6 +171,30 @@ export type WorkerToMain =
     }
   | {
       kind: "setPermissionAuthorizationStatusResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "sessionChatIdentityKeyResponse";
+      requestId: number;
+      ok: true;
+      key: Uint8Array | undefined;
+    }
+  | {
+      kind: "sessionChatIdentityKeyResponse";
+      requestId: number;
+      ok: false;
+      error: string;
+    }
+  | {
+      kind: "deviceEncryptionKeyResponse";
+      requestId: number;
+      ok: true;
+      key: Uint8Array;
+    }
+  | {
+      kind: "deviceEncryptionKeyResponse";
       requestId: number;
       ok: false;
       error: string;

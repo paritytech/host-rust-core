@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli headless install matrix explorer xcframework
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli e2e-chat-cli headless install matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -12,10 +12,13 @@ JS_PACKAGES := js/packages
 EXPLORER := explorer
 DOTLI := hosts/dotli
 HOST_WASM_PKG := $(JS_PACKAGES)/truapi-host
+PROVIDER_WASM_PKG := $(JS_PACKAGES)/truapi-provider
 HOST_CALLBACKS_GENERATED := $(HOST_WASM_PKG)/src/generated/host-callbacks.ts
 HOST_WASM_ADAPTER_GENERATED := $(HOST_WASM_PKG)/src/generated/host-callbacks-adapter.ts
 HOST_WASM_WORKER_CALLBACKS_GENERATED := $(HOST_WASM_PKG)/src/generated/worker-callbacks.ts
 HOST_WASM_WEB := $(HOST_WASM_PKG)/dist/wasm/web/truapi_server.js
+HOST_WASM_WEB_BINARY := $(HOST_WASM_PKG)/dist/wasm/web/truapi_server_bg.wasm
+DOTLI_HOST_VITE_CONFIG := $(DOTLI)/apps/host/vite.config.ts
 DOTLI_UI := $(DOTLI)/packages/ui
 DOTLI_NODE_MODULES := $(DOTLI)/node_modules
 DOTLI_TRUAPI_LINK := $(DOTLI_NODE_MODULES)/@parity/truapi
@@ -67,8 +70,9 @@ codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 	./scripts/codegen.sh
 	cd $(PLAYGROUND) && rm -rf node_modules/@parity && yarn install
 
-wasm: ## Rebuild the truapi-server WASM artifacts under js/packages/truapi-host/dist/wasm/.
+wasm: ## Rebuild the truapi-server and truapi-provider WASM bundles under js/packages/*/dist/.
 	cd $(HOST_WASM_PKG) && npm run build:wasm
+	cd $(PROVIDER_WASM_PKG) && npm run build:wasm
 
 wasm-crypto-test: ## Run crypto/vector tests on wasm32 via wasm-pack/node.
 	wasm-pack test --node rust/crates/truapi-server --test wasm_crypto_vectors --no-default-features
@@ -82,11 +86,14 @@ UNIFFI_CDYLIB_DIR := target/codegen
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.dylib
+PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.dylib
 else
 UNIFFI_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_server.so
+PROVIDER_CDYLIB := $(UNIFFI_CDYLIB_DIR)/libtruapi_provider.so
 endif
 
 UNIFFI_SWIFT_TMP := target/uniffi-swift-out
+PROVIDER_SWIFT_TMP := target/uniffi-provider-swift-check
 
 uniffi: ## Generate Swift bindings from the truapi-server cdylib into target/uniffi-swift-out (consumed by ios/truapi-host/scripts/rebuild.sh).
 	$(CARGO) build -p truapi-server --profile codegen --features ws-bridge
@@ -199,8 +206,56 @@ android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs 
 		-o $(ANDROID_JNILIBS) \
 		build --release -p truapi-server --features ws-bridge
 
+android-check: uniffi-kotlin ## Compile the Kotlin host adapter against freshly generated bindings (needs Gradle + Android SDK).
+	gradle :truapi-host:compileReleaseKotlin
+
 android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
 	gradle :truapi-host:publishReleasePublicationToMavenLocal
+
+# truapi-provider ships as its own per-platform artifacts (iOS xcframework,
+# Android AAR, npm wasm) so a host consumes chain transport without depending on
+# the Rust crate. The `uniffi` feature carries no `ws` backend: these builds are
+# the light client alone.
+PROVIDER_KOTLIN_OUT := android/truapi-provider/src/main/kotlin/generated
+PROVIDER_JNILIBS := android/truapi-provider/src/main/jniLibs
+
+provider-swift: ## Generate the TrUAPIProvider Swift bindings into target/uniffi-provider-swift-out (no Xcode, no iOS targets).
+	$(CARGO) build -p truapi-provider --profile codegen --no-default-features --features uniffi
+	rm -rf $(PROVIDER_SWIFT_TMP)
+	mkdir -p $(PROVIDER_SWIFT_TMP)
+	$(CARGO) run -p uniffi-bindgen-cli -- generate \
+		--library $(PROVIDER_CDYLIB) \
+		--language swift \
+		--out-dir $(PROVIDER_SWIFT_TMP)
+
+provider-swift-check: provider-swift ## Fail if the committed TrUAPIProvider bindings are stale.
+	@diff -u ios/truapi-provider/Sources/TrUAPIProvider/truapi_provider.swift \
+		$(PROVIDER_SWIFT_TMP)/truapi_provider.swift \
+		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/truapi_providerFFI.h \
+		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.h \
+		&& echo "Committed TrUAPIProvider bindings are current." \
+		|| { echo "Committed TrUAPIProvider bindings are stale: run 'make provider-ios'."; exit 1; }
+
+provider-ios: ## Build the TrUAPIProvider Swift bindings + xcframework (adds --sim-only via SIM_ONLY=1).
+	bash ios/truapi-provider/scripts/rebuild.sh $(if $(SIM_ONLY),--sim-only,)
+
+provider-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-provider cdylib.
+	$(CARGO) build -p truapi-provider --profile codegen --no-default-features --features uniffi
+	rm -rf $(PROVIDER_KOTLIN_OUT)
+	mkdir -p $(PROVIDER_KOTLIN_OUT)
+	$(CARGO) run -p uniffi-bindgen-cli -- generate \
+		--library $(PROVIDER_CDYLIB) \
+		--language kotlin \
+		--out-dir $(PROVIDER_KOTLIN_OUT)
+
+provider-android-jni: ## Cross-compile libtruapi_provider.so for Android ABIs into the module's jniLibs (needs cargo-ndk + NDK).
+	@command -v cargo-ndk >/dev/null || { echo "cargo-ndk not found: cargo install cargo-ndk"; exit 1; }
+	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
+		-o $(PROVIDER_JNILIBS) \
+		build --release -p truapi-provider --no-default-features --features uniffi
+
+provider-android-publish-local: provider-kotlin provider-android-jni ## Publish the self-contained provider AAR (bindings + cdylib) to ~/.m2.
+	gradle :truapi-provider:publishReleasePublicationToMavenLocal
 
 test: ## Run Rust + TypeScript client tests.
 	cargo test --workspace
@@ -215,7 +270,7 @@ check: ## Full verification suite (build, fmt, clippy, test, TS tests, playgroun
 	cargo test --workspace --all-features --all-targets
 	cd $(TRUAPI_PKG) && npm run build && npm test
 	cd $(HOST_WASM_PKG) && npm install --no-fund --no-audit && npm run build && npm test
-	cd $(PLAYGROUND) && yarn build && yarn lint
+	cd $(PLAYGROUND) && yarn build && yarn lint && yarn test:unit
 
 clean: ## Remove local build/test artifacts without deleting dependencies.
 	cargo clean
@@ -247,7 +302,14 @@ dev-bootstrap: ## Prepare ignored generated/build artifacts needed by dotli prev
 	if [ ! -d node_modules ]; then npm ci --ignore-scripts; fi
 	./scripts/codegen.sh
 	cd $(HOST_WASM_PKG) && npm run build
-	TRUAPI_WASM_PROFILE=dev $(MAKE) wasm
+	# Release profile, because dotli precaches the WASM in its service worker and
+	# vite-plugin-pwa fails the build outright on anything over its workbox limit.
+	# A dev-profile build is several times that limit; a release build is well
+	# under it. TRUAPI_WASM_PROFILE=dev is therefore not usable with `make dev`
+	# or `make e2e-dotli` at all: dev-link-check rejects the artifact rather than
+	# letting dotli fail deeper in. Build one directly with
+	# `TRUAPI_WASM_PROFILE=dev make wasm` if you need it for something else.
+	$(MAKE) wasm
 	cd $(PLAYGROUND) && yarn install --frozen-lockfile
 	cd $(DOTLI) && bun install --frozen-lockfile
 	$(MAKE) dev-link-check
@@ -258,6 +320,8 @@ dev-link-check: dotli-link ## Verify dotli can resolve the local @parity/truapi-
 	@test -f "$(HOST_WASM_WORKER_CALLBACKS_GENERATED)" || (echo "Missing generated host callbacks worker bridge. Run: make codegen"; exit 1)
 	@test -f "$(HOST_WASM_PKG)/dist/index.js" || (echo "Missing @parity/truapi-host dist. Run: npm run build --prefix $(HOST_WASM_PKG)"; exit 1)
 	@test -f "$(HOST_WASM_WEB)" || (echo "Missing @parity/truapi-host web WASM glue. Run: make wasm"; exit 1)
+	@test -f "$(HOST_WASM_WEB_BINARY)" || (echo "Missing @parity/truapi-host web WASM binary. Run: make wasm"; exit 1)
+	@node scripts/check-dotli-wasm-precache.mjs "$(HOST_WASM_WEB_BINARY)" "$(DOTLI_HOST_VITE_CONFIG)"
 	@test -e "$(DOTLI_TRUAPI_LINK)/package.json" || (echo "dotli cannot resolve @parity/truapi. Run top-level: make dotli-link"; exit 1)
 	@test -e "$(DOTLI_HOST_WASM_LINK)/package.json" || (echo "dotli cannot resolve @parity/truapi-host. Run top-level: make dotli-link"; exit 1)
 	@test ! -e "$(DOTLI_UI_TRUAPI_SHADOW)/package.json" || (echo "$(DOTLI_UI_TRUAPI_SHADOW) shadows the local workspace link. Run top-level: make dotli-link"; exit 1)
@@ -282,6 +346,9 @@ e2e-signing-cli: ## Run the generated battery against the direct signing-host CL
 
 e2e-pairing-cli: ## Run the generated battery against the paired pairing-host CLI.
 	scripts/battery.sh --pairing-host
+
+e2e-chat-cli: ## Run the Chat content-screening battery against a chat signing-host CLI.
+	scripts/battery.sh --chat-host
 
 matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-reports.
 	cd $(EXPLORER) && npm run generate-matrix
