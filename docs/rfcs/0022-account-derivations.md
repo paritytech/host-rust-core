@@ -96,8 +96,12 @@ secret components, no intermediate hashing layer.
 
 - `//product` — **hard** namespace junction separating product accounts from
   the root keypair's other derivations.
-- `//{productId}` — **hard** junction; `productId` is the product's dotNS
-  identifier (e.g. `browse.dot`).
+- `//{productId}` — **hard** junction; `productId` is the product's canonical
+  TLD-free identifier (e.g. `browse`). On the wire products name themselves by
+  the dotNS name their network serves (e.g. `browse.dot`, `browse.paseo`);
+  hosts strip the recognized network TLD during normalization, so the same
+  product derives the same subtree on every network and derivation paths never
+  contain a TLD.
 - `/{index}` — **soft** junction carrying the 32-byte derivation index.
 
 The hard junction is the security firewall: leaking the `//product//{productId}`
@@ -147,7 +151,8 @@ forms:
 
 ```rust
 ProductAccountId {
-    /// A dotNS domain name identifier (e.g., `"my-product.dot"`).
+    /// A dotNS domain name identifier (e.g., `"my-product.dot"`); the host
+    /// strips the network TLD to form the canonical product id.
     dot_ns_identifier: String,
     /// Account selector within the product subtree:
     /// Left — a plain index (primary form); Right — a raw 32-byte index.
@@ -165,7 +170,8 @@ amended to:
 
 ```rust
 ProductProofContext {
-    /// dotNS product identifier (e.g. `"my-product.dot"`) scoping the context.
+    /// dotNS product identifier (e.g. `"my-product.dot"`) scoping the context;
+    /// normalized to the canonical TLD-free id before hashing.
     product_id: String,
     /// Selector distinguishing contexts within the product; expands to the
     /// same 32-byte derivation index as `ProductAccountId.derivation_index`.
@@ -217,7 +223,7 @@ gap:
 ```rust
 /// Host → Account Holder.
 ApProductSubtreeRequest {
-    /// dotNS identifier of the product whose subtree is requested.
+    /// Canonical TLD-free id of the product whose subtree is requested.
     product_id: String,
 }
 
@@ -267,11 +273,11 @@ reserved product identities as their `productId`:
 
 | Category                             | Feature                      | `productId`  | Protection                                                                                     |
 | ------------------------------------ | ---------------------------- | ------------ |------------------------------------------------------------------------------------------------|
-| Migrating to a product soon          | Game (DIM2)                  | `dim2.dot`   | Governance-reserved 3–5 char name                                                              |
-| Migrating long-term / product-shaped | PoI (DIM1)                   | `poi.dot`    | Governance-reserved 3–5 char name                                                              |
-| Migrating long-term / product-shaped | Funding                      | `fund.dot`   | Governance-reserved 3–5 char name                                                              |
-| Migrating long-term / product-shaped | Public light person identity | `uid.dot`    | Governance-reserved 3–5 char name                                                              |
-| Migrating long-term / product-shaped | Personhood                   | `peopl.dot`  | Governance-reserved 3–5 char name                                                              |
+| Migrating to a product soon          | Game (DIM2)                  | `dim2`       | Governance-reserved 3–5 char name                                                              |
+| Migrating long-term / product-shaped | PoI (DIM1)                   | `poi`        | Governance-reserved 3–5 char name                                                              |
+| Migrating long-term / product-shaped | Funding                      | `fund`       | Governance-reserved 3–5 char name                                                              |
+| Migrating long-term / product-shaped | Public light person identity | `uid`        | Governance-reserved 3–5 char name                                                              |
+| Migrating long-term / product-shaped | Personhood                   | `peopl`  | Governance-reserved 3–5 char name                                                              |
 | Not coercible to a product           | Coinage                      | —            | Deferred to a separate RFC (own layout today: `//pps//coin/{index}`, `//pps//ring-vrf/{index}`) |
 
 ### Well-known alias accounts
@@ -322,14 +328,14 @@ reserved product identity from the table above. `DerivationIndex` is the same
 32-byte index format as product accounts, so each domain gets its own index
 space.
 
-The personhood keys live under the `peopl.dot` domain:
+The personhood keys live under the `peopl` domain:
 
 ```rust
 // Full personhood ring-VRF key
-full_personhood_key  = //peopl.dot//index_bytes(0)
+full_personhood_key  = //peopl//index_bytes(0)
 
 // Light personhood ring-VRF key
-light_personhood_key = //peopl.dot//index_bytes(1)
+light_personhood_key = //peopl//index_bytes(1)
 ```
 
 Existing keys migrate to these paths. Coinage's ring-VRF keys
@@ -376,7 +382,7 @@ game_domain = "game"
 ```
 
 > **Note:** the `game` domain is expected to go away soon. The Game is
-> migrating to the `dim2.dot` product, which will obtain its key material
+> migrating to the `dim2` product, which will obtain its key material
 > via `host_derive_entropy` (RFC-0007) instead.
 
 ### Compatibility
@@ -384,7 +390,7 @@ game_domain = "game"
 There are no production deployments of secret-component derivations or of the
 `u32`-index wire types; the selector change is wire-breaking for
 `ProductAccountId`, `ProductProofContext`, `PaymentTopUpSource`, and
-`AllocatableResource`, and is made freely, with no migration path. Existing ring-VRF keys move to their `peopl.dot`
+`AllocatableResource`, and is made freely, with no migration path. Existing ring-VRF keys move to their `peopl`
 paths; deployed encryption keys are handled by the encryption RFC.
 
 ## Drawbacks
@@ -392,7 +398,7 @@ paths; deployed encryption keys are handled by the encryption RFC.
 - **One new Accounts Protocol message**, amortized to one round trip per
   product per Host.
 - **No path-string tooling round trip.** The 32-byte index junction cannot be
-  typed as a path segment, so `//product//browse.dot/5` in stock tooling
+  typed as a path segment, so `//product//browse/5` in stock tooling
   (`polkadot-js`, `subkey`) does not derive index `5` (`index_bytes(5)`)
 
 ## Alternatives

@@ -344,8 +344,10 @@ Accepted product identifiers are:
 - `localhost`; or
 - a string beginning with `localhost:`.
 
-Identifiers are trimmed, Unicode-NFC normalized, and lowercased. For example,
-`" Dotli.DOT "` becomes `dotli.dot`.
+Identifiers are trimmed, Unicode-NFC normalized, and lowercased, and a
+recognized dotNS TLD is stripped, so the canonical product id is TLD-free and
+identical on every network. For example, `" Dotli.DOT "` and `dotli.paseo`
+both become `dotli`.
 
 Other identifiers, including an ordinary `example.com`, are rejected.
 
@@ -724,9 +726,9 @@ Before a signing host answers a link, it:
 
 1. ensures a signer;
 2. decodes the V2 handshake;
-3. derives its RFC-0022 `uid.dot` identity account;
+3. derives its RFC-0022 `uid` identity account;
 4. reads the pairing device Statement Store account from the proposal;
-5. finds the signer's rings through the pairing-attestation bootstrap `peopl.dot`
+5. finds the signer's rings through the pairing-attestation bootstrap `peopl`
    keys, index 0 for `People` and index 1 for `LitePeople`, scanning back from
    the current ring in each (RFC-0024 operational key selection uses the
    registry instead);
@@ -809,7 +811,7 @@ A new auto account:
 
 1. acquires `accounts.json.lock`;
 2. generates a 12-word mnemonic;
-3. derives the RFC-0022 `uid.dot` index-0 sr25519 identity account;
+3. derives the RFC-0022 `uid` index-0 sr25519 identity account;
 4. chooses `auto-<n>` as its local name;
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
@@ -1065,7 +1067,7 @@ state, and other role-owned runtime data.
 - network id;
 - plaintext BIP-39 mnemonic;
 - final Lite username;
-- RFC-0022 `uid.dot` index-0 public key and address;
+- RFC-0022 `uid` index-0 public key and address;
 - creation timestamp;
 - attested state; and
 - exhausted Statement Store periods.
@@ -1097,11 +1099,9 @@ selection files.
 
 ## 14. Network and transport
 
-### 14.1 Network presets
+### 14.1 Network preset
 
-`--network` selects one of two presets. `paseo-next-v2` is the default.
-
-#### `paseo-next-v2`
+v0.1 supports only `paseo-next-v2`.
 
 | Purpose | Value |
 | --- | --- |
@@ -1112,34 +1112,6 @@ selection files.
 | Bulletin genesis | `0x8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22` |
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
 | Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
-
-#### `previewnet`
-
-The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
-nextv2 later, and it is where products with previewnet descriptors do their
-on-chain testing. Its identity backend is the same service on its staging
-environment (`/api/v1/version` reports `"environment": "staging"`).
-
-| Purpose | Value |
-| --- | --- |
-| Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
-| People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
-| Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
-| Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
-
-Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
-signer provisioned on one preset is not visible from the other. Two presets means
-two identities on one machine, which is deliberate: the lite username and the
-statement-store allowance are per chain.
-
-`previewnet`'s identity backend requires a bearer token for write requests, which
-the CLI does not send, so auto-managed account creation fails there with
-`401 Unauthorized (Missing Authorization Header)`. Reads against the backend
-succeed, and every non-backend path is unaffected, so a `previewnet` signer needs
-`--mnemonic` for an account that already holds a username on that chain.
 
 There are no public endpoint override flags.
 
@@ -1468,7 +1440,7 @@ truapi-host identity-check \
 The command derives and queries two accounts:
 
 - root; and
-- RFC-0022 `//product//uid.dot/index_bytes(0)`.
+- RFC-0022 `//product//uid/index_bytes(0)`.
 
 For each it prints one of:
 
