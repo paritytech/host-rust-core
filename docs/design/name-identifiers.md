@@ -80,25 +80,15 @@ and the
 
 #### Open Questions
 
-- The built-in identifiers are network-scoped:
+- When does the mobile Account Holder derive
   [`uid.{tld}` and `peopl.{tld}`](../../rust/crates/truapi-server/src/host_logic/product_account.rs)
-  follow the `dotns_tld` a host sets in its runtime config, with `dot` as the
-  default so unconfigured hosts keep the mobile-pinned derivations. A paired
-  phone still derives `uid.dot` on every network, so hosts configured for a
-  non-dot TLD diverge from the Account Holder until the mobile app ships the
-  same rule.
-- The recognized TLD list is compiled in
-  ([`DOTNS_TLDS`](../../rust/crates/truapi-platform/src/lib.rs)) while the
-  registry already exposes the truth per network through `tld()`. Hosts now
-  declare their network TLD through `HostChainSet.tld` in the
-  `supported_chains` syscall, mirrored from the
-  [network presets](../../rust/crates/truapi-host-cli/src/network.rs). The
-  remaining step is consuming it for validation, which stays on the compiled
-  union list because SCALE decode and the exported `parse_navigate` FFI have
-  no configuration in scope.
-- Graduation needs its own design: a product that wants to carry state from
-  testnet to mainnet needs a registered migration or alias, not implicit
-  identity.
+  per network instead of its hardcoded `uid.dot`, so paired hosts on non-dot
+  networks stop diverging from it?
+- Can name validation and navigation learn the TLD from the registry `tld()`
+  view (now carried by `HostChainSet.tld`) instead of the compiled
+  [`DOTNS_TLDS`](../../rust/crates/truapi-platform/src/lib.rs) list, given
+  SCALE decode and the exported `parse_navigate` FFI have no configuration in
+  scope?
 
 #### Use Cases
 
