@@ -9,6 +9,14 @@
 //! Inbound responses are delivered to a foreign [`ChainMessageListener`]; a
 //! background thread pumps the response stream and invokes it until the
 //! connection closes.
+//!
+//! The `tracing` calls in this module are not observable here. `tracing-subscriber`
+//! is pulled in by the `js` feature alone and `mod logging` is `wasm32`-only, so a
+//! build with `--features uniffi` has no way to install a subscriber and every
+//! `warn!` field goes unformatted. The provider also ships as its own staticlib, so
+//! a subscriber installed by another crate in the same app reaches a different
+//! `tracing-core`. Treat the returned errors as the whole contract: a native host
+//! learns nothing from the logs.
 
 use std::fmt;
 use std::sync::{Arc, Weak};
