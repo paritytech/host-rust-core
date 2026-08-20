@@ -170,13 +170,12 @@ type WidgetManifest = CommonExecutableFields & {
 
 type FundingManifest = CommonExecutableFields & {
   kind: "funding";
-  routes: FundingRoute[]; // Conversions the surface serves. Non-empty.
+  routes: FundingRoute[]; // Destination assets the surface serves. Non-empty.
 };
 
 type FundingRoute = {
-  from: FundingAsset; // Source asset.
   to: FundingAsset; // Destination asset.
-  modes: FundingMode[]; // Rails serving this pair. Non-empty.
+  modes: FundingMode[]; // Rails serving this asset. Non-empty.
 };
 
 type FundingAsset = "CASH" | "EUR";
@@ -199,7 +198,7 @@ type SemVer = [major: number, minor: number, patch: number, build?: string];
 
 - `app` — full-screen App. No extra fields beyond the common ones.
 - `widget` — `dimensions.height` is the list of grid-step heights the widget can render at; the Host picks one per layout. `width` defaults to `1` column. The grid unit and bounds belong to the Host's dashboard spec (see [Future Directions](#future-directions)). By convention `8` in `height` signals a full-screen widget; this RFC does not normalise that convention.
-- `funding` — the web application the Host renders when the user selects this product as a funding source. `routes` lists the conversions served, one ordered pair per direction, each with its own `modes`. The Host matches them against the funding flow at hand, tolerating unrecognised values per [Corner cases](#corner-cases). The runtime contract behind the surface is deferred to a dedicated Funding Modality RFC.
+- `funding` — the web application the Host renders when the user selects this product as a funding source. `routes` lists the destination assets the surface can fund, each with its own `modes`. The Host matches them against the funding flow at hand, tolerating unrecognised values per [Corner cases](#corner-cases). The runtime contract behind the surface is deferred to a dedicated Funding Modality RFC.
 - `worker` — background JS worker. `entrypoint` is the module the Host loads inside the worker. `includes` declares which surfaces it serves.
 
 The funding assets:
@@ -231,7 +230,7 @@ A product MAY publish any combination of the executable subnames listed in [Over
 
 - **Any icon failure** — `cid` unreachable, `format` unrecognised, or bytes that do not decode as the declared `format`. Render a placeholder; do not sniff or auto-correct. The root manifest stays valid and the product remains launchable.
 - **Unrecognised grant value in `trustedProducts`.** Ignore that value and keep the recognised ones; the root manifest stays valid. Same for a key naming a product that does not resolve — the entry is inert.
-- **Unrecognised asset or mode value in the Funding manifest `routes`.** An unrecognised mode is ignored. A route whose `from` or `to` is unrecognised, or whose recognised `modes` set is empty, is inert. The manifest stays valid. If no usable route remains, the product is not offered for funding, which is not an error.
+- **Unrecognised asset or mode value in the Funding manifest `routes`.** An unrecognised mode is ignored. A route whose `to` is unrecognised, or whose recognised `modes` set is empty, is inert. The manifest stays valid. If no usable route remains, the product is not offered for funding, which is not an error.
 - **Executable `contenthash` unset, non-IPFS codec, or undecodable.** That executable cannot be launched; surface a diagnostic. The product stays discoverable and its other executables still launch.
 - **Missing root manifest but present executable subnames.** Product is not discoverable; executables MUST NOT be launched.
 - **Unknown `kind` in an executable manifest.** Skip that executable rather than fail the whole product.
@@ -323,7 +322,7 @@ The publisher validates the local config before any network I/O. Validation is s
 - All referenced files (icon, executables) exist and are readable.
 - Icon `format` is one of the values allowed by `Icon.format`.
 - Every `trustedProducts` key is a bare `<product_id>` label carrying no TLD suffix, and every grant value is one defined by `Granted`.
-- `funding.routes` is non-empty, every `from` and `to` is one defined by `FundingAsset`, and every route carries a non-empty `modes` with every value one defined by `FundingMode`.
+- `funding.routes` is non-empty, every `to` is one defined by `FundingAsset`, and every route carries a non-empty `modes` with every value one defined by `FundingMode`.
 - `appVersion` is a 3- or 4-element tuple of the right shape.
 - Each executable's kind-specific fields are present, well-typed, and satisfy schema-level constraints.
 - Pessimistic size preflight: compose the root manifest with a placeholder icon CID of the fixed encoded length (per the Constants table), and compose each executable manifest exactly — they carry no CID, so their size is already final. Abort if any composed manifest exceeds the dotNS text-record budget.
