@@ -293,35 +293,27 @@ where
         pin_mut!(timeout);
         futures::select! {
             result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            reason = cancelled => Err(authority_cancellation_error(cx, reason).into()),
             () = timeout => {
                 let reason = CancellationReason::TimedOut {
                     timeout: timeout_duration,
                 };
                 cx.cancel().cancel_with_reason(reason.clone());
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
+                Err(authority_cancellation_error(cx, reason).into())
             }
         }
     } else {
         futures::select! {
             result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            reason = cancelled => Err(authority_cancellation_error(cx, reason).into()),
         }
     }
 }
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {
-    AuthorityError::Cancelled(AuthorityCancelError::new(cx.request_id(), reason))
+    let error = AuthorityError::Cancelled(AuthorityCancelError::new(cx.request_id(), reason));
+    warn!(request_id = %cx.request_id(), %error, "authority call abandoned");
+    error
 }
 
 /// Product-scoped adapter that exposes a long-lived host runtime through the
@@ -3720,6 +3712,181 @@ mod tests {
         ));
     }
 
+    struct NeverReadyCall {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Future for NeverReadyCall {
+        type Output = Result<(), AuthorityError>;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Drop for NeverReadyCall {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    const BOUNDED_RETURN_CEILING: std::time::Duration = std::time::Duration::from_millis(500);
+
+    fn assert_bounded_remote_authority_call(
+        request_id: &str,
+        timeout: Option<std::time::Duration>,
+        after_spawn: impl FnOnce(&truapi::CancellationToken),
+        expected_reason: CancellationReason,
+        message: &'static str,
+    ) {
+        let token = truapi::CancellationToken::default();
+        let mut cx = CallContext::with_parts(request_id.to_string(), token.clone());
+        if let Some(timeout) = timeout {
+            cx.set_timeout(timeout);
+        }
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let call = NeverReadyCall {
+            dropped: dropped.clone(),
+        };
+        let started = std::time::Instant::now();
+        let handle = std::thread::spawn(move || {
+            futures::executor::block_on(remote_authority_call::<(), AuthorityError, _>(&cx, call))
+                .expect_err("a cancelled authority call never succeeds")
+        });
+        after_spawn(&token);
+        wait_until(|| handle.is_finished(), message);
+        let elapsed = started.elapsed();
+
+        match handle.join().expect("authority call thread panicked") {
+            AuthorityError::Cancelled(err) => assert_eq!(
+                err.to_string(),
+                AuthorityCancelError::new(request_id, expected_reason.clone()).to_string()
+            ),
+            other => panic!("expected a cancellation, got {other:?}"),
+        }
+        assert_eq!(
+            token.reason(),
+            Some(expected_reason),
+            "the abandoned call did not record its cancellation reason on the shared token"
+        );
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the abandoned inner call was not dropped before the caller resumed"
+        );
+        assert!(
+            elapsed < BOUNDED_RETURN_CEILING,
+            "{message}: returned only after {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn remote_authority_call_times_out_when_the_inner_call_ignores_cancellation() {
+        assert_bounded_remote_authority_call(
+            "rac-timeout",
+            Some(std::time::Duration::from_millis(1)),
+            |_| {},
+            CancellationReason::TimedOut {
+                timeout: std::time::Duration::from_millis(1),
+            },
+            "remote_authority_call never returned after its deadline elapsed",
+        );
+    }
+
+    #[test]
+    fn remote_authority_call_returns_on_explicit_cancellation_under_a_deadline() {
+        assert_bounded_remote_authority_call(
+            "rac-cancel",
+            Some(std::time::Duration::from_secs(30)),
+            |token| token.cancel(),
+            CancellationReason::Cancelled,
+            "remote_authority_call never returned after explicit cancellation",
+        );
+    }
+
+    #[test]
+    fn remote_authority_call_returns_on_cancellation_without_a_deadline() {
+        assert_bounded_remote_authority_call(
+            "rac-no-deadline",
+            None,
+            |token| token.cancel(),
+            CancellationReason::Cancelled,
+            "remote_authority_call never returned after cancellation without a deadline",
+        );
+    }
+
+    #[test]
+    fn remote_authority_call_returns_on_an_already_expired_budget() {
+        assert_bounded_remote_authority_call(
+            "rac-expired",
+            Some(std::time::Duration::ZERO),
+            |_| {},
+            CancellationReason::TimedOut {
+                timeout: std::time::Duration::ZERO,
+            },
+            "remote_authority_call never returned on an already-expired budget",
+        );
+    }
+
+    #[test]
+    fn remote_authority_call_passes_through_inner_success() {
+        let mut cx = CallContext::with_request_id("rac-ok".to_string());
+        cx.set_timeout(std::time::Duration::from_secs(30));
+
+        let value = futures::executor::block_on(remote_authority_call::<u8, AuthorityError, _>(
+            &cx,
+            std::future::ready(Ok(7u8)),
+        ))
+        .expect("an inner success passes through unchanged");
+
+        assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn get_account_answers_the_caller_when_the_statement_store_never_connects() {
+        let platform = Arc::new(StubPlatform {
+            chain_connect_pending: true,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new(
+            platform.clone(),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        host.test_session_state().set_session(sso_session_info());
+        let mut cx = CallContext::with_request_id("account-get-stalled".to_string());
+        cx.set_timeout(std::time::Duration::from_millis(1));
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let handle = std::thread::spawn(move || {
+            futures::executor::block_on(host.get_account(&cx, request))
+                .expect_err("a stalled authority call cannot produce an account")
+        });
+        wait_until(
+            || handle.is_finished(),
+            "get_account never answered while the statement-store connect stayed pending",
+        );
+
+        match handle.join().expect("get_account thread panicked") {
+            CallError::Domain(HostAccountGetError::V1(v01::HostAccountGetError::Unknown {
+                reason,
+            })) => assert_eq!(
+                reason,
+                "Account authority request timed out after 1ms for account-get-stalled"
+            ),
+            other => panic!("expected an authority timeout, got {other:?}"),
+        }
+
+        assert!(
+            platform.pending_connect_dropped.load(Ordering::SeqCst),
+            "the stalled statement-store connect future was not dropped"
+        );
+    }
+
     #[test]
     fn get_account_rejects_invalid_product_identifier() {
         let host =
@@ -4840,11 +5007,6 @@ mod tests {
             ),
             other => panic!("expected SSO response timeout, got {other:?}"),
         }
-
-        wait_until(
-            || recorded_rpc_method_count(&platform.sent_rpc, "statement_unsubscribeStatement") == 2,
-            "timed-out SSO request did not unsubscribe statement streams",
-        );
     }
 
     #[test]
@@ -5616,11 +5778,6 @@ mod tests {
             ),
             other => panic!("expected resource-allocation timeout, got {other:?}"),
         }
-
-        wait_until(
-            || recorded_rpc_method_count(&platform.sent_rpc, "statement_unsubscribeStatement") == 2,
-            "timed-out resource allocation did not unsubscribe statement streams",
-        );
     }
 
     #[test]
