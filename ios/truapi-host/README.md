@@ -9,6 +9,7 @@ The package lives in the truapi repo next to the Rust core it wraps. `Package.sw
 The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 
 - [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostCore` (owning wrapper around the UniFFI-generated `NativeTrUApiCore`, with the localhost WS bridge, session controls, and native change notifications), `TrUAPIHostCoreProtocol`, `RuntimeConfig`, and `LocalhostBridgeBootstrap`.
+- [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) — `TrUAPIHost.installProductScripts(into:core:endpoint:)`, which registers the bootstrap and the lockdown container with the frame scopes the lockdown depends on and peeks the WebRTC decision. The supported way to wire a product web view.
 - the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
 - `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
 - [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
@@ -363,22 +364,20 @@ core.notifyPreimageChanged(key: preimageKey, value: preimageBytesOrNil)
 core.notifyChainResponse(connectionId: chainConnectionId, json: jsonRpcResponse)
 core.notifyChainClosed(connectionId: chainConnectionId)
 
-// Both scripts must be registered before the web view loads the product page,
-// and in this order: the bootstrap publishes the bridge endpoint on
-// `window.__truapi_localhost`; the container script then locks down the
-// page's platform APIs and reads that endpoint at eval time.
+// Register the bootstrap + lockdown container before the web view loads the
+// product page. `installProductScripts` owns the two properties that are easy to
+// get wrong and silently fatal: the container goes into EVERY frame (a frame
+// without it has pristine fetch/WebSocket/RTCPeerConnection, and a product
+// reaches one through an `<iframe>` in its own HTML), while the bootstrap stays
+// main-frame-only so a subframe has no bridge and no policy and fails closed. It
+// also resolves the WebRTC decision by peeking the core rather than prompting.
+// Do not register these scripts by hand.
 let contentController = WKUserContentController()
-let bootstrapScript = LocalhostBridgeBootstrap.script(port: endpoint.port, token: endpoint.token)
-contentController.addUserScript(WKUserScript(
-    source: bootstrapScript,
-    injectionTime: .atDocumentStart,
-    forMainFrameOnly: true
-))
-contentController.addUserScript(WKUserScript(
-    source: try ContainerScriptBundle.load(),
-    injectionTime: .atDocumentStart,
-    forMainFrameOnly: true
-))
+try TrUAPIHost.installProductScripts(
+    into: contentController,
+    core: core,
+    endpoint: endpoint
+)
 
 let configuration = WKWebViewConfiguration()
 configuration.userContentController = contentController
