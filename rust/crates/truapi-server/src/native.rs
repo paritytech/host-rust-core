@@ -2388,13 +2388,13 @@ mod tests {
             native_host_runtime_config(),
         )
         .expect("host runtime config should be valid");
-        let spa = host
+        let app = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
                 native_execution_config("shared.dot", ProductExecutionKind::App),
             )
-            .expect("SPA execution should open");
+            .expect("App execution should open");
         let chat_host = Arc::new(EventCallbacks::new());
         let chat = host
             .open_product_execution(
@@ -2404,9 +2404,9 @@ mod tests {
             )
             .expect("Chat execution should open");
 
-        assert!(Arc::ptr_eq(&spa.runtime, &chat.runtime));
+        assert!(Arc::ptr_eq(&app.runtime, &chat.runtime));
         assert!(matches!(
-            spa.publish_chat_action(text_chat_action("denied")),
+            app.publish_chat_action(text_chat_action("denied")),
             Err(crate::ProductRuntimeError::Denied)
         ));
         chat.publish_chat_action(text_chat_action("buffered"))
@@ -3101,7 +3101,7 @@ mod tests {
                 None,
                 native_execution_config("chain.dot", ProductExecutionKind::App),
             )
-            .expect("SPA execution should open");
+            .expect("App execution should open");
         let mut shared_responses = host.events.register_chain(41);
         let mut scoped_responses = execution.events.register_chain(41);
         let response = r#"{"jsonrpc":"2.0","id":"truapi:1","result":true}"#.to_string();
