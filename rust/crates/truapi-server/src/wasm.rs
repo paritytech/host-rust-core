@@ -1021,6 +1021,30 @@ impl WasmSigningHostRuntime {
     }
 }
 
+#[wasm_bindgen(js_name = deriveProductAccountPublicKey)]
+pub fn derive_product_account_public_key(
+    product_subtree_public_key: Vec<u8>,
+    derivation_index: Vec<u8>,
+) -> Result<Vec<u8>, JsValue> {
+    let subtree = <[u8; 32]>::try_from(product_subtree_public_key.as_slice())
+        .map_err(|_| JsValue::from_str("product subtree public key must be 32 bytes"))?;
+    let index = v01::DerivationIndex::decode(&mut derivation_index.as_slice())
+        .map_err(|err| JsValue::from_str(&format!("derivation index did not decode: {err}")))?;
+    crate::host_logic::product_account::derive_product_public_key(
+        subtree,
+        crate::host_logic::product_account::derivation_index_bytes(&index),
+    )
+    .map(|public_key| public_key.to_vec())
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen(js_name = productAccountAddress)]
+pub fn product_account_address(public_key: Vec<u8>) -> Result<String, JsValue> {
+    let public_key = <[u8; 32]>::try_from(public_key.as_slice())
+        .map_err(|_| JsValue::from_str("product account public key must be 32 bytes"))?;
+    Ok(crate::host_logic::product_account::product_public_key_to_address(public_key))
+}
+
 /// Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`).
 /// Hosts may call this during boot, or again at any time to re-tune verbosity.
 /// Unknown values are parsed as `off`.

@@ -134,6 +134,36 @@ throwing renderer all arrive as `onError`. Both entry points sit behind the same
 access policy as every other Chat call: a connection that is not a `Worker`
 execution with a live session is refused.
 
+## Product account addresses
+
+A host that stores the core's `ProductSubtree` slot can name the account a
+review will sign with, so the review can carry an address and a fee rather than
+a bare derivation path. Both calls are pure and need no runtime or session, so
+`default()` alone is enough:
+
+```ts
+import init, {
+  deriveProductAccountPublicKey,
+  productAccountAddress,
+} from "@parity/truapi-host/wasm/web";
+import { DerivationIndex } from "@parity/truapi";
+
+await init();
+
+// `subtreePublicKey` is the 32 bytes read from the host's own
+// `ProductSubtree { sessionId, productId }` slot.
+const publicKey = deriveProductAccountPublicKey(
+  subtreePublicKey,
+  DerivationIndex.enc(account.derivationIndex),
+);
+const address = productAccountAddress(publicKey);
+```
+
+The index crosses as a SCALE-encoded `DerivationIndex`, the same value a review
+already carries, so the 32-byte chain code behind it stays core-owned and a host
+never reconstructs it. `productAccountAddress` applies the prefix host-spec C.6
+fixes, rather than leaving each host to choose one.
+
 ## Generated WASM artefacts
 
 The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.

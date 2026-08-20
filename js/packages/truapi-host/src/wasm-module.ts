@@ -62,4 +62,15 @@ export interface WasmModuleShape {
     runtimeConfig: unknown,
   ) => WorkerProductRuntime;
   setLogLevel?: (level: string) => void;
+  /**
+   * Derive a product account public key from that product's hard-subtree
+   * public key and a SCALE-encoded `DerivationIndex`. Pure: no runtime or
+   * session needed, so a host can call it after `default()` alone.
+   */
+  deriveProductAccountPublicKey: (
+    productSubtreePublicKey: Uint8Array,
+    derivationIndex: Uint8Array,
+  ) => Uint8Array;
+  /** SS58 address for a product account public key, at the core's prefix. */
+  productAccountAddress: (publicKey: Uint8Array) => string;
 }
