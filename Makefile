@@ -233,6 +233,8 @@ provider-swift-check: provider-swift ## Fail if the committed TrUAPIProvider bin
 		$(PROVIDER_SWIFT_TMP)/truapi_provider.swift \
 		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/truapi_providerFFI.h \
 		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.h \
+		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/module.modulemap \
+		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.modulemap \
 		&& echo "Committed TrUAPIProvider bindings are current." \
 		|| { echo "Committed TrUAPIProvider bindings are stale: run 'make provider-ios'."; exit 1; }
 

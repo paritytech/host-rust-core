@@ -10,6 +10,7 @@
 //! background thread pumps the response stream and invokes it until the
 //! connection closes.
 
+use std::fmt;
 use std::sync::{Arc, Weak};
 
 use futures::executor::block_on;
@@ -136,6 +137,39 @@ impl Drop for PumpGuard {
 pub const CLOSE_REASON_MAX_CHARS: usize = 256;
 
 /// Bound a listener-authored reason to [`CLOSE_REASON_MAX_CHARS`] characters.
+/// Render `value` into at most [`CLOSE_REASON_MAX_CHARS`] characters without
+/// materializing the whole rendering first. A listener's reason is unbounded at
+/// the source, so `to_string()` on it peaks far above what we keep.
+fn bounded_display(value: &dyn fmt::Display) -> String {
+    use fmt::Write as _;
+
+    struct Capped {
+        out: String,
+        remaining: usize,
+    }
+
+    impl fmt::Write for Capped {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            for character in text.chars() {
+                if self.remaining == 0 {
+                    return Ok(());
+                }
+                self.out.push(character);
+                self.remaining -= 1;
+            }
+            Ok(())
+        }
+    }
+
+    let mut capped = Capped {
+        out: String::new(),
+        remaining: CLOSE_REASON_MAX_CHARS,
+    };
+    // Writing into a String cannot fail.
+    let _ = write!(capped, "{value}");
+    capped.out
+}
+
 fn bounded_reason(reason: String) -> String {
     match reason.char_indices().nth(CLOSE_REASON_MAX_CHARS) {
         Some((end, _)) => reason[..end].to_string(),
@@ -249,7 +283,7 @@ async fn pump_responses(
             // throws a *declared* `ChainProviderError` is lifted by uniffi directly,
             // never crossing that impl, so this is the only bound on that path.
             reason = ChainCloseReason::ListenerFailed {
-                reason: bounded_reason(error.to_string()),
+                reason: bounded_display(&error),
             };
             break;
         }
