@@ -310,8 +310,6 @@ mod tests {
             truapi_platform::ProductExecutionKind::Worker,
         );
 
-        // `App` and `Widget` are one capability class: both are denied what
-        // only a `Worker` may reach.
         assert!(!app.allows_execution(truapi_platform::ProductExecutionKind::Worker));
         assert!(!widget.allows_execution(truapi_platform::ProductExecutionKind::Worker));
         assert!(worker.allows_execution(truapi_platform::ProductExecutionKind::Worker));

@@ -865,6 +865,22 @@ pub enum CoreStorageKey {
     /// the previous key can no longer reach this device.
     #[codec(index = 9)]
     DeviceEncryptionKey,
+    /// One product's hard-subtree public key, as the Account Holder answered it
+    /// for this paired session. Product account is a hard derivation, so the
+    /// answer is fixed for the pair and read back instead of re-asking the
+    /// wallet on every launch.
+    ///
+    /// The value is the 32-byte key with no framing, so a host can derive
+    /// product account addresses from the slot it already stores. These are
+    /// public keys: every address derived from them already appears on the
+    /// reviews the host draws.
+    #[codec(index = 10)]
+    ProductSubtree {
+        /// Stable host-derived SSO session id.
+        session_id: String,
+        /// Product whose hard subtree this key roots.
+        product_id: String,
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -911,6 +927,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::AllowanceKeys { .. } => ("AllowanceKeys", None),
         CoreStorageKey::LastProcessedPairingStatement => ("LastProcessedPairingStatement", None),
         CoreStorageKey::AutoSigningKey { product_id } => ("AutoSigningKey", Some(product_id)),
+        CoreStorageKey::ProductSubtree { product_id, .. } => ("ProductSubtree", Some(product_id)),
         CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None),
         CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None),
         CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),

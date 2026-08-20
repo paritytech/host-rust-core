@@ -167,7 +167,19 @@ export type CoreStorageKey =
    * logout and any per-user namespacing: once it changes, peers addressing
    * the previous key can no longer reach this device.
    */
-  | { tag: "DeviceEncryptionKey"; value?: undefined };
+  | { tag: "DeviceEncryptionKey"; value?: undefined }
+  /**
+   * One product's hard-subtree public key, as the Account Holder answered it
+   * for this paired session. Product account is a hard derivation, so the
+   * answer is fixed for the pair and read back instead of re-asking the
+   * wallet on every launch.
+   *
+   * The value is the 32-byte key with no framing, so a host can derive
+   * product account addresses from the slot it already stores. These are
+   * public keys: every address derived from them already appears on the
+   * reviews the host draws.
+   */
+  | { tag: "ProductSubtree"; value: { sessionId: string; productId: string } };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -575,6 +587,10 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
       }>,
       StatementRenewalTargets: S._void,
       DeviceEncryptionKey: S._void,
+      ProductSubtree: S.Struct({
+        sessionId: S.str,
+        productId: S.str,
+      }) as S.Codec<{ sessionId: string; productId: string }>,
     }),
 );
 

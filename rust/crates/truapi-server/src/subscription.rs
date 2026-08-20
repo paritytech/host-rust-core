@@ -664,8 +664,6 @@ mod tests {
                 value: bomb,
             },
         });
-        // Over the depth bound the item does not decode, which is a failure
-        // rather than a quiet end.
         assert!(matches!(
             futures::executor::block_on(nested.next()),
             Some(Err(_))
@@ -754,8 +752,7 @@ mod tests {
             },
         });
 
-        // A tree that does not decode is a failure, not a quiet end: the host
-        // must not keep the last partial tree on screen as if it were final.
+        // A partial tree left on screen as final is the failure this prevents.
         assert!(matches!(
             futures::executor::block_on(malformed.next()),
             Some(Err(_))
@@ -781,9 +778,6 @@ mod tests {
             },
         });
 
-        // The product only sends `_interrupt` when it cannot serve the render;
-        // completing its observable deliberately sends nothing. So an interrupt
-        // must surface as an error and never as a normal completion.
         assert!(matches!(
             futures::executor::block_on(declined.next()),
             Some(Err(_))
@@ -799,8 +793,6 @@ mod tests {
         let manager = HostInitiatedSubscriptionManager::new();
         let mut render = manager.start::<u32>(host_ids(), vec![], transport);
 
-        // Closing the manager is host-side cancellation, not a product
-        // failure, so it ends the stream with no error terminal.
         manager.close();
 
         assert_eq!(futures::executor::block_on(render.next()), None);

@@ -100,11 +100,9 @@ export interface ProductRuntimeConfig {
 
 /** One stored custom Chat message the host wants the product to draw. */
 export interface CustomMessageRenderRequest {
-  /** Id of the stored message, as the host recorded it. */
   messageId: string;
-  /** Product-defined message type, used to pick a renderer. */
+  /** Selects which of the product's renderers draws the message. */
   messageType: string;
-  /** Opaque product-authored message body. */
   payload: Uint8Array;
 }
 

@@ -294,7 +294,8 @@ impl PairingHost {
         result
     }
 
-    /// Fetch and cache a product's hard-subtree public key from the Account Holder.
+    /// Resolve a product's hard-subtree public key, asking the Account Holder
+    /// only when neither the memory cache nor storage already holds it.
     pub(super) async fn remote_product_subtree_public_key(
         &self,
         cx: &CallContext,
@@ -310,6 +311,13 @@ impl PairingHost {
             .expect("product subtree cache mutex poisoned")
             .get(&cache_key)
             .copied()
+        {
+            return Ok(public_key);
+        }
+
+        if let Some(public_key) = self
+            .stored_product_subtree(session, lifecycle_epoch, cache_key.clone())
+            .await
         {
             return Ok(public_key);
         }
@@ -332,7 +340,10 @@ impl PairingHost {
         let public_key = response
             .product_public_key
             .map_err(remote_authority_error)?;
-        if !self.cache_product_subtree_if_current(session, lifecycle_epoch, cache_key, public_key) {
+        if !self
+            .persist_product_subtree_if_current(session, lifecycle_epoch, cache_key, public_key)
+            .await
+        {
             return Err(AuthorityError::Disconnected);
         }
         Ok(public_key)

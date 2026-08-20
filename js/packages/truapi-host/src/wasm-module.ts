@@ -5,7 +5,6 @@
 
 import type { PermissionAuthorizationRuntime } from "./worker-permission-authorization.js";
 
-/** Cancellable observation of one custom-message render instance. */
 export interface WorkerCustomRendererSubscription {
   cancel(): void;
   free(): void;
@@ -16,10 +15,7 @@ export interface WorkerProductRuntime {
   receiveFrame(frame: Uint8Array): Promise<void>;
   dispose(): void;
   free(): void;
-  /**
-   * Publish a SCALE-encoded `HostChatActionSubscribeItem` into this
-   * connection's action stream. Throws when the connection may not reach Chat.
-   */
+  /** Throws when the connection may not reach Chat. */
   publishChatAction(action: Uint8Array): void;
   /**
    * Start the host-initiated render subscription for one stored custom Chat

@@ -710,9 +710,7 @@ export function createWebWorkerPairingHostRuntime(
         case "renderCustomMessageItem": {
           const sink = state.customRenders.get(msg.renderId);
           if (!sink) break;
-          // A tree the host's codec cannot decode, or a renderer that throws,
-          // must end this render rather than escape the worker listener and
-          // strand it with neither `onComplete` nor `onError`.
+          // Escaping the listener would strand the render with no terminal.
           try {
             sink.onUpdate(CustomRendererNodeCodec.dec(msg.node));
           } catch (err) {
