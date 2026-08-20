@@ -25,8 +25,8 @@ mod signing_host;
 pub(crate) mod sso_pairing;
 /// SSO remote request/response messaging over the statement store.
 pub(crate) mod sso_remote;
-/// Native Statement Store and Bulletin allowance allocation.
-#[cfg(not(target_arch = "wasm32"))]
+/// Statement Store and Bulletin allowance allocation. The Bulletin claim
+/// path compiles for every target; PGAS and renewal stay native-only.
 pub mod statement_allowance;
 /// `StatementStore` surface: proofs plus submit and subscribe flows.
 pub(crate) mod statement_store;

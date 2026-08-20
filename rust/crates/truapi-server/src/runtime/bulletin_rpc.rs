@@ -245,7 +245,6 @@ impl BulletinRpc {
     }
 
     /// Open a raw RPC client over the configured Bulletin chain.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn client(
         &self,
         label: &'static str,

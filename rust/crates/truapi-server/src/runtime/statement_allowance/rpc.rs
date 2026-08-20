@@ -1,4 +1,4 @@
-//! Host-backed JSON-RPC helpers for statement-store allowance registration.
+//! JSON-RPC helpers for People-chain and Bulletin allowance allocation.
 
 use core::time::Duration;
 use std::collections::HashMap;
@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use futures::{FutureExt, pin_mut};
 use serde_json::{Value, json};
 use subxt_rpcs::RpcClient as HostRpcClient;
-use subxt_rpcs::client::{RpcClient as NativeRpcClient, RpcParams, rpc_params};
+#[cfg(not(target_arch = "wasm32"))]
+use subxt_rpcs::client::RpcClient as NativeRpcClient;
+use subxt_rpcs::client::{RpcParams, rpc_params};
 use thiserror::Error;
 
 use super::StatementAllowanceError;
@@ -14,7 +16,7 @@ use super::StatementAllowanceError;
 /// Timeout for an allowance registration extrinsic to reach a block.
 const SUBMIT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Error from the native JSON-RPC surface used by allowance allocation.
+/// Error from the JSON-RPC surface used by allowance allocation.
 #[derive(Debug, Error)]
 pub enum RpcError {
     /// Opening a direct RPC URL failed.
@@ -69,6 +71,7 @@ pub struct RpcClient {
 
 impl RpcClient {
     /// Open a native JSON-RPC connection to `url`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect(url: &str) -> Result<Self, StatementAllowanceError> {
         let inner = NativeRpcClient::from_insecure_url(url)
             .await
