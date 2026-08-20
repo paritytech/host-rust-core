@@ -41,6 +41,9 @@ use std::time::Instant;
 use web_time::Instant;
 
 use crate::chain_runtime::RuntimeFailure;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use crate::host_core::HostAllowanceOrigin;
 use crate::host_logic::bulletin::preimage_key;
 use crate::host_logic::dotns::{NavigateDecision, external_host, parse_navigate};
 use crate::host_logic::features::{chain_info, feature_supported, supported_chains};
@@ -603,6 +606,52 @@ impl ProductRuntimeHost {
         let service =
             PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
         service.set_authorization_status(&request, status).await
+    }
+
+    /// Allocate product-scoped resources on the host's own initiative.
+    ///
+    /// Reaches the same authority operation as [`ResourceAllocation::request`]
+    /// without raising [`UserConfirmationReview::ResourceAllocation`]: that
+    /// review asks the user to approve a *product's* request, and there is no
+    /// product asking here. Hosts that want to prompt for a host-initiated
+    /// allocation own that decision, and `origin` records which lifecycle
+    /// moment asked so a host policy can branch on it.
+    #[instrument(
+        skip_all,
+        fields(runtime.method = "resource_allocation.host_request", origin = ?origin)
+    )]
+    pub(crate) async fn allocate_resources_for_host(
+        &self,
+        resources: Vec<v01::AllocatableResource>,
+        origin: HostAllowanceOrigin,
+    ) -> Result<Vec<v01::AllocationOutcome>, v01::GenericError> {
+        let Some(session) = self.authority.current_session() else {
+            return Err(v01::GenericError {
+                reason: "No active session".to_string(),
+            });
+        };
+        let mut cx = CallContext::with_request_id(self.host_allowance_request_id(origin));
+        cx.set_timeout(RESOURCE_ALLOCATION_REMOTE_AUTHORITY_RESPONSE_TIMEOUT);
+        let request = v01::HostRequestResourceAllocationRequest { resources };
+        remote_authority_call(
+            &cx,
+            self.authority
+                .allocate_resources(&cx, &session, self.product_id(), request),
+        )
+        .await
+        .map(|response| response.outcomes)
+        .map_err(|err| v01::GenericError {
+            reason: err.to_string(),
+        })
+    }
+
+    /// Correlation id for a host-initiated allowance request. Unique per call
+    /// because the SSO channel matches responses on it, so two concurrent
+    /// host allocations must not share one.
+    fn host_allowance_request_id(&self, origin: HostAllowanceOrigin) -> String {
+        static NEXT_HOST_ALLOWANCE_REQUEST: AtomicU64 = AtomicU64::new(0);
+        let sequence = NEXT_HOST_ALLOWANCE_REQUEST.fetch_add(1, Ordering::Relaxed);
+        format!("host-allowance-{}-{sequence}", origin.as_str())
     }
 
     #[instrument(skip_all, fields(runtime.method = "permissions.remote_authorization"))]
@@ -5515,6 +5564,70 @@ mod tests {
             )) => assert_eq!(reason, "No active session"),
             other => panic!("expected no-session resource allocation error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn host_allowance_allocation_rejects_without_session() {
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let err = futures::executor::block_on(host.allocate_resources_for_host(
+            vec![v01::AllocatableResource::StatementStoreAllowance],
+            HostAllowanceOrigin::StartupReadiness,
+        ))
+        .unwrap_err();
+        assert_eq!(err.reason, "No active session");
+    }
+
+    /// A product request on this platform raises the review and fails closed.
+    /// The host path must not consult it at all. Asserting the product path
+    /// first keeps the "no review" half from passing vacuously.
+    #[test]
+    fn host_allowance_allocation_raises_no_confirmation_review() {
+        let platform = Arc::new(StubPlatform {
+            resource_allocation_confirmed: false,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        install_pairing_session(&host, session_info());
+        let reviews = || {
+            platform
+                .resource_allocation_reviews
+                .lock()
+                .expect("resource allocation review list mutex poisoned")
+                .len()
+        };
+
+        let cx = CallContext::default();
+        let declined = futures::executor::block_on(ResourceAllocation::request(
+            &host,
+            &cx,
+            resource_allocation_request(),
+        ));
+        assert!(declined.is_err(), "product path should fail closed here");
+        assert_eq!(reviews(), 1, "product path must raise exactly one review");
+
+        let outcome = futures::executor::block_on(host.allocate_resources_for_host(
+            vec![v01::AllocatableResource::StatementStoreAllowance],
+            HostAllowanceOrigin::ForegroundRenewal,
+        ));
+        assert_eq!(
+            reviews(),
+            1,
+            "host-initiated allocation must not raise the product confirmation review"
+        );
+        // Whatever the stub authority answers, it must not be the decline the
+        // product path produces from the same platform.
+        if let Err(err) = outcome {
+            assert_ne!(err.reason, "User rejected resource allocation");
+        }
+    }
+
+    #[test]
+    fn host_allowance_request_ids_are_unique_per_call() {
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let first = host.host_allowance_request_id(HostAllowanceOrigin::Recovery);
+        let second = host.host_allowance_request_id(HostAllowanceOrigin::Recovery);
+        assert_ne!(first, second);
+        assert!(first.starts_with("host-allowance-recovery-"), "{first}");
     }
 
     #[test]

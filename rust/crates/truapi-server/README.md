@@ -166,6 +166,15 @@ PermissionsService
 CoreStorageKey::PermissionAuthorization { product_id, request }
 ```
 
+`HostAdmin::allocate_allowances(resources, origin)` allocates product-scoped
+resources on the host's own initiative — startup warm-up, foreground re-check,
+recovery after a rejection. It reaches the same authority operation as the
+product-facing `ResourceAllocation` call but does not raise that call's
+confirmation review, which exists to put a *product's* request to the user. A
+host that wants to prompt for its own maintenance work decides that itself, and
+`HostAllowanceOrigin` says which lifecycle moment asked. See
+[RFC-0028](../../../docs/rfcs/0028-host-allowance-admin.md).
+
 The embedder builds a role handle, `PairingHostRuntime::new(...)` or
 `SigningHostRuntime::new(...)`, then calls `product_runtime(product, sink)` for
 each product connection. Role-specific operations live only on the matching handle:
