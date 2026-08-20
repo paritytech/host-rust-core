@@ -647,6 +647,16 @@ impl SigningHostRuntime {
             .map(|now| crate::statement_allowance::renewal::next_tick_delay(now.as_secs()))
             .unwrap_or(std::time::Duration::from_secs(3_600))
     }
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `None` until a pass has run, which is "not yet" rather than healthy. A host
+    /// driving the loop has no return value to inspect, so this is where it learns
+    /// that a period was exhausted and an allowance went unrenewed.
+    pub fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::statement_allowance::renewal::StatementRenewalReport> {
+        self.signing_host.last_statement_renewal_report()
+    }
 }
 
 /// Adapters scoped to one product connection: the platform serving its

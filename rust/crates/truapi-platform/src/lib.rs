@@ -278,10 +278,9 @@ pub fn is_product_identifier(identifier: &str) -> bool {
     normalize_product_identifier(identifier).is_ok()
 }
 
-/// Top-level domains that dotNS deployments register product names under:
-/// `dot` on Polkadot, `paseo` on Paseo, `test` on Previewnet. Each network
-/// declares its TLD via the dotNS registry `tld()` view; this list mirrors
-/// the deployed networks.
+/// Top-level domains that dotNS deployments register product names under.
+/// Each network declares its own, so the set spans every network a host can
+/// be pointed at rather than just the production one.
 pub const DOTNS_TLDS: &[&str] = &["dot", "paseo", "test"];
 
 /// Whether `normalized` ends in one of [`DOTNS_TLDS`]. Expects an

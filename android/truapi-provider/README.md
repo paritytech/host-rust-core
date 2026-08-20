@@ -38,12 +38,15 @@ Chain specs are compiled into the cdylib, so the app ships no spec files of its 
 
 ## Public surface
 
+Regenerate the bindings and the `.so` together. The generated Kotlin declares a checksum guard but never invokes it, so a stale `.so` paired with fresh bindings is not detected on this platform, and a callback whose arity changed keeps the same C symbol name, so the linker does not catch it either. iOS runs the equivalent guard before installing the callback vtable.
+
 Everything is generated from [`ffi.rs`](../../rust/crates/truapi-provider/src/ffi.rs) into `uniffi.truapi_provider.*`:
 
 - `ChainProvider` - construct **one per process** and share it. Every connection runs on the single embedded light client, so they share sync, peers, and warm state while keeping their own request queue and response stream. `connect(genesisHash, listener)` resolves the network from the bundled catalog (relay wiring and statement-store placement included), so the 32-byte genesis hash is the only argument.
-- `ChainMessageListener` - the host implements it; `onMessage(message)` receives each JSON-RPC response and notification, `onClosed()` fires once the stream ends.
+- `ChainMessageListener` - the host implements it; `onMessage(message)` receives each JSON-RPC response and notification, `onClosed(reason)` fires once the pump stops and names why. Both may throw: a listener that throws stops the pump for that connection rather than being called again for every response, and an exception it does not declare is reported as `ChainProviderException.Listener` instead of aborting the process.
+- `ChainCloseReason` - `StreamEnded` when the response stream ended, which includes your own `disconnect()` coming back to you, and `ListenerFailed` when your listener rejected a message and the connection was closed for it. It says why the pump stopped, not whether you should reconnect; keep an `else` branch, since variants may be added. That is source compatibility only: adding a variant does not change the `onClosed` checksum, so bindings older than the `.so` pass the integrity check and then fail to decode the reason, which surfaces as `onClosed` never firing. `reason` on `ListenerFailed` is bounded to 256 Unicode scalar values, which is up to 512 in Kotlin's `String.length` (UTF-16 code units) and up to 1024 bytes. Reconnect from a *serial* executor off the pump thread: `connect(genesisHash, listener)` refuses to run inside a listener callback and throws `ChainProviderException.Connect` if you try. Do not re-queue work with `send(request)` from `onClosed`: the connection is already closed by then, and `send` on a closed connection is dropped silently, with no exception and no response frame.
 - `ChainConnection` - `send(request)` queues a request, `disconnect()` tears the connection down. It is not called `close`, because uniffi's generated Kotlin object already has `AutoCloseable.close()` for handle disposal.
-- `ChainProviderError` - `Connect` when the genesis is outside the catalog or the transport fails, `BadGenesis` when the hash is not 32 bytes.
+- `ChainProviderException` - `Connect` when the genesis is outside the catalog or the transport fails, `BadGenesis` when the hash is not 32 bytes, `Listener` when the host's listener failed in a way it did not declare.
 
 ## Architecture
 
@@ -66,6 +69,7 @@ A connection is a raw JSON-RPC string pipe. The provider does no decoding: what 
 ```kt
 import android.os.Handler
 import android.os.Looper
+import uniffi.truapi_provider.ChainCloseReason
 import uniffi.truapi_provider.ChainConnection
 import uniffi.truapi_provider.ChainMessageListener
 import uniffi.truapi_provider.ChainProvider
@@ -78,8 +82,15 @@ class Responses : ChainMessageListener {
         main.post { /* decode and render */ }
     }
 
-    override fun onClosed() {
-        main.post { /* the stream ended: drop the connection */ }
+    override fun onClosed(reason: ChainCloseReason) {
+        // Reached whichever way the connection ended, including your own
+        // disconnect(). Reconnect on your own intent, not on this alone.
+        main.post {
+            when (reason) {
+                is ChainCloseReason.ListenerFailed -> { /* this listener rejected a message: reason.reason */ }
+                else -> { /* drop the connection */ }
+            }
+        }
     }
 }
 
