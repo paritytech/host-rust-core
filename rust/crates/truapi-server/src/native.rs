@@ -1020,16 +1020,18 @@ impl NativeProductExecution {
         )?)
     }
 
-    /// Read a product's hard-subtree public key as the core already holds it,
-    /// for hosts naming the account a review will sign with. `None` when no
-    /// session is active or the Account Holder has not been asked for this
-    /// product yet. Never asks the Account Holder.
+    /// Resolve a product's hard-subtree public key for hosts naming the account
+    /// a review will sign with. Answers from the cache, the persisted slot, or
+    /// the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+    /// an error; `None` means no active session.
     pub fn product_subtree_public_key(
         &self,
         product_id: String,
+        timeout_ms: Option<u32>,
     ) -> Result<Option<Bytes32>, HostRejection> {
         Ok(futures::executor::block_on(
-            self.admin().get_product_subtree_public_key(product_id),
+            self.admin()
+                .get_product_subtree_public_key(product_id, timeout_ms),
         )?)
     }
 

@@ -80,6 +80,7 @@ export interface WorkerPairingHostRuntime {
   getDeviceEncryptionKey(): Promise<Uint8Array>;
   getProductSubtreePublicKey(
     productId: string,
+    timeoutMs?: number,
   ): Promise<Uint8Array | undefined>;
   setLogLevel(level: LogLevel): void;
   dispose(): void;
@@ -985,6 +986,7 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
     },
     getProductSubtreePublicKey(
       productId: string,
+      timeoutMs?: number,
     ): Promise<Uint8Array | undefined> {
       return sendWorkerRequest<Uint8Array | undefined>(
         state,
@@ -995,6 +997,7 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
           kind: "getProductSubtreePublicKey",
           requestId,
           productId,
+          timeoutMs,
         }),
       );
     },
@@ -1158,9 +1161,13 @@ function buildProvider(
     },
     async getProductSubtreePublicKey(
       productId: string,
+      timeoutMs?: number,
     ): Promise<Bytes32 | undefined> {
       if (core.disposed) return undefined;
-      const key = await runtime.getProductSubtreePublicKey(productId);
+      const key = await runtime.getProductSubtreePublicKey(
+        productId,
+        timeoutMs,
+      );
       return key && bytesToHex(key);
     },
     getPermissionAuthorizationStatus(request) {

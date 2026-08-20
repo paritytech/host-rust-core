@@ -72,8 +72,9 @@ pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
 };
 
+pub(crate) use authority::AuthorityError;
 use authority::{
-    AccountAliasAuthorityRequest, AuthorityCancelError, AuthorityError, AuthoritySession,
+    AccountAliasAuthorityRequest, AuthorityCancelError, AuthoritySession,
     CreateProofAuthorityRequest, CreateTransactionAuthorityRequest,
     ListRingVrfKeysAuthorityRequest, RegisterRingVrfKeyAuthorityRequest,
     RingVrfSignAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
@@ -202,7 +203,7 @@ pub(super) const REMOTE_PERMISSION_DENIED_REASON: &str = "Permission denied";
 /// Host-spec B.6.2 recommends timing out unanswered SSO application requests
 /// after 180 seconds:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L303-L307>
-const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
 /// Keep this above the signing host's 240-second propagation ceiling while
@@ -478,16 +479,6 @@ impl ProductRuntimeHost {
     ) {
         self.authority
             .cache_product_subtree_for_test(session, product_id, public_key);
-    }
-
-    /// Read what the authority already holds for a product subtree, without
-    /// asking the Account Holder.
-    #[cfg(test)]
-    pub(crate) async fn test_known_product_subtree(&self, product_id: &str) -> Option<[u8; 32]> {
-        let session = self.authority.current_session()?;
-        self.authority
-            .known_product_subtree_public_key(&session, product_id.to_string())
-            .await
     }
 
     /// Disconnect this runtime from its paired signing host.
@@ -3853,37 +3844,6 @@ mod tests {
         assert_eq!(
             hex::encode(inner.account.public_key),
             "1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c"
-        );
-    }
-
-    #[test]
-    fn a_known_product_subtree_answers_without_asking_the_wallet() {
-        let platform = Arc::new(StubPlatform::default());
-        let host = ProductRuntimeHost::new(
-            platform.clone(),
-            runtime_config("myapp.dot"),
-            test_spawner(),
-        );
-        install_pairing_session(&host, sso_session_info());
-
-        futures::executor::block_on(async {
-            assert_eq!(
-                host.test_known_product_subtree("myapp.dot").await,
-                Some(test_product_subtree("myapp.dot"))
-            );
-            assert_eq!(host.test_known_product_subtree("other.dot").await, None);
-        });
-
-        // The miss is the assertion that matters. Asking the Account Holder
-        // means submitting an SSO statement, and that wait has no timeout of
-        // its own, so a host drawing a review would block on a sleeping phone.
-        // No statement-store traffic proves the read stopped at the miss.
-        assert!(
-            platform
-                .sent_rpc
-                .lock()
-                .expect("rpc list mutex poisoned")
-                .is_empty()
         );
     }
 

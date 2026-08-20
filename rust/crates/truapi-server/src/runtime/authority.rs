@@ -365,17 +365,6 @@ pub(crate) trait ProductAuthority: Send + Sync {
         product_id: String,
     ) -> Result<[u8; 32], AuthorityError>;
 
-    /// Return the public key of `//product//{product_id}` only when it can be
-    /// answered without asking the Account Holder.
-    ///
-    /// Pairing hosts answer from the memory cache or the persisted slot;
-    /// signing hosts derive locally, so they always answer.
-    async fn known_product_subtree_public_key(
-        &self,
-        session: &AuthoritySession,
-        product_id: String,
-    ) -> Option<[u8; 32]>;
-
     /// Sign an RFC-0023 Merlin transcript with a product account.
     async fn sign_vrf(
         &self,

@@ -824,16 +824,17 @@ impl WasmPairingHostRuntime {
             .map_err(generic_error_to_js)
     }
 
-    /// Read a product's hard-subtree public key as the core already holds it,
-    /// or `undefined` when no session is active or the Account Holder has not
-    /// been asked for this product yet. Never asks the Account Holder.
+    /// Resolve a product's hard-subtree public key from the cache, the
+    /// persisted slot, or the Account Holder. `timeoutMs` bounds that wait and
+    /// exceeding it rejects. `undefined` when no session is active.
     #[wasm_bindgen(js_name = productSubtreePublicKey)]
     pub async fn product_subtree_public_key(
         &self,
         product_id: String,
+        timeout_ms: Option<u32>,
     ) -> Result<Option<Vec<u8>>, JsValue> {
         self.runtime
-            .product_subtree_public_key(&product_id)
+            .product_subtree_public_key(&product_id, timeout_ms)
             .await
             .map(|key| key.map(|key| key.to_vec()))
             .map_err(generic_error_to_js)

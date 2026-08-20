@@ -269,7 +269,11 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       void handleGetDeviceEncryptionKey(msg.requestId);
       break;
     case "getProductSubtreePublicKey":
-      void handleGetProductSubtreePublicKey(msg.requestId, msg.productId);
+      void handleGetProductSubtreePublicKey(
+        msg.requestId,
+        msg.productId,
+        msg.timeoutMs,
+      );
       break;
     case "notifySessionStoreChanged":
       runtime?.notifySessionStoreChanged();
@@ -511,6 +515,7 @@ function handleGetSessionChatIdentityKey(requestId: number): void {
 async function handleGetProductSubtreePublicKey(
   requestId: number,
   productId: string,
+  timeoutMs: number | undefined,
 ): Promise<void> {
   if (!runtime) {
     postToMain({
@@ -526,7 +531,7 @@ async function handleGetProductSubtreePublicKey(
       kind: "productSubtreePublicKeyResponse",
       requestId,
       ok: true,
-      key: await runtime.productSubtreePublicKey(productId),
+      key: await runtime.productSubtreePublicKey(productId, timeoutMs),
     });
   } catch (err) {
     postToMain({

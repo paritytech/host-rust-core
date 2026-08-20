@@ -2010,17 +2010,6 @@ impl PairingHost {
             .await
     }
 
-    async fn known_product_subtree_public_key(
-        &self,
-        session: &AuthoritySession,
-        product_id: String,
-    ) -> Option<[u8; 32]> {
-        let session = self.current_private_session(session).ok()?;
-        let sso = session.sso.as_ref()?;
-        let cache_key = (SsoSessionKey::from_session(sso), product_id);
-        self.known_product_subtree(&session, cache_key).await
-    }
-
     async fn sign_vrf(
         &self,
         cx: &CallContext,
@@ -2431,14 +2420,6 @@ impl ProductAuthority for PairingHost {
         product_id: String,
     ) -> Result<[u8; 32], AuthorityError> {
         PairingHost::product_subtree_public_key(self, cx, session, product_id).await
-    }
-
-    async fn known_product_subtree_public_key(
-        &self,
-        session: &AuthoritySession,
-        product_id: String,
-    ) -> Option<[u8; 32]> {
-        PairingHost::known_product_subtree_public_key(self, session, product_id).await
     }
 
     async fn sign_vrf(

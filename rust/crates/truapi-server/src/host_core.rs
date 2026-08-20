@@ -12,13 +12,15 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
+use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::{Decode, Encode};
 use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
+use truapi::{CallContext, CancellationReason};
 use truapi_platform::ChatPlatform;
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
@@ -30,8 +32,9 @@ use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
 use crate::runtime::{
-    ChatConnection, LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost,
-    ResponderExit, RuntimeServices, SigningHostRole, answer_remote_message, respond_to_pairing,
+    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairingHostRole,
+    ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices, SigningHostRole,
+    answer_remote_message, respond_to_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -237,14 +240,15 @@ impl PairingHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
-    /// Read `product_id`'s hard-subtree public key from the cache or the
-    /// persisted slot, without asking the Account Holder.
+    /// Resolve `product_id`'s hard-subtree public key from the cache, the
+    /// persisted slot, or the Account Holder. `timeout_ms` bounds that wait.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.product_subtree_public_key"))]
     pub async fn product_subtree_public_key(
         &self,
         product_id: &str,
+        timeout_ms: Option<u32>,
     ) -> Result<Option<[u8; 32]>, v01::GenericError> {
-        known_product_subtree_public_key(self.pairing_host.as_ref(), product_id).await
+        product_subtree_public_key(self.pairing_host.as_ref(), product_id, timeout_ms).await
     }
 
     /// Clear the canonical paired session and all capability caches/storage
@@ -808,21 +812,28 @@ impl CoreAdmin for HostAdmin {
     async fn get_product_subtree_public_key(
         &self,
         product_id: String,
+        timeout_ms: Option<u32>,
     ) -> Result<Option<[u8; 32]>, v01::GenericError> {
-        known_product_subtree_public_key(self.authority.as_ref(), &product_id).await
+        product_subtree_public_key(self.authority.as_ref(), &product_id, timeout_ms).await
     }
 }
 
-/// Shared body of the two entry points that read a product subtree: the
-/// `CoreAdmin` method native hosts call and the pairing-host runtime method
-/// the wasm bridge wraps.
+/// Shared body of the two entry points that resolve a product subtree: the
+/// `CoreAdmin` method native hosts call and the pairing-host runtime method the
+/// wasm bridge wraps.
 ///
-/// The identifier is normalized here because the product path normalizes
-/// before it populates the cache, so an unnormalized lookup would miss a key
-/// the core is holding.
-async fn known_product_subtree_public_key(
+/// The identifier is normalized because the product path normalizes before it
+/// populates the cache, so an unnormalized lookup would miss a key the core is
+/// already holding.
+///
+/// The deadline is enforced by dropping the call rather than awaiting it after
+/// cancelling. Only the SSO response wait observes the cancellation token; the
+/// statement-store setup before it does not, so a call parked there ignores a
+/// cancel and would outlive any deadline that waited for it to finish.
+async fn product_subtree_public_key(
     authority: &(impl ProductAuthority + ?Sized),
     product_id: &str,
+    timeout_ms: Option<u32>,
 ) -> Result<Option<[u8; 32]>, v01::GenericError> {
     let product_id =
         normalize_product_identifier(product_id).map_err(|reason| v01::GenericError {
@@ -831,9 +842,31 @@ async fn known_product_subtree_public_key(
     let Some(session) = authority.current_session() else {
         return Ok(None);
     };
-    Ok(authority
-        .known_product_subtree_public_key(&session, product_id)
-        .await)
+    let timeout = timeout_ms
+        .map(|timeout_ms| Duration::from_millis(u64::from(timeout_ms)))
+        .unwrap_or(DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT);
+    let mut cx = CallContext::default();
+    cx.set_timeout(timeout);
+
+    let call = authority
+        .product_subtree_public_key(&cx, &session, product_id)
+        .fuse();
+    let deadline = futures_timer::Delay::new(timeout).fuse();
+    pin_mut!(call, deadline);
+    futures::select! {
+        result = call => result.map(Some).map_err(|error| v01::GenericError {
+            reason: error.to_string(),
+        }),
+        () = deadline => {
+            let reason = CancellationReason::TimedOut { timeout };
+            // Best effort for anything already watching the token. The call is
+            // dropped on return either way, which is what actually ends it.
+            cx.cancel().cancel_with_reason(reason.clone());
+            Err(v01::GenericError {
+                reason: format!("Product subtree request {reason}"),
+            })
+        }
+    }
 }
 
 /// Target-neutral host runtime wrapper.
@@ -1136,6 +1169,64 @@ mod tests {
     fn assert_send<T: Send>(_: T) {}
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn a_cached_subtree_answers_without_reaching_the_wallet() {
+        let platform = Arc::new(StubPlatform::default());
+        let (host_config, _) = runtime_config("myapp.dot");
+        let runtime = PairingHostRuntime::new(platform.clone(), host_config, test_spawner());
+        let session = crate::test_support::sso_session_info();
+        runtime
+            .pairing_host
+            .session_state()
+            .set_session(session.clone());
+        runtime
+            .pairing_host
+            .cache_product_subtree_for_test(&session, "myapp.dot", [9; 32]);
+
+        let key =
+            futures::executor::block_on(runtime.product_subtree_public_key("myapp.dot", Some(1)))
+                .expect("a cached subtree resolves");
+        assert_eq!(key, Some([9; 32]));
+
+        // The cache comes before the wallet. A one-millisecond deadline means
+        // anything that reached for the wallet here would time out instead of
+        // answering, and no statement-store traffic says it did not try.
+        assert!(
+            platform
+                .sent_rpc
+                .lock()
+                .expect("rpc list mutex poisoned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_timeout_bounds_the_wait_for_the_account_holder() {
+        let (host_config, _) = runtime_config("myapp.dot");
+        let runtime = PairingHostRuntime::new(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            test_spawner(),
+        );
+        runtime
+            .pairing_host
+            .session_state()
+            .set_session(crate::test_support::sso_session_info());
+
+        // Nothing answers the wallet request, and wait_for_sso_remote_response exits
+        // only on a peer answer, a disconnect, or the caller's token. Without
+        // the timeout cancelling that token the call never returns, so this
+        // test would hang rather than fail.
+        let error =
+            futures::executor::block_on(runtime.product_subtree_public_key("myapp.dot", Some(1)))
+                .expect_err("an unanswered wallet request ends at its deadline");
+        assert!(
+            error.reason.contains("timed out"),
+            "expected a timeout, got {}",
+            error.reason
+        );
+    }
 
     #[test]
     fn product_runtime_and_dispatch_future_are_send() {

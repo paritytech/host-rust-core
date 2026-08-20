@@ -102,6 +102,7 @@ export type MainToWorker =
       kind: "getProductSubtreePublicKey";
       requestId: number;
       productId: string;
+      timeoutMs: number | undefined;
     }
   | {
       kind: "publishChatAction";

@@ -1043,21 +1043,27 @@ pub trait CoreAdmin: Send + Sync {
     /// the install and matches the public key peers were told to address.
     async fn get_device_encryption_key(&self) -> Result<Bytes32, GenericError>;
 
-    /// Read `product_id`'s hard-subtree public key as the core already holds it
-    /// for the active session, so a host can name the account a review will
-    /// sign with instead of showing a bare derivation path.
+    /// Read `product_id`'s hard-subtree public key, so a host can name the
+    /// account a review will sign with instead of showing a bare derivation
+    /// path.
     ///
-    /// Answers from what a pairing host has cached or persisted and from what a
-    /// signing host derives locally. It never asks the Account Holder, because
-    /// a remote request has no timeout of its own and would leave a host
-    /// drawing a review waiting on a phone that may be asleep.
+    /// Resolves from the memory cache, then the persisted slot, then the
+    /// Account Holder. A pairing host reaching the wallet sends an SSO request,
+    /// which answers without prompting the user, though it can wake the phone.
+    /// A signing host derives locally and never waits.
     ///
-    /// `None` when no session is active, or when a pairing host has not yet
-    /// been told this product's subtree. Derive account public keys from the
+    /// `timeout_ms` bounds that wait, and exceeding it is an error rather than
+    /// `None`. The underlying wait has no deadline of its own, so a host
+    /// calling this while drawing a review should pass a timeout it is willing
+    /// to block for. `None` uses a default sized for a product awaiting a
+    /// signature, which is far too long to hold a render.
+    ///
+    /// `None` means no active session. Derive account public keys from the
     /// answer with `deriveProductAccountPublicKey`.
     async fn get_product_subtree_public_key(
         &self,
         product_id: String,
+        timeout_ms: Option<u32>,
     ) -> Result<Option<Bytes32>, GenericError>;
 }
 

@@ -501,7 +501,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
     provider.dispose();
   });
 
-  it("returns a product subtree key as hex and reports an unpaired product", async () => {
+  it("returns a product subtree key as hex and surfaces a wallet deadline", async () => {
     const worker = new FakeWorker();
     const providerPromise = createProviderFromRuntime(
       asWorker(worker),
@@ -515,10 +515,11 @@ describe("createWebWorkerPairingHostRuntime", () => {
     const provider = await finishProviderReady(worker, providerPromise);
 
     const keyBytes = new Uint8Array(32).fill(0x31);
-    const pending = provider.getProductSubtreePublicKey("myapp.dot");
+    const pending = provider.getProductSubtreePublicKey("myapp.dot", 5000);
     const msg = worker.messages.at(-1)!;
     expect(msg.kind).toBe("getProductSubtreePublicKey");
     expect(msg.productId).toBe("myapp.dot");
+    expect(msg.timeoutMs).toBe(5000);
 
     worker.emit({
       kind: "productSubtreePublicKeyResponse",
@@ -528,16 +529,17 @@ describe("createWebWorkerPairingHostRuntime", () => {
     });
     expect(await pending).toBe(bytesToHex(keyBytes));
 
-    // The core never asks the wallet on a miss, so an unpaired product
-    // resolves absent rather than hanging on a phone that may be asleep.
-    const missing = provider.getProductSubtreePublicKey("other.dot");
+    // A wallet that never answers ends at the deadline, and that is an error
+    // rather than an absent key, so a host can tell it apart from having no
+    // session at all.
+    const late = provider.getProductSubtreePublicKey("slow.dot", 1);
     worker.emit({
       kind: "productSubtreePublicKeyResponse",
       requestId: worker.messages.at(-1)!.requestId,
-      ok: true,
-      key: undefined,
+      ok: false,
+      error: "Account authority request timed out after 1ms",
     });
-    expect(await missing).toBeUndefined();
+    await expect(late).rejects.toThrow("timed out");
 
     provider.dispose();
   });
