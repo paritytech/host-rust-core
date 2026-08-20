@@ -80,15 +80,17 @@ and the
 
 #### Open Questions
 
-- The built-in identifiers `uid.dot` and `peopl.dot` are pinned to `.dot` on
-  every network, which gives the user one shared identity account and
-  personhood domain across networks. Consistency with this convention says
-  `uid.{tld}` per network, but that re-pins the mobile interop vectors and
-  needs the Account Holder to move in lockstep.
-- The recognized TLD list is compiled in (`DOTNS_TLDS`) while the registry
-  already exposes the truth per network through `tld()`. The host should
-  eventually learn the TLD from its configured network instead of a hardcoded
-  list.
+- The built-in identifiers
+  [`uid.dot` and `peopl.dot`](../../rust/crates/truapi-server/src/host_logic/product_account.rs)
+  are hardcoded with `.dot` on every network, which gives the user one shared
+  identity account and personhood domain across networks. Consistency with
+  this convention says `uid.{tld}` per network, but that re-pins the mobile
+  interop vectors and needs the Account Holder to move in lockstep.
+- The recognized TLD list is compiled in
+  ([`DOTNS_TLDS`](../../rust/crates/truapi-platform/src/lib.rs)) while the
+  registry already exposes the truth per network through `tld()`. The host
+  should eventually learn the TLD from its configured network instead of a
+  hardcoded list.
 - Graduation needs its own design: a product that wants to carry state from
   testnet to mainnet needs a registered migration or alias, not implicit
   identity.
