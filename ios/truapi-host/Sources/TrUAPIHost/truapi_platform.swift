@@ -1871,18 +1871,28 @@ public func FfiConverterTypePermissionAuthorizationStatus_lower(_ value: Permiss
 
 /**
  * Trusted kind of product executable attached to a TrUAPI connection.
+ *
+ * Mirrors the executable kinds a product manifest declares. The variants are
+ * capability classes: a connection reaches an execution-gated service only
+ * when its kind matches exactly, so `App` and `Widget` carry the same
+ * capability and differ only in how the host presents them, and `Worker` is
+ * the only kind that may serve the Chat modality.
  */
 
 public enum ProductExecutionKind: Equatable, Hashable {
 
     /**
-     * Visible single-page application entrypoint such as `app/index.html`.
+     * Visible full-page entrypoint such as `app/index.html`.
      */
-    case spa
+    case app
     /**
-     * Headless worker executable that provides the Chat modality.
+     * Visible embedded surface such as a dashboard card.
      */
-    case chat
+    case widget
+    /**
+     * Headless executable that serves the Chat modality.
+     */
+    case worker
 
 
 
@@ -1904,9 +1914,11 @@ public struct FfiConverterTypeProductExecutionKind: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .spa
+        case 1: return .app
 
-        case 2: return .chat
+        case 2: return .widget
+
+        case 3: return .worker
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1916,12 +1928,16 @@ public struct FfiConverterTypeProductExecutionKind: FfiConverterRustBuffer {
         switch value {
 
 
-        case .spa:
+        case .app:
             writeInt(&buf, Int32(1))
 
 
-        case .chat:
+        case .widget:
             writeInt(&buf, Int32(2))
+
+
+        case .worker:
+            writeInt(&buf, Int32(3))
 
         }
     }

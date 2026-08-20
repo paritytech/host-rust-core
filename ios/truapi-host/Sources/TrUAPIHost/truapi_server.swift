@@ -2481,6 +2481,14 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
+     * Resolve a product's hard-subtree public key for hosts naming the account
+     * a review will sign with. Answers from the cache, the persisted slot, or
+     * the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+     * an error; `None` means no active session.
+     */
+    func productSubtreePublicKey(productId: String, timeoutMs: UInt32?) throws  -> Bytes32?
+
+    /**
      * Publish one native Chat action, buffering it until the product
      * connection subscribes.
      */
@@ -2662,6 +2670,23 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
     uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
             self.uniffiCloneHandle(),
         FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Resolve a product's hard-subtree public key for hosts naming the account
+     * a review will sign with. Answers from the cache, the persisted slot, or
+     * the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+     * an error; `None` means no active session.
+     */
+open func productSubtreePublicKey(productId: String, timeoutMs: UInt32?)throws  -> Bytes32?  {
+    return try  FfiConverterOptionTypeBytes32.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_product_subtree_public_key(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(productId),
+        FfiConverterOptionUInt32.lower(timeoutMs),uniffiCallStatus
     )
 })
 }
@@ -5829,9 +5854,16 @@ public protocol NativeCustomRendererObserver: AnyObject, Sendable {
     func onUpdate(node: CustomRendererNode)
 
     /**
-     * Report that the renderer stream ended.
+     * Report that the renderer stream ended without drawing further trees.
+     * The last tree delivered stands.
      */
     func onComplete()
+
+    /**
+     * Report that the product could not serve this render. The last tree
+     * delivered, if any, is partial and must not be treated as final.
+     */
+    func onError(reason: String)
 
 }
 
@@ -5893,6 +5925,30 @@ fileprivate struct UniffiCallbackInterfaceNativeCustomRendererObserver {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onComplete(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onError: { (
+            uniffiHandle: UInt64,
+            reason: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onError(
+                     reason: try FfiConverterString.lift(reason)
                 )
             }
 
@@ -6558,6 +6614,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_product_subtree_public_key() != 63238) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 31503) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6687,7 +6746,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_update() != 1079) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 43817) {
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 32694) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_error() != 21230) {
         return InitializationResult.apiChecksumMismatch
     }
 

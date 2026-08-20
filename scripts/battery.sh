@@ -197,7 +197,7 @@ chat_phase() {
   rm -f "$TRUAPI_CHAT_LOG"
   "$HOST" signing-host \
     --product-id "$PRODUCT_ID" \
-    --execution-kind chat \
+    --execution-kind worker \
     --script "$CHAT_SCRIPT" \
     --auto-accept \
     ${HOST_ARGS[@]+"${HOST_ARGS[@]}"} > >(tee "$log") 2>&1 &

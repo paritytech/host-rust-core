@@ -1,5 +1,5 @@
 // End-to-end Chat content screening, run against a host that actually serves
-// chat (`truapi-host <role> --execution-kind chat`).
+// chat (`truapi-host <role> --execution-kind worker`).
 //
 // The core screens product-authored message content in the runtime layer,
 // above the platform, so a host is never handed content it would have to be

@@ -112,14 +112,22 @@ pub struct ProductContext {
 }
 
 /// Trusted kind of product executable attached to a TrUAPI connection.
+///
+/// Mirrors the executable kinds a product manifest declares. The variants are
+/// capability classes: a connection reaches an execution-gated service only
+/// when its kind matches exactly, so `App` and `Widget` carry the same
+/// capability and differ only in how the host presents them, and `Worker` is
+/// the only kind that may serve the Chat modality.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ProductExecutionKind {
-    /// Visible single-page application entrypoint such as `app/index.html`.
+    /// Visible full-page entrypoint such as `app/index.html`.
     #[default]
-    Spa,
-    /// Headless worker executable that provides the Chat modality.
-    Chat,
+    App,
+    /// Visible embedded surface such as a dashboard card.
+    Widget,
+    /// Headless executable that serves the Chat modality.
+    Worker,
 }
 
 /// Host metadata.
@@ -213,7 +221,7 @@ impl ProductContext {
     /// Build a product context, validating fields whose representation cannot
     /// be made invalid by Rust types alone.
     pub fn new(product_id: String) -> Result<Self, RuntimeConfigValidationError> {
-        Self::new_with_execution(product_id, ProductExecutionKind::Spa)
+        Self::new_with_execution(product_id, ProductExecutionKind::App)
     }
 
     /// Build a product context for a host-selected executable kind.
@@ -1036,6 +1044,29 @@ pub trait CoreAdmin: Send + Sync {
     /// Generated and persisted on first read, so the returned key is stable for
     /// the install and matches the public key peers were told to address.
     async fn get_device_encryption_key(&self) -> Result<Bytes32, GenericError>;
+
+    /// Read `product_id`'s hard-subtree public key, so a host can name the
+    /// account a review will sign with instead of showing a bare derivation
+    /// path.
+    ///
+    /// Resolves from the memory cache, then the persisted slot, then the
+    /// Account Holder. A pairing host reaching the wallet sends an SSO request,
+    /// which answers without prompting the user, though it can wake the phone.
+    /// A signing host derives locally and never waits.
+    ///
+    /// `timeout_ms` bounds that wait, and exceeding it is an error rather than
+    /// `None`. The underlying wait has no deadline of its own, so a host
+    /// calling this while drawing a review should pass a timeout it is willing
+    /// to block for. `None` uses a default sized for a product awaiting a
+    /// signature, which is far too long to hold a render.
+    ///
+    /// `None` means no active session. Derive account public keys from the
+    /// answer with `deriveProductAccountPublicKey`.
+    async fn get_product_subtree_public_key(
+        &self,
+        product_id: String,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<Bytes32>, GenericError>;
 }
 
 /// Pairing-host-only administration API exposed to host UI.
@@ -1171,6 +1202,22 @@ pub enum CoreStorageKey {
     /// the previous key can no longer reach this device.
     #[codec(index = 9)]
     DeviceEncryptionKey,
+    /// One product's hard-subtree public key, as the Account Holder answered it
+    /// for this paired session. Product account is a hard derivation, so the
+    /// answer is fixed for the pair and read back instead of re-asking the
+    /// wallet on every launch.
+    ///
+    /// The value is the 32-byte key with no framing, so a host can derive
+    /// product account addresses from the slot it already stores. These are
+    /// public keys: every address derived from them already appears on the
+    /// reviews the host draws.
+    #[codec(index = 10)]
+    ProductSubtree {
+        /// Stable host-derived SSO session id.
+        session_id: String,
+        /// Product whose hard subtree this key roots.
+        product_id: String,
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1217,6 +1264,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::AllowanceKeys { .. } => ("AllowanceKeys", None),
         CoreStorageKey::LastProcessedPairingStatement => ("LastProcessedPairingStatement", None),
         CoreStorageKey::AutoSigningKey { product_id } => ("AutoSigningKey", Some(product_id)),
+        CoreStorageKey::ProductSubtree { product_id, .. } => ("ProductSubtree", Some(product_id)),
         CoreStorageKey::AutoSigningKeys => ("AutoSigningKeys", None),
         CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None),
         CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
@@ -1914,21 +1962,22 @@ mod tests {
     #[test]
     fn product_context_encoding_matches_the_generated_host_codec() {
         // The generated TS host codec is
-        // `S.Struct({productId: S.str, executionKind: S.Status("Spa", "Chat")})`,
+        // `S.Struct({productId: S.str, executionKind: S.Status("App", "Widget", "Worker")})`,
         // so the field order and the variant indices below are the wire
         // contract every JS host decodes against. The JS half of this pair is
         // `product context encoding matches the Rust platform codec` in
         // `js/packages/truapi-host/src/host-callbacks-adapter.test.ts`, which
         // asserts the same bytes through that generated codec.
-        assert_eq!(ProductExecutionKind::Spa.encode(), [0]);
-        assert_eq!(ProductExecutionKind::Chat.encode(), [1]);
+        assert_eq!(ProductExecutionKind::App.encode(), [0]);
+        assert_eq!(ProductExecutionKind::Widget.encode(), [1]);
+        assert_eq!(ProductExecutionKind::Worker.encode(), [2]);
 
         let context =
-            ProductContext::new_with_execution("app.dot".to_string(), ProductExecutionKind::Chat)
+            ProductContext::new_with_execution("app.dot".to_string(), ProductExecutionKind::Worker)
                 .expect("product id is valid");
         assert_eq!(
             context.encode(),
-            [28, b'a', b'p', b'p', b'.', b'd', b'o', b't', 1]
+            [28, b'a', b'p', b'p', b'.', b'd', b'o', b't', 2]
         );
         assert_eq!(
             ProductContext::decode(&mut context.encode().as_slice()),
@@ -1942,7 +1991,7 @@ mod tests {
         // apply the same product-id policy as the constructor so decoding
         // cannot mint a context with an unscoped or empty product id.
         for product_id in ["evil.com", "", "  "] {
-            let frame = (product_id.to_string(), ProductExecutionKind::Spa).encode();
+            let frame = (product_id.to_string(), ProductExecutionKind::App).encode();
             assert!(
                 ProductContext::decode(&mut frame.as_slice()).is_err(),
                 "{product_id:?} must not decode into a ProductContext"
@@ -1955,7 +2004,7 @@ mod tests {
         // Derivation and product-scoped storage are keyed by `product_id`, so
         // a non-canonical id off the wire has to land in the same scope the
         // constructor would produce rather than opening a second one.
-        let frame = ("App.DOT".to_string(), ProductExecutionKind::Spa).encode();
+        let frame = ("App.DOT".to_string(), ProductExecutionKind::App).encode();
         let decoded = ProductContext::decode(&mut frame.as_slice()).expect("product id normalizes");
         assert_eq!(decoded.product_id, "app.dot");
         assert_eq!(
@@ -2244,6 +2293,18 @@ mod tests {
 }
 
 /// Host-private persistence for core-owned state.
+///
+/// Clearing product-indexed slots is the host's job. The core drops the ones
+/// it is holding when a session ends, but a product it never opened this run
+/// has no entry to drop, so those slots outlive the disconnect. A host that
+/// removes a product must clear them with the rest of that product's state, or
+/// they accumulate for the life of the install.
+///
+/// [`describe_core_storage_key`] names the product owning a slot:
+/// [`CoreStorageKeyDescription::product_id`] is `Some` exactly for the
+/// product-indexed variants, which are `PermissionAuthorization`,
+/// `AutoSigningKey`, and `ProductSubtree`. Keying host storage by that value
+/// makes the sweep a prefix delete rather than a scan.
 #[async_trait]
 pub trait CoreStorage: Send + Sync {
     /// Read a core-owned value by typed slot.
