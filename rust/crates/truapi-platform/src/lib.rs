@@ -2285,6 +2285,18 @@ mod tests {
 }
 
 /// Host-private persistence for core-owned state.
+///
+/// Clearing product-indexed slots is the host's job. The core drops the ones
+/// it is holding when a session ends, but a product it never opened this run
+/// has no entry to drop, so those slots outlive the disconnect. A host that
+/// removes a product must clear them with the rest of that product's state, or
+/// they accumulate for the life of the install.
+///
+/// [`describe_core_storage_key`] names the product owning a slot:
+/// [`CoreStorageKeyDescription::product_id`] is `Some` exactly for the
+/// product-indexed variants, which are `PermissionAuthorization`,
+/// `AutoSigningKey`, and `ProductSubtree`. Keying host storage by that value
+/// makes the sweep a prefix delete rather than a scan.
 #[async_trait]
 pub trait CoreStorage: Send + Sync {
     /// Read a core-owned value by typed slot.

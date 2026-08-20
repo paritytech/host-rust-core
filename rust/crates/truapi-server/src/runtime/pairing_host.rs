@@ -1871,8 +1871,8 @@ impl PairingHost {
     /// Drop the persisted subtree slots this run knows about for `session`.
     ///
     /// Scoped to the in-memory set, so a product never opened since launch
-    /// keeps its slot. Those address session ids that cannot recur, and the
-    /// host clears them with the rest of a product's state.
+    /// keeps its slot. Those address session ids that cannot recur, and
+    /// clearing them belongs to the host, as `CoreStorage` states.
     async fn clear_stored_product_subtrees(&self, session: &SessionInfo) {
         let Some(sso) = session.sso.as_ref() else {
             return;
