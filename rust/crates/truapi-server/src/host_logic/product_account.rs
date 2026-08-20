@@ -3,9 +3,11 @@
 //! Product subtrees use hard HDKD at `//product//{product_id}`. Individual
 //! accounts use one soft junction carrying the RFC-0022 32-byte derivation
 //! index, so a paired host can derive children from the subtree public key.
-//! Reserved built-ins additionally pin the `uid.dot` identity account and the
-//! legacy `peopl.dot` full/lite ring-VRF keyed-hash paths used by pairing
-//! attestation. RFC-0024 operational key selection comes from the registry.
+//! Reserved built-ins additionally pin the `uid.{tld}` identity account and
+//! the legacy `peopl.{tld}` full/lite ring-VRF keyed-hash paths used by
+//! pairing attestation, where `{tld}` is the host's configured network TLD
+//! (default `dot`). RFC-0024 operational key selection comes from the
+//! registry.
 //! Host-spec C.5-C.7 define the product-account derivation, SS58 address, and
 //! `ProductAccountId` shape:
 //! <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/C-account-derivation.md?plain=1#L66-L128>
@@ -18,10 +20,19 @@ use thiserror::Error;
 
 const JUNCTION_ID_LEN: usize = 32;
 const PRODUCT_JUNCTION: &str = "product";
-/// Reserved RFC-0022 product id for the public light-person identity account.
-pub const IDENTITY_PRODUCT_ID: &str = "uid.dot";
-/// Reserved RFC-0022 ring-VRF domain for full and light personhood.
-pub const PERSONHOOD_PRODUCT_ID: &str = "peopl.dot";
+/// dotNS TLD assumed when a host does not configure one, keeping today's
+/// mobile-pinned `uid.dot` and `peopl.dot` derivations.
+pub const DEFAULT_DOTNS_TLD: &str = "dot";
+/// Reserved RFC-0022 product id for the public light-person identity account
+/// on the network serving `tld`.
+pub fn identity_product_id(tld: &str) -> String {
+    format!("uid.{tld}")
+}
+/// Reserved RFC-0022 ring-VRF domain for full and light personhood on the
+/// network serving `tld`.
+pub fn personhood_product_id(tld: &str) -> String {
+    format!("peopl.{tld}")
+}
 const RING_VRF_ROOT_KEY: &[u8] = b"ring-vrf";
 
 /// Substrate sr25519 signing-context string, shared by every sr25519 signature
@@ -86,29 +97,30 @@ pub fn derivation_index_bytes(index: &truapi::v01::DerivationIndex) -> [u8; 32] 
     }
 }
 /// Derive the RFC-0022 public light-person identity account:
-/// `//product//uid.dot/index_bytes(0)`.
-pub fn derive_identity_keypair(entropy: &[u8]) -> Result<Keypair, ProductAccountError> {
+/// `//product//uid.{tld}/index_bytes(0)`.
+pub fn derive_identity_keypair(entropy: &[u8], tld: &str) -> Result<Keypair, ProductAccountError> {
     let root = derive_root_keypair_from_entropy(entropy)?;
-    let subtree = derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, IDENTITY_PRODUCT_ID])?;
+    let subtree =
+        derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, &identity_product_id(tld)])?;
     Ok(subtree.derived_key_simple(ChainCode(index_bytes(0)), []).0)
 }
 
 /// Derive the RFC-0022 full-person ring-VRF entropy at
-/// `hash(root_entropy, "ring-vrf")//peopl.dot//index_bytes(0)`.
-pub fn derive_full_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
-    derive_person_ring_vrf_entropy(root_entropy, 0)
+/// `hash(root_entropy, "ring-vrf")//peopl.{tld}//index_bytes(0)`.
+pub fn derive_full_person_ring_vrf_entropy(root_entropy: &[u8], tld: &str) -> [u8; 32] {
+    derive_person_ring_vrf_entropy(root_entropy, tld, 0)
 }
 
 /// Derive the RFC-0022 light-person ring-VRF entropy at
-/// `hash(root_entropy, "ring-vrf")//peopl.dot//index_bytes(1)`.
-pub fn derive_lite_person_ring_vrf_entropy(root_entropy: &[u8]) -> [u8; 32] {
-    derive_person_ring_vrf_entropy(root_entropy, 1)
+/// `hash(root_entropy, "ring-vrf")//peopl.{tld}//index_bytes(1)`.
+pub fn derive_lite_person_ring_vrf_entropy(root_entropy: &[u8], tld: &str) -> [u8; 32] {
+    derive_person_ring_vrf_entropy(root_entropy, tld, 1)
 }
 
-fn derive_person_ring_vrf_entropy(root_entropy: &[u8], index: u32) -> [u8; 32] {
+fn derive_person_ring_vrf_entropy(root_entropy: &[u8], tld: &str, index: u32) -> [u8; 32] {
     derive_ring_vrf_entropy(
         root_entropy,
-        PERSONHOOD_PRODUCT_ID,
+        &personhood_product_id(tld),
         &truapi::v01::DerivationIndex::Index(index),
     )
     .expect("the reserved personhood product id is a valid junction")
@@ -389,11 +401,17 @@ mod tests {
             "372b08255c7798fe3193756296005adc4c44adb9f3986fb718aa98a48b4bf725"
         );
         assert_eq!(
-            hex::encode(derive_full_person_ring_vrf_entropy(&root_entropy)),
+            hex::encode(derive_full_person_ring_vrf_entropy(
+                &root_entropy,
+                DEFAULT_DOTNS_TLD
+            )),
             "c47086f94a7f4c05b7afd9f2339d3fea168f3823b5424ba1f7b31043d8ef60af"
         );
         assert_eq!(
-            hex::encode(derive_lite_person_ring_vrf_entropy(&root_entropy)),
+            hex::encode(derive_lite_person_ring_vrf_entropy(
+                &root_entropy,
+                DEFAULT_DOTNS_TLD
+            )),
             "8d7f5e1510a7e8d813887e100f5a260ec9de60e68695477b93360ee7e3d16a9f"
         );
     }
@@ -415,10 +433,13 @@ mod tests {
     #[test]
     fn identity_is_uid_dot_default_product_account_and_signs() {
         let entropy = [0xAB; 16];
-        let identity = derive_identity_keypair(&entropy).unwrap();
+        let identity = derive_identity_keypair(&entropy, DEFAULT_DOTNS_TLD).unwrap();
         let root = derive_root_keypair_from_entropy(&entropy).unwrap();
-        let uid_subtree =
-            derive_hard_path_from_keypair(root, &[PRODUCT_JUNCTION, IDENTITY_PRODUCT_ID]).unwrap();
+        let uid_subtree = derive_hard_path_from_keypair(
+            root,
+            &[PRODUCT_JUNCTION, &identity_product_id(DEFAULT_DOTNS_TLD)],
+        )
+        .unwrap();
         let expected = uid_subtree
             .derived_key_simple(ChainCode(index_bytes(0)), [])
             .0;
@@ -434,6 +455,20 @@ mod tests {
                 .public
                 .verify_simple(SR25519_SIGNING_CONTEXT, message, &signature)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn built_in_derivations_are_network_scoped() {
+        let entropy = [0xAB; 16];
+        let dot = derive_identity_keypair(&entropy, "dot").unwrap();
+        let test = derive_identity_keypair(&entropy, "test").unwrap();
+        assert_ne!(dot.public, test.public);
+
+        let root_entropy: Vec<u8> = (1..=32).collect();
+        assert_ne!(
+            derive_full_person_ring_vrf_entropy(&root_entropy, "dot"),
+            derive_full_person_ring_vrf_entropy(&root_entropy, "test"),
         );
     }
 

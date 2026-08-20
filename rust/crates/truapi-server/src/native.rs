@@ -202,6 +202,9 @@ pub struct NativeRuntimeConfig {
     pub local_session_lite_username: Option<String>,
     /// Deeplink scheme used in pairing QR payloads.
     pub pairing_deeplink_scheme: NativePairingDeeplinkScheme,
+    /// dotNS TLD of the host's configured network, scoping the reserved
+    /// built-in derivations. `None` means `dot`.
+    pub dotns_tld: Option<String>,
 }
 
 /// Process-owned native host configuration shared by every product execution.
@@ -225,6 +228,9 @@ pub struct NativeHostRuntimeConfig {
     pub local_session_secret: Option<Vec<u8>>,
     /// Optional lite username attached to the local signing-host session.
     pub local_session_lite_username: Option<String>,
+    /// dotNS TLD of the host's configured network, scoping the reserved
+    /// built-in derivations. `None` means `dot`.
+    pub dotns_tld: Option<String>,
 }
 
 /// Trusted identity attached by a native host to one executable connection.
@@ -276,6 +282,12 @@ pub enum NativeRuntimeConfigError {
         /// Parse failure reason.
         reason: String,
     },
+    /// Configured dotNS TLD is not a recognized entry.
+    #[error("dotns_tld must be one of the recognized dotNS TLDs, got {tld:?}")]
+    UnknownDotnsTld {
+        /// Rejected TLD value.
+        tld: String,
+    },
     /// Host icon URL used a non-HTTPS scheme.
     #[error("host_icon must use https scheme, got {scheme:?}")]
     InsecureHostIcon {
@@ -319,6 +331,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
             local_session_secret,
             local_session_lite_username,
             pairing_deeplink_scheme: _,
+            dotns_tld,
         } = config;
         let host: NativeResolvedHostRuntimeConfig = NativeHostRuntimeConfig {
             host_name,
@@ -330,6 +343,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
             bulletin_chain_genesis_hash,
             local_session_secret,
             local_session_lite_username,
+            dotns_tld,
         }
         .try_into()?;
         let product = NativeProductExecutionConfig {
@@ -370,6 +384,10 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
         )?;
+        let signing = match config.dotns_tld {
+            Some(tld) => signing.with_dotns_tld(tld)?,
+            None => signing,
+        };
         Ok(Self {
             signing,
             local_session_secret: config.local_session_secret,
@@ -398,6 +416,7 @@ impl From<RuntimeConfigValidationError> for NativeRuntimeConfigError {
             RuntimeConfigValidationError::InvalidHostIcon { source } => Self::InvalidHostIcon {
                 reason: source.to_string(),
             },
+            RuntimeConfigValidationError::UnknownDotnsTld { tld } => Self::UnknownDotnsTld { tld },
             RuntimeConfigValidationError::InsecureHostIcon { scheme } => {
                 Self::InsecureHostIcon { scheme }
             }
@@ -2314,6 +2333,7 @@ mod tests {
             local_session_secret: None,
             local_session_lite_username: None,
             pairing_deeplink_scheme: NativePairingDeeplinkScheme::PolkadotApp,
+            dotns_tld: None,
         }
     }
 
@@ -2327,6 +2347,7 @@ mod tests {
             people_chain_genesis_hash: vec![0xa2; 32],
             bulletin_chain_genesis_hash: vec![0xbb; 32],
             local_session_secret: Some(vec![7; 32]),
+            dotns_tld: None,
             local_session_lite_username: Some("alice".to_string()),
         }
     }

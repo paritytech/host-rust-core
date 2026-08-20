@@ -361,7 +361,8 @@ async fn main() -> Result<()> {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
                 .to_entropy();
-            attestation::check_identity(network.config().people_ws, &entropy).await
+            let config = network.config();
+            attestation::check_identity(config.people_ws, &entropy, config.tld).await
         }
         Command::AllocCheck {
             mnemonic,
@@ -400,7 +401,7 @@ async fn run_pgas_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.tld);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; a claim has to credit an account");
@@ -558,7 +559,7 @@ async fn run_alloc_check(
     let entropy = bip39::Mnemonic::parse(mnemonic.trim())
         .context("invalid BIP-39 mnemonic")?
         .to_entropy();
-    let candidates = accounts::collection_candidates(&entropy);
+    let candidates = accounts::collection_candidates(&entropy, network.tld);
 
     if submit && target.is_none() {
         bail!("--target is required with --submit; the all-zero default is read-only");
@@ -812,6 +813,7 @@ async fn run_pairing_host(
         network.bulletin_genesis,
         DEEPLINK_SCHEME.to_string(),
     )
+    .and_then(|config| config.with_dotns_tld(network.tld.to_string()))
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
     let chat_host = args.execution_kind.chat_host();
@@ -1113,8 +1115,12 @@ async fn start_signing_host(
             lite_username_prefix: None,
         })
         .await?;
-        match attestation::registered_lite_username(network.people_ws, &explicit_signer.entropy)
-            .await
+        match attestation::registered_lite_username(
+            network.people_ws,
+            &explicit_signer.entropy,
+            network.tld,
+        )
+        .await
         {
             Ok(user_id) => explicit_signer.lite_username = Some(user_id),
             Err(error) => {
@@ -1212,6 +1218,7 @@ fn build_signing_runtime(
         network.people_genesis,
         network.bulletin_genesis,
     )
+    .and_then(|config| config.with_dotns_tld(network.tld.to_string()))
     .context("invalid signing host config")?;
     let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
         platform,
@@ -1442,7 +1449,14 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
                 signer.account_name.clone(),
             )
         };
-        match register_pairing_allowances(session.network.people_ws, &entropy, deeplink).await {
+        match register_pairing_allowances(
+            session.network.people_ws,
+            &entropy,
+            deeplink,
+            session.network.tld,
+        )
+        .await
+        {
             Ok(device) => {
                 track_pairing_renewal_targets(session, device).await;
                 return Ok(());
@@ -1787,21 +1801,22 @@ async fn register_pairing_allowances(
     statement_store_url: &str,
     entropy: &[u8],
     deeplink: &str,
+    tld: &str,
 ) -> Result<[u8; 32]> {
     use truapi_server::host_logic::product_account::derive_identity_keypair;
     use truapi_server::host_logic::sso::pairing::{
         VersionedHandshakeProposal, decode_pairing_deeplink,
     };
 
-    let identity = derive_identity_keypair(entropy)
-        .map_err(|e| anyhow::anyhow!("uid.dot identity derivation failed: {e}"))?
+    let identity = derive_identity_keypair(entropy, tld)
+        .map_err(|e| anyhow::anyhow!("identity derivation failed: {e}"))?
         .public
         .to_bytes();
     let VersionedHandshakeProposal::V2(proposal) =
         decode_pairing_deeplink(deeplink).map_err(anyhow::Error::msg)?;
     let device = proposal.device.statement_account_id;
 
-    let candidates = accounts::collection_candidates(entropy);
+    let candidates = accounts::collection_candidates(entropy, tld);
     let rpc = alloc::rpc::RpcClient::connect(statement_store_url)
         .await
         .map_err(anyhow::Error::msg)?;

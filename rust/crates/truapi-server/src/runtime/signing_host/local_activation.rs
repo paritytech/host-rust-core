@@ -44,7 +44,7 @@ impl LocalActivation for SigningHost {
         let secret = Zeroizing::new(secret);
         let root = derive_root_keypair_from_entropy(&secret).map_err(product_authority_error)?;
         let public_key = root.public.to_bytes();
-        let identity_account_id = derive_identity_keypair(&secret)
+        let identity_account_id = derive_identity_keypair(&secret, &self.services.dotns_tld)
             .map_err(product_authority_error)?
             .public
             .to_bytes();

@@ -80,12 +80,13 @@ and the
 
 #### Open Questions
 
-- The built-in identifiers
-  [`uid.dot` and `peopl.dot`](../../rust/crates/truapi-server/src/host_logic/product_account.rs)
-  are hardcoded with `.dot` on every network, which gives the user one shared
-  identity account and personhood domain across networks. Consistency with
-  this convention says `uid.{tld}` per network, but that re-pins the mobile
-  interop vectors and needs the Account Holder to move in lockstep.
+- The built-in identifiers are network-scoped:
+  [`uid.{tld}` and `peopl.{tld}`](../../rust/crates/truapi-server/src/host_logic/product_account.rs)
+  follow the `dotns_tld` a host sets in its runtime config, with `dot` as the
+  default so unconfigured hosts keep the mobile-pinned derivations. A paired
+  phone still derives `uid.dot` on every network, so hosts configured for a
+  non-dot TLD diverge from the Account Holder until the mobile app ships the
+  same rule.
 - The recognized TLD list is compiled in
   ([`DOTNS_TLDS`](../../rust/crates/truapi-platform/src/lib.rs)) while the
   registry already exposes the truth per network through `tld()`. Hosts now

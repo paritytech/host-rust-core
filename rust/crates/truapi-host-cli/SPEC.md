@@ -724,9 +724,9 @@ Before a signing host answers a link, it:
 
 1. ensures a signer;
 2. decodes the V2 handshake;
-3. derives its RFC-0022 `uid.dot` identity account;
+3. derives its RFC-0022 `uid.{tld}` identity account;
 4. reads the pairing device Statement Store account from the proposal;
-5. finds the signer's rings through the pairing-attestation bootstrap `peopl.dot`
+5. finds the signer's rings through the pairing-attestation bootstrap `peopl.{tld}`
    keys, index 0 for `People` and index 1 for `LitePeople`, scanning back from
    the current ring in each (RFC-0024 operational key selection uses the
    registry instead);
@@ -809,7 +809,7 @@ A new auto account:
 
 1. acquires `accounts.json.lock`;
 2. generates a 12-word mnemonic;
-3. derives the RFC-0022 `uid.dot` index-0 sr25519 identity account;
+3. derives the RFC-0022 `uid.{tld}` index-0 sr25519 identity account;
 4. chooses `auto-<n>` as its local name;
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
@@ -1065,7 +1065,7 @@ state, and other role-owned runtime data.
 - network id;
 - plaintext BIP-39 mnemonic;
 - final Lite username;
-- RFC-0022 `uid.dot` index-0 public key and address;
+- RFC-0022 `uid.{tld}` index-0 public key and address;
 - creation timestamp;
 - attested state; and
 - exhausted Statement Store periods.
@@ -1468,7 +1468,7 @@ truapi-host identity-check \
 The command derives and queries two accounts:
 
 - root; and
-- RFC-0022 `//product//uid.dot/index_bytes(0)`.
+- RFC-0022 `//product//uid.{tld}/index_bytes(0)`.
 
 For each it prints one of:
 

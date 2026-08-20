@@ -49,11 +49,23 @@ pub(crate) struct RuntimeServices {
     statement_cache: Mutex<StatementCache>,
     /// Task spawner for background runtime work.
     pub(crate) spawner: Spawner,
+    /// dotNS TLD of the host's configured network, scoping the reserved
+    /// built-in derivations. Defaults to `dot`.
+    pub(crate) dotns_tld: String,
     /// Serializes the read-or-create of the persisted device encryption key.
     /// Concurrent first-time readers would otherwise each generate a secret and
     /// persist it, leaving peers addressing an overwritten key.
     device_encryption_key: futures::lock::Mutex<()>,
     next_core_instance: AtomicU64,
+}
+
+/// The dotNS TLD a host config scopes built-in derivations to, `dot` unless
+/// configured otherwise.
+pub(crate) fn dotns_tld(config: &truapi_platform::HostRuntimeConfig) -> String {
+    config
+        .dotns_tld
+        .clone()
+        .unwrap_or_else(|| crate::host_logic::product_account::DEFAULT_DOTNS_TLD.to_string())
 }
 
 impl RuntimeServices {
@@ -65,6 +77,7 @@ impl RuntimeServices {
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
+        dotns_tld: String,
     ) -> Arc<Self> {
         let chain_provider = Arc::new(HostChainProvider {
             platform: platform.clone(),
@@ -84,6 +97,7 @@ impl RuntimeServices {
             preimage_cache: Mutex::new(PreimageCache::default()),
             statement_cache: Mutex::new(StatementCache::default()),
             spawner,
+            dotns_tld,
             device_encryption_key: futures::lock::Mutex::new(()),
             next_core_instance: AtomicU64::new(1),
         })
@@ -95,6 +109,7 @@ impl RuntimeServices {
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
+        dotns_tld: String,
         chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
     ) -> Arc<Self> {
         let services = Self::new(
@@ -102,6 +117,7 @@ impl RuntimeServices {
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
             spawner,
+            dotns_tld,
         );
         let Some(chat_platform) = chat_platform else {
             return services;

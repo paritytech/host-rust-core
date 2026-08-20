@@ -466,7 +466,7 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
     let pairing = get_required_object(value, "pairing", "runtimeConfig.pairing")?;
 
-    PairingHostConfig::new(
+    let config = PairingHostConfig::new(
         HostInfo {
             name: get_required_string_at(&host, "name", "runtimeConfig.host.name")?,
             icon: get_optional_string_at(&host, "icon", "runtimeConfig.host.icon")?,
@@ -496,7 +496,14 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
             "runtimeConfig.pairing.deeplinkScheme",
         )?,
     )
-    .map_err(runtime_config_validation_to_js)
+    .map_err(runtime_config_validation_to_js)?;
+
+    match get_optional_string_at(value, "dotnsTld", "runtimeConfig.dotnsTld")? {
+        Some(tld) => config
+            .with_dotns_tld(tld)
+            .map_err(runtime_config_validation_to_js),
+        None => Ok(config),
+    }
 }
 
 #[cfg(feature = "wasm-signing-host")]
@@ -510,7 +517,7 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
 
-    SigningHostConfig::new(
+    let config = SigningHostConfig::new(
         HostInfo {
             name: get_required_string_at(&host, "name", "runtimeConfig.host.name")?,
             icon: get_optional_string_at(&host, "icon", "runtimeConfig.host.icon")?,
@@ -535,7 +542,14 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
             "runtimeConfig.bulletin.genesisHash",
         )?,
     )
-    .map_err(runtime_config_validation_to_js)
+    .map_err(runtime_config_validation_to_js)?;
+
+    match get_optional_string_at(value, "dotnsTld", "runtimeConfig.dotnsTld")? {
+        Some(tld) => config
+            .with_dotns_tld(tld)
+            .map_err(runtime_config_validation_to_js),
+        None => Ok(config),
+    }
 }
 
 fn product_context_from_js(value: &JsValue) -> Result<ProductContext, JsValue> {
@@ -590,6 +604,9 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
                 "runtimeConfig.productId must be a dotNS or localhost product identifier, got {product_id:?}"
             ))
         }
+        RuntimeConfigValidationError::UnknownDotnsTld { tld } => JsValue::from_str(&format!(
+            "runtimeConfig.dotnsTld must be a recognized dotNS TLD, got {tld:?}"
+        )),
     }
 }
 

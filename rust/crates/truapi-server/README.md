@@ -190,7 +190,7 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 - **`SigningHost`** (wallet-local): signs on device from local BIP-39 entropy,
   no pairing flow. `signing_host/local_activation.rs` establishes a session
   from host-held secret material. Its public identity is the RFC-0022
-  `uid.dot` index-0 product account. RFC-0024 ring-VRF keys are explicit,
+  `uid.{tld}` index-0 product account for the configured network TLD (default `dot`). RFC-0024 ring-VRF keys are explicit,
   product-owned registry entries; aliases, proofs, direct signatures, and
   internal personhood flows use the requested or user-selected registered key
   without a compiled-in fallback. It resolves RFC-0004 `RingLocation` values

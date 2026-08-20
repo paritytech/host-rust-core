@@ -30,6 +30,8 @@ pub struct AttestConfig {
     pub entropy: Vec<u8>,
     /// Requested lite username base (6+ lowercase letters, no digits).
     pub username_base: String,
+    /// dotNS TLD of the target network, scoping the identity derivation.
+    pub dotns_tld: String,
 }
 
 /// Check whether a lite username base is available through the identity
@@ -67,8 +69,13 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
         .build()?;
 
     let verifier = fetch_verifier(&client, &config.backend_base).await?;
-    let registration = build_lite_registration(&config.entropy, verifier, &config.username_base)
-        .map_err(|reason| anyhow::anyhow!("failed to build registration params: {reason}"))?;
+    let registration = build_lite_registration(
+        &config.entropy,
+        verifier,
+        &config.username_base,
+        &config.dotns_tld,
+    )
+    .map_err(|reason| anyhow::anyhow!("failed to build registration params: {reason}"))?;
     debug!(
         candidate = %registration.candidate_account_id,
         "attesting lite username '{}'",
@@ -101,9 +108,13 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
 /// Older CLI account records stored the requested username base rather than
 /// the final `name.discriminator` assigned by the People chain. Reading the
 /// consumer record repairs those records without re-attesting the account.
-pub async fn registered_lite_username(people_ws: &str, entropy: &[u8]) -> Result<String> {
-    let identity = derive_identity_keypair(entropy)
-        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+pub async fn registered_lite_username(
+    people_ws: &str,
+    entropy: &[u8],
+    tld: &str,
+) -> Result<String> {
+    let identity = derive_identity_keypair(entropy, tld)
+        .map_err(|err| anyhow::anyhow!("identity derivation failed: {err}"))?;
     let storage_key = format!(
         "0x{}",
         hex::encode(resources_consumers_storage_key(&identity.public.to_bytes()))
@@ -119,11 +130,11 @@ pub async fn registered_lite_username(people_ws: &str, entropy: &[u8]) -> Result
 /// Probe the People chain for the bare root and canonical RFC-0022 `uid.dot`
 /// identity account, printing any `Resources.Consumers` record. Used to
 /// confirm a pre-onboarded account.
-pub async fn check_identity(people_ws: &str, entropy: &[u8]) -> Result<()> {
+pub async fn check_identity(people_ws: &str, entropy: &[u8], tld: &str) -> Result<()> {
     let root = derive_root_keypair_from_entropy(entropy)
         .map_err(|err| anyhow::anyhow!("invalid entropy: {err}"))?;
-    let identity = derive_identity_keypair(entropy)
-        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let identity = derive_identity_keypair(entropy, tld)
+        .map_err(|err| anyhow::anyhow!("identity derivation failed: {err}"))?;
 
     for (label, public) in [
         ("<root>", root.public.to_bytes()),

@@ -63,7 +63,7 @@ pub(crate) use chat::{ChatConnection, chat_platform_for};
 #[cfg(test)]
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
-pub(crate) use services::RuntimeServices;
+pub(crate) use services::{RuntimeServices, dotns_tld};
 pub use signing_host::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
@@ -445,6 +445,7 @@ impl ProductRuntimeHost {
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            dotns_tld(&host_config.host),
         );
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let core_instance = services.next_core_instance();
@@ -3047,6 +3048,7 @@ mod tests {
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            "dot".to_string(),
         );
         let chat_platform = Arc::new(RecordingChatPlatform::default());
         let pairing_host = PairingHost::new(services.clone(), host_config);
@@ -3189,6 +3191,7 @@ mod tests {
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            "dot".to_string(),
         );
         let chat_platform = Arc::new(RecordingChatPlatform::default());
         let pairing_host = PairingHost::new(services.clone(), host_config);
@@ -3272,6 +3275,7 @@ mod tests {
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            "dot".to_string(),
         );
         let chat_platform = Arc::new(RecordingChatPlatform::default());
         let pairing_host = PairingHost::new(services.clone(), host_config);
@@ -3356,6 +3360,7 @@ mod tests {
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            "dot".to_string(),
         );
         let chat_platform = Arc::new(RecordingChatPlatform::default());
         let pairing_host = PairingHost::new(services.clone(), host_config);
@@ -3402,6 +3407,7 @@ mod tests {
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
+            dotns_tld(&host_config.host),
         );
         let pairing_host = PairingHost::new(services.clone(), host_config);
         let first = ProductRuntimeHost::from_services(
