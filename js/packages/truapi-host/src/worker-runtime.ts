@@ -183,6 +183,10 @@ function buildCoreCallbacks(coreId: number) {
 
 let runtime: WorkerPairingHostRuntime | null = null;
 const cores = new Map<number, WorkerProductRuntime>();
+// Outstanding receiveFrame calls per core. wasm-bindgen holds a borrow of the
+// core for the whole duration of an async method, so `free()` throws while one
+// is in flight. `disposeCore` aborts these then awaits them before freeing.
+const inFlightFrames = new Map<number, Set<Promise<void>>>();
 /** Live custom-message render subscriptions, keyed by main-thread render id. */
 const renders: RenderSubscriptions = new Map();
 let wasm: WasmModuleShape | null = null;
@@ -399,18 +403,20 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       stopRender(renders, msg.renderId);
       break;
     case "disposeCore":
-      disposeCore(msg.coreId);
+      void disposeCore(msg.coreId);
       break;
     case "dispose":
-      try {
-        for (const coreId of [...cores.keys()]) {
-          disposeCore(coreId);
+      void (async () => {
+        try {
+          await Promise.all(
+            [...cores.keys()].map((coreId) => disposeCore(coreId)),
+          );
+          runtime?.free();
+        } catch (err) {
+          postToMain({ kind: "disposeError", error: errorMessage(err) });
         }
-        runtime?.free();
-      } catch (err) {
-        postToMain({ kind: "disposeError", error: errorMessage(err) });
-      }
-      runtime = null;
+        runtime = null;
+      })();
       break;
     default: {
       const { kind } = msg as { kind?: unknown };
@@ -421,17 +427,25 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
   }
 });
 
-function disposeCore(coreId: number): void {
+async function disposeCore(coreId: number): Promise<void> {
   const core = cores.get(coreId);
   if (!core) return;
   cores.delete(coreId);
   // A render subscription outliving its core would call into freed wasm.
   stopRendersForCore(renders, coreId);
   try {
+    // dispose() aborts in-flight dispatch, but the borrow it holds is only
+    // released once the aborted receiveFrame promise settles. Await those
+    // before free(), or wasm-bindgen throws "attempted to take ownership of
+    // Rust value while it was borrowed" and the core leaks unfreed.
     core.dispose();
+    const pending = inFlightFrames.get(coreId);
+    if (pending && pending.size > 0) await Promise.all([...pending]);
     core.free();
   } catch (err) {
     postToMain({ kind: "disposeError", error: errorMessage(err) });
+  } finally {
+    inFlightFrames.delete(coreId);
   }
 }
 
@@ -580,13 +594,27 @@ async function handleFrame(coreId: number, bytes: Uint8Array): Promise<void> {
     });
     return;
   }
+  const frame = core.receiveFrame(bytes);
+  let pending = inFlightFrames.get(coreId);
+  if (!pending) {
+    pending = new Set();
+    inFlightFrames.set(coreId, pending);
+  }
+  const tracked = frame.then(
+    () => {},
+    () => {},
+  );
+  pending.add(tracked);
   try {
-    await core.receiveFrame(bytes);
+    await frame;
   } catch (err) {
     postToMain({
       kind: "frameError",
       coreId,
       error: errorMessage(err),
     });
+  } finally {
+    pending.delete(tracked);
+    if (pending.size === 0) inFlightFrames.delete(coreId);
   }
 }
