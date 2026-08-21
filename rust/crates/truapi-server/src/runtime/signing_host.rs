@@ -611,6 +611,16 @@ impl ProductAuthority for SigningHost {
             .map_err(product_authority_error)
     }
 
+    async fn subtree_resolution_reaches_account_holder(
+        &self,
+        _session: &AuthoritySession,
+        _product_id: &str,
+    ) -> bool {
+        // A signing host derives the subtree locally from root entropy, so
+        // resolution never reaches a remote Account Holder and never prompts.
+        false
+    }
+
     async fn sign_vrf(
         &self,
         _cx: &CallContext,

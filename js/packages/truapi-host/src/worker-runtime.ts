@@ -409,19 +409,24 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
     case "disposeCore":
       void disposeCore(msg.coreId);
       break;
-    case "dispose":
+    case "dispose": {
+      // Null the runtime synchronously so a message arriving mid-disposal takes
+      // its `if (!runtime)` path instead of calling into a runtime being torn
+      // down; free the captured handle after the cores finish disposing.
+      const disposing = runtime;
+      runtime = null;
       void (async () => {
         try {
           await Promise.all(
             [...cores.keys()].map((coreId) => disposeCore(coreId)),
           );
-          runtime?.free();
+          disposing?.free();
         } catch (err) {
           postToMain({ kind: "disposeError", error: errorMessage(err) });
         }
-        runtime = null;
       })();
       break;
+    }
     default: {
       const { kind } = msg as { kind?: unknown };
       console.warn(
