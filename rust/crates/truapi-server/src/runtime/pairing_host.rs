@@ -1079,6 +1079,28 @@ impl PairingHost {
         true
     }
 
+    /// Whether resolving `product_id`'s subtree would reach the Account Holder,
+    /// i.e. neither the memory cache nor the persisted slot already holds it.
+    ///
+    /// A stale or missing session resolves as `false` so a broken state falls
+    /// through to the resolution's own error rather than a spurious prompt.
+    pub(super) async fn subtree_reaches_account_holder(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+    ) -> bool {
+        let Ok(session) = self.current_private_session(session) else {
+            return false;
+        };
+        let Some(sso) = session.sso.as_ref() else {
+            return false;
+        };
+        let cache_key = (SsoSessionKey::from_session(sso), product_id.to_string());
+        self.known_product_subtree(&session, cache_key)
+            .await
+            .is_none()
+    }
+
     /// Read a product subtree public key from the memory cache, falling back to
     /// the slot an earlier launch persisted. `None` when neither holds it.
     ///
@@ -2420,6 +2442,14 @@ impl ProductAuthority for PairingHost {
         product_id: String,
     ) -> Result<[u8; 32], AuthorityError> {
         PairingHost::product_subtree_public_key(self, cx, session, product_id).await
+    }
+
+    async fn subtree_resolution_reaches_account_holder(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+    ) -> bool {
+        PairingHost::subtree_reaches_account_holder(self, session, product_id).await
     }
 
     async fn sign_vrf(

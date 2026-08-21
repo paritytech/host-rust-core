@@ -193,9 +193,10 @@ use truapi_platform::Platform;
 use truapi_platform::{
     AccountAccessReview, ChatFieldError, CreateTransactionReview, IdentityDisclosureReview,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
-    ProductContext, ProductStorageKey, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
-    SignRawReview, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
-    validate_chat_icon, validate_chat_message_content, validate_chat_name,
+    ProductContext, ProductStorageKey, ProductSubtreeReview, ResourceAllocationReview,
+    SessionUiInfo, SignPayloadReview, SignRawReview, UserConfirmationReview,
+    normalize_chat_identifier, normalize_product_identifier, validate_chat_icon,
+    validate_chat_message_content, validate_chat_name,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -204,6 +205,12 @@ pub(super) const REMOTE_PERMISSION_DENIED_REASON: &str = "Permission denied";
 /// after 180 seconds:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L303-L307>
 pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+/// After a cancel or deadline, how long a remote authority call is given to
+/// observe the cancellation and unwind (unsubscribing its statement streams)
+/// before it is dropped. A call parked in the statement-store setup, which does
+/// not watch the cancel token, would otherwise outlive its deadline, so this
+/// caps the wait. A normal unwind completes in well under this.
+const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
 /// Keep this above the signing host's 240-second propagation ceiling while
@@ -288,36 +295,41 @@ where
     let cancelled = cx.cancel().cancelled().fuse();
     pin_mut!(call, cancelled);
 
-    if let Some(timeout_duration) = cx.timeout() {
+    // First, run the call against cancellation and the optional deadline. A
+    // completed call returns directly; a cancel or timeout yields its reason and
+    // falls through to a bounded unwind.
+    let reason = if let Some(timeout_duration) = cx.timeout() {
         let timeout = futures_timer::Delay::new(timeout_duration).fuse();
         pin_mut!(timeout);
         futures::select! {
-            result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            result = call => return result,
+            reason = cancelled => reason,
             () = timeout => {
                 let reason = CancellationReason::TimedOut {
                     timeout: timeout_duration,
                 };
                 cx.cancel().cancel_with_reason(reason.clone());
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
+                reason
             }
         }
     } else {
         futures::select! {
-            result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            result = call => return result,
+            reason = cancelled => reason,
         }
+    };
+
+    // Give the call a bounded chance to observe the cancellation and tear down
+    // its statement-store subscriptions, then drop it. The grace caps a call
+    // parked in the setup region that never observes the token.
+    let error = authority_cancellation_error(cx, reason);
+    let unwind = futures_timer::Delay::new(AUTHORITY_CANCEL_UNWIND_GRACE).fuse();
+    pin_mut!(unwind);
+    futures::select! {
+        _ = call => {},
+        () = unwind => {},
     }
+    Err(error.into())
 }
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {
@@ -1002,6 +1014,31 @@ impl Account for ProductRuntimeHost {
                         reason: err.to_string(),
                     });
                 }
+            }
+        } else if self
+            .authority
+            .subtree_resolution_reaches_account_holder(
+                &session,
+                &product_account_id.dot_ns_identifier,
+            )
+            .await
+        {
+            // Own-account resolution has no access review, so a cold subtree
+            // that must reach the Account Holder is the one point a host can
+            // surface and reject before the SSO call.
+            let approved = self
+                .platform
+                .confirm_user_action(UserConfirmationReview::ProductSubtree(
+                    ProductSubtreeReview {
+                        product_id: product_account_id.dot_ns_identifier.clone(),
+                    },
+                ))
+                .await
+                .map_err(|err| CallError::HostFailure { reason: err.reason })?;
+            if !approved {
+                return Err(CallError::Domain(HostAccountGetError::V1(
+                    v01::HostAccountGetError::Rejected,
+                )));
             }
         }
 
@@ -3846,6 +3883,74 @@ mod tests {
             hex::encode(inner.account.public_key),
             "1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c"
         );
+    }
+
+    #[test]
+    fn get_account_own_product_prompts_and_rejects_on_a_cold_subtree() {
+        let host = ProductRuntimeHost::new(
+            Arc::new(StubPlatform {
+                product_subtree_denied: true,
+                ..Default::default()
+            }),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        // Session without a cached subtree: resolving it must reach the
+        // Account Holder, which is the one point the consent prompt fires.
+        host.test_session_state().set_session(sso_session_info());
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let err = futures::executor::block_on(host.get_account(&CallContext::default(), request))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CallError::Domain(HostAccountGetError::V1(v01::HostAccountGetError::Rejected))
+        ));
+    }
+
+    #[test]
+    fn get_account_own_product_skips_the_prompt_when_the_subtree_is_cached() {
+        // denied would reject if the prompt fired; a warm cache must not prompt.
+        let host = ProductRuntimeHost::new(
+            Arc::new(StubPlatform {
+                product_subtree_denied: true,
+                ..Default::default()
+            }),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, sso_session_info());
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let response =
+            futures::executor::block_on(host.get_account(&CallContext::default(), request))
+                .expect("a cached subtree resolves without prompting");
+        let HostAccountGetResponse::V1(inner) = response;
+        assert_eq!(
+            inner.account.public_key,
+            test_product_account_public("myapp.dot", 0).to_vec()
+        );
+    }
+
+    #[test]
+    fn remote_authority_call_bounds_a_call_that_never_unwinds() {
+        let mut cx = CallContext::default();
+        cx.set_timeout(Duration::from_millis(1));
+        // A call that never completes and never observes the token, standing in
+        // for one parked in the un-cancellable statement-store setup. The old
+        // code awaited it after cancelling and hung; it must now be dropped at
+        // the grace and return a bounded timeout.
+        let call = futures::future::pending::<Result<(), AuthorityError>>();
+
+        let err = futures::executor::block_on(remote_authority_call(&cx, call))
+            .expect_err("a never-unwinding call is bounded by the deadline plus grace");
+
+        assert!(matches!(err, AuthorityError::Cancelled(_)));
     }
 
     #[test]

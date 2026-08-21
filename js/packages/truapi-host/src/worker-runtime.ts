@@ -39,6 +39,10 @@ import {
   dispatchSubscriptionItem,
   type SubscriptionListeners,
 } from "./worker-dispatch.js";
+import {
+  dispatchFrame,
+  disposeAwaitingFrames,
+} from "./worker-core-registry.js";
 
 // A literal specifier so bundlers resolve the glue statically and emit it
 // alongside `truapi_server_bg.wasm`. It is typed by the ambient declaration in
@@ -183,6 +187,10 @@ function buildCoreCallbacks(coreId: number) {
 
 let runtime: WorkerPairingHostRuntime | null = null;
 const cores = new Map<number, WorkerProductRuntime>();
+// Outstanding receiveFrame calls per core. wasm-bindgen holds a borrow of the
+// core for the whole duration of an async method, so `free()` throws while one
+// is in flight. `disposeCore` aborts these then awaits them before freeing.
+const inFlightFrames = new Map<number, Set<Promise<void>>>();
 /** Live custom-message render subscriptions, keyed by main-thread render id. */
 const renders: RenderSubscriptions = new Map();
 let wasm: WasmModuleShape | null = null;
@@ -399,19 +407,26 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       stopRender(renders, msg.renderId);
       break;
     case "disposeCore":
-      disposeCore(msg.coreId);
+      void disposeCore(msg.coreId);
       break;
-    case "dispose":
-      try {
-        for (const coreId of [...cores.keys()]) {
-          disposeCore(coreId);
-        }
-        runtime?.free();
-      } catch (err) {
-        postToMain({ kind: "disposeError", error: errorMessage(err) });
-      }
+    case "dispose": {
+      // Null the runtime synchronously so a message arriving mid-disposal takes
+      // its `if (!runtime)` path instead of calling into a runtime being torn
+      // down; free the captured handle after the cores finish disposing.
+      const disposing = runtime;
       runtime = null;
+      void (async () => {
+        try {
+          await Promise.all(
+            [...cores.keys()].map((coreId) => disposeCore(coreId)),
+          );
+          disposing?.free();
+        } catch (err) {
+          postToMain({ kind: "disposeError", error: errorMessage(err) });
+        }
+      })();
       break;
+    }
     default: {
       const { kind } = msg as { kind?: unknown };
       console.warn(
@@ -421,15 +436,14 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
   }
 });
 
-function disposeCore(coreId: number): void {
+async function disposeCore(coreId: number): Promise<void> {
   const core = cores.get(coreId);
   if (!core) return;
   cores.delete(coreId);
   // A render subscription outliving its core would call into freed wasm.
   stopRendersForCore(renders, coreId);
   try {
-    core.dispose();
-    core.free();
+    await disposeAwaitingFrames(core, coreId, inFlightFrames);
   } catch (err) {
     postToMain({ kind: "disposeError", error: errorMessage(err) });
   }
@@ -581,7 +595,7 @@ async function handleFrame(coreId: number, bytes: Uint8Array): Promise<void> {
     return;
   }
   try {
-    await core.receiveFrame(bytes);
+    await dispatchFrame(core, coreId, bytes, inFlightFrames);
   } catch (err) {
     postToMain({
       kind: "frameError",
