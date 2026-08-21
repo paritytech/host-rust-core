@@ -1379,12 +1379,8 @@ mod tests {
         // the user can be asked about.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&status),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1417,12 +1413,8 @@ mod tests {
         // never theirs to lose, so this resolves without asking them again.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&restored),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&restored));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1443,12 +1435,8 @@ mod tests {
         // no answer any more, and only a prompt reaches its dialog.
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&status),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1474,12 +1462,8 @@ mod tests {
         // its own state is not a reason to put the question again.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&status),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1500,12 +1484,8 @@ mod tests {
         // channel revoke a capability the OS still allows.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::failing();
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&status),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1522,12 +1502,8 @@ mod tests {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let denied = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&denied),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&denied));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1542,10 +1518,8 @@ mod tests {
         // they never gave.
         let peek = PermissionsService::new(&storage, &prompt, "product.dot");
         assert_eq!(
-            futures::executor::block_on(
-                peek.peek_device(&HostDevicePermissionRequest::Camera)
-            )
-            .unwrap(),
+            futures::executor::block_on(peek.peek_device(&HostDevicePermissionRequest::Camera))
+                .unwrap(),
             PermissionAuthorizationStatus::NotDetermined,
         );
     }
@@ -1566,12 +1540,8 @@ mod tests {
             )],
             DevicePermissionStatus::Granted,
         );
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&status),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1600,12 +1570,7 @@ mod tests {
     fn a_host_without_the_capability_resolves_from_stored_state_alone() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            None,
-        );
+        let service = PermissionsService::with_status_host(&storage, &prompt, "product.dot", None);
 
         let first = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -1629,12 +1594,8 @@ mod tests {
         // TrUAPI-level decision with no OS gate behind it, so it must resolve
         // untouched.
         let status = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service = PermissionsService::with_status_host(
-            &storage,
-            &prompt,
-            "product.dot",
-            Some(&status),
-        );
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1645,5 +1606,4 @@ mod tests {
         );
         assert!(status.asked().is_empty());
     }
-
 }
