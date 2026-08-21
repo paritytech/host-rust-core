@@ -842,6 +842,13 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
                 review.requesting_product_id, review.target_product_id
             ),
         ),
+        UserConfirmationReview::ProductSubtree(review) => (
+            "resolve account subtree",
+            format!(
+                "Product {} requested its account from your device.",
+                review.product_id
+            ),
+        ),
     }
 }
 

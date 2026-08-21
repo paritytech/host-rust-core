@@ -1096,7 +1096,9 @@ impl PairingHost {
             return false;
         };
         let cache_key = (SsoSessionKey::from_session(sso), product_id.to_string());
-        self.known_product_subtree(&session, cache_key).await.is_none()
+        self.known_product_subtree(&session, cache_key)
+            .await
+            .is_none()
     }
 
     /// Read a product subtree public key from the memory cache, falling back to

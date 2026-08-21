@@ -195,8 +195,8 @@ use truapi_platform::{
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
     ProductContext, ProductStorageKey, ProductSubtreeReview, ResourceAllocationReview,
     SessionUiInfo, SignPayloadReview, SignRawReview, UserConfirmationReview,
-    normalize_chat_identifier, normalize_product_identifier,
-    validate_chat_icon, validate_chat_message_content, validate_chat_name,
+    normalize_chat_identifier, normalize_product_identifier, validate_chat_icon,
+    validate_chat_message_content, validate_chat_name,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -3906,9 +3906,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            CallError::Domain(HostAccountGetError::V1(
-                v01::HostAccountGetError::Rejected
-            ))
+            CallError::Domain(HostAccountGetError::V1(v01::HostAccountGetError::Rejected))
         ));
     }
 
