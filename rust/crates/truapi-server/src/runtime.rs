@@ -205,6 +205,12 @@ pub(super) const REMOTE_PERMISSION_DENIED_REASON: &str = "Permission denied";
 /// after 180 seconds:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L303-L307>
 pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+/// After a cancel or deadline, how long a remote authority call is given to
+/// observe the cancellation and unwind (unsubscribing its statement streams)
+/// before it is dropped. A call parked in the statement-store setup, which does
+/// not watch the cancel token, would otherwise outlive its deadline, so this
+/// caps the wait. A normal unwind completes in well under this.
+const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
 /// Keep this above the signing host's 240-second propagation ceiling while
@@ -289,36 +295,41 @@ where
     let cancelled = cx.cancel().cancelled().fuse();
     pin_mut!(call, cancelled);
 
-    if let Some(timeout_duration) = cx.timeout() {
+    // First, run the call against cancellation and the optional deadline. A
+    // completed call returns directly; a cancel or timeout yields its reason and
+    // falls through to a bounded unwind.
+    let reason = if let Some(timeout_duration) = cx.timeout() {
         let timeout = futures_timer::Delay::new(timeout_duration).fuse();
         pin_mut!(timeout);
         futures::select! {
-            result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            result = call => return result,
+            reason = cancelled => reason,
             () = timeout => {
                 let reason = CancellationReason::TimedOut {
                     timeout: timeout_duration,
                 };
                 cx.cancel().cancel_with_reason(reason.clone());
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
+                reason
             }
         }
     } else {
         futures::select! {
-            result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            result = call => return result,
+            reason = cancelled => reason,
         }
+    };
+
+    // Give the call a bounded chance to observe the cancellation and tear down
+    // its statement-store subscriptions, then drop it. The grace caps a call
+    // parked in the setup region that never observes the token.
+    let error = authority_cancellation_error(cx, reason);
+    let unwind = futures_timer::Delay::new(AUTHORITY_CANCEL_UNWIND_GRACE).fuse();
+    pin_mut!(unwind);
+    futures::select! {
+        _ = call => {},
+        () = unwind => {},
     }
+    Err(error.into())
 }
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {
@@ -3925,6 +3936,22 @@ mod tests {
             inner.account.public_key,
             test_product_account_public("myapp.dot", 0).to_vec()
         );
+    }
+
+    #[test]
+    fn remote_authority_call_bounds_a_call_that_never_unwinds() {
+        let mut cx = CallContext::default();
+        cx.set_timeout(Duration::from_millis(1));
+        // A call that never completes and never observes the token, standing in
+        // for one parked in the un-cancellable statement-store setup. The old
+        // code awaited it after cancelling and hung; it must now be dropped at
+        // the grace and return a bounded timeout.
+        let call = futures::future::pending::<Result<(), AuthorityError>>();
+
+        let err = futures::executor::block_on(remote_authority_call(&cx, call))
+            .expect_err("a never-unwinding call is bounded by the deadline plus grace");
+
+        assert!(matches!(err, AuthorityError::Cancelled(_)));
     }
 
     #[test]
