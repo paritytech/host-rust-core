@@ -39,6 +39,10 @@ import {
   dispatchSubscriptionItem,
   type SubscriptionListeners,
 } from "./worker-dispatch.js";
+import {
+  dispatchFrame,
+  disposeAwaitingFrames,
+} from "./worker-core-registry.js";
 
 // A literal specifier so bundlers resolve the glue statically and emit it
 // alongside `truapi_server_bg.wasm`. It is typed by the ambient declaration in
@@ -434,18 +438,9 @@ async function disposeCore(coreId: number): Promise<void> {
   // A render subscription outliving its core would call into freed wasm.
   stopRendersForCore(renders, coreId);
   try {
-    // dispose() aborts in-flight dispatch, but the borrow it holds is only
-    // released once the aborted receiveFrame promise settles. Await those
-    // before free(), or wasm-bindgen throws "attempted to take ownership of
-    // Rust value while it was borrowed" and the core leaks unfreed.
-    core.dispose();
-    const pending = inFlightFrames.get(coreId);
-    if (pending && pending.size > 0) await Promise.all([...pending]);
-    core.free();
+    await disposeAwaitingFrames(core, coreId, inFlightFrames);
   } catch (err) {
     postToMain({ kind: "disposeError", error: errorMessage(err) });
-  } finally {
-    inFlightFrames.delete(coreId);
   }
 }
 
@@ -594,27 +589,13 @@ async function handleFrame(coreId: number, bytes: Uint8Array): Promise<void> {
     });
     return;
   }
-  const frame = core.receiveFrame(bytes);
-  let pending = inFlightFrames.get(coreId);
-  if (!pending) {
-    pending = new Set();
-    inFlightFrames.set(coreId, pending);
-  }
-  const tracked = frame.then(
-    () => {},
-    () => {},
-  );
-  pending.add(tracked);
   try {
-    await frame;
+    await dispatchFrame(core, coreId, bytes, inFlightFrames);
   } catch (err) {
     postToMain({
       kind: "frameError",
       coreId,
       error: errorMessage(err),
     });
-  } finally {
-    pending.delete(tracked);
-    if (pending.size === 0) inFlightFrames.delete(coreId);
   }
 }
