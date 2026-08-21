@@ -38,7 +38,7 @@ pub struct ProductSelection {
     current: watch::Sender<ProductContext>,
     /// Execution kind every selection keeps. A host serves one kind for its
     /// lifetime: the core reads it per connection, and chat is denied to a
-    /// connection that opened as `Spa`.
+    /// connection that opened as `App`.
     execution_kind: ProductExecutionKind,
 }
 
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn product_selection_validates_and_normalizes_ids() -> Result<()> {
-        let product = ProductSelection::new(" Dotli.DOT ".to_string(), ProductExecutionKind::Spa)?;
+        let product = ProductSelection::new(" Dotli.DOT ".to_string(), ProductExecutionKind::App)?;
 
         assert_eq!(product.current(), "dotli.dot");
         assert!(product.select("localhost:3000".to_string())?);
@@ -381,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn changing_product_notifies_connections() -> Result<()> {
-        let product = ProductSelection::new("first.dot".to_string(), ProductExecutionKind::Spa)?;
+        let product = ProductSelection::new("first.dot".to_string(), ProductExecutionKind::App)?;
         let mut connection = product.subscribe();
 
         assert!(product.select("second.dot".to_string())?);

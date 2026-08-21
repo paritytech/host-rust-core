@@ -17,6 +17,7 @@ mod chat;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
+mod product_subtree;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;
@@ -71,8 +72,9 @@ pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
 };
 
+pub(crate) use authority::AuthorityError;
 use authority::{
-    AccountAliasAuthorityRequest, AuthorityCancelError, AuthorityError, AuthoritySession,
+    AccountAliasAuthorityRequest, AuthorityCancelError, AuthoritySession,
     CreateProofAuthorityRequest, CreateTransactionAuthorityRequest,
     ListRingVrfKeysAuthorityRequest, RegisterRingVrfKeyAuthorityRequest,
     RingVrfSignAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
@@ -201,7 +203,7 @@ pub(super) const REMOTE_PERMISSION_DENIED_REASON: &str = "Permission denied";
 /// Host-spec B.6.2 recommends timing out unanswered SSO application requests
 /// after 180 seconds:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L303-L307>
-const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
 /// Keep this above the signing host's 240-second propagation ceiling while
@@ -2178,6 +2180,16 @@ impl ProductRuntimeHost {
     pub(crate) fn detach_chat(&self) {
         self.chat.detach();
     }
+
+    /// Buffer one host-authored Chat action for this connection's product,
+    /// behind the same access policy as every other Chat entry point.
+    pub(crate) fn publish_chat_action(
+        &self,
+        action: truapi::versioned::chat::HostChatActionSubscribeItem,
+    ) -> Result<(), crate::host_core::ProductRuntimeError> {
+        self.native_chat_platform()?;
+        self.chat.publish_action(action)
+    }
 }
 
 #[truapi_platform::async_trait]
@@ -3038,7 +3050,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();
@@ -3180,7 +3192,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();
@@ -3263,7 +3275,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();
@@ -3347,7 +3359,7 @@ mod tests {
         let (host_config, _) = runtime_config("chat.dot");
         let product = ProductContext::new_with_execution(
             "chat.dot".to_string(),
-            truapi_platform::ProductExecutionKind::Chat,
+            truapi_platform::ProductExecutionKind::Worker,
         )
         .expect("test chat product context is valid");
         let spawner = test_spawner();

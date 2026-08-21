@@ -382,6 +382,31 @@ mod tests {
     }
 
     #[test]
+    fn wire_index_derivation_matches_the_mobile_vector() {
+        use truapi::v01::DerivationIndex;
+
+        // The JS export composes these two steps over a wire `DerivationIndex`
+        // so hosts never build the 32-byte chain code. Pin that composition
+        // against the same vector the internal `index_bytes` path produces.
+        let root = derive_root_keypair_from_entropy(&[0xAB; 16]).unwrap();
+        let subtree = derive_product_subtree_keypair(&root, "myapp.dot").unwrap();
+        let derived = derive_product_public_key(
+            subtree.public.to_bytes(),
+            derivation_index_bytes(&DerivationIndex::Index(0)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            hex::encode(derived),
+            "1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c"
+        );
+        assert_eq!(
+            product_public_key_to_address(derived),
+            "5ChZBnBw9eDQUMBhnXUKrGMdK5MTfGrca3T1xZZtBQhW8eis"
+        );
+    }
+
+    #[test]
     fn person_ring_vrf_entropy_matches_ios_vectors() {
         let root_entropy: Vec<u8> = (1..=32).collect();
         assert_eq!(

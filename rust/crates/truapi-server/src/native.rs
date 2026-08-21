@@ -668,7 +668,7 @@ impl NativeTrUApiHostRuntime {
             product_control: Arc::new(Mutex::new(None)),
         });
 
-        if product.execution_kind == ProductExecutionKind::Chat {
+        if product.execution_kind == ProductExecutionKind::Worker {
             let previous = self
                 .chat_executions
                 .lock()
@@ -849,6 +849,19 @@ impl NativeTrUApiHostRuntime {
         self.runtime.next_statement_renewal_delay()
     }
 
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `None` until a pass has run, which is "not yet" rather than healthy.
+    /// [`Self::start_statement_allowance_renewal`] has no return value, so a host
+    /// driving the loop reads its result here: `slots_exhausted` on the last pass
+    /// means a period filled up and an allowance went unrenewed, which is the one
+    /// outcome retrying cannot fix and a person may need telling about.
+    pub fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::statement_allowance::renewal::StatementRenewalReport> {
+        self.runtime.last_statement_renewal_report()
+    }
+
     /// Activate or replace the process-wide local signing session.
     pub fn activate_local_session(
         &self,
@@ -1017,6 +1030,21 @@ impl NativeProductExecution {
     pub fn device_encryption_key(&self) -> Result<Bytes32, HostRejection> {
         Ok(futures::executor::block_on(
             self.admin().get_device_encryption_key(),
+        )?)
+    }
+
+    /// Resolve a product's hard-subtree public key for hosts naming the account
+    /// a review will sign with. Answers from the cache, the persisted slot, or
+    /// the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+    /// an error; `None` means no active session.
+    pub fn product_subtree_public_key(
+        &self,
+        product_id: String,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<Bytes32>, HostRejection> {
+        Ok(futures::executor::block_on(
+            self.admin()
+                .get_product_subtree_public_key(product_id, timeout_ms),
         )?)
     }
 
@@ -1269,6 +1297,19 @@ impl NativeTrUApiCore {
         targets: Vec<NativeStatementRenewalTarget>,
     ) -> Result<(), NativeRenewalTargetError> {
         self.host.track_statement_renewal_targets(targets)
+    }
+
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `None` until a pass has run, which is "not yet" rather than healthy.
+    /// [`Self::start_statement_allowance_renewal`] has no return value, so a host
+    /// driving the loop reads its result here: `slots_exhausted` on the last pass
+    /// means a period filled up and an allowance went unrenewed, which is the one
+    /// outcome retrying cannot fix and a person may need telling about.
+    pub fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::statement_allowance::renewal::StatementRenewalReport> {
+        self.host.last_statement_renewal_report()
     }
 
     /// Run one renewal pass now and report what each tracked target got.
@@ -2302,7 +2343,7 @@ mod tests {
     fn native_runtime_config(product_id: &str) -> NativeRuntimeConfig {
         NativeRuntimeConfig {
             product_id: product_id.to_string(),
-            execution_kind: ProductExecutionKind::Spa,
+            execution_kind: ProductExecutionKind::App,
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
@@ -2347,25 +2388,25 @@ mod tests {
             native_host_runtime_config(),
         )
         .expect("host runtime config should be valid");
-        let spa = host
+        let app = host
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
-                native_execution_config("shared.dot", ProductExecutionKind::Spa),
+                native_execution_config("shared.dot", ProductExecutionKind::App),
             )
-            .expect("SPA execution should open");
+            .expect("App execution should open");
         let chat_host = Arc::new(EventCallbacks::new());
         let chat = host
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
-                native_execution_config("shared.dot", ProductExecutionKind::Chat),
+                native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
             .expect("Chat execution should open");
 
-        assert!(Arc::ptr_eq(&spa.runtime, &chat.runtime));
+        assert!(Arc::ptr_eq(&app.runtime, &chat.runtime));
         assert!(matches!(
-            spa.publish_chat_action(text_chat_action("denied")),
+            app.publish_chat_action(text_chat_action("denied")),
             Err(crate::ProductRuntimeError::Denied)
         ));
         chat.publish_chat_action(text_chat_action("buffered"))
@@ -2375,7 +2416,7 @@ mod tests {
             .open_product_execution(
                 chat_host.clone(),
                 Some(chat_host.clone()),
-                native_execution_config("shared.dot", ProductExecutionKind::Chat),
+                native_execution_config("shared.dot", ProductExecutionKind::Worker),
             )
             .expect("replacement Chat execution should open");
         assert!(matches!(
@@ -2399,7 +2440,7 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
-                native_execution_config("chat-product.dot", ProductExecutionKind::Chat),
+                native_execution_config("chat-product.dot", ProductExecutionKind::Worker),
             )
             .expect("Chat execution should open");
 
@@ -2548,9 +2589,11 @@ mod tests {
             chat: callbacks,
             events: events.clone(),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let mut stream = truapi_platform::ChatPlatform::subscribe_chat_rooms(&platform, &product);
 
         let first = ready_rooms(stream.as_mut(), "initial room list");
@@ -2599,9 +2642,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let reaction = v01::ChatReaction {
             message_id: "message-1".to_string(),
             emoji: "\u{1f3b2}".to_string(),
@@ -2681,9 +2726,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let connection = crate::runtime::ChatConnection::new();
 
         let posted = futures::executor::block_on(truapi_platform::ChatPlatform::post_chat_message(
@@ -2752,9 +2799,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         *callbacks
             .chat_post_rejection
             .lock()
@@ -2802,9 +2851,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         *callbacks
             .chat_bot_rejection
             .lock()
@@ -2846,9 +2897,11 @@ mod tests {
             chat: callbacks.clone(),
             events: events.clone(),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let request = v01::HostChatRegisterBotRequest {
             bot_id: "flipper".to_string(),
             name: "Flipper".to_string(),
@@ -2918,9 +2971,11 @@ mod tests {
             chat: callbacks.clone(),
             events: Arc::new(NativeEventBus::default()),
         };
-        let product =
-            ProductContext::new_with_execution("chat.dot".to_string(), ProductExecutionKind::Chat)
-                .unwrap();
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            ProductExecutionKind::Worker,
+        )
+        .unwrap();
         let request = v01::HostChatCreateRoomRequest {
             room_id: "support".to_string(),
             name: "Support".to_string(),
@@ -3044,9 +3099,9 @@ mod tests {
             .open_product_execution(
                 Arc::new(EventCallbacks::new()),
                 None,
-                native_execution_config("chain.dot", ProductExecutionKind::Spa),
+                native_execution_config("chain.dot", ProductExecutionKind::App),
             )
-            .expect("SPA execution should open");
+            .expect("App execution should open");
         let mut shared_responses = host.events.register_chain(41);
         let mut scoped_responses = execution.events.register_chain(41);
         let response = r#"{"jsonrpc":"2.0","id":"truapi:1","result":true}"#.to_string();

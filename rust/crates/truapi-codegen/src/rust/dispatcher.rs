@@ -194,7 +194,9 @@ fn write_host_initiated_callers(
                     subscriptions: &HostInitiatedSubscriptionManager,
                     transport: Arc<dyn Transport>,
                     request: versioned::{module}::{request},
-                ) -> truapi::Subscription<versioned::{module}::{item}> {{
+                ) -> truapi::Subscription<
+                    Result<versioned::{module}::{item}, truapi::latest::GenericError>,
+                > {{
                     subscriptions.start(
                         wire_table::{ids},
                         parity_scale_codec::Encode::encode(&request),

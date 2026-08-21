@@ -4,13 +4,16 @@ import { services as generatedServices } from "./codegen/services.js";
 
 const services: ServiceInfo[] = [
     { name: "Storage", methods: [] },
-    { name: "Chat", requiredExecution: "Chat", methods: [] },
+    { name: "Chat", requiredExecution: "Worker", methods: [] },
 ];
 
 describe("servicesForExecution", () => {
     test("keeps shared services and services for the selected execution", () => {
-        expect(servicesForExecution(services, "Spa").map(({ name }) => name)).toEqual(["Storage"]);
-        expect(servicesForExecution(services, "Chat").map(({ name }) => name)).toEqual([
+        expect(servicesForExecution(services, "App").map(({ name }) => name)).toEqual(["Storage"]);
+        expect(servicesForExecution(services, "Widget").map(({ name }) => name)).toEqual([
+            "Storage",
+        ]);
+        expect(servicesForExecution(services, "Worker").map(({ name }) => name)).toEqual([
             "Storage",
             "Chat",
         ]);
@@ -18,7 +21,7 @@ describe("servicesForExecution", () => {
 
     test("generated Chat metadata carries its trusted execution requirement", () => {
         expect(generatedServices.find(({ name }) => name === "Chat")?.requiredExecution).toBe(
-            "Chat",
+            "Worker",
         );
         expect(
             generatedServices.find(({ name }) => name === "Storage")?.requiredExecution,

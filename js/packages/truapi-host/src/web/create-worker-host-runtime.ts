@@ -8,7 +8,16 @@ import type {
   RequiredHostCallbacks,
   TrUApiProductProvider,
 } from "../index.js";
-import type { Bytes32, GenericError } from "@parity/truapi";
+import type {
+  Bytes32,
+  CustomRendererNode,
+  GenericError,
+  HostChatActionSubscribeItem,
+} from "@parity/truapi";
+import {
+  CustomRendererNode as CustomRendererNodeCodec,
+  HostChatActionSubscribeItem as HostChatActionSubscribeItemCodec,
+} from "@parity/truapi";
 import { PermissionAuthorizationRequest as PermissionAuthorizationRequestCodec } from "../generated/host-callbacks.js";
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
 import type { RawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -69,6 +78,10 @@ export interface WorkerPairingHostRuntime {
   ): Promise<void>;
   getSessionChatIdentityKey(): Promise<Uint8Array | undefined>;
   getDeviceEncryptionKey(): Promise<Uint8Array>;
+  getProductSubtreePublicKey(
+    productId: string,
+    timeoutMs?: number,
+  ): Promise<Uint8Array | undefined>;
   setLogLevel(level: LogLevel): void;
   dispose(): void;
 }
@@ -133,6 +146,30 @@ interface RuntimeState {
     number,
     { resolve: (key: Uint8Array) => void; reject: (error: Error) => void }
   >;
+  pendingProductSubtreePublicKeys: Map<
+    number,
+    {
+      resolve: (key: Uint8Array | undefined) => void;
+      reject: (error: Error) => void;
+    }
+  >;
+  pendingChatActions: Map<
+    number,
+    { resolve: () => void; reject: (error: Error) => void }
+  >;
+  /**
+   * Sinks for live custom-message renders, keyed by render id. The core id
+   * rides along so disposing one provider fails only its own renders.
+   */
+  customRenders: Map<
+    number,
+    {
+      coreId: number;
+      onUpdate: (node: CustomRendererNode) => void;
+      onComplete: () => void;
+      onError: (error: Error) => void;
+    }
+  >;
   closedError: Error | null;
   logLevel: LogLevel;
   disposed: boolean;
@@ -147,7 +184,10 @@ let nextDisconnectRequestId = 0;
 let nextPermissionAuthorizationRequestId = 0;
 let nextSessionChatIdentityKeyRequestId = 0;
 let nextDeviceEncryptionKeyRequestId = 0;
+let nextProductSubtreePublicKeyRequestId = 0;
 let nextSessionActivationRequestId = 0;
+let nextChatActionRequestId = 0;
+let nextCustomRenderId = 0;
 
 function encodePermissionAuthorizationRequest(
   request: PermissionAuthorizationRequest,
@@ -454,6 +494,19 @@ function handleSessionChatIdentityKeyResponse(
   );
 }
 
+function handleProductSubtreePublicKeyResponse(
+  state: RuntimeState,
+  msg:
+    | { requestId: number; ok: true; key: Uint8Array | undefined }
+    | { requestId: number; ok: false; error: string },
+): void {
+  settlePending(
+    state.pendingProductSubtreePublicKeys,
+    msg.requestId,
+    msg.ok ? { ok: true, value: msg.key } : { ok: false, error: msg.error },
+  );
+}
+
 function handleDeviceEncryptionKeyResponse(
   state: RuntimeState,
   msg:
@@ -475,6 +528,12 @@ function rejectPendingRuntimeRequests(state: RuntimeState, error: Error): void {
   rejectAll(state.pendingSetPermissionAuthorizationStatuses, error);
   rejectAll(state.pendingSessionChatIdentityKeys, error);
   rejectAll(state.pendingDeviceEncryptionKeys, error);
+  rejectAll(state.pendingProductSubtreePublicKeys, error);
+  rejectAll(state.pendingChatActions, error);
+  for (const [renderId, sink] of [...state.customRenders]) {
+    state.customRenders.delete(renderId);
+    reportRenderFailure(sink, error);
+  }
   for (const pending of state.pendingCores.values()) {
     pending.reject(error);
   }
@@ -598,7 +657,10 @@ export function createWebWorkerPairingHostRuntime(
       pendingPermissionAuthorizationStatusBatches: new Map(),
       pendingSetPermissionAuthorizationStatuses: new Map(),
       pendingSessionChatIdentityKeys: new Map(),
+      pendingProductSubtreePublicKeys: new Map(),
       pendingDeviceEncryptionKeys: new Map(),
+      pendingChatActions: new Map(),
+      customRenders: new Map(),
       closedError: null,
       logLevel: devLogLevelOverride ?? options.logLevel ?? "off",
       disposed: false,
@@ -663,6 +725,50 @@ export function createWebWorkerPairingHostRuntime(
         case "deviceEncryptionKeyResponse":
           handleDeviceEncryptionKeyResponse(state, msg);
           break;
+        case "productSubtreePublicKeyResponse":
+          handleProductSubtreePublicKeyResponse(state, msg);
+          break;
+        case "publishChatActionResponse":
+          settlePending(
+            state.pendingChatActions,
+            msg.requestId,
+            msg.ok
+              ? { ok: true, value: undefined }
+              : { ok: false, error: msg.error },
+          );
+          break;
+        case "renderCustomMessageItem": {
+          const sink = state.customRenders.get(msg.renderId);
+          if (!sink) break;
+          // Escaping the listener would strand the render with no terminal.
+          try {
+            sink.onUpdate(CustomRendererNodeCodec.dec(msg.node));
+          } catch (err) {
+            state.customRenders.delete(msg.renderId);
+            state.worker.postMessage({
+              kind: "renderCustomMessageStop",
+              renderId: msg.renderId,
+            } satisfies MainToWorker);
+            reportRenderFailure(sink, err);
+          }
+          break;
+        }
+        case "renderCustomMessageComplete": {
+          const sink = state.customRenders.get(msg.renderId);
+          state.customRenders.delete(msg.renderId);
+          try {
+            sink?.onComplete();
+          } catch (err) {
+            console.warn("[truapi worker] render onComplete threw:", err);
+          }
+          break;
+        }
+        case "renderCustomMessageError": {
+          const sink = state.customRenders.get(msg.renderId);
+          state.customRenders.delete(msg.renderId);
+          if (sink) reportRenderFailure(sink, new Error(msg.error));
+          break;
+        }
         case "callbackRequest":
           if (debugLoggingEnabled(state)) {
             console.debug("[truapi worker] callbackRequest", msg.name);
@@ -878,6 +984,23 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
         (requestId) => ({ kind: "getDeviceEncryptionKey", requestId }),
       );
     },
+    getProductSubtreePublicKey(
+      productId: string,
+      timeoutMs?: number,
+    ): Promise<Uint8Array | undefined> {
+      return sendWorkerRequest<Uint8Array | undefined>(
+        state,
+        state.pendingProductSubtreePublicKeys,
+        () => ++nextProductSubtreePublicKeyRequestId,
+        undefined,
+        (requestId) => ({
+          kind: "getProductSubtreePublicKey",
+          requestId,
+          productId,
+          timeoutMs,
+        }),
+      );
+    },
     notifySessionStoreChanged(): void {
       if (state.disposed) return;
       state.worker.postMessage({
@@ -962,6 +1085,31 @@ function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
   return runtime;
 }
 
+/** Deliver a render failure without letting the sink's own throw escape. */
+function reportRenderFailure(
+  sink: { onError: (error: Error) => void },
+  cause: unknown,
+): void {
+  try {
+    sink.onError(cause instanceof Error ? cause : new Error(errorMessage(cause)));
+  } catch (err) {
+    console.warn("[truapi worker] render onError threw:", err);
+  }
+}
+
+/** Settle and drop every render belonging to one product connection. */
+function failRendersForCore(
+  state: RuntimeState,
+  coreId: number,
+  error: Error,
+): void {
+  for (const [renderId, sink] of [...state.customRenders]) {
+    if (sink.coreId !== coreId) continue;
+    state.customRenders.delete(renderId);
+    reportRenderFailure(sink, error);
+  }
+}
+
 function buildProvider(
   state: RuntimeState,
   core: CoreState,
@@ -1011,6 +1159,17 @@ function buildProvider(
       }
       return bytesToHex(await runtime.getDeviceEncryptionKey());
     },
+    async getProductSubtreePublicKey(
+      productId: string,
+      timeoutMs?: number,
+    ): Promise<Bytes32 | undefined> {
+      if (core.disposed) return undefined;
+      const key = await runtime.getProductSubtreePublicKey(
+        productId,
+        timeoutMs,
+      );
+      return key && bytesToHex(key);
+    },
     getPermissionAuthorizationStatus(request) {
       if (core.disposed) return Promise.resolve("NotDetermined");
       return runtime.getPermissionAuthorizationStatus(core.productId, request);
@@ -1036,10 +1195,56 @@ function buildProvider(
       if (core.disposed) return;
       runtime.setLogLevel(level);
     },
+    publishChatAction(action: HostChatActionSubscribeItem): Promise<void> {
+      if (state.disposed || core.disposed) {
+        return Promise.reject(new Error("product connection is closed"));
+      }
+      const requestId = nextChatActionRequestId++;
+      return new Promise((resolve, reject) => {
+        state.pendingChatActions.set(requestId, { resolve, reject });
+        state.worker.postMessage({
+          kind: "publishChatAction",
+          coreId: core.coreId,
+          requestId,
+          action: HostChatActionSubscribeItemCodec.enc(action),
+        } satisfies MainToWorker);
+      });
+    },
+    renderCustomMessage(request, sink) {
+      if (state.disposed || core.disposed) {
+        sink.onError?.(new Error("product connection is closed"));
+        return () => {};
+      }
+      const renderId = nextCustomRenderId++;
+      state.customRenders.set(renderId, {
+        coreId: core.coreId,
+        onUpdate: sink.onUpdate,
+        onComplete: () => sink.onComplete?.(),
+        onError: (error) => sink.onError?.(error),
+      });
+      state.worker.postMessage({
+        kind: "renderCustomMessageStart",
+        coreId: core.coreId,
+        renderId,
+        messageId: request.messageId,
+        messageType: request.messageType,
+        payload: request.payload,
+      } satisfies MainToWorker);
+      return () => {
+        if (!state.customRenders.delete(renderId)) return;
+        state.worker.postMessage({
+          kind: "renderCustomMessageStop",
+          renderId,
+        } satisfies MainToWorker);
+      };
+    },
     dispose(): void {
       if (core.disposed) return;
       closeCoreState(core, new Error("provider disposed"));
       state.cores.delete(core.coreId);
+      // Renders left registered would never settle: the worker cancels them
+      // with the core, so nothing further arrives to complete the sink.
+      failRendersForCore(state, core.coreId, new Error("provider disposed"));
       state.worker.postMessage({
         kind: "disposeCore",
         coreId: core.coreId,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
+  CustomRendererNode,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
 } from "@parity/truapi";
@@ -317,7 +318,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
 
   it("binds a host-selected execution kind to the product core", async () => {
     const worker = new FakeWorker();
-    const config = runtimeConfig({ executionKind: "Chat" });
+    const config = runtimeConfig({ executionKind: "Worker" });
     const providerPromise = createProviderFromRuntime(
       asWorker(worker),
       makeHostCallbacks(),
@@ -332,7 +333,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(createCore).toEqual({
       kind: "createCore",
       coreId: 1,
-      product: { productId: "dotli.dot", executionKind: "Chat" },
+      product: { productId: "dotli.dot", executionKind: "Worker" },
     });
     worker.emit({ kind: "coreReady", coreId: 1 });
     (await providerPromise).dispose();
@@ -500,6 +501,49 @@ describe("createWebWorkerPairingHostRuntime", () => {
       key: undefined,
     });
     expect(await missing).toBeUndefined();
+
+    provider.dispose();
+  });
+
+  it("returns a product subtree key as hex and surfaces a wallet deadline", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x31);
+    const pending = provider.getProductSubtreePublicKey("myapp.dot", 5000);
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getProductSubtreePublicKey");
+    expect(msg.productId).toBe("myapp.dot");
+    expect(msg.timeoutMs).toBe(5000);
+
+    worker.emit({
+      kind: "productSubtreePublicKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    // A wallet that never answers ends at the deadline, and that is an error
+    // rather than an absent key, so a host can tell it apart from having no
+    // session at all.
+    const late = provider.getProductSubtreePublicKey("slow.dot", 1);
+    worker.emit({
+      kind: "productSubtreePublicKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: false,
+      error: "Account authority request timed out after 1ms",
+    });
+    await expect(late).rejects.toThrow("timed out");
 
     provider.dispose();
   });
@@ -1110,5 +1154,69 @@ describe("createWebWorkerPairingHostRuntime", () => {
       deeplink: undefined,
       scheduledAt: undefined,
     });
+  });
+  it("ends a render whose tree cannot be decoded instead of stranding it", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+    const coreId = lastMessageOfKind(worker, "createCore").coreId;
+
+    const errors: Error[] = [];
+    let completed = 0;
+    provider.renderCustomMessage!(
+      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
+      {
+        onUpdate: () => {},
+        onComplete: () => completed++,
+        onError: (error) => errors.push(error),
+      },
+    );
+    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+
+    // 0xff is not a CustomRendererNode discriminant.
+    expect(() =>
+      worker.emit({
+        kind: "renderCustomMessageItem",
+        renderId,
+        node: new Uint8Array([0xff]),
+      }),
+    ).not.toThrow();
+
+    expect(errors).toHaveLength(1);
+    expect(completed).toBe(0);
+    // The worker must be told to stop, or its wasm subscription leaks.
+    expect(lastMessageOfKind(worker, "renderCustomMessageStop").renderId).toBe(
+      renderId,
+    );
+  });
+
+  it("keeps a throwing render sink from breaking the worker listener", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    provider.renderCustomMessage!(
+      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
+      {
+        onUpdate: () => {
+          throw new Error("renderer exploded");
+        },
+        onError: () => {
+          throw new Error("and so did onError");
+        },
+      },
+    );
+    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+
+    expect(() =>
+      worker.emit({
+        kind: "renderCustomMessageItem",
+        renderId,
+        node: CustomRendererNode.enc({ tag: "Nil", value: undefined }),
+      }),
+    ).not.toThrow();
+
+    // Still live: a later frame must still reach the provider.
+    expect(() =>
+      worker.emit({ kind: "frame", coreId: 0, bytes: new Uint8Array([1]) }),
+    ).not.toThrow();
   });
 });

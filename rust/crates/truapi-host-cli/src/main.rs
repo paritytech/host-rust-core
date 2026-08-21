@@ -63,8 +63,8 @@ use crate::terminal_ui::{
 };
 
 /// Default product served by the pairing host's frame endpoint. Product ids
-/// must be a dotNS name (`.dot` or `.paseo`) or a `localhost` identifier
-/// (host-spec product id).
+/// must be a dotNS name (`.dot`, `.paseo` or `.test`) or a `localhost`
+/// identifier (host-spec product id).
 const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 /// Deeplink scheme advertised by the pairing host.
 const DEEPLINK_SCHEME: &str = "polkadotapp";
@@ -238,32 +238,32 @@ enum Command {
 /// Execution kind the CLI serves a product as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum ExecutionKind {
-    /// Ordinary product. Chat requests answer `Denied`, as they do on any
-    /// host that does not serve chat.
-    Spa,
-    /// Chat product, served by the CLI's in-memory chat host.
-    Chat,
+    /// Ordinary full-page product. Chat requests answer `Denied`, as they do
+    /// on any host that does not serve chat.
+    App,
+    /// Headless executable served by the CLI's in-memory chat host.
+    Worker,
 }
 
 impl ExecutionKind {
     fn context(self) -> ProductExecutionKind {
         match self {
-            Self::Spa => ProductExecutionKind::Spa,
-            Self::Chat => ProductExecutionKind::Chat,
+            Self::App => ProductExecutionKind::App,
+            Self::Worker => ProductExecutionKind::Worker,
         }
     }
 
     /// The chat host to install, if this kind serves chat at all.
     fn chat_host(self) -> Option<Arc<chat::CliChatHost>> {
-        matches!(self, Self::Chat).then(chat::CliChatHost::from_env)
+        matches!(self, Self::Worker).then(chat::CliChatHost::from_env)
     }
 }
 
 #[derive(Args)]
 struct PairingHostArgs {
-    /// Execution kind the served product runs as. `chat` installs the CLI's
-    /// in-memory chat host; `spa` leaves Chat unserved.
-    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    /// Execution kind the served product runs as. `worker` installs the CLI's
+    /// in-memory chat host; `app` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "app")]
     execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start the terminal UI.
     #[arg(long)]
@@ -288,9 +288,9 @@ struct PairingHostArgs {
 
 #[derive(Args)]
 struct SigningHostArgs {
-    /// Execution kind the served product runs as. `chat` installs the CLI's
-    /// in-memory chat host; `spa` leaves Chat unserved.
-    #[arg(long = "execution-kind", value_enum, default_value = "spa")]
+    /// Execution kind the served product runs as. `worker` installs the CLI's
+    /// in-memory chat host; `app` leaves Chat unserved.
+    #[arg(long = "execution-kind", value_enum, default_value = "app")]
     execution_kind: ExecutionKind,
     /// Product script to run (JS/TS). If omitted, start an interactive shell.
     #[arg(long)]
