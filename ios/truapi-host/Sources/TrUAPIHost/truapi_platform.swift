@@ -1592,6 +1592,109 @@ public func FfiConverterTypeCreateTransactionReview_lower(_ value: CreateTransac
 
 
 /**
+ * What the operating system currently says about a device capability.
+ *
+ * Distinct from [`PermissionAuthorizationStatus`], which is the product-scoped
+ * decision the user made through TrUAPI. The two answer different questions
+ * and are combined rather than substituted: a capability is usable only when
+ * the product holds a grant *and* the OS still allows it.
+ */
+
+public enum DevicePermissionStatus: Equatable, Hashable {
+
+    /**
+     * The OS grants this capability to the host application.
+     */
+    case granted
+    /**
+     * The OS refuses it. Prompting again will not help; the user has to
+     * change it in system settings.
+     */
+    case denied
+    /**
+     * The OS has not been asked yet, either because it never was or because
+     * it reset the grant. Prompting is what resolves this.
+     */
+    case notDetermined
+    /**
+     * This platform has no OS-level gate for the capability, so the
+     * product-scoped decision alone governs it.
+     */
+    case notApplicable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DevicePermissionStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDevicePermissionStatus: FfiConverterRustBuffer {
+    typealias SwiftType = DevicePermissionStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DevicePermissionStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .granted
+
+        case 2: return .denied
+
+        case 3: return .notDetermined
+
+        case 4: return .notApplicable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: DevicePermissionStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .granted:
+            writeInt(&buf, Int32(1))
+
+
+        case .denied:
+            writeInt(&buf, Int32(2))
+
+
+        case .notDetermined:
+            writeInt(&buf, Int32(3))
+
+
+        case .notApplicable:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDevicePermissionStatus_lift(_ buf: RustBuffer) throws -> DevicePermissionStatus {
+    return try FfiConverterTypeDevicePermissionStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDevicePermissionStatus_lower(_ value: DevicePermissionStatus) -> RustBuffer {
+    return FfiConverterTypeDevicePermissionStatus.lower(value)
+}
+
+
+
+/**
  * Why a login attempt failed, for hosts that need to act on the cause rather
  * than only display it.
  */
