@@ -15,6 +15,7 @@ export type {
 } from "./transport.js";
 export type { CreateTransportOptions } from "./client.js";
 export {
+  RequestTimeoutError,
   SubscriptionError,
   createIframeProvider,
   createMessagePortProvider,

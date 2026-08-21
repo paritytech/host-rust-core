@@ -55,6 +55,27 @@ export class SubscriptionError<Reason = never> extends Error {
 }
 
 /**
+ * Rejection delivered when a request outlives its bound: the peer accepted the
+ * frame and sent no response while the channel stayed open.
+ *
+ * Distinct from the plain `Error` a transport or provider close rejects with,
+ * so a caller can tell "host went silent, retry" from "channel is gone,
+ * re-establish". Discriminate with `error instanceof RequestTimeoutError`.
+ **/
+export class RequestTimeoutError extends Error {
+  /**
+   * Bound, in milliseconds, that the request outlived.
+   **/
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`TrUAPI request timed out after ${timeoutMs}ms`);
+    this.name = "RequestTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
  * Minimal Observable-compatible observer shape used by generated subscription
  * APIs without depending on RxJS.
  *
@@ -176,6 +197,13 @@ export interface RequestParams<Ok, Err> {
    * envelope. The transport unwraps the envelope into `ResultAsync<Ok, Err>`.
    **/
   decodeResponse: (payload: Uint8Array) => ResultPayload<Ok, Err>;
+
+  /**
+   * Bound for this one request, in milliseconds, overriding both the
+   * transport's `requestTimeoutMs` and the per-method floor a slow-answering
+   * method would otherwise take. Must be an integer between 1 and 2147483647.
+   **/
+  timeoutMs?: number;
 }
 
 /**

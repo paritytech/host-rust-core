@@ -28,8 +28,11 @@ const provider = createMessagePortProvider(port);
 const transport = createTransport(provider);
 const truapi: Client = createClient(transport);
 
-const result = await truapi.accountManagement.accountGet({
-  productAccountId: { dotNsIdentifier: "my-product.dot", derivationIndex: { tag: "Index", value: 0 } },
+const result = await truapi.account.getAccount({
+  productAccountId: {
+    dotNsIdentifier: "my-product.dot",
+    derivationIndex: { tag: "Index", value: 0 },
+  },
 });
 
 if (result.isErr()) throw result.error;
@@ -61,6 +64,67 @@ const sub: Subscription = truapi.chainInteraction
 
 sub.unsubscribe();
 ```
+
+## Request timeouts
+
+Every request carries a time bound so a silent host never hangs the product. `createTransport`
+accepts a transport-wide bound in `requestTimeoutMs` — an integer between `1` and `2147483647`,
+defaulting to `30_000` — and a per-call `timeoutMs` on `transport.request` overrides it. A request
+that outlives its bound rejects with `RequestTimeoutError`, which carries the bound it outlived on
+`timeoutMs`.
+
+```ts
+import {
+  createClient,
+  createMessagePortProvider,
+  createTransport,
+  RequestTimeoutError,
+  type Client,
+} from "@parity/truapi";
+
+const provider = createMessagePortProvider(port);
+const transport = createTransport(provider, { requestTimeoutMs: 10_000 });
+const truapi: Client = createClient(transport);
+
+try {
+  const result = await truapi.account.getAccount({
+    productAccountId: {
+      dotNsIdentifier: "my-product.dot",
+      derivationIndex: { tag: "Index", value: 0 },
+    },
+  });
+  // …
+} catch (error) {
+  if (error instanceof RequestTimeoutError) {
+    // The peer accepted the frame and never replied. Requests carry no cancel
+    // frame, so the host may still be executing: re-query state for a method
+    // with side effects (submit, allocate, sign) rather than resubmitting.
+  } else {
+    // The transport or provider closed; re-establish the channel.
+  }
+}
+```
+
+A timeout surfaces as a **promise rejection**, not an `Err` in the `ResultAsync`: `request` builds
+its result with `ResultAsync.fromSafePromise`, so a `.match(onOk, onErr)` runs neither callback and
+the error is thrown instead — await the call inside `try`/`catch`, and discriminate with
+`instanceof`, never on message text.
+
+The effective bound is the larger of the configured `requestTimeoutMs` and the method's floor;
+`timeoutMs` overrides both. Floors cover the methods whose answer either outlives the default under
+a host deadline or waits on a person with no host deadline at all, so a bound never aborts an answer
+the host is still allowed to send:
+
+| Floor        | Methods                                                                                                                                                       | Why                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `190_000` ms | account get, alias, and proof; VRF sign and ring-VRF register, list, and sign; every signing method; statement-store create-proof and create-proof-authorized | clears the runtime's 180s remote-authority deadline |
+| `420_000` ms | request login; device and remote permission prompts; payment request and top-up                                                                               | a person answers, and the host applies no deadline  |
+| `420_000` ms | resource allocation; preimage submit; statement-store submit                                                                                                  | clears the 300s allocation and 360s preimage caps   |
+
+Generated methods take the request value only, so the per-call `timeoutMs` is reachable through
+`transport.request` rather than through a generated client method: a floored method cannot be
+shortened from `Client`. `@parity/truapi/sandbox`'s `getClientSync()` takes no options, so it uses
+the default `30_000` ms bound and the floors.
 
 ## What's in the package
 
