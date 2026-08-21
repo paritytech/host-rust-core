@@ -2658,6 +2658,49 @@ pub trait ChatPlatform: Send + Sync {
     ) -> BoxStream<'static, Result<HostChatListSubscribeItem, GenericError>>;
 }
 
+/// What the operating system currently says about a device capability.
+///
+/// Distinct from [`PermissionAuthorizationStatus`], which is the product-scoped
+/// decision the user made through TrUAPI. The two answer different questions
+/// and are combined rather than substituted: a capability is usable only when
+/// the product holds a grant *and* the OS still allows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum DevicePermissionStatus {
+    /// The OS grants this capability to the host application.
+    Granted,
+    /// The OS refuses it. Prompting again will not help; the user has to
+    /// change it in system settings.
+    Denied,
+    /// The OS has not been asked yet, either because it never was or because
+    /// it reset the grant. Prompting is what resolves this.
+    NotDetermined,
+    /// This platform has no OS-level gate for the capability, so the
+    /// product-scoped decision alone governs it.
+    NotApplicable,
+}
+
+/// Live OS permission state, read without prompting.
+///
+/// A product-scoped grant is persisted once and never expires, but the OS
+/// grant behind it can be revoked in system settings, suspended by device
+/// policy, or reset by the platform — Android auto-resets runtime permissions
+/// for apps that go unused. Without this capability the core keeps answering
+/// from the stored grant alone and tells a product `granted` for a capability
+/// the OS has since taken away.
+///
+/// This is deliberately separate from [`Permissions::device_permission`]: that
+/// call may show UI, so it cannot be used to re-check a decision the user has
+/// already made without prompting them again on every request.
+#[async_trait]
+pub trait PermissionStatusHost: Send + Sync {
+    /// Current OS status of a device capability. Must not prompt.
+    async fn device_permission_status(
+        &self,
+        request: HostDevicePermissionRequest,
+    ) -> Result<DevicePermissionStatus, GenericError>;
+}
+
 /// Combined platform interface. A host must provide every capability trait
 /// listed here. Members marked optional may be omitted; the core answers their
 /// product calls with `Unsupported`. See [`OptionalPlatform`].
@@ -2695,6 +2738,6 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform {}
+pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost {}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform {}
+impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost {}

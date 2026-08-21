@@ -767,19 +767,22 @@ impl WasmPairingHostRuntime {
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
         let has_chat = bridge.has_chat();
+        let has_permission_status = bridge.has_permission_status();
         let platform = Arc::new(WasmPlatform::new(bridge));
         let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
+        let status_host = has_permission_status
+            .then(|| platform.clone() as Arc<dyn truapi_platform::PermissionStatusHost>);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = pairing_host_config_from_js(&host_config)?;
+        let runtime =
+            PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        if let Some(status_host) = status_host {
+            runtime.set_permission_status_host(status_host);
+        }
         Ok(Self {
-            runtime: Rc::new(PairingHostRuntime::with_chat_platform(
-                platform,
-                host_config,
-                spawner,
-                chat_platform,
-            )),
+            runtime: Rc::new(runtime),
         })
     }
 
@@ -1123,20 +1126,25 @@ impl WasmProductRuntime {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
         let has_chat = bridge.has_chat();
+        let has_permission_status = bridge.has_permission_status();
         let platform = Arc::new(WasmPlatform::new(bridge));
         let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
+        let status_host = has_permission_status
+            .then(|| platform.clone() as Arc<dyn truapi_platform::PermissionStatusHost>);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let (host_config, product) = runtime_config_from_js(&runtime_config)?;
-        let core = ProductRuntime::from_platform_with_chat_platform(
-            platform,
-            host_config,
-            product,
-            spawner,
-            frame_sink,
-            chat_platform,
-        );
+        // Built in two steps rather than through
+        // `ProductRuntime::from_platform_with_chat_platform`, because the
+        // status adapter is installed on the host runtime the product hangs
+        // off, not on the product runtime itself.
+        let pairing =
+            PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        if let Some(status_host) = status_host {
+            pairing.set_permission_status_host(status_host);
+        }
+        let core = pairing.product_runtime(product, frame_sink);
         Ok(Self::from_parts(core, channel.dispose))
     }
 

@@ -6,7 +6,7 @@
 //! Auth-state transitions are published on a channel so the CLI can print the
 //! pairing deeplink and observe connection status.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -22,9 +22,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
 use truapi_platform::{
-    AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, JsonRpcConnection, Navigation,
-    Notifications, Permissions, PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
+    JsonRpcConnection, Navigation, Notifications, PermissionStatusHost, Permissions, PreimageHost,
+    ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -114,6 +115,13 @@ pub struct CliPlatform {
     /// Consulted-approval transcript (`TRUAPI_APPROVALS_LOG`): one
     /// `<approved|denied> <action>` line per decided confirmation.
     approvals_log: Option<PathBuf>,
+    /// Capabilities this host reports as refused by the OS
+    /// (`TRUAPI_OS_DENIED_PERMISSIONS`), as the lowercase [`Display`] name of
+    /// each: `camera,microphone`. A terminal host has no OS permission gate of
+    /// its own, so this is how the revalidation path is driven from a script.
+    ///
+    /// [`Display`]: core::fmt::Display
+    os_denied_permissions: BTreeSet<String>,
     ui: Option<UiHandle>,
     /// Serializes interactive CLI prompts so concurrent confirmations don't
     /// interleave on stdin.
@@ -193,6 +201,7 @@ impl CliPlatform {
             scheduled_notifications: Arc::new(Mutex::new(HashMap::new())),
             approval,
             approvals_log: std::env::var_os("TRUAPI_APPROVALS_LOG").map(PathBuf::from),
+            os_denied_permissions: os_denied_permissions(),
             ui,
             prompt_lock: AsyncMutex::new(()),
         })
@@ -642,6 +651,36 @@ fn emit_notification_event(ui: Option<&UiHandle>, event: SystemEvent) {
         ui.event(event);
     } else {
         crate::terminal_ui::output_event(event);
+    }
+}
+
+/// Capabilities named by `TRUAPI_OS_DENIED_PERMISSIONS`, comma-separated and
+/// matched case-insensitively against each capability's `Display` name.
+fn os_denied_permissions() -> BTreeSet<String> {
+    std::env::var("TRUAPI_OS_DENIED_PERMISSIONS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+#[async_trait]
+impl PermissionStatusHost for CliPlatform {
+    async fn device_permission_status(
+        &self,
+        request: api::HostDevicePermissionRequest,
+    ) -> Result<DevicePermissionStatus, api::GenericError> {
+        // Every capability this host does not report as refused is
+        // `NotApplicable` rather than `Granted`: a terminal has no OS gate to
+        // grant anything, and claiming one would assert state it cannot see.
+        if self
+            .os_denied_permissions
+            .contains(&request.to_string().to_ascii_lowercase())
+        {
+            return Ok(DevicePermissionStatus::Denied);
+        }
+        Ok(DevicePermissionStatus::NotApplicable)
     }
 }
 

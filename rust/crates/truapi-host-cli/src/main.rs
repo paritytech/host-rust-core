@@ -40,7 +40,9 @@ use futures::future::BoxFuture;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use truapi_platform::{ChatPlatform, HostInfo, PlatformInfo, ProductExecutionKind};
+use truapi_platform::{
+    ChatPlatform, HostInfo, PermissionStatusHost, PlatformInfo, ProductExecutionKind,
+};
 use truapi_server::host_logic::dotns_gateway::{
     MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
 };
@@ -877,12 +879,14 @@ async fn run_pairing_host(
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
     let chat_host = args.execution_kind.chat_host();
+    let status_host = storage_platform.clone() as Arc<dyn PermissionStatusHost>;
     let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
         platform,
         config,
         tokio_spawner(),
         chat_host.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
+    pairing_runtime.set_permission_status_host(status_host);
 
     let frame_server = frame_server::bind(args.frame_listen).await?;
     let frame_url = frame_server.endpoint().to_string();
@@ -1278,12 +1282,14 @@ fn build_signing_runtime(
         network.bulletin_genesis,
     )
     .context("invalid signing host config")?;
+    let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
     let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
         platform,
         config,
         tokio_spawner(),
         chat.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
+    runtime.set_permission_status_host(status_host);
     runtime.start_statement_allowance_renewal();
     Ok(runtime)
 }
