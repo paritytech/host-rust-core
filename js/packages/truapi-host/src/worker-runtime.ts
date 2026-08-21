@@ -108,7 +108,7 @@ interface WorkerChainConnection {
  * Worker-side half of the host chain-connect bridge.
  *
  * The Rust core runs in this worker but owns no socket. When it needs chain
- * access (chainHead v1 for People-chain identity / statement-store SSO) it
+ * access (chainHead v1 for dotNS identity on Asset Hub / statement-store SSO) it
  * calls this; the actual transport lives on the host main thread and is reached
  * over postMessage. The data crossing here is JSON-RPC strings, not SCALE: only
  * the product<->core wire is SCALE.
@@ -117,7 +117,7 @@ interface WorkerChainConnection {
  *   +-------------------+  SCALE  +--------------------------+      +--------------------------------+
  *   | Product (iframe)  |<------->| truapi-server WASM core  |      | host.connect() (ChainProvider) |
  *   | speaks TrUAPI     |  frames | chainHead v1, SSO,       |      | host-owned JSON-RPC transport  |
- *   | never sees chains |         | People-chain identity    |      | remote RPC, native client, ... |
+ *   | never sees chains |         | dotNS identity (AH)      |      | remote RPC, native client, ... |
  *   +-------------------+         +--------------------------+      +--------------------------------+
  *                                      |   ^  JSON-RPC strings (not SCALE)        ^   |
  *                       chainConnect() |   | onResponse(json)           connect   |   | responses()

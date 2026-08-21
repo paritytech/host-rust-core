@@ -5102,6 +5102,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
+ "base64",
  "bip39",
  "clap",
  "crossterm",

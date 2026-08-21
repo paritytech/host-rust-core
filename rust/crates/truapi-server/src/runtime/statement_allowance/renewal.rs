@@ -363,6 +363,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         // One collection, so this stays a test of cross-target protection rather

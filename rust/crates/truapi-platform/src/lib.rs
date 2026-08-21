@@ -69,6 +69,8 @@ pub struct PairingHostConfig {
     pub people_chain_genesis_hash: [u8; 32],
     /// Bulletin-chain genesis hash used for in-core preimage submission.
     pub bulletin_chain_genesis_hash: [u8; 32],
+    /// Asset Hub genesis hash used to resolve session usernames from dotNS.
+    pub asset_hub_chain_genesis_hash: [u8; 32],
     /// Deeplink URI scheme used in pairing QR payloads, without `://`.
     ///
     /// Host-spec L.2-L.3 define the `polkadotapp://pair` route and construction
@@ -182,6 +184,7 @@ impl PairingHostConfig {
         platform_info: PlatformInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
+        asset_hub_chain_genesis_hash: [u8; 32],
         pairing_deeplink_scheme: String,
     ) -> Result<Self, RuntimeConfigValidationError> {
         require_non_empty("pairing_deeplink_scheme", &pairing_deeplink_scheme)?;
@@ -194,6 +197,7 @@ impl PairingHostConfig {
             host: HostRuntimeConfig::new(host_info, platform_info)?,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
+            asset_hub_chain_genesis_hash,
             pairing_deeplink_scheme,
         };
         Ok(config)
@@ -2329,7 +2333,7 @@ pub trait CoreStorage: Send + Sync {
 pub struct SessionUiInfo {
     /// 32-byte sr25519 root public key of the active session.
     pub public_key: Bytes32,
-    /// Wallet identity account id used for People-chain username lookup.
+    /// Wallet identity account id used for the dotNS username lookup on Asset Hub.
     pub identity_account_id: Option<Bytes32>,
     /// X25519 public key addressing this identity in chat. Public counterpart
     /// of the key [`CoreAdmin::get_session_chat_identity_key`] serves.
@@ -2342,9 +2346,9 @@ pub struct SessionUiInfo {
     /// wallet identity is the wallet's choice, so hosts must not treat it as a
     /// device discriminator; use [`Self::device_enc_public_key`] for that.
     pub peer_statement_account_id: Option<Bytes32>,
-    /// Short username from the People-chain identity record.
+    /// Short username from the dotNS identity record on Asset Hub.
     pub lite_username: Option<String>,
-    /// Fully qualified username from the People-chain identity record.
+    /// Fully qualified username from the dotNS identity record on Asset Hub.
     pub full_username: Option<String>,
 }
 

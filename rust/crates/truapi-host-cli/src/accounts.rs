@@ -65,6 +65,9 @@ pub struct ResolveSignerConfig<'a> {
     pub account: Option<String>,
     /// Prefix for generated Lite usernames in auto mode.
     pub lite_username_prefix: Option<String>,
+    /// Full-person base name a newly created auto account reserves on dotNS
+    /// alongside its lite username.
+    pub reserved_username: Option<String>,
 }
 
 impl fmt::Debug for ResolveSignerConfig<'_> {
@@ -76,6 +79,7 @@ impl fmt::Debug for ResolveSignerConfig<'_> {
             .field("mnemonic", &self.mnemonic.as_ref().map(|_| REDACTED))
             .field("account", &self.account)
             .field("lite_username_prefix", &self.lite_username_prefix)
+            .field("reserved_username", &self.reserved_username)
             .finish()
     }
 }
@@ -296,18 +300,36 @@ pub async fn resolve_signer(config: ResolveSignerConfig<'_>) -> Result<ResolvedS
             .get(config.network.id, &name)
             .cloned()
             .with_context(|| format!("account {name:?} not found for {}", config.network.id))?;
-        let record = ensure_record_ready(&mut store, config.network, &record).await?;
+        let record = ensure_record_ready(
+            &mut store,
+            config.network,
+            &record,
+            config.reserved_username.as_deref(),
+        )
+        .await?;
         return resolved_from_record(record, false);
     }
 
     let period = current_statement_period()?;
     if let Some(record) = store.auto_candidate(config.network.id, period) {
-        let record = ensure_record_ready(&mut store, config.network, &record).await?;
+        let record = ensure_record_ready(
+            &mut store,
+            config.network,
+            &record,
+            config.reserved_username.as_deref(),
+        )
+        .await?;
         return resolved_from_record(record, true);
     }
 
     if let Some(record) = store.pending_auto_candidate(config.network.id) {
-        let refreshed = ensure_record_ready(&mut store, config.network, &record).await?;
+        let refreshed = ensure_record_ready(
+            &mut store,
+            config.network,
+            &record,
+            config.reserved_username.as_deref(),
+        )
+        .await?;
         return resolved_from_record(refreshed, true);
     }
 
@@ -318,6 +340,7 @@ pub async fn resolve_signer(config: ResolveSignerConfig<'_>) -> Result<ResolvedS
             .lite_username_prefix
             .as_deref()
             .unwrap_or(DEFAULT_USERNAME_PREFIX),
+        config.reserved_username.as_deref(),
     )
     .await?;
     resolved_from_record(record, true)
@@ -368,6 +391,7 @@ async fn create_auto_account(
     store: &mut AccountStore,
     network: NetworkConfig,
     username_prefix: &str,
+    reserved_username: Option<&str>,
 ) -> Result<AccountRecord> {
     validate_username_prefix(username_prefix)?;
     let name = store.next_auto_name(network.id);
@@ -407,7 +431,7 @@ async fn create_auto_account(
             "created auto signer account"
         );
 
-        record.lite_username = attest_record(network, &record).await?;
+        record.lite_username = attest_record(network, &record, reserved_username).await?;
         wait_for_ring_membership(network.people_ws, &identity.entropy).await?;
         record.attested = true;
         store.upsert(record.clone());
@@ -422,15 +446,16 @@ async fn ensure_record_ready(
     store: &mut AccountStore,
     network: NetworkConfig,
     record: &AccountRecord,
+    reserved_username: Option<&str>,
 ) -> Result<AccountRecord> {
     let identity = identity_from_mnemonic(&record.mnemonic)?;
     let mut record = record.clone();
     if !record.attested {
-        record.lite_username = attest_record(network, &record).await?;
+        record.lite_username = attest_record(network, &record, reserved_username).await?;
         record.attested = true;
     } else {
         record.lite_username =
-            attestation::registered_lite_username(network.people_ws, &identity.entropy)
+            attestation::registered_lite_username(network.asset_hub_ws, &identity.entropy)
                 .await
                 .with_context(|| format!("resolve Lite username for account {}", record.name))?;
     }
@@ -445,13 +470,18 @@ async fn ensure_record_ready(
     Ok(record)
 }
 
-async fn attest_record(network: NetworkConfig, record: &AccountRecord) -> Result<String> {
+async fn attest_record(
+    network: NetworkConfig,
+    record: &AccountRecord,
+    reserved_username: Option<&str>,
+) -> Result<String> {
     let entropy = mnemonic_entropy(&record.mnemonic)?;
     let lite_username = attestation::attest(&attestation::AttestConfig {
         backend_base: network.identity_backend_base.to_string(),
-        people_ws: network.people_ws.to_string(),
+        asset_hub_ws: network.asset_hub_ws.to_string(),
         entropy,
         username_base: record.lite_username.clone(),
+        reserved_username: reserved_username.map(str::to_string),
     })
     .await
     .with_context(|| format!("attest account {}", record.name))?;
@@ -718,6 +748,7 @@ mod tests {
             mnemonic: Some(MNEMONIC.to_string()),
             account: None,
             lite_username_prefix: None,
+            reserved_username: None,
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");

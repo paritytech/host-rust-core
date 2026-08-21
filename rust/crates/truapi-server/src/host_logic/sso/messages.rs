@@ -1976,6 +1976,7 @@ mod tests {
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test pairing config is valid");

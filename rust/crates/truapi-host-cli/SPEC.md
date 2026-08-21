@@ -114,7 +114,7 @@ as the paired path.
 `truapi-host-cli` owns:
 
 - argument and slash-command parsing;
-- the single supported network preset;
+- the supported network presets (`paseo-next-v2`, `previewnet`);
 - local signer selection and onboarding;
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
@@ -198,7 +198,8 @@ Commands:
 | --- | --- |
 | `pairing-host` | Run the seedless product-facing host. |
 | `signing-host` | Run the wallet-local signing host. |
-| `identity-check` | Probe People-chain identity records for a mnemonic. |
+| `identity-check` | Probe dotNS identity records on Asset Hub for a mnemonic. |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name`. |
 | `alloc-check` | Inspect or submit Statement Store allowance registration. |
 | `pgas-check` | Inspect or submit an Asset Hub PGAS allowance claim. |
 
@@ -231,7 +232,7 @@ truapi-host pairing-host [options]
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
 | `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
 Without `--script`, both stdin and stdout must be terminals. The command enters
@@ -268,8 +269,9 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--account <name>` | none | Use one named account from the default account store. |
 | `--session <name>` | remembered session | Restore or create a managed session. |
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
+| `--reserved-username <label>` | none | Full-person base name a newly created auto account reserves on dotNS alongside its lite username (§12.3). |
 | `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
@@ -283,9 +285,11 @@ startup:
 - `--script` with `exec`;
 - `--mnemonic` with `--account`;
 - `--mnemonic` with `--session`;
-- `--mnemonic` with `--lite-username-prefix`;
-- `--account` with `--session`; and
-- `--account` with `--lite-username-prefix`.
+- `--mnemonic` with `--lite-username-prefix` or `--reserved-username`;
+- `--account` with `--session`;
+- `--account` with `--lite-username-prefix` or `--reserved-username`; and
+- a `--reserved-username` that is not a full-person base label (lowercase ASCII
+  letters only, 6 to 32 bytes).
 
 The same conflicts apply when the mnemonic came from
 `HOST_CLI_SIGNER_MNEMONIC`.
@@ -813,13 +817,30 @@ A new auto account:
 4. chooses `auto-<n>` as its local name;
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
-7. builds and submits identity-backend registration proofs;
-8. polls `Resources.Consumers` for the final `name.discriminator`;
+7. builds and submits identity-backend registration proofs, including the dotNS
+   gateway reservation signature timestamped with Asset Hub chain time. A
+   reserved base name (`--reserved-username`) must be a full-person label and
+   unminted on the dotNS registrar (`DotnsRegistrar.ownerOf` reverts for its
+   node under the network TLD): a reservation for a registered name could never
+   be claimed and would hold that stem's reservation queue for the whole
+   reservation window;
+8. polls the dotNS contracts on Asset Hub for the final `name.discriminator`;
 9. waits for inclusion in a personhood ring; and
 10. marks and saves the account as attested.
 
 Identity and ring polling each allow 10 attempts with four seconds between
 attempts. Identity-backend HTTP clients use a 30-second timeout.
+
+The backend's username routes are bearer-gated. Unless
+`HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies one, the CLI mints an access token
+once per process. It takes a challenge from `auth/challenges`. It answers
+`auth/token` with an sr25519 proof over
+`SHA256(challenge || clientId || SHA256(body))`, signed by a throwaway keypair.
+
+The token's subject only identifies the calling app instance. The username claim
+carries its own candidate account. A fresh subject per run therefore stays clear
+of the backend's per-subject device gate and rate limit. Availability answers are
+the flat `{base: "AVAILABLE" | …}` map.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
@@ -1099,7 +1120,16 @@ selection files.
 
 ### 14.1 Network presets
 
-`--network` selects one of two presets. `paseo-next-v2` is the default.
+`--network` selects one of two presets. `paseo-next-v2` is the default. Every
+preset is a test network; the account store keeps BIP-39 entropy for
+disposable test identities only.
+
+Auto-account onboarding (§12.3) needs an identity backend that records the
+lite username on the dotNS gateway. The `paseo-next-v2` backend answers
+`POST /usernames` with "dotNS gateway is not enabled in this environment", so
+new auto accounts cannot be onboarded there until that changes; the CLI reports
+it and points at `previewnet`, whose backend has the gateway enabled. Reads
+(`identity-check`, session usernames) work on both presets.
 
 #### `paseo-next-v2`
 
@@ -1135,20 +1165,21 @@ signer provisioned on one preset is not visible from the other. Two presets mean
 two identities on one machine, which is deliberate: the lite username and the
 statement-store allowance are per chain.
 
-`previewnet`'s identity backend requires a bearer token for write requests, which
-the CLI does not send, so auto-managed account creation fails there with
-`401 Unauthorized (Missing Authorization Header)`. Reads against the backend
-succeed, and every non-backend path is unaffected, so a `previewnet` signer needs
-`--mnemonic` for an account that already holds a username on that chain.
+The backend's username routes are bearer-gated; the CLI mints the access token
+itself through the backend's `auth/challenges` → `auth/token` handshake
+(§12.3), or takes one from `HOST_CLI_IDENTITY_BACKEND_TOKEN`, so auto-managed
+account creation works here.
 
-There are no public endpoint override flags.
+There are no public endpoint override flags. `HOST_CLI_IDENTITY_BACKEND_BASE`
+replaces only the identity backend base URL (§21).
 
 Every role the preset serves — People, Bulletin and Asset Hub — is always routed,
 because host internals require all three: statement-store traffic addressed to the
-People genesis, preimage submission, and PGAS claims respectively. The SSO sentinel is
+People genesis, preimage submission, and PGAS claims plus dotNS username reads
+respectively. The SSO sentinel is
 a separate case — it is an unmapped genesis and reaches People through the fallback
 below, not through People's own route. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
-preset carries without serving them as a role, of which `paseo-next-v2` has none.
+preset carries without serving them as a role, of which neither preset has any.
 
 The all-zero SSO sentinel and every genesis hash not present in the active
 route map fall back to the People RPC.
@@ -1481,7 +1512,50 @@ IDENTITY_ERROR path=<path> account=<ss58> error=<reason>
 Per-path RPC errors are printed and do not make the command itself fail.
 Mnemonic parsing failures do fail the command. The mnemonic is not persisted.
 
-### 19.2 `alloc-check`
+### 19.2 `register-name`
+
+```text
+truapi-host register-name \
+  --mnemonic <BIP-39> \
+  --label <base-label> \
+  [--network paseo-next-v2] \
+  [--link-lite <name.NN> | --chat-key <65-byte-hex>]
+```
+
+Registers `label` as the full-person username of the mnemonic's RFC-0022
+`uid.dot` identity account, through `DotnsGateway.register_name` on Asset Hub.
+The account must be a recognized full person: its ring-VRF key must be built
+into a People-collection ring root on People, and Asset Hub's
+`members-subscriber` must already hold that root revision (the command waits for
+it). The People ring, its members and its root revision are read at one
+finalized People block.
+
+`--link-lite` links the new name to a dotted lite username, inheriting that
+name's chat key; without it and without `--chat-key`, the account's own lite
+username (from dotNS) is linked. `--chat-key` registers standalone with the
+given ECDH key. The two are mutually exclusive.
+
+The transaction is a General (v5) extrinsic authorized by the `AsDotnsGateway`
+extension: `RegisterFullName { proof, ring_index, revision, signature }`, where
+`signature` is the account's sr25519 signature over the inherited-implication
+digest and `proof` the ring-VRF membership proof, built for the `revision` read
+above. `RestrictOrigins` carries `true`. Success prints:
+
+```text
+REGISTER_SUBMITTED label=<label> block=<hash>
+REGISTER_ALIAS alias=0x<alias>
+REGISTER_CONFIRMED label=<label> full_username=<name>
+```
+
+`REGISTER_ALIAS` is printed once `DotnsGateway.AccountAlias` records the
+account, `REGISTER_CONFIRMED` once the dotNS contracts return the name (or
+`<pending>`). Before signing: the label must be unminted on `DotnsRegistrar` (a
+pending reservation is not a mint and stays claimable); the account must not
+already hold a `DotnsGateway.AccountAlias`; a linked lite username must be
+owned by the account per `DotnsGateway.LiteLabelOwner`; and runtimes whose
+`RegisterFullName` shape differs are rejected.
+
+### 19.3 `alloc-check`
 
 ```text
 truapi-host alloc-check \
@@ -1551,13 +1625,16 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_LOG` | Default `--log-level`. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
-| `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
+| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
+| `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
+| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |
 | `EDITOR` | Fallback script editor. |
 | `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
-| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on `paseo-next-v2`. |
+| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on either preset. |
 | `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
 | `COLORFGBG` | Infer TUI background color. |
 | `COLORTERM` | Select true-color TUI rendering. |
@@ -1569,7 +1646,9 @@ ended. This preserves the child status but bypasses later Rust destructors.
 
 These are part of the as-built specification:
 
-- only `paseo-next-v2` is selectable;
+- only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
+- auto-account onboarding works on `previewnet` only, until the `paseo-next-v2`
+  identity backend enables the dotNS gateway (§14.1);
 - product scripts require Bun and, by default, the source checkout;
 - there is no structured/JSON output mode;
 - there is no `--version`;

@@ -21,7 +21,8 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
-| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username. |
+| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
 | `pgas-check` | Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring membership on People, whether Asset Hub has imported that ring revision, the day's first unclaimed slot, and the `Pgas.claim_pgas` extrinsic. |
 
@@ -174,7 +175,9 @@ New auto-managed accounts use the session name as their Lite username prefix;
 characters other than lowercase letters are omitted. For example, session
 `pgtest` creates usernames beginning with `pgtest`. An explicit
 `--lite-username-prefix` takes precedence, and `default` retains the historical
-`headless` prefix.
+`headless` prefix. `--reserved-username <label>` additionally reserves a
+full-person base name on dotNS for a newly created account, to be claimed later
+with `register-name`; the CLI refuses labels the registrar has already minted.
 The selected username and last script reference are cached in `session.json`
 inside the displayed session path. Scratch scripts use a portable filename;
 explicit scripts use an absolute path. On restart, an
@@ -458,20 +461,15 @@ The network preset owns the identity backend URL, the People, Bulletin and Asset
 Hub RPCs, and their genesis hashes; there is
 no public `--statement-store` flag. Pick `previewnet` when a product's runtime
 descriptors target previewnet, so its statements, its host chain routes and its
-own chain reads all land on one network. Sessions are per preset, so each network
-gets its own signer identity on the same machine.
-
-One limit on `previewnet` today: its identity backend requires a bearer token for
-write requests, so auto-provisioning a fresh lite username fails with
-
-```
-username registration failed (401 Unauthorized): Missing Authorization Header
-```
-
-Reads against it work, and everything that does not go through the backend works
-normally, so use `--mnemonic` (or `HOST_CLI_SIGNER_MNEMONIC`) with an account that
-already carries a previewnet username. `paseo-next-v2` still provisions on its
-own, unauthenticated. Both also accept `--frame-listen <address>`
+own chain reads all land on one network — it is also the only preset whose
+identity backend currently onboards new auto accounts through the dotNS gateway
+(the CLI mints the backend's bearer token itself; SPEC.md §12.3). Sessions are
+per preset, so each network gets its own signer identity on the same machine.
+`HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
+the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
+supplies its bearer token instead of the CLI minting one; and
+`HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
+discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
 
@@ -525,8 +523,8 @@ one-shot modes.
 - **Ring-VRF product-account aliases and proofs** are implemented by the
   signing host via the `verifiable` crate (`get_account_alias` and
   `create_account_proof`).
-- **`get_user_id`** resolves the signing account's username from People-chain
-  `Resources.Consumers`. Auto-managed signing accounts register fresh lite
+- **`get_user_id`** resolves the signing account's username from the dotNS
+  contracts on Asset Hub. Auto-managed signing accounts register fresh lite
   usernames via the identity backend (`src/attestation.rs`); first registration
   is backend-async and can take minutes (ring onboarding). `truapi-host
   identity-check --mnemonic <m>` probes which derivation carries a username.

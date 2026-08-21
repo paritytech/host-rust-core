@@ -81,7 +81,7 @@ export interface ProductRuntimeConfig {
     /** Platform or operating-system version. */
     version?: string;
   };
-  /** People-chain configuration used for identity lookup. */
+  /** People-chain configuration used for statement-store SSO. */
   people: {
     /** People-chain genesis hash. */
     genesisHash: string | Uint8Array;
@@ -89,6 +89,11 @@ export interface ProductRuntimeConfig {
   /** Bulletin-chain configuration used for in-core preimage submission. */
   bulletin: {
     /** Bulletin-chain genesis hash. */
+    genesisHash: string | Uint8Array;
+  };
+  /** Asset Hub configuration used to resolve session usernames from dotNS. */
+  assetHub: {
+    /** Asset Hub genesis hash. */
     genesisHash: string | Uint8Array;
   };
   /** Wallet pairing configuration. */

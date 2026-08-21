@@ -24,9 +24,9 @@ pub const IDENTITY_PRODUCT_ID: &str = "uid.dot";
 pub const PERSONHOOD_PRODUCT_ID: &str = "peopl.dot";
 const RING_VRF_ROOT_KEY: &[u8] = b"ring-vrf";
 
-/// Substrate sr25519 signing-context string, shared by every sr25519 signature
-/// the core produces (statement store, product raw signing).
-pub(crate) const SR25519_SIGNING_CONTEXT: &[u8] = b"substrate";
+/// Substrate sr25519 signing-context string. Shared by every sr25519 signature
+/// the core produces: statement store, product raw signing, dotNS gateway.
+pub const SR25519_SIGNING_CONTEXT: &[u8] = b"substrate";
 
 /// Error deriving product accounts or keys.
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -7,17 +7,20 @@
 //! - `signing-host`: a wallet-local host that answers a pairing deeplink and
 //!   auto-signs, replacing the external signing-bot in e2e.
 //!
-//! Plus three diagnostics: `identity-check` for People-chain identity records,
-//! `alloc-check` for statement-store allowance, and `pgas-check` for an Asset Hub
-//! PGAS allowance claim.
+//! Plus the diagnostics and one-shot commands: `identity-check` for the dotNS
+//! usernames of a mnemonic's accounts, `register-name` for a full-person
+//! username, `alloc-check` for statement-store allowance, and `pgas-check` for
+//! an Asset Hub PGAS allowance claim.
 
 mod accounts;
 mod attestation;
 mod chain;
 mod chat;
+mod dotns_read;
 mod frame_server;
 mod network;
 mod platform;
+mod register_name;
 mod script_runner;
 mod sessions;
 mod signing_shell;
@@ -38,6 +41,9 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use truapi_platform::{ChatPlatform, HostInfo, PlatformInfo, ProductExecutionKind};
+use truapi_server::host_logic::dotns_gateway::{
+    MAX_BASE_LABEL_LEN, MIN_PERSON_LABEL_LEN, is_registrable_full_label,
+};
 use truapi_server::statement_allowance as alloc;
 use truapi_server::subscription::Spawner;
 use truapi_server::{
@@ -154,7 +160,8 @@ enum Command {
     /// specified, and can accept pairing deeplinks. With `--script`, exits with
     /// the script's status; otherwise stays interactive.
     SigningHost(SigningHostArgs),
-    /// Probe the People chain for a mnemonic's registered identity/username.
+    /// Probe the dotNS contracts on Asset Hub for a mnemonic's registered
+    /// identity/username.
     IdentityCheck {
         /// BIP-39 mnemonic to probe.
         #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
@@ -162,6 +169,28 @@ enum Command {
         /// Network preset to probe.
         #[arg(long, value_enum, default_value = "paseo-next-v2")]
         network: Network,
+    },
+    /// Register a full-person username on dotNS via
+    /// `DotnsGateway.register_name` on Asset Hub. Requires a recognized full
+    /// person. That person's People ring must have propagated to Asset Hub.
+    RegisterName {
+        /// BIP-39 mnemonic of the recognized full person.
+        #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
+        mnemonic: String,
+        /// Network preset to use.
+        #[arg(long, value_enum, default_value = "paseo-next-v2")]
+        network: Network,
+        /// Base label to register (lowercase ASCII letters only).
+        #[arg(long)]
+        label: String,
+        /// Dotted lite username to link (`name.NN`). Defaults to the
+        /// account's own lite username.
+        #[arg(long, conflicts_with = "chat_key")]
+        link_lite: Option<String>,
+        /// 65-byte ECDH chat key (hex). Use it for a standalone registration
+        /// with no lite-username link.
+        #[arg(long)]
+        chat_key: Option<String>,
     },
     /// Check (and optionally submit) a statement-store allowance registration
     /// against the real People chain: ring membership, the chosen slot, and
@@ -288,6 +317,10 @@ struct SigningHostArgs {
     /// Prefix for newly-created lite usernames in auto-account mode.
     #[arg(long = "lite-username-prefix")]
     lite_username_prefix: Option<String>,
+    /// Full-person base name a newly-created auto account reserves on dotNS
+    /// alongside its lite username, to claim later as a full person.
+    #[arg(long = "reserved-username")]
+    reserved_username: Option<String>,
     /// Root directory for CLI-managed account and host state.
     #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
     base_path: Option<PathBuf>,
@@ -361,7 +394,35 @@ async fn main() -> Result<()> {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
                 .to_entropy();
-            attestation::check_identity(network.config().people_ws, &entropy).await
+            attestation::check_identity(network.config().asset_hub_ws, &entropy).await
+        }
+        Command::RegisterName {
+            mnemonic,
+            network,
+            label,
+            link_lite,
+            chat_key,
+        } => {
+            let entropy = bip39::Mnemonic::parse(mnemonic.trim())
+                .context("invalid BIP-39 mnemonic")?
+                .to_entropy();
+            let chat_key = chat_key
+                .map(|value| -> Result<[u8; 65]> {
+                    let bytes = hex::decode(value.strip_prefix("0x").unwrap_or(&value))
+                        .context("chat key is not valid hex")?;
+                    bytes.try_into().map_err(|bytes: Vec<u8>| {
+                        anyhow::anyhow!("chat key must be 65 bytes, got {}", bytes.len())
+                    })
+                })
+                .transpose()?;
+            register_name::register_name(&register_name::RegisterNameConfig {
+                network: network.config(),
+                entropy,
+                label,
+                link_lite,
+                chat_key,
+            })
+            .await
         }
         Command::AllocCheck {
             mnemonic,
@@ -803,13 +864,14 @@ async fn run_pairing_host(
         approval_policy(args.auto_accept),
         ui_handle,
     );
-    // SSO and identity both run over the real People chain, so usernames always
-    // resolve from `Resources.Consumers` (host-spec G).
+    // SSO runs over the real People chain. Usernames resolve from the dotNS
+    // contracts on Asset Hub.
     let config = PairingHostConfig::new(
         host_info("Headless Pairing Host"),
         platform_info(),
         network.people_genesis,
         network.bulletin_genesis,
+        network.asset_hub_genesis,
         DEEPLINK_SCHEME.to_string(),
     )
     .context("invalid pairing host config")?;
@@ -1038,6 +1100,7 @@ struct SigningHostSession {
     mnemonic: Option<String>,
     default_account: Option<String>,
     lite_username_prefix: Option<String>,
+    reserved_username: Option<String>,
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
     /// Set when this host serves a chat product. Held across runtime rebuilds
@@ -1111,14 +1174,15 @@ async fn start_signing_host(
             mnemonic: mnemonic.clone(),
             account: None,
             lite_username_prefix: None,
+            reserved_username: None,
         })
         .await?;
-        match attestation::registered_lite_username(network.people_ws, &explicit_signer.entropy)
+        match attestation::registered_lite_username(network.asset_hub_ws, &explicit_signer.entropy)
             .await
         {
             Ok(user_id) => explicit_signer.lite_username = Some(user_id),
             Err(error) => {
-                tracing::warn!(%error, "explicit signer has no resolvable People-chain username")
+                tracing::warn!(%error, "explicit signer has no resolvable dotNS username")
             }
         }
         signer = Some(explicit_signer);
@@ -1186,6 +1250,7 @@ async fn start_signing_host(
         mnemonic,
         default_account,
         lite_username_prefix: normalized(args.lite_username_prefix.clone()),
+        reserved_username: normalized(args.reserved_username.clone()),
         approval,
         ui,
         chat,
@@ -1264,6 +1329,23 @@ fn validate_signing_args(args: &SigningHostArgs) -> Result<()> {
     }
     if account.is_some() && prefix.is_some() {
         bail!("--lite-username-prefix only applies when --account is omitted");
+    }
+    let reserved = normalized(args.reserved_username.clone());
+    if mnemonic.is_some() && reserved.is_some() {
+        bail!(
+            "--reserved-username cannot be used when --mnemonic or HOST_CLI_SIGNER_MNEMONIC is set"
+        );
+    }
+    if account.is_some() && reserved.is_some() {
+        bail!("--reserved-username only applies when --account is omitted");
+    }
+    if let Some(reserved) = &reserved
+        && !is_registrable_full_label(reserved)
+    {
+        bail!(
+            "--reserved-username {reserved:?} is not a reservable base label: lowercase ASCII \
+             letters only, {MIN_PERSON_LABEL_LEN} to {MAX_BASE_LABEL_LEN} bytes"
+        );
     }
     Ok(())
 }
@@ -1351,6 +1433,7 @@ async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
             mnemonic: session.mnemonic.clone(),
             account,
             lite_username_prefix,
+            reserved_username: session.reserved_username.clone(),
         })
         .await?,
     );
@@ -1482,6 +1565,7 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
                         mnemonic: None,
                         account: None,
                         lite_username_prefix,
+                        reserved_username: session.reserved_username.clone(),
                     })
                     .await?,
                 );
@@ -1724,6 +1808,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
             None
         },
         lite_username_prefix,
+        reserved_username: session.reserved_username.clone(),
     })
     .await?;
     let profile = if let Some(user_id) = &signer.lite_username {
