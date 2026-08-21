@@ -193,8 +193,9 @@ use truapi_platform::Platform;
 use truapi_platform::{
     AccountAccessReview, ChatFieldError, CreateTransactionReview, IdentityDisclosureReview,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
-    ProductContext, ProductStorageKey, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
-    SignRawReview, UserConfirmationReview, normalize_chat_identifier, normalize_product_identifier,
+    ProductContext, ProductStorageKey, ProductSubtreeReview, ResourceAllocationReview,
+    SessionUiInfo, SignPayloadReview, SignRawReview, UserConfirmationReview,
+    normalize_chat_identifier, normalize_product_identifier,
     validate_chat_icon, validate_chat_message_content, validate_chat_name,
 };
 
@@ -1001,6 +1002,31 @@ impl Account for ProductRuntimeHost {
                         reason: err.to_string(),
                     });
                 }
+            }
+        } else if self
+            .authority
+            .subtree_resolution_reaches_account_holder(
+                &session,
+                &product_account_id.dot_ns_identifier,
+            )
+            .await
+        {
+            // Own-account resolution has no access review, so a cold subtree
+            // that must reach the Account Holder is the one point a host can
+            // surface and reject before the SSO call.
+            let approved = self
+                .platform
+                .confirm_user_action(UserConfirmationReview::ProductSubtree(
+                    ProductSubtreeReview {
+                        product_id: product_account_id.dot_ns_identifier.clone(),
+                    },
+                ))
+                .await
+                .map_err(|err| CallError::HostFailure { reason: err.reason })?;
+            if !approved {
+                return Err(CallError::Domain(HostAccountGetError::V1(
+                    v01::HostAccountGetError::Rejected,
+                )));
             }
         }
 
@@ -3844,6 +3870,60 @@ mod tests {
         assert_eq!(
             hex::encode(inner.account.public_key),
             "1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c"
+        );
+    }
+
+    #[test]
+    fn get_account_own_product_prompts_and_rejects_on_a_cold_subtree() {
+        let host = ProductRuntimeHost::new(
+            Arc::new(StubPlatform {
+                product_subtree_denied: true,
+                ..Default::default()
+            }),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        // Session without a cached subtree: resolving it must reach the
+        // Account Holder, which is the one point the consent prompt fires.
+        host.test_session_state().set_session(sso_session_info());
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let err = futures::executor::block_on(host.get_account(&CallContext::default(), request))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CallError::Domain(HostAccountGetError::V1(
+                v01::HostAccountGetError::Rejected
+            ))
+        ));
+    }
+
+    #[test]
+    fn get_account_own_product_skips_the_prompt_when_the_subtree_is_cached() {
+        // denied would reject if the prompt fired; a warm cache must not prompt.
+        let host = ProductRuntimeHost::new(
+            Arc::new(StubPlatform {
+                product_subtree_denied: true,
+                ..Default::default()
+            }),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, sso_session_info());
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let response =
+            futures::executor::block_on(host.get_account(&CallContext::default(), request))
+                .expect("a cached subtree resolves without prompting");
+        let HostAccountGetResponse::V1(inner) = response;
+        assert_eq!(
+            inner.account.public_key,
+            test_product_account_public("myapp.dot", 0).to_vec()
         );
     }
 

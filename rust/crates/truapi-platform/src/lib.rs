@@ -2521,6 +2521,15 @@ pub struct IdentityDisclosureReview {
     pub product_id: String,
 }
 
+/// Review shown before a product resolves its own account subtree over SSO,
+/// when the value is not cached and the core must ask the Account Holder.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct ProductSubtreeReview {
+    /// Product resolving its own account.
+    pub product_id: String,
+}
+
 /// Review shown before a preimage is submitted.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -2556,6 +2565,8 @@ pub enum UserConfirmationReview {
     AccountAccess(AccountAccessReview),
     /// Sign an RFC-0023 VRF transcript with a product account.
     SignVrf(SignVrfReview),
+    /// Resolve a product's own account subtree over SSO.
+    ProductSubtree(ProductSubtreeReview),
 }
 
 /// Local user confirmation UI for sensitive core-owned operations.

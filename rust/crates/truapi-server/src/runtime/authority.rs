@@ -365,6 +365,18 @@ pub(crate) trait ProductAuthority: Send + Sync {
         product_id: String,
     ) -> Result<[u8; 32], AuthorityError>;
 
+    /// Whether resolving `product_id`'s subtree would reach the Account Holder
+    /// over SSO rather than resolve locally. Gates a host consent prompt: a
+    /// pairing host returns `true` only on a cold cache; a signing host derives
+    /// locally and returns `false`.
+    async fn subtree_resolution_reaches_account_holder(
+        &self,
+        _session: &AuthoritySession,
+        _product_id: &str,
+    ) -> bool {
+        false
+    }
+
     /// Sign an RFC-0023 Merlin transcript with a product account.
     async fn sign_vrf(
         &self,

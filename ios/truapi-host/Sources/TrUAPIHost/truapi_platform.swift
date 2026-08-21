@@ -1038,6 +1038,66 @@ public func FfiConverterTypePreimageSubmitReview_lower(_ value: PreimageSubmitRe
 
 
 /**
+ * Review shown before a product resolves its own account subtree over SSO,
+ * when the value is not cached and the core must ask the Account Holder.
+ */
+public struct ProductSubtreeReview: Equatable, Hashable {
+    /**
+     * Product resolving its own account.
+     */
+    public var productId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Product resolving its own account.
+         */productId: String) {
+        self.productId = productId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProductSubtreeReview: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProductSubtreeReview: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductSubtreeReview {
+        return
+            try ProductSubtreeReview(
+                productId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProductSubtreeReview, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.productId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductSubtreeReview_lift(_ buf: RustBuffer) throws -> ProductSubtreeReview {
+    return try FfiConverterTypeProductSubtreeReview.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductSubtreeReview_lower(_ value: ProductSubtreeReview) -> RustBuffer {
+    return FfiConverterTypeProductSubtreeReview.lower(value)
+}
+
+
+/**
  * Review shown before allocating resources for a product. Names the
  * beneficiary product so the user knows which product receives the
  * (signing-capable) allowance key they are approving.
@@ -2183,6 +2243,11 @@ public enum UserConfirmationReview: Equatable, Hashable {
      */
     case signVrf(SignVrfReview
     )
+    /**
+     * Resolve a product's own account subtree over SSO.
+     */
+    case productSubtree(ProductSubtreeReview
+    )
 
 
 
@@ -2235,6 +2300,9 @@ public struct FfiConverterTypeUserConfirmationReview: FfiConverterRustBuffer {
         )
 
         case 11: return .signVrf(try FfiConverterTypeSignVrfReview.read(from: &buf)
+        )
+
+        case 12: return .productSubtree(try FfiConverterTypeProductSubtreeReview.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2298,6 +2366,11 @@ public struct FfiConverterTypeUserConfirmationReview: FfiConverterRustBuffer {
         case let .signVrf(v1):
             writeInt(&buf, Int32(11))
             FfiConverterTypeSignVrfReview.write(v1, into: &buf)
+
+
+        case let .productSubtree(v1):
+            writeInt(&buf, Int32(12))
+            FfiConverterTypeProductSubtreeReview.write(v1, into: &buf)
 
         }
     }
