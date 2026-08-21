@@ -35,8 +35,8 @@ use truapi::latest::{
     RemotePermissionRequest, RemotePermissionResponse,
 };
 use truapi_platform::{
-    CoreStorage, CoreStorageKey, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
-    Permissions, remote_domain_candidates,
+    CoreStorage, CoreStorageKey, DevicePermissionStatus, PermissionAuthorizationRequest,
+    PermissionAuthorizationStatus, PermissionStatusHost, Permissions, remote_domain_candidates,
 };
 
 /// Persisted answer for a single permission request. Keep `Authorized` at
@@ -106,16 +106,59 @@ pub struct PermissionsService<'a, S: CoreStorage + ?Sized, P: Permissions + ?Siz
     storage: &'a S,
     prompt: &'a P,
     product_id: &'a str,
+    /// Live OS permission state, when the host serves that capability. Absent
+    /// leaves the stored decision governing on its own.
+    status: Option<&'a dyn PermissionStatusHost>,
 }
 
 impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a, S, P> {
     /// Construct a service backed by the given storage + prompt callbacks.
+    ///
+    /// Device grants resolve from stored state alone. Use
+    /// [`Self::with_status_host`] on paths that enforce a device capability, so
+    /// a grant the OS has since withdrawn stops reading as usable.
     pub fn new(storage: &'a S, prompt: &'a P, product_id: &'a str) -> Self {
         Self {
             storage,
             prompt,
             product_id,
+            status: None,
         }
+    }
+
+    /// Same as [`Self::new`], revalidating device grants against the OS state
+    /// `status` reports.
+    pub fn with_status_host(
+        storage: &'a S,
+        prompt: &'a P,
+        product_id: &'a str,
+        status: Option<&'a dyn PermissionStatusHost>,
+    ) -> Self {
+        Self {
+            storage,
+            prompt,
+            product_id,
+            status,
+        }
+    }
+
+    /// Live OS status for a capability.
+    ///
+    /// `NotApplicable` when the host serves no OS state, and also when the
+    /// query fails: a failed query is transient — a busy host, a dropped IPC —
+    /// and reading it as a refusal would let a flaky channel revoke a working
+    /// capability.
+    async fn os_device_status(
+        &self,
+        permission: HostDevicePermissionRequest,
+    ) -> DevicePermissionStatus {
+        let Some(status) = self.status else {
+            return DevicePermissionStatus::NotApplicable;
+        };
+        status
+            .device_permission_status(permission)
+            .await
+            .unwrap_or(DevicePermissionStatus::NotApplicable)
     }
 
     /// Returns the stored authorization status for a device permission without prompting.
@@ -295,15 +338,35 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         set_authorization_status(self.storage, key, status).await
     }
 
-    /// Returns the cached device authorization if any, otherwise prompts the
-    /// platform's `device_permission` callback and persists the answer.
+    /// Resolves a device capability against both the OS state and the stored
+    /// product decision, prompting the platform's `device_permission` callback
+    /// and persisting the answer when the question is still open.
+    ///
+    /// The two are combined, not substituted. A stored grant is a decision
+    /// about this product and is kept as long as it stands; the OS grant behind
+    /// it is the host application's and can move underneath us at any time.
     pub async fn check_or_prompt_device(
         &self,
         permission: HostDevicePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         let key = CoreStorageKey::device_permission_authorization(self.product_id, &permission);
+        let os = self.os_device_status(permission).await;
+        if os == DevicePermissionStatus::Denied {
+            // Unusable whatever the product holds, and prompting cannot reach
+            // it — only system settings can. The stored decision is left
+            // untouched: the user may restore the OS grant, and clearing it
+            // here would re-ask a question they have already answered.
+            return Ok(PermissionAuthorizationStatus::Denied);
+        }
         if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
-            return Ok(cached.into());
+            // A stored answer stands, except where the OS has forgotten its own
+            // grant. That is the one case a prompt resolves rather than repeats:
+            // it reaches the OS dialog instead of re-asking the user.
+            let os_forgot_its_grant = os == DevicePermissionStatus::NotDetermined
+                && cached == StoredAuthorizationStatus::Authorized;
+            if !os_forgot_its_grant {
+                return Ok(cached.into());
+            }
         }
         // Only a genuine user authorization is persisted. A prompt-callback
         // error is transient (dismissed UI, unavailable UI, IPC timeout), not
