@@ -1452,7 +1452,8 @@ mod tests {
         let frame = ProtocolMessage {
             request_id: "chat:bot".into(),
             payload: Payload {
-                id: ids.request_id,
+                trait_id: ids.trait_id,
+                method_id: ids.request_id,
                 value: request.encode(),
             },
         };
@@ -1462,7 +1463,8 @@ mod tests {
         let frames = sink.frames.lock().unwrap();
         assert_eq!(frames.len(), 1);
         let response = ProtocolMessage::decode(&mut frames[0].as_slice()).unwrap();
-        assert_eq!(response.payload.id, ids.response_id);
+        assert_eq!(response.payload.trait_id, ids.trait_id);
+        assert_eq!(response.payload.method_id, ids.response_id);
         let expected = crate::frame::encode_versioned_err_payload(
             truapi::CallError::<truapi::versioned::chat::HostChatRegisterBotError>::Denied,
             1,

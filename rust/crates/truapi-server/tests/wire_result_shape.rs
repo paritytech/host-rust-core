@@ -83,13 +83,15 @@ fn get_chain_info_ok_response_round_trips_over_the_wire() {
     let frame = ProtocolMessage {
         request_id: "p:9".into(),
         payload: Payload {
-            id: ids.request_id,
+            trait_id: ids.trait_id,
+            method_id: ids.request_id,
             value: request.encode(),
         },
     };
     let response = dispatch(&core, frame);
     assert_eq!(response.request_id, "p:9");
-    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(response.payload.trait_id, ids.trait_id);
+    assert_eq!(response.payload.method_id, ids.response_id);
 
     // Wire payload: [V1 disc=0x00][Ok disc=0x00][encoded response body].
     let mut expected = vec![0x00u8, 0x00u8];
@@ -113,12 +115,14 @@ fn get_chain_info_unserved_chain_uses_err_discriminant() {
     let frame = ProtocolMessage {
         request_id: "p:10".into(),
         payload: Payload {
-            id: ids.request_id,
+            trait_id: ids.trait_id,
+            method_id: ids.request_id,
             value: request.encode(),
         },
     };
     let response = dispatch(&core, frame);
-    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(response.payload.trait_id, ids.trait_id);
+    assert_eq!(response.payload.method_id, ids.response_id);
 
     // Wire payload: [V1 disc=0x00][Err disc=0x01][encoded domain error].
     let mut expected = vec![0x00u8, 0x01u8];
@@ -563,12 +567,14 @@ fn coin_payment_request_reports_unsupported_on_the_wire() {
     let frame = ProtocolMessage {
         request_id: "p:coin".into(),
         payload: Payload {
-            id: ids.request_id,
+            trait_id: ids.trait_id,
+            method_id: ids.request_id,
             value: request.encode(),
         },
     };
     let response = dispatch(&core, frame);
-    assert_eq!(response.payload.id, ids.response_id);
+    assert_eq!(response.payload.trait_id, ids.trait_id);
+    assert_eq!(response.payload.method_id, ids.response_id);
     // [V1 disc=0x00][Err disc=0x01][CallError::Unsupported=0x02], and nothing more.
     assert_eq!(response.payload.value, vec![0x00u8, 0x01u8, 0x02u8]);
 }

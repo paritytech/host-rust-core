@@ -711,26 +711,18 @@ mod tests {
         // One `Deeper` byte per level, terminated by `Leaf`.
         let mut bomb = vec![0x01; (MAX_SUBSCRIPTION_DECODE_DEPTH as usize) * 4];
         bomb.push(0x00);
-        manager.handle_message(ProtocolMessage {
-            request_id: "h:1".into(),
-            payload: Payload {
-                id: 55,
-                value: bomb,
-            },
-        });
+        manager.handle_message(host_frame("h:1", host_ids().receive_id, bomb));
         assert!(matches!(
             futures::executor::block_on(nested.next()),
             Some(Err(_))
         ));
 
         // A payload inside the bound still arrives, on its own subscription.
-        manager.handle_message(ProtocolMessage {
-            request_id: "h:2".into(),
-            payload: Payload {
-                id: 55,
-                value: NestedItem::Leaf.encode(),
-            },
-        });
+        manager.handle_message(host_frame(
+            "h:2",
+            host_ids().receive_id,
+            NestedItem::Leaf.encode(),
+        ));
         assert_eq!(
             futures::executor::block_on(healthy.next()),
             Some(Ok(NestedItem::Leaf))
