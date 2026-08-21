@@ -427,9 +427,11 @@ pub struct DotnsIdentity {
 /// two digits, `StringUtils.isSingleDotLiteLabel`) into the flat label `stemNN`
 /// before minting, so a flat label whose last two characters are digits after a
 /// DNS-label stem is read back as a lite username and re-dotted (`alice01` →
-/// `alice.01`). Everything else is a full username. First hit per slot wins.
-/// Labels are expected bare: [`resolve_labels`] strips the network TLD, and any
-/// label still carrying a dot (a subname such as `app.alice`) is skipped.
+/// `alice.01`). Every other canonical DNS label is a full username; anything
+/// that is not one — oversized, non-ASCII, control characters, markup, or a
+/// dotted subname — is skipped, so no unscreened contract string becomes a
+/// username. First hit per slot wins. Labels are expected bare:
+/// [`resolve_labels`] strips the network TLD.
 ///
 /// Lite and public names share one namespace on the contract side, so a public
 /// name ending in two digits is indistinguishable from a flattened lite name
@@ -448,7 +450,10 @@ where
     let mut identity = DotnsIdentity::default();
     for label in labels {
         let label = label.as_ref();
-        if !label.is_ascii() || label.contains('.') {
+        // Contract data is untrusted and these strings reach host UI
+        // (`SessionUiInfo`): anything that is not a canonical DNS label —
+        // oversized, control characters, markup, dots — is not a username.
+        if !is_dns_label(label) {
             continue;
         }
         let (stem, digits) = label.split_at(label.len().saturating_sub(2));
@@ -467,10 +472,15 @@ where
     identity
 }
 
+/// RFC 1035 label bound the contracts enforce (`StringUtils.MAX_DNS_LABEL_OCTETS`).
+const MAX_DNS_LABEL_LEN: usize = 63;
+
 /// A canonical DNS label: lowercase ASCII letters, digits and hyphens, neither
-/// starting nor ending with a hyphen (`StringUtils._isDnsLabel`).
+/// starting nor ending with a hyphen, at most [`MAX_DNS_LABEL_LEN`] octets
+/// (`StringUtils._isDnsLabel`).
 pub fn is_dns_label(value: &str) -> bool {
     !value.is_empty()
+        && value.len() <= MAX_DNS_LABEL_LEN
         && !value.starts_with('-')
         && !value.ends_with('-')
         && value
@@ -749,10 +759,11 @@ pub fn namehash_under(parent: &[u8; 32], label: &str) -> [u8; 32] {
 }
 
 /// Whether the gateway could still mint `label` on this network: the name's
-/// node under the network TLD (`namehash(label.tld)`, derived locally) has no
-/// owner on the `DotnsRegistrar` (`ownerOf` reverts). A minted name is taken
-/// whoever holds it, the name escrow included: the gateway's registration path
-/// only mints fresh ids.
+/// node under the network TLD (`namehash(label.tld)`, derived locally) does
+/// not exist on the `DotnsRegistrar` (`exists(uint256)`, a total view, so a
+/// revert is a broken deployment and an error, never "available"). A minted
+/// name is taken whoever holds it, the name escrow included: the gateway's
+/// registration path only mints fresh ids.
 ///
 /// A lite-name reservation carrying a `reserved_base_label` that is already
 /// registered can never be claimed, yet it holds the reservation queue for
@@ -781,18 +792,13 @@ pub async fn label_available<T: DotnsTransport + ?Sized>(
         .map_err(|err| format!("ProtocolRegistry.get(registrar): {err}"))?;
 
     let node = namehash_under(&tld_node(&tld), label);
-    match transport
-        .view(&registrar, call_bytes32("ownerOf(uint256)", &node))
+    let output = transport
+        .view(&registrar, call_bytes32("exists(uint256)", &node))
         .await
-    {
-        Ok(output) => decode_address(&output)
-            .map(|_owner| false)
-            .map_err(|err| format!("DotnsRegistrar.ownerOf({label}): {err}")),
-        Err(DotnsViewError::Reverted(_)) => Ok(true),
-        Err(DotnsViewError::Failed(reason)) => {
-            Err(format!("DotnsRegistrar.ownerOf({label}): {reason}"))
-        }
-    }
+        .map_err(|err| format!("DotnsRegistrar.exists({label}): {err}"))?;
+    decode_bool(&output)
+        .map(|exists| !exists)
+        .map_err(|err| format!("DotnsRegistrar.exists({label}): {err}"))
 }
 
 /// Gateway-minted labels of `user` still waiting for `claimLabelStore`, from
@@ -992,6 +998,7 @@ mod tests {
         assert_eq!(hex::encode(selector("tld()")), "2d551432");
         assert_eq!(hex::encode(selector("recordExists(bytes32)")), "f79fe538");
         assert_eq!(hex::encode(selector("ownerOf(uint256)")), "6352211e");
+        assert_eq!(hex::encode(selector("exists(uint256)")), "4f558e79");
     }
 
     #[test]
@@ -1203,6 +1210,21 @@ mod tests {
             classify_labels(Vec::<String>::new()),
             DotnsIdentity::default()
         );
+
+        // Hostile store data never becomes a username: oversized labels,
+        // control characters, markup, ANSI escapes, interior NULs.
+        let identity = classify_labels([
+            "a".repeat(5000),
+            "admin\r\nx".to_string(),
+            "a\0b".to_string(),
+            "\x1b[31mred\x1b[0m".to_string(),
+            "<img src=x onerror=alert(1)>".to_string(),
+            "Upper".to_string(),
+        ]);
+        assert_eq!(identity, DotnsIdentity::default());
+        // The 63-octet DNS bound is the cut-off.
+        assert!(classify_labels(["a".repeat(63)]).full_username.is_some());
+        assert!(classify_labels(["a".repeat(64)]).full_username.is_none());
         // One trailing digit is not lite format.
         let identity = classify_labels(["alice1"]);
         assert_eq!(identity.lite_username, None);
@@ -1318,6 +1340,71 @@ mod tests {
             },
             &registry,
         ));
+        assert!(failed.is_err(), "{failed:?}");
+    }
+
+    /// The full availability walk, scripted: tld → get(registrar) → exists.
+    struct ScriptedAvailability {
+        exists: fn() -> Result<Vec<u8>, DotnsViewError>,
+    }
+
+    #[truapi_platform::async_trait]
+    impl DotnsTransport for ScriptedAvailability {
+        async fn storage(&mut self, _key: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
+        }
+
+        async fn view(
+            &mut self,
+            _dest: &[u8; 20],
+            input: Vec<u8>,
+        ) -> Result<Vec<u8>, DotnsViewError> {
+            let sel: [u8; 4] = input[..4].try_into().expect("selector prefix; qed");
+            if sel == selector("protocolRegistry()") {
+                let mut word = [0u8; 32];
+                word[12..].copy_from_slice(&[0x9e; 20]);
+                Ok(word.to_vec())
+            } else if sel == selector("tld()") {
+                Ok([abi_word(32).to_vec(), abi_string(".paseo")].concat())
+            } else if sel == selector("get(bytes32)") {
+                let mut word = [0u8; 32];
+                word[12..].copy_from_slice(&[0xd1; 20]);
+                Ok(word.to_vec())
+            } else if sel == selector("exists(uint256)") {
+                assert_eq!(
+                    &input[4..36],
+                    &namehash_under(&tld_node(".paseo"), "george")
+                );
+                (self.exists)()
+            } else {
+                panic!("unscripted view {}", hex::encode(sel));
+            }
+        }
+    }
+
+    /// `available` must fail closed: a registrar that reverts (a wrong or
+    /// undeployed entry) is an error, never "available", or the already-minted
+    /// guard would pass for every name.
+    #[test]
+    fn availability_fails_closed_when_the_registrar_does_not_answer() {
+        let controller = [0xc0; 20];
+        let run = |exists: fn() -> Result<Vec<u8>, DotnsViewError>| {
+            futures::executor::block_on(label_available(
+                &mut ScriptedAvailability { exists },
+                &controller,
+                "george",
+            ))
+        };
+
+        assert_eq!(run(|| Ok(abi_word(0).to_vec())), Ok(true));
+        assert_eq!(run(|| Ok(abi_word(1).to_vec())), Ok(false));
+        let reverted = run(|| {
+            Err(DotnsViewError::Reverted(DotnsContractError::Reverted {
+                detail: "(empty)".to_string(),
+            }))
+        });
+        assert!(reverted.is_err(), "{reverted:?}");
+        let failed = run(|| Err(DotnsViewError::Failed("timed out".to_string())));
         assert!(failed.is_err(), "{failed:?}");
     }
 
