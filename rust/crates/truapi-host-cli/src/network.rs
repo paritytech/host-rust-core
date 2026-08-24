@@ -36,7 +36,7 @@ impl Network {
         match self {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
-                identity_backend_base: "https://identity-backend-next.parity-testnet.parity.io/api/v1",
+                identity_backend_base: "https://identity.dotspark.app/api/v1",
                 people_ws: PASEO_PEOPLE.ws,
                 bulletin_ws: PASEO_BULLETIN.ws,
                 asset_hub_ws: PASEO_ASSET_HUB.ws,
@@ -47,7 +47,7 @@ impl Network {
             },
             Self::Previewnet => NetworkConfig {
                 id: "previewnet",
-                identity_backend_base: "https://polkadot-app-stg.parity.io/api/v1",
+                identity_backend_base: "https://identity-previewnet.dotspark.app/api/v1",
                 people_ws: PREVIEWNET_PEOPLE.ws,
                 bulletin_ws: PREVIEWNET_BULLETIN.ws,
                 asset_hub_ws: PREVIEWNET_ASSET_HUB.ws,
@@ -399,9 +399,8 @@ mod tests {
     /// rework the account store rather than relaxing the assertion.
     /// Hosts a preset may route to. Every entry is a disposable test deployment:
     /// `paseo`/`testnet` name the Paseo testnets and their backends,
-    /// `previewnet.substrate.dev` is the previewnet parachain set, and
-    /// `polkadot-app-stg.parity.io` is the identity backend's staging
-    /// environment (`/api/v1/version` reports `"environment": "staging"`).
+    /// `previewnet.substrate.dev` is the previewnet parachain set, and the
+    /// dotspark hosts are the corresponding identity backends.
     ///
     /// An allowlist rather than a substring rule, because the rule this test
     /// exists for is "no production network", and a production host can contain
@@ -410,7 +409,8 @@ mod tests {
         "paseo",
         "testnet",
         "previewnet.substrate.dev",
-        "polkadot-app-stg.parity.io",
+        "identity.dotspark.app",
+        "identity-previewnet.dotspark.app",
     ];
 
     #[test]

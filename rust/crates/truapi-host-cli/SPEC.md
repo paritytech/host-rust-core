@@ -1135,7 +1135,7 @@ it and points at `previewnet`, whose backend has the gateway enabled. Reads
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://identity-backend-next.parity-testnet.parity.io/api/v1` |
+| Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
 | People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
@@ -1147,12 +1147,11 @@ it and points at `previewnet`, whose backend has the gateway enabled. Reads
 
 The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
 nextv2 later, and it is where products with previewnet descriptors do their
-on-chain testing. Its identity backend is the same service on its staging
-environment (`/api/v1/version` reports `"environment": "staging"`).
+on-chain testing. It uses the dedicated previewnet identity backend.
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
+| Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
 | People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
