@@ -2,6 +2,9 @@
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
+// Proving `request_login`'s boxed trait future `Send` walks every future nested
+// under it and exceeds the default 128-step budget. The chain is not recursive.
+#![recursion_limit = "256"]
 
 //! TrUAPI server runtime: dispatcher, frames, SCALE encoding, stream management.
 //!
