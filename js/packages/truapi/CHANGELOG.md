@@ -1,5 +1,22 @@
 # @parity/truapi
 
+## 0.10.0
+
+### Minor Changes
+
+- d872d64: Export `PREVIEWNET_INDIVIDUALITY` and `PREVIEWNET_ASSET_HUB` well-known chains,
+  so a product on previewnet can pin the genesis hashes it signs `CheckGenesis`
+  over the same way a product on `paseo-next-v2` does. Pairs with the CLI gaining a
+  `previewnet` network preset.
+- d49f253: Add `createWebSocketProvider(url)` for hosts that serve protocol frames over a
+  WebSocket, and `connectWebSocketHost(url)` on the sandbox path so a plain
+  browser tab using such a host is detected as hosted and shares the cached
+  client. Both native host READMEs already pointed products at
+  `createWebSocketProvider`, which until now did not exist, so every browser
+  product had to hand-write the bridge. `truapi-host signing-host --frame-listen`
+  is now reachable from an ordinary tab, and the CLI's own TCP provider delegates
+  to the shared implementation.
+
 ## 0.9.0
 
 ### Minor Changes
