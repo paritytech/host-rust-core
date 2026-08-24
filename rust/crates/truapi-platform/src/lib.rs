@@ -30,8 +30,8 @@ uniffi::use_remote_type!(truapi::Bytes32);
 
 use truapi::Bytes32;
 use truapi::latest::{
-    AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage, ChatFile,
-    ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
+    AccountId, AllocatableResource, ChainIdentifier, ChatAction, ChatActions, ChatCustomMessage,
+    ChatFile, ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, GenericError,
     HostChatCreateRoomError, HostChatCreateRoomRequest, HostChatCreateRoomResponse,
     HostChatListSubscribeItem, HostChatPostMessageError, HostChatPostMessageRequest,
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
@@ -2838,6 +2838,94 @@ pub trait PermissionStatusHost: Send + Sync {
     ) -> Result<DevicePermissionStatus, GenericError>;
 }
 
+/// One contact in the host's list.
+///
+/// Nothing here reaches a product: the core mints a handle from `account`, and
+/// `display_name` exists for host and core UI only.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostContact {
+    /// The contact's account as the host's own store knows it.
+    pub account: AccountId,
+    /// What the user calls this person, when the host has a name for them.
+    pub display_name: Option<String>,
+}
+
+/// The user's contacts.
+///
+/// A named wrapper because the callback emitter cannot return a bare `Vec`;
+/// `HostChatListSubscribeItem` wraps its room list for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct HostContactBook {
+    /// The contacts, in the host's own order. Empty when there are none.
+    pub contacts: Vec<HostContact>,
+}
+
+/// How a host's contact picker ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+pub enum HostContactPick {
+    /// The user chose this account.
+    ///
+    /// Consumed by the core to mint the product-facing handle and never
+    /// forwarded to a product: it is the person's real account, and the handle
+    /// exists precisely so a product does not receive it.
+    Picked {
+        /// The chosen contact's account.
+        account: AccountId,
+    },
+    /// The user closed the picker without choosing.
+    Dismissed,
+    /// This host lists contacts but cannot present a picker. The core answers
+    /// the product `Unsupported`, so it can tell "try again later" apart from
+    /// "this host will never pick".
+    Unsupported,
+}
+
+/// Host-owned contact picker, drawn from the chat lists the host's
+/// Chat-modality workers hold.
+///
+/// Optional, and listed on [`OptionalPlatform`] as [`ChatPlatform`] is.
+///
+/// The host owns the UI here, not just the data. It draws the names, so nothing
+/// it renders reaches the product and the user's contact list never crosses the
+/// boundary — only the one person they select does. A host omits contacts the
+/// user has blocked; since it is drawing the rows, that means simply not drawing
+/// them.
+#[async_trait]
+pub trait ContactsPlatform: Send + Sync {
+    /// The user's contacts. Empty when the host has none.
+    ///
+    /// The one method a host has to write. A host omits contacts the user has
+    /// blocked. Nothing returned here reaches a product: the core reads it to
+    /// resolve a handle back to an account.
+    async fn contacts(&self) -> Result<HostContactBook, GenericError>;
+
+    /// Present the contact picker on behalf of `product` and return the user's
+    /// choice.
+    ///
+    /// Defaults to [`HostContactPick::Unsupported`], so a host that only
+    /// implements [`Self::contacts`] still compiles and its products get a
+    /// truthful answer rather than a dismissal they might retry forever.
+    ///
+    /// This exists separately from [`Self::contacts`] because the core cannot
+    /// draw UI: the list alone cannot produce a selection, and the whole point
+    /// of the picker is that the host renders the names rather than shipping
+    /// them to the product. `product` is passed so the host can say who is
+    /// asking; it is not a filter.
+    ///
+    /// The core does not call this when [`Self::contacts`] is empty, so a host
+    /// never has to render an empty overlay.
+    async fn pick_contact(
+        &self,
+        product: &ProductContext,
+    ) -> Result<HostContactPick, GenericError> {
+        let _ = product;
+        Ok(HostContactPick::Unsupported)
+    }
+}
+
 /// Combined platform interface. A host must provide every capability trait
 /// listed here. Members marked optional may be omitted; the core answers their
 /// product calls with `Unsupported`. See [`OptionalPlatform`].
@@ -2875,6 +2963,6 @@ impl<T> Platform for T where
 /// omits one is not broken: the core answers the corresponding product calls
 /// with `Unsupported`. Codegen reads this list to emit each capability as an
 /// optional group on the host-callback surface.
-pub trait OptionalPlatform: ChatPlatform + PermissionStatusHost {}
+pub trait OptionalPlatform: ChatPlatform + ContactsPlatform + PermissionStatusHost {}
 
-impl<T> OptionalPlatform for T where T: ChatPlatform + PermissionStatusHost {}
+impl<T> OptionalPlatform for T where T: ChatPlatform + ContactsPlatform + PermissionStatusHost {}

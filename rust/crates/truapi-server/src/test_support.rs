@@ -64,6 +64,12 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 pub(crate) struct StubPlatform {
     pub(crate) remote_permission_denied: bool,
+    /// Device permissions the user declines. Anything absent is granted.
+    pub(crate) device_permissions_denied: Vec<v01::HostDevicePermissionRequest>,
+    /// Every `device_permission` prompt, in order, so a test can assert that a
+    /// stored decision suppresses a re-ask and that an unavailable capability
+    /// never prompts at all.
+    pub(crate) device_permission_requests: Arc<Mutex<Vec<v01::HostDevicePermissionRequest>>>,
     /// Every `remote_permission` request, in order, so a test can assert which
     /// domains reached the prompt and that a stored grant suppresses a re-ask.
     pub(crate) remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
@@ -908,9 +914,15 @@ impl PlatformNotifications for StubPlatform {
 impl PlatformPermissions for StubPlatform {
     async fn device_permission(
         &self,
-        _request: v01::HostDevicePermissionRequest,
+        request: v01::HostDevicePermissionRequest,
     ) -> Result<v01::HostDevicePermissionResponse, v01::GenericError> {
-        Ok(v01::HostDevicePermissionResponse { granted: true })
+        self.device_permission_requests
+            .lock()
+            .expect("device permission list mutex poisoned")
+            .push(request);
+        Ok(v01::HostDevicePermissionResponse {
+            granted: !self.device_permissions_denied.contains(&request),
+        })
     }
 
     async fn remote_permission(

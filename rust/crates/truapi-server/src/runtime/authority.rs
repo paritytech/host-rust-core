@@ -509,6 +509,15 @@ pub(crate) trait ProductAuthority: Send + Sync {
         product_id: &str,
         context: &[u8],
     ) -> Result<[u8; 32], AuthorityError>;
+
+    /// Key material for minting contact handles.
+    ///
+    /// Product-independent by construction, unlike [`Self::derive_entropy`]: one
+    /// contact must hash to the same handle in every product. Derived from the
+    /// session's root entropy source, which both roles hold and which no product
+    /// can reach — a handle keyed on anything public would be recoverable by
+    /// hashing candidate accounts.
+    fn contacts_handle_key(&self, session: &AuthoritySession) -> Result<[u8; 32], AuthorityError>;
 }
 
 /// Build the neutral authority-session snapshot for `session`.

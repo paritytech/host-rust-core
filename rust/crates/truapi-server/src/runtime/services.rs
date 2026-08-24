@@ -37,6 +37,9 @@ pub(crate) struct RuntimeServices {
     /// startup by a host that can read it. Unset leaves device grants
     /// resolving from stored state alone.
     permission_status: OnceLock<Arc<dyn PermissionStatusHost>>,
+    /// Host contacts adapter, when the host serves the Contacts capability.
+    /// `None` makes every product contacts call resolve as `Unsupported`.
+    pub(crate) contacts_platform: Option<Arc<dyn truapi_platform::ContactsPlatform>>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -86,6 +89,7 @@ impl RuntimeServices {
             host_info,
             chat_platform: None,
             permission_status: OnceLock::new(),
+            contacts_platform: None,
             chain,
             statement_store,
             bulletin,
@@ -99,14 +103,15 @@ impl RuntimeServices {
         })
     }
 
-    /// Same as [`Self::new`], with the host's chat adapter installed.
-    pub(crate) fn with_chat_platform(
+    /// Same as [`Self::new`], with the host's optional adapters installed.
+    pub(crate) fn with_platforms(
         platform: Arc<dyn Platform>,
         host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
         chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+        contacts_platform: Option<Arc<dyn truapi_platform::ContactsPlatform>>,
     ) -> Arc<Self> {
         let services = Self::new(
             platform,
@@ -115,12 +120,13 @@ impl RuntimeServices {
             bulletin_chain_genesis_hash,
             spawner,
         );
-        let Some(chat_platform) = chat_platform else {
+        if chat_platform.is_none() && contacts_platform.is_none() {
             return services;
-        };
+        }
         let mut services = Arc::try_unwrap(services)
             .unwrap_or_else(|_| unreachable!("services are not shared before this point"));
-        services.chat_platform = Some(chat_platform);
+        services.chat_platform = chat_platform;
+        services.contacts_platform = contacts_platform;
         Arc::new(services)
     }
 

@@ -93,6 +93,7 @@ const callbacks: HostCallbacks = {
   // ...required groups...
   chat, // optional: leave it out and chat products get `Unsupported`
   permissionStatus, // optional: reports live OS permission state
+  contacts, // optional: leave it out and contacts calls get `Unsupported`
 };
 ```
 
@@ -169,6 +170,12 @@ The index crosses as a SCALE-encoded `DerivationIndex`, the same value a review
 already carries, so the 32-byte chain code behind it stays core-owned and a host
 never reconstructs it. `productAccountAddress` applies the prefix host-spec C.6
 fixes, rather than leaving each host to choose one.
+
+`contacts` returns the user's contacts and renders the picker over them. The host
+draws the overlay, so the list never reaches the product — only an opaque handle
+for the selection does, which the core resolves when it builds a transaction.
+Return an empty list when there are none, and omit blocked contacts. See
+the contacts RFC (`docs/rfcs/contacts-api.md`).
 
 ## Generated WASM artefacts
 

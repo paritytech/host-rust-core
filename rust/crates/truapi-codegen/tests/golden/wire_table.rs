@@ -490,6 +490,12 @@ pub const ACCOUNT_RING_VRF_SIGN: RequestFrameIds = RequestFrameIds {
     response_id: 173,
 };
 
+/// Wire discriminants for `contacts_pick`.
+pub const CONTACTS_PICK: RequestFrameIds = RequestFrameIds {
+    request_id: 188,
+    response_id: 189,
+};
+
 /// Wire discriminants for `system_get_product_context`.
 pub const SYSTEM_GET_PRODUCT_CONTEXT: RequestFrameIds = RequestFrameIds {
     request_id: 190,
@@ -780,6 +786,10 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "account_ring_vrf_sign",
         kind: WireKind::Request(ACCOUNT_RING_VRF_SIGN),
+    },
+    WireEntry {
+        method: "contacts_pick",
+        kind: WireKind::Request(CONTACTS_PICK),
     },
     WireEntry {
         method: "system_get_product_context",

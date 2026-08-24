@@ -21,11 +21,10 @@ use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::{ChatPlatform, PermissionStatusHost};
 use truapi_platform::{
-    CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
-    PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
-    normalize_product_identifier,
+    ChatPlatform, ContactsPlatform, CoreAdmin, PairingHostAdmin, PairingHostConfig,
+    PermissionAuthorizationRequest, PermissionAuthorizationStatus, PermissionStatusHost, Platform,
+    ProductContext, SigningHostConfig, normalize_product_identifier,
 };
 
 use crate::core::TrUApiCore;
@@ -99,7 +98,7 @@ impl PairingHostRuntime {
     where
         P: Platform + 'static,
     {
-        Self::with_chat_platform(platform, config, spawner, None)
+        Self::with_platforms(platform, config, spawner, None, None)
     }
 
     /// Same as [`Self::new`], with the host's chat adapter installed. Passing
@@ -115,14 +114,32 @@ impl PairingHostRuntime {
     where
         P: Platform + 'static,
     {
+        Self::with_platforms(platform, config, spawner, chat_platform, None)
+    }
+
+    /// Same as [`Self::new`], with both optional adapters installed. An omitted
+    /// adapter leaves the host without that capability, so its products' calls
+    /// to it resolve as `Unsupported`.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.with_platforms"))]
+    pub fn with_platforms<P>(
+        platform: Arc<P>,
+        config: PairingHostConfig,
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn ChatPlatform>>,
+        contacts_platform: Option<Arc<dyn ContactsPlatform>>,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
         let platform: Arc<dyn Platform> = platform;
-        let services = RuntimeServices::with_chat_platform(
+        let services = RuntimeServices::with_platforms(
             platform,
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
             chat_platform,
+            contacts_platform,
         );
         let pairing_host = PairingHostRole::new(services.clone(), config);
         pairing_host.clone().start_session_store_sync(spawner);
@@ -410,13 +427,14 @@ pub struct SigningHostRuntime {
 
 impl SigningHostRuntime {
     /// Build a long-lived signing-host runtime around a platform implementation.
-    /// Chat is answered `Unsupported`; [`Self::with_chat_platform`] serves it.
+    /// Optional capabilities are answered `Unsupported`;
+    /// [`Self::with_platforms`] serves them.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.new"))]
     pub fn new<P>(platform: Arc<P>, config: SigningHostConfig, spawner: Spawner) -> Self
     where
         P: Platform + 'static,
     {
-        Self::with_chat_platform(platform, config, spawner, None)
+        Self::with_platforms(platform, config, spawner, None, None)
     }
 
     /// Build a signing-host runtime that serves Chat through `chat_platform`.
@@ -434,14 +452,30 @@ impl SigningHostRuntime {
     where
         P: Platform + 'static,
     {
+        Self::with_platforms(platform, config, spawner, chat_platform, None)
+    }
+
+    /// Build a signing-host runtime serving both optional adapters.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.with_platforms"))]
+    pub fn with_platforms<P>(
+        platform: Arc<P>,
+        config: SigningHostConfig,
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn ChatPlatform>>,
+        contacts_platform: Option<Arc<dyn ContactsPlatform>>,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
         let platform: Arc<dyn Platform> = platform;
-        let services = RuntimeServices::with_chat_platform(
+        let services = RuntimeServices::with_platforms(
             platform,
             config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
             chat_platform,
+            contacts_platform,
         );
         let signing_host = SigningHostRole::new(services.clone());
         Self {
@@ -1051,11 +1085,19 @@ impl ProductRuntime {
     where
         P: Platform + 'static,
     {
-        Self::from_platform_with_chat_platform(platform, host_config, product, spawner, sink, None)
+        Self::from_platform_with_platforms(
+            platform,
+            host_config,
+            product,
+            spawner,
+            sink,
+            None,
+            None,
+        )
     }
 
-    /// Same as [`Self::from_platform_with_config`], with the host's chat
-    /// adapter installed.
+    /// Same as [`Self::from_platform_with_config`], with the host's chat adapter
+    /// installed.
     pub fn from_platform_with_chat_platform<P>(
         platform: Arc<P>,
         host_config: PairingHostConfig,
@@ -1067,8 +1109,38 @@ impl ProductRuntime {
     where
         P: Platform + 'static,
     {
-        let pairing =
-            PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        Self::from_platform_with_platforms(
+            platform,
+            host_config,
+            product,
+            spawner,
+            sink,
+            chat_platform,
+            None,
+        )
+    }
+
+    /// Same as [`Self::from_platform_with_config`], with both optional adapters
+    /// installed.
+    pub fn from_platform_with_platforms<P>(
+        platform: Arc<P>,
+        host_config: PairingHostConfig,
+        product: ProductContext,
+        spawner: Spawner,
+        sink: Arc<dyn FrameSink>,
+        chat_platform: Option<Arc<dyn ChatPlatform>>,
+        contacts_platform: Option<Arc<dyn ContactsPlatform>>,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
+        let pairing = PairingHostRuntime::with_platforms(
+            platform,
+            host_config,
+            spawner,
+            chat_platform,
+            contacts_platform,
+        );
         pairing.product_runtime(product, sink)
     }
 

@@ -7,6 +7,7 @@
 import * as S from "@parity/truapi/scale";
 
 import {
+  AccountId,
   AllocatableResource,
   Bytes32,
   ChainIdentifier,
@@ -276,6 +277,60 @@ export interface HostChainSet {
    */
   chains: Array<HostChainEntry>;
 }
+
+/**
+ * One contact in the host's list.
+ *
+ * Nothing here reaches a product: the core mints a handle from `account`, and
+ * `display_name` exists for host and core UI only.
+ */
+export interface HostContact {
+  /**
+   * The contact's account as the host's own store knows it.
+   */
+  account: AccountId;
+
+  /**
+   * What the user calls this person, when the host has a name for them.
+   */
+  displayName?: string;
+}
+
+/**
+ * The user's contacts.
+ *
+ * A named wrapper because the callback emitter cannot return a bare `Vec`;
+ * `HostChatListSubscribeItem` wraps its room list for the same reason.
+ */
+export interface HostContactBook {
+  /**
+   * The contacts, in the host's own order. Empty when there are none.
+   */
+  contacts: Array<HostContact>;
+}
+
+/**
+ * How a host's contact picker ended.
+ */
+export type HostContactPick =
+  /**
+   * The user chose this account.
+   *
+   * Consumed by the core to mint the product-facing handle and never
+   * forwarded to a product: it is the person's real account, and the handle
+   * exists precisely so a product does not receive it.
+   */
+  | { tag: "Picked"; value: { account: AccountId } }
+  /**
+   * The user closed the picker without choosing.
+   */
+  | { tag: "Dismissed"; value?: undefined }
+  /**
+   * This host lists contacts but cannot present a picker. The core answers
+   * the product `Unsupported`, so it can tell "try again later" apart from
+   * "this host will never pick".
+   */
+  | { tag: "Unsupported"; value?: undefined };
 
 /**
  * Review shown before a product learns the user's primary identity.
@@ -706,6 +761,45 @@ export const HostChainSet: S.Codec<HostChainSet> = S.lazy(
 );
 
 /**
+ * One contact in the host's list.
+ *
+ * Nothing here reaches a product: the core mints a handle from `account`, and
+ * `display_name` exists for host and core UI only.
+ */
+export const HostContact: S.Codec<HostContact> = S.lazy(
+  (): S.Codec<HostContact> =>
+    S.Struct({
+      account: AccountId,
+      displayName: S.Option(S.str),
+    }) as S.Codec<HostContact>,
+);
+
+/**
+ * The user's contacts.
+ *
+ * A named wrapper because the callback emitter cannot return a bare `Vec`;
+ * `HostChatListSubscribeItem` wraps its room list for the same reason.
+ */
+export const HostContactBook: S.Codec<HostContactBook> = S.lazy(
+  (): S.Codec<HostContactBook> =>
+    S.Struct({ contacts: S.Vector(HostContact) }) as S.Codec<HostContactBook>,
+);
+
+/**
+ * How a host's contact picker ended.
+ */
+export const HostContactPick: S.Codec<HostContactPick> = S.lazy(
+  (): S.Codec<HostContactPick> =>
+    S.TaggedUnion({
+      Picked: S.Struct({ account: AccountId }) as S.Codec<{
+        account: AccountId;
+      }>,
+      Dismissed: S._void,
+      Unsupported: S._void,
+    }),
+);
+
+/**
  * Review shown before a product learns the user's primary identity.
  */
 export const IdentityDisclosureReview: S.Codec<IdentityDisclosureReview> =
@@ -987,6 +1081,48 @@ export interface ChatPlatform {
   subscribeChatRooms(
     product: ProductContext,
   ): AsyncIterable<Result<HostChatListSubscribeItem, GenericError>>;
+}
+
+/**
+ * Host-owned contact picker, drawn from the chat lists the host's
+ * Chat-modality workers hold.
+ *
+ * Optional, and listed on `OptionalPlatform` as `ChatPlatform` is.
+ *
+ * The host owns the UI here, not just the data. It draws the names, so nothing
+ * it renders reaches the product and the user's contact list never crosses the
+ * boundary — only the one person they select does. A host omits contacts the
+ * user has blocked; since it is drawing the rows, that means simply not drawing
+ * them.
+ */
+export interface ContactsPlatform {
+  /**
+   * The user's contacts. Empty when the host has none.
+   *
+   * The one method a host has to write. A host omits contacts the user has
+   * blocked. Nothing returned here reaches a product: the core reads it to
+   * resolve a handle back to an account.
+   */
+  contacts(): Promise<HostContactBook>;
+
+  /**
+   * Present the contact picker on behalf of `product` and return the user's
+   * choice.
+   *
+   * Defaults to `HostContactPick::Unsupported`, so a host that only
+   * implements `Self::contacts` still compiles and its products get a
+   * truthful answer rather than a dismissal they might retry forever.
+   *
+   * This exists separately from `Self::contacts` because the core cannot
+   * draw UI: the list alone cannot produce a selection, and the whole point
+   * of the picker is that the host renders the names rather than shipping
+   * them to the product. `product` is passed so the host can say who is
+   * asking; it is not a filter.
+   *
+   * The core does not call this when `Self::contacts` is empty, so a host
+   * never has to render an empty overlay.
+   */
+  pickContact?(product: ProductContext): Promise<HostContactPick>;
 }
 
 /**
@@ -1328,6 +1464,7 @@ export interface HostCallbacks {
   theme: ThemeHost;
   preimage: PreimageHost;
   chat?: ChatPlatform;
+  contacts?: ContactsPlatform;
   permissionStatus?: PermissionStatusHost;
 }
 
@@ -1344,5 +1481,6 @@ export interface RequiredHostCallbacks {
   theme: Required<ThemeHost>;
   preimage: Required<PreimageHost>;
   chat?: Required<ChatPlatform>;
+  contacts?: Required<ContactsPlatform>;
   permissionStatus?: Required<PermissionStatusHost>;
 }
