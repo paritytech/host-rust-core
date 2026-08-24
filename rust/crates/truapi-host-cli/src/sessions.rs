@@ -16,6 +16,8 @@ struct SessionInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     last_script: Option<String>,
 }
 
@@ -24,6 +26,7 @@ impl Default for SessionInfo {
         Self {
             version: 1,
             user_id: None,
+            account_name: None,
             last_script: None,
         }
     }
@@ -243,6 +246,44 @@ impl SessionCatalog {
         }
         let mut info = read_session_info(&profile.path)?;
         info.user_id = Some(user_id.to_string());
+        write_session_info(&profile.path, &info)
+    }
+
+    /// Return the exact local account record bound to this durable session.
+    pub fn cached_account_name(&self, profile: &SessionProfile) -> Result<Option<String>> {
+        Ok(read_session_info(&profile.path)?
+            .account_name
+            .filter(|name| !name.is_empty()))
+    }
+
+    /// Persist the username and account record together so restart cannot fall
+    /// back to an unrelated auto-managed account.
+    pub fn store_signer_binding(
+        &self,
+        profile: &SessionProfile,
+        user_id: &str,
+        account_name: &str,
+    ) -> Result<()> {
+        if user_id.is_empty() || account_name.is_empty() {
+            return Ok(());
+        }
+        let mut info = read_session_info(&profile.path)?;
+        info.user_id = Some(user_id.to_string());
+        info.account_name = Some(account_name.to_string());
+        write_session_info(&profile.path, &info)
+    }
+
+    /// Bind a username-less imported signer to its durable session.
+    pub fn store_account_binding(
+        &self,
+        profile: &SessionProfile,
+        account_name: &str,
+    ) -> Result<()> {
+        if account_name.is_empty() {
+            return Ok(());
+        }
+        let mut info = read_session_info(&profile.path)?;
+        info.account_name = Some(account_name.to_string());
         write_session_info(&profile.path, &info)
     }
 
@@ -495,6 +536,41 @@ mod tests {
                 .ends_with("testnet/alice_signing_host/storage")
         );
         assert_eq!(profile.path, profile.account_base_path);
+        Ok(())
+    }
+
+    #[test]
+    fn signer_binding_roundtrips_in_one_session_metadata_record() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice.01")?;
+
+        catalog.store_signer_binding(&profile, "alice.01", "imported")?;
+
+        assert_eq!(
+            catalog.cached_user_id(&profile)?.as_deref(),
+            Some("alice.01")
+        );
+        assert_eq!(
+            catalog.cached_account_name(&profile)?.as_deref(),
+            Some("imported")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn account_binding_does_not_require_a_dotns_username() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("imported-0123456789abcdef")?;
+
+        catalog.store_account_binding(&profile, "imported")?;
+
+        assert_eq!(catalog.cached_user_id(&profile)?, None);
+        assert_eq!(
+            catalog.cached_account_name(&profile)?.as_deref(),
+            Some("imported")
+        );
         Ok(())
     }
 

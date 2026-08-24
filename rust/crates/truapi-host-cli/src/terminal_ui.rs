@@ -30,7 +30,7 @@ use tracing_subscriber::layer::{Context as LayerContext, Layer};
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;
-use crate::signing_shell::{CommandEditor, parse_approval};
+use crate::signing_shell::{CommandEditor, contains_mnemonic, mask_mnemonic, parse_approval};
 
 const TRANSCRIPT_LIMIT: usize = 10_000;
 const TRANSCRIPT_LINE_LIMIT: usize = 10_000;
@@ -1883,7 +1883,8 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     }
 
     let approval = app.pending_approval.is_some();
-    let input = app.editor.text();
+    let raw_input = app.editor.text();
+    let input = mask_mnemonic(&raw_input).unwrap_or(raw_input);
     let prompt_area = Rect::new(
         composer_content_area.x,
         surface_area
@@ -2480,7 +2481,9 @@ fn text_display_width(text: &str) -> usize {
 }
 
 fn redact_command(command: &str) -> String {
-    if command.trim_start().starts_with("/pair ") {
+    if contains_mnemonic(command) {
+        "/session --mnemonic <redacted>".to_string()
+    } else if command.trim_start().starts_with("/pair ") {
         "/pair <pairing link>".to_string()
     } else {
         sanitize_terminal_text(command)
@@ -2677,17 +2680,20 @@ mod tests {
     }
 
     #[test]
-    fn transcript_copy_uses_natural_grouped_output_and_redacts_deeplinks() {
+    fn transcript_copy_uses_natural_grouped_output_and_redacts_secrets() {
         let mut app = test_app();
         app.handle_system_event(SystemEvent::SigningHostReady);
         app.push_command("/pair polkadotapp://pair?handshake=secret".to_string());
+        app.push_command("/session --mnemonic \"abandon abandon abandon about\"".to_string());
         app.stream(StreamKind::Stdout, "user id: alice.dot".to_string());
 
         let transcript = app.transcript_text();
         assert!(transcript.contains("✓ Signing host ready"));
         assert!(transcript.contains("─ /pair <pairing link>"));
+        assert!(transcript.contains("─ /session --mnemonic <redacted>"));
         assert!(transcript.contains("  user id: alice.dot"));
         assert!(!transcript.contains("handshake=secret"));
+        assert!(!transcript.contains("abandon"));
         assert!(!transcript.contains("SCRIPT ·"));
     }
 

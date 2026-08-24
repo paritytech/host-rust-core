@@ -103,6 +103,7 @@ Commands always start with `/`:
 | `/product <id>` | Switch the product used by future scripts and frame connections. |
 | `/session` | Show the current session name, path, and user id (signing host). |
 | `/session <name>` | Switch to or create an isolated signing-host session. |
+| `/session --mnemonic "<phrase>"` | Import an existing signer as a durable session. |
 | `/session --list` | List user sessions for the current network. |
 | `/help` | Show commands and keyboard shortcuts. |
 | `/clear` | Clear the visible transcript. |
@@ -111,7 +112,9 @@ Commands always start with `/`:
 
 Typing `/` opens autocomplete. Up/Down selects a completion; with the menu
 closed it navigates process-local command history. Tab inserts a completion,
-and `/script` completes filesystem paths. Ctrl-U/Ctrl-D scroll by half a
+and `/script` completes filesystem paths. Mnemonic characters are masked while
+typing and mnemonic commands are never retained in command history or the
+transcript. Ctrl-U/Ctrl-D scroll by half a
 viewport, End restores auto-follow, Esc closes autocomplete, and Ctrl-C clears
 input, cancels a running command, or exits when idle. Deeplinks are deliberately
 not persisted in history across processes.
@@ -171,6 +174,23 @@ letters, digits, `.`, `_`, or `-`; they cannot be paths. Switching prepares the
 target while the old session remains active, then stops its pairing responder
 and resets product WebSocket connections so clients reconnect against the new
 runtime.
+
+`/session --mnemonic "<phrase>"` brings an already-onboarded account into the
+session catalog. The host derives its `uid.dot` identity, reads any existing
+full or Lite username from dotNS, falls back to the identity backend's assigned
+username records when no dotNS mirror exists, and confirms its People or
+LitePeople ring membership. This lookup is read-only and never registers a new
+username. On success, the resolved identity username becomes the session name;
+only an account absent from both sources uses a deterministic
+`imported-<key fingerprint>` name and connects the account without username
+metadata. The mnemonic is written to that session's `0600` account store and
+the exact account record is remembered for restart. An invalid phrase or an
+account without ring membership on the selected network leaves the current
+runtime active. A username-less session can sign and connect, but
+`account.getUserId()` cannot return a primary username until one source has a
+record. Use the interactive command when practical: putting the same command in
+`exec` also puts the phrase in your shell's arguments/history.
+
 New auto-managed accounts use the session name as their Lite username prefix;
 characters other than lowercase letters are omitted. For example, session
 `pgtest` creates usernames beginning with `pgtest`. An explicit

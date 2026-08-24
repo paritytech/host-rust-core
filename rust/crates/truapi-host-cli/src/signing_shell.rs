@@ -1,9 +1,11 @@
 //! Slash-command parsing and command-bar editing for the signing-host UI.
 
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use truapi_platform::normalize_product_identifier;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::LogLevel;
 use crate::sessions;
@@ -26,6 +28,70 @@ pub enum SessionCommand {
     List,
     /// Switch to or create the named session.
     Switch(String),
+    /// Import an existing signer and initialize its username-owned session.
+    ImportMnemonic(SecretMnemonic),
+}
+
+/// A mnemonic accepted by the command parser without exposing it through
+/// derived debug output or retaining it after the command is dropped.
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct SecretMnemonic(String);
+
+impl SecretMnemonic {
+    fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Borrow the phrase only at the account-import boundary.
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretMnemonic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// Whether a command carries mnemonic material that must not enter UI history,
+/// transcripts, busy labels, or diagnostics.
+pub fn contains_mnemonic(command: &str) -> bool {
+    mnemonic_option_end(command).is_some()
+}
+
+fn mnemonic_option_end(command: &str) -> Option<usize> {
+    let trimmed = command.trim_start();
+    let leading_bytes = command.len().saturating_sub(trimmed.len());
+    let after_session = trimmed.strip_prefix("/session")?;
+    if !after_session.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let option = after_session.trim_start();
+    let option_start = command.len().saturating_sub(option.len());
+    let suffix = option.strip_prefix("--mnemonic")?;
+    if !suffix.is_empty() && !suffix.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(leading_bytes.max(option_start) + "--mnemonic".len())
+}
+
+/// Replace mnemonic characters while preserving command length and cursor
+/// placement in the interactive command bar.
+pub fn mask_mnemonic(command: &str) -> Option<String> {
+    if !contains_mnemonic(command) {
+        return None;
+    }
+    let argument_start = mnemonic_option_end(command)?;
+    let mut masked = command[..argument_start].to_string();
+    masked.extend(command[argument_start..].chars().map(|character| {
+        if character.is_whitespace() {
+            character
+        } else {
+            '•'
+        }
+    }));
+    Some(masked)
 }
 
 /// A command accepted by the signing-host command bar or `exec` mode.
@@ -110,12 +176,34 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
             if argument.is_empty() {
                 return Ok(ShellCommand::Session(SessionCommand::Current));
             }
-            if argument == "--list" {
-                return Ok(ShellCommand::Session(SessionCommand::List));
+            let arguments = shlex::split(argument)
+                .ok_or_else(|| "invalid /session quoting; close the mnemonic quote".to_string())?;
+            let first = arguments.first().expect("non-empty session argument");
+            match first.as_str() {
+                "--list" if arguments.len() == 1 => {
+                    return Ok(ShellCommand::Session(SessionCommand::List));
+                }
+                "--mnemonic" => {
+                    if arguments.len() < 2 {
+                        return Err("usage: /session --mnemonic \"<BIP-39 phrase>\"".to_string());
+                    }
+                    return Ok(ShellCommand::Session(SessionCommand::ImportMnemonic(
+                        SecretMnemonic::new(arguments[1..].join(" ")),
+                    )));
+                }
+                option if option.starts_with("--") => {
+                    return Err(format!(
+                        "unknown /session option `{option}`; use /help to list options"
+                    ));
+                }
+                _ if arguments.len() != 1 => {
+                    return Err("usage: /session <name>".to_string());
+                }
+                _ => {}
             }
-            sessions::validate_selectable_name(argument)?;
+            sessions::validate_selectable_name(first)?;
             Ok(ShellCommand::Session(SessionCommand::Switch(
-                argument.to_string(),
+                first.to_string(),
             )))
         }
         "/renew" => no_argument(name, argument, ShellCommand::Renew),
@@ -217,6 +305,12 @@ fn completions_for_scope(
                 },
             );
         }
+        if "--mnemonic".starts_with(prefix) {
+            matches.push(Completion {
+                value: "/session --mnemonic".to_string(),
+                description: "import an existing signer",
+            });
+        }
         return matches;
     }
     if !input.starts_with('/') || input.contains(char::is_whitespace) {
@@ -299,7 +393,6 @@ fn path_completions(input: &str) -> Vec<Completion> {
 }
 
 /// Editable command input with completion selection and in-memory history.
-#[derive(Debug)]
 pub struct CommandEditor {
     chars: Vec<char>,
     cursor: usize,
@@ -310,6 +403,33 @@ pub struct CommandEditor {
     completions_dismissed: bool,
     session_names: Vec<String>,
     scope: CommandScope,
+}
+
+impl fmt::Debug for CommandEditor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = self.text();
+        let text = if contains_mnemonic(&text) {
+            "<redacted>".to_string()
+        } else {
+            text
+        };
+        f.debug_struct("CommandEditor")
+            .field("text", &text)
+            .field("cursor", &self.cursor)
+            .field("history_entries", &self.history.len())
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+impl Drop for CommandEditor {
+    fn drop(&mut self) {
+        self.chars.zeroize();
+        for entry in &mut self.history {
+            entry.zeroize();
+        }
+        self.history_draft.zeroize();
+    }
 }
 
 impl Default for CommandEditor {
@@ -331,10 +451,9 @@ impl Default for CommandEditor {
 impl CommandEditor {
     /// Build an editor exposing only commands supported by the pairing host.
     pub fn pairing_host() -> Self {
-        Self {
-            scope: CommandScope::PairingHost,
-            ..Self::default()
-        }
+        let mut editor = Self::default();
+        editor.scope = CommandScope::PairingHost;
+        editor
     }
 
     /// Return the current command text.
@@ -349,6 +468,7 @@ impl CommandEditor {
 
     /// Replace the command text and place the cursor at its end.
     pub fn set_text(&mut self, value: impl Into<String>) {
+        self.chars.zeroize();
         self.chars = value.into().chars().collect();
         self.cursor = self.chars.len();
         self.edited();
@@ -400,6 +520,7 @@ impl CommandEditor {
 
     /// Clear the current command without adding it to history.
     pub fn clear(&mut self) {
+        self.chars.zeroize();
         self.chars.clear();
         self.cursor = 0;
         self.edited();
@@ -467,9 +588,13 @@ impl CommandEditor {
     /// Submit and remember the current input, clearing the editor.
     pub fn submit(&mut self) -> String {
         let value = self.text();
-        if !value.trim().is_empty() && self.history.last() != Some(&value) {
+        if !value.trim().is_empty()
+            && !contains_mnemonic(&value)
+            && self.history.last() != Some(&value)
+        {
             self.history.push(value.clone());
         }
+        self.chars.zeroize();
         self.chars.clear();
         self.cursor = 0;
         self.history_index = None;
@@ -491,11 +616,16 @@ impl CommandEditor {
         let index = match self.history_index {
             Some(index) => index.saturating_sub(1),
             None => {
-                self.history_draft = self.text();
+                self.history_draft.zeroize();
+                let draft = self.text();
+                if !contains_mnemonic(&draft) {
+                    self.history_draft = draft;
+                }
                 self.history.len() - 1
             }
         };
         self.history_index = Some(index);
+        self.chars.zeroize();
         self.chars = self.history[index].chars().collect();
         self.cursor = self.chars.len();
     }
@@ -507,9 +637,11 @@ impl CommandEditor {
         if index + 1 < self.history.len() {
             let next = index + 1;
             self.history_index = Some(next);
+            self.chars.zeroize();
             self.chars = self.history[next].chars().collect();
         } else {
             self.history_index = None;
+            self.chars.zeroize();
             self.chars = self.history_draft.chars().collect();
         }
         self.cursor = self.chars.len();
@@ -535,6 +667,7 @@ pub const HELP_TEXT: &str = "\
 /product <id>           switch product and reconnect product clients
 /session                show the current session and path
 /session <name>         switch to or create a session
+/session --mnemonic \"<phrase>\" import an existing signer as its username session
 /session --list         list sessions for this network
 /renew                  renew statement-store allowances now
 /help                   show this help
@@ -565,6 +698,8 @@ Esc close completion, Ctrl-C clear/cancel/quit";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     #[test]
     fn parses_all_operational_commands() {
@@ -609,6 +744,12 @@ mod tests {
                 "alice".to_string()
             )))
         );
+        let imported = parse_command(&format!("/session --mnemonic \"{MNEMONIC}\""))
+            .expect("mnemonic command parses");
+        let ShellCommand::Session(SessionCommand::ImportMnemonic(mnemonic)) = imported else {
+            panic!("unexpected mnemonic command")
+        };
+        assert_eq!(mnemonic.expose_secret(), MNEMONIC);
     }
 
     #[test]
@@ -628,6 +769,9 @@ mod tests {
         assert!(parse_command("/log noisy").is_err());
         assert!(parse_command("/product example.com").is_err());
         assert!(parse_command("/session ../escape").is_err());
+        assert!(parse_command("/session --unknown").is_err());
+        assert!(parse_command("/session --mnemonic").is_err());
+        assert!(parse_command("/session --mnemonic \"not closed").is_err());
         assert!(
             parse_command("/session default")
                 .unwrap_err()
@@ -652,6 +796,34 @@ mod tests {
         assert_eq!(editor.text(), "/help");
         editor.down();
         assert_eq!(editor.text(), "draft");
+    }
+
+    #[test]
+    fn mnemonic_commands_are_redacted_and_never_enter_history() {
+        let command = format!("/session --mnemonic \"{MNEMONIC}\"");
+        let parsed = parse_command(&command).expect("mnemonic command parses");
+        let rendered = format!("{parsed:?}");
+        assert!(!rendered.contains("abandon"), "mnemonic leaked: {rendered}");
+        assert!(rendered.contains("<redacted>"));
+
+        let masked = mask_mnemonic(&command).expect("mnemonic is masked");
+        assert!(masked.starts_with("/session --mnemonic "));
+        assert!(!masked.contains("abandon"));
+        assert_eq!(masked.chars().count(), command.chars().count());
+        let irregular = format!("  /session\t --mnemonic\t{MNEMONIC}");
+        assert!(contains_mnemonic(&irregular));
+        assert!(
+            !mask_mnemonic(&irregular)
+                .expect("irregular whitespace is still masked")
+                .contains("abandon")
+        );
+
+        let mut editor = CommandEditor::default();
+        editor.set_text(command.clone());
+        let rendered = format!("{editor:?}");
+        assert!(!rendered.contains("abandon"), "editor leaked: {rendered}");
+        assert_eq!(editor.submit(), command);
+        assert!(editor.history.is_empty());
     }
 
     #[test]
@@ -704,6 +876,17 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].value, "/session alice");
+    }
+
+    #[test]
+    fn session_completion_offers_mnemonic_import() {
+        let import = completions_for_scope(
+            "/session --m",
+            &["alice".to_string()],
+            CommandScope::SigningHost,
+        );
+        assert_eq!(import.len(), 1);
+        assert_eq!(import[0].value, "/session --mnemonic");
     }
 
     #[test]

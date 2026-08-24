@@ -396,6 +396,7 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/product <id>` | yes | yes | Switch product and reset product connections. |
 | `/session` | no | yes | Show current session, user, and path. |
 | `/session <name>` | no | yes | Switch to or create and provision a session. |
+| `/session --mnemonic "<phrase>"` | no | yes | Import an existing ring member into a durable local session. |
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
 | `/log <level>` | yes | yes | Replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
@@ -479,13 +480,18 @@ from link generation through authentication to its final state.
 - Tab accepts the selected completion.
 - Enter first accepts a differing selected completion; a later Enter submits.
 - `/script` followed by a space completes filesystem entries.
-- `/session` followed by a space completes known signing sessions and `--list`.
+- `/session` followed by a space completes known signing sessions, `--list`,
+  and `--mnemonic`.
 - Left/Right, Home/End, Backspace, and Delete edit by Unicode character.
 - Long input scrolls horizontally and retains a native terminal cursor.
 - Bracketed paste is enabled; pasted control characters are discarded.
 - At most eight completion rows are visible.
 
 Command history is in memory only and disappears when the process exits.
+Mnemonic import commands are excluded from history, debug rendering, busy
+labels, and transcripts. Their phrase is masked character-for-character in the
+command bar. `exec` cannot hide a phrase from the invoking shell's history or
+the operating system's process arguments.
 
 ### 9.4 Scrolling and cancellation
 
@@ -801,7 +807,7 @@ Explicit mnemonic mode:
 - does not read or write an account record;
 - has no cached username;
 - reports the session as `ephemeral`; and
-- disables `/session <name>`.
+- disables commands that switch or import managed sessions.
 
 Explicit account mode looks up a named record in the default account store and
 ensures its on-chain identity and ring readiness. It is not considered
@@ -858,6 +864,12 @@ An attested account with a resolved Lite username can be loaded and activated
 from `accounts.json` without contacting the identity backend or checking ring
 membership on every restart. The current Statement Store period is still used
 to skip locally marked exhausted accounts.
+
+Imported accounts are stored with an explicit `imported` origin and are never
+eligible for the auto-account pool or slot rotation. `session.json` binds a
+durable session to its exact local account name even when it has no dotNS
+username, so restart selects the imported record instead of whichever auto
+account happens to appear first.
 
 ### 12.5 Statement Store slot rotation
 
@@ -928,6 +940,32 @@ The active session is marked with `*`.
 If activation fails, the previous `current-session` pointer is restored and the
 old in-memory runtime remains active. Files created while preparing the target
 may remain.
+
+`/session --mnemonic "<phrase>"` is an import-only flow:
+
+1. parse and normalize the BIP-39 phrase;
+2. derive the RFC-0022 `uid.dot` identity;
+3. read its optional full or Lite dotNS username from Asset Hub;
+4. when no dotNS mirror exists, search the identity backend's assigned username
+   records for the derived candidate account;
+5. confirm membership in a People or LitePeople ring;
+6. use that username as the session name, or derive a deterministic
+   `imported-<key fingerprint>` name when neither source has a username;
+7. build and activate a replacement runtime off-side;
+8. persist the mnemonic as the named `imported` account and atomically write
+   the session's account binding plus its username when present;
+9. persist `current-session`; and
+10. swap runtimes and disconnect old product connections.
+
+The backend fallback uses authenticated, cursor-paginated, prefix searches
+because the backend has no account-indexed read route. It only accepts an
+`ASSIGNED` row whose candidate account equals the derived identity and it never
+calls a registration route. A username missing from both dotNS and the backend
+does not prevent local activation; the connected session simply has no primary
+username for `account.getUserId()`. A mnemonic without ring membership on the
+selected network is rejected and the old in-memory runtime remains active. The
+phrase is not written locally until the replacement runtime activates
+successfully.
 
 ## 13. Persistence
 
