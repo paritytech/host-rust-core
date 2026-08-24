@@ -105,6 +105,8 @@ Commands always start with `/`:
 | `/session <name>` | Switch to or create an isolated signing-host session. |
 | `/session --mnemonic "<phrase>"` | Import an existing signer as a durable session. |
 | `/session --list` | List user sessions for the current network. |
+| `/session --clear <name>` | Permanently clear one signing-host session. |
+| `/session --clear-all` | Permanently clear every signing-host session for the current network. |
 | `/help` | Show commands and keyboard shortcuts. |
 | `/clear` | Clear the visible transcript. |
 | `/copy` | Copy the retained transcript to the system clipboard. |
@@ -208,6 +210,16 @@ session's editor context. A session with no signer yet reports
 `/session <name>`. Inspecting with bare `/session` never starts network
 onboarding; naming a different session creates and connects its user.
 
+`/session --clear <name>` permanently deletes that session's local signer
+keys, scripts, core/product storage, and permissions. `/session --clear-all`
+does the same for every signing-host session on the current network, including
+legacy bootstrap state, while preserving other networks and pairing-host
+state. Neither command deregisters an on-chain username. The interactive UI
+asks for `[y/N]` confirmation. `exec` treats the explicit one-shot command as
+confirmation and runs it immediately. Clearing an inactive named session keeps
+the host running; clearing the active session or all sessions stops the signing
+host after its runtime and product connections have shut down.
+
 Select or create a session at startup with:
 
 ```bash
@@ -224,6 +236,8 @@ come first):
 
 ```bash
 truapi-host signing-host exec '/session'
+truapi-host signing-host exec '/session --clear alice.01'
+truapi-host signing-host exec '/session --clear-all'
 truapi-host signing-host --auto-accept exec '/script ./js/scripts/ring-vrf-smoke.ts'
 truapi-host signing-host exec '/pair polkadotapp://pair?handshake=...'
 ```

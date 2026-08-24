@@ -6,9 +6,20 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::accounts;
+
 pub const DEFAULT_SESSION_NAME: &str = "default";
 const CURRENT_SESSION_FILE: &str = "current-session";
 const SESSION_INFO_FILE: &str = "session.json";
+
+/// Persistent signing-host session data selected for permanent removal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionClearTarget {
+    /// Clear one durable session name shown by `/session --list`.
+    Named(String),
+    /// Clear every managed signing-host session for the active network.
+    All,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionInfo {
@@ -48,6 +59,7 @@ pub struct SessionProfile {
 #[derive(Debug, Clone)]
 pub struct SessionCatalog {
     base_path: PathBuf,
+    network_id: String,
     network_path: PathBuf,
     role_path: PathBuf,
 }
@@ -61,6 +73,7 @@ impl SessionCatalog {
             .with_context(|| format!("create session root {}", role_path.display()))?;
         Ok(Self {
             base_path,
+            network_id: network_id.to_string(),
             network_path,
             role_path,
         })
@@ -181,6 +194,87 @@ impl SessionCatalog {
         Ok(names)
     }
 
+    /// Return the network whose signing-host sessions this catalog owns.
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
+
+    /// Check that a clear target currently resolves to managed session data.
+    pub fn validate_clear_target(&self, target: &SessionClearTarget) -> Result<()> {
+        let SessionClearTarget::Named(name) = target else {
+            return Ok(());
+        };
+        validate_selectable_name(name).map_err(anyhow::Error::msg)?;
+        if self.list()?.iter().any(|existing| existing == name) {
+            Ok(())
+        } else {
+            anyhow::bail!("session `{name}` does not exist; use /session --list")
+        }
+    }
+
+    /// Permanently remove the selected local signing-host session data.
+    ///
+    /// Callers must stop an active runtime before clearing its profile. The
+    /// catalog only removes paths it derives from validated, listed names.
+    pub fn clear(&self, target: &SessionClearTarget) -> Result<Vec<String>> {
+        self.validate_clear_target(target)?;
+        match target {
+            SessionClearTarget::Named(name) => {
+                let was_current = self.current_name() == *name;
+                self.remove_named_data(name)?;
+                if was_current {
+                    remove_file_if_exists(&self.role_path.join(CURRENT_SESSION_FILE))?;
+                }
+                accounts::remove_managed_accounts(&self.base_path, &self.network_id, Some(name))?;
+                Ok(vec![name.clone()])
+            }
+            SessionClearTarget::All => {
+                let names = self.list()?;
+                for name in &names {
+                    self.remove_named_data(name)?;
+                }
+                remove_dir_if_exists(&self.role_path)?;
+                accounts::remove_managed_accounts(&self.base_path, &self.network_id, None)?;
+                Ok(names)
+            }
+        }
+    }
+
+    fn remove_profile_data(&self, profile: &SessionProfile) -> Result<()> {
+        if !profile.path.starts_with(&self.network_path)
+            || !profile.product_storage_dir.starts_with(&self.network_path)
+        {
+            anyhow::bail!(
+                "refusing to clear session outside network root {}",
+                self.network_path.display()
+            );
+        }
+        remove_dir_if_exists(&profile.path)?;
+        if !profile.product_storage_dir.starts_with(&profile.path) {
+            remove_dir_if_exists(&profile.product_storage_dir)?;
+        }
+        Ok(())
+    }
+
+    fn remove_named_data(&self, name: &str) -> Result<()> {
+        let profile = self.profile(name)?;
+        self.remove_profile_data(&profile)?;
+        for path in [
+            self.identity_path(name),
+            self.role_path.join("sessions").join(name),
+            self.role_path.join("storage").join(name),
+        ] {
+            if !path.starts_with(&self.network_path) {
+                anyhow::bail!(
+                    "refusing to clear session outside network root {}",
+                    self.network_path.display()
+                );
+            }
+            remove_dir_if_exists(&path)?;
+        }
+        Ok(())
+    }
+
     /// Move a provisional or legacy session into the user-owned host root.
     ///
     /// The public session name is the Lite username. The suffix is only a
@@ -299,6 +393,24 @@ impl SessionCatalog {
 
     fn identity_path(&self, user_id: &str) -> PathBuf {
         self.network_path.join(format!("{user_id}_signing_host"))
+    }
+}
+
+fn remove_dir_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("clear session data {}", path.display())),
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            Err(error).with_context(|| format!("clear session pointer {}", path.display()))
+        }
     }
 }
 
@@ -570,6 +682,75 @@ mod tests {
         assert_eq!(
             catalog.cached_account_name(&profile)?.as_deref(),
             Some("imported")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clears_one_named_session_and_resets_its_current_pointer() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let alice = catalog.ensure_profile("alice")?;
+        let bob = catalog.ensure_profile("bob")?;
+        let legacy_alice = catalog.role_path.join("sessions/alice");
+        let legacy_alice_storage = catalog.role_path.join("storage/alice");
+        fs::create_dir_all(&legacy_alice)?;
+        fs::create_dir_all(&legacy_alice_storage)?;
+        fs::write(alice.path.join("state"), "alice")?;
+        fs::write(bob.path.join("state"), "bob")?;
+        catalog.set_current("alice")?;
+
+        assert_eq!(
+            catalog.clear(&SessionClearTarget::Named("alice".to_string()))?,
+            vec!["alice"]
+        );
+
+        assert!(!alice.path.exists());
+        assert!(!legacy_alice.exists());
+        assert!(!legacy_alice_storage.exists());
+        assert!(bob.path.exists());
+        assert_eq!(catalog.current_name(), DEFAULT_SESSION_NAME);
+        assert_eq!(catalog.list()?, vec!["bob"]);
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_all_sessions_removes_default_legacy_and_identity_state_only() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let default = catalog.ensure_profile(DEFAULT_SESSION_NAME)?;
+        let alice = catalog.ensure_profile("alice")?;
+        let legacy = catalog.role_path.join("sessions/legacy");
+        fs::create_dir_all(&legacy)?;
+        fs::write(default.path.join("core-storage.json"), "{}")?;
+        fs::write(alice.path.join("state"), "alice")?;
+        fs::write(legacy.join("state"), "legacy")?;
+        let unrelated = catalog.network_path.join("pairing-host");
+        fs::create_dir_all(&unrelated)?;
+        fs::write(unrelated.join("state"), "keep")?;
+
+        let cleared = catalog.clear(&SessionClearTarget::All)?;
+
+        assert_eq!(cleared, vec!["alice", "legacy"]);
+        assert!(!catalog.role_path.exists());
+        assert!(!alice.path.exists());
+        assert!(unrelated.join("state").is_file());
+        assert!(catalog.list()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn clearing_a_missing_session_has_an_actionable_error() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+
+        let error = catalog
+            .clear(&SessionClearTarget::Named("alice".to_string()))
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "session `alice` does not exist; use /session --list"
         );
         Ok(())
     }

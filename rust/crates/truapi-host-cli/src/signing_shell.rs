@@ -28,6 +28,8 @@ pub enum SessionCommand {
     List,
     /// Switch to or create the named session.
     Switch(String),
+    /// Permanently clear one named session or every session for the network.
+    Clear(sessions::SessionClearTarget),
     /// Import an existing signer and initialize its username-owned session.
     ImportMnemonic(SecretMnemonic),
 }
@@ -183,6 +185,23 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
                 "--list" if arguments.len() == 1 => {
                     return Ok(ShellCommand::Session(SessionCommand::List));
                 }
+                "--clear" => {
+                    let Some(name) = arguments.get(1) else {
+                        return Err("usage: /session --clear <name>".to_string());
+                    };
+                    if arguments.len() != 2 {
+                        return Err("usage: /session --clear <name>".to_string());
+                    }
+                    sessions::validate_selectable_name(name)?;
+                    return Ok(ShellCommand::Session(SessionCommand::Clear(
+                        sessions::SessionClearTarget::Named(name.to_string()),
+                    )));
+                }
+                "--clear-all" if arguments.len() == 1 => {
+                    return Ok(ShellCommand::Session(SessionCommand::Clear(
+                        sessions::SessionClearTarget::All,
+                    )));
+                }
                 "--mnemonic" => {
                     if arguments.len() < 2 {
                         return Err("usage: /session --mnemonic \"<BIP-39 phrase>\"".to_string());
@@ -236,7 +255,7 @@ const SIGNING_COMMANDS: &[(&str, &str)] = &[
     ("/script", "edit the last or run an existing product script"),
     ("/log", "set error, warn, info, debug, or trace"),
     ("/product", "show or switch the active product"),
-    ("/session", "show or switch the active session"),
+    ("/session", "show, switch, or clear sessions"),
     ("/renew", "renew statement-store allowances now"),
     ("/help", "show commands and keyboard shortcuts"),
     ("/clear", "clear the visible transcript"),
@@ -283,6 +302,21 @@ fn completions_for_scope(
         return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
     }
     if scope == CommandScope::SigningHost
+        && let Some(prefix) = input.strip_prefix("/session --clear ")
+    {
+        if prefix.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        return session_names
+            .iter()
+            .filter(|name| name.starts_with(prefix))
+            .map(|name| Completion {
+                value: format!("/session --clear {name}"),
+                description: "clear existing session",
+            })
+            .collect();
+    }
+    if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/session ")
     {
         if prefix.contains(char::is_whitespace) {
@@ -305,11 +339,17 @@ fn completions_for_scope(
                 },
             );
         }
-        if "--mnemonic".starts_with(prefix) {
-            matches.push(Completion {
-                value: "/session --mnemonic".to_string(),
-                description: "import an existing signer",
-            });
+        for (value, description) in [
+            ("--mnemonic", "import an existing signer"),
+            ("--clear", "clear one session"),
+            ("--clear-all", "clear all sessions"),
+        ] {
+            if value.starts_with(prefix) {
+                matches.push(Completion {
+                    value: format!("/session {value}"),
+                    description,
+                });
+            }
         }
         return matches;
     }
@@ -669,6 +709,8 @@ pub const HELP_TEXT: &str = "\
 /session <name>         switch to or create a session
 /session --mnemonic \"<phrase>\" import an existing signer as its username session
 /session --list         list sessions for this network
+/session --clear <name> permanently clear one session
+/session --clear-all    permanently clear all sessions for this network
 /renew                  renew statement-store allowances now
 /help                   show this help
 /clear                  clear the visible transcript
@@ -744,6 +786,18 @@ mod tests {
                 "alice".to_string()
             )))
         );
+        assert_eq!(
+            parse_command("/session --clear alice"),
+            Ok(ShellCommand::Session(SessionCommand::Clear(
+                sessions::SessionClearTarget::Named("alice".to_string())
+            )))
+        );
+        assert_eq!(
+            parse_command("/session --clear-all"),
+            Ok(ShellCommand::Session(SessionCommand::Clear(
+                sessions::SessionClearTarget::All
+            )))
+        );
         let imported = parse_command(&format!("/session --mnemonic \"{MNEMONIC}\""))
             .expect("mnemonic command parses");
         let ShellCommand::Session(SessionCommand::ImportMnemonic(mnemonic)) = imported else {
@@ -769,6 +823,12 @@ mod tests {
         assert!(parse_command("/log noisy").is_err());
         assert!(parse_command("/product example.com").is_err());
         assert!(parse_command("/session ../escape").is_err());
+        assert_eq!(
+            parse_command("/session --clear").unwrap_err(),
+            "usage: /session --clear <name>"
+        );
+        assert!(parse_command("/session --clear alice bob").is_err());
+        assert!(parse_command("/session --clear-all now").is_err());
         assert!(parse_command("/session --unknown").is_err());
         assert!(parse_command("/session --mnemonic").is_err());
         assert!(parse_command("/session --mnemonic \"not closed").is_err());
@@ -879,7 +939,22 @@ mod tests {
     }
 
     #[test]
-    fn session_completion_offers_mnemonic_import() {
+    fn session_completion_offers_clear_operations_and_existing_names() {
+        let operations = completions_for_scope(
+            "/session --c",
+            &["alice".to_string(), "bob".to_string()],
+            CommandScope::SigningHost,
+        );
+        assert!(
+            operations
+                .iter()
+                .any(|completion| completion.value == "/session --clear")
+        );
+        assert!(
+            operations
+                .iter()
+                .any(|completion| completion.value == "/session --clear-all")
+        );
         let import = completions_for_scope(
             "/session --m",
             &["alice".to_string()],
@@ -887,6 +962,14 @@ mod tests {
         );
         assert_eq!(import.len(), 1);
         assert_eq!(import[0].value, "/session --mnemonic");
+
+        let names = completions_for_scope(
+            "/session --clear b",
+            &["alice".to_string(), "bob".to_string()],
+            CommandScope::SigningHost,
+        );
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0].value, "/session --clear bob");
     }
 
     #[test]

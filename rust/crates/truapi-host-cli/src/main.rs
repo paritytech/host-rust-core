@@ -54,7 +54,7 @@ use truapi_server::{
 use crate::accounts::{ResolveSignerConfig, ResolvedSigner};
 use crate::network::{Network, NetworkConfig};
 use crate::platform::{ApprovalPolicy, CliPlatform, CliStoragePaths};
-use crate::sessions::{DEFAULT_SESSION_NAME, SessionCatalog, SessionProfile};
+use crate::sessions::{DEFAULT_SESSION_NAME, SessionCatalog, SessionClearTarget, SessionProfile};
 use crate::signing_shell::{
     HELP_TEXT, PAIRING_HELP_TEXT, ProductCommand, SessionCommand, ShellCommand, parse_command,
 };
@@ -1044,7 +1044,8 @@ async fn run_signing_host(
 
     let initial_deeplink = args.deeplink.clone();
     if let Some(command) = exec_command {
-        return with_frame_server(
+        let cleanup_catalog = session.catalog.clone();
+        let clear_target = with_frame_server(
             runtime_for_frames,
             product.clone(),
             frame_server,
@@ -1064,11 +1065,16 @@ async fn run_signing_host(
                 result
             },
         )
-        .await;
+        .await?;
+        if let Some(target) = clear_target {
+            clear_sessions_after_shutdown(&cleanup_catalog, &target)?;
+        }
+        return Ok(());
     }
 
     let terminal_ui = terminal_ui.context("interactive terminal was not initialized")?;
-    with_frame_server(
+    let cleanup_catalog = session.catalog.clone();
+    let clear_target = with_frame_server(
         runtime_for_frames,
         product.clone(),
         frame_server,
@@ -1084,7 +1090,11 @@ async fn run_signing_host(
             .await
         },
     )
-    .await
+    .await?;
+    if let Some(target) = clear_target {
+        clear_sessions_after_shutdown(&cleanup_catalog, &target)?;
+    }
+    Ok(())
 }
 
 struct SigningHostSession {
@@ -1740,6 +1750,81 @@ async fn start_deeplink_responder(
     Ok(())
 }
 
+fn validate_session_clear(
+    session: &SigningHostSession,
+    target: &SessionClearTarget,
+) -> Result<bool> {
+    if session.mnemonic.is_some() {
+        bail!("session clearing is unavailable when launched with --mnemonic");
+    }
+    session.catalog.validate_clear_target(target)?;
+    Ok(match target {
+        SessionClearTarget::All => true,
+        SessionClearTarget::Named(name) => session
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.name == *name),
+    })
+}
+
+fn session_clear_confirmation(
+    session: &SigningHostSession,
+    target: &SessionClearTarget,
+    active: bool,
+) -> (String, String) {
+    let action = match target {
+        SessionClearTarget::Named(name) => format!("Clear session {name}"),
+        SessionClearTarget::All => {
+            format!("Clear all sessions for {}", session.catalog.network_id())
+        }
+    };
+    let scope = match target {
+        SessionClearTarget::Named(_) => {
+            "This permanently deletes its local signer keys, scripts, storage, and permissions"
+        }
+        SessionClearTarget::All => {
+            "This permanently deletes every local session's signer keys, scripts, storage, and permissions"
+        }
+    };
+    let mut detail = format!(
+        "{scope} for {}. On-chain usernames are not removed.",
+        session.catalog.network_id()
+    );
+    if active {
+        detail.push_str(" The active session is included, so the signing host will stop.");
+    }
+    (action, detail)
+}
+
+fn session_clear_success(
+    network_id: &str,
+    target: &SessionClearTarget,
+    stopped: bool,
+) -> (String, String) {
+    let title = match target {
+        SessionClearTarget::Named(name) => format!("Session {name} cleared"),
+        SessionClearTarget::All => format!("All sessions cleared for {network_id}"),
+    };
+    let detail = if stopped {
+        "Signing host stopped. Restart it to create or select another session.".to_string()
+    } else {
+        format!(
+            "Local signer keys, scripts, storage, and permissions were deleted for {network_id}."
+        )
+    };
+    (title, detail)
+}
+
+fn clear_sessions_after_shutdown(
+    catalog: &SessionCatalog,
+    target: &SessionClearTarget,
+) -> Result<()> {
+    catalog.clear(target)?;
+    let (title, detail) = session_clear_success(catalog.network_id(), target, true);
+    terminal_ui::output_success(title, Some(detail));
+    Ok(())
+}
+
 fn session_status_event(session: &SigningHostSession) -> SystemEvent {
     let name = session
         .profile
@@ -2322,7 +2407,7 @@ async fn signing_interactive_loop(
     initial_deeplink: Option<String>,
     mut ui: ActiveTerminalUi,
     log_controller: LogController,
-) -> Result<()> {
+) -> Result<Option<SessionClearTarget>> {
     if let Some(deeplink) = initial_deeplink {
         let input = format!("/pair {deeplink}");
         ui.command(input.clone());
@@ -2340,7 +2425,7 @@ async fn signing_interactive_loop(
 
     loop {
         let Some(input) = ui.next_command().await? else {
-            return Ok(());
+            return Ok(None);
         };
         ui.command(input.clone());
         let command = match parse_command(&input) {
@@ -2390,7 +2475,50 @@ async fn signing_interactive_loop(
                 Ok(sessions) => ui.system(sessions),
                 Err(error) => ui.error(format!("failed to list sessions: {error}")),
             },
-            ShellCommand::Quit => return Ok(()),
+            ShellCommand::Session(SessionCommand::Clear(target)) => {
+                let active = match validate_session_clear(session, &target) {
+                    Ok(active) => active,
+                    Err(error) => {
+                        ui.error(error.to_string());
+                        continue;
+                    }
+                };
+                let (action, detail) = session_clear_confirmation(session, &target, active);
+                let handle = ui.handle();
+                let approved = match ui
+                    .drive(input.clone(), handle.confirm(action, detail))
+                    .await?
+                {
+                    DriveResult::Complete(approved) => approved,
+                    DriveResult::Cancelled => false,
+                };
+                if !approved {
+                    ui.system("Session clear cancelled");
+                    continue;
+                }
+                if active || target == SessionClearTarget::All {
+                    if let Some(responder) = session.responder.take() {
+                        responder.abort();
+                    }
+                    session.runtime_factory.reset_connections();
+                    tokio::task::yield_now().await;
+                    return Ok(Some(target));
+                }
+                match session.catalog.clear(&target) {
+                    Ok(_) => {
+                        let (title, detail) =
+                            session_clear_success(session.catalog.network_id(), &target, false);
+                        ui.success(title, Some(detail));
+                        let current = session
+                            .profile
+                            .as_ref()
+                            .map_or(DEFAULT_SESSION_NAME, |profile| profile.name.as_str());
+                        ui.handle().session(current, session.catalog.list()?);
+                    }
+                    Err(error) => ui.error(error.to_string()),
+                }
+            }
+            ShellCommand::Quit => return Ok(None),
             ShellCommand::Script(None) => match edit_session_script(session, &mut ui).await {
                 Ok(script) => {
                     let product_id = product.current();
@@ -2492,7 +2620,9 @@ async fn execute_interactive_operation(
         | ShellCommand::Clear
         | ShellCommand::Copy
         | ShellCommand::Log(_)
-        | ShellCommand::Session(SessionCommand::Current | SessionCommand::List)
+        | ShellCommand::Session(
+            SessionCommand::Current | SessionCommand::List | SessionCommand::Clear(_),
+        )
         | ShellCommand::Quit => {
             bail!("command must be handled by the terminal UI")
         }
@@ -2506,7 +2636,7 @@ async fn execute_non_interactive_command(
     product: &frame_server::ProductSelection,
     command: ShellCommand,
     log_controller: &LogController,
-) -> Result<()> {
+) -> Result<Option<SessionClearTarget>> {
     match command {
         ShellCommand::Pair(deeplink) => respond_to_deeplink(session, deeplink).await?,
         ShellCommand::Script(script) => {
@@ -2569,9 +2699,18 @@ async fn execute_non_interactive_command(
         ShellCommand::Session(SessionCommand::ImportMnemonic(mnemonic)) => {
             import_mnemonic_session(session, &mnemonic).await?;
         }
+        ShellCommand::Session(SessionCommand::Clear(target)) => {
+            validate_session_clear(session, &target)?;
+            if let Some(responder) = session.responder.take() {
+                responder.abort();
+            }
+            session.runtime_factory.reset_connections();
+            tokio::task::yield_now().await;
+            return Ok(Some(target));
+        }
         ShellCommand::Renew => run_renew(session).await?,
     }
-    Ok(())
+    Ok(None)
 }
 
 fn scratch_script_directory(session: &SigningHostSession) -> PathBuf {

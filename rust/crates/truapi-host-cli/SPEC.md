@@ -398,6 +398,8 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/session <name>` | no | yes | Switch to or create and provision a session. |
 | `/session --mnemonic "<phrase>"` | no | yes | Import an existing ring member into a durable local session. |
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
+| `/session --clear <name>` | no | yes | Permanently clear one network-scoped signing session. |
+| `/session --clear-all` | no | yes | Permanently clear all signing sessions for the current network. |
 | `/log <level>` | yes | yes | Replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
 | `/clear` | yes | yes | Clear the retained visible transcript. |
@@ -481,7 +483,8 @@ from link generation through authentication to its final state.
 - Enter first accepts a differing selected completion; a later Enter submits.
 - `/script` followed by a space completes filesystem entries.
 - `/session` followed by a space completes known signing sessions, `--list`,
-  and `--mnemonic`.
+  `--mnemonic`, `--clear`, and `--clear-all`; `/session --clear ` completes
+  known names.
 - Left/Right, Home/End, Backspace, and Delete edit by Unicode character.
 - Long input scrolls horizontally and retains a native terminal cursor.
 - Bracketed paste is enabled; pasted control characters are discarded.
@@ -906,7 +909,7 @@ known, the public and durable session name becomes its Lite username and its
 directory becomes `<username>_signing_host`. The bootstrap name is not
 user-selectable and is omitted from session completion and listing.
 
-### 12.7 Session inspection and switching
+### 12.7 Session inspection, switching, and clearing
 
 `/session` reports:
 
@@ -966,6 +969,22 @@ username for `account.getUserId()`. A mnemonic without ring membership on the
 selected network is rejected and the old in-memory runtime remains active. The
 phrase is not written locally until the replacement runtime activates
 successfully.
+
+`/session --clear <name>` removes the durable name shown by `/session --list`,
+its identity or legacy session directory, any separate legacy product storage,
+and the matching network account cached in the compatibility account store.
+`/session --clear-all` removes every such session, the network's signing-host
+bootstrap state, and every compatibility account record for that network. It
+does not remove pairing-host state, another network's records, externally
+referenced scripts, or on-chain usernames.
+
+The interactive UI describes the data loss and uses the existing `[y/N]`
+approval. `exec` executes these explicit one-shot commands without another
+flag or prompt. Clearing an inactive named session updates completion and keeps
+the current runtime active. Clearing the active session or all sessions first
+ends the command loop, aborts the frame server, drops the runtime, and only then
+deletes the data; the signing host exits afterward. Session clearing is
+unavailable in explicit-mnemonic mode.
 
 ## 13. Persistence
 

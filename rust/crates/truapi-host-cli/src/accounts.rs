@@ -353,6 +353,30 @@ impl AccountStore {
     }
 }
 
+/// Remove cached local accounts owned by one network and, optionally, one
+/// durable Lite username. Records for other networks are always preserved.
+pub fn remove_managed_accounts(
+    base_path: &Path,
+    network_id: &str,
+    lite_username: Option<&str>,
+) -> Result<usize> {
+    if !base_path.join(ACCOUNT_STORE_FILE).is_file() {
+        return Ok(0);
+    }
+    let _lock = AccountStoreLock::acquire(base_path)?;
+    let mut store = AccountStore::load(base_path)?;
+    let before = store.data.accounts.len();
+    store.data.accounts.retain(|record| {
+        record.network != network_id
+            || lite_username.is_some_and(|username| record.lite_username != username)
+    });
+    let removed = before - store.data.accounts.len();
+    if removed > 0 {
+        store.save()?;
+    }
+    Ok(removed)
+}
+
 pub async fn resolve_signer(config: ResolveSignerConfig<'_>) -> Result<ResolvedSigner> {
     if let Some(mnemonic) = config.mnemonic {
         let entropy = mnemonic_entropy(&mnemonic)?;
@@ -1010,6 +1034,34 @@ mod tests {
             Some("auto-1")
         );
         assert!(!temp_path(&dir.path().join(ACCOUNT_STORE_FILE)).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn removing_managed_accounts_preserves_other_sessions_and_networks() -> Result<()> {
+        let dir = tempdir()?;
+        let mut store = AccountStore::load(dir.path())?;
+        store.upsert(record("alice", "paseo-next-v2", true));
+        store.upsert(record("bob", "paseo-next-v2", true));
+        store.upsert(record("alice", "other", true));
+        store.save()?;
+
+        assert_eq!(
+            remove_managed_accounts(dir.path(), "paseo-next-v2", Some("alicelite.01"))?,
+            1
+        );
+        let loaded = AccountStore::load(dir.path())?;
+        assert!(loaded.get("paseo-next-v2", "alice").is_none());
+        assert!(loaded.get("paseo-next-v2", "bob").is_some());
+        assert!(loaded.get("other", "alice").is_some());
+
+        assert_eq!(
+            remove_managed_accounts(dir.path(), "paseo-next-v2", None)?,
+            1
+        );
+        let loaded = AccountStore::load(dir.path())?;
+        assert!(loaded.get("paseo-next-v2", "bob").is_none());
+        assert!(loaded.get("other", "alice").is_some());
         Ok(())
     }
 
