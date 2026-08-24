@@ -134,6 +134,15 @@ dependency on the crate:
 
 Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions.
 
+Product-account handles are normalized against the admitted product runtime.
+An environment-qualified runtime such as `host-playground.paseo` accepts the
+exact canonical `host-playground.dot` and container
+`host-playground.paseo.dot` account spellings without widening access to
+another product. Hosts can register a
+network-qualified `peopl.<network>` alias for the active wallet's canonical
+Lite Person key. Multi-resource allocation executes independent chain
+allocations concurrently while preserving request order in the response.
+
 ## Develop
 
 Common tasks are wrapped in the top-level `Makefile`. Run `make help` for the full list.

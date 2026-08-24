@@ -237,7 +237,7 @@ fn version_index(version: u8) -> u8 {
 }
 
 #[test]
-fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
+fn foreign_account_proof_is_delegated_to_the_account_authority() {
     let core = make_core();
     let request = account::HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
         key_handle: v01::ProductAccountId {
@@ -268,9 +268,10 @@ fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
     );
     assert_eq!(response.request_id, "p:account-proof");
     assert_eq!(response.payload.id, ids.response_id);
-    // RFC-0024 forbids a prompt fallback for bearer proofs made with a foreign key.
+    // The product runtime delegates foreign-key policy to the authority. This
+    // fixture has no active session, so the authority returns Rejected.
     let expected = versioned_result_err_payload(account::HostAccountCreateProofError::V1(
-        v01::HostAccountCreateProofError::NotAllowlisted,
+        v01::HostAccountCreateProofError::Rejected,
     ));
     assert_eq!(response.payload.value, expected);
 }

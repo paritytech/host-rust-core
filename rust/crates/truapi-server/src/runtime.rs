@@ -515,11 +515,36 @@ impl ProductRuntimeHost {
     }
 
     fn normalize_product_account_id(
+        &self,
         product_account_id: v01::ProductAccountId,
     ) -> Result<v01::ProductAccountId, ()> {
+        let mut dot_ns_identifier =
+            normalize_product_identifier(&product_account_id.dot_ns_identifier).map_err(|_| ())?;
+        let product_id = self.product.product_id.as_str();
+        let canonical_runtime = product_id
+            .rsplit_once('.')
+            .map(|(label, _)| format!("{label}.dot"));
+        let canonical_requested = dot_ns_identifier
+            .rsplit_once('.')
+            .map(|(label, _)| format!("{label}.dot"));
+        let canonical_container_alias =
+            dot_ns_identifier
+                .strip_suffix(".dot")
+                .and_then(|container| {
+                    container
+                        .rsplit_once('.')
+                        .map(|(label, _)| format!("{label}.dot"))
+                });
+        if (!product_id.ends_with(".dot")
+            && canonical_runtime.as_deref() == Some(&dot_ns_identifier))
+            || canonical_requested.as_deref() == Some(product_id)
+            || dot_ns_identifier.strip_suffix(".dot") == Some(product_id)
+            || canonical_container_alias.as_deref() == Some(product_id)
+        {
+            dot_ns_identifier = product_id.to_owned();
+        }
         Ok(v01::ProductAccountId {
-            dot_ns_identifier: normalize_product_identifier(&product_account_id.dot_ns_identifier)
-                .map_err(|_| ())?,
+            dot_ns_identifier,
             derivation_index: product_account_id.derivation_index,
         })
     }
@@ -979,8 +1004,9 @@ impl Account for ProductRuntimeHost {
         request: HostAccountGetRequest,
     ) -> Result<HostAccountGetResponse, CallError<HostAccountGetError>> {
         let HostAccountGetRequest::V1(v01::HostAccountGetRequest { product_account_id }) = request;
-        let product_account_id =
-            Self::normalize_product_account_id(product_account_id).map_err(|()| {
+        let product_account_id = self
+            .normalize_product_account_id(product_account_id)
+            .map_err(|()| {
                 CallError::Domain(HostAccountGetError::V1(
                     v01::HostAccountGetError::DomainNotValid,
                 ))
@@ -1065,13 +1091,15 @@ impl Account for ProductRuntimeHost {
             context,
             ring_location,
         }) = request;
-        let key_handle = Self::normalize_product_account_id(key_handle).map_err(|()| {
-            CallError::Domain(HostAccountGetAliasError::V1(
-                v01::HostAccountGetAliasError::Unknown {
-                    reason: "Invalid key handle".to_string(),
-                },
-            ))
-        })?;
+        let key_handle = self
+            .normalize_product_account_id(key_handle)
+            .map_err(|()| {
+                CallError::Domain(HostAccountGetAliasError::V1(
+                    v01::HostAccountGetAliasError::Unknown {
+                        reason: "Invalid key handle".to_string(),
+                    },
+                ))
+            })?;
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountGetAliasError::V1(
                 v01::HostAccountGetAliasError::Rejected,
@@ -1110,18 +1138,15 @@ impl Account for ProductRuntimeHost {
             ring_location,
             message,
         }) = request;
-        let key_handle = Self::normalize_product_account_id(key_handle).map_err(|()| {
-            CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::Unknown {
-                    reason: "Invalid key handle".to_string(),
-                },
-            ))
-        })?;
-        if key_handle.dot_ns_identifier != self.product_id() {
-            return Err(CallError::Domain(HostAccountCreateProofError::V1(
-                v01::HostAccountCreateProofError::NotAllowlisted,
-            )));
-        }
+        let key_handle = self
+            .normalize_product_account_id(key_handle)
+            .map_err(|()| {
+                CallError::Domain(HostAccountCreateProofError::V1(
+                    v01::HostAccountCreateProofError::Unknown {
+                        reason: "Invalid key handle".to_string(),
+                    },
+                ))
+            })?;
 
         let Some(session) = self.authority.current_session() else {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
@@ -1244,8 +1269,9 @@ impl Account for ProductRuntimeHost {
         request: HostAccountRingVrfSignRequest,
     ) -> Result<HostAccountRingVrfSignResponse, CallError<HostAccountRingVrfSignError>> {
         let HostAccountRingVrfSignRequest::V1(mut request) = request;
-        request.key_handle =
-            Self::normalize_product_account_id(request.key_handle).map_err(|()| {
+        request.key_handle = self
+            .normalize_product_account_id(request.key_handle)
+            .map_err(|()| {
                 CallError::Domain(HostAccountRingVrfSignError::V1(
                     v01::HostAccountRingVrfSignError::Unknown {
                         reason: "Invalid key handle".to_string(),
@@ -1288,13 +1314,15 @@ impl Account for ProductRuntimeHost {
         request: HostAccountSignVrfRequest,
     ) -> Result<HostAccountSignVrfResponse, CallError<HostAccountSignVrfError>> {
         let HostAccountSignVrfRequest::V1(mut request) = request;
-        request.account = Self::normalize_product_account_id(request.account).map_err(|()| {
-            CallError::Domain(HostAccountSignVrfError::V1(
-                v01::HostAccountSignVrfError::Unknown {
-                    reason: "Invalid product account".to_string(),
-                },
-            ))
-        })?;
+        request.account = self
+            .normalize_product_account_id(request.account)
+            .map_err(|()| {
+                CallError::Domain(HostAccountSignVrfError::V1(
+                    v01::HostAccountSignVrfError::Unknown {
+                        reason: "Invalid product account".to_string(),
+                    },
+                ))
+            })?;
         validate_vrf_transcript(&request).map_err(|reason| {
             CallError::Domain(HostAccountSignVrfError::V1(
                 v01::HostAccountSignVrfError::Unknown { reason },
@@ -1575,11 +1603,13 @@ impl Signing for ProductRuntimeHost {
     ) -> Result<HostSignPayloadResponse, CallError<HostSignPayloadError>> {
         debug!("sign_payload: requesting signing-host signature");
         let HostSignPayloadRequest::V1(mut inner) = request;
-        inner.account = Self::normalize_product_account_id(inner.account).map_err(|()| {
-            CallError::Domain(HostSignPayloadError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            ))
-        })?;
+        inner.account = self
+            .normalize_product_account_id(inner.account)
+            .map_err(|()| {
+                CallError::Domain(HostSignPayloadError::V1(
+                    v01::HostSignPayloadError::PermissionDenied,
+                ))
+            })?;
         if !self.is_product_account_valid_for_caller(&inner.account.dot_ns_identifier) {
             return Err(CallError::Domain(HostSignPayloadError::V1(
                 v01::HostSignPayloadError::PermissionDenied,
@@ -1627,12 +1657,21 @@ impl Signing for ProductRuntimeHost {
     ) -> Result<HostSignRawResponse, CallError<HostSignRawError>> {
         debug!("sign_raw: requesting signing-host signature");
         let HostSignRawRequest::V1(mut inner) = request;
-        inner.account = Self::normalize_product_account_id(inner.account).map_err(|()| {
-            CallError::Domain(HostSignRawError::V1(
-                v01::HostSignPayloadError::PermissionDenied,
-            ))
-        })?;
+        let requested_product_id = inner.account.dot_ns_identifier.clone();
+        inner.account = self
+            .normalize_product_account_id(inner.account)
+            .map_err(|()| {
+                CallError::Domain(HostSignRawError::V1(
+                    v01::HostSignPayloadError::PermissionDenied,
+                ))
+            })?;
         if !self.is_product_account_valid_for_caller(&inner.account.dot_ns_identifier) {
+            debug!(
+                runtime_product_id = %self.product_id(),
+                %requested_product_id,
+                normalized_product_id = %inner.account.dot_ns_identifier,
+                "sign_raw rejected a product-account identity mismatch"
+            );
             return Err(CallError::Domain(HostSignRawError::V1(
                 v01::HostSignPayloadError::PermissionDenied,
             )));
@@ -1679,12 +1718,21 @@ impl Signing for ProductRuntimeHost {
     ) -> Result<HostCreateTransactionResponse, CallError<HostCreateTransactionError>> {
         debug!("create_transaction: requesting signing-host signature");
         let HostCreateTransactionRequest::V1(mut inner) = request;
-        inner.signer = Self::normalize_product_account_id(inner.signer).map_err(|()| {
-            CallError::Domain(HostCreateTransactionError::V1(
-                v01::HostCreateTransactionError::PermissionDenied,
-            ))
-        })?;
+        let requested_product_id = inner.signer.dot_ns_identifier.clone();
+        inner.signer = self
+            .normalize_product_account_id(inner.signer)
+            .map_err(|()| {
+                CallError::Domain(HostCreateTransactionError::V1(
+                    v01::HostCreateTransactionError::PermissionDenied,
+                ))
+            })?;
         if !self.is_product_account_valid_for_caller(&inner.signer.dot_ns_identifier) {
+            debug!(
+                runtime_product_id = %self.product_id(),
+                %requested_product_id,
+                normalized_product_id = %inner.signer.dot_ns_identifier,
+                "create_transaction rejected a product-account identity mismatch"
+            );
             return Err(CallError::Domain(HostCreateTransactionError::V1(
                 v01::HostCreateTransactionError::PermissionDenied,
             )));
@@ -3971,6 +4019,62 @@ mod tests {
             hex::encode(inner.account.public_key),
             "1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c"
         );
+    }
+
+    #[test]
+    fn get_account_maps_canonical_and_container_aliases_to_environment_product() {
+        let host = ProductRuntimeHost::new(
+            stub_platform(),
+            runtime_config("host-playground.paseo"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, sso_session_info());
+        for dot_ns_identifier in ["host-playground.dot", "host-playground.paseo.dot"] {
+            let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+                product_account_id: v01::ProductAccountId {
+                    dot_ns_identifier: dot_ns_identifier.to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+            });
+
+            let response =
+                futures::executor::block_on(host.get_account(&CallContext::default(), request))
+                    .unwrap();
+            let HostAccountGetResponse::V1(inner) = response;
+            assert_eq!(
+                inner.account.public_key,
+                test_product_account_public("host-playground.paseo", 0).to_vec(),
+                "{dot_ns_identifier}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_account_maps_environment_container_alias_to_canonical_runtime() {
+        let host = ProductRuntimeHost::new(
+            stub_platform(),
+            runtime_config("host-playground.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, sso_session_info());
+        for dot_ns_identifier in ["host-playground.paseo", "host-playground.paseo.dot"] {
+            let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+                product_account_id: v01::ProductAccountId {
+                    dot_ns_identifier: dot_ns_identifier.to_string(),
+                    derivation_index: v01::DerivationIndex::Index(0),
+                },
+            });
+
+            let response =
+                futures::executor::block_on(host.get_account(&CallContext::default(), request))
+                    .unwrap();
+            let HostAccountGetResponse::V1(inner) = response;
+            assert_eq!(
+                inner.account.public_key,
+                test_product_account_public("host-playground.dot", 0).to_vec(),
+                "{dot_ns_identifier}"
+            );
+        }
     }
 
     #[test]

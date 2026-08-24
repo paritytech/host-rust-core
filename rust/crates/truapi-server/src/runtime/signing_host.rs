@@ -44,14 +44,12 @@ use crate::host_logic::extrinsic::{
     Sr25519Signer, V5BuildError, build_signed_extrinsic_v4,
     build_signed_extrinsic_v4_with_signature, build_signed_extrinsic_v5,
 };
-use crate::host_logic::product_account::{
-    ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes, derive_identity_keypair,
-    derive_product_keypair, derive_product_subtree_keypair, derive_ring_vrf_entropy,
-    derive_root_keypair_from_entropy,
-};
 #[cfg(not(target_arch = "wasm32"))]
+use crate::host_logic::product_account::derive_full_person_ring_vrf_entropy;
 use crate::host_logic::product_account::{
-    derive_full_person_ring_vrf_entropy, derive_lite_person_ring_vrf_entropy,
+    PERSONHOOD_PRODUCT_ID, ProductAccountError, SR25519_SIGNING_CONTEXT, derivation_index_bytes,
+    derive_identity_keypair, derive_lite_person_ring_vrf_entropy, derive_product_keypair,
+    derive_product_subtree_keypair, derive_ring_vrf_entropy, derive_root_keypair_from_entropy,
 };
 use crate::host_logic::session::{SessionInfo, SessionState};
 use crate::host_logic::sso::messages::{OnExistingAllowancePolicy, RingVrfError};
@@ -76,6 +74,9 @@ use zeroize::Zeroizing;
 
 const BYTES_WRAP_PREFIX: &[u8] = b"<Bytes>";
 const BYTES_WRAP_SUFFIX: &[u8] = b"</Bytes>";
+
+const PEOPLE_LITE_COLLECTION: &[u8; 32] = b"pop:polkadot.network/people-lite";
+const MEMBERS_PALLET_INSTANCE: u8 = 67;
 
 #[derive(Default)]
 struct LocalGrantState {
@@ -431,9 +432,7 @@ impl SigningHost {
         if !entry.rings.contains(ring) {
             return Err(RingVrfError::KeyNotInRing);
         }
-        let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&entry, &entropy)?;
-        Ok(entropy)
+        self.resolve_registered_entropy(session, handle, &entry)
     }
 
     async fn resolve_registered_ring_vrf_key(
@@ -445,22 +444,57 @@ impl SigningHost {
             .registered_ring_vrf_entry(session, handle)
             .await?
             .ok_or(RingVrfError::KeyNotRegistered)?;
-        let entropy = self.ring_vrf_entropy(session, handle)?;
-        Self::require_matching_registered_public_key(&entry, &entropy)?;
-        Ok(entropy)
+        self.resolve_registered_entropy(session, handle, &entry)
     }
 
-    fn require_matching_registered_public_key(
+    fn resolve_registered_entropy(
+        &self,
+        session: &AuthoritySession,
+        handle: &v01::ProductAccountId,
+        entry: &v01::RegisteredRingVrfKey,
+    ) -> Result<Zeroizing<[u8; 32]>, RingVrfError> {
+        let entropy = self.ring_vrf_entropy(session, handle)?;
+        if Self::registered_public_key_matches(entry, &entropy)? {
+            return Ok(entropy);
+        }
+        if Self::is_lite_person_handle(handle) {
+            let canonical =
+                Zeroizing::new(derive_lite_person_ring_vrf_entropy(&self.root_entropy()?));
+            if Self::registered_public_key_matches(entry, &canonical)? {
+                return Ok(canonical);
+            }
+        }
+        Err(RingVrfError::Unknown {
+            reason: "registered ring-VRF public key does not match the active wallet".to_string(),
+        })
+    }
+
+    fn registered_public_key_matches(
         entry: &v01::RegisteredRingVrfKey,
         entropy: &[u8; 32],
-    ) -> Result<(), RingVrfError> {
-        if entry.public_key != Some(member_from_entropy(entropy)?) {
-            return Err(RingVrfError::Unknown {
-                reason: "registered ring-VRF public key does not match the active wallet"
-                    .to_string(),
-            });
+    ) -> Result<bool, RingVrfError> {
+        Ok(entry.public_key == Some(member_from_entropy(entropy)?))
+    }
+
+    fn is_lite_person_handle(handle: &v01::ProductAccountId) -> bool {
+        matches!(handle.derivation_index, v01::DerivationIndex::Index(1))
+            && (handle.dot_ns_identifier == PERSONHOOD_PRODUCT_ID
+                || handle.dot_ns_identifier.starts_with("peopl."))
+    }
+
+    async fn is_lite_person_provider_alias(
+        &self,
+        session: &AuthoritySession,
+        handle: &v01::ProductAccountId,
+    ) -> Result<bool, RingVrfError> {
+        if !Self::is_lite_person_handle(handle) {
+            return Ok(false);
         }
-        Ok(())
+        let Some(entry) = self.registered_ring_vrf_entry(session, handle).await? else {
+            return Ok(false);
+        };
+        let canonical = derive_lite_person_ring_vrf_entropy(&self.root_entropy()?);
+        Self::registered_public_key_matches(&entry, &canonical)
     }
 
     fn ring_vrf_member_candidate(
@@ -485,6 +519,45 @@ impl SigningHost {
             return Err(RingVrfError::NotAllowlisted);
         }
         Ok(())
+    }
+
+    /// Registers an environment-qualified alias for the active wallet's canonical Lite Person key.
+    pub(crate) async fn ensure_lite_person_provider_alias(
+        &self,
+        people_chain_id: [u8; 32],
+        owner: &str,
+    ) -> Result<(), RingVrfError> {
+        let session = self.current_local_session().ok_or(RingVrfError::Unknown {
+            reason: "no active session".to_string(),
+        })?;
+        if session.lite_username.is_none() {
+            return Ok(());
+        }
+        let owner = normalize_product_identifier(owner).map_err(|error| RingVrfError::Unknown {
+            reason: error.to_string(),
+        })?;
+        if owner != PERSONHOOD_PRODUCT_ID && !owner.starts_with("peopl.") {
+            return Err(RingVrfError::Unknown {
+                reason: "Lite Person provider aliases must use the reserved peopl product"
+                    .to_string(),
+            });
+        }
+        let handle = v01::ProductAccountId {
+            dot_ns_identifier: owner,
+            derivation_index: v01::DerivationIndex::Index(1),
+        };
+        let public_key =
+            member_from_entropy(&derive_lite_person_ring_vrf_entropy(&self.root_entropy()?))?;
+        let ring = v01::RingLocation {
+            chain_id: people_chain_id,
+            junctions: vec![
+                v01::RingLocationJunction::PalletInstance(MEMBERS_PALLET_INSTANCE),
+                v01::RingLocationJunction::CollectionId(PEOPLE_LITE_COLLECTION.to_vec()),
+            ],
+        };
+        self.ring_vrf_registry
+            .register(session.public_key, handle, ring, public_key)
+            .await
     }
 
     pub(crate) async fn ring_vrf_providers(
@@ -828,7 +901,34 @@ impl ProductAuthority for SigningHost {
         request: CreateProofAuthorityRequest,
     ) -> Result<v01::HostAccountCreateProofResponse, RingVrfError> {
         self.require_current_session(session)?;
-        Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)?;
+        if Self::require_owned_ring_vrf_key(&request.calling_product_id, &request.key_handle)
+            .is_err()
+        {
+            if !self
+                .is_lite_person_provider_alias(session, &request.key_handle)
+                .await?
+            {
+                return Err(RingVrfError::NotAllowlisted);
+            }
+            match super::account_access_authorization(
+                self.services.platform.as_ref(),
+                &request.calling_product_id,
+                &request.key_handle.dot_ns_identifier,
+            )
+            .await
+            {
+                Ok(PermissionAuthorizationStatus::Authorized) => {}
+                Ok(
+                    PermissionAuthorizationStatus::Denied
+                    | PermissionAuthorizationStatus::NotDetermined,
+                ) => return Err(RingVrfError::Rejected),
+                Err(error) => {
+                    return Err(RingVrfError::Unknown {
+                        reason: error.to_string(),
+                    });
+                }
+            }
+        }
         let entropy = self
             .resolve_ring_vrf_key_for_ring(session, &request.key_handle, &request.ring_location)
             .await?;
@@ -944,45 +1044,50 @@ impl ProductAuthority for SigningHost {
         request: v01::HostRequestResourceAllocationRequest,
     ) -> Result<v01::HostRequestResourceAllocationResponse, AuthorityError> {
         self.require_current_session(session)?;
-        let mut outcomes = Vec::with_capacity(request.resources.len());
-        for resource in request.resources {
-            let outcome = match resource {
-                v01::AllocatableResource::StatementStoreAllowance => {
-                    sso_responder::allocate_statement_store_allowance(
-                        &self.services,
-                        self,
-                        &product_id,
-                        OnExistingAllowancePolicy::Increase,
-                    )
-                    .await
-                    .map(|_| v01::AllocationOutcome::Allocated)
+        let resource_count = request.resources.len();
+        let allocation_results =
+            futures::future::join_all(request.resources.into_iter().map(|resource| async {
+                match resource {
+                    v01::AllocatableResource::StatementStoreAllowance => {
+                        sso_responder::allocate_statement_store_allowance(
+                            &self.services,
+                            self,
+                            &product_id,
+                            OnExistingAllowancePolicy::Ignore,
+                        )
+                        .await
+                        .map(|_| v01::AllocationOutcome::Allocated)
+                    }
+                    v01::AllocatableResource::BulletinAllowance => {
+                        sso_responder::allocate_bulletin_allowance(
+                            &self.services,
+                            self,
+                            &product_id,
+                            OnExistingAllowancePolicy::Ignore,
+                        )
+                        .await
+                        .map(|_| v01::AllocationOutcome::Allocated)
+                    }
+                    v01::AllocatableResource::SmartContractAllowance(index) => {
+                        sso_responder::allocate_smart_contract_allowance(
+                            &self.services,
+                            self,
+                            &product_id,
+                            index,
+                            OnExistingAllowancePolicy::Ignore,
+                        )
+                        .await
+                        .map(|()| v01::AllocationOutcome::Allocated)
+                    }
+                    v01::AllocatableResource::AutoSigning => self
+                        .grant_auto_signing(session, &product_id)
+                        .map(|_| v01::AllocationOutcome::Allocated)
+                        .map_err(sso_responder::AllowanceAllocationError::Authority),
                 }
-                v01::AllocatableResource::BulletinAllowance => {
-                    sso_responder::allocate_bulletin_allowance(
-                        &self.services,
-                        self,
-                        &product_id,
-                        OnExistingAllowancePolicy::Increase,
-                    )
-                    .await
-                    .map(|_| v01::AllocationOutcome::Allocated)
-                }
-                v01::AllocatableResource::SmartContractAllowance(index) => {
-                    sso_responder::allocate_smart_contract_allowance(
-                        &self.services,
-                        self,
-                        &product_id,
-                        index,
-                        OnExistingAllowancePolicy::Increase,
-                    )
-                    .await
-                    .map(|()| v01::AllocationOutcome::Allocated)
-                }
-                v01::AllocatableResource::AutoSigning => self
-                    .grant_auto_signing(session, &product_id)
-                    .map(|_| v01::AllocationOutcome::Allocated)
-                    .map_err(sso_responder::AllowanceAllocationError::Authority),
-            };
+            }))
+            .await;
+        let mut outcomes = Vec::with_capacity(resource_count);
+        for outcome in allocation_results {
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),
                 Err(reason) => {
@@ -1240,13 +1345,13 @@ mod tests {
     use super::super::{ProductAuthority, ProductRuntimeHost, RuntimeServices, SigningHostRole};
     use super::ring_vrf::{MemberCandidate, ResolvedRing, RingResolver, member_from_entropy};
     use super::{
-        BYTES_WRAP_PREFIX, BYTES_WRAP_SUFFIX, LocalActivation, RingVrfError,
-        SR25519_SIGNING_CONTEXT, raw_payload_bytes,
+        BYTES_WRAP_PREFIX, BYTES_WRAP_SUFFIX, LocalActivation, MEMBERS_PALLET_INSTANCE,
+        PEOPLE_LITE_COLLECTION, RingVrfError, SR25519_SIGNING_CONTEXT, raw_payload_bytes,
     };
     use crate::host_logic::extrinsic::tests::split_v4;
     use crate::host_logic::product_account::{
-        derive_identity_keypair, derive_product_keypair, derive_ring_vrf_entropy,
-        derive_root_keypair_from_entropy, index_bytes,
+        derive_identity_keypair, derive_lite_person_ring_vrf_entropy, derive_product_keypair,
+        derive_ring_vrf_entropy, derive_root_keypair_from_entropy, index_bytes,
     };
     use crate::host_logic::transaction::{
         extrinsic_payload_extensions, extrinsic_payload_preimage,
@@ -1418,6 +1523,56 @@ mod tests {
             },
         ))
         .expect("full person key registration succeeds");
+    }
+
+    fn lite_person_ring_location() -> v01::RingLocation {
+        v01::RingLocation {
+            chain_id: [0x33; 32],
+            junctions: vec![
+                v01::RingLocationJunction::PalletInstance(MEMBERS_PALLET_INSTANCE),
+                v01::RingLocationJunction::CollectionId(PEOPLE_LITE_COLLECTION.to_vec()),
+            ],
+        }
+    }
+
+    #[test]
+    fn lite_person_provider_alias_uses_the_canonical_member_key() {
+        let (_, authority) = signing_runtime();
+        futures::executor::block_on(
+            authority.activate_local_session_with_identity(
+                ENTROPY.to_vec(),
+                Some("alice.42".to_string()),
+            ),
+        )
+        .expect("activation succeeds");
+        futures::executor::block_on(
+            authority.ensure_lite_person_provider_alias([0x33; 32], "peopl.paseo"),
+        )
+        .expect("provider alias registration succeeds");
+
+        let ring = lite_person_ring_location();
+        let providers = futures::executor::block_on(authority.ring_vrf_providers(&ring))
+            .expect("providers load");
+        assert_eq!(
+            providers,
+            vec![v01::ProductAccountId {
+                dot_ns_identifier: "peopl.paseo".to_string(),
+                derivation_index: v01::DerivationIndex::Index(1),
+            }]
+        );
+
+        let session = authority.current_session().expect("active session");
+        let entropy = futures::executor::block_on(authority.resolve_ring_vrf_key_for_ring(
+            &session,
+            &providers[0],
+            &ring,
+        ))
+        .expect("alias resolves");
+        assert_eq!(
+            member_from_entropy(&entropy).expect("member derives"),
+            member_from_entropy(&derive_lite_person_ring_vrf_entropy(&ENTROPY))
+                .expect("canonical Lite member derives")
+        );
     }
 
     #[test]

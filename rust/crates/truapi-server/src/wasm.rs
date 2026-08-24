@@ -1034,6 +1034,25 @@ impl WasmSigningHostRuntime {
             .map_err(generic_error_to_js)
     }
 
+    /// Registers an environment-qualified alias for the active wallet's canonical Lite Person key.
+    #[wasm_bindgen(js_name = ensureLitePersonProviderAlias)]
+    pub async fn ensure_lite_person_provider_alias(
+        &self,
+        people_chain_id: Vec<u8>,
+        owner: String,
+    ) -> Result<(), JsValue> {
+        let people_chain_id: [u8; 32] = people_chain_id.try_into().map_err(|bytes: Vec<u8>| {
+            JsValue::from_str(&format!(
+                "People chain genesis must be 32 bytes, got {}",
+                bytes.len()
+            ))
+        })?;
+        self.runtime
+            .ensure_lite_person_provider_alias(people_chain_id, &owner)
+            .await
+            .map_err(generic_error_to_js)
+    }
+
     /// Revoke one product's grants from the current local activation.
     #[wasm_bindgen(js_name = clearProductState)]
     pub async fn clear_product_state(&self, product_id: String) -> Result<(), JsValue> {

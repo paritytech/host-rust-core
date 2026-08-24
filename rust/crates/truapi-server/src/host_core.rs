@@ -546,6 +546,18 @@ impl SigningHostRuntime {
             .map_err(ring_vrf_admin_error)
     }
 
+    /// Registers an environment-qualified alias for the active wallet's canonical Lite Person key.
+    pub async fn ensure_lite_person_provider_alias(
+        &self,
+        people_chain_id: [u8; 32],
+        owner: &str,
+    ) -> Result<(), v01::GenericError> {
+        self.signing_host
+            .ensure_lite_person_provider_alias(people_chain_id, owner)
+            .await
+            .map_err(ring_vrf_admin_error)
+    }
+
     /// Activate a wallet-local session from host-held secret material (raw
     /// BIP-39 entropy).
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.activate_local_session"))]
