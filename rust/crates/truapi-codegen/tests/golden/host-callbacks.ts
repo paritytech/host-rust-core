@@ -357,6 +357,17 @@ export interface ProductContext {
 export type ProductExecutionKind = "App" | "Widget" | "Worker";
 
 /**
+ * Review shown before a product resolves its own account subtree over SSO,
+ * when the value is not cached and the core must ask the Account Holder.
+ */
+export interface ProductSubtreeReview {
+  /**
+   * Product resolving its own account.
+   */
+  productId: string;
+}
+
+/**
  * Review shown before allocating resources for a product. Names the
  * beneficiary product so the user knows which product receives the
  * (signing-capable) allowance key they are approving.
@@ -525,7 +536,11 @@ export type UserConfirmationReview =
   /**
    * Sign an RFC-0023 VRF transcript with a product account.
    */
-  | { tag: "SignVrf"; value: SignVrfReview };
+  | { tag: "SignVrf"; value: SignVrfReview }
+  /**
+   * Resolve a product's own account subtree over SSO.
+   */
+  | { tag: "ProductSubtree"; value: ProductSubtreeReview };
 
 /**
  * Review shown before a product asks to access another product account.
@@ -750,6 +765,15 @@ export const ProductExecutionKind: S.Codec<ProductExecutionKind> = S.lazy(
 );
 
 /**
+ * Review shown before a product resolves its own account subtree over SSO,
+ * when the value is not cached and the core must ask the Account Holder.
+ */
+export const ProductSubtreeReview: S.Codec<ProductSubtreeReview> = S.lazy(
+  (): S.Codec<ProductSubtreeReview> =>
+    S.Struct({ productId: S.str }) as S.Codec<ProductSubtreeReview>,
+);
+
+/**
  * Review shown before allocating resources for a product. Names the
  * beneficiary product so the user knows which product receives the
  * (signing-capable) allowance key they are approving.
@@ -845,6 +869,7 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
       PreimageSubmit: PreimageSubmitReview,
       AccountAccess: AccountAccessReview,
       SignVrf: SignVrfReview,
+      ProductSubtree: ProductSubtreeReview,
     }),
 );
 
