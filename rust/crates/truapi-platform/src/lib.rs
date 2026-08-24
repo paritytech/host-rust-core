@@ -2673,7 +2673,9 @@ pub enum DevicePermissionStatus {
     /// change it in system settings.
     Denied,
     /// The OS has not been asked yet, either because it never was or because
-    /// it reset the grant. Prompting is what resolves this.
+    /// it reset the grant. The core does not treat this as a refusal: the OS
+    /// puts its own dialog up when the capability is used, and the core has no
+    /// way to reach that dialog without also re-asking the product's question.
     NotDetermined,
     /// This platform has no OS-level gate for the capability, so the
     /// product-scoped decision alone governs it.

@@ -343,15 +343,21 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
     /// and persisting the answer when the question is still open.
     ///
     /// The two are combined, not substituted. A stored grant is a decision
-    /// about this product and is kept as long as it stands; the OS grant behind
-    /// it is the host application's and can move underneath us at any time.
+    /// about this product; the OS grant behind it is the host application's and
+    /// can move underneath us at any time.
+    ///
+    /// Only an OS refusal overrides the stored decision. `NotDetermined` does
+    /// not: the OS resolves its own gate at the point the capability is used,
+    /// which is where its dialog belongs, and the core has no way to ask the OS
+    /// without also putting the product's question to the user again. Prompting
+    /// here would re-ask an answered question on every request and overwrite
+    /// the product decision with the answer to a different one.
     pub async fn check_or_prompt_device(
         &self,
         permission: HostDevicePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         let key = CoreStorageKey::device_permission_authorization(self.product_id, &permission);
-        let os = self.os_device_status(permission).await;
-        if os == DevicePermissionStatus::Denied {
+        if self.os_device_status(permission).await == DevicePermissionStatus::Denied {
             // Unusable whatever the product holds, and prompting cannot reach
             // it — only system settings can. The stored decision is left
             // untouched: the user may restore the OS grant, and clearing it
@@ -359,14 +365,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
             return Ok(PermissionAuthorizationStatus::Denied);
         }
         if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
-            // A stored answer stands, except where the OS has forgotten its own
-            // grant. That is the one case a prompt resolves rather than repeats:
-            // it reaches the OS dialog instead of re-asking the user.
-            let os_forgot_its_grant = os == DevicePermissionStatus::NotDetermined
-                && cached == StoredAuthorizationStatus::Authorized;
-            if !os_forgot_its_grant {
-                return Ok(cached.into());
-            }
+            return Ok(cached.into());
         }
         // Only a genuine user authorization is persisted. A prompt-callback
         // error is transient (dismissed UI, unavailable UI, IPC timeout), not
@@ -1427,12 +1426,88 @@ mod tests {
     }
 
     #[test]
-    fn an_os_reset_reprompts_a_stored_grant() {
+    fn an_os_reset_never_reprompts_a_stored_grant() {
         let storage = MemStorage::default();
         grant_stored(&storage, HostDevicePermissionRequest::Camera);
 
-        // Android auto-resets runtime permissions for unused apps. The OS has
-        // no answer any more, and only a prompt reaches its dialog.
+        // Android auto-resets runtime permissions for unused apps. The core
+        // cannot ask the OS on its own — the prompt callback also puts the
+        // product's question to the user — so it does not try. No answers are
+        // scripted: reaching the prompt at all would panic.
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
+        let service =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+
+        // Repeated, because a condition a prompt cannot clear re-fires forever.
+        for _ in 0..3 {
+            assert_eq!(
+                futures::executor::block_on(
+                    service.check_or_prompt_device(HostDevicePermissionRequest::Camera)
+                )
+                .unwrap(),
+                PermissionAuthorizationStatus::Authorized,
+            );
+        }
+        assert_eq!(prompt.device_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_os_reset_cannot_turn_a_stored_grant_into_a_permanent_denial() {
+        let storage = MemStorage::default();
+        grant_stored(&storage, HostDevicePermissionRequest::Camera);
+
+        // On iOS and Android the prompt callback *is* the OS dialog, so a
+        // "Don't Allow" answered there is an answer about the OS, not about the
+        // product. Persisting it would replace the product's grant, and
+        // restoring the capability in system settings could never recover it.
+        let declining = ScriptedPrompt::new(vec![false], vec![]);
+        let reset = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
+        futures::executor::block_on(
+            PermissionsService::with_status_host(&storage, &declining, "product.dot", Some(&reset))
+                .check_or_prompt_device(HostDevicePermissionRequest::Camera),
+        )
+        .unwrap();
+
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
+        let after =
+            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&restored));
+        assert_eq!(
+            futures::executor::block_on(
+                after.check_or_prompt_device(HostDevicePermissionRequest::Camera)
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::Authorized,
+        );
+    }
+
+    #[test]
+    fn a_prompt_failure_cannot_mask_a_stored_grant() {
+        let storage = MemStorage::default();
+        grant_stored(&storage, HostDevicePermissionRequest::Camera);
+
+        // A failing prompt callback resolves to `NotDetermined`, which the
+        // runtime reports as `granted: false`. A grant the product already
+        // holds must never be reached through that path.
+        let failing = FailingPrompt;
+        let reset = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
+        let service =
+            PermissionsService::with_status_host(&storage, &failing, "product.dot", Some(&reset));
+        assert_eq!(
+            futures::executor::block_on(
+                service.check_or_prompt_device(HostDevicePermissionRequest::Camera)
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::Authorized,
+        );
+    }
+
+    #[test]
+    fn a_first_request_still_prompts_while_the_os_is_undetermined() {
+        // The guard against re-prompting must not swallow the first ask, which
+        // is the only one that establishes the product decision at all.
+        let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
         let service =

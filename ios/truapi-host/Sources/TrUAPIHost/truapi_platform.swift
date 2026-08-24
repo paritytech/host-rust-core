@@ -1673,7 +1673,9 @@ public enum DevicePermissionStatus: Equatable, Hashable {
     case denied
     /**
      * The OS has not been asked yet, either because it never was or because
-     * it reset the grant. Prompting is what resolves this.
+     * it reset the grant. The core does not treat this as a refusal: the OS
+     * puts its own dialog up when the capability is used, and the core has no
+     * way to reach that dialog without also re-asking the product's question.
      */
     case notDetermined
     /**
