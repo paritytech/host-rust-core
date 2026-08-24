@@ -828,19 +828,21 @@ A new auto account:
 9. waits for inclusion in a personhood ring; and
 10. marks and saves the account as attested.
 
-Identity and ring polling each allow 10 attempts with four seconds between
+Identity and ring polling each allow 30 attempts with four seconds between
 attempts. Identity-backend HTTP clients use a 30-second timeout.
 
 The backend's username routes are bearer-gated. Unless
 `HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies one, the CLI mints an access token
-once per process. It takes a challenge from `auth/challenges`. It answers
-`auth/token` with an sr25519 proof over
-`SHA256(challenge || clientId || SHA256(body))`, signed by a throwaway keypair.
-
-The token's subject only identifies the calling app instance. The username claim
-carries its own candidate account. A fresh subject per run therefore stays clear
-of the backend's per-subject device gate and rate limit. Availability answers are
-the flat `{base: "AVAILABLE" | …}` map.
+for the mnemonic's RFC-0022 `uid.dot` account. It takes a challenge from
+`auth/challenges`. It answers `auth/token` with an sr25519 proof over
+`SHA256(challenge || clientId || SHA256(body))`, signed by that identity key.
+The backend requires the JWT subject to equal `candidateAccountId` on
+`POST /usernames`; using the same key for availability and registration also
+prevents a pre-registration request from caching a token for another subject.
+Tokens are cached per backend and identity account. A cached token rejected with
+401 is evicted and minted again for the same account before the request is
+retried once. The CLI accepts both the legacy flat availability map and the
+dotSpark v1 envelope whose per-name value carries a `status` field.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
@@ -1125,17 +1127,15 @@ preset is a test network; the account store keeps BIP-39 entropy for
 disposable test identities only.
 
 Auto-account onboarding (§12.3) needs an identity backend that records the
-lite username on the dotNS gateway. The `paseo-next-v2` backend answers
-`POST /usernames` with "dotNS gateway is not enabled in this environment", so
-new auto accounts cannot be onboarded there until that changes; the CLI reports
-it and points at `previewnet`, whose backend has the gateway enabled. Reads
-(`identity-check`, session usernames) work on both presets.
+lite username on the dotNS gateway. Each preset points at its matching dotSpark
+identity backend, and the CLI reports the complete backend response when
+registration fails.
 
 #### `paseo-next-v2`
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://identity-backend-next.parity-testnet.parity.io/api/v1` |
+| Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
 | People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
@@ -1147,12 +1147,11 @@ it and points at `previewnet`, whose backend has the gateway enabled. Reads
 
 The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
 nextv2 later, and it is where products with previewnet descriptors do their
-on-chain testing. Its identity backend is the same service on its staging
-environment (`/api/v1/version` reports `"environment": "staging"`).
+on-chain testing.
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
+| Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
 | People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
@@ -1627,7 +1626,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
-| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
+| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
 | `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
@@ -1647,8 +1646,6 @@ ended. This preserves the child status but bypasses later Rust destructors.
 These are part of the as-built specification:
 
 - only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
-- auto-account onboarding works on `previewnet` only, until the `paseo-next-v2`
-  identity backend enables the dotNS gateway (§14.1);
 - product scripts require Bun and, by default, the source checkout;
 - there is no structured/JSON output mode;
 - there is no `--version`;

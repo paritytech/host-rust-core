@@ -2291,7 +2291,7 @@ async fn run_interactive_operation(
                 ActivityState::Failed,
                 "Stopped after an error",
             );
-            ui.error(error.to_string());
+            ui.error_with_causes(&error);
         }
         DriveResult::Cancelled => {
             ui.finish_activities_since(activity_checkpoint, ActivityState::Cancelled, "Cancelled");

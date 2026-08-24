@@ -14,9 +14,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use bip39::Mnemonic;
+use futures_util::{StreamExt as _, TryStreamExt as _, stream};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 use tracing::{debug, warn};
 use truapi_server::host_logic::attestation::build_lite_registration;
@@ -35,46 +37,110 @@ use crate::dotns_read::AssetHubReader;
 /// auth handshake itself ([`backend_token`]).
 pub const IDENTITY_BACKEND_TOKEN_ENV: &str = "HOST_CLI_IDENTITY_BACKEND_TOKEN";
 
-/// Access tokens for the username routes, minted once per backend base and
-/// process. Keyed by base so two backends in one process never share a token.
-static BACKEND_TOKENS: Mutex<Vec<(String, &'static str)>> = Mutex::new(Vec::new());
+/// Access tokens for the username routes, keyed by backend and authenticated
+/// account. The backend requires a username registration's candidate account
+/// to be the JWT subject, so a token must never cross candidate identities.
+static BACKEND_TOKENS: Mutex<Vec<CachedBackendToken>> = Mutex::new(Vec::new());
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CachedBackendToken {
+    backend_base: String,
+    auth_client_id: [u8; 32],
+    value: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendTokenSource {
+    Environment,
+    Cache,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BackendToken {
+    value: String,
+    source: BackendTokenSource,
+    auth_client_id: [u8; 32],
+}
 
 /// Bearer token for the identity backend's username routes.
 ///
 /// The explicit env token wins. Otherwise the CLI completes the backend's
-/// `challenges` → `token` sr25519 handshake with a throwaway keypair. The JWT
-/// subject only identifies the calling app instance. The username claim carries
-/// its own candidate account. A fresh subject each run keeps repeat
-/// registrations clear of the per-subject device gate and rate limit.
-async fn backend_token(client: &reqwest::Client, backend_base: &str) -> Result<&'static str> {
+/// `challenges` → `token` sr25519 handshake as the mnemonic's RFC-0022 `uid.dot`
+/// account. Since device-uniqueness-backend#77, `POST /usernames` rejects a JWT
+/// whose subject differs from `candidateAccountId`.
+async fn backend_token(
+    client: &reqwest::Client,
+    backend_base: &str,
+    auth_entropy: &[u8],
+) -> Result<BackendToken> {
+    let auth_client_id = derive_identity_keypair(auth_entropy)
+        .map_err(|err| anyhow::anyhow!("backend auth identity derivation failed: {err}"))?
+        .public
+        .to_bytes();
     if let Ok(token) = std::env::var(IDENTITY_BACKEND_TOKEN_ENV)
         && !token.trim().is_empty()
     {
-        return Ok(Box::leak(token.trim().to_string().into_boxed_str()));
+        return Ok(BackendToken {
+            value: token.trim().to_string(),
+            source: BackendTokenSource::Environment,
+            auth_client_id,
+        });
     }
     let cached = BACKEND_TOKENS
         .lock()
         .expect("backend token cache mutex poisoned")
         .iter()
-        .find(|(base, _)| base == backend_base)
-        .map(|(_, token)| *token);
+        .find(|token| token.backend_base == backend_base && token.auth_client_id == auth_client_id)
+        .map(|token| token.value.clone());
     if let Some(token) = cached {
-        return Ok(token);
+        return Ok(BackendToken {
+            value: token,
+            source: BackendTokenSource::Cache,
+            auth_client_id,
+        });
     }
-    let token: &'static str = Box::leak(
-        mint_backend_token(client, backend_base)
-            .await?
-            .into_boxed_str(),
-    );
+    let token = mint_backend_token(client, backend_base, auth_entropy).await?;
+    let token = {
+        let mut tokens = BACKEND_TOKENS
+            .lock()
+            .expect("backend token cache mutex poisoned");
+        if let Some(existing) = tokens.iter().find(|token| {
+            token.backend_base == backend_base && token.auth_client_id == auth_client_id
+        }) {
+            existing.value.clone()
+        } else {
+            tokens.push(CachedBackendToken {
+                backend_base: backend_base.to_string(),
+                auth_client_id,
+                value: token.clone(),
+            });
+            token
+        }
+    };
+    Ok(BackendToken {
+        value: token,
+        source: BackendTokenSource::Cache,
+        auth_client_id,
+    })
+}
+
+fn evict_rejected_backend_token(backend_base: &str, auth_client_id: &[u8; 32], rejected: &str) {
     BACKEND_TOKENS
         .lock()
         .expect("backend token cache mutex poisoned")
-        .push((backend_base.to_string(), token));
-    Ok(token)
+        .retain(|token| {
+            token.backend_base != backend_base
+                || token.auth_client_id != *auth_client_id
+                || token.value != rejected
+        });
 }
 
 /// Runs the backend's auth handshake and returns its access JWT.
-async fn mint_backend_token(client: &reqwest::Client, backend_base: &str) -> Result<String> {
+async fn mint_backend_token(
+    client: &reqwest::Client,
+    backend_base: &str,
+    auth_entropy: &[u8],
+) -> Result<String> {
     let url = format!("{backend_base}/auth/challenges");
     let body: Value = client
         .post(&url)
@@ -95,11 +161,8 @@ async fn mint_backend_token(client: &reqwest::Client, backend_base: &str) -> Res
         .decode(&challenge)
         .context("challenge is not valid base64")?;
 
-    let entropy = Mnemonic::generate(12)
-        .context("generate throwaway auth mnemonic")?
-        .to_entropy();
-    let keypair = derive_root_keypair_from_entropy(&entropy)
-        .map_err(|err| anyhow::anyhow!("auth keypair derivation failed: {err}"))?;
+    let keypair = derive_identity_keypair(auth_entropy)
+        .map_err(|err| anyhow::anyhow!("backend auth identity derivation failed: {err}"))?;
     let client_id = keypair.public.to_bytes();
 
     // The proof signs SHA256(challenge || clientId || SHA256(body)). It must
@@ -140,13 +203,33 @@ async fn mint_backend_token(client: &reqwest::Client, backend_base: &str) -> Res
     Ok(token.to_string())
 }
 
-/// Attaches the identity backend bearer token to `request`.
-async fn with_backend_auth(
+/// Send one authenticated backend request. A cached token can expire while an
+/// interactive host stays open, so a 401 evicts it, re-runs the authentication
+/// handshake, and retries the request once. An explicit environment token is
+/// never silently replaced.
+async fn send_with_backend_auth<F>(
     client: &reqwest::Client,
     backend_base: &str,
-    request: reqwest::RequestBuilder,
-) -> Result<reqwest::RequestBuilder> {
-    Ok(request.bearer_auth(backend_token(client, backend_base).await?))
+    auth_entropy: &[u8],
+    request: F,
+) -> Result<reqwest::Response>
+where
+    F: Fn(&str) -> reqwest::RequestBuilder,
+{
+    let token = backend_token(client, backend_base, auth_entropy).await?;
+    let response = request(&token.value).send().await?;
+    if response.status() != reqwest::StatusCode::UNAUTHORIZED
+        || token.source == BackendTokenSource::Environment
+    {
+        return Ok(response);
+    }
+
+    warn!(backend = %backend_base, "identity backend rejected cached token; authenticating again");
+    evict_rejected_backend_token(backend_base, &token.auth_client_id, &token.value);
+    let refreshed = backend_token(client, backend_base, auth_entropy)
+        .await
+        .context("refresh identity backend token after 401 Unauthorized")?;
+    request(&refreshed.value).send().await.map_err(Into::into)
 }
 
 /// Inputs for one attestation run.
@@ -166,17 +249,21 @@ pub struct AttestConfig {
 
 /// Check whether a lite username base is available through the identity
 /// backend. The username must be the base form without the digit suffix.
-pub async fn lite_username_available(backend_base: &str, username_base: &str) -> Result<bool> {
+pub async fn lite_username_available(
+    backend_base: &str,
+    auth_entropy: &[u8],
+    username_base: &str,
+) -> Result<bool> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
     let url = format!("{backend_base}/usernames/available");
     let body = json!({ "usernames": [username_base] });
-    let response = with_backend_auth(&client, backend_base, client.post(&url).json(&body))
-        .await?
-        .send()
-        .await
-        .with_context(|| format!("POST {url}"))?;
+    let response = send_with_backend_auth(&client, backend_base, auth_entropy, |token| {
+        client.post(&url).bearer_auth(token).json(&body)
+    })
+    .await
+    .with_context(|| format!("POST {url}"))?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
@@ -192,7 +279,12 @@ pub async fn lite_username_available(backend_base: &str, username_base: &str) ->
 /// Reads one base's status out of the availability response, a flat
 /// `{base: "AVAILABLE" | …}` map.
 fn availability_status<'a>(body: &'a Value, username_base: &str) -> Option<&'a str> {
-    body.get(username_base).and_then(Value::as_str)
+    body.get(username_base).and_then(Value::as_str).or_else(|| {
+        body.get("value")?
+            .get(username_base)?
+            .get("status")?
+            .as_str()
+    })
 }
 
 /// Registers (or confirms) the signing host's lite username. Waits until the
@@ -249,6 +341,7 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
     submit_registration(
         &client,
         &config.backend_base,
+        &config.entropy,
         &config.username_base,
         config.reserved_username.as_deref(),
         signed_at,
@@ -275,6 +368,149 @@ pub async fn registered_lite_username(asset_hub_ws: &str, entropy: &[u8]) -> Res
         .await?
         .lite_username
         .context("attested signer has no dotNS lite username")
+}
+
+/// Resolve an existing full-person or Lite dotNS identity when one exists.
+/// An unlabeled account is a valid result and can still back a local session.
+pub async fn lookup_registered_username(
+    asset_hub_ws: &str,
+    entropy: &[u8],
+) -> Result<Option<String>> {
+    let identity = derive_identity_keypair(entropy)
+        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let mut reader = AssetHubReader::connect(asset_hub_ws).await?;
+    let identity = reader.dotns_identity(&identity.public.to_bytes()).await?;
+    Ok(identity.full_username.or(identity.lite_username))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsernameSearchPage {
+    usernames: Vec<UsernameSearchItem>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsernameSearchItem {
+    account_id: String,
+    username: String,
+    status: String,
+}
+
+/// Reverse-resolve an assigned username from the identity backend.
+///
+/// The backend does not currently expose an account-indexed route. Its search
+/// route is cursor-paginated and prefix-only, so imports search each valid
+/// initial letter and retain only rows whose candidate account is the mnemonic's
+/// canonical `uid.dot` identity. The bearer token exempts these calls from the
+/// unauthenticated proof-of-compute challenge.
+pub async fn lookup_backend_username(
+    backend_base: &str,
+    auth_entropy: &[u8],
+    candidate_account_id: &str,
+) -> Result<Option<String>> {
+    const SEARCH_CONCURRENCY: usize = 4;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let matches = stream::iter(b'a'..=b'z')
+        .map(|initial| {
+            search_backend_prefix(
+                &client,
+                backend_base,
+                auth_entropy,
+                candidate_account_id,
+                char::from(initial),
+            )
+        })
+        .buffer_unordered(SEARCH_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
+    let matches = matches.into_iter().flatten().collect::<BTreeSet<_>>();
+
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(matches.into_iter().next()),
+        _ => bail!(
+            "identity backend returned multiple assigned usernames for {candidate_account_id}: {}",
+            matches.into_iter().collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+async fn search_backend_prefix(
+    client: &reqwest::Client,
+    backend_base: &str,
+    auth_entropy: &[u8],
+    candidate_account_id: &str,
+    initial: char,
+) -> Result<Vec<String>> {
+    const PAGE_LIMIT: &str = "1000";
+
+    let url = format!("{backend_base}/usernames/search");
+    let prefix = initial.to_string();
+    let mut cursor = None;
+    let mut seen_cursors = BTreeSet::new();
+    let mut matches = Vec::new();
+    loop {
+        let mut query = vec![("prefix", prefix.as_str()), ("limit", PAGE_LIMIT)];
+        if let Some(cursor) = cursor.as_deref() {
+            query.push(("cursor", cursor));
+        }
+        let response = send_with_backend_auth(client, backend_base, auth_entropy, |token| {
+            client.get(&url).bearer_auth(token).query(&query)
+        })
+        .await
+        .with_context(|| format!("GET {url} for prefix {prefix:?}"))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("identity backend username search failed ({status}): {text}");
+        }
+        let page: UsernameSearchPage = serde_json::from_str(&text)
+            .with_context(|| format!("decode identity backend username search response: {text}"))?;
+        matches.extend(matching_assigned_usernames(
+            page.usernames,
+            candidate_account_id,
+        ));
+
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        if !seen_cursors.insert(next.clone()) {
+            bail!("identity backend username search repeated cursor {next:?}");
+        }
+        cursor = Some(next);
+    }
+    Ok(matches)
+}
+
+fn matching_assigned_usernames(
+    items: Vec<UsernameSearchItem>,
+    candidate_account_id: &str,
+) -> impl Iterator<Item = String> {
+    let candidate_account_id = candidate_account_id.to_string();
+    items
+        .into_iter()
+        .filter(move |item| item.status == "ASSIGNED" && item.account_id == candidate_account_id)
+        .map(|item| normalize_searched_username(&item.username))
+}
+
+/// `/usernames/search` decodes the discriminator as a number and therefore
+/// renders `01` as `1`. V1 Lite usernames always use exactly two digits.
+fn normalize_searched_username(username: &str) -> String {
+    let Some((base, digits)) = username.rsplit_once('.') else {
+        return username.to_string();
+    };
+    let Ok(digits) = digits.parse::<u8>() else {
+        return username.to_string();
+    };
+    if !(1..=99).contains(&digits) {
+        return username.to_string();
+    }
+    format!("{base}.{digits:02}")
 }
 
 /// Probes the dotNS contracts for the bare root and canonical RFC-0022 `uid.dot`
@@ -332,6 +568,7 @@ async fn fetch_verifier(client: &reqwest::Client, backend_base: &str) -> Result<
 async fn submit_registration(
     client: &reqwest::Client,
     backend_base: &str,
+    auth_entropy: &[u8],
     username_base: &str,
     reserved_username: Option<&str>,
     signed_at: u64,
@@ -355,11 +592,11 @@ async fn submit_registration(
         "consumerRegistrationSignature": hex0x(&reg.consumer_registration_signature),
         "dotns": dotns,
     });
-    let response = with_backend_auth(client, backend_base, client.post(&url).json(&body))
-        .await?
-        .send()
-        .await
-        .with_context(|| format!("POST {url}"))?;
+    let response = send_with_backend_auth(client, backend_base, auth_entropy, |token| {
+        client.post(&url).bearer_auth(token).json(&body)
+    })
+    .await
+    .with_context(|| format!("POST {url}"))?;
     let status = response.status();
     if status.is_success() {
         let text = response.text().await.unwrap_or_default();
@@ -372,16 +609,6 @@ async fn submit_registration(
     {
         warn!(%status, body = %text, "username already registered; confirming on-chain");
         return Ok(());
-    }
-    if text.contains("dotNS gateway is not enabled") {
-        bail!(
-            "username registration failed ({status}): {text}\n\
-             This identity backend does not record usernames on the dotNS gateway, and the \
-             host reads usernames only from dotNS on Asset Hub, so no username can be \
-             resolved for accounts registered through it. Use a preset whose backend has \
-             the gateway enabled (`--network previewnet`), or point \
-             HOST_CLI_IDENTITY_BACKEND_BASE at one that does."
-        );
     }
     bail!("username registration failed ({status}): {text}");
 }
@@ -397,7 +624,7 @@ async fn wait_for_dotns_username(
     // First-time lite registration is backend-async and can lag the HTTP
     // response. The record is permanent once written. Later runs therefore
     // resolve on the first poll.
-    const MAX_ATTEMPTS: usize = 10;
+    const MAX_ATTEMPTS: usize = 30;
     for attempt in 1..=MAX_ATTEMPTS {
         match reader.dotns_identity(candidate).await {
             Ok(identity) if identity.lite_username.is_some() => {
@@ -432,13 +659,302 @@ async fn wait_for_dotns_username(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
 
     /// The availability response is a flat `{base: status}` map.
     #[test]
-    fn availability_reads_the_flat_status_map() {
+    fn availability_reads_flat_and_versioned_status_maps() {
         let flat = json!({ "pntest": "EXHAUSTED", "other": "AVAILABLE" });
         assert_eq!(availability_status(&flat, "pntest"), Some("EXHAUSTED"));
         assert_eq!(availability_status(&flat, "other"), Some("AVAILABLE"));
         assert_eq!(availability_status(&flat, "missing"), None);
+
+        let versioned = json!({
+            "_tag": "v1",
+            "value": {
+                "pntest": { "status": "AVAILABLE", "availableDigits": [1, 2, 3] }
+            }
+        });
+        assert_eq!(availability_status(&versioned, "pntest"), Some("AVAILABLE"));
+        assert_eq!(availability_status(&versioned, "missing"), None);
+    }
+
+    #[test]
+    fn search_username_restores_the_v1_two_digit_discriminator() {
+        assert_eq!(normalize_searched_username("alice.1"), "alice.01");
+        assert_eq!(normalize_searched_username("alice.42"), "alice.42");
+        assert_eq!(normalize_searched_username("fullperson"), "fullperson");
+        assert_eq!(normalize_searched_username("future.123"), "future.123");
+    }
+
+    #[test]
+    fn backend_search_uses_only_assigned_rows_for_the_candidate() -> Result<()> {
+        let page: UsernameSearchPage = serde_json::from_value(json!({
+            "usernames": [
+                { "accountId": "candidate", "username": "alice.1", "status": "ASSIGNED" },
+                { "accountId": "candidate", "username": "stale.2", "status": "FAILED" },
+                { "accountId": "someone-else", "username": "other.3", "status": "ASSIGNED" }
+            ],
+            "nextCursor": null
+        }))?;
+
+        assert_eq!(
+            matching_assigned_usernames(page.usernames, "candidate").collect::<Vec<_>>(),
+            ["alice.01"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn username_registration_authenticates_as_the_candidate() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let backend_base = format!("http://{}/api/v1", listener.local_addr()?);
+        let server = tokio::spawn(serve_candidate_bound_registration(listener));
+
+        let entropy = [7u8; 16];
+        let registration = build_lite_registration(&entropy, [9u8; 32], "testing", None, 123)?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
+        let result = submit_registration(
+            &client,
+            &backend_base,
+            &entropy,
+            "testing",
+            None,
+            123,
+            &registration,
+        )
+        .await;
+        let requests = server.await??;
+
+        assert_eq!(requests.len(), 3);
+        assert!(
+            result.is_ok(),
+            "candidate-bound backend rejected registration: {}",
+            result.unwrap_err()
+        );
+        Ok(())
+    }
+
+    async fn serve_candidate_bound_registration(listener: TcpListener) -> Result<Vec<String>> {
+        let mut requests = Vec::new();
+        let mut authenticated_account = None;
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await?;
+            let mut buffer = vec![0u8; 32 * 1024];
+            let read = stream.read(&mut buffer).await?;
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let lowercase = request.to_ascii_lowercase();
+            let (status, body) = if request.starts_with("POST /api/v1/auth/challenges ") {
+                ("200 OK", r#"{"challenge":"Y2hhbGxlbmdl"}"#.to_string())
+            } else if request.starts_with("POST /api/v1/auth/token ") {
+                let client_id = request_header(&request, "Auth-ClientId")
+                    .context("auth token request missing Auth-ClientId")?;
+                let bytes = BASE64
+                    .decode(client_id)
+                    .context("Auth-ClientId is not base64")?;
+                let public_key: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+                    anyhow::anyhow!("Auth-ClientId is {} bytes", bytes.len())
+                })?;
+                authenticated_account = Some(product_public_key_to_address(public_key));
+                ("200 OK", r#"{"token":"candidate-token"}"#.to_string())
+            } else if request.starts_with("POST /api/v1/usernames ")
+                && lowercase.contains("authorization: bearer candidate-token")
+            {
+                let payload = request
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body)
+                    .context("username request missing body")?;
+                let candidate = serde_json::from_str::<Value>(payload)?
+                    .get("candidateAccountId")
+                    .and_then(Value::as_str)
+                    .context("username request missing candidateAccountId")?
+                    .to_string();
+                if authenticated_account.as_deref() == Some(candidate.as_str()) {
+                    ("202 Accepted", r#"{"status":"PENDING"}"#.to_string())
+                } else {
+                    (
+                        "403 Forbidden",
+                        r#"{"error":"candidateAccountId must be the authenticated account."}"#
+                            .to_string(),
+                    )
+                }
+            } else {
+                (
+                    "500 Internal Server Error",
+                    r#"{"error":"unexpected request"}"#.to_string(),
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await?;
+            requests.push(request);
+        }
+        Ok(requests)
+    }
+
+    fn request_header<'a>(request: &'a str, expected: &str) -> Option<&'a str> {
+        request.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(expected).then(|| value.trim())
+        })
+    }
+
+    #[test]
+    fn rejected_token_eviction_is_scoped_to_the_matching_cached_value() {
+        const BASE: &str = "test://rejected-token";
+        const OTHER_BASE: &str = "test://other-token";
+        const SUBJECT: [u8; 32] = [1; 32];
+        const OTHER_SUBJECT: [u8; 32] = [2; 32];
+        let mut tokens = BACKEND_TOKENS
+            .lock()
+            .expect("backend token cache mutex poisoned");
+        tokens.retain(|token| token.backend_base != BASE && token.backend_base != OTHER_BASE);
+        tokens.push(CachedBackendToken {
+            backend_base: BASE.to_string(),
+            auth_client_id: SUBJECT,
+            value: "stale".to_string(),
+        });
+        tokens.push(CachedBackendToken {
+            backend_base: BASE.to_string(),
+            auth_client_id: OTHER_SUBJECT,
+            value: "other-subject".to_string(),
+        });
+        tokens.push(CachedBackendToken {
+            backend_base: OTHER_BASE.to_string(),
+            auth_client_id: SUBJECT,
+            value: "keep".to_string(),
+        });
+        drop(tokens);
+
+        evict_rejected_backend_token(BASE, &SUBJECT, "newer-token");
+        assert!(
+            BACKEND_TOKENS
+                .lock()
+                .expect("backend token cache mutex poisoned")
+                .iter()
+                .any(|token| {
+                    token.backend_base == BASE
+                        && token.auth_client_id == SUBJECT
+                        && token.value == "stale"
+                })
+        );
+
+        evict_rejected_backend_token(BASE, &SUBJECT, "stale");
+        let mut tokens = BACKEND_TOKENS
+            .lock()
+            .expect("backend token cache mutex poisoned");
+        assert!(
+            tokens
+                .iter()
+                .all(|token| token.backend_base != BASE || token.auth_client_id != SUBJECT)
+        );
+        assert!(tokens.iter().any(|token| {
+            token.backend_base == BASE
+                && token.auth_client_id == OTHER_SUBJECT
+                && token.value == "other-subject"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token.backend_base == OTHER_BASE
+                && token.auth_client_id == SUBJECT
+                && token.value == "keep"
+        }));
+        tokens.retain(|token| token.backend_base != BASE && token.backend_base != OTHER_BASE);
+    }
+
+    #[tokio::test]
+    async fn cached_401_reauthenticates_and_retries_once() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let backend_base = format!("http://{}/api/v1", listener.local_addr()?);
+        let server = tokio::spawn(serve_auth_retry(listener));
+        let entropy = [11u8; 16];
+        let auth_client_id = derive_identity_keypair(&entropy)
+            .map_err(|err| anyhow::anyhow!("derive test auth identity: {err}"))?
+            .public
+            .to_bytes();
+
+        {
+            let mut tokens = BACKEND_TOKENS
+                .lock()
+                .expect("backend token cache mutex poisoned");
+            tokens.retain(|token| token.backend_base != backend_base);
+            tokens.push(CachedBackendToken {
+                backend_base: backend_base.clone(),
+                auth_client_id,
+                value: "expired-test-token".to_string(),
+            });
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
+        let url = format!("{backend_base}/protected");
+        let response = send_with_backend_auth(&client, &backend_base, &entropy, |token| {
+            client.post(&url).bearer_auth(token).body("{}")
+        })
+        .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let requests = server.await??;
+        assert_eq!(requests.len(), 4);
+        assert!(requests[0].contains("authorization: Bearer expired-test-token"));
+        assert!(requests[1].starts_with("POST /api/v1/auth/challenges "));
+        assert!(requests[2].starts_with("POST /api/v1/auth/token "));
+        let encoded_client_id = BASE64.encode(auth_client_id);
+        assert_eq!(
+            request_header(&requests[2], "Auth-ClientId"),
+            Some(encoded_client_id.as_str())
+        );
+        assert!(requests[3].contains("authorization: Bearer fresh-token"));
+
+        let mut tokens = BACKEND_TOKENS
+            .lock()
+            .expect("backend token cache mutex poisoned");
+        assert!(tokens.iter().any(|token| {
+            token.backend_base == backend_base
+                && token.auth_client_id == auth_client_id
+                && token.value == "fresh-token"
+        }));
+        tokens.retain(|token| token.backend_base != backend_base);
+        Ok(())
+    }
+
+    async fn serve_auth_retry(listener: TcpListener) -> Result<Vec<String>> {
+        let mut requests = Vec::new();
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await?;
+            let mut buffer = vec![0u8; 16 * 1024];
+            let read = stream.read(&mut buffer).await?;
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let lowercase = request.to_ascii_lowercase();
+            let (status, body) = if request.starts_with("POST /api/v1/protected ")
+                && lowercase.contains("authorization: bearer expired-test-token")
+            {
+                ("401 Unauthorized", r#"{"title":"Invalid Token"}"#)
+            } else if request.starts_with("POST /api/v1/auth/challenges ") {
+                ("200 OK", r#"{"challenge":"Y2hhbGxlbmdl"}"#)
+            } else if request.starts_with("POST /api/v1/auth/token ") {
+                ("200 OK", r#"{"token":"fresh-token"}"#)
+            } else if request.starts_with("POST /api/v1/protected ")
+                && lowercase.contains("authorization: bearer fresh-token")
+            {
+                ("200 OK", r#"{"ok":true}"#)
+            } else {
+                (
+                    "500 Internal Server Error",
+                    r#"{"error":"unexpected request"}"#,
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await?;
+            requests.push(request);
+        }
+        Ok(requests)
     }
 }

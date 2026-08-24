@@ -402,9 +402,13 @@ async fn create_auto_account(
 
     for attempt in 0..8 {
         let lite_username = generated_username(username_prefix, attempt);
-        if !attestation::lite_username_available(network.identity_backend_base, &lite_username)
-            .await
-            .with_context(|| format!("check lite username {lite_username:?} availability"))?
+        if !attestation::lite_username_available(
+            network.identity_backend_base,
+            &identity.entropy,
+            &lite_username,
+        )
+        .await
+        .with_context(|| format!("check lite username {lite_username:?} availability"))?
         {
             continue;
         }
@@ -517,7 +521,7 @@ pub(crate) fn collection_candidates(entropy: &[u8]) -> Vec<alloc::CollectionCand
 }
 
 async fn wait_for_ring_membership(people_ws: &str, entropy: &[u8]) -> Result<()> {
-    const MAX_ATTEMPTS: usize = 10;
+    const MAX_ATTEMPTS: usize = 30;
     const SLEEP: Duration = Duration::from_secs(4);
 
     let candidates = collection_candidates(entropy);

@@ -461,13 +461,14 @@ The network preset owns the identity backend URL, the People, Bulletin and Asset
 Hub RPCs, and their genesis hashes; there is
 no public `--statement-store` flag. Pick `previewnet` when a product's runtime
 descriptors target previewnet, so its statements, its host chain routes and its
-own chain reads all land on one network — it is also the only preset whose
-identity backend currently onboards new auto accounts through the dotNS gateway
-(the CLI mints the backend's bearer token itself; SPEC.md §12.3). Sessions are
-per preset, so each network gets its own signer identity on the same machine.
+own chain reads all land on one network. The CLI mints the identity backend's
+bearer token itself (SPEC.md §12.3). Sessions are per preset, so each network
+gets its own signer identity on the same machine.
 `HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
 the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
-supplies its bearer token instead of the CLI minting one; and
+supplies its bearer token instead of the CLI minting one. For username
+registration, an injected token's subject must match the session's `uid.dot`
+candidate account. The automatically minted token uses that identity; and
 `HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
 discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and

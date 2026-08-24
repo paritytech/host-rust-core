@@ -674,6 +674,29 @@ impl ActiveTerminalUi {
         self.app.notice(NoticeTone::Error, text.into(), None);
     }
 
+    /// Record an error and every source attached to it.
+    ///
+    /// Operational errors commonly add local context around a backend or
+    /// chain response. Keeping the outer context as the title and rendering
+    /// the remaining sources as detail preserves the remote explanation in
+    /// the interactive transcript.
+    pub fn error_with_causes(&mut self, error: &anyhow::Error) {
+        let mut causes = error.chain();
+        let title = causes
+            .next()
+            .expect("an anyhow error always contains itself")
+            .to_string();
+        let detail = causes
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.app.notice(
+            NoticeTone::Error,
+            title,
+            (!detail.is_empty()).then_some(detail),
+        );
+    }
+
     /// Clear the visible transcript.
     pub fn clear(&mut self) {
         self.app.entries.clear();
@@ -2755,6 +2778,30 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn interactive_error_preserves_backend_cause_chain() {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let mut ui = ActiveTerminalUi {
+            terminal: None,
+            events: None,
+            receiver,
+            sender,
+            app: test_app(),
+            clipboard: None,
+            copy_next_pairing_deeplink: false,
+        };
+        let error = anyhow::anyhow!("backend supplied explanation")
+            .context("username registration failed (503 Service Unavailable)")
+            .context("attest account auto-1");
+
+        ui.error_with_causes(&error);
+
+        assert_eq!(
+            ui.app.transcript_text(),
+            "× attest account auto-1\n  username registration failed (503 Service Unavailable)\n  backend supplied explanation"
+        );
     }
 
     #[test]
