@@ -5129,6 +5129,7 @@ dependencies = [
  "truapi-platform",
  "truapi-server",
  "unicode-width",
+ "zeroize",
 ]
 
 [[package]]

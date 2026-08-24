@@ -396,7 +396,10 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/product <id>` | yes | yes | Switch product and reset product connections. |
 | `/session` | no | yes | Show current session, user, and path. |
 | `/session <name>` | no | yes | Switch to or create and provision a session. |
+| `/session --mnemonic "<phrase>"` | no | yes | Import an existing ring member into a durable local session. |
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
+| `/session --clear <name>` | no | yes | Permanently clear one network-scoped signing session. |
+| `/session --clear-all` | no | yes | Permanently clear all signing sessions for the current network. |
 | `/log <level>` | yes | yes | Replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
 | `/clear` | yes | yes | Clear the retained visible transcript. |
@@ -479,13 +482,19 @@ from link generation through authentication to its final state.
 - Tab accepts the selected completion.
 - Enter first accepts a differing selected completion; a later Enter submits.
 - `/script` followed by a space completes filesystem entries.
-- `/session` followed by a space completes known signing sessions and `--list`.
+- `/session` followed by a space completes known signing sessions, `--list`,
+  `--mnemonic`, `--clear`, and `--clear-all`; `/session --clear ` completes
+  known names.
 - Left/Right, Home/End, Backspace, and Delete edit by Unicode character.
 - Long input scrolls horizontally and retains a native terminal cursor.
 - Bracketed paste is enabled; pasted control characters are discarded.
 - At most eight completion rows are visible.
 
 Command history is in memory only and disappears when the process exits.
+Mnemonic import commands are excluded from history, debug rendering, busy
+labels, and transcripts. Their phrase is masked character-for-character in the
+command bar. `exec` cannot hide a phrase from the invoking shell's history or
+the operating system's process arguments.
 
 ### 9.4 Scrolling and cancellation
 
@@ -801,7 +810,7 @@ Explicit mnemonic mode:
 - does not read or write an account record;
 - has no cached username;
 - reports the session as `ephemeral`; and
-- disables `/session <name>`.
+- disables commands that switch or import managed sessions.
 
 Explicit account mode looks up a named record in the default account store and
 ensures its on-chain identity and ring readiness. It is not considered
@@ -828,19 +837,21 @@ A new auto account:
 9. waits for inclusion in a personhood ring; and
 10. marks and saves the account as attested.
 
-Identity and ring polling each allow 10 attempts with four seconds between
+Identity and ring polling each allow 30 attempts with four seconds between
 attempts. Identity-backend HTTP clients use a 30-second timeout.
 
 The backend's username routes are bearer-gated. Unless
 `HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies one, the CLI mints an access token
-once per process. It takes a challenge from `auth/challenges`. It answers
-`auth/token` with an sr25519 proof over
-`SHA256(challenge || clientId || SHA256(body))`, signed by a throwaway keypair.
-
-The token's subject only identifies the calling app instance. The username claim
-carries its own candidate account. A fresh subject per run therefore stays clear
-of the backend's per-subject device gate and rate limit. Availability answers are
-the flat `{base: "AVAILABLE" | …}` map.
+for the mnemonic's RFC-0022 `uid.dot` account. It takes a challenge from
+`auth/challenges`. It answers `auth/token` with an sr25519 proof over
+`SHA256(challenge || clientId || SHA256(body))`, signed by that identity key.
+The backend requires the JWT subject to equal `candidateAccountId` on
+`POST /usernames`; using the same key for availability and registration also
+prevents a pre-registration request from caching a token for another subject.
+Tokens are cached per backend and identity account. A cached token rejected with
+401 is evicted and minted again for the same account before the request is
+retried once. The CLI accepts both the legacy flat availability map and the
+dotSpark v1 envelope whose per-name value carries a `status` field.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
@@ -856,6 +867,12 @@ An attested account with a resolved Lite username can be loaded and activated
 from `accounts.json` without contacting the identity backend or checking ring
 membership on every restart. The current Statement Store period is still used
 to skip locally marked exhausted accounts.
+
+Imported accounts are stored with an explicit `imported` origin and are never
+eligible for the auto-account pool or slot rotation. `session.json` binds a
+durable session to its exact local account name even when it has no dotNS
+username, so restart selects the imported record instead of whichever auto
+account happens to appear first.
 
 ### 12.5 Statement Store slot rotation
 
@@ -892,7 +909,7 @@ known, the public and durable session name becomes its Lite username and its
 directory becomes `<username>_signing_host`. The bootstrap name is not
 user-selectable and is omitted from session completion and listing.
 
-### 12.7 Session inspection and switching
+### 12.7 Session inspection, switching, and clearing
 
 `/session` reports:
 
@@ -926,6 +943,48 @@ The active session is marked with `*`.
 If activation fails, the previous `current-session` pointer is restored and the
 old in-memory runtime remains active. Files created while preparing the target
 may remain.
+
+`/session --mnemonic "<phrase>"` is an import-only flow:
+
+1. parse and normalize the BIP-39 phrase;
+2. derive the RFC-0022 `uid.dot` identity;
+3. read its optional full or Lite dotNS username from Asset Hub;
+4. when no dotNS mirror exists, search the identity backend's assigned username
+   records for the derived candidate account;
+5. confirm membership in a People or LitePeople ring;
+6. use that username as the session name, or derive a deterministic
+   `imported-<key fingerprint>` name when neither source has a username;
+7. build and activate a replacement runtime off-side;
+8. persist the mnemonic as the named `imported` account and atomically write
+   the session's account binding plus its username when present;
+9. persist `current-session`; and
+10. swap runtimes and disconnect old product connections.
+
+The backend fallback uses authenticated, cursor-paginated, prefix searches
+because the backend has no account-indexed read route. It only accepts an
+`ASSIGNED` row whose candidate account equals the derived identity and it never
+calls a registration route. A username missing from both dotNS and the backend
+does not prevent local activation; the connected session simply has no primary
+username for `account.getUserId()`. A mnemonic without ring membership on the
+selected network is rejected and the old in-memory runtime remains active. The
+phrase is not written locally until the replacement runtime activates
+successfully.
+
+`/session --clear <name>` removes the durable name shown by `/session --list`,
+its identity or legacy session directory, any separate legacy product storage,
+and the matching network account cached in the compatibility account store.
+`/session --clear-all` removes every such session, the network's signing-host
+bootstrap state, and every compatibility account record for that network. It
+does not remove pairing-host state, another network's records, externally
+referenced scripts, or on-chain usernames.
+
+The interactive UI describes the data loss and uses the existing `[y/N]`
+approval. `exec` executes these explicit one-shot commands without another
+flag or prompt. Clearing an inactive named session updates completion and keeps
+the current runtime active. Clearing the active session or all sessions first
+ends the command loop, aborts the frame server, drops the runtime, and only then
+deletes the data; the signing host exits afterward. Session clearing is
+unavailable in explicit-mnemonic mode.
 
 ## 13. Persistence
 
@@ -1125,17 +1184,15 @@ preset is a test network; the account store keeps BIP-39 entropy for
 disposable test identities only.
 
 Auto-account onboarding (§12.3) needs an identity backend that records the
-lite username on the dotNS gateway. The `paseo-next-v2` backend answers
-`POST /usernames` with "dotNS gateway is not enabled in this environment", so
-new auto accounts cannot be onboarded there until that changes; the CLI reports
-it and points at `previewnet`, whose backend has the gateway enabled. Reads
-(`identity-check`, session usernames) work on both presets.
+lite username on the dotNS gateway. Each preset points at its matching dotSpark
+identity backend, and the CLI reports the complete backend response when
+registration fails.
 
 #### `paseo-next-v2`
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://identity-backend-next.parity-testnet.parity.io/api/v1` |
+| Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
 | People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
@@ -1147,12 +1204,11 @@ it and points at `previewnet`, whose backend has the gateway enabled. Reads
 
 The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
 nextv2 later, and it is where products with previewnet descriptors do their
-on-chain testing. Its identity backend is the same service on its staging
-environment (`/api/v1/version` reports `"environment": "staging"`).
+on-chain testing.
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
+| Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
 | People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
@@ -1627,7 +1683,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
-| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with a throwaway keypair. |
+| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
 | `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
@@ -1647,8 +1703,6 @@ ended. This preserves the child status but bypasses later Rust destructors.
 These are part of the as-built specification:
 
 - only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
-- auto-account onboarding works on `previewnet` only, until the `paseo-next-v2`
-  identity backend enables the dotNS gateway (§14.1);
 - product scripts require Bun and, by default, the source checkout;
 - there is no structured/JSON output mode;
 - there is no `--version`;
