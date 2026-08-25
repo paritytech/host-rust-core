@@ -17,20 +17,15 @@ on:
         description: "Commit to build, since a called workflow does not inherit the caller's checkout"
         required: true
         type: string
+  # Manual escape hatch. There is deliberately no tag trigger: a tag push
+  # cannot use release.yml's workflow_run gate on green CI, so it would be an
+  # unverified path to the registry.
   workflow_dispatch:
     inputs:
       version:
         description: "Version to publish (e.g. 0.1.0 or 0.1.0-rc.1)"
         required: true
         type: string
-  push:
-    tags:
-      - "truapi-host-android@*"
-    # Temporary, remove once the pipeline is proven: publish an rc build on
-    # every push to the introducing branch, since workflow_dispatch is only
-    # available after this file lands on the default branch.
-    branches:
-      - "vf/android-host-artifact"
 
 permissions:
   contents: read
@@ -44,22 +39,6 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-
-      - name: Resolve version
-        id: version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-          RUN_NUMBER: ${{ github.run_number }}
-        run: |
-          set -euo pipefail
-          if [ -n "${INPUT_VERSION}" ]; then
-            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
-          elif [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
-            echo "version=${GITHUB_REF_NAME#truapi-host-android@}" >> "$GITHUB_OUTPUT"
-          else
-            # Branch push (temporary trigger): unique rc per run.
-            echo "version=0.1.0-rc.${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          fi
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
@@ -98,7 +77,7 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
           gradle :truapi-host:publishReleasePublicationToGitHubPackagesRepository \
             -PtruapiHostVersion="${VERSION}"

@@ -32,6 +32,8 @@ dependencies {
 }
 ```
 
+The package is public, so any authenticated GitHub identity can read it. In GitHub Actions that means the built-in `GITHUB_TOKEN` with a `permissions: packages: read` block, no secret to create or rotate. Locally it means a personal access token with `read:packages`, set once as `gpr.user` / `gpr.key` in `~/.gradle/gradle.properties`. A token without that scope fails with 401 even though the package is public, which is how GitHub Packages treats Maven.
+
 The consuming app must declare `android.permission.INTERNET` — the localhost WebSocket bridge binds a `127.0.0.1` TCP socket, which requires it even for loopback.
 
 ### Compatibility
@@ -399,9 +401,9 @@ or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi-server`
 
 Include `@parity/android-host <version>` in the `release:` PR title, the same flow the npm packages and the iOS host use. On merge, `release.yml` calls `release-android.yml` for the release commit, which cross-compiles the cdylib for all three ABIs, regenerates the Kotlin bindings via the `codegen` cargo profile, and publishes `io.parity:truapi-host-android:<version>` to GitHub Packages.
 
-Two other paths reach the same workflow, for publishes outside a release: a `truapi-host-android@<version>` tag push, and a manual `release-android` run with a version input.
+A manual `release-android` run with a version input reaches the same workflow, as an escape hatch. There is deliberately no tag trigger: a tag push cannot use `release.yml`'s gate on green CI, so it would be an unverified path to the registry.
 
-The version lives only in the release subject or the tag. Nothing in the tree records it, so there is no committed version to keep in sync.
+The version lives only in the release subject. Nothing in the tree records it, so there is no committed version to keep in sync.
 
 For local development, publish into `~/.m2`:
 
