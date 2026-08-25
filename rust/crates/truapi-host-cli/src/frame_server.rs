@@ -118,6 +118,11 @@ impl SwitchableSigningRuntime {
     /// Replace the runtime and disconnect every product using the old one.
     pub fn replace(&self, runtime: Arc<SigningHostRuntime>) {
         *self.current.write().expect("runtime lock poisoned") = runtime;
+        self.reset_connections();
+    }
+
+    /// Disconnect every product currently using the active signing runtime.
+    pub fn reset_connections(&self) {
         self.generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
