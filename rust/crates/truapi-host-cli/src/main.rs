@@ -14,6 +14,7 @@
 
 mod accounts;
 mod attestation;
+mod bootstrap;
 mod chain;
 mod chat;
 mod dotns_read;
@@ -29,11 +30,12 @@ mod terminal_ui;
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -159,6 +161,13 @@ enum Command {
     /// With `--script`, exits with the script's status. Without it, stays in an
     /// interactive terminal UI where scripts can be run repeatedly.
     PairingHost(PairingHostArgs),
+    /// Run a product against a local signing host, with one command.
+    ///
+    /// Starts a host on loopback, waits for its signer, then runs the wrapped
+    /// development command with the host already live. The product reaches it
+    /// through a development-only `<script>` tag pointing at the bridge URL
+    /// this prints.
+    Dev(DevArgs),
     /// Run a wallet-local signing host for scripts or pairing deeplinks.
     ///
     /// Owns signer identity, auto-manages accounts when no mnemonic/account is
@@ -241,10 +250,11 @@ enum Command {
 }
 
 /// Execution kind the CLI serves a product as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 enum ExecutionKind {
     /// Ordinary full-page product. Chat requests answer `Denied`, as they do
     /// on any host that does not serve chat.
+    #[default]
     App,
     /// Headless executable served by the CLI's in-memory chat host.
     Worker,
@@ -291,7 +301,44 @@ struct PairingHostArgs {
     auto_accept: bool,
 }
 
+/// Default loopback port for the frame socket and the bridge script.
+///
+/// Products name it in a development `<script>` tag, so it is part of their
+/// source and stays fixed unless both sides change together.
+const DEFAULT_DEV_PORT: u16 = 9955;
+
 #[derive(Args)]
+struct DevArgs {
+    /// Port the wrapped development server listens on. Names the product id.
+    #[arg(long = "app-port", default_value_t = 3000)]
+    app_port: u16,
+    /// Loopback port serving product frames and the bridge script.
+    #[arg(long, default_value_t = DEFAULT_DEV_PORT)]
+    port: u16,
+    /// Product id the host serves. Defaults to the development server's own
+    /// origin, which is what a product derives for itself locally.
+    #[arg(long = "product-id")]
+    product_id: Option<String>,
+    /// Network preset that supplies all RPC/backend/genesis config.
+    #[arg(long, value_enum, default_value = "paseo-next-v2")]
+    network: Network,
+    /// Persistent signing-host session to restore or create.
+    #[arg(long)]
+    session: Option<String>,
+    /// BIP-39 mnemonic for the wallet root, to sign as an existing identity
+    /// instead of the auto-managed one. Confirmations are auto-approved here,
+    /// so the connected product can sign anything: testnet keys only.
+    #[arg(long, env = "HOST_CLI_SIGNER_MNEMONIC")]
+    mnemonic: Option<String>,
+    /// Root directory for CLI-managed account and host state.
+    #[arg(long = "base-path", env = "TRUAPI_HOST_BASE_PATH")]
+    base_path: Option<PathBuf>,
+    /// Development command to run once the host is ready, after `--`.
+    #[arg(last = true)]
+    command: Vec<String>,
+}
+
+#[derive(Args, Default)]
 struct SigningHostArgs {
     /// Execution kind the served product runs as. `worker` installs the CLI's
     /// in-memory chat host; `app` leaves Chat unserved.
@@ -394,7 +441,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::PairingHost(args) => run_pairing_host(args, cli.log_level, log_controller).await,
-        Command::SigningHost(args) => run_signing_host(args, cli.log_level, log_controller).await,
+        Command::Dev(args) => run_dev(args, cli.log_level, log_controller).await,
+        Command::SigningHost(args) => {
+            run_signing_host(args, cli.log_level, log_controller, None).await
+        }
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?
@@ -938,6 +988,7 @@ async fn run_signing_host(
     args: SigningHostArgs,
     initial_log_level: LogLevel,
     log_controller: LogController,
+    dev_command: Option<Vec<String>>,
 ) -> Result<()> {
     if let Err(error) = validate_signing_args(&args) {
         invalid_invocation(error);
@@ -993,6 +1044,9 @@ async fn run_signing_host(
     terminal_ui::output_event(SystemEvent::FramesListening {
         url: frame_url.clone(),
     });
+    if let Some(url) = bootstrap::bridge_url(&frame_url) {
+        terminal_ui::output_event(SystemEvent::BridgeReady { url });
+    }
     let runtime_for_frames: Arc<dyn frame_server::ProductRuntimeFactory> =
         session.runtime_factory.clone();
 
@@ -1040,12 +1094,19 @@ async fn run_signing_host(
                     url: serve_frame_url,
                     auto_accept,
                 });
-                wait_for_shutdown().await;
+                let code = match dev_command {
+                    Some(command) => run_dev_command(command).await?,
+                    None => {
+                        wait_for_shutdown().await;
+                        0
+                    }
+                };
                 session.responders.stop_all();
-                Ok(())
+                Ok(code)
             },
         )
-        .await;
+        .await
+        .map(|code| std::process::exit(code));
     }
 
     let initial_deeplink = args.deeplink.clone();
@@ -1619,6 +1680,114 @@ async fn restore_paired_responders(session: &mut SigningHostSession) {
 
 /// Park until the operator stops the process. Ctrl-C is awaited so the host owns
 /// its own shutdown; SIGTERM keeps its default action and ends the process.
+/// How long the wrapped development command has to exit after an interrupt
+/// before it is killed.
+const DEV_COMMAND_GRACE: Duration = Duration::from_secs(5);
+
+/// Conventional exit code for a process stopped by an interrupt.
+const INTERRUPTED_EXIT_CODE: i32 = 130;
+
+/// Run a product against a local signing host with one command.
+///
+/// Everything the host and the product need to agree on is derived here, so
+/// they cannot disagree: the product id names the development server's own
+/// origin, and the bridge script the product loads is generated by this
+/// process from the endpoint it just bound.
+async fn run_dev(
+    args: DevArgs,
+    initial_log_level: LogLevel,
+    log_controller: LogController,
+) -> Result<()> {
+    let product_id = args
+        .product_id
+        .unwrap_or_else(|| format!("localhost:{}", args.app_port));
+    let signing = SigningHostArgs {
+        product_id,
+        network: args.network,
+        session: args.session,
+        mnemonic: args.mnemonic,
+        base_path: args.base_path,
+        frame_listen: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, args.port))),
+        // A process with no terminal cannot prompt, which is why this pairs
+        // with a testnet-only network preset.
+        serve: true,
+        auto_accept: true,
+        ..Default::default()
+    };
+    let command = (!args.command.is_empty()).then_some(args.command);
+    run_signing_host(signing, initial_log_level, log_controller, command).await
+}
+
+/// Run the wrapped development command, returning the code to exit with.
+///
+/// The command gets its own process group, so stopping the host stops the whole
+/// tree it spawned. Package managers reach the actual dev server through two or
+/// three intermediate processes, and signalling only the direct child leaves
+/// that server holding its port.
+async fn run_dev_command(command: Vec<String>) -> Result<i32> {
+    let (program, arguments) = command
+        .split_first()
+        .expect("an empty dev command is never supervised");
+    let mut builder = tokio::process::Command::new(program);
+    builder.args(arguments);
+    #[cfg(unix)]
+    builder.process_group(0);
+    let mut child = builder
+        .spawn()
+        .with_context(|| format!("failed to start {program}"))?;
+    let group = child.id();
+
+    tokio::select! {
+        status = child.wait() => {
+            // Intermediate processes exit before the server they spawned.
+            stop_process_group(group, Stop::Terminate);
+            Ok(status?.code().unwrap_or(1))
+        }
+        _ = wait_for_shutdown() => {
+            // The group is its own, so it never saw the terminal's interrupt.
+            stop_process_group(group, Stop::Terminate);
+            if tokio::time::timeout(DEV_COMMAND_GRACE, child.wait())
+                .await
+                .is_err()
+            {
+                stop_process_group(group, Stop::Kill);
+                child.wait().await.ok();
+            }
+            // The command was interrupted, not failed. Report the interrupt
+            // rather than whatever a terminated package manager last said.
+            Ok(INTERRUPTED_EXIT_CODE)
+        }
+    }
+}
+
+/// How firmly to stop the development command's process group.
+#[derive(Clone, Copy)]
+enum Stop {
+    Terminate,
+    Kill,
+}
+
+/// Signal every process in the development command's group.
+#[cfg(unix)]
+fn stop_process_group(group: Option<u32>, stop: Stop) {
+    use rustix::process::{Pid, Signal, kill_process_group};
+
+    let Some(pid) = group
+        .and_then(|group| i32::try_from(group).ok())
+        .and_then(Pid::from_raw)
+    else {
+        return;
+    };
+    let signal = match stop {
+        Stop::Terminate => Signal::TERM,
+        Stop::Kill => Signal::KILL,
+    };
+    let _ = kill_process_group(pid, signal);
+}
+
+#[cfg(not(unix))]
+fn stop_process_group(_group: Option<u32>, _stop: Stop) {}
+
 async fn wait_for_shutdown() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         // Nothing to await without a signal handler, so stay up and serve until
@@ -3393,6 +3562,44 @@ mod cli_tests {
         };
         assert_eq!(command, "/help");
         assert_eq!(args.frame_listen, None);
+    }
+
+    /// The product id and the frame port are the two values the host and the
+    /// product must agree on, and `dev` derives both so they cannot drift.
+    #[test]
+    fn dev_derives_the_product_id_from_the_app_port_and_wraps_a_command() {
+        let cli = Cli::try_parse_from([
+            "truapi-host",
+            "dev",
+            "--app-port",
+            "5173",
+            "--",
+            "pnpm",
+            "dev",
+            "--host",
+        ])
+        .expect("dev should parse a wrapped command");
+        let Command::Dev(args) = cli.command else {
+            panic!("expected dev command");
+        };
+
+        assert_eq!(args.app_port, 5173);
+        assert_eq!(args.port, DEFAULT_DEV_PORT);
+        assert_eq!(args.product_id, None);
+        assert_eq!(args.command, ["pnpm", "dev", "--host"]);
+    }
+
+    #[test]
+    fn dev_runs_a_bare_host_when_no_command_is_wrapped() {
+        let cli = Cli::try_parse_from(["truapi-host", "dev", "--product-id", "playground.paseo"])
+            .expect("dev should parse without a wrapped command");
+        let Command::Dev(args) = cli.command else {
+            panic!("expected dev command");
+        };
+
+        assert_eq!(args.product_id.as_deref(), Some("playground.paseo"));
+        assert_eq!(args.app_port, 3000);
+        assert!(args.command.is_empty());
     }
 
     #[test]

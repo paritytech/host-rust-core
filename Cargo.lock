@@ -5113,6 +5113,7 @@ dependencies = [
  "parity-scale-codec",
  "ratatui",
  "reqwest",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

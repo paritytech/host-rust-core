@@ -45,19 +45,52 @@ this is required for browser clients, which cannot open filesystem sockets.
 
 ### Browser products
 
-A browser product reaches that socket through `@parity/truapi`'s sandbox. Start
-the host on a fixed port, and point the product at it before anything else
-touches the client:
+`truapi-host dev` is one command for "run this product as if it were inside a
+host". It starts a signing host on loopback, waits for the signer, then runs the
+wrapped development command with the host already live:
+
+```bash
+truapi-host dev -- yarn dev
+```
+
+The product reaches it through a development-only tag, which the host serves
+itself:
+
+```jsx
+{process.env.NODE_ENV === "development" && (
+  <script src="http://127.0.0.1:9955/bootstrap.js" />
+)}
+```
+
+That script installs the same `window.__HOST_API_PORT__` a native webview host
+injects, so the SDK adopts it with no product-side package, import, or
+environment variable. `--app-port` names the development server's port when it
+is not 3000, and the product id defaults to that origin, so the host and the
+product cannot disagree about who they are. Stopping the command stops the whole
+tree it started.
+
+A host that should outlive the development server, or one whose confirmations
+you want to approve by hand in the terminal UI, is the same host started
+directly with your development server run separately. Every host mode serves the
+bridge script, so the product tag is unchanged:
 
 ```bash
 truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id my-product.dot
 ```
+
+A product that would rather name the endpoint itself can skip the tag and call
+the SDK directly, before anything else touches the client:
 
 ```ts
 import { connectWebSocketHost } from "@parity/truapi/sandbox";
 
 connectWebSocketHost("ws://127.0.0.1:9955");
 ```
+
+Frame connections are limited to loopback origins. WebSocket is not subject to
+CORS, so without that check any page open in the same browser could drive a host
+that auto-approves confirmations. Clients that send no `Origin` at all are local
+processes and are allowed.
 
 The product is then detected as hosted and holds the real product account for
 its own `.dot` name, so signing, statements, entropy, permissions and storage
@@ -551,6 +584,9 @@ cleans up a unique temporary Unix socket.
 
 ## Serving a dev server (one process, no terminal)
 
+`truapi-host dev` is the shorthand for this when the thing being supervised is a
+development server; reach for `--serve` when something else owns the process.
+
 `signing-host --serve` runs the host as a background service instead of a
 terminal UI, so a dev server or test harness can supervise it:
 
@@ -570,6 +606,9 @@ line per event:
 ✓ Signing host ready
 • Listening for product frames
   ws://127.0.0.1:9955
+• Browser bridge
+  http://127.0.0.1:9955/bootstrap.js
+  Load it from a development-only <script> tag to run a product in a plain browser tab
 • Serving product frames until stopped
   ws://127.0.0.1:9955
   Confirmations are approved automatically

@@ -9,6 +9,9 @@ license = "MIT"
 name = "truapi-host"
 path = "src/main.rs"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 

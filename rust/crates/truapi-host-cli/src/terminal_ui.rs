@@ -114,6 +114,9 @@ pub enum SystemEvent {
         url: String,
         auto_accept: bool,
     },
+    BridgeReady {
+        url: String,
+    },
     SigningHostReady,
     SigningHostNeedsSession,
     SigningHostAccountExhausted {
@@ -1312,6 +1315,13 @@ impl App {
                     } else {
                         "Confirmations will be denied: there is no terminal to prompt on, so pass --auto-accept"
                     }
+                )),
+            ),
+            SystemEvent::BridgeReady { url } => self.notice(
+                NoticeTone::Info,
+                "Browser bridge".to_string(),
+                Some(format!(
+                    "{url}\nLoad it from a development-only <script> tag to run a product in a plain browser tab"
                 )),
             ),
             SystemEvent::SigningHostReady => self.activity(

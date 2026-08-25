@@ -172,14 +172,41 @@ make e2e-pairing-cli                # same paired pairing-host phase
 make e2e-chat-cli                   # chat content screening against a chat signing-host
 ```
 
-To run the playground locally:
+To run the playground locally in a plain browser tab, against a signing host on
+your own machine:
 
 ```bash
 cd playground
-yarn dev
+truapi-host dev -- yarn dev
 ```
 
-Open `https://dot.li/localhost:3000` inside the Polkadot Desktop Host. See [`playground/README.md`](playground/README.md) for deployment.
+`truapi-host dev` starts a signing host on `127.0.0.1:9955`, waits for its
+signer, then runs the wrapped command with the host already live. The product
+reaches it through a development-only `<script>` tag:
+
+```jsx
+{process.env.NODE_ENV === "development" && (
+  <script src="http://127.0.0.1:9955/bootstrap.js" />
+)}
+```
+
+The host serves that script itself, so the page needs no package, no imports,
+and no environment variables. It installs the same `window.__HOST_API_PORT__`
+that native webview hosts inject, and the SDK adopts it unchanged. Frame
+connections are limited to loopback origins, because WebSocket is not subject
+to CORS and confirmations here are auto-approved.
+
+A host that should outlive the dev server, or one whose confirmations you want
+to approve by hand in its terminal UI, is the existing command with your dev
+server started separately:
+
+```bash
+truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id localhost:3000
+```
+
+To run the playground inside a real host instead, start it with `yarn dev` and
+open `https://dot.li/localhost:3000` in the Polkadot Desktop Host. See
+[`playground/README.md`](playground/README.md) for deployment.
 
 To build the iOS host and open the playground in Simulator:
 

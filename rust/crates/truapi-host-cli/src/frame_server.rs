@@ -5,20 +5,26 @@
 //! binary messages. One binary WS message carries exactly one SCALE
 //! `ProtocolMessage`, matching the browser transport's framing.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::UnixListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
+#[cfg(test)]
 use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::{StatusCode, header};
 use tracing::{debug, warn};
+
+use crate::bootstrap;
 use truapi_platform::ProductExecutionKind;
 use truapi_server::{
     FrameSink, PairingHostRuntime, ProductContext, ProductRuntime, SigningHostRuntime,
@@ -32,6 +38,18 @@ use truapi_server::{
 /// are either process-wide (`EMFILE`/`ENFILE`) or per-connection and transient
 /// (`ECONNABORTED`); neither clears faster for being retried in a tight loop.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+/// Cap on the request head buffered while deciding whether a TCP connection is
+/// a WebSocket handshake or a plain HTTP request for the bridge script.
+const MAX_REQUEST_HEAD: usize = 8 * 1024;
+
+/// Blank line ending an HTTP request head.
+const HEAD_TERMINATOR: &[u8] = b"\r\n\r\n";
+
+/// How long a TCP peer has to finish sending its request head before the
+/// connection is dropped, so a peer that connects and says nothing cannot pin a
+/// task forever.
+const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Process-local product selection shared by the command loop and frame server.
 pub struct ProductSelection {
@@ -235,7 +253,7 @@ pub async fn accept_loop(
     #[cfg(unix)]
     let _socket_directory = frame_server.socket_directory;
     match frame_server.listener {
-        FrameListener::Tcp(listener) => accept_tcp_loop(runtime, product, listener).await,
+        FrameListener::Tcp(listener) => accept_tcp_loop(runtime, product, listener, endpoint).await,
         #[cfg(unix)]
         FrameListener::Unix(listener) => accept_unix_loop(runtime, product, listener).await,
     }
@@ -245,6 +263,7 @@ async fn accept_tcp_loop(
     runtime: Arc<dyn ProductRuntimeFactory>,
     product: Arc<ProductSelection>,
     listener: TcpListener,
+    endpoint: String,
 ) -> Result<()> {
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -261,12 +280,172 @@ async fn accept_tcp_loop(
         };
         let runtime = runtime.clone();
         let product = product.clone();
+        let endpoint = endpoint.clone();
         tokio::spawn(async move {
-            if let Err(err) = serve_connection(runtime, product, stream).await {
+            if let Err(err) = serve_tcp_connection(runtime, product, stream, &endpoint).await {
                 debug!(%peer, %err, "frame connection ended");
             }
         });
     }
+}
+
+/// Serve one TCP peer, which is either a product opening the frame socket or a
+/// browser fetching the bridge script.
+///
+/// The request head is peeked rather than read so a WebSocket handshake reaches
+/// the tungstenite server exactly as the peer sent it.
+async fn serve_tcp_connection(
+    runtime: Arc<dyn ProductRuntimeFactory>,
+    product: Arc<ProductSelection>,
+    mut stream: TcpStream,
+    endpoint: &str,
+) -> Result<()> {
+    let head = tokio::time::timeout(REQUEST_HEAD_TIMEOUT, peek_request_head(&stream))
+        .await
+        .context("timed out reading the request head")??;
+    if is_websocket_upgrade(&head) {
+        return serve_connection(runtime, product, stream).await;
+    }
+    serve_bridge_script(&mut stream, &head, endpoint).await
+}
+
+/// Buffer the peer's request head without consuming it.
+async fn peek_request_head(stream: &TcpStream) -> Result<Vec<u8>> {
+    let mut buffer = vec![0u8; MAX_REQUEST_HEAD];
+    loop {
+        stream.readable().await?;
+        let peeked = stream.peek(&mut buffer).await?;
+        if peeked == 0 {
+            anyhow::bail!("peer closed before sending a request");
+        }
+        let head = &buffer[..peeked];
+        if let Some(end) = find_head_end(head) {
+            return Ok(head[..end].to_vec());
+        }
+        if peeked == buffer.len() {
+            anyhow::bail!("request head exceeded {MAX_REQUEST_HEAD} bytes");
+        }
+    }
+}
+
+fn find_head_end(head: &[u8]) -> Option<usize> {
+    head.windows(HEAD_TERMINATOR.len())
+        .position(|window| window == HEAD_TERMINATOR)
+}
+
+fn is_websocket_upgrade(head: &[u8]) -> bool {
+    header_value(head, "upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+/// First value of `name` in a raw request head, if the head is valid UTF-8.
+fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a str> {
+    let head = std::str::from_utf8(head).ok()?;
+    head.lines().skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim().eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
+/// Answer a plain HTTP request with the bridge script, or a 404.
+///
+/// Products load this from a development-only `<script>` tag, which is a
+/// cross-origin request no CORS header can gate, so the script carries no
+/// secret. What keeps another page from using the endpoint it names is the
+/// origin check on the WebSocket handshake.
+async fn serve_bridge_script(stream: &mut TcpStream, head: &[u8], endpoint: &str) -> Result<()> {
+    // The head was peeked, not read. Closing with it still buffered would reset
+    // the connection and lose the response, so drain it first.
+    let mut consumed = vec![0u8; head.len() + HEAD_TERMINATOR.len()];
+    stream.read_exact(&mut consumed).await?;
+
+    let response = match request_path(head).as_deref() {
+        Some(bootstrap::PATH) => http_response(
+            "200 OK",
+            "application/javascript; charset=utf-8",
+            &bootstrap::script(endpoint),
+        ),
+        _ => http_response(
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            &format!("not found; the bridge script is at {}\n", bootstrap::PATH),
+        ),
+    };
+    stream.write_all(response.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+fn http_response(status: &str, content_type: &str, body: &str) -> String {
+    format!(
+        "HTTP/1.1 {status}\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {length}\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n\
+         {body}",
+        length = body.len()
+    )
+}
+
+/// Request target from a raw request head, ignoring any query string.
+fn request_path(head: &[u8]) -> Option<String> {
+    let head = std::str::from_utf8(head).ok()?;
+    let target = head.lines().next()?.split_whitespace().nth(1)?;
+    Some(target.split(['?', '#']).next()?.to_string())
+}
+
+/// Whether a browser-supplied `Origin` may open a frame connection.
+///
+/// Browsers always send `Origin` on a WebSocket handshake and a page cannot
+/// forge its own, so this is what separates the product under development from
+/// any other page the developer happens to have open: WebSocket is not subject
+/// to CORS, so without this any site could drive a host that auto-approves.
+/// It also defeats DNS rebinding, because the origin stays the attacker's
+/// however their name resolves. A missing `Origin` is a non-browser client on
+/// loopback, which can already read the host's state directory.
+fn origin_allowed(origin: Option<&str>) -> bool {
+    let Some(origin) = origin else {
+        return true;
+    };
+    origin_host(origin).is_some_and(is_loopback_host)
+}
+
+/// Handshake callback that rejects a browser origin outside loopback.
+// The signature is tungstenite's `Callback` contract, so the error type is not
+// ours to shrink.
+#[allow(clippy::result_large_err)]
+fn check_origin(request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .map(|value| value.to_str().unwrap_or_default());
+    if origin_allowed(origin) {
+        return Ok(response);
+    }
+    warn!(
+        origin = origin.unwrap_or_default(),
+        "rejected a frame connection from a non-loopback origin"
+    );
+    let mut rejection = ErrorResponse::new(Some(
+        "frame connections are limited to loopback origins".to_string(),
+    ));
+    *rejection.status_mut() = StatusCode::FORBIDDEN;
+    Err(rejection)
+}
+
+fn origin_host(origin: &str) -> Option<&str> {
+    let authority = origin.split_once("://")?.1;
+    match authority.strip_prefix('[') {
+        Some(inner) => inner.split_once(']').map(|(host, _)| host),
+        None => authority.split(':').next(),
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(unix)]
@@ -305,7 +484,7 @@ where
     // only cause an extra reconnect, never leave a connection on stale state.
     let mut reset = runtime.connection_reset();
     let mut product_updates = selected_product.subscribe();
-    let ws = accept_async(stream).await?;
+    let ws = accept_hdr_async(stream, check_origin).await?;
     let (mut write, mut read) = ws.split();
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
 
@@ -371,6 +550,94 @@ mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::client_async;
+
+    /// Only a browser sends `Origin`, and it cannot forge it. WebSocket
+    /// ignores CORS, so without this any page the developer has open could
+    /// drive a host that auto-approves confirmations.
+    #[test]
+    fn only_loopback_browser_origins_may_open_frame_connections() {
+        for allowed in [
+            "http://localhost:3000",
+            "http://LocalHost:3000",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.2:8080",
+            "http://[::1]:5173",
+            "https://localhost",
+        ] {
+            assert!(origin_allowed(Some(allowed)), "{allowed} should be allowed");
+        }
+        for rejected in [
+            "https://evil.com",
+            "http://localhost.evil.com:3000",
+            "http://evil.com:3000",
+            // A rebinding attacker keeps their own origin however the name
+            // resolves, which is exactly what this catches.
+            "http://rebind.evil.com",
+            "null",
+            "file://",
+        ] {
+            assert!(
+                !origin_allowed(Some(rejected)),
+                "{rejected} should be rejected"
+            );
+        }
+        // A local process, which can already read the host's state directory.
+        assert!(origin_allowed(None));
+    }
+
+    #[test]
+    fn a_request_head_is_classified_by_its_upgrade_header() {
+        let upgrade =
+            b"GET / HTTP/1.1\r\nHost: x\r\nUpgrade: WebSocket\r\nOrigin: http://localhost:3000";
+        assert!(is_websocket_upgrade(upgrade));
+        assert_eq!(request_path(upgrade).as_deref(), Some("/"));
+
+        let script = b"GET /bootstrap.js?v=2 HTTP/1.1\r\nHost: 127.0.0.1:9955";
+        assert!(!is_websocket_upgrade(script));
+        assert_eq!(request_path(script).as_deref(), Some("/bootstrap.js"));
+    }
+
+    /// The bridge and the frame socket share one port, so a plain GET must be
+    /// answered as HTTP, and the script must name the endpoint to dial.
+    #[tokio::test]
+    async fn the_bridge_script_is_served_beside_the_frame_socket() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        async fn fetch(target: &str, endpoint: &str) -> Result<String> {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let endpoint = endpoint.to_string();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await?;
+                let head = peek_request_head(&stream).await?;
+                assert!(!is_websocket_upgrade(&head));
+                serve_bridge_script(&mut stream, &head, &endpoint).await
+            });
+
+            let mut client = TcpStream::connect(address).await?;
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+                .await?;
+            let mut response = String::new();
+            client.read_to_string(&mut response).await?;
+            server.await??;
+            Ok(response)
+        }
+
+        let endpoint = "ws://127.0.0.1:9955";
+        let script = fetch(bootstrap::PATH, endpoint).await?;
+        assert!(script.starts_with("HTTP/1.1 200 OK"), "{script}");
+        assert!(script.contains("application/javascript"));
+        assert!(
+            script.contains(&format!(r#"var url = "{endpoint}";"#)),
+            "{script}"
+        );
+        assert!(script.contains("window.__HOST_API_PORT__ = channel.port1;"));
+
+        let missing = fetch("/nope", endpoint).await?;
+        assert!(missing.starts_with("HTTP/1.1 404 Not Found"), "{missing}");
+        Ok(())
+    }
 
     #[test]
     fn product_selection_validates_and_normalizes_ids() -> Result<()> {
