@@ -1,41 +1,31 @@
 // ============================================================================
 // TrUAPI mode lockdown. Runs AFTER LocalhostBridgeBootstrap (native injects
 // the bootstrap first), which publishes the bridge endpoint on
-// window.__truapi_localhost and exposes __HOST_API_PORT__ / __HOST_WEBVIEW_MARK__.
+// window.__truapi_localhost, the pre-resolved permission decisions on
+// window.__truapi_policy__, and exposes __HOST_API_PORT__ /
+// __HOST_WEBVIEW_MARK__.
 // The bootstrap dials its WebSocket lazily (inside port.start()), so
 // window.WebSocket must remain constructible for exactly the bridge URL.
+//
+// Hosts must inject this script into EVERY frame, not just the main frame. A
+// realm without it has pristine fetch/WebSocket/RTCPeerConnection, and a
+// product can reach one through any iframe path that skips
+// `document.createElement` (innerHTML, document.write, createElementNS,
+// srcdoc). Only the bootstrap is main-frame-only: a subframe with no bridge
+// endpoint and no policy fails closed on every gate below.
 // ============================================================================
 
 // =============================================================================
 // Isolation: Lock down globals so product scripts cannot access platform APIs.
 // =============================================================================
 
-function freezeAndDelete(obj: any, prop: string) {
-  try {
-    Object.defineProperty(obj, prop, {
-      get: () => undefined,
-      set() { /* silently ignore */ },
-      configurable: false,
-    });
-  } catch {
-    // Property may already be non-configurable; try delete as fallback
-    try { delete obj[prop]; } catch { /* best effort */ }
-  }
-}
-
-function freezeValue(obj: any, prop: string, value: any) {
-  try {
-    // Use a getter instead of a data property with writable:false.
-    // A non-writable data property on the prototype chain prevents
-    // descendant objects from shadowing it, which breaks polyfills
-    // that create objects with window/self as prototype.
-    Object.defineProperty(obj, prop, {
-      get: () => value,
-      set() { /* silently ignore */ },
-      configurable: false,
-    });
-  } catch { /* best effort */ }
-}
+import {
+  freezeAndDelete,
+  freezeCustom,
+  freezeValue,
+  reportLockdownFailures,
+} from './freeze.js';
+import { consumeWebRtcPolicy, installWebRtcPolicy } from './webrtc.js';
 
 // Capture native fetch BEFORE lockdown so the same-origin gate can use it.
 const _nativeFetch = window.fetch.bind(window);
@@ -56,13 +46,12 @@ freezeValue(window, 'WebSocket', _GatedWebSocket);
 
 // Close the prototype-constructor bypass: `new window.WebSocket.prototype.constructor(url)`
 // would reach the ungated native constructor without this.
-try {
-  Object.defineProperty(_NativeWebSocket.prototype, 'constructor', {
-    value: _GatedWebSocket,
-    writable: false,
-    configurable: false,
-  });
-} catch { /* best effort */ }
+freezeCustom(
+  _NativeWebSocket.prototype,
+  'constructor',
+  { value: _GatedWebSocket, writable: false },
+  (current) => current === _GatedWebSocket,
+);
 
 // --- Network: fetch gated to same-origin only ---
 freezeValue(window, 'fetch', (input: RequestInfo | URL, init?: RequestInit) => {
@@ -89,27 +78,26 @@ freezeAndDelete(window, 'indexedDB');
 freezeAndDelete(window, 'caches');
 
 // document.cookie — redefine as no-op getter/setter
-try {
-  Object.defineProperty(document, 'cookie', {
-    get: () => '',
-    set: () => {},
-    configurable: false,
-  });
-} catch { /* best effort */ }
+freezeCustom(
+  document,
+  'cookie',
+  { get: () => '', set: () => {} },
+  (current) => current === '',
+);
 
 // --- Workers ---
 freezeAndDelete(window, 'SharedWorker');
 
 if (navigator.serviceWorker) {
-  try {
-    Object.defineProperty(navigator, 'serviceWorker', {
-      value: Object.freeze({
-        register: () => { throw new Error('ServiceWorker is not available'); },
-      }),
-      writable: false,
-      configurable: false,
-    });
-  } catch { /* best effort */ }
+  const _stubServiceWorker = Object.freeze({
+    register: () => { throw new Error('ServiceWorker is not available'); },
+  });
+  freezeCustom(
+    navigator,
+    'serviceWorker',
+    { value: _stubServiceWorker, writable: false },
+    (current) => current === _stubServiceWorker,
+  );
 }
 
 // --- DOM: block iframe creation ---
@@ -120,5 +108,17 @@ freezeValue(document, 'createElement', (tagName: string, options?: ElementCreati
   }
   return _createElement(tagName, options);
 });
+
+// --- WebRTC: gated on the decision the host resolved before this realm ---
+// Read and clear the policy global first so nothing downstream can observe or
+// rewrite it. An absent policy denies, which is what makes a subframe (no
+// bootstrap, so no policy) fail closed.
+installWebRtcPolicy(window, consumeWebRtcPolicy(window));
+
+// --- Report: every lock above has been attempted, so a failure can throw ---
+// A lock that did not take is a hole in the sandbox. Reporting last means the
+// throw costs no coverage, and it means the host learns rather than serving
+// products into a realm it believes is closed.
+reportLockdownFailures();
 
 export {};

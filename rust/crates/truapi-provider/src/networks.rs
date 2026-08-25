@@ -224,6 +224,32 @@ impl EmbeddedChainProviderBuilder {
 
 #[cfg(test)]
 mod tests {
+    /// `ChainCloseReason::StreamEnded` documents that every connection this crate
+    /// hands a host runs on the embedded light client, whose stream ends only when
+    /// the connection is closed. That holds because the FFI registers no chains of
+    /// its own, so every source it resolves comes from this catalog. The `ws`
+    /// backend ends its stream when a socket drops, which would make that doc
+    /// false, so a catalog entry must never be one.
+    #[test]
+    fn every_catalog_source_is_light_backed() {
+        for network in super::CATALOG.iter() {
+            let (_, sources) = super::network_sources(network).expect("bundled network resolves");
+            assert!(
+                !sources.is_empty(),
+                "{} contributed no sources, so this test would pass vacuously",
+                network.name
+            );
+            for (genesis, source) in sources {
+                assert!(
+                    matches!(source, crate::ChainSource::LightClient { .. }),
+                    "{} chain {} is not light-backed, which breaks the StreamEnded contract",
+                    network.name,
+                    hex::encode(genesis)
+                );
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

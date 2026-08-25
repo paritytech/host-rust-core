@@ -71,13 +71,16 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   bindings, and the `ios-swift` job compiles the package and its test target on
   pull requests touching `ios/`, `Package.swift`, the `Makefile` or `native*`,
   which is what catches a hand-written conformer that missed a new protocol
-  requirement. `TrUAPIHost.kt` and the embedding apps are compiled by neither.
+  requirement. `TrUAPIHost.kt` and the embedding apps are compiled by neither;
+  run `make android-check` after touching the Kotlin surface.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and `TrUAPIHostCore` both accept one.
   To publish the binary, include `@parity/ios-host <version>`
   in the `release:` PR title. The release workflow rebuilds and simulator-tests
   the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
-  only after the asset is live. `publish.sh <version>` is the manual fallback.
+  only after the asset is live. When the title also names an npm package, the
+  iOS job waits on that publish being confirmed on npm.
+  `publish.sh <version>` is the manual fallback.
   Keep `useLocalBinary = false` in committed manifests; `true` is for local
   testing against the rebuilt XCFramework only.
 

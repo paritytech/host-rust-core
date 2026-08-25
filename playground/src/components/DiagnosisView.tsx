@@ -138,9 +138,9 @@ export function DiagnosisView({
           <span className="panel__label">About</span>
         </div>
         <p className="panel__desc">
-          Runs every SPA-compatible TrUAPI method against the connected host to
+          Runs every App-compatible TrUAPI method against the connected host to
           build a coverage report — which methods work, which fail, and which
-          aren&apos;t wired yet. Chat APIs run in the separate native Chat
+          aren&apos;t wired yet. Chat APIs run in the separate Worker Chat
           diagnosis. Methods run one at a time, in order; those that need your
           approval (signing, permission and resource requests) wait on your
           response before the run continues. When it finishes, copy the report

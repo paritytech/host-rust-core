@@ -842,6 +842,13 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
                 review.requesting_product_id, review.target_product_id
             ),
         ),
+        UserConfirmationReview::ProductSubtree(review) => (
+            "resolve account subtree",
+            format!(
+                "Product {} requested its account from your device.",
+                review.product_id
+            ),
+        ),
     }
 }
 
@@ -1198,7 +1205,7 @@ fn load_hex_key_map(path: &Path) -> HashMap<Vec<u8>, Vec<u8>> {
 
 /// Directory-safe name for one paired identity's storage namespace.
 ///
-/// The connected id is whatever the People-chain identity yields: a lite username
+/// The connected id is whatever the dotNS identity yields: a lite username
 /// when there is one, otherwise the free-form `full_username`. Only the former is
 /// guaranteed to satisfy [`crate::sessions::validate_name`], so a display name
 /// like `"Tarik Gul"` is rejected on both the space and the capitals.

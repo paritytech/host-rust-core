@@ -9,6 +9,7 @@ The package lives in the truapi repo next to the Rust core it wraps. `Package.sw
 The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 
 - [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostCore` (owning wrapper around the UniFFI-generated `NativeTrUApiCore`, with the localhost WS bridge, session controls, and native change notifications), `TrUAPIHostCoreProtocol`, `RuntimeConfig`, and `LocalhostBridgeBootstrap`.
+- [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) — `TrUAPIHost.installProductScripts(into:core:endpoint:)`, which registers the bootstrap and the lockdown container with the frame scopes the lockdown depends on and peeks the WebRTC decision. The supported way to wire a product web view.
 - the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
 - `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
 - [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
@@ -72,6 +73,81 @@ Run the package tests against an iOS simulator (the xcframework has no macOS sli
 # from the repo root
 xcodebuild test -scheme TrUAPIHost -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
+
+## Chat
+
+A host serving the Chat modality implements `ChatHostBridge` and opens the
+execution with `ProductExecutionKind.chat`. Hosts without it pass nothing and
+Chat calls answer unsupported.
+
+```swift
+// Called from a shared dispatch pool, so the backing store must be
+// thread-safe, and a slow call here stalls other product executions.
+final class MyChatBridge: ChatHostBridge, @unchecked Sendable {
+    private let store: ChatStore
+
+    init(store: ChatStore) { self.store = store }
+
+    func createRoom(roomId: String, name: String, icon: String) throws
+        -> ChatRoomRegistrationStatus
+    {
+        store.putRoom(roomId, name: name, icon: icon) ? .new : .exists
+    }
+
+    func registerBot(botId: String, name: String, icon: String) throws
+        -> ChatBotRegistrationStatus
+    {
+        store.putBot(botId, name: name, icon: icon) ? .new : .exists
+    }
+
+    func postMessage(roomId: String, content: ChatMessageContent) throws -> String {
+        if case .file = content {
+            // Declining a variant is how a host opts out of rendering one.
+            // Throw `HostRejection.Rejected` (or a `LocalizedError`) so the
+            // product receives your reason rather than a bare type name.
+            throw HostRejection.Rejected(reason: "this host cannot render file cards")
+        }
+        return store.append(roomId, content: content)
+    }
+
+    func listRooms() throws -> [ChatRoom] { store.rooms() }
+}
+
+let runtime = try TrUAPIHostRuntime(
+    bridge: bridge,
+    runtimeConfig: HostRuntimeConfig(
+        hostName: "My Chat Host",
+        peopleChainGenesisHash: peopleChainGenesisHash,   // exactly 32 bytes
+        bulletinChainGenesisHash: bulletinChainGenesisHash
+    )
+)
+// Chat needs an active session; without one every Chat call answers denied.
+try runtime.activateLocalSession(secret: secret)
+
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(productId: "chat.dot", executionKind: .chat),
+    chat: MyChatBridge(store: store)
+)
+let endpoint = try execution.startWsBridge()
+```
+
+The core bounds and screens the product-supplied fields it forwards — ids,
+names, icons, message bodies, URLs, and the action and media counts. Ids and
+names are also normalized; a message body is bounded and screened but passed
+through byte-for-byte, and `ChatFile.sizeBytes` is product-asserted and
+unverified. Contextual output escaping is the host's job.
+
+The id `postMessage` returns is the correlation key `ActionTrigger.messageId`
+carries back, so it must name that message for as long as the host stores it.
+Ids arriving *in* a `Reaction` or `ReactionRemoved` are product-chosen and
+untrusted: they may name a message in another room, or one that never existed.
+
+On the execution: `publishChatAction` delivers a user's action back to the
+product, buffering up to 64 before it subscribes; `notifyChatRoomsChanged`
+republishes the room list; `renderCustomMessage` returns a stream of typed UI
+for a stored custom message; and `sessionChatIdentityKey` reads the session's
+X25519 chat identity private key, which must not be logged or persisted.
 
 ## Architecture
 
@@ -147,6 +223,23 @@ if report.slotsExhausted {
 ```
 
 One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed wake-up is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a `BGTaskScheduler` host should read a value under an hour as the boundary approaching rather than requesting a wake-up every hour for a pass that will almost always report `alreadyAllocated`.
+
+### Answering the scheduler
+
+A pass reports per target and only throws when it could not run at all, so decide from the report rather than from the absence of an error:
+
+- every status `Registered` or `AlreadyAllocated`: completed successfully.
+- any status `Failed`: complete unsuccessfully and submit a fresh request, since iOS does not reschedule one for you. The grace window means that request can wait for the next opportunistic wake rather than a tight loop.
+- any status `SkippedExhausted`, or `report.slotsExhausted`: completed successfully. Retrying cannot free a slot, only time or a replacement can, so a retry here only burns background budget. It does mean an allowance went unrenewed, so tell the person rather than only logging it.
+- a throw carrying `Disconnected` before a session is restored: not ready rather than failed. Restore a session and let the next wake run the pass.
+
+Scheduling is one of three layers, and only the first needs the OS:
+
+1. a `BGTaskScheduler` wake, which is the only one that covers an app nobody opens.
+2. a pass on session activation, which covers an app somebody does.
+3. on-demand allocation, which registers a product's own account for the current period when that product asks for a statement-store allowance and none is held. That covers the asking product, not the rest of the ledger, so it narrows the window rather than closing it.
+
+`lastStatementRenewalReport()` returns the most recent pass the in-process loop ran, or `nil` if none has, which is "not yet" rather than healthy. The loop returns nothing to its caller, so this is where a host driving it reads what it achieved; checking on resume is enough to catch an exhausted period. A direct `renewStatementAllowances()` hands back its own report and does not write here.
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead. It suits a host that stays resident; on iOS a suspended app stops ticking, so prefer `BGTaskScheduler` driving the one-shot call. A pass has no cancellation, so several targets can outlast a short background budget; targets registered before the process is killed are not lost, and read back as already allocated next time.
 
@@ -271,22 +364,20 @@ core.notifyPreimageChanged(key: preimageKey, value: preimageBytesOrNil)
 core.notifyChainResponse(connectionId: chainConnectionId, json: jsonRpcResponse)
 core.notifyChainClosed(connectionId: chainConnectionId)
 
-// Both scripts must be registered before the web view loads the product page,
-// and in this order: the bootstrap publishes the bridge endpoint on
-// `window.__truapi_localhost`; the container script then locks down the
-// page's platform APIs and reads that endpoint at eval time.
+// Register the bootstrap + lockdown container before the web view loads the
+// product page. `installProductScripts` owns the two properties that are easy to
+// get wrong and silently fatal: the container goes into EVERY frame (a frame
+// without it has pristine fetch/WebSocket/RTCPeerConnection, and a product
+// reaches one through an `<iframe>` in its own HTML), while the bootstrap stays
+// main-frame-only so a subframe has no bridge and no policy and fails closed. It
+// also resolves the WebRTC decision by peeking the core rather than prompting.
+// Do not register these scripts by hand.
 let contentController = WKUserContentController()
-let bootstrapScript = LocalhostBridgeBootstrap.script(port: endpoint.port, token: endpoint.token)
-contentController.addUserScript(WKUserScript(
-    source: bootstrapScript,
-    injectionTime: .atDocumentStart,
-    forMainFrameOnly: true
-))
-contentController.addUserScript(WKUserScript(
-    source: try ContainerScriptBundle.load(),
-    injectionTime: .atDocumentStart,
-    forMainFrameOnly: true
-))
+try TrUAPIHost.installProductScripts(
+    into: contentController,
+    core: core,
+    endpoint: endpoint
+)
 
 let configuration = WKWebViewConfiguration()
 configuration.userContentController = contentController

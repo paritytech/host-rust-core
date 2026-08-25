@@ -91,9 +91,9 @@ pub(crate) struct AuthoritySession {
     pub public_key: [u8; 32],
     /// Identity account resolved from the signing host, when available.
     pub identity_account_id: Option<[u8; 32]>,
-    /// Lightweight username resolved from People-chain identity, when available.
+    /// Lightweight username resolved from the dotNS contracts on Asset Hub, when available.
     pub lite_username: Option<String>,
-    /// Fully qualified username resolved from People-chain identity, when available.
+    /// Fully qualified username resolved from the dotNS contracts on Asset Hub, when available.
     pub full_username: Option<String>,
     /// Opaque session token used to reject stale pre-confirmation snapshots.
     pub validation_id: Vec<u8>,
@@ -364,6 +364,17 @@ pub(crate) trait ProductAuthority: Send + Sync {
         session: &AuthoritySession,
         product_id: String,
     ) -> Result<[u8; 32], AuthorityError>;
+
+    /// Whether resolving `product_id`'s subtree would reach the Account Holder
+    /// over SSO rather than resolve locally. Gates a host consent prompt: a
+    /// pairing host returns `true` only on a cold cache; a signing host derives
+    /// locally and returns `false`. Required rather than defaulted, so a new
+    /// authority cannot skip the consent gate by omission.
+    async fn subtree_resolution_reaches_account_holder(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+    ) -> bool;
 
     /// Sign an RFC-0023 Merlin transcript with a product account.
     async fn sign_vrf(

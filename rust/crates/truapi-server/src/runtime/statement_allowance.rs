@@ -213,6 +213,7 @@ pub async fn fetch_chain_state(rpc: &RpcClient) -> Result<ChainState, StatementA
         transaction_version,
         genesis_hash,
         nonce: 0,
+        restrict_origins: false,
     })
 }
 
@@ -317,6 +318,7 @@ impl ChainContextCache {
                 transaction_version,
                 genesis_hash,
                 nonce: 0,
+                restrict_origins: false,
             },
         };
         self.entries
@@ -1602,6 +1604,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -1686,6 +1689,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let memberships = pooled_memberships();
         let candidates = pooled_candidates();
@@ -1726,6 +1730,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let memberships = pooled_memberships();
         let candidates = pooled_candidates();
@@ -2228,6 +2233,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -2286,6 +2292,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -2342,6 +2349,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {
@@ -2391,6 +2399,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         let ring = RingParams {

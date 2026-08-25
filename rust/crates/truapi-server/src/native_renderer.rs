@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
-use truapi::{Subscription, latest::ProductChatCustomMessageRenderItem};
+use truapi::{Subscription, latest::GenericError, latest::ProductChatCustomMessageRenderItem};
 
 use crate::subscription::Spawner;
 
@@ -14,8 +14,13 @@ pub trait NativeCustomRendererObserver: Send + Sync {
     /// Deliver a complete replacement tree.
     fn on_update(&self, node: ProductChatCustomMessageRenderItem);
 
-    /// Report that the renderer stream ended.
+    /// Report that the renderer stream ended without drawing further trees.
+    /// The last tree delivered stands.
     fn on_complete(&self);
+
+    /// Report that the product could not serve this render. The last tree
+    /// delivered, if any, is partial and must not be treated as final.
+    fn on_error(&self, reason: String);
 }
 
 /// Cancellable native observation of one custom-message render instance.
@@ -47,7 +52,7 @@ impl Drop for NativeCustomRendererSubscription {
 
 #[cfg_attr(not(feature = "ws-bridge"), allow(dead_code))]
 pub(crate) fn observe_renderer(
-    mut stream: Subscription<ProductChatCustomMessageRenderItem>,
+    mut stream: Subscription<Result<ProductChatCustomMessageRenderItem, GenericError>>,
     observer: Arc<dyn NativeCustomRendererObserver>,
     spawner: Spawner,
 ) -> Arc<NativeCustomRendererSubscription> {
@@ -55,8 +60,11 @@ pub(crate) fn observe_renderer(
     (spawner)(Box::pin(async move {
         let _ = Abortable::new(
             async move {
-                while let Some(node) = stream.next().await {
-                    observer.on_update(node);
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(node) => observer.on_update(node),
+                        Err(error) => return observer.on_error(error.reason),
+                    }
                 }
                 observer.on_complete();
             },
