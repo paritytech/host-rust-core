@@ -32,9 +32,9 @@ use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
 use crate::runtime::{
-    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairingHostRole,
-    ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices, SigningHostRole,
-    answer_remote_message, respond_to_pairing,
+    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
+    PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
+    SigningHostRole, answer_remote_message, respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -586,6 +586,20 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Resume a previously paired host from its persisted public peer keys.
+    ///
+    /// Only [`ResponderExit::PeerDisconnected`] authorizes removing the durable
+    /// pairing. Retain it after [`ResponderExit::SubscriptionEnded`] or an error.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.resume_pairing"))]
+    pub async fn resume_pairing(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<ResponderExit, v01::GenericError> {
+        resume_pairing(self.services.clone(), self.signing_host.clone(), peer)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Answer one decrypted SSO remote message with this signing host.
     ///
     /// Session control stays with the caller: `Disconnected` is reported as an
@@ -624,6 +638,18 @@ impl SigningHostRuntime {
     ) -> Result<(), v01::GenericError> {
         self.signing_host
             .track_statement_renewal_targets(targets)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Stop renewing one fixed statement account.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.untrack_statement_renewal_account"))]
+    pub async fn untrack_statement_renewal_account(
+        &self,
+        account_id: &[u8; 32],
+    ) -> Result<bool, v01::GenericError> {
+        self.signing_host
+            .untrack_statement_renewal_account(account_id)
             .await
             .map_err(|reason| v01::GenericError { reason })
     }

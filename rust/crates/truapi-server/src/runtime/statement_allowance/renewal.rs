@@ -38,7 +38,7 @@ use super::rpc::RpcClient;
 use super::slot::{STATEMENT_STORE_PERIOD_SECONDS, SlotError};
 use super::{
     CollectionCandidate, CollectionMembership, PooledRegistrationParams, RegistrationOutcome,
-    StatementAllowanceError, register_statement_account_pooled, scan_collections,
+    StatementAllowanceError, allocated_in, register_statement_account_pooled, scan_collections,
 };
 
 /// Cap between renewal ticks for the in-process loop.
@@ -162,26 +162,27 @@ pub struct RenewalChainContext<'a> {
 /// and stopping early once the host's slots for the period are exhausted
 /// (remaining targets are reported as skipped).
 ///
-/// Slots claimed earlier in the pass are protected from replacement by later
-/// targets. Without that, a pass with more targets than the period has slots
-/// takes each slot back off the target before it: the run would undo its own
-/// work and never settle. Protecting them turns that into an exhaustion report,
-/// which is the honest answer when the ledger wants more slots than exist.
+/// Slots already held by any target, plus slots claimed earlier in the pass,
+/// are protected from replacement. Without that, a new target early in the
+/// ledger can evict a paired device that appears later, or targets can take
+/// slots back from each other within one pass. Protecting them turns that into
+/// an exhaustion report, which is the honest answer when the ledger wants more
+/// slots than exist.
 ///
-/// `registration_lock` is held per target, not for the whole pass, so an
-/// on-demand allocation sharing the lock waits at most one registration.
+/// `registration_lock` is held for one target operation at a time, not for the
+/// whole pass, so an on-demand allocation sharing the lock waits at most one
+/// scan or registration.
 pub async fn renew_targets(
     context: &RenewalChainContext<'_>,
     period: u32,
     targets: &[ResolvedRenewalTarget],
     registration_lock: &Mutex<()>,
 ) -> StatementRenewalReport {
-    let mut results = Vec::with_capacity(targets.len());
-    let mut claimed: Vec<(PersonhoodCollection, u32)> = Vec::new();
+    let mut target_scans = Vec::with_capacity(targets.len());
     for target in targets {
-        let result = {
+        let scans = {
             let _guard = registration_lock.lock().await;
-            let scans = match scan_collections(
+            scan_collections(
                 context.rpc,
                 context.metadata,
                 context.candidates,
@@ -190,13 +191,26 @@ pub async fn renew_targets(
                 true,
             )
             .await
-            {
-                Ok(scans) => scans,
-                Err(err) => {
-                    results.push(Err(RenewalFailure::from(err)));
-                    continue;
-                }
-            };
+            .map_err(RenewalFailure::from)
+        };
+        target_scans.push(scans);
+    }
+
+    let mut claimed: Vec<(PersonhoodCollection, u32)> = target_scans
+        .iter()
+        .filter_map(|scans| scans.as_ref().ok().and_then(|scans| allocated_in(scans)))
+        .collect();
+    let mut results = Vec::with_capacity(targets.len());
+    for (target, scans) in targets.iter().zip(target_scans) {
+        let scans = match scans {
+            Ok(scans) => scans,
+            Err(failure) => {
+                results.push(Err(failure));
+                continue;
+            }
+        };
+        let result = {
+            let _guard = registration_lock.lock().await;
             register_statement_account_pooled(
                 context.rpc,
                 context.metadata,
@@ -223,7 +237,10 @@ pub async fn renew_targets(
                     seq, collection, ..
                 }
                 | RegistrationOutcome::AlreadyAllocated { seq, collection } => {
-                    claimed.push((*collection, *seq));
+                    let claimed_slot = (*collection, *seq);
+                    if !claimed.contains(&claimed_slot) {
+                        claimed.push(claimed_slot);
+                    }
                 }
             }
         }
@@ -383,13 +400,14 @@ mod tests {
             target_with("second", [0xa2; 32]),
         ];
 
-        // Per target: ten occupied slots (seq 0 oldest), the chain clock, the ring
-        // revision, then the post-submit verification read. The scripted chain
-        // does not mutate, so both passes see the same table; only the protection
-        // of slot 0 can push the second target elsewhere.
+        // Every target's slot table is scanned before registration begins. The
+        // scripted chain does not mutate, so only protection of slot 0 can push
+        // the second target elsewhere.
         let mut owned = Vec::new();
-        for target in &targets {
+        for _ in &targets {
             owned.extend((0..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
+        }
+        for target in &targets {
             owned.push(clock());
             owned.push("null".to_string());
             owned.push(entry(target.account_id, NOW));
@@ -427,6 +445,94 @@ mod tests {
             seqs,
             vec![0, 1],
             "the second target must not reclaim the first target's slot: {:?}",
+            report.outcomes
+        );
+    }
+
+    #[test]
+    fn a_new_target_cannot_replace_an_existing_later_target() {
+        use parity_scale_codec::Encode;
+        use subxt_rpcs::RpcClient as HostRpcClient;
+
+        use crate::runtime::statement_allowance::CollectionMembership;
+        use crate::runtime::statement_allowance::extension::{ChainState, Metadata};
+        use crate::runtime::statement_allowance::proof;
+        use crate::runtime::statement_allowance::ring::RingParams;
+        use crate::runtime::statement_allowance::rpc::RpcClient;
+        use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
+
+        const FIXTURE: &[u8] =
+            include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+        const NOW: u64 = 10_000_000;
+
+        fn entry(account: [u8; 32], since: u64) -> String {
+            format!(r#""0x{}""#, hex::encode((account, 0u32, since).encode()))
+        }
+        fn clock() -> String {
+            format!(r#""0x{}""#, hex::encode((NOW * 1_000).encode()))
+        }
+
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+            restrict_origins: false,
+        };
+        let entropy = [0x11; 32];
+        let memberships = [CollectionMembership {
+            entropy,
+            ring: RingParams {
+                collection: PersonhoodCollection::LitePeople,
+                members: vec![proof::member_key(entropy)],
+                exponent: 9,
+                ring_index: 0,
+                block_hash: "0xfinal".to_string(),
+            },
+        }];
+        let new_target = target_with("new", [0xa1; 32]);
+        let existing_target = target_with("existing", [0xa2; 32]);
+        let targets = [new_target.clone(), existing_target.clone()];
+
+        let mut owned = vec![entry(existing_target.account_id, 1_000)];
+        owned.extend((1..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
+        owned.push(entry(existing_target.account_id, 1_000));
+        owned.push(clock());
+        owned.push("null".to_string());
+        owned.push(entry(new_target.account_id, NOW));
+        let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let scripted = ScriptedRpc::new(responses);
+        scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let candidates = [CollectionCandidate {
+            collection: PersonhoodCollection::LitePeople,
+            entropy,
+        }];
+        let context = RenewalChainContext {
+            rpc: &rpc,
+            metadata: &metadata,
+            chain_state: &chain_state,
+            candidates: &candidates,
+            memberships: &memberships,
+        };
+        let lock = Mutex::new(());
+        let report = futures::executor::block_on(renew_targets(&context, 7, &targets, &lock));
+
+        let seqs: Vec<u32> = report
+            .outcomes
+            .iter()
+            .filter_map(|outcome| match outcome.status {
+                TargetRenewalStatus::Registered { seq, .. }
+                | TargetRenewalStatus::AlreadyAllocated { seq } => Some(seq),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seqs,
+            vec![1, 0],
+            "the new target must not replace the later target's existing slot: {:?}",
             report.outcomes
         );
     }

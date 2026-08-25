@@ -19,7 +19,7 @@ use truapi_platform::{CoreStorage, CoreStorageKey};
 use super::SigningHost;
 use super::sso_responder::current_unix_secs;
 use crate::host_logic::product_account::{
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+    derive_identity_keypair, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
 };
 use crate::runtime::RuntimeServices;
 use crate::runtime::authority::ProductAuthority;
@@ -183,6 +183,30 @@ async fn track_targets(
     write_entries(storage, &entries).await
 }
 
+async fn untrack_account(
+    storage: &(impl CoreStorage + ?Sized),
+    ledger_lock: &Mutex<()>,
+    account_id: &[u8; 32],
+) -> Result<bool, String> {
+    let _guard = ledger_lock.lock().await;
+    let mut entries = read_entries(storage).await?;
+    let original_len = entries.len();
+    entries.retain(|entry| {
+        !matches!(
+            &entry.target,
+            StatementRenewalTarget::Account {
+                account_id: existing,
+                ..
+            } if existing == account_id
+        )
+    });
+    if entries.len() == original_len {
+        return Ok(false);
+    }
+    write_entries(storage, &entries).await?;
+    Ok(true)
+}
+
 async fn write_entries(
     storage: &(impl CoreStorage + ?Sized),
     entries: &[LedgerEntry],
@@ -234,8 +258,7 @@ fn resolve_target(
             })
         }
         StatementRenewalTarget::WalletSso => {
-            let pair = derive_sr25519_hard_path(entropy, &["wallet", "sso"])
-                .map_err(|err| err.to_string())?;
+            let pair = derive_identity_keypair(entropy).map_err(|err| err.to_string())?;
             Ok(ResolvedRenewalTarget {
                 label,
                 account_id: pair.public.to_bytes(),
@@ -259,6 +282,19 @@ pub(super) async fn track(
         signing_host.renewal.ledger_lock(),
         owner_key(&entropy)?,
         targets,
+    )
+    .await
+}
+
+/// Stop renewing one fixed statement account for the active identity.
+pub(super) async fn untrack_account_for_signing_host(
+    signing_host: &SigningHost,
+    account_id: &[u8; 32],
+) -> Result<bool, String> {
+    untrack_account(
+        signing_host.platform.as_ref(),
+        signing_host.renewal.ledger_lock(),
+        account_id,
     )
     .await
 }
@@ -934,9 +970,9 @@ mod tests {
     }
 
     #[test]
-    fn wallet_sso_target_resolves_to_wallet_sso_derivation() {
+    fn wallet_sso_target_resolves_to_the_responder_identity() {
         let entropy = [7u8; 32];
-        let expected = derive_sr25519_hard_path(&entropy, &["wallet", "sso"])
+        let expected = crate::host_logic::product_account::derive_identity_keypair(&entropy)
             .unwrap()
             .public
             .to_bytes();
@@ -949,6 +985,64 @@ mod tests {
                 account_id: expected,
             }
         );
+    }
+
+    #[test]
+    fn untracking_one_device_preserves_wallet_sso_and_other_devices() {
+        let storage = MemStorage::default();
+        let first = StatementRenewalTarget::Account {
+            account_id: [8; 32],
+            label: "device:08".to_string(),
+        };
+        let second = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device:09".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(
+                &storage,
+                &lock(),
+                OWNER,
+                vec![StatementRenewalTarget::WalletSso, first, second.clone()],
+            )
+            .await
+            .unwrap();
+
+            assert!(untrack_account(&storage, &lock(), &[8; 32]).await.unwrap());
+            assert_eq!(
+                read_targets(&storage, OWNER).await.unwrap(),
+                vec![StatementRenewalTarget::WalletSso, second]
+            );
+        });
+    }
+
+    #[test]
+    fn concurrent_track_and_untrack_preserve_an_unrelated_device() {
+        let storage = YieldingStorage::default();
+        let ledger_lock = lock();
+        let first = StatementRenewalTarget::Account {
+            account_id: [8; 32],
+            label: "device:08".to_string(),
+        };
+        let second = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device:09".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &ledger_lock, OWNER, vec![first])
+                .await
+                .unwrap();
+            let (removed, tracked) = futures::join!(
+                untrack_account(&storage, &ledger_lock, &[8; 32]),
+                track_targets(&storage, &ledger_lock, OWNER, vec![second.clone()]),
+            );
+            assert!(removed.unwrap());
+            tracked.unwrap();
+
+            assert_eq!(read_targets(&storage.0, OWNER).await.unwrap(), vec![second]);
+        });
     }
 
     #[test]

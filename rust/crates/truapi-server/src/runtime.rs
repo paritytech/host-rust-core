@@ -65,12 +65,13 @@ pub(crate) use chat::{ChatConnection, chat_platform_for};
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use services::RuntimeServices;
-pub use signing_host::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
     LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
+    resume_pairing,
 };
+pub use signing_host::{PairedSsoPeer, ResponderExit};
 
 pub(crate) use authority::AuthorityError;
 use authority::{
