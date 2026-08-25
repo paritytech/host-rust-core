@@ -447,7 +447,7 @@ impl SigningHostRuntime {
 
     /// Build one product connection with adapters scoped to one native
     /// executable while sharing this runtime's authentication and services.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
     pub(crate) fn product_runtime_with(
         &self,
         product: ProductContext,
