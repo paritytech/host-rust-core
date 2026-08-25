@@ -226,7 +226,7 @@ describe("generated client transport", () => {
                     id: W.SYSTEM_GET_PRODUCT_CONTEXT.response,
                     value: versionedV1(
                         ScaleResult(
-                            T.ProductContext,
+                            T.GetProductContextResponse,
                             CallError(T.VersionedHostGetProductContextError),
                         ),
                     ).enc({

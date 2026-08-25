@@ -25,7 +25,7 @@ Tracking issue: [#503](https://github.com/paritytech/host-rust-core/issues/503).
 ## Detailed Design
 
 ```ts
-interface ProductContext {
+interface GetProductContextResponse {
   productId: string;
 }
 ```

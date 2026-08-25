@@ -239,7 +239,6 @@ fn emit_wasm_adapter(
             }
         }
     }
-    imports.retain(|name| !local.contains(name));
 
     let mut out = String::new();
     writedoc!(

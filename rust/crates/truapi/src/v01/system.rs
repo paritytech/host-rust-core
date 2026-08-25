@@ -3,9 +3,9 @@ use parity_scale_codec::{Decode, Encode};
 
 use super::common::GenericError;
 
-/// Product context bound to the current host runtime.
+/// Response containing the product context bound to the current host runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct ProductContext {
+pub struct GetProductContextResponse {
     /// Full canonical identifier used for authorization and account derivation.
     pub product_id: String,
 }

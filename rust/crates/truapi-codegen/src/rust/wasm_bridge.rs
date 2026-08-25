@@ -531,18 +531,18 @@ fn rust_type(ty: &TypeRef, ctx: &BridgeCtx<'_>) -> Result<String> {
             rust_type(&args[0], ctx)?,
             rust_type(&args[1], ctx)?
         )),
-        TypeRef::Named { name, args } if ctx.local_types.contains(name.as_str()) => {
-            if args.is_empty() {
-                Ok(format!("truapi_platform::{name}"))
-            } else {
-                bail!("generic platform type `{name}` is not supported in wasm bridge")
-            }
-        }
         TypeRef::Named { name, args } if ctx.api_types.contains_key(name.as_str()) => {
             if args.is_empty() {
                 Ok(format!("v01::{name}"))
             } else {
                 bail!("generic API type `{name}` is not supported in wasm bridge")
+            }
+        }
+        TypeRef::Named { name, args } if ctx.local_types.contains(name.as_str()) => {
+            if args.is_empty() {
+                Ok(format!("truapi_platform::{name}"))
+            } else {
+                bail!("generic platform type `{name}` is not supported in wasm bridge")
             }
         }
         TypeRef::Named { name, .. } => Ok(name.clone()),
@@ -905,39 +905,5 @@ fn collect_local_from_type<'a>(
             }
         }
         TypeRef::Primitive(_) | TypeRef::Generic(_) | TypeRef::Unit => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn platform_type_wins_an_api_name_collision() {
-        let api_product_context = TypeDef {
-            name: "ProductContext".to_string(),
-            module_path: vec!["truapi".to_string(), "v01".to_string()],
-            generic_params: vec![],
-            kind: TypeDefKind::Struct(vec![]),
-            docs: None,
-        };
-        let context = BridgeCtx {
-            api_types: BTreeMap::from([("ProductContext", &api_product_context)]),
-            codec_types: BTreeSet::from(["ProductContext"]),
-            local_types: BTreeSet::from(["ProductContext"]),
-            local_codec_types: BTreeSet::from(["ProductContext"]),
-        };
-
-        assert_eq!(
-            rust_type(
-                &TypeRef::Named {
-                    name: "ProductContext".to_string(),
-                    args: vec![],
-                },
-                &context,
-            )
-            .unwrap(),
-            "truapi_platform::ProductContext",
-        );
     }
 }
