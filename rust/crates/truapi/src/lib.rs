@@ -127,6 +127,9 @@ pub mod latest {
     /// Feature-support query result.
     pub type HostFeatureSupportedResponse =
         LatestOf<versioned::system::HostFeatureSupportedResponse>;
+    /// Product context bound to the current host runtime.
+    pub type HostGetProductContextResponse =
+        LatestOf<versioned::system::HostGetProductContextResponse>;
     /// Local storage operation error.
     pub type HostLocalStorageReadError =
         LatestOf<versioned::local_storage::HostLocalStorageReadError>;

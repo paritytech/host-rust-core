@@ -239,6 +239,7 @@ fn emit_wasm_adapter(
             }
         }
     }
+    imports.retain(|name| !local.contains(name));
 
     let mut out = String::new();
     writedoc!(
@@ -2006,5 +2007,26 @@ mod tests {
             method_with_param(TypeRef::Tuple(vec![codec])),
             "parameter `request`",
         );
+    }
+
+    #[test]
+    fn wasm_adapter_prefers_platform_codec_on_api_name_collision() {
+        let mut definition = platform_with_method(method_with_param(named("ProductContext")));
+        definition.types.push(TypeDef {
+            name: "ProductContext".to_string(),
+            module_path: vec!["truapi_platform".to_string()],
+            generic_params: Vec::new(),
+            kind: TypeDefKind::Struct(Vec::new()),
+            docs: None,
+        });
+        let local_codec_types = ["ProductContext".to_string()].into_iter().collect();
+        let mut api_codec_types = codec_types();
+        api_codec_types.insert("ProductContext".to_string());
+
+        let output = emit_wasm_adapter(&definition, &api_codec_types, &local_codec_types)
+            .expect("WASM adapter should render");
+
+        assert!(output.contains("import {\n  ProductContext,\n} from \"./host-callbacks.js\";"));
+        assert!(!output.contains("import {\n  ProductContext,\n} from \"@parity/truapi\";"));
     }
 }
