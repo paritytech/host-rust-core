@@ -179,7 +179,20 @@ export type CoreStorageKey =
    * public keys: every address derived from them already appears on the
    * reviews the host draws.
    */
-  | { tag: "ProductSubtree"; value: { sessionId: string; productId: string } };
+  | { tag: "ProductSubtree"; value: { sessionId: string; productId: string } }
+  /**
+   * Signing-host request replay state for one wallet and pairing peer.
+   *
+   * The value is a versioned, bounded replay ledger owned by the core.
+   */
+  | {
+      tag: "SsoResponderRequestLedger";
+      value: {
+        rootPublicKey: Uint8Array;
+        peerStatementAccountId: Uint8Array;
+        peerEncryptionPublicKey: Uint8Array;
+      };
+    };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -606,6 +619,15 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
         sessionId: S.str,
         productId: S.str,
       }) as S.Codec<{ sessionId: string; productId: string }>,
+      SsoResponderRequestLedger: S.Struct({
+        rootPublicKey: S.Bytes(32),
+        peerStatementAccountId: S.Bytes(32),
+        peerEncryptionPublicKey: S.Bytes(32),
+      }) as S.Codec<{
+        rootPublicKey: Uint8Array;
+        peerStatementAccountId: Uint8Array;
+        peerEncryptionPublicKey: Uint8Array;
+      }>,
     }),
 );
 

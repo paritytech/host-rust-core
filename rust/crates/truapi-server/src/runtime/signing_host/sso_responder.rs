@@ -24,6 +24,7 @@ use truapi_platform::{
 };
 
 use super::SigningHost;
+use super::sso_replay::{ReplayExecution, SsoReplayScope, execute_once};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::chain_runtime::RuntimeFailure;
 use crate::host_logic::entropy::root_entropy_source;
@@ -47,7 +48,10 @@ use crate::host_logic::sso::pairing::{
     derive_identity_chat_private_key, derive_x25519_keypair_from_entropy,
     encrypt_v2_handshake_response, establish_responder_session_info, v2, x25519_public_key,
 };
-use crate::host_logic::statement_store::{build_signed_statement, parse_new_statements_result};
+use crate::host_logic::statement_store::{
+    build_signed_statement, current_unix_secs as statement_current_unix_secs,
+    parse_new_statements_result,
+};
 use crate::runtime::authority::{
     AccountAliasAuthorityRequest, AuthorityError, CreateProofAuthorityRequest,
     CreateTransactionAuthorityRequest, ListRingVrfKeysAuthorityRequest, ProductAuthority,
@@ -69,11 +73,8 @@ const SSO_ENCRYPTION_DOMAIN: &[u8] = b"sso";
 #[cfg(not(target_arch = "wasm32"))]
 const BULLETIN_AUTHORIZATION_WAIT: std::time::Duration = std::time::Duration::from_secs(240);
 
-/// Upper bound on remembered request ids for replay dedup within a serve loop.
-/// A peer that holds the session open cannot grow this without bound; requests
-/// older than the eviction window are past their statement expiry and can no
-/// longer be validly replayed.
-const MAX_SERVED_REQUEST_IDS: usize = 1024;
+/// Upper bound on undecodable request ids acknowledged within one serve loop.
+const MAX_DECODE_FAILURE_REQUEST_IDS: usize = 1024;
 
 fn derive_responder_identity(
     entropy: &[u8],
@@ -93,15 +94,13 @@ fn derive_responder_identity(
     ))
 }
 
-/// Bounded set of served request ids for replay dedup. Evicts the oldest id
-/// once the capacity is reached so a peer cannot force unbounded memory growth
-/// by streaming fresh request ids.
-struct ServedRequestIds {
+/// Bounded set of undecodable request ids acknowledged within one serve loop.
+struct DecodeFailureRequestIds {
     seen: HashSet<String>,
     order: VecDeque<String>,
 }
 
-impl ServedRequestIds {
+impl DecodeFailureRequestIds {
     fn new() -> Self {
         Self {
             seen: HashSet::new(),
@@ -116,7 +115,7 @@ impl ServedRequestIds {
             return false;
         }
         self.order.push_back(request_id);
-        if self.order.len() > MAX_SERVED_REQUEST_IDS
+        if self.order.len() > MAX_DECODE_FAILURE_REQUEST_IDS
             && let Some(evicted) = self.order.pop_front()
         {
             self.seen.remove(&evicted);
@@ -128,10 +127,36 @@ impl ServedRequestIds {
 /// Terminal outcome of one responder serve loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponderExit {
-    /// The pairing host announced `Disconnected`.
+    /// The pairing host announced `Disconnected`; its durable pairing may be removed.
     PeerDisconnected,
-    /// The statement subscription ended without a disconnect message.
+    /// The statement subscription ended without a disconnect message; retain the pairing and retry.
     SubscriptionEnded,
+}
+
+/// Public key material identifying one pairing host's resumable SSO session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PairedSsoPeer {
+    /// Pairing host's statement-store account id.
+    pub statement_account_id: [u8; 32],
+    /// Pairing host's X25519 public key.
+    pub encryption_public_key: [u8; 32],
+}
+
+struct EstablishedPairing {
+    session: SsoSessionInfo,
+    replay_scope: SsoReplayScope,
+}
+
+impl PairedSsoPeer {
+    /// Extract the public peer material carried by a pairing deeplink.
+    pub fn from_deeplink(deeplink: &str) -> Result<Self, String> {
+        let VersionedHandshakeProposal::V2(proposal) =
+            decode_pairing_deeplink(deeplink).map_err(|err| err.to_string())?;
+        Ok(Self {
+            statement_account_id: proposal.device.statement_account_id,
+            encryption_public_key: proposal.device.encryption_public_key,
+        })
+    }
 }
 
 /// Failure while deriving or allocating a Statement Store/Bulletin allowance.
@@ -224,8 +249,32 @@ pub(crate) async fn respond_to_pairing(
     signing_host: Arc<SigningHost>,
     deeplink: &str,
 ) -> Result<ResponderExit, String> {
-    let VersionedHandshakeProposal::V2(proposal) =
-        decode_pairing_deeplink(deeplink).map_err(|err| err.to_string())?;
+    let established = establish_pairing_session(&services, &signing_host, deeplink).await?;
+    serve_session(
+        services,
+        signing_host,
+        established.session,
+        established.replay_scope,
+    )
+    .await
+}
+
+/// Answer a pairing host's handshake without entering its long-lived serve loop.
+pub(crate) async fn establish_pairing(
+    services: Arc<RuntimeServices>,
+    signing_host: Arc<SigningHost>,
+    deeplink: &str,
+) -> Result<(), String> {
+    establish_pairing_session(&services, &signing_host, deeplink).await?;
+    Ok(())
+}
+
+async fn establish_pairing_session(
+    services: &Arc<RuntimeServices>,
+    signing_host: &Arc<SigningHost>,
+    deeplink: &str,
+) -> Result<EstablishedPairing, String> {
+    let peer = PairedSsoPeer::from_deeplink(deeplink)?;
     let entropy = signing_host
         .root_entropy()
         .map_err(|err| format!("signing host has no active local session: {err}"))?;
@@ -236,11 +285,7 @@ pub(crate) async fn respond_to_pairing(
     let (identity, identity_chat_private_key) = derive_responder_identity(&entropy)
         .map_err(|err| format!("responder identity derivation failed: {err}"))?;
     let device_enc_pub_key = x25519_public_key(services.device_encryption_secret().await?);
-    let session = establish_responder_session_info(
-        &identity,
-        proposal.device.statement_account_id,
-        proposal.device.encryption_public_key,
-    )?;
+    let session = responder_session_from_identity(&identity, peer)?;
 
     let success = v2::EncryptedResponse::Success(Box::new(v2::Success {
         identity_account_id: identity.statement_public_key,
@@ -250,11 +295,8 @@ pub(crate) async fn respond_to_pairing(
         device_enc_pub_key,
         root_entropy_source: root_entropy_source(&entropy),
     }));
-    let handshake = encrypt_v2_handshake_response(proposal.device.encryption_public_key, &success)?;
-    let topic = bootstrap_topic(
-        proposal.device.statement_account_id,
-        proposal.device.encryption_public_key,
-    );
+    let handshake = encrypt_v2_handshake_response(peer.encryption_public_key, &success)?;
+    let topic = bootstrap_topic(peer.statement_account_id, peer.encryption_public_key);
     let statement = build_signed_statement(
         &session,
         topic,
@@ -266,9 +308,58 @@ pub(crate) async fn respond_to_pairing(
         .statement_store
         .submit(statement, "sso-responder handshake")
         .await?;
-    debug!("answered pairing handshake, serving SSO session");
+    debug!("answered pairing handshake");
 
-    serve_session(services, signing_host, session).await
+    Ok(EstablishedPairing {
+        session,
+        replay_scope: SsoReplayScope {
+            root_public_key: root.public.to_bytes(),
+            peer_statement_account_id: peer.statement_account_id,
+            peer_encryption_public_key: peer.encryption_public_key,
+        },
+    })
+}
+
+/// Resume a previously paired SSO session from its persisted public peer keys.
+pub(crate) async fn resume_pairing(
+    services: Arc<RuntimeServices>,
+    signing_host: Arc<SigningHost>,
+    peer: PairedSsoPeer,
+) -> Result<ResponderExit, String> {
+    let entropy = signing_host
+        .root_entropy()
+        .map_err(|err| format!("signing host has no active local session: {err}"))?;
+    let root = derive_root_keypair_from_entropy(&entropy)
+        .map_err(|err| format!("root account derivation failed: {err}"))?;
+    let session = responder_session(&entropy, peer)?;
+    serve_session(
+        services,
+        signing_host,
+        session,
+        SsoReplayScope {
+            root_public_key: root.public.to_bytes(),
+            peer_statement_account_id: peer.statement_account_id,
+            peer_encryption_public_key: peer.encryption_public_key,
+        },
+    )
+    .await
+}
+
+fn responder_session(entropy: &[u8], peer: PairedSsoPeer) -> Result<SsoSessionInfo, String> {
+    let (identity, _) = derive_responder_identity(entropy)
+        .map_err(|err| format!("responder identity derivation failed: {err}"))?;
+    responder_session_from_identity(&identity, peer)
+}
+
+fn responder_session_from_identity(
+    identity: &ResponderIdentity,
+    peer: PairedSsoPeer,
+) -> Result<SsoSessionInfo, String> {
+    establish_responder_session_info(
+        identity,
+        peer.statement_account_id,
+        peer.encryption_public_key,
+    )
 }
 
 /// Serve inbound session statements until the session ends.
@@ -277,6 +368,7 @@ async fn serve_session(
     services: Arc<RuntimeServices>,
     signing_host: Arc<SigningHost>,
     session: SsoSessionInfo,
+    replay_scope: SsoReplayScope,
 ) -> Result<ResponderExit, String> {
     let rpc_client = services
         .statement_store
@@ -287,7 +379,7 @@ async fn serve_session(
         statement_store_rpc::subscribe_match_all(&rpc_client, &[session.session_id_peer])
             .await
             .map_err(|err| format!("sso-responder subscribe failed: {err}"))?;
-    let mut served_request_ids = ServedRequestIds::new();
+    let mut decode_failure_request_ids = DecodeFailureRequestIds::new();
 
     while let Some(item) = subscription.next().await {
         let value = item.map_err(|err| format!("sso-responder subscription failed: {err}"))?;
@@ -309,7 +401,7 @@ async fn serve_session(
                     // so the peer fails fast instead of waiting out its
                     // response deadline.
                     if let Some(request_id) = error.request_id
-                        && served_request_ids.insert(request_id.clone())
+                        && decode_failure_request_ids.insert(request_id.clone())
                     {
                         let ack = build_signed_session_response_statement(
                             &session,
@@ -340,10 +432,27 @@ async fn serve_session(
                     remote_message_id = %message.message_id,
                 );
             }
-            if !served_request_ids.insert(incoming.request_id.clone()) {
-                continue;
-            }
-            if let Some(exit) = serve_request(&services, &signing_host, &session, incoming).await? {
+            let request_id = incoming.request_id.clone();
+            let expires_at_unix_secs = incoming.expires_at_unix_secs;
+            let duplicate_exit = duplicate_request_exit(&incoming);
+            let execution = execute_once(
+                services.platform.as_ref(),
+                signing_host.sso_replay_locks(),
+                replay_scope,
+                &request_id,
+                expires_at_unix_secs,
+                statement_current_unix_secs(),
+                || serve_request(&services, &signing_host, &session, incoming),
+            )
+            .await?;
+            let exit = match execution {
+                ReplayExecution::Duplicate => {
+                    acknowledge_request(&services, &session, &request_id).await?;
+                    duplicate_exit
+                }
+                ReplayExecution::Executed(exit) => exit,
+            };
+            if let Some(exit) = exit {
                 return Ok(exit);
             }
         }
@@ -358,16 +467,7 @@ async fn serve_request(
     session: &SsoSessionInfo,
     incoming: IncomingSsoRequest,
 ) -> Result<Option<ResponderExit>, String> {
-    let ack = build_signed_session_response_statement(
-        session,
-        incoming.request_id.clone(),
-        SsoResponseCode::Success as u8,
-        fresh_statement_expiry(),
-    )?;
-    services
-        .statement_store
-        .submit_sso(ack, "sso-responder ack")
-        .await?;
+    acknowledge_request(services, session, &incoming.request_id).await?;
 
     for message in incoming.messages {
         let RemoteMessageData::V1(request) = message.data;
@@ -457,6 +557,36 @@ async fn serve_request(
         }
     }
     Ok(None)
+}
+
+async fn acknowledge_request(
+    services: &Arc<RuntimeServices>,
+    session: &SsoSessionInfo,
+    request_id: &str,
+) -> Result<(), String> {
+    let ack = build_signed_session_response_statement(
+        session,
+        request_id.to_string(),
+        SsoResponseCode::Success as u8,
+        fresh_statement_expiry(),
+    )?;
+    services
+        .statement_store
+        .submit_sso(ack, "sso-responder ack")
+        .await
+}
+
+fn duplicate_request_exit(incoming: &IncomingSsoRequest) -> Option<ResponderExit> {
+    incoming
+        .messages
+        .iter()
+        .any(|message| {
+            matches!(
+                &message.data,
+                RemoteMessageData::V1(v1::RemoteMessage::Disconnected)
+            )
+        })
+        .then_some(ResponderExit::PeerDisconnected)
 }
 
 struct ResponseResult {
@@ -1752,6 +1882,82 @@ mod tests {
         assert_ne!(advertised, sso_public);
     }
 
+    #[test]
+    fn pairing_deeplink_exposes_the_public_material_needed_to_resume() {
+        let proposal = VersionedHandshakeProposal::V2(v2::Proposal {
+            device: v2::Device {
+                statement_account_id: [0x31; 32],
+                encryption_public_key: [0x42; 32],
+            },
+            metadata: vec![v2::MetadataEntry(
+                v2::MetadataKey::HostName,
+                "paired host".to_string(),
+            )],
+        });
+        let deeplink = format!(
+            "polkadotapp://pair?handshake={}",
+            hex::encode(proposal.encode())
+        );
+
+        assert_eq!(
+            PairedSsoPeer::from_deeplink(&deeplink).unwrap(),
+            PairedSsoPeer {
+                statement_account_id: [0x31; 32],
+                encryption_public_key: [0x42; 32],
+            }
+        );
+    }
+
+    #[test]
+    fn persisted_peer_rebuilds_the_original_responder_session() {
+        let peer = PairedSsoPeer {
+            statement_account_id: [0x53; 32],
+            encryption_public_key: x25519_public_key([0x64; 32]),
+        };
+        let (identity, _) = derive_responder_identity(&ENTROPY).unwrap();
+        let mut expected = establish_responder_session_info(
+            &identity,
+            peer.statement_account_id,
+            peer.encryption_public_key,
+        )
+        .unwrap();
+        let resumed = responder_session(&ENTROPY, peer).unwrap();
+
+        assert_eq!(
+            crate::host_logic::statement_store::statement_public_key_from_secret(resumed.ss_secret)
+                .unwrap(),
+            expected.ss_public_key
+        );
+        expected.ss_secret = resumed.ss_secret;
+
+        assert_eq!(resumed, expected);
+    }
+
+    #[test]
+    fn replayed_disconnect_still_terminates_the_peer() {
+        let disconnect = IncomingSsoRequest {
+            request_id: "disconnect-1".to_string(),
+            expires_at_unix_secs: Some(200),
+            messages: vec![RemoteMessage {
+                message_id: "message-1".to_string(),
+                data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
+            }],
+        };
+        let ordinary = IncomingSsoRequest {
+            request_id: "empty-1".to_string(),
+            expires_at_unix_secs: Some(200),
+            messages: Vec::new(),
+        };
+
+        assert_eq!(
+            (
+                duplicate_request_exit(&disconnect),
+                duplicate_request_exit(&ordinary)
+            ),
+            (Some(ResponderExit::PeerDisconnected), None)
+        );
+    }
+
     fn response_payload(answer: AnsweredRemoteMessage) -> v1::RemoteMessage {
         let RemoteMessageData::V1(data) = answer.response.data;
         data
@@ -2038,25 +2244,25 @@ mod tests {
     }
 
     #[test]
-    fn served_request_ids_dedup_and_bound() {
-        let mut served = ServedRequestIds::new();
+    fn decode_failure_request_ids_dedup_and_bound() {
+        let mut served = DecodeFailureRequestIds::new();
 
         // First sighting is served; an immediate duplicate is rejected.
         assert!(served.insert("req-a".to_string()));
         assert!(!served.insert("req-a".to_string()));
 
         // Fill to capacity with distinct ids; the set never exceeds the bound.
-        for i in 0..MAX_SERVED_REQUEST_IDS {
+        for i in 0..MAX_DECODE_FAILURE_REQUEST_IDS {
             served.insert(format!("fill-{i}"));
         }
-        assert_eq!(served.seen.len(), MAX_SERVED_REQUEST_IDS);
-        assert_eq!(served.order.len(), MAX_SERVED_REQUEST_IDS);
+        assert_eq!(served.seen.len(), MAX_DECODE_FAILURE_REQUEST_IDS);
+        assert_eq!(served.order.len(), MAX_DECODE_FAILURE_REQUEST_IDS);
 
         // The oldest id ("req-a") has been evicted, so it is accepted again,
         // while a recent id is still deduped — memory stays bounded regardless
         // of how many ids a peer streams.
         assert!(served.insert("req-a".to_string()));
-        assert!(!served.insert(format!("fill-{}", MAX_SERVED_REQUEST_IDS - 1)));
-        assert_eq!(served.seen.len(), MAX_SERVED_REQUEST_IDS);
+        assert!(!served.insert(format!("fill-{}", MAX_DECODE_FAILURE_REQUEST_IDS - 1)));
+        assert_eq!(served.seen.len(), MAX_DECODE_FAILURE_REQUEST_IDS);
     }
 }

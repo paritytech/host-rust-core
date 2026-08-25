@@ -1222,6 +1222,18 @@ pub enum CoreStorageKey {
         /// Product whose hard subtree this key roots.
         product_id: String,
     },
+    /// Signing-host request replay state for one wallet and pairing peer.
+    ///
+    /// The value is a versioned, bounded replay ledger owned by the core.
+    #[codec(index = 11)]
+    SsoResponderRequestLedger {
+        /// Root public key of the wallet that served the requests.
+        root_public_key: [u8; 32],
+        /// Pairing peer's statement-store account id.
+        peer_statement_account_id: [u8; 32],
+        /// Pairing peer's X25519 public key.
+        peer_encryption_public_key: [u8; 32],
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1273,6 +1285,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None),
         CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
         CoreStorageKey::DeviceEncryptionKey => ("DeviceEncryptionKey", None),
+        CoreStorageKey::SsoResponderRequestLedger { .. } => ("SsoResponderRequestLedger", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }
@@ -1964,6 +1977,21 @@ mod tests {
     }
 
     #[test]
+    fn sso_responder_request_ledger_key_has_stable_encoding() {
+        let key = CoreStorageKey::SsoResponderRequestLedger {
+            root_public_key: [0x11; 32],
+            peer_statement_account_id: [0x22; 32],
+            peer_encryption_public_key: [0x33; 32],
+        };
+        let mut expected = vec![11];
+        expected.extend([0x11; 32]);
+        expected.extend([0x22; 32]);
+        expected.extend([0x33; 32]);
+
+        assert_eq!(key.encode(), expected);
+    }
+
+    #[test]
     fn product_context_encoding_matches_the_generated_host_codec() {
         // The generated TS host codec is
         // `S.Struct({productId: S.str, executionKind: S.Status("App", "Widget", "Worker")})`,
@@ -2073,6 +2101,15 @@ mod tests {
             (
                 CoreStorageKey::DeviceEncryptionKey,
                 "DeviceEncryptionKey",
+                None,
+            ),
+            (
+                CoreStorageKey::SsoResponderRequestLedger {
+                    root_public_key: [0x11; 32],
+                    peer_statement_account_id: [0x22; 32],
+                    peer_encryption_public_key: [0x33; 32],
+                },
+                "SsoResponderRequestLedger",
                 None,
             ),
         ] {
