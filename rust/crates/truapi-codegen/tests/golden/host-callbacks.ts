@@ -982,6 +982,10 @@ export interface CoreAdmin {
 
   /**
    * Read a stored permission authorization status without prompting.
+   *
+   * A device capability also resolves the host application's OS gate, so an
+   * OS refusal reads as `Denied` whatever is stored. Remote,
+   * identity-disclosure and account-access decisions have no OS gate.
    */
   getPermissionAuthorizationStatus(
     request: PermissionAuthorizationRequest,
@@ -989,6 +993,10 @@ export interface CoreAdmin {
 
   /**
    * Read stored permission authorization statuses without prompting.
+   *
+   * A device capability also resolves the host application's OS gate, so an
+   * OS refusal reads as `Denied` whatever is stored. Remote,
+   * identity-disclosure and account-access decisions have no OS gate.
    *
    * Results are returned in the same order as `requests`.
    */

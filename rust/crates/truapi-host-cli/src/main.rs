@@ -879,7 +879,7 @@ async fn run_pairing_host(
     .context("invalid pairing host config")?;
     let storage_platform = platform.clone();
     let chat_host = args.execution_kind.chat_host();
-    let status_host = storage_platform.clone() as Arc<dyn PermissionStatusHost>;
+    let status_host = platform.clone() as Arc<dyn PermissionStatusHost>;
     let pairing_runtime = Arc::new(PairingHostRuntime::with_chat_platform(
         platform,
         config,

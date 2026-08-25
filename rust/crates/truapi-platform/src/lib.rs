@@ -1008,12 +1008,20 @@ pub trait CoreAdmin: Send + Sync {
     async fn disconnect_session(&self) -> Result<(), GenericError>;
 
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     async fn get_permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError>;
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     ///
     /// Results are returned in the same order as `requests`.
     async fn get_permission_authorization_statuses(

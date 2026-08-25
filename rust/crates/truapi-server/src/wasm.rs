@@ -26,8 +26,9 @@ use truapi::v01;
 #[cfg(feature = "wasm-signing-host")]
 use truapi_platform::SigningHostConfig;
 use truapi_platform::{
-    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig, PlatformInfo,
-    ProductContext, ProductExecutionKind, RuntimeConfigValidationError,
+    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
+    PermissionStatusHost, PlatformInfo, ProductContext, ProductExecutionKind,
+    RuntimeConfigValidationError,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -750,6 +751,24 @@ struct WasmCoreInner {
 
 /// JS-callable handle to a long-lived pairing-host runtime shared by product
 /// cores.
+/// Build the platform from a JS bridge together with the optional capability
+/// adapters the host actually supplied. Both are the same object; a host that
+/// omits a group gets `None` and the core answers accordingly.
+fn wasm_platform(
+    bridge: Arc<JsBridge>,
+) -> (
+    Arc<WasmPlatform>,
+    Option<Arc<dyn ChatPlatform>>,
+    Option<Arc<dyn PermissionStatusHost>>,
+) {
+    let has_chat = bridge.has_chat();
+    let has_permission_status = bridge.has_permission_status();
+    let platform = Arc::new(WasmPlatform::new(bridge));
+    let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
+    let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
+    (platform, chat, status)
+}
+
 #[wasm_bindgen]
 pub struct WasmPairingHostRuntime {
     runtime: Rc<PairingHostRuntime>,
@@ -766,12 +785,7 @@ impl WasmPairingHostRuntime {
         console_error_panic_hook::set_once();
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
-        let has_chat = bridge.has_chat();
-        let has_permission_status = bridge.has_permission_status();
-        let platform = Arc::new(WasmPlatform::new(bridge));
-        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
-        let status_host = has_permission_status
-            .then(|| platform.clone() as Arc<dyn truapi_platform::PermissionStatusHost>);
+        let (platform, chat_platform, status_host) = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
@@ -1125,20 +1139,13 @@ impl WasmProductRuntime {
         let frame_sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
-        let has_chat = bridge.has_chat();
-        let has_permission_status = bridge.has_permission_status();
-        let platform = Arc::new(WasmPlatform::new(bridge));
-        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
-        let status_host = has_permission_status
-            .then(|| platform.clone() as Arc<dyn truapi_platform::PermissionStatusHost>);
+        let (platform, chat_platform, status_host) = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let (host_config, product) = runtime_config_from_js(&runtime_config)?;
-        // Built in two steps rather than through
-        // `ProductRuntime::from_platform_with_chat_platform`, because the
-        // status adapter is installed on the host runtime the product hangs
-        // off, not on the product runtime itself.
+        // The status adapter installs on the host runtime the product hangs off,
+        // not on the product runtime itself.
         let pairing =
             PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
         if let Some(status_host) = status_host {

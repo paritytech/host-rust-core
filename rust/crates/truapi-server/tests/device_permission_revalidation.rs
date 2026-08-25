@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use parity_scale_codec::{Decode, Encode};
 
 use truapi::v01;
-use truapi::versioned::permissions::{HostDevicePermissionRequest, HostDevicePermissionResponse};
+use truapi::versioned::permissions::HostDevicePermissionRequest;
 use truapi_platform::{DevicePermissionStatus, PermissionStatusHost};
 use truapi_platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
 use truapi_server::frame::{Payload, ProtocolMessage, request_ids};
@@ -87,15 +87,19 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
         .find(|message| message.payload.id == ids.response_id)
         .expect("dispatcher emitted a device-permission response");
 
-    // Wire payload is [version disc][result disc][body]; the versioned
-    // response decodes from the version byte and the body alone.
-    let payload = &response.payload.value;
-    assert_eq!(payload[1], 0x00, "expected an Ok result, got {payload:?}");
-    let mut versioned = vec![payload[0]];
-    versioned.extend_from_slice(&payload[2..]);
-    let HostDevicePermissionResponse::V1(decoded) =
-        HostDevicePermissionResponse::decode(&mut &versioned[..]).expect("decode response body");
-    decoded.granted
+    // Wire payload is [version disc][Ok disc][body]. Assert the whole thing
+    // against each possible answer rather than splicing bytes out by index.
+    for granted in [true, false] {
+        let mut expected = vec![0x00u8, 0x00u8];
+        v01::HostDevicePermissionResponse { granted }.encode_to(&mut expected);
+        if response.payload.value == expected {
+            return granted;
+        }
+    }
+    panic!(
+        "unexpected device-permission payload {:?}",
+        response.payload.value
+    )
 }
 
 #[test]

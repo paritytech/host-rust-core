@@ -597,6 +597,10 @@ impl ProductRuntimeHost {
 
 impl ProductRuntimeHost {
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_status"))]
     pub(crate) async fn permission_authorization_status(
         &self,
@@ -608,6 +612,10 @@ impl ProductRuntimeHost {
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_statuses"))]
     pub(crate) async fn permission_authorization_statuses(
         &self,

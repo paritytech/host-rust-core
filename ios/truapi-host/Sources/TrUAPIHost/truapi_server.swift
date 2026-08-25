@@ -2927,6 +2927,10 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     /**
      * Read a stored permission authorization status without prompting.
      *
+     * A device capability also resolves the host application's OS gate, so an
+     * OS refusal reads as `Denied` whatever is stored. Remote,
+     * identity-disclosure and account-access decisions have no OS gate.
+     *
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
      */
@@ -3241,6 +3245,10 @@ open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
 
     /**
      * Read a stored permission authorization status without prompting.
+     *
+     * A device capability also resolves the host application's OS gate, so an
+     * OS refusal reads as `Denied` whatever is stored. Remote,
+     * identity-disclosure and account-access decisions have no OS gate.
      *
      * Blocks the calling thread on the storage read, so call it off the host's
      * main/UI thread.
@@ -6668,7 +6676,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 49601) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 39901) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 57273) {

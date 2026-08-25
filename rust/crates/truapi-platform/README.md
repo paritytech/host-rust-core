@@ -47,6 +47,9 @@ optional group on the host-callback surface.
 Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`.
 Omitting `PermissionStatusHost` leaves device grants resolving from stored
 state alone, which is what a host with no OS permission model does anyway.
+Serving it gates both halves of the surface: a device permission request and a
+status read through `CoreAdmin` resolve the same two gates, so a settings
+screen never reports a capability as usable when the OS refuses it.
 
 ## Core-Owned Admin API
 

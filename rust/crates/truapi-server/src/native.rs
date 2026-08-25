@@ -1244,6 +1244,10 @@ impl NativeTrUApiCore {
 
     /// Read a stored permission authorization status without prompting.
     ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
+    ///
     /// Blocks the calling thread on the storage read, so call it off the host's
     /// main/UI thread.
     pub fn permission_authorization_status(

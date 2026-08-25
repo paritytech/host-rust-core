@@ -131,13 +131,8 @@ impl PairingHostRuntime {
         }
     }
 
-    /// Install the host's live OS permission-status adapter.
-    ///
-    /// Device grants are persisted once and never expire, but the OS grant
-    /// behind one can be revoked in settings, suspended by policy, or reset by
-    /// the platform. With this installed the core revalidates against the OS
-    /// before answering a device-permission request; without it a stored grant
-    /// answers on its own.
+    /// Install the host's [`PermissionStatusHost`], which carries the reasoning
+    /// for what it changes.
     ///
     /// Set-once, so the capability cannot be swapped under a running product.
     /// Returns whether this call installed it. Call it before serving any
@@ -330,6 +325,10 @@ impl PairingHostRuntime {
     }
 
     /// Read a stored permission authorization status for a product without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.permission_authorization_status", product_id = %product_id))]
     pub async fn permission_authorization_status(
         &self,
@@ -342,6 +341,10 @@ impl PairingHostRuntime {
     }
 
     /// Read stored permission authorization statuses for a product without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.permission_authorization_statuses", product_id = %product_id))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -445,13 +448,8 @@ impl SigningHostRuntime {
         }
     }
 
-    /// Install the host's live OS permission-status adapter.
-    ///
-    /// Device grants are persisted once and never expire, but the OS grant
-    /// behind one can be revoked in settings, suspended by policy, or reset by
-    /// the platform. With this installed the core revalidates against the OS
-    /// before answering a device-permission request; without it a stored grant
-    /// answers on its own.
+    /// Install the host's [`PermissionStatusHost`], which carries the reasoning
+    /// for what it changes.
     ///
     /// Set-once, so the capability cannot be swapped under a running product.
     /// Returns whether this call installed it. Call it before serving any
@@ -772,6 +770,10 @@ impl HostAdmin {
     }
 
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "host_admin.permission_authorization_status"))]
     pub async fn permission_authorization_status(
         &self,
@@ -783,6 +785,10 @@ impl HostAdmin {
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "host_admin.permission_authorization_statuses"))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -1112,6 +1118,10 @@ impl ProductRuntime {
     }
 
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.permission_authorization_status"))]
     pub async fn permission_authorization_status(
         &self,
@@ -1121,6 +1131,10 @@ impl ProductRuntime {
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.permission_authorization_statuses"))]
     pub async fn permission_authorization_statuses(
         &self,
