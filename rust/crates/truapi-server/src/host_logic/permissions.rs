@@ -126,46 +126,39 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         }
     }
 
-    /// Same as [`Self::new`], revalidating device grants against the OS state
-    /// `status` reports.
-    pub fn with_status_host(
-        storage: &'a S,
-        prompt: &'a P,
-        product_id: &'a str,
-        status: Option<&'a dyn PermissionStatusHost>,
-    ) -> Self {
-        Self {
-            storage,
-            prompt,
-            product_id,
-            status,
-        }
+    /// Revalidate device capabilities against the OS state `status` reports.
+    pub fn with_status_host(mut self, status: Option<&'a dyn PermissionStatusHost>) -> Self {
+        self.status = status;
+        self
     }
 
-    /// Live OS status for a capability.
+    /// Whether the OS currently refuses this capability to the host
+    /// application, which is the only OS answer that overrides a stored
+    /// decision.
     ///
-    /// `NotApplicable` when the host serves no OS state, and also when the
-    /// query fails: a failed query is transient — a busy host, a dropped IPC —
-    /// and reading it as a refusal would let a flaky channel revoke a working
-    /// capability.
-    async fn os_device_status(
-        &self,
-        permission: HostDevicePermissionRequest,
-    ) -> DevicePermissionStatus {
+    /// False when the host serves no OS state, and also when the query fails: a
+    /// failed query is transient — a busy host, a dropped IPC — and reading it
+    /// as a refusal would let a flaky channel revoke a working capability.
+    async fn os_refuses(&self, permission: HostDevicePermissionRequest) -> bool {
         let Some(status) = self.status else {
-            return DevicePermissionStatus::NotApplicable;
+            return false;
         };
-        status
-            .device_permission_status(permission)
-            .await
-            .unwrap_or(DevicePermissionStatus::NotApplicable)
+        status.device_permission_status(permission).await == Ok(DevicePermissionStatus::Denied)
     }
 
-    /// Returns the stored authorization status for a device permission without prompting.
+    /// Authorization status for a device permission, without prompting.
+    ///
+    /// Resolves the same two gates a request does, so a host settings screen and
+    /// `request_device_permission` cannot disagree. Reporting the stored grant
+    /// alone would send the user looking for a product toggle when the OS is
+    /// what refused. The stored decision is left untouched either way.
     pub async fn peek_device(
         &self,
         permission: &HostDevicePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
+        if self.os_refuses(*permission).await {
+            return Ok(PermissionAuthorizationStatus::Denied);
+        }
         authorization_status(
             self.storage,
             CoreStorageKey::device_permission_authorization(self.product_id, permission),
@@ -357,11 +350,7 @@ impl<'a, S: CoreStorage + ?Sized, P: Permissions + ?Sized> PermissionsService<'a
         permission: HostDevicePermissionRequest,
     ) -> Result<PermissionAuthorizationStatus, GenericError> {
         let key = CoreStorageKey::device_permission_authorization(self.product_id, &permission);
-        if self.os_device_status(permission).await == DevicePermissionStatus::Denied {
-            // Unusable whatever the product holds, and prompting cannot reach
-            // it — only system settings can. The stored decision is left
-            // untouched: the user may restore the OS grant, and clearing it
-            // here would re-ask a question they have already answered.
+        if self.os_refuses(permission).await {
             return Ok(PermissionAuthorizationStatus::Denied);
         }
         if let Some(cached) = peek_stored(self.storage, key.clone()).await? {
@@ -603,8 +592,9 @@ mod tests {
     /// capability while another stays granted.
     struct ScriptedStatus {
         answers: Vec<(HostDevicePermissionRequest, DevicePermissionStatus)>,
-        fallback: DevicePermissionStatus,
-        fail: bool,
+        /// Answer for any capability `answers` does not name. `None` fails the
+        /// query instead, standing in for a busy host or a dropped IPC.
+        fallback: Option<DevicePermissionStatus>,
         asked: Mutex<Vec<HostDevicePermissionRequest>>,
     }
 
@@ -612,8 +602,7 @@ mod tests {
         fn always(status: DevicePermissionStatus) -> Self {
             Self {
                 answers: Vec::new(),
-                fallback: status,
-                fail: false,
+                fallback: Some(status),
                 asked: Mutex::new(Vec::new()),
             }
         }
@@ -624,8 +613,7 @@ mod tests {
         ) -> Self {
             Self {
                 answers,
-                fallback,
-                fail: false,
+                fallback: Some(fallback),
                 asked: Mutex::new(Vec::new()),
             }
         }
@@ -633,8 +621,7 @@ mod tests {
         fn failing() -> Self {
             Self {
                 answers: Vec::new(),
-                fallback: DevicePermissionStatus::Granted,
-                fail: true,
+                fallback: None,
                 asked: Mutex::new(Vec::new()),
             }
         }
@@ -651,17 +638,16 @@ mod tests {
             request: HostDevicePermissionRequest,
         ) -> Result<DevicePermissionStatus, GenericError> {
             self.asked.lock().await.push(request);
-            if self.fail {
-                return Err(v01::GenericError {
-                    reason: "status channel unavailable".to_string(),
-                });
-            }
-            Ok(self
+            if let Some((_, status)) = self
                 .answers
                 .iter()
                 .find(|(capability, _)| *capability == request)
-                .map(|(_, status)| *status)
-                .unwrap_or(self.fallback))
+            {
+                return Ok(*status);
+            }
+            self.fallback.ok_or_else(|| v01::GenericError {
+                reason: "status channel unavailable".to_string(),
+            })
         }
     }
 
@@ -1378,8 +1364,8 @@ mod tests {
         // the user can be asked about.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1398,13 +1384,9 @@ mod tests {
         let denied_prompt = ScriptedPrompt::new(vec![], vec![]);
         let denied = ScriptedStatus::always(DevicePermissionStatus::Denied);
         futures::executor::block_on(
-            PermissionsService::with_status_host(
-                &storage,
-                &denied_prompt,
-                "product.dot",
-                Some(&denied),
-            )
-            .check_or_prompt_device(HostDevicePermissionRequest::Camera),
+            PermissionsService::new(&storage, &denied_prompt, "product.dot")
+                .with_status_host(Some(&denied))
+                .check_or_prompt_device(HostDevicePermissionRequest::Camera),
         )
         .unwrap();
 
@@ -1412,8 +1394,8 @@ mod tests {
         // never theirs to lose, so this resolves without asking them again.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&restored));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&restored));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1436,8 +1418,8 @@ mod tests {
         // scripted: reaching the prompt at all would panic.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&status));
 
         // Repeated, because a condition a prompt cannot clear re-fires forever.
         for _ in 0..3 {
@@ -1464,15 +1446,16 @@ mod tests {
         let declining = ScriptedPrompt::new(vec![false], vec![]);
         let reset = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
         futures::executor::block_on(
-            PermissionsService::with_status_host(&storage, &declining, "product.dot", Some(&reset))
+            PermissionsService::new(&storage, &declining, "product.dot")
+                .with_status_host(Some(&reset))
                 .check_or_prompt_device(HostDevicePermissionRequest::Camera),
         )
         .unwrap();
 
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
-        let after =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&restored));
+        let after = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&restored));
         assert_eq!(
             futures::executor::block_on(
                 after.check_or_prompt_device(HostDevicePermissionRequest::Camera)
@@ -1492,8 +1475,8 @@ mod tests {
         // holds must never be reached through that path.
         let failing = FailingPrompt;
         let reset = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service =
-            PermissionsService::with_status_host(&storage, &failing, "product.dot", Some(&reset));
+        let service = PermissionsService::new(&storage, &failing, "product.dot")
+            .with_status_host(Some(&reset));
         assert_eq!(
             futures::executor::block_on(
                 service.check_or_prompt_device(HostDevicePermissionRequest::Camera)
@@ -1510,8 +1493,8 @@ mod tests {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1537,8 +1520,8 @@ mod tests {
         // its own state is not a reason to put the question again.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::always(DevicePermissionStatus::NotDetermined);
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1559,8 +1542,8 @@ mod tests {
         // channel revoke a capability the OS still allows.
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let status = ScriptedStatus::failing();
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1577,8 +1560,8 @@ mod tests {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![], vec![]);
         let denied = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&denied));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&denied));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1615,8 +1598,8 @@ mod tests {
             )],
             DevicePermissionStatus::Granted,
         );
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1645,7 +1628,8 @@ mod tests {
     fn a_host_without_the_capability_resolves_from_stored_state_alone() {
         let storage = MemStorage::default();
         let prompt = ScriptedPrompt::new(vec![true], vec![]);
-        let service = PermissionsService::with_status_host(&storage, &prompt, "product.dot", None);
+        let service =
+            PermissionsService::new(&storage, &prompt, "product.dot").with_status_host(None);
 
         let first = futures::executor::block_on(
             service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
@@ -1669,8 +1653,8 @@ mod tests {
         // TrUAPI-level decision with no OS gate behind it, so it must resolve
         // untouched.
         let status = ScriptedStatus::always(DevicePermissionStatus::Denied);
-        let service =
-            PermissionsService::with_status_host(&storage, &prompt, "product.dot", Some(&status));
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&status));
 
         assert_eq!(
             futures::executor::block_on(
@@ -1680,5 +1664,122 @@ mod tests {
             PermissionAuthorizationStatus::Authorized,
         );
         assert!(status.asked().is_empty());
+    }
+
+    #[test]
+    fn a_peeked_grant_the_os_refuses_reads_as_denied() {
+        // A settings screen and a request must not disagree. Reporting the
+        // stored grant here sends the user hunting for a product toggle when
+        // the OS is what refused.
+        let storage = MemStorage::default();
+        grant_stored(&storage, HostDevicePermissionRequest::Camera);
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&refusing));
+
+        assert_eq!(
+            futures::executor::block_on(service.peek_device(&HostDevicePermissionRequest::Camera))
+                .unwrap(),
+            PermissionAuthorizationStatus::Denied,
+        );
+    }
+
+    #[test]
+    fn a_peek_under_an_os_refusal_leaves_the_stored_grant_intact() {
+        let storage = MemStorage::default();
+        grant_stored(&storage, HostDevicePermissionRequest::Camera);
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
+        futures::executor::block_on(
+            PermissionsService::new(&storage, &prompt, "product.dot")
+                .with_status_host(Some(&refusing))
+                .peek_device(&HostDevicePermissionRequest::Camera),
+        )
+        .unwrap();
+
+        // A read is not a decision, so the grant is still there once the user
+        // restores the OS grant.
+        let restored = ScriptedStatus::always(DevicePermissionStatus::Granted);
+        assert_eq!(
+            futures::executor::block_on(
+                PermissionsService::new(&storage, &prompt, "product.dot")
+                    .with_status_host(Some(&restored))
+                    .peek_device(&HostDevicePermissionRequest::Camera),
+            )
+            .unwrap(),
+            PermissionAuthorizationStatus::Authorized,
+        );
+    }
+
+    #[test]
+    fn a_peeked_grant_survives_an_os_reset_and_a_failed_query() {
+        let storage = MemStorage::default();
+        grant_stored(&storage, HostDevicePermissionRequest::Camera);
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+
+        for status in [
+            ScriptedStatus::always(DevicePermissionStatus::NotDetermined),
+            ScriptedStatus::failing(),
+        ] {
+            assert_eq!(
+                futures::executor::block_on(
+                    PermissionsService::new(&storage, &prompt, "product.dot")
+                        .with_status_host(Some(&status))
+                        .peek_device(&HostDevicePermissionRequest::Camera),
+                )
+                .unwrap(),
+                PermissionAuthorizationStatus::Authorized,
+                "only an outright refusal overrides the stored decision"
+            );
+        }
+    }
+
+    #[test]
+    fn a_status_read_of_a_remote_permission_never_reaches_the_os() {
+        let storage = MemStorage::default();
+        let prompt = ScriptedPrompt::new(vec![], vec![true]);
+        let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&refusing));
+        futures::executor::block_on(
+            service.check_or_prompt_remote(remote_domains(&["example.com"])),
+        )
+        .unwrap();
+
+        assert_eq!(
+            futures::executor::block_on(service.authorization_status(
+                &PermissionAuthorizationRequest::Remote(remote_domains(&["example.com"]))
+            ))
+            .unwrap(),
+            PermissionAuthorizationStatus::Authorized,
+        );
+        assert!(refusing.asked().is_empty());
+    }
+
+    #[test]
+    fn a_device_request_and_a_status_read_agree_once_the_os_refuses() {
+        let storage = MemStorage::default();
+        grant_stored(&storage, HostDevicePermissionRequest::Camera);
+        let prompt = ScriptedPrompt::new(vec![], vec![]);
+        let refusing = ScriptedStatus::always(DevicePermissionStatus::Denied);
+        let service = PermissionsService::new(&storage, &prompt, "product.dot")
+            .with_status_host(Some(&refusing));
+
+        let requested = futures::executor::block_on(
+            service.check_or_prompt_device(HostDevicePermissionRequest::Camera),
+        )
+        .unwrap();
+        let read = futures::executor::block_on(service.authorization_status(
+            &PermissionAuthorizationRequest::Device(HostDevicePermissionRequest::Camera),
+        ))
+        .unwrap();
+        assert_eq!(
+            (requested, read),
+            (
+                PermissionAuthorizationStatus::Denied,
+                PermissionAuthorizationStatus::Denied,
+            )
+        );
     }
 }

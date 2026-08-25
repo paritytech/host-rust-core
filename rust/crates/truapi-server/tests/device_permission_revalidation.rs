@@ -19,6 +19,7 @@ use parity_scale_codec::{Decode, Encode};
 use truapi::v01;
 use truapi::versioned::permissions::{HostDevicePermissionRequest, HostDevicePermissionResponse};
 use truapi_platform::{DevicePermissionStatus, PermissionStatusHost};
+use truapi_platform::{PermissionAuthorizationRequest, PermissionAuthorizationStatus};
 use truapi_server::frame::{Payload, ProtocolMessage, request_ids};
 use truapi_server::{FrameSink, PairingHostRuntime};
 
@@ -119,4 +120,45 @@ fn an_os_status_of_not_applicable_leaves_the_prompt_deciding() {
     assert!(request_camera(Some(Arc::new(FixedStatus(
         DevicePermissionStatus::NotApplicable
     )))));
+}
+
+/// A host settings screen reads through `HostAdmin`. It must resolve the same
+/// gates a request does, or it reports `Authorized` for a capability the
+/// request reports as `granted: false` and sends the user looking for a product
+/// toggle that was never what blocked them.
+#[test]
+fn a_status_read_and_a_request_agree_once_the_os_refuses() {
+    let (host_config, product) = test_runtime_config();
+    let runtime = PairingHostRuntime::new(Arc::new(WireShapePlatform), host_config, test_spawner());
+    assert!(
+        runtime.set_permission_status_host(Arc::new(FixedStatus(DevicePermissionStatus::Denied)))
+    );
+
+    let admin = runtime.product_admin(product);
+    let read = futures::executor::block_on(admin.permission_authorization_status(
+        PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Camera),
+    ))
+    .expect("status read");
+
+    assert_eq!(read, PermissionAuthorizationStatus::Denied);
+}
+
+/// The same read, for a permission with no OS gate behind it, must not be
+/// touched by the status adapter.
+#[test]
+fn a_status_read_of_a_remote_permission_ignores_the_os_gate() {
+    let (host_config, product) = test_runtime_config();
+    let runtime = PairingHostRuntime::new(Arc::new(WireShapePlatform), host_config, test_spawner());
+    assert!(
+        runtime.set_permission_status_host(Arc::new(FixedStatus(DevicePermissionStatus::Denied)))
+    );
+
+    let admin = runtime.product_admin(product);
+    let read = futures::executor::block_on(
+        admin.permission_authorization_status(PermissionAuthorizationRequest::IdentityDisclosure),
+    )
+    .expect("status read");
+
+    // Nothing stored and no OS gate, so this is still an open question.
+    assert_eq!(read, PermissionAuthorizationStatus::NotDetermined);
 }
