@@ -3,6 +3,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 
 import {
   parsePackageLines,
+  reportConfirmation,
   waitForPublishedVersions,
 } from "./lib/npm-registry.mjs";
 
@@ -17,16 +18,16 @@ import {
  * is still missing.
  *
  * Override the poll bounds with NPM_PUBLISH_TIMEOUT_MS and
- * NPM_PUBLISH_INTERVAL_MS.
+ * NPM_PUBLISH_INTERVAL_MS. Both must be a positive number of milliseconds.
  */
 
 const command = "wait-for-npm-publish";
 const registry = "https://registry.npmjs.org";
-const timeoutMs = Number(process.env.NPM_PUBLISH_TIMEOUT_MS ?? 600_000);
-const intervalMs = Number(process.env.NPM_PUBLISH_INTERVAL_MS ?? 15_000);
+const requestTimeoutMs = 10_000;
+const timeoutMs = positiveMs("NPM_PUBLISH_TIMEOUT_MS", 600_000);
+const intervalMs = positiveMs("NPM_PUBLISH_INTERVAL_MS", 15_000);
 
-const block = readFileSync(0, "utf8");
-const packages = parse(block);
+const packages = parse(readFileSync(0, "utf8"));
 if (packages.length === 0) {
   fail("no packages on stdin; expected release.yml's packages output");
 }
@@ -35,7 +36,7 @@ console.log(
   `Waiting up to ${Math.round(timeoutMs / 1000)}s for ${packages.length} package(s) on npm.`,
 );
 
-const { ok, published, missing } = await waitForPublishedVersions({
+const result = await waitForPublishedVersions({
   packages,
   fetchStatus,
   sleep,
@@ -43,19 +44,16 @@ const { ok, published, missing } = await waitForPublishedVersions({
   intervalMs,
 });
 
-for (const entry of published) console.log(`Confirmed ${entry.tag} on npm.`);
+for (const entry of result.published)
+  console.log(`Confirmed ${entry.tag} on npm.`);
 
-// Written before the exit below, so a partial publish still gets its tags.
-writeOutput(published);
-
-if (!ok) {
-  for (const entry of missing) {
-    console.error(
-      `::error::${entry.tag} is not on npm; the publish did not land.`,
-    );
-  }
-  process.exit(1);
-}
+process.exit(
+  reportConfirmation({
+    result,
+    writeOutput,
+    logError: (message) => console.error(`::error::${message}`),
+  }),
+);
 
 /**
  * Version-addressed, matching the check npm_publish_automation itself makes.
@@ -63,8 +61,10 @@ if (!ok) {
  * not answer for a dist-tagged publish.
  */
 async function fetchStatus(name, version) {
-  const response = await fetch(`${registry}/${name}/${version}`, {
-    cache: "no-store",
+  const url = `${registry}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`;
+  const response = await fetch(url, {
+    // One stalled connection must not spend the whole poll budget.
+    signal: AbortSignal.timeout(requestTimeoutMs),
     headers: { "cache-control": "no-cache" },
   });
   return response.status;
@@ -83,6 +83,16 @@ function writeOutput(entries) {
     )
     .join("");
   appendFileSync(output, `published<<EOF\n${lines}EOF\n`);
+}
+
+function positiveMs(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    fail(`${name} must be a positive number of milliseconds, got "${raw}"`);
+  }
+  return value;
 }
 
 function parse(text) {

@@ -213,7 +213,9 @@ jobs:
         id: confirm
         if: steps.version.outputs.proceed == 'true'
         continue-on-error: true
-        timeout-minutes: 12
+        # Above the script's own budget, so its deadline decides the outcome.
+        # If this fires first, the confirmed subset is never written.
+        timeout-minutes: 15
         env:
           STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
         run: printf '%s' "${STEPS_VERSION_OUTPUTS_PACKAGES}" | node scripts/wait-for-npm-publish.mjs

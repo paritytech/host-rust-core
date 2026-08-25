@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   parsePackageLines,
+  reportConfirmation,
   waitForPublishedVersions,
 } from "./npm-registry.mjs";
 
@@ -30,13 +31,16 @@ function fakeRegistry(statuses) {
   };
 }
 
-function countingSleep() {
-  const sleep = () => {
-    sleep.count += 1;
+/** Fake clock whose `sleep` advances it, so deadlines need no real waiting. */
+function fakeClock() {
+  const clock = { elapsed: 0, sleeps: 0 };
+  clock.now = () => clock.elapsed;
+  clock.sleep = (ms) => {
+    clock.sleeps += 1;
+    clock.elapsed += ms;
     return Promise.resolve();
   };
-  sleep.count = 0;
-  return sleep;
+  return clock;
 }
 
 const truapi = "@parity/truapi@0.10.0";
@@ -68,12 +72,13 @@ test("parsePackageLines rejects a line that is not four fields", () => {
 
 test("resolves on the first poll when every version is already published", async () => {
   const registry = fakeRegistry({ [truapi]: 200, [host]: 200 });
-  const sleep = countingSleep();
+  const clock = fakeClock();
 
   const result = await waitForPublishedVersions({
     packages: parsePackageLines(packagesBlock),
     fetchStatus: registry.fetchStatus,
-    sleep,
+    sleep: clock.sleep,
+    now: clock.now,
     timeoutMs: 60_000,
     intervalMs: 1_000,
   });
@@ -84,23 +89,24 @@ test("resolves on the first poll when every version is already published", async
     [truapi, host],
   );
   assert.deepEqual(result.missing, []);
-  assert.equal(sleep.count, 0, "nothing to wait for");
+  assert.equal(clock.sleeps, 0, "nothing to wait for");
 });
 
 test("retries a 404 and sleeps between polls", async () => {
   const registry = fakeRegistry({ [truapi]: 200, [host]: [404, 200] });
-  const sleep = countingSleep();
+  const clock = fakeClock();
 
   const result = await waitForPublishedVersions({
     packages: parsePackageLines(packagesBlock),
     fetchStatus: registry.fetchStatus,
-    sleep,
+    sleep: clock.sleep,
+    now: clock.now,
     timeoutMs: 60_000,
     intervalMs: 1_000,
   });
 
   assert.equal(result.ok, true);
-  assert.equal(sleep.count, 1, "one wait, not a busy loop");
+  assert.equal(clock.sleeps, 1, "one wait, not a busy loop");
   assert.equal(
     registry.calls.filter((call) => call === truapi).length,
     1,
@@ -110,12 +116,13 @@ test("retries a 404 and sleeps between polls", async () => {
 
 test("returns the confirmed subset alongside the missing one on timeout", async () => {
   const registry = fakeRegistry({ [truapi]: 200, [host]: 404 });
-  const sleep = countingSleep();
+  const clock = fakeClock();
 
   const result = await waitForPublishedVersions({
     packages: parsePackageLines(packagesBlock),
     fetchStatus: registry.fetchStatus,
-    sleep,
+    sleep: clock.sleep,
+    now: clock.now,
     timeoutMs: 2_000,
     intervalMs: 1_000,
   });
@@ -135,10 +142,13 @@ test("returns the confirmed subset alongside the missing one on timeout", async 
 test("reports every missing package, not only the first", async () => {
   const registry = fakeRegistry({ [truapi]: 404, [host]: 404 });
 
+  const clock = fakeClock();
+
   const result = await waitForPublishedVersions({
     packages: parsePackageLines(packagesBlock),
     fetchStatus: registry.fetchStatus,
-    sleep: countingSleep(),
+    sleep: clock.sleep,
+    now: clock.now,
     timeoutMs: 2_000,
     intervalMs: 1_000,
   });
@@ -153,18 +163,19 @@ test("reports every missing package, not only the first", async () => {
 
 test("treats a registry error as not-yet-published and keeps polling", async () => {
   const registry = fakeRegistry({ [truapi]: [500, 200], [host]: 200 });
-  const sleep = countingSleep();
+  const clock = fakeClock();
 
   const result = await waitForPublishedVersions({
     packages: parsePackageLines(packagesBlock),
     fetchStatus: registry.fetchStatus,
-    sleep,
+    sleep: clock.sleep,
+    now: clock.now,
     timeoutMs: 60_000,
     intervalMs: 1_000,
   });
 
   assert.equal(result.ok, true, "a 500 must not crash the poll");
-  assert.equal(sleep.count, 1);
+  assert.equal(clock.sleeps, 1);
 });
 
 test("a rejected fetch is retried rather than thrown", async () => {
@@ -176,12 +187,15 @@ test("a rejected fetch is retried rather than thrown", async () => {
       : Promise.resolve(200);
   };
 
+  const clock = fakeClock();
+
   const result = await waitForPublishedVersions({
     packages: parsePackageLines(
       "@parity/truapi|js/packages/truapi|0.10.0|@parity/truapi@0.10.0\n",
     ),
     fetchStatus,
-    sleep: countingSleep(),
+    sleep: clock.sleep,
+    now: clock.now,
     timeoutMs: 60_000,
     intervalMs: 1_000,
   });
@@ -192,14 +206,144 @@ test("a rejected fetch is retried rather than thrown", async () => {
 test("ok is false while any single package is missing", async () => {
   const registry = fakeRegistry({ [truapi]: 200, [host]: 404 });
 
+  const clock = fakeClock();
+
   const result = await waitForPublishedVersions({
     packages: parsePackageLines(packagesBlock),
     fetchStatus: registry.fetchStatus,
-    sleep: countingSleep(),
+    sleep: clock.sleep,
+    now: clock.now,
     timeoutMs: 2_000,
     intervalMs: 1_000,
   });
 
   assert.equal(result.ok, false);
   assert.equal(result.published.length, 1);
+});
+
+test("parsePackageLines rejects a trailing separator", () => {
+  assert.throws(
+    () =>
+      parsePackageLines(
+        "@parity/truapi|js/packages/truapi|0.10.0|@parity/truapi@0.10.0|\n",
+      ),
+    /four fields/,
+  );
+});
+
+test("parsePackageLines rejects a blank version", () => {
+  assert.throws(
+    () =>
+      parsePackageLines("@parity/truapi|js/packages/truapi||@parity/truapi@\n"),
+    /must not be blank/,
+  );
+});
+
+test("stops at the deadline rather than after a fixed attempt count", async () => {
+  const registry = fakeRegistry({ [truapi]: 404, [host]: 404 });
+  const clock = fakeClock();
+
+  const result = await waitForPublishedVersions({
+    packages: parsePackageLines(packagesBlock),
+    fetchStatus: registry.fetchStatus,
+    sleep: clock.sleep,
+    now: clock.now,
+    timeoutMs: 5_000,
+    intervalMs: 1_000,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(clock.sleeps, 4, "four waits inside a five second budget");
+  assert.equal(clock.elapsed, 4_000, "never sleeps past the deadline");
+});
+
+test("a slow poll still ends on the deadline, not on the attempt count", async () => {
+  const registry = fakeRegistry({ [truapi]: 404, [host]: 404 });
+  const clock = fakeClock();
+  // Each round costs 3s of clock on top of the interval, as a slow registry would.
+  const slowFetch = (name, version) => {
+    clock.elapsed += 1_500;
+    return registry.fetchStatus(name, version);
+  };
+
+  await waitForPublishedVersions({
+    packages: parsePackageLines(packagesBlock),
+    fetchStatus: slowFetch,
+    sleep: clock.sleep,
+    now: clock.now,
+    timeoutMs: 10_000,
+    intervalMs: 1_000,
+  });
+
+  // The deadline governs. A round in flight can overrun by its request time.
+  assert.ok(
+    clock.elapsed <= 13_000,
+    `deadline plus at most one round, elapsed ${clock.elapsed}ms`,
+  );
+  assert.ok(clock.sleeps <= 3, `stopped early, ${clock.sleeps} waits`);
+});
+
+test("reports why a package could not be confirmed", async () => {
+  const clock = fakeClock();
+
+  const result = await waitForPublishedVersions({
+    packages: parsePackageLines(packagesBlock),
+    fetchStatus: () => Promise.reject(new Error("registry unreachable")),
+    sleep: clock.sleep,
+    now: clock.now,
+    timeoutMs: 2_000,
+    intervalMs: 1_000,
+  });
+
+  assert.equal(result.errors.get(truapi), "registry unreachable");
+
+  const logged = [];
+  reportConfirmation({
+    result,
+    writeOutput: () => {},
+    logError: (m) => logged.push(m),
+  });
+  assert.match(
+    logged[0],
+    /could not be confirmed on npm: registry unreachable/,
+  );
+});
+
+test("a non-404 status is reported rather than read as absent", async () => {
+  const registry = fakeRegistry({ [truapi]: 500, [host]: 500 });
+  const clock = fakeClock();
+
+  const result = await waitForPublishedVersions({
+    packages: parsePackageLines(packagesBlock),
+    fetchStatus: registry.fetchStatus,
+    sleep: clock.sleep,
+    now: clock.now,
+    timeoutMs: 2_000,
+    intervalMs: 1_000,
+  });
+
+  assert.equal(result.errors.get(truapi), "registry answered 500");
+});
+
+test("writes the confirmed subset before reporting a failure", () => {
+  const order = [];
+  const result = {
+    ok: false,
+    published: [{ name: "a", path: "p", version: "1", tag: "a@1" }],
+    missing: [{ name: "b", path: "p", version: "2", tag: "b@2" }],
+    errors: new Map(),
+  };
+
+  const code = reportConfirmation({
+    result,
+    writeOutput: (entries) => order.push(`write:${entries.length}`),
+    logError: () => order.push("error"),
+  });
+
+  assert.equal(code, 1, "a missing package still fails the caller");
+  assert.deepEqual(
+    order,
+    ["write:1", "error"],
+    "output written before the failure",
+  );
 });

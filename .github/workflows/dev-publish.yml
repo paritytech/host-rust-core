@@ -152,7 +152,7 @@ jobs:
       # No tags to gate here, so a missing version just fails the job. The check
       # is version-addressed, so the dist-tag above does not affect it.
       - name: Confirm the dev snapshot reached npm
-        timeout-minutes: 12
+        timeout-minutes: 15
         env:
           DEV_VERSION: ${{ steps.devver.outputs.version }}
         run: |

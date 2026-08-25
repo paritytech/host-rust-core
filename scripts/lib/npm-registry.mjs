@@ -7,7 +7,7 @@
  * before creating any tag or GitHub Release.
  *
  * Consumed by `scripts/wait-for-npm-publish.mjs`; unit-tested in
- * `npm-registry.test.mjs` by injecting `fetchStatus` and `sleep`.
+ * `npm-registry.test.mjs` by injecting `fetchStatus`, `sleep` and `now`.
  */
 
 const FIELD_COUNT = 4;
@@ -29,18 +29,26 @@ export function parsePackageLines(text) {
         );
       }
       const [name, path, version, tag] = fields;
+      // A blank version addresses the package document, which answers 200.
+      if (name === "" || version === "") {
+        throw new Error(`name and version must not be blank: ${line}`);
+      }
       return { name, path, version, tag };
     });
 }
 
 /**
  * Poll the registry until every package's version is published, or until the
- * attempt budget runs out.
+ * deadline passes.
  *
  * Returns the confirmed packages in `published` even when `ok` is false: the
  * publisher tolerates a partial publish, and release.yml drops anything
  * already on npm from a later run, so a package that did publish has to be
  * tagged by this run or it never will be.
+ *
+ * `errors` carries the last failure per package, so an unreachable registry
+ * reads differently from an absent version. The deadline bounds when a round
+ * starts, not when it ends, so callers bound each request.
  */
 export async function waitForPublishedVersions({
   packages,
@@ -48,33 +56,63 @@ export async function waitForPublishedVersions({
   sleep,
   timeoutMs,
   intervalMs,
+  now = Date.now,
 }) {
-  // Attempts are counted rather than timed so the tests need no real clock.
-  const attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs));
+  const deadline = now() + timeoutMs;
   const confirmed = new Set();
+  const errors = new Map();
 
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  for (;;) {
     for (const entry of packages) {
       if (confirmed.has(entry.tag)) continue;
-      if (await isPublished(fetchStatus, entry)) confirmed.add(entry.tag);
+      if (await isPublished(fetchStatus, entry, errors))
+        confirmed.add(entry.tag);
     }
 
     if (confirmed.size === packages.length) break;
-    if (attempt < attempts) await sleep(intervalMs);
+    // Never sleep past the deadline; the caller's timeout is only a backstop.
+    if (now() + intervalMs >= deadline) break;
+    await sleep(intervalMs);
   }
 
   return {
     ok: confirmed.size === packages.length,
     published: packages.filter((entry) => confirmed.has(entry.tag)),
     missing: packages.filter((entry) => !confirmed.has(entry.tag)),
+    errors,
   };
 }
 
-async function isPublished(fetchStatus, { name, version }) {
+/**
+ * Write the confirmed subset, then report what is missing, then return the exit
+ * code. The order is load-bearing: a partial publish must still be tagged.
+ */
+export function reportConfirmation({ result, writeOutput, logError }) {
+  writeOutput(result.published);
+
+  for (const entry of result.missing) {
+    const reason = result.errors?.get(entry.tag);
+    logError(
+      reason
+        ? `${entry.tag} could not be confirmed on npm: ${reason}`
+        : `${entry.tag} is not on npm; the publish did not land.`,
+    );
+  }
+
+  return result.ok ? 0 : 1;
+}
+
+async function isPublished(fetchStatus, entry, errors) {
   try {
-    return (await fetchStatus(name, version)) === 200;
-  } catch {
-    // A dropped connection or a 5xx means "unknown", which is not "published".
+    const status = await fetchStatus(entry.name, entry.version);
+    if (status === 200) {
+      errors.delete(entry.tag);
+      return true;
+    }
+    if (status !== 404) errors.set(entry.tag, `registry answered ${status}`);
+    return false;
+  } catch (error) {
+    errors.set(entry.tag, error.message);
     return false;
   }
 }
