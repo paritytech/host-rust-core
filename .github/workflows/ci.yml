@@ -278,6 +278,10 @@ jobs:
         with:
           bun-version: latest
 
+      # Node builtins only, so this needs neither the codegen output nor npm ci.
+      - name: Test scripts
+        run: npm run test:scripts
+
       - name: Download codegen output
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

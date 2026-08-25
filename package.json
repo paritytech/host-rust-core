@@ -14,6 +14,7 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,md}\"",
     "typecheck": "npm run typecheck --prefix js/packages/truapi && cd playground && npx tsc --noEmit --noUnusedLocals --noUnusedParameters",
     "test": "cargo test --workspace && npm test --prefix js/packages/truapi",
+    "test:scripts": "node --test scripts/lib/*.test.mjs",
     "lint": "npm run format:check && npm run typecheck",
     "changeset": "changeset",
     "version-packages": "changeset version && npm run sync-release-versions && npm install --package-lock-only --ignore-scripts",
