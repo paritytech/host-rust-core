@@ -2180,9 +2180,19 @@ mod tests {
         chain_connects: Mutex<Vec<Vec<u8>>>,
         chain_sends: Mutex<Vec<(u32, String)>>,
         chain_closes: Mutex<Vec<u32>>,
+        /// Capability this host reports as refused by the OS, if any.
+        os_refused: Option<v01::HostDevicePermissionRequest>,
     }
 
     impl EventCallbacks {
+        /// Same as [`Self::new`], reporting `capability` as refused by the OS.
+        fn refusing(capability: v01::HostDevicePermissionRequest) -> Self {
+            Self {
+                os_refused: Some(capability),
+                ..Self::new()
+            }
+        }
+
         fn new() -> Self {
             Self {
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
@@ -2202,6 +2212,7 @@ mod tests {
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
+                os_refused: None,
             }
         }
     }
@@ -2229,9 +2240,13 @@ mod tests {
         }
         async fn device_permission_status(
             &self,
-            _request: v01::HostDevicePermissionRequest,
+            request: v01::HostDevicePermissionRequest,
         ) -> Result<NativeDevicePermissionStatus, HostRejection> {
-            Ok(NativeDevicePermissionStatus::NotApplicable)
+            Ok(if self.os_refused == Some(request) {
+                NativeDevicePermissionStatus::Denied
+            } else {
+                NativeDevicePermissionStatus::NotApplicable
+            })
         }
         async fn remote_permission(
             &self,
@@ -3771,5 +3786,49 @@ mod tests {
         )
         .expect("review must lift back");
         assert_eq!(lifted, review);
+    }
+
+    /// Drives the whole native chain for a status read: foreign callback,
+    /// `CallbackPlatform`, the per-execution connection adapters, and the
+    /// permission service. Nothing else covers that path, and the adapter is
+    /// per execution rather than per host runtime, so a host-level installer
+    /// would silently answer from the wrong object.
+    #[test]
+    fn a_native_status_read_follows_the_os_gate() {
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::refusing(
+                    v01::HostDevicePermissionRequest::Camera,
+                )),
+                None,
+                native_execution_config("gated.dot", ProductExecutionKind::App),
+            )
+            .expect("execution should open");
+
+        let camera = execution
+            .permission_authorization_status(PermissionAuthorizationRequest::Device(
+                v01::HostDevicePermissionRequest::Camera,
+            ))
+            .expect("status read");
+        let microphone = execution
+            .permission_authorization_status(PermissionAuthorizationRequest::Device(
+                v01::HostDevicePermissionRequest::Microphone,
+            ))
+            .expect("status read");
+
+        // Camera is refused by the OS; the microphone has no OS gate and no
+        // stored decision, so its question is still open.
+        assert_eq!(
+            (camera, microphone),
+            (
+                PermissionAuthorizationStatus::Denied,
+                PermissionAuthorizationStatus::NotDetermined,
+            )
+        );
     }
 }
