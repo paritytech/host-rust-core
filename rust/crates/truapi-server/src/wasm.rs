@@ -749,8 +749,6 @@ struct WasmCoreInner {
     disposing: Cell<bool>,
 }
 
-/// JS-callable handle to a long-lived pairing-host runtime shared by product
-/// cores.
 /// Build the platform from a JS bridge together with the optional capability
 /// adapters the host actually supplied. Both are the same object; a host that
 /// omits a group gets `None` and the core answers accordingly.
@@ -769,6 +767,8 @@ fn wasm_platform(
     (platform, chat, status)
 }
 
+/// JS-callable handle to a long-lived pairing-host runtime shared by product
+/// cores.
 #[wasm_bindgen]
 pub struct WasmPairingHostRuntime {
     runtime: Rc<PairingHostRuntime>,
