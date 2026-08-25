@@ -378,7 +378,7 @@ async fn create_auto_account(
 
     for attempt in 0..8 {
         let lite_username = generated_username(username_prefix, attempt);
-        if !attestation::lite_username_available(network.identity_backend_base, &lite_username)
+        if !attestation::lite_username_available(network, &identity.entropy, &lite_username)
             .await
             .with_context(|| format!("check lite username {lite_username:?} availability"))?
         {
@@ -449,6 +449,7 @@ async fn attest_record(network: NetworkConfig, record: &AccountRecord) -> Result
     let entropy = mnemonic_entropy(&record.mnemonic)?;
     let lite_username = attestation::attest(&attestation::AttestConfig {
         backend_base: network.identity_backend_base.to_string(),
+        backend_auth: network.identity_backend_auth,
         people_ws: network.people_ws.to_string(),
         entropy,
         username_base: record.lite_username.clone(),

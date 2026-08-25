@@ -26,6 +26,7 @@ impl Network {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
                 identity_backend_base: "https://identity-backend-next.parity-testnet.parity.io/api/v1",
+                identity_backend_auth: IdentityBackendAuth::None,
                 people_ws: "wss://paseo-people-next-system-rpc.polkadot.io",
                 bulletin_ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
                 asset_hub_ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
@@ -42,7 +43,8 @@ impl Network {
             },
             Self::Previewnet => NetworkConfig {
                 id: "previewnet",
-                identity_backend_base: "https://polkadot-app-stg.parity.io/api/v1",
+                identity_backend_base: "https://identity-previewnet.dotspark.app/api/v1",
+                identity_backend_auth: IdentityBackendAuth::Jwt,
                 people_ws: "wss://previewnet.substrate.dev/people",
                 bulletin_ws: "wss://previewnet.substrate.dev/bulletin",
                 asset_hub_ws: "wss://previewnet.substrate.dev/asset-hub",
@@ -114,6 +116,7 @@ const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
 pub struct NetworkConfig {
     pub id: &'static str,
     pub identity_backend_base: &'static str,
+    pub identity_backend_auth: IdentityBackendAuth,
     pub people_ws: &'static str,
     #[allow(dead_code)]
     pub bulletin_ws: &'static str,
@@ -129,6 +132,15 @@ pub struct NetworkConfig {
     /// the chain does not report sends Asset Hub traffic to the fallback chain.
     pub asset_hub_genesis: [u8; 32],
     pub live_chain_endpoints: &'static [ChainEndpoint],
+}
+
+/// Authentication required by a network's identity backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityBackendAuth {
+    /// The legacy identity backend accepts unauthenticated requests.
+    None,
+    /// The identity backend requires a short-lived JWT proved by `uid.dot`.
+    Jwt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -376,8 +388,7 @@ mod tests {
     /// Hosts a preset may route to. Every entry is a disposable test deployment:
     /// `paseo`/`testnet` name the Paseo testnets and their backends,
     /// `previewnet.substrate.dev` is the previewnet parachain set, and
-    /// `polkadot-app-stg.parity.io` is the identity backend's staging
-    /// environment (`/api/v1/version` reports `"environment": "staging"`).
+    /// `identity-previewnet.dotspark.app` is its identity backend deployment.
     ///
     /// An allowlist rather than a substring rule, because the rule this test
     /// exists for is "no production network", and a production host can contain
@@ -386,7 +397,7 @@ mod tests {
         "paseo",
         "testnet",
         "previewnet.substrate.dev",
-        "polkadot-app-stg.parity.io",
+        "identity-previewnet.dotspark.app",
     ];
 
     #[test]

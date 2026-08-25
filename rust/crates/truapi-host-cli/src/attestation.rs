@@ -9,7 +9,9 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use subxt_rpcs::client::{RpcClient, rpc_params};
 use tracing::{debug, warn};
 use truapi_server::host_logic::attestation::build_lite_registration;
@@ -20,10 +22,14 @@ use truapi_server::host_logic::product_account::{
     derive_identity_keypair, derive_root_keypair_from_entropy, product_public_key_to_address,
 };
 
+use crate::network::{IdentityBackendAuth, NetworkConfig};
+
 /// Inputs for one attestation run.
 pub struct AttestConfig {
     /// Identity backend base URL including `/api/v1`.
     pub backend_base: String,
+    /// Authentication the configured identity backend requires.
+    pub backend_auth: IdentityBackendAuth,
     /// People-chain WebSocket URL for the `Resources.Consumers` poll.
     pub people_ws: String,
     /// BIP-39 entropy of the signing host's root account.
@@ -34,14 +40,21 @@ pub struct AttestConfig {
 
 /// Check whether a lite username base is available through the identity
 /// backend. The username must be the base form without the digit suffix.
-pub async fn lite_username_available(backend_base: &str, username_base: &str) -> Result<bool> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let url = format!("{backend_base}/usernames/available");
+pub async fn lite_username_available(
+    network: NetworkConfig,
+    entropy: &[u8],
+    username_base: &str,
+) -> Result<bool> {
+    let backend = IdentityBackendClient::connect(
+        network.identity_backend_base,
+        network.identity_backend_auth,
+        entropy,
+    )
+    .await?;
+    let url = backend.availability_url();
     let body = json!({ "usernames": [username_base] });
-    let response = client
-        .post(&url)
+    let response = backend
+        .request(reqwest::Method::POST, &url)
         .json(&body)
         .send()
         .await
@@ -52,21 +65,28 @@ pub async fn lite_username_available(backend_base: &str, username_base: &str) ->
         .json()
         .await
         .context("decoding availability response")?;
-    Ok(body
+    let legacy_status = body
         .get(username_base)
         .and_then(Value::as_str)
-        .is_some_and(|status| status == "AVAILABLE"))
+        .is_some_and(|status| status == "AVAILABLE");
+    let current_status = body
+        .get("value")
+        .and_then(|value| value.get(username_base))
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "AVAILABLE");
+    Ok(legacy_status || current_status)
 }
 
 /// Register (or confirm) the signing host's lite username and wait until the
 /// People-chain `Resources.Consumers` record exists. Returns the Lite username
 /// assigned on chain (including its discriminator).
 pub async fn attest(config: &AttestConfig) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let backend =
+        IdentityBackendClient::connect(&config.backend_base, config.backend_auth, &config.entropy)
+            .await?;
 
-    let verifier = fetch_verifier(&client, &config.backend_base).await?;
+    let verifier = fetch_verifier(&backend.client, &config.backend_base).await?;
     let registration = build_lite_registration(&config.entropy, verifier, &config.username_base)
         .map_err(|reason| anyhow::anyhow!("failed to build registration params: {reason}"))?;
     debug!(
@@ -76,7 +96,7 @@ pub async fn attest(config: &AttestConfig) -> Result<String> {
     );
 
     submit_registration(
-        &client,
+        &backend,
         &config.backend_base,
         &config.username_base,
         &registration,
@@ -176,7 +196,7 @@ async fn fetch_verifier(client: &reqwest::Client, backend_base: &str) -> Result<
 }
 
 async fn submit_registration(
-    client: &reqwest::Client,
+    backend: &IdentityBackendClient,
     backend_base: &str,
     username_base: &str,
     reg: &truapi_server::host_logic::attestation::LiteRegistration,
@@ -191,8 +211,8 @@ async fn submit_registration(
         "identifierKey": hex0x(&reg.identifier_key),
         "consumerRegistrationSignature": hex0x(&reg.consumer_registration_signature),
     });
-    let response = client
-        .post(&url)
+    let response = backend
+        .request(reqwest::Method::POST, &url)
         .json(&body)
         .send()
         .await
@@ -211,6 +231,121 @@ async fn submit_registration(
         return Ok(());
     }
     bail!("username registration failed ({status}): {text}");
+}
+
+/// HTTP access to an identity backend, including its optional proof-based JWT.
+struct IdentityBackendClient {
+    client: reqwest::Client,
+    base_url: String,
+    authorization: Option<String>,
+}
+
+impl IdentityBackendClient {
+    async fn connect(
+        backend_base: &str,
+        auth: IdentityBackendAuth,
+        entropy: &[u8],
+    ) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
+        let authorization = match auth {
+            IdentityBackendAuth::None => None,
+            IdentityBackendAuth::Jwt => Some(issue_jwt(&client, backend_base, entropy).await?),
+        };
+        Ok(Self {
+            client,
+            base_url: backend_base.to_string(),
+            authorization,
+        })
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_url)
+    }
+
+    fn availability_url(&self) -> String {
+        let url = self.url("/usernames/available");
+        if self.authorization.is_some() {
+            format!("{url}?version=v1")
+        } else {
+            url
+        }
+    }
+
+    fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        let request = self.client.request(method, url);
+        match &self.authorization {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+    }
+}
+
+/// Prove control of the signing host's `uid.dot` key and obtain a backend JWT.
+async fn issue_jwt(client: &reqwest::Client, backend_base: &str, entropy: &[u8]) -> Result<String> {
+    let challenge_url = format!("{backend_base}/auth/challenges");
+    let challenge_b64 = client
+        .post(&challenge_url)
+        .send()
+        .await
+        .with_context(|| format!("POST {challenge_url}"))?
+        .error_for_status()
+        .with_context(|| format!("identity backend challenge request failed at {challenge_url}"))?
+        .json::<Value>()
+        .await
+        .context("decoding identity backend challenge response")?
+        .get("challenge")
+        .and_then(Value::as_str)
+        .context("identity backend challenge response missing 'challenge'")?
+        .to_string();
+    let challenge = base64::engine::general_purpose::STANDARD
+        .decode(&challenge_b64)
+        .context("identity backend challenge is not base64")?;
+    let body = b"{}";
+    let (client_id, proof) = identity_proof(entropy, &challenge, body)?;
+    let token_url = format!("{backend_base}/auth/token");
+    client
+        .post(&token_url)
+        .header(
+            "Auth-ClientId",
+            base64::engine::general_purpose::STANDARD.encode(client_id),
+        )
+        .header(
+            "Auth-ClientProof",
+            base64::engine::general_purpose::STANDARD.encode(proof),
+        )
+        .header("Auth-Challenge", challenge_b64)
+        .body(body.to_vec())
+        .send()
+        .await
+        .with_context(|| format!("POST {token_url}"))?
+        .error_for_status()
+        .with_context(|| format!("identity backend token request failed at {token_url}"))?
+        .json::<Value>()
+        .await
+        .context("decoding identity backend token response")?
+        .get("token")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .context("identity backend token response missing 'token'")
+}
+
+/// Build the proof required by the identity backend token endpoint.
+fn identity_proof(entropy: &[u8], challenge: &[u8], body: &[u8]) -> Result<([u8; 32], [u8; 64])> {
+    let identity = derive_identity_keypair(entropy)
+        .map_err(|err| anyhow::anyhow!("uid.dot identity derivation failed: {err}"))?;
+    let client_id = identity.public.to_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(challenge);
+    hasher.update(client_id);
+    hasher.update(Sha256::digest(body));
+    let message: [u8; 32] = hasher.finalize().into();
+    let proof = identity
+        .secret
+        .sign_simple(b"substrate", &message, &identity.public)
+        .to_bytes();
+    Ok((client_id, proof))
 }
 
 fn hex0x(bytes: &[u8]) -> String {
