@@ -108,6 +108,10 @@ which is where a publish failure reports its reason.
   another does not, only the one that landed is tagged and the run still fails.
   Re-run it once the publish is fixed; the tag and version checks make that
   safe.
+- A release is one unit. The iOS job runs only after the release job succeeds,
+  so a release naming both npm packages and `@parity/ios-host` publishes no
+  XCFramework while npm is unconfirmed. Re-running covers both. An iOS-only
+  release is unaffected, since it has no npm package to confirm.
 - A `release:` PR with mismatched `js/packages/truapi/package.json` and
   `rust/crates/truapi/Cargo.toml` versions is blocked at PR time by the
   `Release version check` workflow.
