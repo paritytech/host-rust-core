@@ -1050,6 +1050,12 @@ class TrUAPIHostRuntime private constructor(
     }
 }
 
+/** A render the product declined or could not encode. */
+class CustomRendererStreamException(
+    /** Why the product ended the render. */
+    val reason: String,
+) : Exception(reason)
+
 /**
  * One SPA or Chat executable connected to a shared [TrUAPIHostRuntime]. Closing
  * it shuts the connection down permanently; the runtime stays usable.
@@ -1104,15 +1110,21 @@ class TrUAPIProductExecution internal constructor(
         callbackFlow {
             val observer =
                 object : NativeCustomRendererObserver {
-                    // The core declares both infallible, so uniffi has no error
-                    // type to convert a throw into and panics -- which aborts
-                    // under `panic = "abort"`.
+                    // The core declares all three infallible, so uniffi has no
+                    // error type to convert a throw into and panics -- which
+                    // aborts under `panic = "abort"`.
                     override fun onUpdate(node: CustomRendererNode) {
                         runCatching { trySend(node) }
                     }
 
                     override fun onComplete() {
                         runCatching { close() }
+                    }
+
+                    // The last tree sent is partial, so closing with a cause
+                    // keeps this distinct from a clean end for the collector.
+                    override fun onError(reason: String) {
+                        runCatching { close(CustomRendererStreamException(reason)) }
                     }
                 }
             val subscription = inner.renderCustomMessage(messageId, messageType, payload, observer)
