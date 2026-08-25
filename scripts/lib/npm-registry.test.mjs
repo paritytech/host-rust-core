@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   parsePackageLines,
   reportConfirmation,
+  resolvePackages,
   waitForPublishedVersions,
 } from "./npm-registry.mjs";
 
@@ -345,5 +346,64 @@ test("writes the confirmed subset before reporting a failure", () => {
     order,
     ["write:1", "error"],
     "output written before the failure",
+  );
+});
+
+test("resolvePackages builds one record from the flags", () => {
+  assert.deepEqual(
+    resolvePackages({
+      args: [
+        "--package",
+        "@parity/truapi-provider",
+        "--version",
+        "0.1.1-dev.0",
+      ],
+      readInput: () =>
+        assert.fail("stdin must not be read when flags are given"),
+    }),
+    [
+      {
+        name: "@parity/truapi-provider",
+        path: "",
+        version: "0.1.1-dev.0",
+        tag: "@parity/truapi-provider@0.1.1-dev.0",
+      },
+    ],
+  );
+});
+
+test("resolvePackages rejects one flag without the other", () => {
+  assert.throws(
+    () =>
+      resolvePackages({
+        args: ["--package", "@parity/truapi-provider"],
+        readInput: () => "",
+      }),
+    /must be given together/,
+  );
+  assert.throws(
+    () =>
+      resolvePackages({ args: ["--version", "1.0.0"], readInput: () => "" }),
+    /must be given together/,
+  );
+});
+
+test("resolvePackages falls back to the record block on stdin", () => {
+  assert.deepEqual(
+    resolvePackages({ args: [], readInput: () => packagesBlock }).map(
+      (e) => e.tag,
+    ),
+    [truapi, host],
+  );
+});
+
+test("resolvePackages rejects a flag with a blank value", () => {
+  assert.throws(
+    () =>
+      resolvePackages({
+        args: ["--package", "@parity/truapi-provider", "--version", ""],
+        readInput: () => "",
+      }),
+    /must not be blank/,
   );
 });

@@ -156,6 +156,5 @@ jobs:
         env:
           DEV_VERSION: ${{ steps.devver.outputs.version }}
         run: |
-          set -euo pipefail
-          printf '%s\n' "@parity/truapi-provider|js/packages/truapi-provider|${DEV_VERSION}|@parity/truapi-provider@${DEV_VERSION}" \
-            | node scripts/wait-for-npm-publish.mjs
+          node scripts/wait-for-npm-publish.mjs \
+            --package @parity/truapi-provider --version "${DEV_VERSION}"

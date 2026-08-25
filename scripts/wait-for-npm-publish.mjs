@@ -2,8 +2,8 @@
 import { appendFileSync, readFileSync } from "node:fs";
 
 import {
-  parsePackageLines,
   reportConfirmation,
+  resolvePackages,
   waitForPublishedVersions,
 } from "./lib/npm-registry.mjs";
 
@@ -12,6 +12,9 @@ import {
  *
  * Reads release.yml's `name|path|version|tag` block on stdin:
  *   printf '%s' "$PACKAGES" | node scripts/wait-for-npm-publish.mjs
+ *
+ * Or for one package:
+ *   node scripts/wait-for-npm-publish.mjs --package @parity/x --version 1.2.3
  *
  * Writes the confirmed subset to $GITHUB_OUTPUT as `published`, in the same
  * format, so the tagging steps can consume it. Exits non-zero if any package
@@ -27,9 +30,11 @@ const requestTimeoutMs = 10_000;
 const timeoutMs = positiveMs("NPM_PUBLISH_TIMEOUT_MS", 600_000);
 const intervalMs = positiveMs("NPM_PUBLISH_INTERVAL_MS", 15_000);
 
-const packages = parse(readFileSync(0, "utf8"));
+const packages = parse();
 if (packages.length === 0) {
-  fail("no packages on stdin; expected release.yml's packages output");
+  fail(
+    "no packages given; expected --package with --version, or a block on stdin",
+  );
 }
 
 console.log(
@@ -95,9 +100,12 @@ function positiveMs(name, fallback) {
   return value;
 }
 
-function parse(text) {
+function parse() {
   try {
-    return parsePackageLines(text);
+    return resolvePackages({
+      args: process.argv.slice(2),
+      readInput: () => readFileSync(0, "utf8"),
+    });
   } catch (error) {
     fail(error.message);
   }

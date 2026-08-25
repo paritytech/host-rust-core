@@ -37,6 +37,25 @@ export function parsePackageLines(text) {
     });
 }
 
+/** Packages from `--package` and `--version`, or from the block on stdin. */
+export function resolvePackages({ args, readInput }) {
+  const flag = (flagName) => {
+    const at = args.indexOf(`--${flagName}`);
+    return at === -1 ? undefined : args[at + 1];
+  };
+  const name = flag("package");
+  const version = flag("version");
+
+  if (name === undefined && version === undefined) {
+    return parsePackageLines(readInput());
+  }
+  if (name === undefined || version === undefined) {
+    throw new Error("--package and --version must be given together");
+  }
+  // No path: only release.yml's tagging steps read that field.
+  return parsePackageLines(`${name}||${version}|${name}@${version}`);
+}
+
 /**
  * Poll the registry until every package's version is published, or until the
  * deadline passes.
