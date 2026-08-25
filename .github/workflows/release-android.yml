@@ -1,0 +1,90 @@
+# Builds and publishes the Android host AAR (io.parity:truapi-host-android) to
+# GitHub Packages. The AAR bundles the per-ABI Rust core (ws-bridge feature), the
+# UniFFI Kotlin bindings generated from the same source, and the Kotlin shell.
+name: release-android
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0 or 0.1.0-rc.1)"
+        required: true
+  push:
+    tags:
+      - "truapi-host-android@*"
+    # Temporary, remove once the pipeline is proven: publish an rc build on
+    # every push to the introducing branch, since workflow_dispatch is only
+    # available after this file lands on the default branch.
+    branches:
+      - "vf/android-host-artifact"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
+            echo "version=${GITHUB_REF_NAME#truapi-host-android@}" >> "$GITHUB_OUTPUT"
+          else
+            # Branch push (temporary trigger): unique rc per run.
+            echo "version=0.1.0-rc.${RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: "8.9"
+
+      - name: Generate UniFFI Kotlin bindings
+        run: make uniffi-kotlin
+
+      - name: Cross-compile libtruapi_server.so for every ABI
+        run: make android-jni
+
+      - name: Verify AAR inputs
+        run: |
+          set -e
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            test -f "android/truapi-host/src/main/jniLibs/$abi/libtruapi_server.so" \
+              || { echo "missing .so for $abi"; exit 1; }
+          done
+          test -f android/truapi-host/src/main/kotlin/generated/uniffi/truapi_server/truapi_server.kt
+
+      - name: Publish to GitHub Packages
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gradle :truapi-host:publishReleasePublicationToGitHubPackagesRepository \
+            -PtruapiHostVersion="${VERSION}"

@@ -2,13 +2,11 @@
 
 *Kotlin wrapper around the TrUAPI Rust core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
 
-> **Status:** the JitPack distribution described below is the intended packaging but is **not yet wired up** — there is no `jitpack.yml` at the repo root, so the "add the JitPack repo and depend on the tag" flow does not work today. Until it is added, integrate locally with `make android-publish-local` + `mavenLocal()`, or build the module directly. The rest of this doc describes the target design.
-
-Intended distribution: a Maven artifact built on demand from git tags by [JitPack](https://jitpack.io/), no Maven Central account required on either side.
+Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi_server.*`), and the Kotlin host adapter (`io.parity.truapi.*`). Consumers need no Rust toolchain or NDK.
 
 ## Consume
 
-Add the JitPack Maven repository and the artifact to your app's Gradle build:
+Add the GitHub Packages repository and the artifact to your app's Gradle build (GitHub Packages requires authentication even for public repos — any GitHub account token with `read:packages` works):
 
 ```kotlin
 // settings.gradle.kts
@@ -16,7 +14,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
+        maven {
+            url = uri("https://maven.pkg.github.com/paritytech/host-rust-core")
+            credentials {
+                username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+                password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+            }
+        }
     }
 }
 ```
@@ -24,13 +28,9 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.paritytech.truapi:truapi-host:0.1.0")
+    implementation("io.parity:truapi-host-android:0.1.0")
 }
 ```
-
-JitPack fetches the tag `0.1.0` from `paritytech/host-rust-core`, runs `make android-publish-local` against it (driven by `jitpack.yml` at the repo root, including UniFFI binding generation), and serves the resulting AAR + POM + sources jar. First fetch takes ~1 minute while JitPack builds; subsequent consumers hit the cache.
-
-The artifact bundles the Kotlin host adapter (`io.parity.truapi.*`) and the generated UniFFI bindings (`uniffi.truapi_server.*`). It does **not** bundle the native `libtruapi_server.so` cdylib, integrators build that per Android ABI and drop it into their app's `src/main/jniLibs/<abi>/` (see "Linking the cdylib" below).
 
 The consuming app must declare `android.permission.INTERNET` — the localhost WebSocket bridge binds a `127.0.0.1` TCP socket, which requires it even for loopback.
 
@@ -382,72 +382,33 @@ main.post {
 core.disconnect()
 ```
 
-## Linking the cdylib
+## The cdylib
 
-The native runtime ships separately. JNA looks for `libtruapi_server.so` in the standard `jniLibs` paths; bundle the per-ABI builds under:
+The released AAR bundles `libtruapi_server.so` for all three ABIs under its `jni/` directory; JNA loads it from there without any consumer setup.
 
-```
-src/main/jniLibs/arm64-v8a/libtruapi_server.so
-src/main/jniLibs/armeabi-v7a/libtruapi_server.so
-src/main/jniLibs/x86_64/libtruapi_server.so
-```
-
-Cross-build the cdylib for each Android ABI from the truapi monorepo. Two options, pick whichever fits the host app's existing toolchain:
-
-**Option A: `mozilla-rust-android-gradle` plugin.** Recommended if the host app already uses it (polkadot-app-android-v2 does, for `bandersnatch-crypto`). Vendor `paritytech/host-rust-core` as a git submodule, add a small Gradle module that points the plugin at `rust/crates/truapi-server`:
-
-```kotlin
-// app/build.gradle.kts (or a dedicated :truapi-cdylib module)
-plugins {
-    alias(libs.plugins.mozilla.rust.android)
-}
-
-cargo {
-    module = "<path>/truapi/rust/crates/truapi-server"
-    libname = "truapi_server"
-    targets = listOf("arm64", "arm", "x86_64")
-    profile = "release"
-    features { defaultAnd(arrayOf("ws-bridge")) }
-}
-
-tasks.matching { it.name.matches("merge.*JniLibFolders".toRegex()) }.configureEach {
-    inputs.dir(layout.buildDirectory.dir("rustJniLibs/android"))
-    dependsOn("cargoBuild")
-}
-```
-
-**Option B: `cargo-ndk` from the command line.** Standalone, no Gradle plugin required:
+When iterating on the core from a source checkout instead of the published artifact, cross-compile into this module's `jniLibs` with:
 
 ```bash
-cargo install cargo-ndk
-cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
-  -o app/src/main/jniLibs \
-  build --release -p truapi-server --features ws-bridge
+make android-jni    # needs cargo-ndk, the NDK, and the three Android rust targets
 ```
 
-Both options require the Android NDK installed and the matching Rust targets (`rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`).
-
-Pre-built per-ABI `.so` files bundled inside the AAR are tracked as a follow-up so consumers eventually don't need a Rust toolchain at all.
+or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi-server` from the host app's own build (polkadot-app-android-v2 does this while it still builds from a checkout).
 
 ## Maintainers: cutting a release
 
-JitPack builds on demand from any git tag in `paritytech/host-rust-core`, so a release is just:
+Releases are built and published by `.github/workflows/release-android.yml`:
 
-1. Bump `publicationVersion` in `android/truapi-host/build.gradle.kts`.
-2. Commit. Open a PR. Merge.
-3. Tag the merge commit with the version: `git tag truapi-host-android@0.1.0 && git push origin truapi-host-android@0.1.0`.
+1. Tag the commit to release: `git tag truapi-host-android@0.1.0 && git push origin truapi-host-android@0.1.0` (or run the `release-android` workflow manually with a version input).
+2. The workflow cross-compiles the cdylib for all three ABIs, regenerates the Kotlin bindings via the `codegen` cargo profile, and publishes `io.parity:truapi-host-android:<version>` to GitHub Packages.
 
-That's the entire release flow, the iOS Swift Package follows the same pattern. The first consumer to pull the tag will trigger JitPack to build the artifact; subsequent fetches hit the cache.
-
-For local development, publish into the dev `~/.m2`:
+For local development, publish into `~/.m2`:
 
 ```bash
-gradle :truapi-host:publishReleasePublicationToMavenLocal
-# or
+make android-jni            # optional: bundle the cdylibs into the local AAR
 make android-publish-local
 ```
 
-The artifact lands under `~/.m2/repository/io/parity/truapi-host-android/<version>/`. Consumers pointing at `mavenLocal()` can resolve it via `io.parity:truapi-host-android:<version>`. These local coordinates differ from the JitPack consumer coordinate (`com.github.paritytech.truapi:truapi-host:<tag>`): JitPack derives the group and artifactId from the repo and Gradle subproject, overriding the `io.parity:truapi-host-android` coordinates set in `build.gradle.kts`.
+The artifact lands under `~/.m2/repository/io/parity/truapi-host-android/0.0.0-local/`; consumers pointing at `mavenLocal()` resolve it as `io.parity:truapi-host-android:0.0.0-local`.
 
 ## Regenerating the UniFFI bindings
 
