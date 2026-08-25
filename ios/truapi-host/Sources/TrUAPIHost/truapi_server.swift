@@ -693,7 +693,7 @@ public protocol HostCallbacks: AnyObject, Sendable {
      * It is async because reading notification authorization on iOS is
      * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
      */
-    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws  -> DevicePermissionStatus
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws  -> NativeDevicePermissionStatus
 
     /**
      * Prompt the user for a remote (product-scoped) permission.
@@ -961,7 +961,7 @@ open func devicePermission(request: HostDevicePermissionRequest)async throws  ->
      * It is async because reading notification authorization on iOS is
      * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
      */
-open func devicePermissionStatus(request: HostDevicePermissionRequest)async throws  -> DevicePermissionStatus  {
+open func devicePermissionStatus(request: HostDevicePermissionRequest)async throws  -> NativeDevicePermissionStatus  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
@@ -972,7 +972,7 @@ open func devicePermissionStatus(request: HostDevicePermissionRequest)async thro
             pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
             completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
             freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeDevicePermissionStatus_lift,
+            liftFunc: FfiConverterTypeNativeDevicePermissionStatus_lift,
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
@@ -1436,7 +1436,7 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
             uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
         ) in
             let makeCall = {
-                () async throws -> DevicePermissionStatus in
+                () async throws -> NativeDevicePermissionStatus in
                 guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
@@ -1445,11 +1445,11 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                 )
             }
 
-            let uniffiHandleSuccess = { (returnValue: DevicePermissionStatus) in
+            let uniffiHandleSuccess = { (returnValue: NativeDevicePermissionStatus) in
                 uniffiFutureCallback(
                     uniffiCallbackData,
                     UniffiForeignFutureResultRustBuffer(
-                        returnValue: FfiConverterTypeDevicePermissionStatus_lower(returnValue),
+                        returnValue: FfiConverterTypeNativeDevicePermissionStatus_lower(returnValue),
                         callStatus: RustCallStatus()
                     )
                 )
@@ -4865,6 +4865,106 @@ public func FfiConverterTypeHostStorageError_lower(_ value: HostStorageError) ->
 
 
 /**
+ * OS status of a device capability, as a native host reports it.
+ *
+ * Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
+ * directly: an async callback method returning a type from another UniFFI
+ * namespace lowers into that namespace's `RustBuffer`, and the generated
+ * Kotlin then fails to compile. The conversion is total.
+ */
+
+public enum NativeDevicePermissionStatus: Equatable, Hashable {
+
+    /**
+     * The OS grants this capability to the host application.
+     */
+    case granted
+    /**
+     * The OS refuses it; only system settings can change that.
+     */
+    case denied
+    /**
+     * The OS has not been asked, or reset its own answer.
+     */
+    case notDetermined
+    /**
+     * This platform has no OS gate for the capability.
+     */
+    case notApplicable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativeDevicePermissionStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeDevicePermissionStatus: FfiConverterRustBuffer {
+    typealias SwiftType = NativeDevicePermissionStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeDevicePermissionStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .granted
+
+        case 2: return .denied
+
+        case 3: return .notDetermined
+
+        case 4: return .notApplicable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NativeDevicePermissionStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .granted:
+            writeInt(&buf, Int32(1))
+
+
+        case .denied:
+            writeInt(&buf, Int32(2))
+
+
+        case .notDetermined:
+            writeInt(&buf, Int32(3))
+
+
+        case .notApplicable:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeDevicePermissionStatus_lift(_ buf: RustBuffer) throws -> NativeDevicePermissionStatus {
+    return try FfiConverterTypeNativeDevicePermissionStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeDevicePermissionStatus_lower(_ value: NativeDevicePermissionStatus) -> RustBuffer {
+    return FfiConverterTypeNativeDevicePermissionStatus.lower(value)
+}
+
+
+
+/**
  * Native-friendly SSO deeplink scheme.
  */
 
@@ -6626,7 +6726,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 19880) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission_status() != 31894) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission_status() != 21303) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 12868) {

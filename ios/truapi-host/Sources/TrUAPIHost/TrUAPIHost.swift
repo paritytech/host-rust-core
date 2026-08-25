@@ -393,7 +393,7 @@ public protocol HostBridge: AnyObject, Sendable {
     /// governing. Defaults to `.notApplicable`, so an app that does not
     /// implement it keeps today's behaviour.
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> DevicePermissionStatus
+        -> NativeDevicePermissionStatus
 
     /// Prompt for a remote (product-scoped) permission bundle. Invoked on a
     /// blocking-pool thread; present the prompt on the main thread and block
@@ -508,7 +508,7 @@ public extension HostBridge {
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> DevicePermissionStatus { .notApplicable }
+        -> NativeDevicePermissionStatus { .notApplicable }
 }
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
@@ -600,7 +600,7 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     }
 
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
-        -> DevicePermissionStatus
+        -> NativeDevicePermissionStatus
     {
         try await withHostRejection {
             try await bridge.devicePermissionStatus(request: request)

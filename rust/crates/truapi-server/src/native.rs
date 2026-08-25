@@ -427,6 +427,35 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
+/// OS status of a device capability, as a native host reports it.
+///
+/// Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
+/// directly: an async callback method returning a type from another UniFFI
+/// namespace lowers into that namespace's `RustBuffer`, and the generated
+/// Kotlin then fails to compile. The conversion is total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeDevicePermissionStatus {
+    /// The OS grants this capability to the host application.
+    Granted,
+    /// The OS refuses it; only system settings can change that.
+    Denied,
+    /// The OS has not been asked, or reset its own answer.
+    NotDetermined,
+    /// This platform has no OS gate for the capability.
+    NotApplicable,
+}
+
+impl From<NativeDevicePermissionStatus> for truapi_platform::DevicePermissionStatus {
+    fn from(status: NativeDevicePermissionStatus) -> Self {
+        match status {
+            NativeDevicePermissionStatus::Granted => Self::Granted,
+            NativeDevicePermissionStatus::Denied => Self::Denied,
+            NativeDevicePermissionStatus::NotDetermined => Self::NotDetermined,
+            NativeDevicePermissionStatus::NotApplicable => Self::NotApplicable,
+        }
+    }
+}
+
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
@@ -481,7 +510,7 @@ pub trait HostCallbacks: Send + Sync {
     async fn device_permission_status(
         &self,
         request: v01::HostDevicePermissionRequest,
-    ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection>;
+    ) -> Result<NativeDevicePermissionStatus, HostRejection>;
 
     /// Prompt the user for a remote (product-scoped) permission.
     async fn remote_permission(
@@ -1660,6 +1689,7 @@ impl truapi_platform::PermissionStatusHost for CallbackPlatform {
         self.callbacks
             .device_permission_status(request)
             .await
+            .map(Into::into)
             .map_err(v01::GenericError::from)
     }
 }
@@ -2200,8 +2230,8 @@ mod tests {
         async fn device_permission_status(
             &self,
             _request: v01::HostDevicePermissionRequest,
-        ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection> {
-            Ok(truapi_platform::DevicePermissionStatus::NotApplicable)
+        ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+            Ok(NativeDevicePermissionStatus::NotApplicable)
         }
         async fn remote_permission(
             &self,
@@ -3254,8 +3284,8 @@ mod tests {
             async fn device_permission_status(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection> {
-                Ok(truapi_platform::DevicePermissionStatus::NotApplicable)
+            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+                Ok(NativeDevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,
@@ -3408,8 +3438,8 @@ mod tests {
             async fn device_permission_status(
                 &self,
                 _request: v01::HostDevicePermissionRequest,
-            ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection> {
-                Ok(truapi_platform::DevicePermissionStatus::NotApplicable)
+            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+                Ok(NativeDevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,
