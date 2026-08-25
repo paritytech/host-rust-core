@@ -275,7 +275,8 @@ Pushes to `main` build and deploy:
 ## Release
 
 See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
-`@parity/truapi`, `@parity/truapi-host`, or both packages to npm.
+`@parity/truapi` and `@parity/truapi-host` to npm, and the iOS host and
+Android host artifacts alongside them.
 
 ## Contributing
 
