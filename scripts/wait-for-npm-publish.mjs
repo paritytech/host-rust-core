@@ -51,7 +51,7 @@ writeOutput(published);
 if (!ok) {
   for (const entry of missing) {
     console.error(
-      `::error::${entry.tag} was not published to npm. The release is not tagged for it.`,
+      `::error::${entry.tag} is not on npm; the publish did not land.`,
     );
   }
   process.exit(1);

@@ -148,3 +148,14 @@ jobs:
           inputs: '${{ format(''{{ "repo": "{0}", "run_id": "{1}", "artifact_name": "truapi-provider-dev-{2}", "npm_tag": "{3}" }}'', github.repository, github.run_id, github.sha, steps.devver.outputs.tag) }}'
         env:
           GITHUB_TOKEN: ${{ secrets.NPM_PUBLISH_AUTOMATION_TOKEN }}
+
+      # No tags to gate here, so a missing version just fails the job. The check
+      # is version-addressed, so the dist-tag above does not affect it.
+      - name: Confirm the dev snapshot reached npm
+        timeout-minutes: 12
+        env:
+          DEV_VERSION: ${{ steps.devver.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "@parity/truapi-provider|js/packages/truapi-provider|${DEV_VERSION}|@parity/truapi-provider@${DEV_VERSION}" \
+            | node scripts/wait-for-npm-publish.mjs
