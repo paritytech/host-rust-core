@@ -78,23 +78,36 @@ On merge, CI runs as usual. When CI passes, the `Release` workflow:
 1. Confirms the commit subject starts with `release:`.
 2. Reads each package/version target from the comma-separated release subject
    and validates it against the corresponding package manifest.
-3. Checks for `@parity/truapi@<version>` and
-   `@parity/truapi-host@<version>` tags. Packages whose tag already exists
-   are skipped, so re-runs are idempotent.
-4. Builds generated sources and the host WASM bundle, creates and pushes tags
-   for unpublished packages, packs their tarballs, and dispatches to
-   `npm_publish_automation`.
+3. Asks npm whether each `<package>@<version>` already exists. Versions the
+   registry already serves are skipped, so re-runs are idempotent.
+4. Builds generated sources and the host WASM bundle, packs the tarballs, and
+   dispatches to `npm_publish_automation`.
+5. Polls the registry until every version being released is installable, for up
+   to ten minutes.
+6. Creates and pushes tags and publishes GitHub Releases, for the confirmed
+   versions only.
 
-You can watch the dispatched run under
-[`paritytech/npm_publish_automation` Actions](https://github.com/paritytech/npm_publish_automation/actions).
+The dispatch in step 4 returns as soon as GitHub accepts it, which is why step 5
+exists: the registry is the only proof a version landed. A green `Release` run
+therefore means both packages are installable, not merely that the publish was
+requested.
+
+You can still watch the dispatched run under
+[`paritytech/npm_publish_automation` Actions](https://github.com/paritytech/npm_publish_automation/actions),
+which is where a publish failure reports its reason.
 
 ## Safety properties
 
 - A feature PR that accidentally bumps `package.json` will **not**
   trigger a publish — only `release:` PRs do.
-- A `release:` PR that forgets to bump package versions will be skipped at
-  the tag-already-exists check, not silently re-publish over an
-  existing version.
+- A `release:` PR that forgets to bump package versions will be skipped at the
+  version-already-on-npm check, not silently re-publish over an existing
+  version. That check queries the registry, not the git tags.
+- A publish that never reaches npm fails the release, so no tag or GitHub
+  Release is created for a version nobody can install. If one package lands and
+  another does not, only the one that landed is tagged and the run still fails.
+  Re-run it once the publish is fixed; the tag and version checks make that
+  safe.
 - A `release:` PR with mismatched `js/packages/truapi/package.json` and
   `rust/crates/truapi/Cargo.toml` versions is blocked at PR time by the
   `Release version check` workflow.
