@@ -1641,7 +1641,6 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `FORCE_COLOR` | Force battery reporter color in non-TTY output. |
 | `TRUAPI_BATTERY_REPORT_PATH` | Override battery report destination. |
 | `TRUAPI_APPROVALS_LOG` | Append one line per decided confirmation to this file. |
-| `TRUAPI_OS_DENIED_PERMISSIONS` | Comma-separated device capabilities this host reports as refused by the OS, e.g. `camera,microphone`. |
 
 ## 22. Current v0.1 operational constraints
 
