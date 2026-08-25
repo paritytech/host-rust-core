@@ -1,0 +1,12 @@
+{
+  "lint": { "rules": { "include": ["no-sync-fn-in-async-fn"] } },
+  "fmt": { "lineWidth": 110 },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.19",
+    "@std/cli": "jsr:@std/cli@^1.0.32",
+    "@std/fmt": "jsr:@std/fmt@^1.0.10",
+    "@std/front-matter": "jsr:@std/front-matter@^1.0.9",
+    "@std/fs": "jsr:@std/fs@^1.0.24",
+    "@std/path": "jsr:@std/path@^1.1.6"
+  }
+}
