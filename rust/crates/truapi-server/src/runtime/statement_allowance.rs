@@ -3,14 +3,19 @@
 //! Mirrors how an iOS/web client obtains statement-store allowance from the real
 //! People chain: build the `Resources.set_statement_store_account` call, prove
 //! personhood ring membership with the caller's registry-selected ring-VRF key,
-//! and submit the resulting unsigned General (v5) extrinsic. Native only
-//! (needs the `verifiable` prover and live chain reads).
+//! and submit the resulting unsigned General (v5) extrinsic. Compiles for
+//! every target: the wasm host reaches both chains through its platform
+//! connections, and the `verifiable` prover runs under wasm (the ring-VRF
+//! product surface already ships it there). Only the PGAS claim and the
+//! renewal loop remain native-only.
 
 pub mod collection;
 pub mod extension;
 pub mod extrinsic;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pgas;
 pub mod proof;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod renewal;
 pub mod ring;
 pub mod rpc;
@@ -20,7 +25,10 @@ pub(crate) mod test_fixtures;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
+#[cfg(target_arch = "wasm32")]
+use web_time::{Duration, Instant};
 
 use futures::FutureExt;
 use parity_scale_codec::{Decode, Encode};
@@ -59,6 +67,7 @@ pub enum StatementAllowanceError {
     #[error(transparent)]
     Proof(#[from] proof::ProofError),
     /// Asset Hub PGAS claim failed.
+    #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Pgas(#[from] pgas::PgasError),
     /// Bulletin allowance polling timed out.
