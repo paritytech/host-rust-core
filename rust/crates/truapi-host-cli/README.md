@@ -62,7 +62,7 @@ connectWebSocketHost("ws://127.0.0.1:9955");
 The product is then detected as hosted and holds the real product account for
 its own `.dot` name, so signing, statements, entropy, permissions and storage
 all take their production code paths with no phone involved. `--product-id` is
-not optional: the host derives the product account from it and refuses to *sign*
+not optional: the host derives the product account from it and refuses to _sign_
 for any other product id, and a mismatch only surfaces later, as a
 `PermissionDenied` on the first signature.
 
@@ -77,9 +77,9 @@ available commands. It uses `--mnemonic` / `HOST_CLI_SIGNER_MNEMONIC` if set.
 Otherwise it auto-selects or creates a stored account under `--base-path` (default
 `$XDG_STATE_HOME/truapi-host` or `~/.local/state/truapi-host`), attests it
 through the identity backend, waits for ring readiness, and rotates when the
-current account exhausts Statement Store slots. A full period replaces the
-oldest slot past the runtime's replacement cooldown, so rotation only happens
-when no slot is replaceable.
+current account exhausts Statement Store slots and no saved pairing depends on
+its identity. A full period replaces the oldest slot past the runtime's
+replacement cooldown, so rotation only happens when no slot is replaceable.
 
 ### Interactive terminal UI
 
@@ -94,6 +94,8 @@ Commands always start with `/`:
 | Command | Result |
 | --- | --- |
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
+| `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
+| `/devices --remove <statement-account-id>` | Remove one paired device by its 32-byte statement account ID. |
 | `/script` | Reopen the session's last TypeScript scratch script (or create one), then run it. |
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
 | `/login` | Start pairing for the selected product and copy its deeplink to the clipboard. |
@@ -173,9 +175,9 @@ network but is not repeated in the status bar as a separate session field.
 is resolved. It is hidden from session completion and listing and cannot be
 selected with `/session default`. User session names contain lowercase ASCII
 letters, digits, `.`, `_`, or `-`; they cannot be paths. Switching prepares the
-target while the old session remains active, then stops its pairing responder
-and resets product WebSocket connections so clients reconnect against the new
-runtime.
+target while the old session remains active, then stops all responders for the
+old session, resets product WebSocket connections so clients reconnect against
+the new runtime, and restores every paired device saved for the target session.
 
 `/session --mnemonic "<phrase>"` brings an already-onboarded account into the
 session catalog. The host derives its `uid.dot` identity, reads any existing
@@ -210,6 +212,26 @@ session's editor context. A session with no signer yet reports
 `/session <name>`. Inspecting with bare `/session` never starts network
 onboarding; naming a different session creates and connects its user.
 
+Each managed session stores all of its paired hosts in `paired-hosts.json`.
+Mutations are serialized through `paired-hosts.json.lock`. `/pair` inserts or
+updates the host selected by its statement account ID and leaves every other
+responder running. Interactive mode and `--serve` restore responders for all
+saved hosts at startup. Transient responder failures and ended subscriptions are
+retried with backoff. A remote `Disconnected` message removes only that peer's
+saved pairing and responder.
+
+Handled SSO request IDs are stored per signing identity and paired host. The
+signing host records a request before executing it, so restarting or retrying a
+responder acknowledges an unexpired duplicate without repeating its side
+effects.
+
+`/devices` and `/devices --list` show the saved statement account IDs in stable
+order with available host and platform metadata. Interactive
+`/devices --remove <statement-account-id>` asks for confirmation. The same
+command through `exec` is an explicit one-shot removal and runs without another
+prompt. Removing one device stops only its responder and allowance renewal. The
+other saved pairings and the signing identity are unchanged.
+
 `/session --clear <name>` permanently deletes that session's local signer
 keys, scripts, core/product storage, and permissions. `/session --clear-all`
 does the same for every signing-host session on the current network, including
@@ -240,13 +262,20 @@ truapi-host signing-host exec '/session --clear alice.01'
 truapi-host signing-host exec '/session --clear-all'
 truapi-host signing-host --auto-accept exec '/script ./js/scripts/ring-vrf-smoke.ts'
 truapi-host signing-host exec '/pair polkadotapp://pair?handshake=...'
+truapi-host signing-host --session alice.01 exec '/devices'
+truapi-host signing-host --session alice.01 exec '/devices --list'
+truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 ```
 
 `exec` does not enable raw mode or emit terminal controls. Command results go
 to stdout, diagnostics go to stderr, and the process exits when the command
 finishes. Starting `signing-host` without `--script` or `exec` while either
-stdin or stdout is not a TTY is an invocation error. The existing `--script`
-one-shot mode remains supported.
+stdin or stdout is not a TTY is an invocation error unless `--serve` is used.
+The existing `--script` one-shot mode remains supported. Neither one-shot mode
+restores saved responders. Only a deeplink supplied for that run is answered,
+and a managed session still saves that pairing for a later interactive or
+`--serve` run. By contrast, an explicit startup mnemonic has no managed session,
+so its pairing runs only for the current process and `/devices` is unavailable.
 
 ## Writing a product script
 
@@ -271,7 +300,8 @@ const login = await truapi.account.requestLogin({ reason: undefined });
 if (
   !login.isOk() ||
   (login.value !== "Success" && login.value !== "AlreadyConnected")
-) throw new Error("login failed");
+)
+  throw new Error("login failed");
 
 const res = await truapi.signing.signRaw({
   account: host.productAccount(),
@@ -279,7 +309,9 @@ const res = await truapi.signing.signRaw({
 });
 res.match(
   (v) => console.log("signature", v.signature),
-  (e) => { throw new Error(JSON.stringify(e)); },
+  (e) => {
+    throw new Error(JSON.stringify(e));
+  },
 );
 ```
 
@@ -472,6 +504,12 @@ slot tables. Auto-managed accounts are stored in
 and the file is written with `0600` permissions on Unix. `alloc-check` verifies
 membership and can submit a test registration.
 
+When a managed session has saved pairings, Statement Store exhaustion does not
+mark its signer as exhausted or rotate to another identity. If there is no slot
+for another device, pairing fails and preserves the existing identity and
+pairings. Remove a paired device or wait for a new allowance period before
+trying again.
+
 ## Manual use (two terminals)
 
 ```bash
@@ -520,8 +558,9 @@ truapi-host signing-host --serve \
   --auto-accept
 ```
 
-It needs no TTY, initialises the signer, and stays up until stopped. Output is
-one line per event:
+It needs no TTY, initialises the signer, restores responders for every paired
+device saved in the selected session, and stays up until stopped. Output is one
+line per event:
 
 ```
 ✓ Paired with headlessyvqhet.43
@@ -562,7 +601,7 @@ one-shot modes.
   contracts on Asset Hub. Auto-managed signing accounts register fresh lite
   usernames via the identity backend (`src/attestation.rs`); first registration
   is backend-async and can take minutes (ring onboarding). `truapi-host
-  identity-check --mnemonic <m>` probes which derivation carries a username.
+identity-check --mnemonic <m>` probes which derivation carries a username.
 - `set_statement_store_account`, Bulletin long-term-storage, and Asset Hub PGAS
   resource allocation are implemented over SSO on native headless hosts.
 - Everything else the browser host exercises passes: signing (raw, payload,
