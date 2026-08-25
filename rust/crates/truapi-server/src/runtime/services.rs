@@ -129,8 +129,8 @@ impl RuntimeServices {
     }
 
     /// The host's live OS permission-status adapter, when one is installed.
-    pub(crate) fn permission_status_host(&self) -> Option<&dyn PermissionStatusHost> {
-        self.permission_status.get().map(AsRef::as_ref)
+    pub(crate) fn permission_status_host(&self) -> Option<Arc<dyn PermissionStatusHost>> {
+        self.permission_status.get().cloned()
     }
 
     /// This device's persisted X25519 encryption secret, created on first use.

@@ -468,6 +468,21 @@ pub trait HostCallbacks: Send + Sync {
         request: v01::HostDevicePermissionRequest,
     ) -> Result<bool, HostRejection>;
 
+    /// Report the OS status of a device capability without prompting.
+    ///
+    /// Answer from the platform's own authorization APIs. This must not show
+    /// UI: the core calls it before every device-permission request and status
+    /// read, and prompting here would re-ask a question the user has already
+    /// answered. A host with no OS gate for the capability answers
+    /// `NotApplicable`, which leaves the stored product decision governing.
+    ///
+    /// It is async because reading notification authorization on iOS is
+    /// `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection>;
+
     /// Prompt the user for a remote (product-scoped) permission.
     async fn remote_permission(
         &self,
@@ -638,10 +653,13 @@ impl NativeTrUApiHostRuntime {
         product: ProductContext,
     ) -> Arc<NativeProductExecution> {
         let events = Arc::new(NativeEventBus::default());
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(CallbackPlatform {
+        let callback_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
         });
+        let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
+            callback_platform.clone();
+        let platform: Arc<dyn truapi_platform::Platform> = callback_platform;
         let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> =
             chat_callbacks.map(|chat| -> Arc<dyn truapi_platform::ChatPlatform> {
                 Arc::new(ChatCallbackPlatform {
@@ -654,6 +672,7 @@ impl NativeTrUApiHostRuntime {
             product: product.clone(),
             platform,
             chat,
+            permission_status,
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -930,6 +949,9 @@ pub struct NativeProductExecution {
     product: ProductContext,
     platform: Arc<dyn truapi_platform::Platform>,
     chat: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// The same `CallbackPlatform` as `platform`, kept separately because
+    /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
+    permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -954,6 +976,7 @@ impl NativeProductExecution {
         crate::host_core::ConnectionAdapters {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
+            permission_status: Some(self.permission_status.clone()),
             chat: self.chat_connection.clone(),
         }
     }
@@ -1159,15 +1182,8 @@ impl NativeProductExecution {
         let adapters = self.adapters();
         let product_control = self.product_control.clone();
         let runtime_factory = Arc::new(move |sink| {
-            let product_runtime = runtime.product_runtime_with(
-                product.clone(),
-                crate::host_core::ConnectionAdapters {
-                    platform: adapters.platform.clone(),
-                    chat_platform: adapters.chat_platform.clone(),
-                    chat: adapters.chat.clone(),
-                },
-                sink,
-            );
+            let product_runtime =
+                runtime.product_runtime_with(product.clone(), adapters.clone(), sink);
             *product_control
                 .lock()
                 .expect("native product control mutex poisoned") = Some(product_runtime.control());
@@ -1626,6 +1642,24 @@ impl Notifications for CallbackPlatform {
         );
         self.callbacks
             .cancel_notification(id)
+            .map_err(v01::GenericError::from)
+    }
+}
+
+#[async_trait]
+impl truapi_platform::PermissionStatusHost for CallbackPlatform {
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::DevicePermissionStatus, v01::GenericError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.device_permission_status".to_string(),
+            format!("{request}"),
+        );
+
+        self.callbacks
+            .device_permission_status(request)
+            .await
             .map_err(v01::GenericError::from)
     }
 }
@@ -2162,6 +2196,12 @@ mod tests {
             _request: v01::HostDevicePermissionRequest,
         ) -> Result<bool, HostRejection> {
             Ok(false)
+        }
+        async fn device_permission_status(
+            &self,
+            _request: v01::HostDevicePermissionRequest,
+        ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection> {
+            Ok(truapi_platform::DevicePermissionStatus::NotApplicable)
         }
         async fn remote_permission(
             &self,
@@ -3211,6 +3251,12 @@ mod tests {
             ) -> Result<bool, HostRejection> {
                 Ok(false)
             }
+            async fn device_permission_status(
+                &self,
+                _request: v01::HostDevicePermissionRequest,
+            ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection> {
+                Ok(truapi_platform::DevicePermissionStatus::NotApplicable)
+            }
             async fn remote_permission(
                 &self,
                 _request: v01::RemotePermission,
@@ -3358,6 +3404,12 @@ mod tests {
                     .await
                     .expect("release signal");
                 Ok(true)
+            }
+            async fn device_permission_status(
+                &self,
+                _request: v01::HostDevicePermissionRequest,
+            ) -> Result<truapi_platform::DevicePermissionStatus, HostRejection> {
+                Ok(truapi_platform::DevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,

@@ -704,9 +704,15 @@ impl SigningHostRuntime {
 /// Adapters scoped to one product connection: the platform serving its
 /// syscalls, the optional native Chat adapter, and the connection's Chat
 /// stream state. Non-native connections use [`Self::from_services`].
+#[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
     pub(crate) chat_platform: Option<Arc<dyn ChatPlatform>>,
+    /// Live OS permission state for this connection. It travels here rather
+    /// than on the host runtime because a native host builds one platform per
+    /// product execution, so the object that reports OS state has to be the
+    /// same one that presents the prompt.
+    pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
     pub(crate) chat: Arc<ChatConnection>,
 }
 
@@ -716,6 +722,7 @@ impl ConnectionAdapters {
         Self {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
+            permission_status: services.permission_status_host(),
             chat: Arc::new(ChatConnection::new()),
         }
     }

@@ -682,6 +682,20 @@ public protocol HostCallbacks: AnyObject, Sendable {
     func devicePermission(request: HostDevicePermissionRequest) async throws  -> Bool
 
     /**
+     * Report the OS status of a device capability without prompting.
+     *
+     * Answer from the platform's own authorization APIs. This must not show
+     * UI: the core calls it before every device-permission request and status
+     * read, and prompting here would re-ask a question the user has already
+     * answered. A host with no OS gate for the capability answers
+     * `NotApplicable`, which leaves the stored product decision governing.
+     *
+     * It is async because reading notification authorization on iOS is
+     * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+     */
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws  -> DevicePermissionStatus
+
+    /**
      * Prompt the user for a remote (product-scoped) permission.
      */
     func remotePermission(request: RemotePermission) async throws  -> Bool
@@ -931,6 +945,34 @@ open func devicePermission(request: HostDevicePermissionRequest)async throws  ->
             completeFunc: ffi_truapi_server_rust_future_complete_i8,
             freeFunc: ffi_truapi_server_rust_future_free_i8,
             liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
+}
+
+    /**
+     * Report the OS status of a device capability without prompting.
+     *
+     * Answer from the platform's own authorization APIs. This must not show
+     * UI: the core calls it before every device-permission request and status
+     * read, and prompting here would re-ask a question the user has already
+     * answered. A host with no OS gate for the capability answers
+     * `NotApplicable`, which leaves the stored product decision governing.
+     *
+     * It is async because reading notification authorization on iOS is
+     * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+     */
+open func devicePermissionStatus(request: HostDevicePermissionRequest)async throws  -> DevicePermissionStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_hostcallbacks_device_permission_status(
+                        self.uniffiCloneHandle(),FfiConverterTypeHostDevicePermissionRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeDevicePermissionStatus_lift,
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
@@ -1374,6 +1416,49 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     uniffiCallbackData,
                     UniffiForeignFutureResultI8(
                         returnValue: 0,
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        devicePermissionStatus: { (
+            uniffiHandle: UInt64,
+            request: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> DevicePermissionStatus in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.devicePermissionStatus(
+                     request: try FfiConverterTypeHostDevicePermissionRequest_lift(request)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: DevicePermissionStatus) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: FfiConverterTypeDevicePermissionStatus_lower(returnValue),
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: RustBuffer.empty(),
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
@@ -6541,52 +6626,55 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 19880) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 25245) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission_status() != 31894) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 41678) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 12868) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 59238) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 5497) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 35684) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 61703) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 61002) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 4428) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 36320) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 43717) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 10194) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 30923) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 54867) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 6042) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 23589) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 51970) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 33694) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 20260) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 64982) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 59647) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 24427) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 54534) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 28665) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 45374) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 62222) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 18981) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 61208) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 7579) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 22643) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {

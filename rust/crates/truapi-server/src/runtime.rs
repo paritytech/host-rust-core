@@ -342,6 +342,8 @@ pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// Live OS permission state for this connection, when the host serves it.
+    permission_status: Option<Arc<dyn truapi_platform::PermissionStatusHost>>,
     authority: Arc<dyn ProductAuthority>,
     product: ProductContext,
     /// Stable per-product-runtime id used to scope long-lived chain follow
@@ -364,6 +366,7 @@ impl ProductRuntimeHost {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
+            permission_status: adapters.permission_status,
             authority,
             product,
             core_instance,
@@ -387,7 +390,7 @@ impl ProductRuntimeHost {
         product_id: &'a str,
     ) -> PermissionsService<'a, dyn Platform, dyn Platform> {
         PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), product_id)
-            .with_status_host(self.services.permission_status_host())
+            .with_status_host(self.permission_status.as_deref())
     }
 
     /// Trusted executable kind attached to this product connection.
@@ -482,6 +485,7 @@ impl ProductRuntimeHost {
             services,
             platform,
             chat_platform: None,
+            permission_status: None,
             authority: pairing_host.clone(),
             product,
             core_instance,
