@@ -25,7 +25,7 @@ use truapi::{CancellationReason, CancellationToken};
 
 /// Host-spec B.3.3 recommends seven-day statement expiry for session traffic:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L143-L145>
-const DEFAULT_SSO_STATEMENT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
+pub(super) const DEFAULT_SSO_STATEMENT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
 /// The statement store keeps only the highest-priority statement on a channel.
 /// Expiry's lower 32 bits are the tie-breaker for statements expiring in the
 /// same second, so every submission from this process must advance them.

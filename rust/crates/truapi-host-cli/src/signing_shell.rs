@@ -19,6 +19,15 @@ pub enum ProductCommand {
     Switch(String),
 }
 
+/// Operation selected through `/devices`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceCommand {
+    /// List paired devices for the active managed session.
+    List,
+    /// Remove the device with this statement account ID.
+    Remove([u8; 32]),
+}
+
 /// Operation selected through `/session`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionCommand {
@@ -101,6 +110,8 @@ pub fn mask_mnemonic(command: &str) -> Option<String> {
 pub enum ShellCommand {
     /// Answer a Polkadot Mobile pairing deeplink.
     Pair(String),
+    /// Inspect or remove paired devices for the active managed session.
+    Devices(DeviceCommand),
     /// Edit the remembered product script, or run an explicit one, through the
     /// public frame endpoint.
     Script(Option<PathBuf>),
@@ -148,6 +159,22 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
                 return Err("/pair expects a polkadotapp://pair?... URL".to_string());
             }
             Ok(ShellCommand::Pair(argument.to_string()))
+        }
+        "/devices" => {
+            if argument.is_empty() || argument == "--list" {
+                return Ok(ShellCommand::Devices(DeviceCommand::List));
+            }
+            let arguments =
+                shlex::split(argument).ok_or_else(|| "invalid /devices quoting".to_string())?;
+            if arguments.first().is_some_and(|value| value == "--remove") {
+                if arguments.len() != 2 {
+                    return Err("usage: /devices --remove <statement-account-id>".to_string());
+                }
+                return Ok(ShellCommand::Devices(DeviceCommand::Remove(
+                    parse_statement_account_id(&arguments[1])?,
+                )));
+            }
+            Err("usage: /devices [--list | --remove <statement-account-id>]".to_string())
         }
         "/script" => {
             if argument.is_empty() {
@@ -233,6 +260,18 @@ pub fn parse_command(input: &str) -> Result<ShellCommand, String> {
     }
 }
 
+fn parse_statement_account_id(value: &str) -> Result<[u8; 32], String> {
+    let value = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    let bytes = hex::decode(value)
+        .map_err(|_| "statement account ID must be 32 bytes of hexadecimal".to_string())?;
+    bytes
+        .try_into()
+        .map_err(|_| "statement account ID must be 32 bytes of hexadecimal".to_string())
+}
+
 fn no_argument(name: &str, argument: &str, command: ShellCommand) -> Result<ShellCommand, String> {
     if argument.is_empty() {
         Ok(command)
@@ -252,6 +291,7 @@ pub struct Completion {
 
 const SIGNING_COMMANDS: &[(&str, &str)] = &[
     ("/pair", "answer a Polkadot Mobile pairing URL"),
+    ("/devices", "list or remove paired devices"),
     ("/script", "edit the last or run an existing product script"),
     ("/log", "set error, warn, info, debug, or trace"),
     ("/product", "show or switch the active product"),
@@ -300,6 +340,18 @@ fn completions_for_scope(
     }
     if let Some(prefix) = input.strip_prefix("/log ") {
         return fixed_argument_completions("/log", prefix, LOG_ARGUMENTS);
+    }
+    if scope == CommandScope::SigningHost
+        && let Some(prefix) = input.strip_prefix("/devices ")
+    {
+        return fixed_argument_completions(
+            "/devices",
+            prefix,
+            &[
+                ("--list", "list paired devices"),
+                ("--remove", "remove one paired device"),
+            ],
+        );
     }
     if scope == CommandScope::SigningHost
         && let Some(prefix) = input.strip_prefix("/session --clear ")
@@ -700,6 +752,8 @@ pub fn parse_approval(input: &str) -> Option<bool> {
 /// Text displayed by `/help` in either presentation mode.
 pub const HELP_TEXT: &str = "\
 /pair <url>             answer a Polkadot Mobile pairing URL
+/devices                list paired devices for the active session
+/devices --remove <id>  remove one paired device by statement account ID
 /script                 edit and run the session's last Bun TypeScript script
 /script <path>          run an existing JS/TS product script with Bun
 /log <level>            set error, warn, info, debug, or trace
@@ -742,6 +796,7 @@ mod tests {
     use super::*;
 
     const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const DEVICE_ID: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
     #[test]
     fn parses_all_operational_commands() {
@@ -776,6 +831,18 @@ mod tests {
         );
         assert_eq!(parse_command("/copy"), Ok(ShellCommand::Copy));
         assert_eq!(parse_command("/renew"), Ok(ShellCommand::Renew));
+        assert_eq!(
+            parse_command("/devices"),
+            Ok(ShellCommand::Devices(DeviceCommand::List))
+        );
+        assert_eq!(
+            parse_command(&format!("/devices --remove 0x{DEVICE_ID}")),
+            Ok(ShellCommand::Devices(DeviceCommand::Remove([1; 32])))
+        );
+        assert_eq!(
+            parse_command(&format!("/devices --remove 0X{DEVICE_ID}")),
+            Ok(ShellCommand::Devices(DeviceCommand::Remove([1; 32])))
+        );
         assert_eq!(
             parse_command("/session"),
             Ok(ShellCommand::Session(SessionCommand::Current))
@@ -820,6 +887,10 @@ mod tests {
         assert!(parse_command("/pair https://example.com").is_err());
         assert!(parse_command("/deeplink polkadotapp://pair?handshake=01").is_err());
         assert!(parse_command("/renew now").is_err());
+        assert!(parse_command("/devices --remove").is_err());
+        assert!(parse_command("/devices --remove not-an-account").is_err());
+        assert!(parse_command(&format!("/devices --remove {DEVICE_ID} extra")).is_err());
+        assert!(parse_command("/devices --unknown").is_err());
         assert!(parse_command("/log noisy").is_err());
         assert!(parse_command("/product example.com").is_err());
         assert!(parse_command("/session ../escape").is_err());
@@ -936,6 +1007,24 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].value, "/session alice");
+    }
+
+    #[test]
+    fn device_completion_offers_list_and_remove_operations() {
+        assert_eq!(
+            completions_for_scope("/devices --", &[], CommandScope::SigningHost),
+            vec![
+                Completion {
+                    value: "/devices --list".to_string(),
+                    description: "list paired devices",
+                },
+                Completion {
+                    value: "/devices --remove".to_string(),
+                    description: "remove one paired device",
+                },
+            ]
+        );
+        assert!(completions_for_scope("/devices", &[], CommandScope::PairingHost).is_empty());
     }
 
     #[test]

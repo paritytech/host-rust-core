@@ -44,6 +44,7 @@ fn exec_help_is_plain_and_exits_successfully() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("/copy"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/product"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/devices"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session --clear-all"));
     #[cfg(unix)]
     assert!(String::from_utf8_lossy(&output.stdout).contains("ws+unix:"));
@@ -190,6 +191,78 @@ fn exec_clear_all_removes_every_session_for_the_network() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("All sessions cleared for paseo-next-v2"));
     assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn exec_devices_lists_and_removes_exactly_one_paired_device() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let profile = temporary.path().join("paseo-next-v2/alice_signing_host");
+    std::fs::create_dir_all(&profile).expect("create signing-host profile");
+    std::fs::write(
+        profile.join("paired-hosts.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "paired_hosts": [
+                {
+                    "version": 1,
+                    "statement_account_id": vec![1_u8; 32],
+                    "encryption_public_key": vec![11_u8; 32],
+                    "host_name": "First"
+                },
+                {
+                    "version": 1,
+                    "statement_account_id": vec![2_u8; 32],
+                    "encryption_public_key": vec![22_u8; 32],
+                    "host_name": "Second"
+                }
+            ]
+        }))
+        .expect("encode paired hosts"),
+    )
+    .expect("seed paired hosts");
+
+    let listed = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["--session", "alice", "exec", "/devices"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("list paired devices");
+    assert!(listed.status.success());
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    assert!(stdout.contains("Paired devices for session alice"));
+    assert!(stdout.contains(&format!("0x{}  First", hex::encode([1; 32]))));
+    assert!(stdout.contains(&format!("0x{}  Second", hex::encode([2; 32]))));
+
+    let remove_command = format!("/devices --remove 0x{}", hex::encode([1; 32]));
+    let removed = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["--session", "alice", "exec", &remove_command])
+        .stdin(Stdio::null())
+        .output()
+        .expect("remove paired device");
+    assert!(removed.status.success());
+    assert!(String::from_utf8_lossy(&removed.stdout).contains(&format!(
+        "Removed paired device 0x{} from session alice",
+        hex::encode([1; 32])
+    )));
+
+    let stored: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(profile.join("paired-hosts.json")).expect("read paired hosts"),
+    )
+    .expect("decode paired hosts");
+    assert_eq!(
+        stored["paired_hosts"],
+        serde_json::json!([{
+            "version": 1,
+            "statement_account_id": vec![2_u8; 32],
+            "encryption_public_key": vec![22_u8; 32],
+            "host_name": "Second"
+        }])
+    );
 }
 
 #[test]
