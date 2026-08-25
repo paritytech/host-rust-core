@@ -37,7 +37,3 @@ The host returns the full identifier, including `.dot`, `.paseo`, `.test`, or a 
 ## Alternatives
 
 Returning only the network suffix would duplicate host-owned construction and normalization in every product. Inspecting the product URL would couple the API to one execution environment and would not provide an authoritative value for tests.
-
-## Drawbacks
-
-The response is deliberately narrow. Exposing more runtime metadata later requires a new response version.
