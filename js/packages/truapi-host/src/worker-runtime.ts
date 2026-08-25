@@ -13,6 +13,7 @@ import type { GenericError } from "@parity/truapi";
 import {
   createWorkerRawCallbacks,
   type CallbackName,
+  type OptionalCapabilities,
 } from "./generated/worker-callbacks.js";
 import {
   handleGetPermissionAuthorizationStatus,
@@ -26,11 +27,22 @@ import type {
 } from "./wasm-module.js";
 import { errorMessage } from "./error.js";
 import {
+  handlePublishChatAction,
+  handleRenderCustomMessageStart,
+  stopRender,
+  stopRendersForCore,
+  type RenderSubscriptions,
+} from "./worker-chat.js";
+import {
   dispatchChainResponse,
   dispatchSubscriptionError,
   dispatchSubscriptionItem,
   type SubscriptionListeners,
 } from "./worker-dispatch.js";
+import {
+  dispatchFrame,
+  disposeAwaitingFrames,
+} from "./worker-core-registry.js";
 
 // A literal specifier so bundlers resolve the glue statically and emit it
 // alongside `truapi_server_bg.wasm`. It is typed by the ambient declaration in
@@ -100,7 +112,7 @@ interface WorkerChainConnection {
  * Worker-side half of the host chain-connect bridge.
  *
  * The Rust core runs in this worker but owns no socket. When it needs chain
- * access (chainHead v1 for People-chain identity / statement-store SSO) it
+ * access (chainHead v1 for dotNS identity on Asset Hub / statement-store SSO) it
  * calls this; the actual transport lives on the host main thread and is reached
  * over postMessage. The data crossing here is JSON-RPC strings, not SCALE: only
  * the product<->core wire is SCALE.
@@ -109,7 +121,7 @@ interface WorkerChainConnection {
  *   +-------------------+  SCALE  +--------------------------+      +--------------------------------+
  *   | Product (iframe)  |<------->| truapi-server WASM core  |      | host.connect() (ChainProvider) |
  *   | speaks TrUAPI     |  frames | chainHead v1, SSO,       |      | host-owned JSON-RPC transport  |
- *   | never sees chains |         | People-chain identity    |      | remote RPC, native client, ... |
+ *   | never sees chains |         | dotNS identity (AH)      |      | remote RPC, native client, ... |
  *   +-------------------+         +--------------------------+      +--------------------------------+
  *                                      |   ^  JSON-RPC strings (not SCALE)        ^   |
  *                       chainConnect() |   | onResponse(json)           connect   |   | responses()
@@ -151,12 +163,15 @@ function chainConnect(
 }
 
 /** Build the host-level callback object passed to the WASM runtime. */
-function buildRawCallbacks() {
-  return createWorkerRawCallbacks({
-    callbackRequest,
-    startSubscription,
-    chainConnect,
-  });
+function buildRawCallbacks(capabilities: OptionalCapabilities) {
+  return createWorkerRawCallbacks(
+    {
+      callbackRequest,
+      startSubscription,
+      chainConnect,
+    },
+    capabilities,
+  );
 }
 
 function buildCoreCallbacks(coreId: number) {
@@ -172,6 +187,12 @@ function buildCoreCallbacks(coreId: number) {
 
 let runtime: WorkerPairingHostRuntime | null = null;
 const cores = new Map<number, WorkerProductRuntime>();
+// Outstanding receiveFrame calls per core. wasm-bindgen holds a borrow of the
+// core for the whole duration of an async method, so `free()` throws while one
+// is in flight. `disposeCore` aborts these then awaits them before freeing.
+const inFlightFrames = new Map<number, Set<Promise<void>>>();
+/** Live custom-message render subscriptions, keyed by main-thread render id. */
+const renders: RenderSubscriptions = new Map();
 let wasm: WasmModuleShape | null = null;
 
 (async () => {
@@ -205,7 +226,7 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       wasm.setLogLevel?.(msg.logLevel);
       try {
         runtime = new wasm.WasmPairingHostRuntime(
-          buildRawCallbacks(),
+          buildRawCallbacks(msg.capabilities),
           msg.hostConfig,
         );
         postToMain({ kind: "ready" });
@@ -248,6 +269,19 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       break;
     case "cancelPairing":
       runtime?.cancelPairing();
+      break;
+    case "getSessionChatIdentityKey":
+      handleGetSessionChatIdentityKey(msg.requestId);
+      break;
+    case "getDeviceEncryptionKey":
+      void handleGetDeviceEncryptionKey(msg.requestId);
+      break;
+    case "getProductSubtreePublicKey":
+      void handleGetProductSubtreePublicKey(
+        msg.requestId,
+        msg.productId,
+        msg.timeoutMs,
+      );
       break;
     case "notifySessionStoreChanged":
       runtime?.notifySessionStoreChanged();
@@ -348,20 +382,51 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
       );
       break;
     }
+    case "publishChatAction":
+      handlePublishChatAction(
+        cores.get(msg.coreId),
+        postToMain,
+        msg.coreId,
+        msg.requestId,
+        msg.action,
+      );
+      break;
+    case "renderCustomMessageStart":
+      handleRenderCustomMessageStart(
+        cores.get(msg.coreId),
+        postToMain,
+        renders,
+        msg.coreId,
+        msg.renderId,
+        msg.messageId,
+        msg.messageType,
+        msg.payload,
+      );
+      break;
+    case "renderCustomMessageStop":
+      stopRender(renders, msg.renderId);
+      break;
     case "disposeCore":
-      disposeCore(msg.coreId);
+      void disposeCore(msg.coreId);
       break;
-    case "dispose":
-      try {
-        for (const coreId of [...cores.keys()]) {
-          disposeCore(coreId);
-        }
-        runtime?.free();
-      } catch (err) {
-        postToMain({ kind: "disposeError", error: errorMessage(err) });
-      }
+    case "dispose": {
+      // Null the runtime synchronously so a message arriving mid-disposal takes
+      // its `if (!runtime)` path instead of calling into a runtime being torn
+      // down; free the captured handle after the cores finish disposing.
+      const disposing = runtime;
       runtime = null;
+      void (async () => {
+        try {
+          await Promise.all(
+            [...cores.keys()].map((coreId) => disposeCore(coreId)),
+          );
+          disposing?.free();
+        } catch (err) {
+          postToMain({ kind: "disposeError", error: errorMessage(err) });
+        }
+      })();
       break;
+    }
     default: {
       const { kind } = msg as { kind?: unknown };
       console.warn(
@@ -371,13 +436,14 @@ ctx.addEventListener("message", (ev: MessageEvent<MainToWorker>) => {
   }
 });
 
-function disposeCore(coreId: number): void {
+async function disposeCore(coreId: number): Promise<void> {
   const core = cores.get(coreId);
   if (!core) return;
   cores.delete(coreId);
+  // A render subscription outliving its core would call into freed wasm.
+  stopRendersForCore(renders, coreId);
   try {
-    core.dispose();
-    core.free();
+    await disposeAwaitingFrames(core, coreId, inFlightFrames);
   } catch (err) {
     postToMain({ kind: "disposeError", error: errorMessage(err) });
   }
@@ -433,6 +499,91 @@ async function handleDisconnectSession(requestId: number): Promise<void> {
   }
 }
 
+function handleGetSessionChatIdentityKey(requestId: number): void {
+  if (!runtime) {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: false,
+      error: "getSessionChatIdentityKey received before runtime is ready",
+    });
+    return;
+  }
+  try {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: true,
+      key: runtime.sessionChatIdentityKey(),
+    });
+  } catch (err) {
+    postToMain({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
+async function handleGetProductSubtreePublicKey(
+  requestId: number,
+  productId: string,
+  timeoutMs: number | undefined,
+): Promise<void> {
+  if (!runtime) {
+    postToMain({
+      kind: "productSubtreePublicKeyResponse",
+      requestId,
+      ok: false,
+      error: "getProductSubtreePublicKey received before runtime is ready",
+    });
+    return;
+  }
+  try {
+    postToMain({
+      kind: "productSubtreePublicKeyResponse",
+      requestId,
+      ok: true,
+      key: await runtime.productSubtreePublicKey(productId, timeoutMs),
+    });
+  } catch (err) {
+    postToMain({
+      kind: "productSubtreePublicKeyResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
+async function handleGetDeviceEncryptionKey(requestId: number): Promise<void> {
+  if (!runtime) {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
+      requestId,
+      ok: false,
+      error: "getDeviceEncryptionKey received before runtime is ready",
+    });
+    return;
+  }
+  try {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
+      requestId,
+      ok: true,
+      key: await runtime.deviceEncryptionKey(),
+    });
+  } catch (err) {
+    postToMain({
+      kind: "deviceEncryptionKeyResponse",
+      requestId,
+      ok: false,
+      error: errorMessage(err),
+    });
+  }
+}
+
 async function handleFrame(coreId: number, bytes: Uint8Array): Promise<void> {
   const core = cores.get(coreId);
   if (!core) {
@@ -444,7 +595,7 @@ async function handleFrame(coreId: number, bytes: Uint8Array): Promise<void> {
     return;
   }
   try {
-    await core.receiveFrame(bytes);
+    await dispatchFrame(core, coreId, bytes, inFlightFrames);
   } catch (err) {
     postToMain({
       kind: "frameError",

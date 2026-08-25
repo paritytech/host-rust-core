@@ -28,7 +28,7 @@ use subxt::utils::{AccountId32, MultiSignature};
 pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
 pub use sso_responder::ResponderExit;
-pub(crate) use sso_responder::respond_to_pairing;
+pub(crate) use sso_responder::{answer_remote_message, respond_to_pairing};
 
 use super::authority::{
     AccountAliasAuthorityRequest, AuthorityError, AuthoritySession, BulletinAllowanceKey,
@@ -542,6 +542,16 @@ impl SigningHost {
         allowance_renewal::renew_now(&self.services, self).await
     }
 
+    /// The most recent pass the in-process loop ran.
+    ///
+    /// A direct call to [`Self::renew_statement_allowances`] returns its own
+    /// report, so only the loop needs somewhere to leave one.
+    pub(crate) fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::runtime::statement_allowance::renewal::StatementRenewalReport> {
+        self.renewal.last_report()
+    }
+
     /// Start the periodic statement-store renewal loop. Idempotent.
     pub(crate) fn start_statement_allowance_renewal(self: &Arc<Self>) {
         allowance_renewal::start_renewal_loop(&self.services, self);
@@ -599,6 +609,16 @@ impl ProductAuthority for SigningHost {
         derive_product_subtree_keypair(&root, &product_id)
             .map(|keypair| keypair.public.to_bytes())
             .map_err(product_authority_error)
+    }
+
+    async fn subtree_resolution_reaches_account_holder(
+        &self,
+        _session: &AuthoritySession,
+        _product_id: &str,
+    ) -> bool {
+        // A signing host derives the subtree locally from root entropy, so
+        // resolution never reaches a remote Account Holder and never prompts.
+        false
     }
 
     async fn sign_vrf(

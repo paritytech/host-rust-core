@@ -20,7 +20,7 @@ use truapi::versioned::account::HostAccountConnectionStatusSubscribeItem as Vers
 
 /// Session info for a pairing host's active signing-host session. The 32-byte
 /// sr25519 public key plus optional usernames are sourced from the signing host
-/// and People-chain identity record.
+/// and dotNS identity record (read from Asset Hub).
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SessionInfo {
     /// 32-byte sr25519 root public key owned by the signing host.
@@ -30,8 +30,14 @@ pub struct SessionInfo {
     pub sso: Option<SsoSessionInfo>,
     /// Wallet-provided source for deterministic product entropy.
     pub root_entropy_source: Option<[u8; 32]>,
-    /// Wallet identity account id used for People-chain username lookup.
+    /// Wallet identity account id used for the dotNS username lookup on Asset Hub.
     pub identity_account_id: Option<[u8; 32]>,
+    /// X25519 private key addressing this identity in chat. A pairing host
+    /// retains what the handshake shares and cannot recompute it.
+    pub identity_chat_private_key: Option<[u8; 32]>,
+    /// X25519 public key of the wallet device that answered pairing. Distinct
+    /// from [`SsoSessionInfo::peer_enc_pubkey`], which keys the SSO channels.
+    pub device_enc_public_key: Option<[u8; 32]>,
     /// Short username (e.g. `alice`).
     pub lite_username: Option<String>,
     /// Fully qualified username (e.g. `Alice Smith`).
@@ -100,8 +106,14 @@ pub struct ExternalPairedSession {
     pub sso: SsoSessionInfo,
     /// Wallet-provided source for deterministic product entropy.
     pub root_entropy_source: [u8; 32],
-    /// Wallet identity account id used for People-chain username lookup.
+    /// Wallet identity account id used for the dotNS username lookup on Asset Hub.
     pub identity_account_id: [u8; 32],
+    /// Wallet-supplied X25519 private key addressing this identity in chat,
+    /// when the external runtime captured it during its own handshake.
+    pub identity_chat_private_key: Option<[u8; 32]>,
+    /// X25519 public key of the wallet device that answered pairing, when the
+    /// external runtime captured it during its own handshake.
+    pub device_enc_public_key: Option<[u8; 32]>,
 }
 
 /// Encode an already-paired external host session as the canonical opaque
@@ -115,6 +127,8 @@ pub fn encode_external_paired_session(info: ExternalPairedSession) -> Vec<u8> {
         sso: Some(info.sso),
         root_entropy_source: Some(info.root_entropy_source),
         identity_account_id: Some(info.identity_account_id),
+        identity_chat_private_key: info.identity_chat_private_key,
+        device_enc_public_key: info.device_enc_public_key,
         lite_username: None,
         full_username: None,
     })
@@ -251,6 +265,8 @@ mod tests {
             sso: None,
             root_entropy_source: None,
             identity_account_id: None,
+            identity_chat_private_key: None,
+            device_enc_public_key: None,
             lite_username: Some("alice".to_string()),
             full_username: None,
         }
@@ -365,6 +381,8 @@ mod tests {
             },
             root_entropy_source: [12; 32],
             identity_account_id: [5; 32],
+            identity_chat_private_key: Some([13; 32]),
+            device_enc_public_key: Some([14; 32]),
         };
 
         let blob = encode_external_paired_session(external);
@@ -388,6 +406,8 @@ mod tests {
                 }),
                 root_entropy_source: Some([12; 32]),
                 identity_account_id: Some([5; 32]),
+                identity_chat_private_key: Some([13; 32]),
+                device_enc_public_key: Some([14; 32]),
                 lite_username: None,
                 full_username: None,
             }

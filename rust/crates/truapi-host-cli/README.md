@@ -21,7 +21,8 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
-| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username. |
+| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
 | `pgas-check` | Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring membership on People, whether Asset Hub has imported that ring revision, the day's first unclaimed slot, and the `Pgas.claim_pgas` extrinsic. |
 
@@ -41,6 +42,34 @@ Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
 default, so starting either host does not reserve a TCP port. Pass
 `--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
 this is required for browser clients, which cannot open filesystem sockets.
+
+### Browser products
+
+A browser product reaches that socket through `@parity/truapi`'s sandbox. Start
+the host on a fixed port, and point the product at it before anything else
+touches the client:
+
+```bash
+truapi-host signing-host --frame-listen 127.0.0.1:9955 --product-id my-product.dot
+```
+
+```ts
+import { connectWebSocketHost } from "@parity/truapi/sandbox";
+
+connectWebSocketHost("ws://127.0.0.1:9955");
+```
+
+The product is then detected as hosted and holds the real product account for
+its own `.dot` name, so signing, statements, entropy, permissions and storage
+all take their production code paths with no phone involved. `--product-id` is
+not optional: the host derives the product account from it and refuses to *sign*
+for any other product id, and a mismatch only surfaces later, as a
+`PermissionDenied` on the first signature.
+
+Two players on one machine means two hosts, each with its own session and port
+(`--session bob --frame-listen 127.0.0.1:9956`), and a second product instance
+pointed at the second port. Sessions isolate the signer, the storage and the
+permissions.
 
 The signing host opens an interactive terminal where you can paste a pairing
 link, type `/pair <link>`, run `/script`, or use `/help` to discover the
@@ -74,7 +103,10 @@ Commands always start with `/`:
 | `/product <id>` | Switch the product used by future scripts and frame connections. |
 | `/session` | Show the current session name, path, and user id (signing host). |
 | `/session <name>` | Switch to or create an isolated signing-host session. |
+| `/session --mnemonic "<phrase>"` | Import an existing signer as a durable session. |
 | `/session --list` | List user sessions for the current network. |
+| `/session --clear <name>` | Permanently clear one signing-host session. |
+| `/session --clear-all` | Permanently clear every signing-host session for the current network. |
 | `/help` | Show commands and keyboard shortcuts. |
 | `/clear` | Clear the visible transcript. |
 | `/copy` | Copy the retained transcript to the system clipboard. |
@@ -82,7 +114,9 @@ Commands always start with `/`:
 
 Typing `/` opens autocomplete. Up/Down selects a completion; with the menu
 closed it navigates process-local command history. Tab inserts a completion,
-and `/script` completes filesystem paths. Ctrl-U/Ctrl-D scroll by half a
+and `/script` completes filesystem paths. Mnemonic characters are masked while
+typing and mnemonic commands are never retained in command history or the
+transcript. Ctrl-U/Ctrl-D scroll by half a
 viewport, End restores auto-follow, Esc closes autocomplete, and Ctrl-C clears
 input, cancels a running command, or exits when idle. Deeplinks are deliberately
 not persisted in history across processes.
@@ -142,11 +176,30 @@ letters, digits, `.`, `_`, or `-`; they cannot be paths. Switching prepares the
 target while the old session remains active, then stops its pairing responder
 and resets product WebSocket connections so clients reconnect against the new
 runtime.
+
+`/session --mnemonic "<phrase>"` brings an already-onboarded account into the
+session catalog. The host derives its `uid.dot` identity, reads any existing
+full or Lite username from dotNS, falls back to the identity backend's assigned
+username records when no dotNS mirror exists, and confirms its People or
+LitePeople ring membership. This lookup is read-only and never registers a new
+username. On success, the resolved identity username becomes the session name;
+only an account absent from both sources uses a deterministic
+`imported-<key fingerprint>` name and connects the account without username
+metadata. The mnemonic is written to that session's `0600` account store and
+the exact account record is remembered for restart. An invalid phrase or an
+account without ring membership on the selected network leaves the current
+runtime active. A username-less session can sign and connect, but
+`account.getUserId()` cannot return a primary username until one source has a
+record. Use the interactive command when practical: putting the same command in
+`exec` also puts the phrase in your shell's arguments/history.
+
 New auto-managed accounts use the session name as their Lite username prefix;
 characters other than lowercase letters are omitted. For example, session
 `pgtest` creates usernames beginning with `pgtest`. An explicit
 `--lite-username-prefix` takes precedence, and `default` retains the historical
-`headless` prefix.
+`headless` prefix. `--reserved-username <label>` additionally reserves a
+full-person base name on dotNS for a newly created account, to be claimed later
+with `register-name`; the CLI refuses labels the registrar has already minted.
 The selected username and last script reference are cached in `session.json`
 inside the displayed session path. Scratch scripts use a portable filename;
 explicit scripts use an absolute path. On restart, an
@@ -156,6 +209,16 @@ session's editor context. A session with no signer yet reports
 `<not provisioned>` and the transcript prompts the user to run
 `/session <name>`. Inspecting with bare `/session` never starts network
 onboarding; naming a different session creates and connects its user.
+
+`/session --clear <name>` permanently deletes that session's local signer
+keys, scripts, core/product storage, and permissions. `/session --clear-all`
+does the same for every signing-host session on the current network, including
+legacy bootstrap state, while preserving other networks and pairing-host
+state. Neither command deregisters an on-chain username. The interactive UI
+asks for `[y/N]` confirmation. `exec` treats the explicit one-shot command as
+confirmation and runs it immediately. Clearing an inactive named session keeps
+the host running; clearing the active session or all sessions stops the signing
+host after its runtime and product connections have shut down.
 
 Select or create a session at startup with:
 
@@ -173,6 +236,8 @@ come first):
 
 ```bash
 truapi-host signing-host exec '/session'
+truapi-host signing-host exec '/session --clear alice.01'
+truapi-host signing-host exec '/session --clear-all'
 truapi-host signing-host --auto-accept exec '/script ./js/scripts/ring-vrf-smoke.ts'
 truapi-host signing-host exec '/pair polkadotapp://pair?handshake=...'
 ```
@@ -218,8 +283,8 @@ res.match(
 );
 ```
 
-`--product-id` (a name ending in `.dot`, `.paseo` or `.test`, or a `localhost`
-identifier; default
+`--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.test`, or a
+`localhost` identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
 WebSockets so clients reconnect with a new product context; the network,
@@ -275,6 +340,7 @@ Six scripts ship under `js/scripts/`:
   scripts/battery.sh --pairing-host     # paired phase only
   make e2e-signing-cli                  # direct phase only
   make e2e-pairing-cli                  # paired phase only
+  make e2e-chat-cli                     # chat phase only
   scripts/battery.sh --release          # release binary
   scripts/battery.sh -- --network foo   # arguments after `--` go to every host process
   ```
@@ -424,12 +490,64 @@ HOST_CLI_SIGNER_MNEMONIC="spin battle …" truapi-host signing-host --deeplink '
 truapi-host alloc-check --mnemonic "spin battle …" --lookback 100
 ```
 
-Both hosts take `--network` (default `paseo-next-v2`). The network preset owns
-the identity backend URL, the People, Bulletin and Asset Hub RPCs, and their
-genesis hashes; there is
-no public `--statement-store` flag. Both also accept `--frame-listen <address>`
+Both hosts take `--network`, either `paseo-next-v2` (default) or `previewnet`.
+The network preset owns the identity backend URL, the People, Bulletin and Asset
+Hub RPCs, and their genesis hashes; there is
+no public `--statement-store` flag. Pick `previewnet` when a product's runtime
+descriptors target previewnet, so its statements, its host chain routes and its
+own chain reads all land on one network. The CLI mints the identity backend's
+bearer token itself (SPEC.md §12.3). Sessions are per preset, so each network
+gets its own signer identity on the same machine.
+`HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
+the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
+supplies its bearer token instead of the CLI minting one. For username
+registration, an injected token's subject must match the session's `uid.dot`
+candidate account. The automatically minted token uses that identity; and
+`HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
+discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
+
+## Serving a dev server (one process, no terminal)
+
+`signing-host --serve` runs the host as a background service instead of a
+terminal UI, so a dev server or test harness can supervise it:
+
+```bash
+truapi-host signing-host --serve \
+  --frame-listen 127.0.0.1:9955 \
+  --product-id myapp.dot \
+  --auto-accept
+```
+
+It needs no TTY, initialises the signer, and stays up until stopped. Output is
+one line per event:
+
+```
+✓ Paired with headlessyvqhet.43
+✓ Signing host ready
+• Listening for product frames
+  ws://127.0.0.1:9955
+• Serving product frames until stopped
+  ws://127.0.0.1:9955
+  Confirmations are approved automatically
+```
+
+Wait for `Serving product frames until stopped` before pointing a product at the
+endpoint. That line is last in every case, and it is the only one that means
+both halves are up: the frame socket accepts connections well before a signer
+exists, and `Signing host ready` can arrive either side of it depending on
+whether the session was cached or is being registered. A first run registers a
+lite username and the statement-store allowance on-chain, which can take
+minutes.
+
+Stopping it: Ctrl-C is handled, so the host logs its own shutdown. `SIGTERM`
+ends the process, which is what a supervising dev server sends.
+
+`--auto-accept` is effectively required, because a process with no terminal has
+nowhere to prompt: confirmations are denied instead, and the startup line says
+so. `--serve` cannot be combined with `--script` or `exec`, which are the
+one-shot modes.
 
 ## Scope / gaps
 
@@ -440,8 +558,8 @@ cleans up a unique temporary Unix socket.
 - **Ring-VRF product-account aliases and proofs** are implemented by the
   signing host via the `verifiable` crate (`get_account_alias` and
   `create_account_proof`).
-- **`get_user_id`** resolves the signing account's username from People-chain
-  `Resources.Consumers`. Auto-managed signing accounts register fresh lite
+- **`get_user_id`** resolves the signing account's username from the dotNS
+  contracts on Asset Hub. Auto-managed signing accounts register fresh lite
   usernames via the identity backend (`src/attestation.rs`); first registration
   is backend-async and can take minutes (ring onboarding). `truapi-host
   identity-check --mnemonic <m>` probes which derivation carries a username.

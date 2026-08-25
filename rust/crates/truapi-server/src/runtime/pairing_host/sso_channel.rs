@@ -189,7 +189,7 @@ impl PairingHost {
             .sso
             .as_ref()
             .ok_or_else(|| "No SSO session state".to_string())?;
-        let message_id = "truapi:sso:disconnect".to_string();
+        let message_id = sso_message_id();
         let message = RemoteMessage {
             message_id: message_id.clone(),
             data: RemoteMessageData::V1(v1::RemoteMessage::Disconnected),
@@ -294,7 +294,8 @@ impl PairingHost {
         result
     }
 
-    /// Fetch and cache a product's hard-subtree public key from the Account Holder.
+    /// Resolve a product's hard-subtree public key, asking the Account Holder
+    /// only when neither the memory cache nor storage already holds it.
     pub(super) async fn remote_product_subtree_public_key(
         &self,
         cx: &CallContext,
@@ -304,13 +305,7 @@ impl PairingHost {
         let sso = session.sso.as_ref().ok_or(AuthorityError::Disconnected)?;
         let lifecycle_epoch = self.current_session_lifecycle_epoch();
         let cache_key = (SsoSessionKey::from_session(sso), product_id.clone());
-        if let Some(public_key) = self
-            .product_subtrees
-            .lock()
-            .expect("product subtree cache mutex poisoned")
-            .get(&cache_key)
-            .copied()
-        {
+        if let Some(public_key) = self.known_product_subtree(session, cache_key.clone()).await {
             return Ok(public_key);
         }
 
@@ -332,7 +327,10 @@ impl PairingHost {
         let public_key = response
             .product_public_key
             .map_err(remote_authority_error)?;
-        if !self.cache_product_subtree_if_current(session, lifecycle_epoch, cache_key, public_key) {
+        if !self
+            .persist_product_subtree_if_current(session, lifecycle_epoch, cache_key, public_key)
+            .await
+        {
             return Err(AuthorityError::Disconnected);
         }
         Ok(public_key)

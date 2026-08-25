@@ -97,8 +97,13 @@ pub struct CliPlatform {
     chains: truapi_platform::HostChainSet,
     product_storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     core_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+    /// Device-scoped core slots, kept outside the per-user namespaces that
+    /// [`Self::switch_pairing_user_storage`] swaps. Peers address this install
+    /// by the key held here, so a user switch must not regenerate it.
+    device_storage: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     product_storage_dir: Mutex<Option<PathBuf>>,
     core_storage_path: Mutex<Option<PathBuf>>,
+    device_storage_path: Option<PathBuf>,
     state_dir: Mutex<Option<PathBuf>>,
     pairing_scope: Option<PairingStorageScope>,
     preimages: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
@@ -150,14 +155,37 @@ impl CliPlatform {
             .as_deref()
             .map(load_hex_key_map)
             .unwrap_or_default();
+        // Anchored to the role-level bootstrap directory rather than the active
+        // user's, so switching users keeps this install's device identity.
+        let device_storage_path = storage.as_ref().map(|paths| {
+            let directory = paths
+                .pairing_scope
+                .as_ref()
+                .map(|scope| scope.bootstrap_dir.clone())
+                .unwrap_or_else(|| paths.state_dir.clone());
+            if let Err(err) = fs::create_dir_all(&directory) {
+                tracing::warn!(
+                    path = %directory.display(),
+                    %err,
+                    "could not create CLI device storage dir"
+                );
+            }
+            directory.join("device-storage.json")
+        });
+        let device_storage = device_storage_path
+            .as_deref()
+            .map(load_hex_key_map)
+            .unwrap_or_default();
 
         Arc::new(Self {
             chain: WsChainProvider::new(network.people_ws, network.live_chain_endpoints),
             chains: network.host_chain_set(),
             product_storage: Mutex::new(product_storage),
             core_storage: Mutex::new(core_storage),
+            device_storage: Mutex::new(device_storage),
             product_storage_dir: Mutex::new(product_storage_dir),
             core_storage_path: Mutex::new(core_storage_path),
+            device_storage_path,
             state_dir: Mutex::new(storage.as_ref().map(|paths| paths.state_dir.clone())),
             pairing_scope: storage.and_then(|paths| paths.pairing_scope),
             preimages: Mutex::new(HashMap::new()),
@@ -189,6 +217,22 @@ impl CliPlatform {
             return Ok(());
         };
         save_product_storage(&directory, product_id, values)
+    }
+
+    /// Whether a slot belongs to the install rather than the signed-in user.
+    fn is_device_scoped(key: &CoreStorageKey) -> bool {
+        matches!(key, CoreStorageKey::DeviceEncryptionKey)
+    }
+
+    fn persist_device_storage(&self) -> Result<(), String> {
+        let Some(path) = self.device_storage_path.as_deref() else {
+            return Ok(());
+        };
+        let storage = self
+            .device_storage
+            .lock()
+            .expect("device storage mutex poisoned");
+        save_hex_key_map(path, &storage)
     }
 
     fn persist_core_storage(&self) -> Result<(), String> {
@@ -437,8 +481,12 @@ impl CoreStorage for CliPlatform {
         &self,
         key: CoreStorageKey,
     ) -> Result<Option<Vec<u8>>, api::GenericError> {
-        Ok(self
-            .core_storage
+        let store = if Self::is_device_scoped(&key) {
+            &self.device_storage
+        } else {
+            &self.core_storage
+        };
+        Ok(store
             .lock()
             .expect("core storage mutex poisoned")
             .get(&Self::core_key(&key))
@@ -450,25 +498,45 @@ impl CoreStorage for CliPlatform {
         key: CoreStorageKey,
         value: Vec<u8>,
     ) -> Result<(), api::GenericError> {
+        let device_scoped = Self::is_device_scoped(&key);
         {
-            self.core_storage
+            let store = if device_scoped {
+                &self.device_storage
+            } else {
+                &self.core_storage
+            };
+            store
                 .lock()
                 .expect("core storage mutex poisoned")
                 .insert(Self::core_key(&key), value);
         }
-        self.persist_core_storage()
-            .map_err(|reason| api::GenericError { reason })
+        if device_scoped {
+            self.persist_device_storage()
+        } else {
+            self.persist_core_storage()
+        }
+        .map_err(|reason| api::GenericError { reason })
     }
 
     async fn clear_core_storage(&self, key: CoreStorageKey) -> Result<(), api::GenericError> {
+        let device_scoped = Self::is_device_scoped(&key);
         {
-            self.core_storage
+            let store = if device_scoped {
+                &self.device_storage
+            } else {
+                &self.core_storage
+            };
+            store
                 .lock()
                 .expect("core storage mutex poisoned")
                 .remove(&Self::core_key(&key));
         }
-        self.persist_core_storage()
-            .map_err(|reason| api::GenericError { reason })
+        if device_scoped {
+            self.persist_device_storage()
+        } else {
+            self.persist_core_storage()
+        }
+        .map_err(|reason| api::GenericError { reason })
     }
 }
 
@@ -772,6 +840,13 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
             format!(
                 "Product {} requested access to the {} account.",
                 review.requesting_product_id, review.target_product_id
+            ),
+        ),
+        UserConfirmationReview::ProductSubtree(review) => (
+            "resolve account subtree",
+            format!(
+                "Product {} requested its account from your device.",
+                review.product_id
             ),
         ),
     }
@@ -1130,7 +1205,7 @@ fn load_hex_key_map(path: &Path) -> HashMap<Vec<u8>, Vec<u8>> {
 
 /// Directory-safe name for one paired identity's storage namespace.
 ///
-/// The connected id is whatever the People-chain identity yields: a lite username
+/// The connected id is whatever the dotNS identity yields: a lite username
 /// when there is one, otherwise the free-form `full_username`. Only the former is
 /// guaranteed to satisfy [`crate::sessions::validate_name`], so a display name
 /// like `"Tarik Gul"` is rejected on both the space and the capitals.
@@ -1595,6 +1670,71 @@ mod tests {
         assert_eq!(
             read_current_pairing_user(&network_dir.join("pairing-host")).as_deref(),
             Some("alice.dot")
+        );
+    }
+
+    #[test]
+    fn device_encryption_key_outlives_pairing_user_switches() {
+        let temporary = tempdir().expect("create pairing storage root");
+        let network_dir = temporary.path().join("testnet");
+        let platform = CliPlatform::new(
+            test_network(),
+            Some(CliStoragePaths::pairing(network_dir.clone())),
+            ApprovalPolicy::AutoAccept,
+            None,
+        );
+
+        platform
+            .switch_pairing_user_storage("alice.dot")
+            .expect("select alice");
+        futures::executor::block_on(
+            platform.write_core_storage(CoreStorageKey::DeviceEncryptionKey, vec![7; 32]),
+        )
+        .expect("write device key");
+
+        // Peers address this install by the matching public key, so switching
+        // users must not strand them on a regenerated one.
+        platform
+            .switch_pairing_user_storage("bob.dot")
+            .expect("select bob");
+        assert_eq!(
+            futures::executor::block_on(
+                platform.read_core_storage(CoreStorageKey::DeviceEncryptionKey)
+            )
+            .expect("read device key as bob"),
+            Some(vec![7; 32])
+        );
+
+        // A user-scoped slot stays isolated, so the routing is not simply
+        // making every slot global.
+        futures::executor::block_on(
+            platform.write_core_storage(CoreStorageKey::AutoSigningKeys, vec![1, 2, 3]),
+        )
+        .expect("write bob auto-signing keys");
+        platform
+            .switch_pairing_user_storage("alice.dot")
+            .expect("restore alice");
+        assert_eq!(
+            futures::executor::block_on(
+                platform.read_core_storage(CoreStorageKey::AutoSigningKeys)
+            )
+            .expect("read alice auto-signing keys"),
+            None
+        );
+
+        // It also survives a fresh process reading the same directories.
+        let restarted = CliPlatform::new(
+            test_network(),
+            Some(CliStoragePaths::pairing(network_dir)),
+            ApprovalPolicy::AutoAccept,
+            None,
+        );
+        assert_eq!(
+            futures::executor::block_on(
+                restarted.read_core_storage(CoreStorageKey::DeviceEncryptionKey)
+            )
+            .expect("read device key after restart"),
+            Some(vec![7; 32])
         );
     }
 

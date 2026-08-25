@@ -114,7 +114,7 @@ as the paired path.
 `truapi-host-cli` owns:
 
 - argument and slash-command parsing;
-- the single supported network preset;
+- the supported network presets (`paseo-next-v2`, `previewnet`);
 - local signer selection and onboarding;
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
@@ -198,7 +198,8 @@ Commands:
 | --- | --- |
 | `pairing-host` | Run the seedless product-facing host. |
 | `signing-host` | Run the wallet-local signing host. |
-| `identity-check` | Probe People-chain identity records for a mnemonic. |
+| `identity-check` | Probe dotNS identity records on Asset Hub for a mnemonic. |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name`. |
 | `alloc-check` | Inspect or submit Statement Store allowance registration. |
 | `pgas-check` | Inspect or submit an Asset Hub PGAS allowance claim. |
 
@@ -231,7 +232,7 @@ truapi-host pairing-host [options]
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
 | `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
 Without `--script`, both stdin and stdout must be terminals. The command enters
@@ -268,8 +269,9 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--account <name>` | none | Use one named account from the default account store. |
 | `--session <name>` | remembered session | Restore or create a managed session. |
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
+| `--reserved-username <label>` | none | Full-person base name a newly created auto account reserves on dotNS alongside its lite username (§12.3). |
 | `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
@@ -283,9 +285,11 @@ startup:
 - `--script` with `exec`;
 - `--mnemonic` with `--account`;
 - `--mnemonic` with `--session`;
-- `--mnemonic` with `--lite-username-prefix`;
-- `--account` with `--session`; and
-- `--account` with `--lite-username-prefix`.
+- `--mnemonic` with `--lite-username-prefix` or `--reserved-username`;
+- `--account` with `--session`;
+- `--account` with `--lite-username-prefix` or `--reserved-username`; and
+- a `--reserved-username` that is not a full-person base label (lowercase ASCII
+  letters only, 6 to 32 bytes).
 
 The same conflicts apply when the mnemonic came from
 `HOST_CLI_SIGNER_MNEMONIC`.
@@ -340,7 +344,7 @@ use `exec '/script <path>'` instead. `/copy` is unavailable. `/clear` and
 
 Accepted product identifiers are:
 
-- a name ending in a product TLD (`.dot`, `.paseo` or `.test`);
+- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.test`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 
@@ -392,7 +396,10 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/product <id>` | yes | yes | Switch product and reset product connections. |
 | `/session` | no | yes | Show current session, user, and path. |
 | `/session <name>` | no | yes | Switch to or create and provision a session. |
+| `/session --mnemonic "<phrase>"` | no | yes | Import an existing ring member into a durable local session. |
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
+| `/session --clear <name>` | no | yes | Permanently clear one network-scoped signing session. |
+| `/session --clear-all` | no | yes | Permanently clear all signing sessions for the current network. |
 | `/log <level>` | yes | yes | Replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
 | `/clear` | yes | yes | Clear the retained visible transcript. |
@@ -475,13 +482,19 @@ from link generation through authentication to its final state.
 - Tab accepts the selected completion.
 - Enter first accepts a differing selected completion; a later Enter submits.
 - `/script` followed by a space completes filesystem entries.
-- `/session` followed by a space completes known signing sessions and `--list`.
+- `/session` followed by a space completes known signing sessions, `--list`,
+  `--mnemonic`, `--clear`, and `--clear-all`; `/session --clear ` completes
+  known names.
 - Left/Right, Home/End, Backspace, and Delete edit by Unicode character.
 - Long input scrolls horizontally and retains a native terminal cursor.
 - Bracketed paste is enabled; pasted control characters are discarded.
 - At most eight completion rows are visible.
 
 Command history is in memory only and disappears when the process exits.
+Mnemonic import commands are excluded from history, debug rendering, busy
+labels, and transcripts. Their phrase is masked character-for-character in the
+command bar. `exec` cannot hide a phrase from the invoking shell's history or
+the operating system's process arguments.
 
 ### 9.4 Scrolling and cancellation
 
@@ -797,7 +810,7 @@ Explicit mnemonic mode:
 - does not read or write an account record;
 - has no cached username;
 - reports the session as `ephemeral`; and
-- disables `/session <name>`.
+- disables commands that switch or import managed sessions.
 
 Explicit account mode looks up a named record in the default account store and
 ensures its on-chain identity and ring readiness. It is not considered
@@ -813,13 +826,32 @@ A new auto account:
 4. chooses `auto-<n>` as its local name;
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
-7. builds and submits identity-backend registration proofs;
-8. polls `Resources.Consumers` for the final `name.discriminator`;
+7. builds and submits identity-backend registration proofs, including the dotNS
+   gateway reservation signature timestamped with Asset Hub chain time. A
+   reserved base name (`--reserved-username`) must be a full-person label and
+   unminted on the dotNS registrar (`DotnsRegistrar.ownerOf` reverts for its
+   node under the network TLD): a reservation for a registered name could never
+   be claimed and would hold that stem's reservation queue for the whole
+   reservation window;
+8. polls the dotNS contracts on Asset Hub for the final `name.discriminator`;
 9. waits for inclusion in a personhood ring; and
 10. marks and saves the account as attested.
 
-Identity and ring polling each allow 10 attempts with four seconds between
+Identity and ring polling each allow 30 attempts with four seconds between
 attempts. Identity-backend HTTP clients use a 30-second timeout.
+
+The backend's username routes are bearer-gated. Unless
+`HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies one, the CLI mints an access token
+for the mnemonic's RFC-0022 `uid.dot` account. It takes a challenge from
+`auth/challenges`. It answers `auth/token` with an sr25519 proof over
+`SHA256(challenge || clientId || SHA256(body))`, signed by that identity key.
+The backend requires the JWT subject to equal `candidateAccountId` on
+`POST /usernames`; using the same key for availability and registration also
+prevents a pre-registration request from caching a token for another subject.
+Tokens are cached per backend and identity account. A cached token rejected with
+401 is evicted and minted again for the same account before the request is
+retried once. The CLI accepts both the legacy flat availability map and the
+dotSpark v1 envelope whose per-name value carries a `status` field.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
@@ -835,6 +867,12 @@ An attested account with a resolved Lite username can be loaded and activated
 from `accounts.json` without contacting the identity backend or checking ring
 membership on every restart. The current Statement Store period is still used
 to skip locally marked exhausted accounts.
+
+Imported accounts are stored with an explicit `imported` origin and are never
+eligible for the auto-account pool or slot rotation. `session.json` binds a
+durable session to its exact local account name even when it has no dotNS
+username, so restart selects the imported record instead of whichever auto
+account happens to appear first.
 
 ### 12.5 Statement Store slot rotation
 
@@ -871,7 +909,7 @@ known, the public and durable session name becomes its Lite username and its
 directory becomes `<username>_signing_host`. The bootstrap name is not
 user-selectable and is omitted from session completion and listing.
 
-### 12.7 Session inspection and switching
+### 12.7 Session inspection, switching, and clearing
 
 `/session` reports:
 
@@ -905,6 +943,48 @@ The active session is marked with `*`.
 If activation fails, the previous `current-session` pointer is restored and the
 old in-memory runtime remains active. Files created while preparing the target
 may remain.
+
+`/session --mnemonic "<phrase>"` is an import-only flow:
+
+1. parse and normalize the BIP-39 phrase;
+2. derive the RFC-0022 `uid.dot` identity;
+3. read its optional full or Lite dotNS username from Asset Hub;
+4. when no dotNS mirror exists, search the identity backend's assigned username
+   records for the derived candidate account;
+5. confirm membership in a People or LitePeople ring;
+6. use that username as the session name, or derive a deterministic
+   `imported-<key fingerprint>` name when neither source has a username;
+7. build and activate a replacement runtime off-side;
+8. persist the mnemonic as the named `imported` account and atomically write
+   the session's account binding plus its username when present;
+9. persist `current-session`; and
+10. swap runtimes and disconnect old product connections.
+
+The backend fallback uses authenticated, cursor-paginated, prefix searches
+because the backend has no account-indexed read route. It only accepts an
+`ASSIGNED` row whose candidate account equals the derived identity and it never
+calls a registration route. A username missing from both dotNS and the backend
+does not prevent local activation; the connected session simply has no primary
+username for `account.getUserId()`. A mnemonic without ring membership on the
+selected network is rejected and the old in-memory runtime remains active. The
+phrase is not written locally until the replacement runtime activates
+successfully.
+
+`/session --clear <name>` removes the durable name shown by `/session --list`,
+its identity or legacy session directory, any separate legacy product storage,
+and the matching network account cached in the compatibility account store.
+`/session --clear-all` removes every such session, the network's signing-host
+bootstrap state, and every compatibility account record for that network. It
+does not remove pairing-host state, another network's records, externally
+referenced scripts, or on-chain usernames.
+
+The interactive UI describes the data loss and uses the existing `[y/N]`
+approval. `exec` executes these explicit one-shot commands without another
+flag or prompt. Clearing an inactive named session updates completion and keeps
+the current runtime active. Clearing the active session or all sessions first
+ends the command loop, aborts the frame server, drops the runtime, and only then
+deletes the data; the signing host exits afterward. Session clearing is
+unavailable in explicit-mnemonic mode.
 
 ## 13. Persistence
 
@@ -1097,13 +1177,22 @@ selection files.
 
 ## 14. Network and transport
 
-### 14.1 Network preset
+### 14.1 Network presets
 
-v0.1 supports only `paseo-next-v2`.
+`--network` selects one of two presets. `paseo-next-v2` is the default. Every
+preset is a test network; the account store keeps BIP-39 entropy for
+disposable test identities only.
+
+Auto-account onboarding (§12.3) needs an identity backend that records the
+lite username on the dotNS gateway. Each preset points at its matching dotSpark
+identity backend, and the CLI reports the complete backend response when
+registration fails.
+
+#### `paseo-next-v2`
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://identity-backend-next.parity-testnet.parity.io/api/v1` |
+| Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
 | People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
@@ -1111,14 +1200,42 @@ v0.1 supports only `paseo-next-v2`.
 | Asset Hub RPC | `wss://paseo-asset-hub-next-rpc.polkadot.io` |
 | Asset Hub genesis | `0x23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6` |
 
-There are no public endpoint override flags.
+#### `previewnet`
+
+The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
+nextv2 later, and it is where products with previewnet descriptors do their
+on-chain testing.
+
+| Purpose | Value |
+| --- | --- |
+| Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
+| People RPC | `wss://previewnet.substrate.dev/people` |
+| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
+| Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
+| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
+| Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
+| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
+
+Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
+signer provisioned on one preset is not visible from the other. Two presets means
+two identities on one machine, which is deliberate: the lite username and the
+statement-store allowance are per chain.
+
+The backend's username routes are bearer-gated; the CLI mints the access token
+itself through the backend's `auth/challenges` → `auth/token` handshake
+(§12.3), or takes one from `HOST_CLI_IDENTITY_BACKEND_TOKEN`, so auto-managed
+account creation works here.
+
+There are no public endpoint override flags. `HOST_CLI_IDENTITY_BACKEND_BASE`
+replaces only the identity backend base URL (§21).
 
 Every role the preset serves — People, Bulletin and Asset Hub — is always routed,
 because host internals require all three: statement-store traffic addressed to the
-People genesis, preimage submission, and PGAS claims respectively. The SSO sentinel is
+People genesis, preimage submission, and PGAS claims plus dotNS username reads
+respectively. The SSO sentinel is
 a separate case — it is an unmapped genesis and reaches People through the fallback
 below, not through People's own route. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
-preset carries without serving them as a role, of which `paseo-next-v2` has none.
+preset carries without serving them as a role, of which neither preset has any.
 
 The all-zero SSO sentinel and every genesis hash not present in the active
 route map fall back to the People RPC.
@@ -1180,7 +1297,7 @@ surface.
 | System | Handshake, feature query, and no-op navigation. |
 | Theme | One `Dark` subscription value. |
 | Chat | Typed unavailable/empty-subscription behavior. |
-| Coin Payment | Typed unavailable/interrupted-subscription behavior. |
+| Coin Payment | Typed unsupported/interrupted-subscription behavior. |
 | Payment | Typed unsupported/interrupted-subscription behavior. |
 
 ### 15.1 Exact reported methods
@@ -1236,10 +1353,11 @@ reports:
 
 Deliberately unavailable methods:
 
-- all five product-initiated Chat methods; the host-initiated custom-render
-  subscription is also unused because the CLI has no native Chat UI;
-- all nine generated Coin Payment methods; and
-- all four generated Payment methods.
+- all six product-initiated Chat methods, because the CLI installs no
+  `ChatPlatform`; the host-initiated custom-render subscription is also unused
+  because the CLI has no native Chat UI;
+- all nine Coin Payment methods, which answer `CallError::Unsupported`; and
+- all four Payment methods, which answer typed `Unknown` domain errors.
 
 A successful `System/feature_supported` call resolves the queried chain against
 the host's chain set, the same set `Chain/get_chain_info` answers from, so it
@@ -1450,7 +1568,50 @@ IDENTITY_ERROR path=<path> account=<ss58> error=<reason>
 Per-path RPC errors are printed and do not make the command itself fail.
 Mnemonic parsing failures do fail the command. The mnemonic is not persisted.
 
-### 19.2 `alloc-check`
+### 19.2 `register-name`
+
+```text
+truapi-host register-name \
+  --mnemonic <BIP-39> \
+  --label <base-label> \
+  [--network paseo-next-v2] \
+  [--link-lite <name.NN> | --chat-key <65-byte-hex>]
+```
+
+Registers `label` as the full-person username of the mnemonic's RFC-0022
+`uid.dot` identity account, through `DotnsGateway.register_name` on Asset Hub.
+The account must be a recognized full person: its ring-VRF key must be built
+into a People-collection ring root on People, and Asset Hub's
+`members-subscriber` must already hold that root revision (the command waits for
+it). The People ring, its members and its root revision are read at one
+finalized People block.
+
+`--link-lite` links the new name to a dotted lite username, inheriting that
+name's chat key; without it and without `--chat-key`, the account's own lite
+username (from dotNS) is linked. `--chat-key` registers standalone with the
+given ECDH key. The two are mutually exclusive.
+
+The transaction is a General (v5) extrinsic authorized by the `AsDotnsGateway`
+extension: `RegisterFullName { proof, ring_index, revision, signature }`, where
+`signature` is the account's sr25519 signature over the inherited-implication
+digest and `proof` the ring-VRF membership proof, built for the `revision` read
+above. `RestrictOrigins` carries `true`. Success prints:
+
+```text
+REGISTER_SUBMITTED label=<label> block=<hash>
+REGISTER_ALIAS alias=0x<alias>
+REGISTER_CONFIRMED label=<label> full_username=<name>
+```
+
+`REGISTER_ALIAS` is printed once `DotnsGateway.AccountAlias` records the
+account, `REGISTER_CONFIRMED` once the dotNS contracts return the name (or
+`<pending>`). Before signing: the label must be unminted on `DotnsRegistrar` (a
+pending reservation is not a mint and stays claimable); the account must not
+already hold a `DotnsGateway.AccountAlias`; a linked lite username must be
+owned by the account per `DotnsGateway.LiteLabelOwner`; and runtimes whose
+`RegisterFullName` shape differs are rejected.
+
+### 19.3 `alloc-check`
 
 ```text
 truapi-host alloc-check \
@@ -1520,13 +1681,16 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_LOG` | Default `--log-level`. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
-| `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
+| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
+| `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
+| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |
 | `EDITOR` | Fallback script editor. |
 | `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
-| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on `paseo-next-v2`. |
+| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on either preset. |
 | `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
 | `COLORFGBG` | Infer TUI background color. |
 | `COLORTERM` | Select true-color TUI rendering. |
@@ -1538,7 +1702,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 
 These are part of the as-built specification:
 
-- only `paseo-next-v2` is selectable;
+- only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
 - product scripts require Bun and, by default, the source checkout;
 - there is no structured/JSON output mode;
 - there is no `--version`;
@@ -1572,11 +1736,17 @@ The implementation is covered by:
 
 The reports currently have identical method results apart from their title:
 
-- 45 implemented-success methods;
-- 6 unavailable Chat surface entries (five product-initiated methods plus the
-  host-initiated custom-render subscription);
-- 9 unavailable Coin Payment methods; and
-- 4 unavailable Payment methods.
+- 65 rows: 52 succeeding methods and 13 failing ones;
+- 9 Coin Payment methods, which answer `CallError::Unsupported`; and
+- 4 Payment methods, which answer a typed `Unknown` domain error.
+
+The Chat surface does not appear: it requires a `Chat` execution, and these are
+SPA reports. Two caveats on the checked-in reports: the enumeration in 15.1
+lists 45 methods and predates later additions to the surface, and only the
+signing-host report carries measured `Unsupported` Coin Payment details — the
+pairing-host report still records the older `HostFailure` shape, because the
+pairing phase needs a personhood ring member before it runs any method. It
+refreshes on the next `make e2e-pairing-cli` run from such a signer.
 
 Recommended local verification after CLI changes:
 

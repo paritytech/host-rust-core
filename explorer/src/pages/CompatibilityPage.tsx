@@ -4,6 +4,12 @@ import { Check, ChevronDown, Minus, X } from "lucide-react";
 import type { VersionEntry } from "../data/types";
 import { methodPath } from "../data/registry";
 import { chatCompatibility, compatibility } from "../data/compatibility";
+
+/**
+ * Execution kinds that serve the Chat modality. `Chat` is the name protocol
+ * versions up to 0.9.0 declared; `Worker` is the name that replaced it.
+ */
+const CHAT_EXECUTIONS: ReadonlySet<string> = new Set(["Chat", "Worker"]);
 import type {
   CompatibilityMatrix,
   CompatStatus,
@@ -86,8 +92,9 @@ export default function CompatibilityPage() {
 
       <div className="space-y-10">
         <CompatibilitySection
-          title="SPA compatibility"
-          description="API coverage measured from the visible SPA execution."
+          title="App compatibility"
+          description="API coverage measured from a visible App or Widget execution."
+          executions={null}
           matrix={compatibility}
           version={version}
           expandedId={expandedId}
@@ -95,7 +102,8 @@ export default function CompatibilityPage() {
         />
         <CompatibilitySection
           title="Chat compatibility"
-          description="Chat API coverage measured from the product's native Chat worker."
+          description="Chat API coverage measured from the product's Worker execution."
+          executions={CHAT_EXECUTIONS}
           matrix={chatCompatibility}
           version={version}
           expandedId={expandedId}
@@ -109,6 +117,7 @@ export default function CompatibilityPage() {
 function CompatibilitySection({
   title,
   description,
+  executions,
   matrix,
   version,
   expandedId,
@@ -116,6 +125,12 @@ function CompatibilitySection({
 }: {
   title: string;
   description: string;
+  /**
+   * Kinds whose gated services belong in this section, or `null` for the
+   * ungated ones. A set rather than one name because each archived version
+   * records the kind name that version declared.
+   */
+  executions: ReadonlySet<string> | null;
   matrix: CompatibilityMatrix;
   version: VersionEntry;
   expandedId: string | null;
@@ -149,27 +164,29 @@ function CompatibilitySection({
           </thead>
           <tbody>
             {version.services
+              .filter((service) =>
+                executions
+                  ? service.requiredExecution !== undefined &&
+                    executions.has(service.requiredExecution)
+                  : service.requiredExecution === undefined,
+              )
               .map((service) => ({
                 name: service.name,
-                // Only methods the matrix actually measured. Methods absent from
-                // the matrix (e.g. skipped services) are dropped, and a service
-                // left with none is not rendered at all.
-                methods: service.methods.flatMap((m) => {
+                // Every generated method, measured or not. A method with no
+                // matrix row renders as not-reported across all hosts rather
+                // than vanishing, so an unexercised method reads as a gap
+                // instead of shrinking the denominator.
+                methods: service.methods.map((m) => {
                   const id = `${service.name}/${m.name}`;
                   const row = byId.get(id);
-                  return row
-                    ? [
-                        {
-                          name: m.name,
-                          id,
-                          results: row.results,
-                          details: row.details,
-                        },
-                      ]
-                    : [];
+                  return {
+                    name: m.name,
+                    id,
+                    results: row?.results,
+                    details: row?.details,
+                  };
                 }),
               }))
-              .filter((service) => service.methods.length > 0)
               .map((service, i) => (
                 <ServiceRows
                   key={service.name}

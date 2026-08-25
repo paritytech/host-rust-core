@@ -2,6 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
+  HostChatCreateRoomRequest,
+  HostChatCreateRoomResponse,
   HostDevicePermissionRequest,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
@@ -240,6 +242,8 @@ describe("createWasmRawCallbacks", () => {
                   review.value.size,
                 ]);
                 return review.value.size === 42n;
+              default:
+                return false;
             }
           },
         },
@@ -253,8 +257,11 @@ describe("createWasmRawCallbacks", () => {
     );
 
     const preimageEvents: (number[] | null)[] = [];
-    const disposePreimages = raw.lookupPreimage!(new Uint8Array([9]), (value) =>
-      preimageEvents.push(value ? [...value] : null),
+    const preimageErrors: string[] = [];
+    const disposePreimages = raw.lookupPreimage!(
+      new Uint8Array([9]),
+      (value) => preimageEvents.push(value ? [...value] : null),
+      (error) => preimageErrors.push(error.reason),
     );
 
     raw.authStateChanged?.(
@@ -358,6 +365,7 @@ describe("createWasmRawCallbacks", () => {
         UserConfirmationReview.enc({
           tag: "ResourceAllocation",
           value: {
+            callingProductId: "playground.dot",
             resources: [{ tag: "StatementStoreAllowance" }],
           },
         }),
@@ -389,6 +397,45 @@ describe("createWasmRawCallbacks", () => {
     disposePreimages?.();
   });
 
+  it("omits the chat callbacks when the host does not serve chat", () => {
+    const raw = createWasmRawCallbacks(makeHostCallbacks());
+
+    expect(raw.createChatRoom).toBeUndefined();
+    expect(raw.registerChatBot).toBeUndefined();
+    expect(raw.postChatMessage).toBeUndefined();
+    expect(raw.subscribeChatRooms).toBeUndefined();
+  });
+
+  it("adapts the chat callbacks when the host serves chat", async () => {
+    const seen: string[] = [];
+    const raw = createWasmRawCallbacks(
+      makeHostCallbacks({
+        chat: {
+          createChatRoom: async (product, request) => {
+            seen.push(`${product.productId}:${request.roomId}`);
+            return { status: "Exists" };
+          },
+        },
+      }),
+    );
+
+    const product = ProductContext.enc({
+      productId: "chat.dot",
+      executionKind: "Worker",
+    });
+    const request = HostChatCreateRoomRequest.enc({
+      roomId: "room",
+      name: "Support",
+      icon: "",
+    });
+    const response = await raw.createChatRoom!(product, request);
+
+    expect(seen).toEqual(["chat.dot:room"]);
+    expect(HostChatCreateRoomResponse.dec(response)).toEqual({
+      status: "Exists",
+    });
+  });
+
   it("adapts typed result subscriptions", async () => {
     async function* themes() {
       yield ok<HostThemeSubscribeItemValue>(namedTheme("midnight", "Dark"));
@@ -403,8 +450,10 @@ describe("createWasmRawCallbacks", () => {
       }),
     );
     const seen: HostThemeSubscribeItemValue[] = [];
-    const dispose = raw.subscribeTheme?.((theme) =>
-      seen.push(HostThemeSubscribeItem.dec(theme!)),
+    const themeErrors: string[] = [];
+    const dispose = raw.subscribeTheme?.(
+      (theme) => seen.push(HostThemeSubscribeItem.dec(theme!)),
+      (error) => themeErrors.push(error.reason),
     );
 
     await settle();
@@ -522,14 +571,15 @@ describe("ProductContext codec", () => {
   // ProductContext travels the wasm callback boundary encoded in Rust and
   // decoded here.
   it("product context encoding matches the Rust platform codec", () => {
-    expect([...ProductExecutionKind.enc("Spa")]).toEqual([0]);
-    expect([...ProductExecutionKind.enc("Chat")]).toEqual([1]);
+    expect([...ProductExecutionKind.enc("App")]).toEqual([0]);
+    expect([...ProductExecutionKind.enc("Widget")]).toEqual([1]);
+    expect([...ProductExecutionKind.enc("Worker")]).toEqual([2]);
 
-    const context = { productId: "app.dot", executionKind: "Chat" } as const;
+    const context = { productId: "app.dot", executionKind: "Worker" } as const;
     expect([...ProductContext.enc(context)]).toEqual([
       28,
       ...new TextEncoder().encode("app.dot"),
-      1,
+      2,
     ]);
     expect(ProductContext.dec(ProductContext.enc(context))).toEqual(context);
   });

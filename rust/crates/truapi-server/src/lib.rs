@@ -2,6 +2,9 @@
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
+// The pairing-flow future nests the chain, SSO and identity futures deeply
+// enough that proving the tree's auto traits exceeds the default limit.
+#![recursion_limit = "256"]
 
 //! TrUAPI server runtime: dispatcher, frames, SCALE encoding, stream management.
 //!
@@ -79,6 +82,12 @@ pub use wasm::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 uniffi::setup_scaffolding!();
+
+#[cfg(not(target_arch = "wasm32"))]
+uniffi::use_remote_type!(truapi::Bytes32);
+
+#[cfg(not(target_arch = "wasm32"))]
+use truapi::Bytes32;
 
 #[cfg(not(target_arch = "wasm32"))]
 truapi::uniffi_reexport_scaffolding!();

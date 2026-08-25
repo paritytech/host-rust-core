@@ -10,7 +10,11 @@
  * @module
  */
 
-import { createMessagePortProvider, type WireProvider } from "./transport.js";
+import {
+  createMessagePortProvider,
+  createWebSocketProvider,
+  type WireProvider,
+} from "./transport.js";
 import { createTransport } from "./client.js";
 import { createClient, type TrUApiClient } from "./generated/index.js";
 import { tryCreateLegacyIframeProvider } from "./sandbox-legacy.js";
@@ -32,6 +36,9 @@ declare global {
   }
 }
 
+/** Endpoint set by {@link connectWebSocketHost}, and the host when present. */
+let webSocketEndpoint: string | null = null;
+
 function hostWindow(): Window | null {
   return typeof window === "undefined" ? null : window;
 }
@@ -51,6 +58,9 @@ function isIframe(): boolean {
  * injected host message port. Synchronous, so it can gate hot paths.
  */
 export function isCorrectEnvironment(): boolean {
+  // An endpoint handed to `connectWebSocketHost` is the host, wherever the code
+  // runs: a plain browser tab against a loopback socket, or a script in Node.
+  if (webSocketEndpoint !== null) return true;
   const win = hostWindow();
   if (!win) return false;
   if (isIframe()) return true;
@@ -221,6 +231,11 @@ function createIframeCompatibilityProvider(
  * webview). `onEstablished` fires once the host channel is live.
  */
 function createSandboxProvider(onEstablished: () => void): WireProvider {
+  if (webSocketEndpoint !== null) {
+    const provider = createWebSocketProvider(webSocketEndpoint);
+    provider.opened.then(onEstablished, () => {});
+    return provider;
+  }
   if (isIframe()) return createIframeCompatibilityProvider(onEstablished);
 
   const portController = new AbortController();
@@ -260,6 +275,34 @@ export function getClientSync(): TrUApiClient | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Connect to a host that serves protocol frames over a WebSocket, and return
+ * the client for it. From then on this module treats that endpoint as the host:
+ * {@link isCorrectEnvironment} reports `true` and {@link getClientSync} returns
+ * the same cached client, so product code that already runs inside a webview or
+ * an iframe needs no changes.
+ *
+ * The endpoint is whatever a host exposes on loopback. For local development
+ * that is `truapi-host signing-host --frame-listen 127.0.0.1:9955`:
+ *
+ * ```ts
+ * connectWebSocketHost("ws://127.0.0.1:9955");
+ * ```
+ *
+ * Call it before anything else touches the client. It throws if a client for a
+ * different transport has already been built, because that client is cached and
+ * cannot be redirected.
+ */
+export function connectWebSocketHost(url: string): TrUApiClient | null {
+  if (cachedClient !== null && webSocketEndpoint !== url) {
+    throw new Error(
+      "connectWebSocketHost must be called before the TrUAPI client is created",
+    );
+  }
+  webSocketEndpoint = url;
+  return getClientSync();
 }
 
 /**

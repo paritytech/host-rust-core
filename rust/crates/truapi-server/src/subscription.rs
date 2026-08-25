@@ -16,7 +16,8 @@ use futures::channel::mpsc;
 use futures::future::{BoxFuture, Either, select};
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use parity_scale_codec::{Decode, Encode};
+use parity_scale_codec::{Decode, DecodeLimit, Encode};
+use truapi::v01;
 
 use crate::frame::{IdFactory, Payload, ProtocolMessage};
 use crate::generated::wire_table::SubscriptionFrameIds;
@@ -310,9 +311,17 @@ impl SubscriptionManager {
     }
 }
 
+/// One frame routed to a live host-initiated stream. The product ends a stream
+/// it cannot serve with `_interrupt`; completing its observable deliberately
+/// sends nothing, so an interrupt is a failure and never a normal end.
+enum HostInitiatedFrame {
+    Item(Vec<u8>),
+    Interrupt,
+}
+
 struct HostInitiatedSlot {
     ids: SubscriptionFrameIds,
-    sender: mpsc::UnboundedSender<Vec<u8>>,
+    sender: mpsc::UnboundedSender<HostInitiatedFrame>,
 }
 
 struct HostInitiatedState {
@@ -354,7 +363,7 @@ impl HostInitiatedSubscriptionManager {
         ids: SubscriptionFrameIds,
         payload: Vec<u8>,
         transport: Arc<dyn Transport>,
-    ) -> truapi::Subscription<Item>
+    ) -> truapi::Subscription<Result<Item, v01::GenericError>>
     where
         Item: Decode + Send + Unpin + 'static,
     {
@@ -409,8 +418,12 @@ impl HostInitiatedSubscriptionManager {
         if message.payload.id == slot.ids.receive_id {
             let sender = slot.sender.clone();
             drop(state);
-            let _ = sender.unbounded_send(message.payload.value);
+            let _ = sender.unbounded_send(HostInitiatedFrame::Item(message.payload.value));
         } else if message.payload.id == slot.ids.interrupt_id {
+            // Deliver the terminal before dropping the sender, so the stream
+            // reports a declining product rather than a silent end.
+            let sender = slot.sender.clone();
+            let _ = sender.unbounded_send(HostInitiatedFrame::Interrupt);
             state.active.remove(&message.request_id);
         }
         None
@@ -430,7 +443,7 @@ impl HostInitiatedSubscriptionManager {
 struct HostInitiatedSubscription<Item> {
     request_id: String,
     ids: SubscriptionFrameIds,
-    receiver: mpsc::UnboundedReceiver<Vec<u8>>,
+    receiver: mpsc::UnboundedReceiver<HostInitiatedFrame>,
     state: Arc<Mutex<HostInitiatedState>>,
     transport: Arc<dyn Transport>,
     terminated: bool,
@@ -462,24 +475,50 @@ impl<Item> HostInitiatedSubscription<Item> {
     }
 }
 
+/// Nesting a product-supplied subscription item may reach before it is refused.
+///
+/// Recursive payloads such as a custom renderer tree would otherwise decode
+/// until the thread's stack is exhausted, which aborts the process rather than
+/// failing the call. Far above any nesting the protocol's own types need.
+const MAX_SUBSCRIPTION_DECODE_DEPTH: u32 = 64;
+
 impl<Item> Stream for HostInitiatedSubscription<Item>
 where
     Item: Decode + Unpin,
 {
-    type Item = Item;
+    type Item = Result<Item, v01::GenericError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.receiver).poll_next(cx) {
-            Poll::Ready(Some(bytes)) => {
+            Poll::Ready(Some(HostInitiatedFrame::Item(bytes))) => {
                 let mut input = &bytes[..];
-                match Item::decode(&mut input) {
-                    Ok(item) if input.is_empty() => Poll::Ready(Some(item)),
+                match Item::decode_with_depth_limit(MAX_SUBSCRIPTION_DECODE_DEPTH, &mut input) {
+                    Ok(item) if input.is_empty() => Poll::Ready(Some(Ok(item))),
                     Ok(_) | Err(_) => {
+                        // The peer sees a bare stop frame and the host sees a
+                        // completion, both identical to a clean teardown, so
+                        // this is the only record that the item was refused.
+                        // The codec's own error chains to kilobytes, so it is
+                        // deliberately not included.
+                        tracing::warn!(
+                            request_id = %self.request_id,
+                            "refused a host subscription item: undecodable or nested past the limit"
+                        );
                         self.stop();
-                        Poll::Ready(None)
+                        Poll::Ready(Some(Err(v01::GenericError {
+                            reason: "host-initiated subscription item did not decode".to_string(),
+                        })))
                     }
                 }
             }
+            Poll::Ready(Some(HostInitiatedFrame::Interrupt)) => {
+                self.terminated = true;
+                Poll::Ready(Some(Err(v01::GenericError {
+                    reason: "product interrupted the host-initiated subscription".to_string(),
+                })))
+            }
+            // The sender is gone: the host closed the manager or disposed the
+            // core. That is cancellation, not a product failure.
             Poll::Ready(None) => {
                 self.terminated = true;
                 Poll::Ready(None)
@@ -589,7 +628,10 @@ mod tests {
                 })
                 .is_none()
         );
-        assert_eq!(futures::executor::block_on(subscription.next()), Some(7));
+        assert_eq!(
+            futures::executor::block_on(subscription.next()),
+            Some(Ok(7))
+        );
 
         drop(subscription);
         let frames = transport_typed.sent();
@@ -597,6 +639,94 @@ mod tests {
         assert_eq!(frames[1].request_id, "h:1");
         assert_eq!(frames[1].payload.id, 53);
         assert!(frames[1].payload.value.is_empty());
+    }
+
+    #[test]
+    fn a_deeply_nested_host_item_is_refused_rather_than_exhausting_the_stack() {
+        // A recursive product-supplied payload decodes until the thread's stack
+        // is gone, and a stack overflow aborts the process rather than failing
+        // the call -- no `catch_unwind` and no `panic = "abort"` handling
+        // applies to it. The depth bound turns that into an ordinary refusal
+        // that ends this subscription alone.
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut nested = manager.start::<NestedItem>(host_ids(), vec![], transport.clone());
+        let mut healthy = manager.start::<NestedItem>(host_ids(), vec![], transport);
+
+        // One `Deeper` byte per level, terminated by `Leaf`.
+        let mut bomb = vec![0x01; (MAX_SUBSCRIPTION_DECODE_DEPTH as usize) * 4];
+        bomb.push(0x00);
+        manager.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: 55,
+                value: bomb,
+            },
+        });
+        assert!(matches!(
+            futures::executor::block_on(nested.next()),
+            Some(Err(_))
+        ));
+
+        // A payload inside the bound still arrives, on its own subscription.
+        manager.handle_message(ProtocolMessage {
+            request_id: "h:2".into(),
+            payload: Payload {
+                id: 55,
+                value: NestedItem::Leaf.encode(),
+            },
+        });
+        assert_eq!(
+            futures::executor::block_on(healthy.next()),
+            Some(Ok(NestedItem::Leaf))
+        );
+    }
+
+    #[test]
+    fn the_depth_bound_lands_where_the_real_render_item_nests() {
+        // The fixture above recurses through `Box`, which uses a different
+        // `Decode` impl than the `Vec<Self>` the production type recurses
+        // through. Pin the boundary on the type actually decoded here.
+        fn nested(depth: u32) -> truapi::versioned::chat::ProductChatCustomMessageRenderItem {
+            let mut node = truapi::v01::CustomRendererNode::Nil;
+            for _ in 0..depth {
+                node = truapi::v01::CustomRendererNode::Box {
+                    modifiers: Vec::new(),
+                    props: truapi::v01::BoxProps {
+                        content_alignment: None,
+                    },
+                    children: vec![node],
+                };
+            }
+            truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node)
+        }
+
+        let decode = |depth: u32| {
+            let bytes = nested(depth).encode();
+            let mut input = &bytes[..];
+            truapi::versioned::chat::ProductChatCustomMessageRenderItem::decode_with_depth_limit(
+                MAX_SUBSCRIPTION_DECODE_DEPTH,
+                &mut input,
+            )
+            .is_ok()
+        };
+
+        assert!(
+            decode(MAX_SUBSCRIPTION_DECODE_DEPTH),
+            "the limit must be usable"
+        );
+        assert!(
+            !decode(MAX_SUBSCRIPTION_DECODE_DEPTH + 1),
+            "one past the limit must be refused"
+        );
+    }
+
+    /// Stands in for the recursive protocol payloads a product can supply.
+    #[derive(Debug, PartialEq, Eq, Encode, Decode)]
+    enum NestedItem {
+        Leaf,
+        Deeper(Box<NestedItem>),
     }
 
     #[test]
@@ -622,8 +752,13 @@ mod tests {
             },
         });
 
+        // A partial tree left on screen as final is the failure this prevents.
+        assert!(matches!(
+            futures::executor::block_on(malformed.next()),
+            Some(Err(_))
+        ));
         assert_eq!(futures::executor::block_on(malformed.next()), None);
-        assert_eq!(futures::executor::block_on(healthy.next()), Some(9));
+        assert_eq!(futures::executor::block_on(healthy.next()), Some(Ok(9)));
         assert_eq!(transport_typed.sent()[2].request_id, "h:1");
         assert_eq!(transport_typed.sent()[2].payload.id, 53);
     }
@@ -643,8 +778,24 @@ mod tests {
             },
         });
 
+        assert!(matches!(
+            futures::executor::block_on(declined.next()),
+            Some(Err(_))
+        ));
         assert_eq!(futures::executor::block_on(declined.next()), None);
         assert_eq!(transport_typed.sent().len(), 1);
+    }
+
+    #[test]
+    fn host_cancellation_ends_the_stream_without_reporting_an_error() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
+
+        manager.close();
+
+        assert_eq!(futures::executor::block_on(render.next()), None);
     }
 
     #[test]
@@ -694,8 +845,14 @@ mod tests {
             },
         });
 
-        assert_eq!(futures::executor::block_on(first_render.next()), Some(7));
-        assert_eq!(futures::executor::block_on(second_render.next()), Some(9));
+        assert_eq!(
+            futures::executor::block_on(first_render.next()),
+            Some(Ok(7))
+        );
+        assert_eq!(
+            futures::executor::block_on(second_render.next()),
+            Some(Ok(9))
+        );
     }
 
     struct PendingDropStream {

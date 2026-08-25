@@ -7,8 +7,8 @@
 _The protocol that lets product webviews talk to their Polkadot host._
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](./LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/paritytech/truapi/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/truapi/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/truapi)
+[![CI](https://img.shields.io/github/actions/workflow/status/paritytech/host-rust-core/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/paritytech/host-rust-core/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-rustdoc-blue?style=flat-square)](https://paritytech.github.io/host-rust-core)
 [![Playground](https://img.shields.io/badge/playground-live-success?style=flat-square)](https://truapi-playground.paseo.li/)
 
 </div>
@@ -19,7 +19,7 @@ TrUAPI (Triangle User-Agent Programming Interface) is the API surface that hosts
 
 ## Try it
 
-Browse the published Rust API docs at [paritytech.github.io/truapi](https://paritytech.github.io/truapi).
+Browse the published Rust API docs at [paritytech.github.io/host-rust-core](https://paritytech.github.io/host-rust-core).
 
 The interactive playground lets you browse every method, edit request payloads, and call or subscribe to them live against a connected host. It also drives an end-to-end **Diagnosis** that produces a per-host pass/fail report ([playground/README.md → Diagnosis](playground/README.md#diagnosis)). The explorer aggregates those reports into a cross-host **Compatibility** matrix ([explorer/README.md → Host compatibility matrix](explorer/README.md#host-compatibility-matrix)).
 
@@ -58,16 +58,22 @@ rust/crates/
   truapi-codegen/        rustdoc JSON to TypeScript client + Rust dispatcher
   truapi-macros/         #[wire(id = N)] proc-macro
   truapi-platform/       Host syscall traits used by truapi-server (storage, navigation, consent, ...)
+  truapi-provider/       Network provider backends (WebSocket RPC or smoldot light-client)
   truapi-server/         Host runtime: dispatcher, typed SCALE logic, chain signing, WASM surface
 js/packages/
   truapi/                  @parity/truapi TypeScript client
   truapi-host/            @parity/truapi-host: WASM-backed host runtime; entries `.`
                           (shared host types), `/web` (iframe + Web Worker),
                           `/worker-runtime`
+  truapi-provider/         @parity/truapi-provider: WASM ChainProvider backends
+                          (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
-android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
+                           compiled by no CI job, so run `make android-check` after changing it
+android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
+ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
 playground/                Interactive Next.js playground (truapi-playground dotNS label)
 hosts/dotli/               dotli host, vendored as a submodule
 docs/                      Design docs, RFCs, feature proposals
@@ -83,6 +89,12 @@ container bundle (`make xcframework` + `make uniffi`); see
 [`ios/truapi-host/README.md`](ios/truapi-host/README.md).
 Native bindings expose the canonical Rust domain and protocol value types;
 native-only adapter types are limited to lifecycle and callback behavior.
+On iOS, a wallet host that manages its own statement-store SSO session can call
+`handleSsoRequest` (routes one decrypted remote message through the core,
+returning a typed outcome: response bytes to post back, a disconnect marker, or
+ignored) and `prepareDisconnectRequest` (builds the SCALE-encoded wire message
+for a wallet-initiated disconnect) on `TrUAPIHostRuntime`. Response posting and
+session-record cleanup remain on the wallet side.
 
 ### JS Host SDKs
 
@@ -94,6 +106,24 @@ a single package with tree-shakeable subpath entries:
   MessageChannel handshake (`createIframeHost`) plus `createWebWorkerProvider`.
 - `@parity/truapi-host/worker-runtime` is the Web Worker entrypoint so the WASM core can
   run off the page main thread.
+
+### Chain transport
+
+A host that serves chain traffic itself embeds the `truapi-provider` crate: an
+embedded smoldot light client plus a bundled chain-spec catalog, addressed by
+genesis hash, so the host ships no chain specs and never refreshes them. The crate
+compiles to one binary artifact per platform, each exposing the same
+`ChainProvider` contract, so a consumer needs neither a Rust toolchain nor a
+dependency on the crate:
+
+- [`@parity/truapi-provider`](js/packages/truapi-provider) is the WASM build for
+  browser and webview hosts, rebuilt by `make wasm` alongside the host bundle.
+- [`TrUAPIProvider`](ios/truapi-provider) is the second product of the root
+  `Package.swift`, an xcframework plus committed Swift bindings, built by
+  `make provider-ios`.
+- [`truapi-provider-android`](android/truapi-provider) is an AAR carrying the
+  Kotlin bindings and the cdylib per ABI, built by
+  `make provider-android-publish-local`.
 
 ## How it works
 
@@ -139,6 +169,7 @@ scripts/battery.sh --signing-host   # direct phase only
 scripts/battery.sh --pairing-host   # paired phase only
 make e2e-signing-cli                # same direct signing-host phase
 make e2e-pairing-cli                # same paired pairing-host phase
+make e2e-chat-cli                   # chat content screening against a chat signing-host
 ```
 
 To run the playground locally:
@@ -177,7 +208,9 @@ does not provision or pair a signer-bot user.
 
 To exercise the shared-core Chat path with the first-party TrUAPI Playground
 worker, build and serve the local product, install its worker into the
-simulator app's product storage, and open its native Chat application:
+simulator app's product storage, and open its native Chat application. The
+worker drives all six Chat methods, so a host without bot registration reports
+that row red:
 
 ```bash
 make ios-chat-run
@@ -236,7 +269,7 @@ use a different state directory while debugging.
 Pushes to `main` build and deploy:
 
 - The playground to the dotNS label [`truapi-playground`](https://truapi-playground.paseo.li/), live as `truapi-playground.paseo`, via [`.github/workflows/deploy-playground.yml`](.github/workflows/deploy-playground.yml).
-- The Rust API docs to [https://paritytech.github.io/truapi](https://paritytech.github.io/truapi) via [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
+- The Rust API docs to [https://paritytech.github.io/host-rust-core](https://paritytech.github.io/host-rust-core) via [`.github/workflows/deploy-docs.yml`](.github/workflows/deploy-docs.yml).
 
 ## Release
 

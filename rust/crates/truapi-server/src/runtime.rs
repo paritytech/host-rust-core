@@ -17,6 +17,7 @@ mod chat;
 mod identity;
 pub(crate) mod login_failure;
 mod pairing_host;
+mod product_subtree;
 mod ring_vrf_registry;
 /// Role-neutral runtime services shared by product-facing runtimes.
 pub(crate) mod services;
@@ -54,6 +55,7 @@ use crate::host_logic::session::SessionInfo;
 #[cfg(test)]
 use crate::host_logic::session::SessionState;
 use crate::host_logic::sso::messages::RingVrfError;
+use crate::host_logic::sso::pairing::x25519_public_key;
 use crate::runtime::bulletin_rpc::BulletinSubmitError;
 #[cfg(test)]
 use crate::subscription::Spawner;
@@ -67,11 +69,12 @@ pub use signing_host::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, respond_to_pairing,
+    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
 };
 
+pub(crate) use authority::AuthorityError;
 use authority::{
-    AccountAliasAuthorityRequest, AuthorityCancelError, AuthorityError, AuthoritySession,
+    AccountAliasAuthorityRequest, AuthorityCancelError, AuthoritySession,
     CreateProofAuthorityRequest, CreateTransactionAuthorityRequest,
     ListRingVrfKeysAuthorityRequest, RegisterRingVrfKeyAuthorityRequest,
     RingVrfSignAuthorityRequest, SignPayloadAuthorityRequest, SignRawAuthorityRequest,
@@ -121,7 +124,22 @@ use truapi::versioned::chain::{
 use truapi::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
-    HostChatPostMessageRequest, HostChatPostMessageResponse,
+    HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
+    HostChatRegisterBotRequest, HostChatRegisterBotResponse,
+};
+use truapi::versioned::coin_payment::{
+    HostCoinPaymentCreateChequeError, HostCoinPaymentCreateChequeRequest,
+    HostCoinPaymentCreateChequeResponse, HostCoinPaymentCreatePurseError,
+    HostCoinPaymentCreatePurseRequest, HostCoinPaymentCreatePurseResponse,
+    HostCoinPaymentCreateReceivableError, HostCoinPaymentCreateReceivableRequest,
+    HostCoinPaymentCreateReceivableResponse, HostCoinPaymentDeletePurseError,
+    HostCoinPaymentDeletePurseItem, HostCoinPaymentDeletePurseRequest, HostCoinPaymentDepositError,
+    HostCoinPaymentDepositItem, HostCoinPaymentDepositRequest, HostCoinPaymentListenForError,
+    HostCoinPaymentListenForItem, HostCoinPaymentListenForRequest, HostCoinPaymentQueryPurseError,
+    HostCoinPaymentQueryPurseRequest, HostCoinPaymentQueryPurseResponse,
+    HostCoinPaymentRebalancePurseError, HostCoinPaymentRebalancePurseItem,
+    HostCoinPaymentRebalancePurseRequest, HostCoinPaymentRefundError, HostCoinPaymentRefundItem,
+    HostCoinPaymentRefundRequest,
 };
 use truapi::versioned::entropy::{
     HostDeriveEntropyError, HostDeriveEntropyRequest, HostDeriveEntropyResponse,
@@ -173,10 +191,12 @@ use truapi::{CallContext, CallError, CancellationReason, Subscription};
 use truapi::{latest, v01};
 use truapi_platform::Platform;
 use truapi_platform::{
-    AccountAccessReview, CreateTransactionReview, IdentityDisclosureReview,
+    AccountAccessReview, ChatFieldError, CreateTransactionReview, IdentityDisclosureReview,
     PermissionAuthorizationRequest, PermissionAuthorizationStatus, PreimageSubmitReview,
-    ProductContext, ProductStorageKey, ResourceAllocationReview, SessionUiInfo, SignPayloadReview,
-    SignRawReview, UserConfirmationReview, normalize_product_identifier,
+    ProductContext, ProductStorageKey, ProductSubtreeReview, ResourceAllocationReview,
+    SessionUiInfo, SignPayloadReview, SignRawReview, UserConfirmationReview,
+    normalize_chat_identifier, normalize_product_identifier, validate_chat_icon,
+    validate_chat_message_content, validate_chat_name,
 };
 
 /// Error reason surfaced to products when a remote permission is not granted.
@@ -184,7 +204,13 @@ pub(super) const REMOTE_PERMISSION_DENIED_REASON: &str = "Permission denied";
 /// Host-spec B.6.2 recommends timing out unanswered SSO application requests
 /// after 180 seconds:
 /// <https://github.com/paritytech/host-spec/blob/adb3989208ae1c2107dbf0159611353e6989422c/spec/B-inter-host.md?plain=1#L303-L307>
-const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT: Duration = Duration::from_secs(180);
+/// After a cancel or deadline, how long a remote authority call is given to
+/// observe the cancellation and unwind (unsubscribing its statement streams)
+/// before it is dropped. A call parked in the statement-store setup, which does
+/// not watch the cancel token, would otherwise outlive its deadline, so this
+/// caps the wait. A normal unwind completes in well under this.
+const AUTHORITY_CANCEL_UNWIND_GRACE: Duration = Duration::from_secs(2);
 /// Resource allocation may include a People -> Bulletin cross-chain
 /// propagation before the signing host can truthfully report `Allocated`.
 /// Keep this above the signing host's 240-second propagation ceiling while
@@ -269,36 +295,41 @@ where
     let cancelled = cx.cancel().cancelled().fuse();
     pin_mut!(call, cancelled);
 
-    if let Some(timeout_duration) = cx.timeout() {
+    // First, run the call against cancellation and the optional deadline. A
+    // completed call returns directly; a cancel or timeout yields its reason and
+    // falls through to a bounded unwind.
+    let reason = if let Some(timeout_duration) = cx.timeout() {
         let timeout = futures_timer::Delay::new(timeout_duration).fuse();
         pin_mut!(timeout);
         futures::select! {
-            result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            result = call => return result,
+            reason = cancelled => reason,
             () = timeout => {
                 let reason = CancellationReason::TimedOut {
                     timeout: timeout_duration,
                 };
                 cx.cancel().cancel_with_reason(reason.clone());
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
+                reason
             }
         }
     } else {
         futures::select! {
-            result = call => result,
-            reason = cancelled => {
-                let error = authority_cancellation_error(cx, reason);
-                let _ = call.await;
-                Err(error.into())
-            },
+            result = call => return result,
+            reason = cancelled => reason,
         }
+    };
+
+    // Give the call a bounded chance to observe the cancellation and tear down
+    // its statement-store subscriptions, then drop it. The grace caps a call
+    // parked in the setup region that never observes the token.
+    let error = authority_cancellation_error(cx, reason);
+    let unwind = futures_timer::Delay::new(AUTHORITY_CANCEL_UNWIND_GRACE).fuse();
+    pin_mut!(unwind);
+    futures::select! {
+        _ = call => {},
+        () = unwind => {},
     }
+    Err(error.into())
 }
 
 fn authority_cancellation_error(cx: &CallContext, reason: CancellationReason) -> AuthorityError {
@@ -340,6 +371,11 @@ impl ProductRuntimeHost {
         }
     }
 
+    /// Role-neutral services shared with the owning host runtime.
+    pub(crate) fn services(&self) -> &Arc<RuntimeServices> {
+        &self.services
+    }
+
     /// Trusted executable kind attached to this product connection.
     pub(crate) fn execution_kind(&self) -> truapi_platform::ProductExecutionKind {
         self.product.execution_kind
@@ -378,6 +414,7 @@ impl ProductRuntimeHost {
             truapi_platform::PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("compat runtime config is valid")
@@ -797,22 +834,21 @@ impl System for ProductRuntimeHost {
             // reaches an arbitrary internet host, so neither consumes a grant.
             NavigateDecision::DotName { canonical_url, .. }
             | NavigateDecision::Localhost { canonical_url, .. } => canonical_url,
-            // External navigation hands an arbitrary host the referrer, the
-            // shape of the URL, and whatever the product put in it, so it needs
-            // the same per-domain grant that gates outbound access to that host.
+            // An `http(s)` URL hands an arbitrary host the referrer, the shape
+            // of the URL, and whatever the product put in it, so it needs the
+            // same per-domain grant that gates outbound access to that host.
+            // The other allowed schemes are app handoffs with no authorizable
+            // domain (`external_host` returns `None`) and pass straight through.
             NavigateDecision::External { url } => {
-                let host = external_host(&url).ok_or_else(|| {
-                    CallError::Domain(HostNavigateToError::V1(v01::HostNavigateToError::Unknown {
-                        reason: format!("external URL `{url}` has no host to authorize"),
-                    }))
-                })?;
-                self.require_remote_permission(
-                    v01::RemotePermission::Remote {
-                        domains: vec![host],
-                    },
-                    HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied),
-                )
-                .await?;
+                if let Some(host) = external_host(&url) {
+                    self.require_remote_permission(
+                        v01::RemotePermission::Remote {
+                            domains: vec![host],
+                        },
+                        HostNavigateToError::V1(v01::HostNavigateToError::PermissionDenied),
+                    )
+                    .await?;
+                }
                 url
             }
         };
@@ -978,6 +1014,31 @@ impl Account for ProductRuntimeHost {
                         reason: err.to_string(),
                     });
                 }
+            }
+        } else if self
+            .authority
+            .subtree_resolution_reaches_account_holder(
+                &session,
+                &product_account_id.dot_ns_identifier,
+            )
+            .await
+        {
+            // Own-account resolution has no access review, so a cold subtree
+            // that must reach the Account Holder is the one point a host can
+            // surface and reject before the SSO call.
+            let approved = self
+                .platform
+                .confirm_user_action(UserConfirmationReview::ProductSubtree(
+                    ProductSubtreeReview {
+                        product_id: product_account_id.dot_ns_identifier.clone(),
+                    },
+                ))
+                .await
+                .map_err(|err| CallError::HostFailure { reason: err.reason })?;
+            if !approved {
+                return Err(CallError::Domain(HostAccountGetError::V1(
+                    v01::HostAccountGetError::Rejected,
+                )));
             }
         }
 
@@ -1335,6 +1396,9 @@ fn connected_session_ui_info(session: &SessionInfo) -> SessionUiInfo {
     SessionUiInfo {
         public_key: session.public_key,
         identity_account_id: session.identity_account_id,
+        chat_public_key: session.identity_chat_private_key.map(x25519_public_key),
+        device_enc_public_key: session.device_enc_public_key,
+        peer_statement_account_id: session.sso.as_ref().map(|sso| sso.identity_account_id),
         lite_username: session.lite_username.clone(),
         full_username: session.full_username.clone(),
     }
@@ -2146,13 +2210,22 @@ impl ProductRuntimeHost {
     fn chat_platform<E>(&self) -> Result<Arc<dyn truapi_platform::ChatPlatform>, CallError<E>> {
         self.native_chat_platform().map_err(|error| match error {
             crate::host_core::ProductRuntimeError::Denied => CallError::Denied,
-            crate::host_core::ProductRuntimeError::Unsupported => CallError::Unsupported,
-            _ => unreachable!("Chat platform policy only returns Denied or Unsupported"),
+            _ => CallError::Unsupported,
         })
     }
 
     pub(crate) fn detach_chat(&self) {
         self.chat.detach();
+    }
+
+    /// Buffer one host-authored Chat action for this connection's product,
+    /// behind the same access policy as every other Chat entry point.
+    pub(crate) fn publish_chat_action(
+        &self,
+        action: truapi::versioned::chat::HostChatActionSubscribeItem,
+    ) -> Result<(), crate::host_core::ProductRuntimeError> {
+        self.native_chat_platform()?;
+        self.chat.publish_action(action)
     }
 }
 
@@ -2165,12 +2238,39 @@ impl Chat for ProductRuntimeHost {
         request: HostChatCreateRoomRequest,
     ) -> Result<HostChatCreateRoomResponse, CallError<HostChatCreateRoomError>> {
         let platform = self.chat_platform()?;
-        let HostChatCreateRoomRequest::V1(request) = request;
+        let HostChatCreateRoomRequest::V1(mut request) = request;
+        request.room_id = normalize_chat_identifier("roomId", &request.room_id)
+            .map_err(chat_create_room_field_error)?;
+        request.name =
+            validate_chat_name("name", &request.name).map_err(chat_create_room_field_error)?;
+        request.icon =
+            validate_chat_icon("icon", &request.icon).map_err(chat_create_room_field_error)?;
         platform
-            .create_room(&self.product, request)
+            .create_chat_room(&self.product, request)
             .await
             .map(HostChatCreateRoomResponse::V1)
             .map_err(|error| CallError::Domain(HostChatCreateRoomError::V1(error)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "chat.register_bot"))]
+    async fn register_bot(
+        &self,
+        _cx: &CallContext,
+        request: HostChatRegisterBotRequest,
+    ) -> Result<HostChatRegisterBotResponse, CallError<HostChatRegisterBotError>> {
+        let platform = self.chat_platform()?;
+        let HostChatRegisterBotRequest::V1(mut request) = request;
+        request.bot_id = normalize_chat_identifier("botId", &request.bot_id)
+            .map_err(chat_register_bot_field_error)?;
+        request.name =
+            validate_chat_name("name", &request.name).map_err(chat_register_bot_field_error)?;
+        request.icon =
+            validate_chat_icon("icon", &request.icon).map_err(chat_register_bot_field_error)?;
+        platform
+            .register_chat_bot(&self.product, request)
+            .await
+            .map(HostChatRegisterBotResponse::V1)
+            .map_err(|error| CallError::Domain(HostChatRegisterBotError::V1(error)))
     }
 
     #[instrument(skip_all, fields(runtime.method = "chat.list_subscribe"))]
@@ -2180,8 +2280,23 @@ impl Chat for ProductRuntimeHost {
         };
         Subscription::new(Box::pin(
             platform
-                .subscribe_rooms(&self.product)
-                .map(HostChatListSubscribeItem::V1),
+                .subscribe_chat_rooms(&self.product)
+                .filter_map(|item| async {
+                    // TODO: preserve platform stream errors as terminal
+                    // subscription interrupts once subscription items can carry
+                    // in-stream failures. Until then a dropped error freezes the
+                    // product's room list on its last value, so record why.
+                    match item {
+                        Ok(item) => Some(HostChatListSubscribeItem::V1(item)),
+                        Err(error) => {
+                            warn!(
+                                reason = %error.reason,
+                                "chat room list platform stream failed"
+                            );
+                            None
+                        }
+                    }
+                }),
         ))
     }
 
@@ -2192,9 +2307,17 @@ impl Chat for ProductRuntimeHost {
         request: HostChatPostMessageRequest,
     ) -> Result<HostChatPostMessageResponse, CallError<HostChatPostMessageError>> {
         let platform = self.chat_platform()?;
-        let HostChatPostMessageRequest::V1(request) = request;
+        let HostChatPostMessageRequest::V1(mut request) = request;
+        // The same normalization create_room applied, so a product's own
+        // spelling of a room id still resolves to the stored room.
+        request.room_id =
+            normalize_chat_identifier("roomId", &request.room_id).map_err(chat_post_field_error)?;
+        // Content is product-authored and host-rendered, so it gets the same
+        // treatment the room fields get rather than reaching a host raw.
+        request.payload =
+            validate_chat_message_content(request.payload).map_err(chat_post_field_error)?;
         platform
-            .post_message(&self.product, request)
+            .post_chat_message(&self.product, request)
             .await
             .map(HostChatPostMessageResponse::V1)
             .map_err(|error| CallError::Domain(HostChatPostMessageError::V1(error)))
@@ -2211,8 +2334,146 @@ impl Chat for ProductRuntimeHost {
         self.chat.subscribe_actions()
     }
 }
+/// Report a rejected chat bot field as a bot-registration domain error.
+fn chat_register_bot_field_error(
+    error: truapi_platform::ChatFieldError,
+) -> CallError<HostChatRegisterBotError> {
+    CallError::Domain(HostChatRegisterBotError::V1(
+        v01::HostChatRegisterBotError::Unknown {
+            reason: error.to_string(),
+        },
+    ))
+}
+
+/// Fields whose rejection a product resolves by sending less content, and the
+/// only ones the fieldless `MessageTooLarge` can describe.
+const CHAT_SIZED_CONTENT_FIELDS: [&str; 2] = ["text", "payload"];
+
+/// Maps a rejected `post_message` field onto the wire error, reporting a size
+/// rejection as the size variant the protocol declares for it.
+fn chat_post_field_error(error: ChatFieldError) -> CallError<HostChatPostMessageError> {
+    let payload = match error {
+        // `MessageTooLarge` names no field, so it is reserved for the content
+        // a product shrinks by sending less. Every other rejection reports
+        // through `Unknown`, whose reason names the field and its limit.
+        ChatFieldError::TooLong { field, .. } if CHAT_SIZED_CONTENT_FIELDS.contains(&field) => {
+            v01::HostChatPostMessageError::MessageTooLarge
+        }
+        error => v01::HostChatPostMessageError::Unknown {
+            reason: error.to_string(),
+        },
+    };
+    CallError::Domain(HostChatPostMessageError::V1(payload))
+}
+
+/// Report a rejected chat room field as a room-creation domain error.
+fn chat_create_room_field_error(
+    error: truapi_platform::ChatFieldError,
+) -> CallError<HostChatCreateRoomError> {
+    CallError::Domain(HostChatCreateRoomError::V1(
+        v01::HostChatCreateRoomError::Unknown {
+            reason: error.to_string(),
+        },
+    ))
+}
+
 #[truapi::async_trait]
-impl CoinPayment for ProductRuntimeHost {}
+impl CoinPayment for ProductRuntimeHost {
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.create_purse"))]
+    async fn create_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentCreatePurseRequest,
+    ) -> Result<HostCoinPaymentCreatePurseResponse, CallError<HostCoinPaymentCreatePurseError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.query_purse"))]
+    async fn query_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentQueryPurseRequest,
+    ) -> Result<HostCoinPaymentQueryPurseResponse, CallError<HostCoinPaymentQueryPurseError>> {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.rebalance_purse"))]
+    async fn rebalance_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentRebalancePurseRequest,
+    ) -> Result<
+        Subscription<HostCoinPaymentRebalancePurseItem>,
+        CallError<HostCoinPaymentRebalancePurseError>,
+    > {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.delete_purse"))]
+    async fn delete_purse(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentDeletePurseRequest,
+    ) -> Result<
+        Subscription<HostCoinPaymentDeletePurseItem>,
+        CallError<HostCoinPaymentDeletePurseError>,
+    > {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.create_receivable"))]
+    async fn create_receivable(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentCreateReceivableRequest,
+    ) -> Result<
+        HostCoinPaymentCreateReceivableResponse,
+        CallError<HostCoinPaymentCreateReceivableError>,
+    > {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.create_cheque"))]
+    async fn create_cheque(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentCreateChequeRequest,
+    ) -> Result<HostCoinPaymentCreateChequeResponse, CallError<HostCoinPaymentCreateChequeError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.deposit"))]
+    async fn deposit(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentDepositRequest,
+    ) -> Result<Subscription<HostCoinPaymentDepositItem>, CallError<HostCoinPaymentDepositError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.refund"))]
+    async fn refund(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentRefundRequest,
+    ) -> Result<Subscription<HostCoinPaymentRefundItem>, CallError<HostCoinPaymentRefundError>>
+    {
+        Err(CallError::Unsupported)
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "coin_payment.listen_for_payment"))]
+    async fn listen_for_payment(
+        &self,
+        _cx: &CallContext,
+        _request: HostCoinPaymentListenForRequest,
+    ) -> Result<Subscription<HostCoinPaymentListenForItem>, CallError<HostCoinPaymentListenForError>>
+    {
+        Err(CallError::Unsupported)
+    }
+}
 #[truapi::async_trait]
 impl Payment for ProductRuntimeHost {
     #[instrument(skip_all, fields(runtime.method = "payment.balance_subscribe"))]
@@ -2561,8 +2822,15 @@ impl Theme for ProductRuntimeHost {
         let stream = self.platform.subscribe_theme().filter_map(|item| async {
             // TODO: preserve platform stream errors as terminal
             // subscription interrupts once subscription items can carry
-            // in-stream failures.
-            item.ok().map(HostThemeSubscribeItem::V1)
+            // in-stream failures. Until then a dropped error freezes the
+            // product's theme on its last value, so record why.
+            match item {
+                Ok(item) => Some(HostThemeSubscribeItem::V1(item)),
+                Err(error) => {
+                    warn!(reason = %error.reason, "theme platform stream failed");
+                    None
+                }
+            }
         });
         Subscription::new(Box::pin(stream))
     }
@@ -2737,6 +3005,443 @@ mod tests {
         );
     }
 
+    /// Records which `ChatPlatform` methods the runtime actually reached.
+    #[derive(Default)]
+    struct RecordingChatPlatform {
+        registered_bots: Mutex<Vec<String>>,
+        created_rooms: Mutex<Vec<String>>,
+        posted_rooms: Mutex<Vec<String>>,
+        posted_payloads: Mutex<Vec<v01::ChatMessageContent>>,
+    }
+
+    #[truapi::async_trait]
+    impl truapi_platform::ChatPlatform for RecordingChatPlatform {
+        async fn create_chat_room(
+            &self,
+            _product: &ProductContext,
+            request: truapi::latest::HostChatCreateRoomRequest,
+        ) -> Result<
+            truapi::latest::HostChatCreateRoomResponse,
+            truapi::latest::HostChatCreateRoomError,
+        > {
+            self.created_rooms
+                .lock()
+                .expect("created rooms mutex poisoned")
+                .push(request.room_id);
+            Ok(truapi::latest::HostChatCreateRoomResponse {
+                status: v01::ChatRoomRegistrationStatus::New,
+            })
+        }
+
+        async fn register_chat_bot(
+            &self,
+            _product: &ProductContext,
+            request: truapi::latest::HostChatRegisterBotRequest,
+        ) -> Result<
+            truapi::latest::HostChatRegisterBotResponse,
+            truapi::latest::HostChatRegisterBotError,
+        > {
+            self.registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .push(request.bot_id);
+            Ok(truapi::latest::HostChatRegisterBotResponse {
+                status: v01::ChatBotRegistrationStatus::New,
+            })
+        }
+
+        async fn post_chat_message(
+            &self,
+            _product: &ProductContext,
+            request: truapi::latest::HostChatPostMessageRequest,
+        ) -> Result<
+            truapi::latest::HostChatPostMessageResponse,
+            truapi::latest::HostChatPostMessageError,
+        > {
+            self.posted_rooms
+                .lock()
+                .expect("posted rooms mutex poisoned")
+                .push(request.room_id);
+            self.posted_payloads
+                .lock()
+                .expect("posted payloads mutex poisoned")
+                .push(request.payload);
+            Ok(truapi::latest::HostChatPostMessageResponse {
+                message_id: "message-id".to_string(),
+            })
+        }
+
+        fn subscribe_chat_rooms(
+            &self,
+            _product: &ProductContext,
+        ) -> futures::stream::BoxStream<
+            'static,
+            Result<truapi::latest::HostChatListSubscribeItem, truapi::latest::GenericError>,
+        > {
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    #[test]
+    fn chat_post_message_screens_content_before_it_reaches_a_host() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+        install_pairing_session(&host, session_info());
+
+        let post = |payload: v01::ChatMessageContent| {
+            futures::executor::block_on(Chat::post_message(
+                &host,
+                &CallContext::default(),
+                HostChatPostMessageRequest::V1(v01::HostChatPostMessageRequest {
+                    room_id: "support".to_string(),
+                    payload,
+                }),
+            ))
+        };
+
+        // The screen runs at this entrypoint, not only in the helper: a host
+        // must never be handed a scheme it would fetch or open.
+        let rejected = post(v01::ChatMessageContent::File(v01::ChatFile {
+            url: "javascript:alert(document.cookie)".to_string(),
+            file_name: "f".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 1,
+            text: None,
+        }))
+        .expect_err("a javascript: file url must not reach the host");
+        assert!(matches!(
+            rejected,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::Unknown { .. }
+            ))
+        ));
+
+        // A body over budget reports the size variant the protocol declares.
+        let too_large = post(v01::ChatMessageContent::Text {
+            text: "x".repeat(truapi_platform::CHAT_BODY_MAX_BYTES + 1),
+        })
+        .expect_err("an over-budget body must not reach the host");
+        assert!(matches!(
+            too_large,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::MessageTooLarge
+            ))
+        ));
+
+        // The payload arm of the size variant, which the body arm does not cover.
+        let big_payload = post(v01::ChatMessageContent::Custom(v01::ChatCustomMessage {
+            message_type: "vote".to_string(),
+            payload: vec![0; truapi_platform::CHAT_CUSTOM_PAYLOAD_MAX_BYTES + 1],
+        }))
+        .expect_err("an over-budget custom payload must not reach the host");
+        assert!(matches!(
+            big_payload,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::MessageTooLarge
+            ))
+        ));
+
+        // An over-long room id is not an over-large message.
+        let long_room = futures::executor::block_on(Chat::post_message(
+            &host,
+            &CallContext::default(),
+            HostChatPostMessageRequest::V1(v01::HostChatPostMessageRequest {
+                room_id: "r".repeat(truapi_platform::CHAT_FIELD_MAX_BYTES + 1),
+                payload: v01::ChatMessageContent::Text {
+                    text: "hi".to_string(),
+                },
+            }),
+        ))
+        .expect_err("an over-long room id must be rejected");
+        assert!(matches!(
+            long_room,
+            CallError::Domain(HostChatPostMessageError::V1(
+                v01::HostChatPostMessageError::Unknown { .. }
+            ))
+        ));
+
+        assert!(
+            chat_platform
+                .posted_rooms
+                .lock()
+                .expect("posted rooms mutex poisoned")
+                .is_empty(),
+            "nothing rejected may reach the host"
+        );
+
+        // The validated value is what the host receives, not the arriving one:
+        // running the screen and discarding its result would pass every
+        // rejection assertion above.
+        post(v01::ChatMessageContent::Reaction(v01::ChatReaction {
+            message_id: "  cafe\u{301}  ".to_string(),
+            emoji: "\u{1f3b2}".to_string(),
+        }))
+        .expect("a normalizable reaction is accepted");
+        post(v01::ChatMessageContent::File(v01::ChatFile {
+            url: "https://example.invalid".to_string(),
+            file_name: "f".to_string(),
+            mime_type: "text/plain".to_string(),
+            size_bytes: 1,
+            text: None,
+        }))
+        .expect("a resolvable file url is accepted");
+        assert_eq!(
+            chat_platform
+                .posted_payloads
+                .lock()
+                .expect("posted payloads mutex poisoned")
+                .as_slice(),
+            &[
+                v01::ChatMessageContent::Reaction(v01::ChatReaction {
+                    message_id: "caf\u{e9}".to_string(),
+                    emoji: "\u{1f3b2}".to_string(),
+                }),
+                v01::ChatMessageContent::File(v01::ChatFile {
+                    url: "https://example.invalid/".to_string(),
+                    file_name: "f".to_string(),
+                    mime_type: "text/plain".to_string(),
+                    size_bytes: 1,
+                    text: None,
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn chat_room_ids_agree_across_create_and_post() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host = ProductRuntimeHost::from_services(services, adapters, pairing_host, product);
+        install_pairing_session(&host, session_info());
+
+        // Precomposed on create, decomposed on post: the host must see one id,
+        // or the message lands in a room that does not exist.
+        futures::executor::block_on(Chat::create_room(
+            &host,
+            &CallContext::default(),
+            HostChatCreateRoomRequest::V1(v01::HostChatCreateRoomRequest {
+                room_id: "caf\u{e9}".to_string(),
+                name: "Cafe".to_string(),
+                icon: String::new(),
+            }),
+        ))
+        .expect("create_room accepts a normalizable id");
+
+        futures::executor::block_on(Chat::post_message(
+            &host,
+            &CallContext::default(),
+            HostChatPostMessageRequest::V1(v01::HostChatPostMessageRequest {
+                room_id: "cafe\u{301}".to_string(),
+                payload: v01::ChatMessageContent::Text {
+                    text: "hello".to_string(),
+                },
+            }),
+        ))
+        .expect("post_message accepts the other spelling of the same id");
+
+        let created = chat_platform
+            .created_rooms
+            .lock()
+            .expect("created rooms mutex poisoned")
+            .clone();
+        let posted = chat_platform
+            .posted_rooms
+            .lock()
+            .expect("posted rooms mutex poisoned")
+            .clone();
+        assert_eq!(created, posted);
+
+        // create_room screens the same fields register_bot does.
+        for (room_id, icon) in [("", ""), ("room\u{202e}", ""), ("room", "javascript:x")] {
+            let rejected = futures::executor::block_on(Chat::create_room(
+                &host,
+                &CallContext::default(),
+                HostChatCreateRoomRequest::V1(v01::HostChatCreateRoomRequest {
+                    room_id: room_id.to_string(),
+                    name: "Room".to_string(),
+                    icon: icon.to_string(),
+                }),
+            ));
+            assert!(
+                matches!(
+                    rejected,
+                    Err(CallError::Domain(HostChatCreateRoomError::V1(
+                        v01::HostChatCreateRoomError::Unknown { .. }
+                    )))
+                ),
+                "{room_id:?}/{icon:?} must be a domain error, got {rejected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn chat_register_bot_rejects_unsafe_product_fields() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host =
+            ProductRuntimeHost::from_services(services, adapters, pairing_host, product.clone());
+        install_pairing_session(&host, session_info());
+
+        let register = |bot_id: &str, name: &str, icon: &str| {
+            futures::executor::block_on(Chat::register_bot(
+                &host,
+                &CallContext::default(),
+                HostChatRegisterBotRequest::V1(v01::HostChatRegisterBotRequest {
+                    bot_id: bot_id.to_string(),
+                    name: name.to_string(),
+                    icon: icon.to_string(),
+                }),
+            ))
+        };
+
+        // A rejected field is a domain error naming the field, not the
+        // transport-level `Unsupported` that means "this host has no Chat".
+        for (bot_id, name, icon, expected_field) in [
+            ("", "Flipper", "", "botId"),
+            ("   ", "Flipper", "", "botId"),
+            ("flip\u{202e}per", "Flipper", "", "botId"),
+            ("flipper", "Flip\u{202e}per", "", "name"),
+            ("flipper", "Flipper", "javascript:alert(1)", "icon"),
+            ("flipper", "Flipper", "data: text/html,<script>", "icon"),
+            ("flipper", "Flipper", "data:image/svg+xml,<svg>", "icon"),
+            ("flipper", "Flipper", "file:///etc/passwd", "icon"),
+            ("flipper", "Flipper", "//evil.example/x.png", "icon"),
+        ] {
+            match register(bot_id, name, icon) {
+                Err(CallError::Domain(HostChatRegisterBotError::V1(
+                    v01::HostChatRegisterBotError::Unknown { reason },
+                ))) => assert!(
+                    reason.contains(expected_field),
+                    "{bot_id:?}/{name:?}/{icon:?} must name {expected_field}, got {reason:?}"
+                ),
+                other => panic!("{bot_id:?}/{name:?}/{icon:?} must be a domain error: {other:?}"),
+            }
+        }
+        assert!(
+            chat_platform
+                .registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .is_empty(),
+            "no rejected field may reach the host"
+        );
+
+        // NFD and NFC spellings normalize to one id, so they cannot become two
+        // bots that render identically.
+        register("cafe\u{301}", "Cafe", "").expect("normalized id is accepted");
+        register("caf\u{e9}", "Cafe", "").expect("normalized id is accepted");
+        let bots = chat_platform
+            .registered_bots
+            .lock()
+            .expect("registered bots mutex poisoned");
+        assert_eq!(bots.len(), 2);
+        assert_eq!(bots[0], bots[1]);
+    }
+
+    /// Guards the failure mode that hid `register_bot`: a `Chat` trait method
+    /// with no `impl` silently falls back to the trait default and answers
+    /// `unavailable`, while codegen, the wire table and the TS types all still
+    /// advertise it.
+    #[test]
+    fn chat_register_bot_reaches_the_installed_adapter() {
+        let (host_config, _) = runtime_config("chat.dot");
+        let product = ProductContext::new_with_execution(
+            "chat.dot".to_string(),
+            truapi_platform::ProductExecutionKind::Worker,
+        )
+        .expect("test chat product context is valid");
+        let spawner = test_spawner();
+        let platform: Arc<dyn Platform> = stub_platform();
+        let services = RuntimeServices::new(
+            platform.clone(),
+            host_config.people_chain_genesis_hash,
+            host_config.bulletin_chain_genesis_hash,
+            spawner.clone(),
+        );
+        let chat_platform = Arc::new(RecordingChatPlatform::default());
+        let pairing_host = PairingHost::new(services.clone(), host_config);
+        let mut adapters = crate::host_core::ConnectionAdapters::from_services(&services);
+        adapters.chat_platform = Some(chat_platform.clone());
+        let host = ProductRuntimeHost::from_services(
+            services.clone(),
+            adapters,
+            pairing_host,
+            product.clone(),
+        );
+        install_pairing_session(&host, session_info());
+
+        let response = futures::executor::block_on(Chat::register_bot(
+            &host,
+            &CallContext::default(),
+            HostChatRegisterBotRequest::V1(v01::HostChatRegisterBotRequest {
+                bot_id: "flipper".to_string(),
+                name: "Flipper".to_string(),
+                icon: String::new(),
+            }),
+        ));
+
+        let HostChatRegisterBotResponse::V1(response) =
+            response.expect("register_bot must reach the adapter, not fall back to unavailable");
+        assert_eq!(response.status, v01::ChatBotRegistrationStatus::New);
+        assert_eq!(
+            chat_platform
+                .registered_bots
+                .lock()
+                .expect("registered bots mutex poisoned")
+                .as_slice(),
+            &["flipper"]
+        );
+    }
+
     #[test]
     fn chain_follow_ids_are_scoped_per_product_core() {
         let (host_config, product) = runtime_config("same.dot");
@@ -2897,6 +3602,52 @@ mod tests {
                 .lock()
                 .expect("remote permission list mutex poisoned")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn navigate_to_handoff_schemes_bypass_the_remote_gate() {
+        // Only `http(s)` reaches a domain a grant can name. The other allowed
+        // schemes hand the URL to another app, so a denying platform must not
+        // turn them into a permission error.
+        let platform = Arc::new(StubPlatform {
+            remote_permission_denied: true,
+            ..Default::default()
+        });
+        let host = ProductRuntimeHost::new_compat(platform.clone(), test_spawner());
+        let cx = CallContext::default();
+
+        let handoffs = [
+            "mailto:someone@example.com",
+            "tel:+15551234567",
+            "polkadot://1exampleaddress",
+            "dot:transfer",
+        ];
+        for url in handoffs {
+            let request = HostNavigateToRequest::V1(v01::HostNavigateToRequest {
+                url: url.to_string(),
+            });
+            assert_eq!(
+                futures::executor::block_on(host.navigate_to(&cx, request)).unwrap(),
+                HostNavigateToResponse::V1,
+                "{url} has no authorizable domain and must reach the platform"
+            );
+        }
+        assert!(
+            platform
+                .remote_permission_requests
+                .lock()
+                .expect("remote permission list mutex poisoned")
+                .is_empty(),
+            "a hostless scheme must not consume a grant"
+        );
+        assert_eq!(
+            platform
+                .navigations
+                .lock()
+                .expect("navigation list mutex poisoned")
+                .len(),
+            handoffs.len()
         );
     }
 
@@ -3132,6 +3883,74 @@ mod tests {
             hex::encode(inner.account.public_key),
             "1c1ae478b564572f806ffa6352b4273d612beb01610b19f4e5bf444521cd5b5c"
         );
+    }
+
+    #[test]
+    fn get_account_own_product_prompts_and_rejects_on_a_cold_subtree() {
+        let host = ProductRuntimeHost::new(
+            Arc::new(StubPlatform {
+                product_subtree_denied: true,
+                ..Default::default()
+            }),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        // Session without a cached subtree: resolving it must reach the
+        // Account Holder, which is the one point the consent prompt fires.
+        host.test_session_state().set_session(sso_session_info());
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let err = futures::executor::block_on(host.get_account(&CallContext::default(), request))
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CallError::Domain(HostAccountGetError::V1(v01::HostAccountGetError::Rejected))
+        ));
+    }
+
+    #[test]
+    fn get_account_own_product_skips_the_prompt_when_the_subtree_is_cached() {
+        // denied would reject if the prompt fired; a warm cache must not prompt.
+        let host = ProductRuntimeHost::new(
+            Arc::new(StubPlatform {
+                product_subtree_denied: true,
+                ..Default::default()
+            }),
+            runtime_config("myapp.dot"),
+            test_spawner(),
+        );
+        install_pairing_session(&host, sso_session_info());
+        let request = HostAccountGetRequest::V1(v01::HostAccountGetRequest {
+            product_account_id: account_id("myapp.dot", 0),
+        });
+
+        let response =
+            futures::executor::block_on(host.get_account(&CallContext::default(), request))
+                .expect("a cached subtree resolves without prompting");
+        let HostAccountGetResponse::V1(inner) = response;
+        assert_eq!(
+            inner.account.public_key,
+            test_product_account_public("myapp.dot", 0).to_vec()
+        );
+    }
+
+    #[test]
+    fn remote_authority_call_bounds_a_call_that_never_unwinds() {
+        let mut cx = CallContext::default();
+        cx.set_timeout(Duration::from_millis(1));
+        // A call that never completes and never observes the token, standing in
+        // for one parked in the un-cancellable statement-store setup. The old
+        // code awaited it after cancelling and hung; it must now be dropped at
+        // the grace and return a bounded timeout.
+        let call = futures::future::pending::<Result<(), AuthorityError>>();
+
+        let err = futures::executor::block_on(remote_authority_call(&cx, call))
+            .expect_err("a never-unwinding call is bounded by the deadline plus grace");
+
+        assert!(matches!(err, AuthorityError::Cancelled(_)));
     }
 
     #[test]
@@ -6235,7 +7054,7 @@ mod tests {
             1
         );
         let message = submitted_remote_message(&platform, &session);
-        assert_eq!(message.message_id, "truapi:sso:disconnect");
+        assert_eq!(message.message_id.len(), 8, "opaque nanoid message id");
         assert!(matches!(
             message.data,
             RemoteMessageData::V1(v1::RemoteMessage::Disconnected)

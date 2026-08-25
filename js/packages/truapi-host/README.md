@@ -79,6 +79,91 @@ this ships the full 1.4 MB `.wasm` where about 600 kB (gzip) or 470 kB (brotli)
 would do — and a server configured with `gzip_static` but no dynamic `gzip on`
 has no fallback.
 
+## Optional capabilities
+
+`HostCallbacks` groups are required except those listed on the Rust
+`OptionalPlatform` super-trait, which are emitted as optional members. Omit one
+and the core answers its product calls with `Unsupported`; supply it and the
+whole group must be implemented:
+
+```ts
+const callbacks: HostCallbacks = {
+  navigation,
+  notifications,
+  // ...required groups...
+  chat, // optional: leave it out and chat products get `Unsupported`
+};
+```
+
+Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
+reported to the worker in its `init` message, so the core sees the same
+capability set on both sides of the boundary.
+
+### Custom chat messages
+
+A host that serves `chat` can also draw product-authored custom messages and
+send back what the user does with them. Both live on the product provider and
+are present only on runtimes holding a live channel to the core:
+
+```ts
+const stop = provider.renderCustomMessage!(
+  { messageId, messageType, payload },
+  {
+    onUpdate: (node) => setTree(node), // complete replacement tree each time
+    onComplete: () => setTree(null),
+    onError: (error) => console.warn(error),
+  },
+);
+
+// A button inside the rendered tree was tapped:
+await provider.publishChatAction!({
+  roomId,
+  peer: productId,
+  payload: { tag: "ActionTriggered", value: { messageId, actionId, payload } },
+});
+
+stop(); // stop rendering; safe to call more than once
+```
+
+`renderCustomMessage` reports failure through `onError` rather than throwing, so
+one dead render cannot take the surrounding message list with it. Exactly one
+terminal fires per render: `onComplete` means the last tree delivered stands,
+`onError` means it is partial and must not be shown as final. A product that
+declines the render, a tree that fails to decode, a closed connection, and a
+throwing renderer all arrive as `onError`. Both entry points sit behind the same
+access policy as every other Chat call: a connection that is not a `Worker`
+execution with a live session is refused.
+
+## Product account addresses
+
+A host that stores the core's `ProductSubtree` slot can name the account a
+review will sign with, so the review can carry an address and a fee rather than
+a bare derivation path. Both calls are pure and need no runtime or session, so
+`default()` alone is enough:
+
+```ts
+import init, {
+  deriveProductAccountPublicKey,
+  productAccountAddress,
+} from "@parity/truapi-host/wasm/web";
+import { DerivationIndex } from "@parity/truapi";
+
+await init();
+
+// `subtreePublicKey` is the 32 bytes read from the host's own
+// `ProductSubtree { sessionId, productId }` slot.
+const publicKey = deriveProductAccountPublicKey(
+  subtreePublicKey,
+  DerivationIndex.enc(account.derivationIndex),
+);
+const address = productAccountAddress(publicKey);
+```
+
+The index crosses as a SCALE-encoded `DerivationIndex`, the same value a review
+already carries, so the 32-byte chain code behind it stays core-owned and a host
+never reconstructs it. `productAccountAddress` applies the prefix host-spec C.6
+fixes, rather than leaving each host to choose one.
+
 ## Generated WASM artefacts
 
 The ignored bundle under `dist/wasm/web/` is built with host-owned chain access.

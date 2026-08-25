@@ -1942,8 +1942,8 @@ public func FfiConverterTypeHostCallbacks_lower(_ value: HostCallbacks) -> UInt6
  * Native Chat storage and UI adapter. Hosts that support the Chat modality
  * pass an implementation to
  * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
- * simply pass `None`. Callbacks run inline on the dispatcher thread and must
- * return promptly without blocking.
+ * simply pass `None`. Callbacks run inline on the process-wide dispatch pool
+ * shared by every product execution, so one that blocks stalls the others.
  */
 public protocol NativeChatCallbacks: AnyObject, Sendable {
 
@@ -1953,14 +1953,20 @@ public protocol NativeChatCallbacks: AnyObject, Sendable {
     func createRoom(roomId: String, name: String, icon: String) throws  -> ChatRoomRegistrationStatus
 
     /**
-     * Persist a text message in native Chat storage.
+     * Register or resolve a native product Chat bot.
      */
-    func postTextMessage(roomId: String, text: String) throws  -> String
+    func registerBot(botId: String, name: String, icon: String) throws  -> ChatBotRegistrationStatus
 
     /**
-     * Persist a custom message in native Chat storage.
+     * Persist a product-authored message in native Chat storage. A host that
+     * cannot render a given content variant returns a rejection for it.
+     *
+     * The returned id is what [`ActionTrigger::message_id`] carries back, so
+     * it must name this message for as long as the host stores it.
+     *
+     * [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
      */
-    func postCustomMessage(roomId: String, messageType: String, payload: Data) throws  -> String
+    func postMessage(roomId: String, content: ChatMessageContent) throws  -> String
 
     /**
      * Return the current product-scoped native Chat room list.
@@ -1972,8 +1978,8 @@ public protocol NativeChatCallbacks: AnyObject, Sendable {
  * Native Chat storage and UI adapter. Hosts that support the Chat modality
  * pass an implementation to
  * [`NativeTrUApiHostRuntime::open_product_execution`]; hosts that do not
- * simply pass `None`. Callbacks run inline on the dispatcher thread and must
- * return promptly without blocking.
+ * simply pass `None`. Callbacks run inline on the process-wide dispatch pool
+ * shared by every product execution, so one that blocks stalls the others.
  */
 open class NativeChatCallbacksImpl: NativeChatCallbacks, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -2044,30 +2050,36 @@ open func createRoom(roomId: String, name: String, icon: String)throws  -> ChatR
 }
 
     /**
-     * Persist a text message in native Chat storage.
+     * Register or resolve a native product Chat bot.
      */
-open func postTextMessage(roomId: String, text: String)throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+open func registerBot(botId: String, name: String, icon: String)throws  -> ChatBotRegistrationStatus  {
+    return try  FfiConverterTypeChatBotRegistrationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativechatcallbacks_post_text_message(
+    uniffi_truapi_server_fn_method_nativechatcallbacks_register_bot(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(roomId),
-        FfiConverterString.lower(text),uniffiCallStatus
+        FfiConverterString.lower(botId),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(icon),uniffiCallStatus
     )
 })
 }
 
     /**
-     * Persist a custom message in native Chat storage.
+     * Persist a product-authored message in native Chat storage. A host that
+     * cannot render a given content variant returns a rejection for it.
+     *
+     * The returned id is what [`ActionTrigger::message_id`] carries back, so
+     * it must name this message for as long as the host stores it.
+     *
+     * [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
      */
-open func postCustomMessage(roomId: String, messageType: String, payload: Data)throws  -> String  {
+open func postMessage(roomId: String, content: ChatMessageContent)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativechatcallbacks_post_custom_message(
+    uniffi_truapi_server_fn_method_nativechatcallbacks_post_message(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(roomId),
-        FfiConverterString.lower(messageType),
-        FfiConverterData.lower(payload),uniffiCallStatus
+        FfiConverterTypeChatMessageContent_lower(content),uniffiCallStatus
     )
 })
 }
@@ -2141,26 +2153,28 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
                 lowerError: FfiConverterTypeHostRejection_lower
             )
         },
-        postTextMessage: { (
+        registerBot: { (
             uniffiHandle: UInt64,
-            roomId: RustBuffer,
-            text: RustBuffer,
+            botId: RustBuffer,
+            name: RustBuffer,
+            icon: RustBuffer,
             uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
             let makeCall = {
-                () throws -> String in
+                () throws -> ChatBotRegistrationStatus in
                 guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return try uniffiObj.postTextMessage(
-                     roomId: try FfiConverterString.lift(roomId),
-                     text: try FfiConverterString.lift(text)
+                return try uniffiObj.registerBot(
+                     botId: try FfiConverterString.lift(botId),
+                     name: try FfiConverterString.lift(name),
+                     icon: try FfiConverterString.lift(icon)
                 )
             }
 
 
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
+            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeChatBotRegistrationStatus_lower($0) }
             uniffiTraitInterfaceCallWithError(
                 callStatus: uniffiCallStatus,
                 makeCall: makeCall,
@@ -2168,11 +2182,10 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
                 lowerError: FfiConverterTypeHostRejection_lower
             )
         },
-        postCustomMessage: { (
+        postMessage: { (
             uniffiHandle: UInt64,
             roomId: RustBuffer,
-            messageType: RustBuffer,
-            payload: RustBuffer,
+            content: RustBuffer,
             uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -2181,10 +2194,9 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
                 guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return try uniffiObj.postCustomMessage(
+                return try uniffiObj.postMessage(
                      roomId: try FfiConverterString.lift(roomId),
-                     messageType: try FfiConverterString.lift(messageType),
-                     payload: try FfiConverterData.lift(payload)
+                     content: try FfiConverterTypeChatMessageContent_lift(content)
                 )
             }
 
@@ -2433,6 +2445,12 @@ public func FfiConverterTypeNativeCustomRendererSubscription_lower(_ value: Nati
 public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
 
     /**
+     * Read this device's X25519 encryption secret, for device sync against a
+     * peer's `deviceEncPublicKey`. Generated and persisted on first read.
+     */
+    func deviceEncryptionKey() throws  -> Bytes32
+
+    /**
      * Notify this execution's chain adapter that a connection closed.
      */
     func notifyChainClosed(connectionId: UInt32)
@@ -2463,6 +2481,14 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
+     * Resolve a product's hard-subtree public key for hosts naming the account
+     * a review will sign with. Answers from the cache, the persisted slot, or
+     * the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+     * an error; `None` means no active session.
+     */
+    func productSubtreePublicKey(productId: String, timeoutMs: UInt32?) throws  -> Bytes32?
+
+    /**
      * Publish one native Chat action, buffering it until the product
      * connection subscribes.
      */
@@ -2472,6 +2498,12 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
      * Request typed native UI for one stored custom Chat message.
      */
     func renderCustomMessage(messageId: String, messageType: String, payload: Data, observer: NativeCustomRendererObserver) throws  -> NativeCustomRendererSubscription
+
+    /**
+     * Read the active session's X25519 chat identity private key, or `None`
+     * when no session is active.
+     */
+    func sessionChatIdentityKey() throws  -> Bytes32?
 
     /**
      * Update a product-scoped permission authorization.
@@ -2555,6 +2587,19 @@ open class NativeProductExecution: NativeProductExecutionProtocol, @unchecked Se
 
 
     /**
+     * Read this device's X25519 encryption secret, for device sync against a
+     * peer's `deviceEncPublicKey`. Generated and persisted on first read.
+     */
+open func deviceEncryptionKey()throws  -> Bytes32  {
+    return try  FfiConverterTypeBytes32_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_device_encryption_key(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * Notify this execution's chain adapter that a connection closed.
      */
 open func notifyChainClosed(connectionId: UInt32)  {try! rustCall() {
@@ -2630,6 +2675,23 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
 }
 
     /**
+     * Resolve a product's hard-subtree public key for hosts naming the account
+     * a review will sign with. Answers from the cache, the persisted slot, or
+     * the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+     * an error; `None` means no active session.
+     */
+open func productSubtreePublicKey(productId: String, timeoutMs: UInt32?)throws  -> Bytes32?  {
+    return try  FfiConverterOptionTypeBytes32.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_product_subtree_public_key(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(productId),
+        FfiConverterOptionUInt32.lower(timeoutMs),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * Publish one native Chat action, buffering it until the product
      * connection subscribes.
      */
@@ -2654,6 +2716,19 @@ open func renderCustomMessage(messageId: String, messageType: String, payload: D
         FfiConverterString.lower(messageType),
         FfiConverterData.lower(payload),
         FfiConverterCallbackInterfaceNativeCustomRendererObserver_lower(observer),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Read the active session's X25519 chat identity private key, or `None`
+     * when no session is active.
+     */
+open func sessionChatIdentityKey()throws  -> Bytes32?  {
+    return try  FfiConverterOptionTypeBytes32.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_session_chat_identity_key(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -2796,6 +2871,17 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * the host's main/UI thread.
      */
     func disconnect()
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
 
     /**
      * The in-process loop's own cadence, capped at an hour. An allowance stays
@@ -3049,6 +3135,24 @@ open func disconnect()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -3361,6 +3465,30 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func disconnect()
 
     /**
+     * Answer one decrypted SSO remote message from a wallet-managed
+     * statement-store session.
+     *
+     * `message` is one SCALE-encoded `RemoteMessage` exactly as decrypted from
+     * the session statement. The bytes are deliberately opaque at this
+     * boundary: the wallet forwards wire encodings verbatim and never
+     * constructs them. Session control and transport stay with the wallet —
+     * `Disconnected` is reported, never handled here. Confirmation-gated
+     * requests await `confirm_user_action`, so this can take arbitrarily long.
+     */
+    func handleSsoRequest(message: Data) async throws  -> SsoRequestOutcome
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
+
+    /**
      * The in-process loop's own cadence: at most an hour, tightening to land
      * just after the next period boundary.
      *
@@ -3389,6 +3517,15 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
      * Chat modality pass `None`.
      */
     func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeChatCallbacks?, executionConfig: NativeProductExecutionConfig) throws  -> NativeProductExecution
+
+    /**
+     * Build the SCALE-encoded `Disconnected` message a wallet posts over a
+     * session it is ending. Each call carries a fresh opaque message id,
+     * like every outgoing SSO message; receivers detect disconnect by
+     * message variant, not id. Posting and record cleanup stay with the
+     * wallet.
+     */
+    func prepareDisconnectRequest()  -> Data
 
     /**
      * Run one renewal pass now and report what each tracked target got.
@@ -3518,6 +3655,51 @@ open func disconnect()  {try! rustCall() {
 }
 
     /**
+     * Answer one decrypted SSO remote message from a wallet-managed
+     * statement-store session.
+     *
+     * `message` is one SCALE-encoded `RemoteMessage` exactly as decrypted from
+     * the session statement. The bytes are deliberately opaque at this
+     * boundary: the wallet forwards wire encodings verbatim and never
+     * constructs them. Session control and transport stay with the wallet —
+     * `Disconnected` is reported, never handled here. Confirmation-gated
+     * requests await `confirm_user_action`, so this can take arbitrarily long.
+     */
+open func handleSsoRequest(message: Data)async throws  -> SsoRequestOutcome  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_nativetruapihostruntime_handle_sso_request(
+                        self.uniffiCloneHandle(),FfiConverterData.lower(message)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeSsoRequestOutcome_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
+}
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * The in-process loop's own cadence: at most an hour, tightening to land
      * just after the next period boundary.
      *
@@ -3575,6 +3757,22 @@ open func openProductExecution(callbacks: HostCallbacks, chatCallbacks: NativeCh
         FfiConverterTypeHostCallbacks_lower(callbacks),
         FfiConverterOptionTypeNativeChatCallbacks.lower(chatCallbacks),
         FfiConverterTypeNativeProductExecutionConfig_lower(executionConfig),uniffiCallStatus
+    )
+})
+}
+
+    /**
+     * Build the SCALE-encoded `Disconnected` message a wallet posts over a
+     * session it is ending. Each call carries a fresh opaque message id,
+     * like every outgoing SSO message; receivers detect disconnect by
+     * message variant, not id. Posting and record cleanup stay with the
+     * wallet.
+     */
+open func prepareDisconnectRequest() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_prepare_disconnect_request(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -5336,6 +5534,105 @@ public func FfiConverterTypeProductRuntimeError_lower(_ value: ProductRuntimeErr
 
 
 /**
+ * FFI projection of the canonical
+ * [`SsoRequestOutcome`](crate::host_logic::sso::messages::SsoRequestOutcome),
+ * concrete because UniFFI cannot export generics.
+ *
+ * Variants carry SCALE-encoded wire bytes rather than decoded Rust types because
+ * the wallet forwards encodings verbatim and never constructs them — the opaque
+ * bytes are the correct boundary representation here.
+ */
+
+public enum SsoRequestOutcome: Equatable, Hashable {
+
+    /**
+     * SCALE-encoded response to post back over the session.
+     */
+    case response(
+        /**
+         * SCALE-encoded `RemoteMessage` response ready to submit over the
+         * session statement store.
+         */message: Data
+    )
+    /**
+     * The peer ended the session; the wallet tears down its transport and
+     * records (host entry, device record, device-removed broadcast).
+     */
+    case disconnected
+    /**
+     * Not a request; nothing to post.
+     */
+    case ignored
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SsoRequestOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSsoRequestOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = SsoRequestOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SsoRequestOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .response(message: try FfiConverterData.read(from: &buf)
+        )
+
+        case 2: return .disconnected
+
+        case 3: return .ignored
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SsoRequestOutcome, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case let .response(message):
+            writeInt(&buf, Int32(1))
+            FfiConverterData.write(message, into: &buf)
+
+
+        case .disconnected:
+            writeInt(&buf, Int32(2))
+
+
+        case .ignored:
+            writeInt(&buf, Int32(3))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSsoRequestOutcome_lift(_ buf: RustBuffer) throws -> SsoRequestOutcome {
+    return try FfiConverterTypeSsoRequestOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSsoRequestOutcome_lower(_ value: SsoRequestOutcome) -> RustBuffer {
+    return FfiConverterTypeSsoRequestOutcome.lower(value)
+}
+
+
+
+/**
  * Outcome of renewing one target.
  */
 
@@ -5557,9 +5854,16 @@ public protocol NativeCustomRendererObserver: AnyObject, Sendable {
     func onUpdate(node: CustomRendererNode)
 
     /**
-     * Report that the renderer stream ended.
+     * Report that the renderer stream ended without drawing further trees.
+     * The last tree delivered stands.
      */
     func onComplete()
+
+    /**
+     * Report that the product could not serve this render. The last tree
+     * delivered, if any, is partial and must not be treated as final.
+     */
+    func onError(reason: String)
 
 }
 
@@ -5621,6 +5925,30 @@ fileprivate struct UniffiCallbackInterfaceNativeCustomRendererObserver {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onComplete(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onError: { (
+            uniffiHandle: UInt64,
+            reason: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onError(
+                     reason: try FfiConverterString.lift(reason)
                 )
             }
 
@@ -5826,6 +6154,54 @@ fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffe
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeProductAccountId.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeStatementRenewalReport: FfiConverterRustBuffer {
+    typealias SwiftType = StatementRenewalReport?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeStatementRenewalReport.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeStatementRenewalReport.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeBytes32: FfiConverterRustBuffer {
+    typealias SwiftType = Bytes32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeBytes32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeBytes32.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -6208,13 +6584,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_text_message() != 10747) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_register_bot() != 59357) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_custom_message() != 33405) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_message() != 56893) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 21374) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_device_encryption_key() != 18707) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_chain_closed() != 59343) {
@@ -6235,10 +6614,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_product_subtree_public_key() != 63238) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 31503) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_render_custom_message() != 17716) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_session_chat_identity_key() != 3903) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_set_permission_authorization_status() != 14164) {
@@ -6260,6 +6645,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_last_statement_renewal_report() != 25210) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 13069) {
@@ -6316,6 +6704,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_disconnect() != 38487) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_handle_sso_request() != 21060) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_last_statement_renewal_report() != 40119) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 33452) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6326,6 +6720,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_open_product_execution() != 49537) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_prepare_disconnect_request() != 17252) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_renew_statement_allowances() != 11225) {
@@ -6349,7 +6746,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_update() != 1079) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 43817) {
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 32694) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_error() != 21230) {
         return InitializationResult.apiChecksumMismatch
     }
 

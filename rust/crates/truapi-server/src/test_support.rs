@@ -29,9 +29,9 @@ use truapi_platform::{
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
     JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
     PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
-    ProductContext, ProductStorage as PlatformProductStorage, ResourceAllocationReview,
-    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    ProductContext, ProductStorage as PlatformProductStorage, ProductSubtreeReview,
+    ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -77,6 +77,10 @@ pub(crate) struct StubPlatform {
     pub(crate) account_access_confirmed: bool,
     pub(crate) account_access_error: Option<&'static str>,
     pub(crate) account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
+    /// Inverted so the derived default (`false`) approves, matching the
+    /// pre-consent behavior where a cold own-account resolve was not gated.
+    pub(crate) product_subtree_denied: bool,
+    pub(crate) product_subtree_reviews: Arc<Mutex<Vec<ProductSubtreeReview>>>,
     pub(crate) identity_disclosure_confirmed: bool,
     pub(crate) identity_disclosure_error: Option<&'static str>,
     pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
@@ -208,6 +212,7 @@ pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductCon
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),
@@ -234,6 +239,8 @@ pub(crate) fn session_info() -> crate::host_logic::session::SessionInfo {
             0xb8, 0xf5, 0x81, 0xaa, 0x99, 0xe3, 0x49, 0x3b, 0xf4, 0x96, 0xed, 0xf1, 0x51, 0xab,
             0xc1, 0xd7, 0x20, 0x23,
         ]),
+        identity_chat_private_key: None,
+        device_enc_public_key: None,
         lite_username: Some("alice".to_string()),
         full_username: Some("Alice Smith".to_string()),
     }
@@ -531,6 +538,13 @@ pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) ->
     )
 }
 
+/// Wallet device X25519 public key distinct from the persistent SSO key, so
+/// tests catch a session that keys device-scoped material off the SSO channel
+/// key by mistake.
+pub(crate) fn wallet_device_encryption_public_key() -> [u8; 32] {
+    pairing::x25519_public_key([9; 32])
+}
+
 fn wallet_handshake_success() -> pairing::v2::Success {
     let wallet_persistent_secret = X25519SecretKey::from([2; 32]);
     let wallet_persistent_public = X25519PublicKey::from(&wallet_persistent_secret).to_bytes();
@@ -539,7 +553,7 @@ fn wallet_handshake_success() -> pairing::v2::Success {
         root_account_id: session_info().public_key,
         identity_chat_private_key: [0x77; 32],
         sso_enc_pub_key: wallet_persistent_public,
-        device_enc_pub_key: wallet_persistent_public,
+        device_enc_pub_key: wallet_device_encryption_public_key(),
         root_entropy_source: [0x66; 32],
     }
 }
@@ -1462,6 +1476,13 @@ impl UserConfirmation for StubPlatform {
                 )
             }
             UserConfirmationReview::PreimageSubmit(_) => (None, true),
+            UserConfirmationReview::ProductSubtree(review) => {
+                self.product_subtree_reviews
+                    .lock()
+                    .expect("product subtree review list mutex poisoned")
+                    .push(review);
+                (None, !self.product_subtree_denied)
+            }
         };
         if let Some(reason) = error {
             return Err(v01::GenericError {

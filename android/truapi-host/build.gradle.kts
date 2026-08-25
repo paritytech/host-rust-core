@@ -56,8 +56,10 @@ android {
 dependencies {
     // UniFFI Kotlin bindings use JNA for FFI.
     api("net.java.dev.jna:jna:5.14.0@aar")
-    // UniFFI async functions and callbacks use cancellable continuations and jobs.
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    // UniFFI async functions and callbacks use cancellable continuations and
+    // jobs, and `TrUAPIProductExecution.renderCustomMessage` returns a `Flow`,
+    // so consumers compile against this.
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 
 // Coordinates for the local Maven publication (`publishToMavenLocal`).
@@ -91,17 +93,17 @@ publishing {
                         "`libtruapi_server` cdylib and route product traffic " +
                         "through the localhost WebSocket bridge."
                 )
-                url.set("https://github.com/paritytech/truapi")
+                url.set("https://github.com/paritytech/host-rust-core")
                 licenses {
                     license {
                         name.set("MIT")
-                        url.set("https://github.com/paritytech/truapi/blob/main/LICENSE")
+                        url.set("https://github.com/paritytech/host-rust-core/blob/main/LICENSE")
                     }
                 }
                 scm {
-                    connection.set("scm:git:https://github.com/paritytech/truapi.git")
-                    developerConnection.set("scm:git:ssh://git@github.com/paritytech/truapi.git")
-                    url.set("https://github.com/paritytech/truapi")
+                    connection.set("scm:git:https://github.com/paritytech/host-rust-core.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/paritytech/host-rust-core.git")
+                    url.set("https://github.com/paritytech/host-rust-core")
                 }
                 developers {
                     developer {

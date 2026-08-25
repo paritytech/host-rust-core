@@ -8,7 +8,6 @@ use truapi::Subscription;
 use truapi::versioned::chat::HostChatActionSubscribeItem;
 
 use crate::host_core::ProductRuntimeError;
-#[cfg(any(test, not(target_arch = "wasm32")))]
 const ACTION_BUFFER_CAPACITY: usize = 64;
 
 /// Chat access policy shared by the wire runtime and the native entrypoints:
@@ -19,7 +18,7 @@ pub(crate) fn chat_platform_for(
     has_session: bool,
     chat: Option<&Arc<dyn truapi_platform::ChatPlatform>>,
 ) -> Result<Arc<dyn truapi_platform::ChatPlatform>, ProductRuntimeError> {
-    if execution_kind != truapi_platform::ProductExecutionKind::Chat || !has_session {
+    if execution_kind != truapi_platform::ProductExecutionKind::Worker || !has_session {
         return Err(ProductRuntimeError::Denied);
     }
     chat.cloned().ok_or(ProductRuntimeError::Unsupported)
@@ -59,8 +58,8 @@ impl ChatConnection {
         Subscription::new(Box::pin(receiver))
     }
 
-    /// Publish one native action, buffering it until the product subscribes.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    /// Publish one host-authored action, buffering it until the product
+    /// subscribes.
     pub(crate) fn publish_action(
         &self,
         mut action: HostChatActionSubscribeItem,

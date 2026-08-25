@@ -13,55 +13,125 @@ pub enum Network {
     #[value(name = "paseo-next-v2")]
     #[default]
     PaseoNextV2,
+    /// Named for the id the playground and dotli already use for this network
+    /// (`VITE_NETWORKS=paseo-next-v2,previewnet`), so `HostChainSet::network`
+    /// reads the same string a product sees everywhere else.
+    #[value(name = "previewnet")]
+    Previewnet,
 }
 
+/// Env var overriding the identity backend base URL for every command. The URL
+/// includes `/api/v1`, for instance a local backend at
+/// `http://localhost:8080/api/v1`. Chain endpoints stay on the preset.
+pub const IDENTITY_BACKEND_BASE_ENV: &str = "HOST_CLI_IDENTITY_BACKEND_BASE";
+
 impl Network {
+    /// Preset resolved with any environment overrides applied.
     pub fn config(self) -> NetworkConfig {
+        apply_backend_override(self.preset(), std::env::var(IDENTITY_BACKEND_BASE_ENV).ok())
+    }
+
+    /// The unmodified preset values.
+    fn preset(self) -> NetworkConfig {
         match self {
             Self::PaseoNextV2 => NetworkConfig {
                 id: "paseo-next-v2",
-                identity_backend_base: "https://identity-backend-next.parity-testnet.parity.io/api/v1",
-                people_ws: "wss://paseo-people-next-system-rpc.polkadot.io",
-                bulletin_ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
-                asset_hub_ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-                people_genesis: hex_literal_genesis(
-                    "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
-                ),
-                bulletin_genesis: hex_literal_genesis(
-                    "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
-                ),
-                asset_hub_genesis: hex_literal_genesis(
-                    "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
-                ),
+                identity_backend_base: "https://identity.dotspark.app/api/v1",
+                people_ws: PASEO_PEOPLE.ws,
+                bulletin_ws: PASEO_BULLETIN.ws,
+                asset_hub_ws: PASEO_ASSET_HUB.ws,
+                people_genesis: PASEO_PEOPLE.genesis,
+                bulletin_genesis: PASEO_BULLETIN.genesis,
+                asset_hub_genesis: PASEO_ASSET_HUB.genesis,
                 live_chain_endpoints: PASEO_NEXT_V2_CHAIN_ENDPOINTS,
+            },
+            Self::Previewnet => NetworkConfig {
+                id: "previewnet",
+                identity_backend_base: "https://identity-previewnet.dotspark.app/api/v1",
+                people_ws: PREVIEWNET_PEOPLE.ws,
+                bulletin_ws: PREVIEWNET_BULLETIN.ws,
+                asset_hub_ws: PREVIEWNET_ASSET_HUB.ws,
+                people_genesis: PREVIEWNET_PEOPLE.genesis,
+                bulletin_genesis: PREVIEWNET_BULLETIN.genesis,
+                asset_hub_genesis: PREVIEWNET_ASSET_HUB.genesis,
+                live_chain_endpoints: PREVIEWNET_CHAIN_ENDPOINTS,
             },
         }
     }
 }
 
-const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] = &[
-    ChainEndpoint {
-        genesis: hex_literal_genesis(
-            "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
-        ),
-        ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
-        required_for_host: true,
-    },
-    ChainEndpoint {
-        genesis: hex_literal_genesis(
-            "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
-        ),
-        ws: "wss://paseo-people-next-system-rpc.polkadot.io",
-        required_for_host: true,
-    },
-    ChainEndpoint {
-        genesis: hex_literal_genesis(
-            "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
-        ),
-        ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
-        required_for_host: true,
-    },
-];
+/// Replaces the preset's identity backend base with `base` when it carries a
+/// non-empty URL. Trailing slashes are stripped so path joins stay clean. The
+/// override string is leaked; the CLI reads it a handful of times per process.
+fn apply_backend_override(mut config: NetworkConfig, base: Option<String>) -> NetworkConfig {
+    if let Some(base) = base {
+        let trimmed = base.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            config.identity_backend_base = Box::leak(trimmed.to_string().into_boxed_str());
+        }
+    }
+    config
+}
+
+// Each chain is declared once and reused by both the preset fields and the
+// endpoint table. A genesis hash can therefore never drift from the URL it
+// routes to. Every route below is host-required: session identity (dotNS
+// usernames) resolves through Asset Hub, SSO through People, preimages through
+// Bulletin.
+
+const PASEO_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "23e730eb1c6fecae09c917439a5038cb6122d0d48980e8b9bbf0ff56f94a2ca6",
+    ),
+    ws: "wss://paseo-asset-hub-next-rpc.polkadot.io",
+    required_for_host: true,
+};
+
+const PASEO_PEOPLE: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f",
+    ),
+    ws: "wss://paseo-people-next-system-rpc.polkadot.io",
+    required_for_host: true,
+};
+
+const PASEO_BULLETIN: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "8cfe6717dc4becfda2e13c488a1e2061ff2dfee96e7d031157f72d36716c0a22",
+    ),
+    ws: "wss://paseo-bulletin-next-rpc.polkadot.io",
+    required_for_host: true,
+};
+
+const PREVIEWNET_ASSET_HUB: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659",
+    ),
+    ws: "wss://previewnet.substrate.dev/asset-hub",
+    required_for_host: true,
+};
+
+const PREVIEWNET_PEOPLE: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220",
+    ),
+    ws: "wss://previewnet.substrate.dev/people",
+    required_for_host: true,
+};
+
+const PREVIEWNET_BULLETIN: ChainEndpoint = ChainEndpoint {
+    genesis: hex_literal_genesis(
+        "1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89",
+    ),
+    ws: "wss://previewnet.substrate.dev/bulletin",
+    required_for_host: true,
+};
+
+const PASEO_NEXT_V2_CHAIN_ENDPOINTS: &[ChainEndpoint] =
+    &[PASEO_ASSET_HUB, PASEO_PEOPLE, PASEO_BULLETIN];
+
+const PREVIEWNET_CHAIN_ENDPOINTS: &[ChainEndpoint] =
+    &[PREVIEWNET_ASSET_HUB, PREVIEWNET_PEOPLE, PREVIEWNET_BULLETIN];
 
 /// Resolved RPC/backend/genesis values for one network preset.
 #[derive(Debug, Clone, Copy)]
@@ -255,18 +325,21 @@ mod tests {
     fn the_spec_genesis_table_matches_the_preset() {
         const SPEC: &str = include_str!("../SPEC.md");
 
-        let config = Network::PaseoNextV2.config();
-        for (row, expected) in [
-            ("People genesis", config.people_genesis),
-            ("Bulletin genesis", config.bulletin_genesis),
-            ("Asset Hub genesis", config.asset_hub_genesis),
-        ] {
-            let expected_row = format!("| {row} | `0x{}` |", hex::encode(expected));
-            assert!(
-                SPEC.contains(&expected_row),
-                "SPEC.md is missing the row `{expected_row}`; the table and the \
-                 preset have drifted"
-            );
+        for network in Network::value_variants() {
+            let config = network.config();
+            for (row, expected) in [
+                ("People genesis", config.people_genesis),
+                ("Bulletin genesis", config.bulletin_genesis),
+                ("Asset Hub genesis", config.asset_hub_genesis),
+            ] {
+                let expected_row = format!("| {row} | `0x{}` |", hex::encode(expected));
+                assert!(
+                    SPEC.contains(&expected_row),
+                    "SPEC.md is missing the row `{expected_row}` for {}; the table and \
+                     the preset have drifted",
+                    config.id
+                );
+            }
         }
     }
 
@@ -286,11 +359,24 @@ mod tests {
         const WELL_KNOWN_CHAINS: &str =
             include_str!("../../../../js/packages/truapi/src/well-known-chains.ts");
 
-        let config = Network::PaseoNextV2.config();
-        for (export, expected) in [
-            ("PASEO_NEXT_V2_INDIVIDUALITY", config.people_genesis),
-            ("PASEO_NEXT_V2_ASSET_HUB", config.asset_hub_genesis),
-        ] {
+        // Every preset needs its pair here: a product on previewnet signs
+        // `CheckGenesis` over the TypeScript constant just as one on nextv2 does.
+        let exports: Vec<(String, [u8; 32])> = Network::value_variants()
+            .iter()
+            .flat_map(|network| {
+                let config = network.config();
+                let prefix = match network {
+                    Network::PaseoNextV2 => "PASEO_NEXT_V2",
+                    Network::Previewnet => "PREVIEWNET",
+                };
+                [
+                    (format!("{prefix}_INDIVIDUALITY"), config.people_genesis),
+                    (format!("{prefix}_ASSET_HUB"), config.asset_hub_genesis),
+                ]
+            })
+            .collect();
+
+        for (export, expected) in &exports {
             let declaration = WELL_KNOWN_CHAINS
                 .split_once(&format!("export const {export} ="))
                 .unwrap_or_else(|| panic!("{export} is no longer exported"))
@@ -311,20 +397,40 @@ mod tests {
     /// store is only safe for disposable identities, so no preset may point at a
     /// production network. If this fails because a real network was added,
     /// rework the account store rather than relaxing the assertion.
+    /// Hosts a preset may route to. Every entry is a disposable test deployment:
+    /// `paseo`/`testnet` name the Paseo testnets,
+    /// `previewnet.substrate.dev` is the previewnet parachain set, and the two
+    /// exact dotSpark hosts are those test presets' identity backends.
+    ///
+    /// An allowlist rather than a substring rule, because the rule this test
+    /// exists for is "no production network", and a production host can contain
+    /// any substring. Adding a preset means adding its hosts here on purpose.
+    const TEST_NETWORK_MARKERS: &[&str] = &[
+        "paseo",
+        "testnet",
+        "previewnet.substrate.dev",
+        "identity.dotspark.app",
+        "identity-previewnet.dotspark.app",
+    ];
+
     #[test]
     fn every_preset_is_a_test_network() {
         for network in Network::value_variants() {
-            let config = network.config();
+            // Reading the raw preset. An exported backend override cannot leak in.
+            let config = network.preset();
             let mut routes = vec![
                 config.identity_backend_base,
                 config.people_ws,
                 config.bulletin_ws,
+                config.asset_hub_ws,
             ];
             routes.extend(config.live_chain_endpoints.iter().map(|chain| chain.ws));
 
             for route in routes {
                 assert!(
-                    route.contains("paseo") || route.contains("testnet"),
+                    TEST_NETWORK_MARKERS
+                        .iter()
+                        .any(|marker| route.contains(marker)),
                     "preset `{}` routes to a host that is not a recognised test \
                      network: {route}",
                     config.id,
@@ -404,15 +510,23 @@ mod tests {
                 checked += 1;
                 // The chain's own name has to name the role, or a role pointed at
                 // the wrong preset chain passes every other assertion here.
-                let expected_in_name = match entry.identifier {
-                    ChainIdentifier::People => "People",
-                    ChainIdentifier::Bulletin => "Bulletin",
-                    ChainIdentifier::AssetHub => "Asset Hub",
-                    ChainIdentifier::Relay => "Relay",
+                // Both spellings the People role answers to: Paseo's chain calls
+                // itself "People", previewnet's calls itself "Individuality
+                // Local", and `PASEO_NEXT_V2_INDIVIDUALITY` shows the two names
+                // are one role.
+                let expected_in_name: &[&str] = match entry.identifier {
+                    ChainIdentifier::People => &["People", "Individuality"],
+                    ChainIdentifier::Bulletin => &["Bulletin"],
+                    ChainIdentifier::AssetHub => &["Asset Hub"],
+                    ChainIdentifier::Relay => &["Relay"],
                 };
-                if !chain_name.contains(expected_in_name) {
+                if !expected_in_name
+                    .iter()
+                    .any(|expected| chain_name.contains(expected))
+                {
                     drifted.push(format!(
-                        "{} serves {:?} from {ws}, which calls itself {chain_name:?}",
+                        "{} serves {:?} from {ws}, which calls itself \
+                         {chain_name:?} and names none of {expected_in_name:?}",
                         config.id, entry.identifier
                     ));
                 } else if entry.genesis_hash == reported {
@@ -468,6 +582,24 @@ mod tests {
             checked, expected_checks,
             "every served role must be probed; anything else means the loop \
              skipped one and this test stopped covering it"
+        );
+    }
+
+    #[test]
+    fn backend_override_replaces_only_the_backend_base() {
+        let preset = Network::PaseoNextV2.preset();
+        let overridden =
+            apply_backend_override(preset, Some("http://localhost:8080/api/v1/".to_string()));
+
+        assert_eq!(
+            overridden.identity_backend_base, "http://localhost:8080/api/v1",
+            "trailing slash is stripped"
+        );
+        assert_eq!(overridden.asset_hub_ws, preset.asset_hub_ws);
+        assert_eq!(
+            apply_backend_override(preset, Some("  ".to_string())).identity_backend_base,
+            preset.identity_backend_base,
+            "a blank override keeps the preset"
         );
     }
 }

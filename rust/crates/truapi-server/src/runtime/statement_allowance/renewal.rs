@@ -9,6 +9,23 @@
 //! chain-pure pass: given already-resolved targets, register each for the
 //! requested period. Scheduling and target persistence live in
 //! `signing_host::allowance_renewal`.
+//!
+//! A host owns the schedule. The core answers when the next pass is due and what
+//! a pass achieved; it never asks to be woken, because the period arithmetic a
+//! host would need is derivable from the clock and the grace window leaves days
+//! of slack. Three layers cover it, and only the first needs the operating
+//! system: a scheduled wake for an app nobody opens, a pass on session
+//! activation for an app somebody does, and on-demand allocation, which covers
+//! the account of a product asking for an allowance but not the rest of the
+//! ledger.
+//!
+//! A caller reading [`StatementRenewalReport`] to answer an OS scheduler should
+//! treat every `Registered` or `AlreadyAllocated` as success, a `Failed` as worth
+//! retrying on the next opportunistic wake, and exhaustion as success: retrying
+//! cannot free a slot, only time or a replacement can. A host driving the loop
+//! instead reads the same report from `last_statement_renewal_report`, since the
+//! loop has no caller to return one to. The host READMEs under `ios/truapi-host`
+//! and `android/truapi-host` carry the platform-specific form of this.
 
 use std::time::Duration;
 
@@ -346,6 +363,7 @@ mod tests {
             transaction_version: 1,
             genesis_hash: [0xab; 32],
             nonce: 0,
+            restrict_origins: false,
         };
         let entropy = [0x11; 32];
         // One collection, so this stays a test of cross-target protection rather
