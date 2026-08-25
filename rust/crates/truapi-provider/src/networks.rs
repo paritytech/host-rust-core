@@ -76,22 +76,22 @@ const CATALOG: &[NetworkDef] = &[
     NetworkDef {
         name: "previewnet",
         relay: ChainDef {
-            genesis_hex: "0x8c27ddf678c2ae9bef0efebfc485a9309f3d735c6d3fbb8d947afc3ace0e80f4",
+            genesis_hex: "0xf534869782b0aafa6e02a66d8bae47c83fd0a7b854d55303ce574838c6c48a23",
             spec: include_str!("../networks/previewnet.json"),
             statement_protocol: false,
         },
         assethub: ChainDef {
-            genesis_hex: "0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210",
+            genesis_hex: "0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659",
             spec: include_str!("../networks/previewnet-asset-hub.json"),
             statement_protocol: false,
         },
         bulletin: ChainDef {
-            genesis_hex: "0x2778b1c94c4362e49a54be57d3056bc714f3712e4486625312704ffb74eb973d",
+            genesis_hex: "0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89",
             spec: include_str!("../networks/previewnet-bulletin.json"),
             statement_protocol: false,
         },
         people: ChainDef {
-            genesis_hex: "0x3138c6d4ce58c760047a413c2a930e919b4673a841ab4890de59aac3bd037f3d",
+            genesis_hex: "0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220",
             spec: include_str!("../networks/previewnet-people.json"),
             statement_protocol: true,
         },
