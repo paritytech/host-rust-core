@@ -4,11 +4,25 @@
 name: release-android
 
 on:
+  # release.yml calls this for a `release: @parity/android-host <version>`
+  # commit subject, so the release flow and a manual publish build the AAR
+  # exactly the same way.
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to publish"
+        required: true
+        type: string
+      ref:
+        description: "Commit to build, since a called workflow does not inherit the caller's checkout"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       version:
         description: "Version to publish (e.g. 0.1.0 or 0.1.0-rc.1)"
         required: true
+        type: string
   push:
     tags:
       - "truapi-host-android@*"
@@ -28,17 +42,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - name: Resolve version
         id: version
         env:
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+          if [ -n "${INPUT_VERSION}" ]; then
             echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
           elif [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
             echo "version=${GITHUB_REF_NAME#truapi-host-android@}" >> "$GITHUB_OUTPUT"

@@ -39,7 +39,8 @@ The consuming app must declare `android.permission.INTERNET` — the localhost W
 - **minSdk**: 29 (Android 10). Aligns with the polkadot-app-android-v2 floor.
 - **AGP**: built with 8.5.2; AGP 8.5+ consumers are fine. AAR is forward-compatible with newer AGPs.
 - **Kotlin**: built with 1.9.24. Newer Kotlin compilers (2.x) read 1.9 metadata fine.
-- **Transitive dependency**: the AAR pulls `net.java.dev.jna:jna:5.14.0` (UniFFI's runtime). Consumers that don't already use JNA will see ~1.5MB added to their app.
+- **Transitive dependencies**: `net.java.dev.jna:jna:5.14.0` (UniFFI's runtime, ~1.5MB for consumers that don't already use it), `org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0` and `org.jetbrains.kotlin:kotlin-stdlib:1.9.24`.
+- **Size**: the AAR is ~20MB, one `libtruapi_server.so` per ABI. An app bundle ships only the ABI the device needs, so the installed cost is ~9MB on arm64.
 
 ## Public surface
 
@@ -396,10 +397,11 @@ or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi-server`
 
 ## Maintainers: cutting a release
 
-Releases are built and published by `.github/workflows/release-android.yml`:
+Include `@parity/android-host <version>` in the `release:` PR title, the same flow the npm packages and the iOS host use. On merge, `release.yml` calls `release-android.yml` for the release commit, which cross-compiles the cdylib for all three ABIs, regenerates the Kotlin bindings via the `codegen` cargo profile, and publishes `io.parity:truapi-host-android:<version>` to GitHub Packages.
 
-1. Tag the commit to release: `git tag truapi-host-android@0.1.0 && git push origin truapi-host-android@0.1.0` (or run the `release-android` workflow manually with a version input).
-2. The workflow cross-compiles the cdylib for all three ABIs, regenerates the Kotlin bindings via the `codegen` cargo profile, and publishes `io.parity:truapi-host-android:<version>` to GitHub Packages.
+Two other paths reach the same workflow, for publishes outside a release: a `truapi-host-android@<version>` tag push, and a manual `release-android` run with a version input.
+
+The version lives only in the release subject or the tag. Nothing in the tree records it, so there is no committed version to keep in sync.
 
 For local development, publish into `~/.m2`:
 
