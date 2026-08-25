@@ -53,6 +53,7 @@ fn runtime_config() -> PairingHostConfig {
         },
         [0xa2; 32],
         [0xbb; 32],
+        [0xcc; 32],
         "polkadotapp".to_string(),
     )
     .expect("test runtime config is valid")

@@ -1703,6 +1703,46 @@ pub(crate) async fn wait_for_chain_head_storage_value(
     }
 }
 
+/// Waits for one runtime-API call operation's output from a
+/// `chainHead_v1_follow` stream.
+pub(crate) async fn wait_for_chain_head_call_output(
+    follow: &mut BoxStream<'static, RemoteChainHeadFollowItem>,
+    operation_id: &str,
+    label: &'static str,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let timeout = futures_timer::Delay::new(timeout).fuse();
+    pin_mut!(timeout);
+    loop {
+        let next = follow.next().fuse();
+        pin_mut!(next);
+        futures::select! {
+            item = next => match item {
+                Some(RemoteChainHeadFollowItem::OperationCallDone { operation_id: item_operation_id, output })
+                    if item_operation_id == operation_id =>
+                {
+                    return Ok(output);
+                }
+                Some(RemoteChainHeadFollowItem::OperationInaccessible { operation_id: item_operation_id })
+                    if item_operation_id == operation_id =>
+                {
+                    return Err(format!("{label} runtime call was inaccessible"));
+                }
+                Some(RemoteChainHeadFollowItem::OperationError { operation_id: item_operation_id, error })
+                    if item_operation_id == operation_id =>
+                {
+                    return Err(error);
+                }
+                Some(RemoteChainHeadFollowItem::Stop) | None => {
+                    return Err(format!("{label} follow stopped during runtime call"));
+                }
+                _ => {}
+            },
+            () = timeout => return Err(format!("{label} runtime call timed out")),
+        }
+    }
+}
+
 #[cfg(test)]
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     hex::decode(value.strip_prefix("0x").unwrap_or(value)).map_err(|_| "invalid hex".to_string())

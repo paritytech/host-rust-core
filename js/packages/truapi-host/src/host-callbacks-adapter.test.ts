@@ -242,6 +242,8 @@ describe("createWasmRawCallbacks", () => {
                   review.value.size,
                 ]);
                 return review.value.size === 42n;
+              default:
+                return false;
             }
           },
         },
@@ -255,8 +257,11 @@ describe("createWasmRawCallbacks", () => {
     );
 
     const preimageEvents: (number[] | null)[] = [];
-    const disposePreimages = raw.lookupPreimage!(new Uint8Array([9]), (value) =>
-      preimageEvents.push(value ? [...value] : null),
+    const preimageErrors: string[] = [];
+    const disposePreimages = raw.lookupPreimage!(
+      new Uint8Array([9]),
+      (value) => preimageEvents.push(value ? [...value] : null),
+      (error) => preimageErrors.push(error.reason),
     );
 
     raw.authStateChanged?.(
@@ -360,6 +365,7 @@ describe("createWasmRawCallbacks", () => {
         UserConfirmationReview.enc({
           tag: "ResourceAllocation",
           value: {
+            callingProductId: "playground.dot",
             resources: [{ tag: "StatementStoreAllowance" }],
           },
         }),
@@ -395,6 +401,7 @@ describe("createWasmRawCallbacks", () => {
     const raw = createWasmRawCallbacks(makeHostCallbacks());
 
     expect(raw.createChatRoom).toBeUndefined();
+    expect(raw.registerChatBot).toBeUndefined();
     expect(raw.postChatMessage).toBeUndefined();
     expect(raw.subscribeChatRooms).toBeUndefined();
   });
@@ -414,9 +421,13 @@ describe("createWasmRawCallbacks", () => {
 
     const product = ProductContext.enc({
       productId: "chat.dot",
-      executionKind: "Chat",
+      executionKind: "Worker",
     });
-    const request = HostChatCreateRoomRequest.enc({ roomId: "room" });
+    const request = HostChatCreateRoomRequest.enc({
+      roomId: "room",
+      name: "Support",
+      icon: "",
+    });
     const response = await raw.createChatRoom!(product, request);
 
     expect(seen).toEqual(["chat.dot:room"]);
@@ -439,8 +450,10 @@ describe("createWasmRawCallbacks", () => {
       }),
     );
     const seen: HostThemeSubscribeItemValue[] = [];
-    const dispose = raw.subscribeTheme?.((theme) =>
-      seen.push(HostThemeSubscribeItem.dec(theme!)),
+    const themeErrors: string[] = [];
+    const dispose = raw.subscribeTheme?.(
+      (theme) => seen.push(HostThemeSubscribeItem.dec(theme!)),
+      (error) => themeErrors.push(error.reason),
     );
 
     await settle();
@@ -558,14 +571,15 @@ describe("ProductContext codec", () => {
   // ProductContext travels the wasm callback boundary encoded in Rust and
   // decoded here.
   it("product context encoding matches the Rust platform codec", () => {
-    expect([...ProductExecutionKind.enc("Spa")]).toEqual([0]);
-    expect([...ProductExecutionKind.enc("Chat")]).toEqual([1]);
+    expect([...ProductExecutionKind.enc("App")]).toEqual([0]);
+    expect([...ProductExecutionKind.enc("Widget")]).toEqual([1]);
+    expect([...ProductExecutionKind.enc("Worker")]).toEqual([2]);
 
-    const context = { productId: "app.dot", executionKind: "Chat" } as const;
+    const context = { productId: "app.dot", executionKind: "Worker" } as const;
     expect([...ProductContext.enc(context)]).toEqual([
       28,
       ...new TextEncoder().encode("app.dot"),
-      1,
+      2,
     ]);
     expect(ProductContext.dec(ProductContext.enc(context))).toEqual(context);
   });

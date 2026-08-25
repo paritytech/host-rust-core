@@ -4,10 +4,10 @@
 // Run via:
 //   scripts/battery.sh --chat-host
 //
-// which starts a signing host with `--execution-kind chat`, so the product
-// connection opens as a Chat execution and the CLI's in-memory chat host is
-// installed. Chat is denied to a Spa connection and to a host with no session,
-// so neither the generated Spa battery nor an in-process harness can reach
+// which starts a signing host with `--execution-kind worker`, so the product
+// connection opens as a Worker execution and the CLI's in-memory chat host is
+// installed. Chat is denied to an App connection and to a host with no session,
+// so neither the generated App battery nor an in-process harness can reach
 // this path: a live host is the only way to exercise it.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";

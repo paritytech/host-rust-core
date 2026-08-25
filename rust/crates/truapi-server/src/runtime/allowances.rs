@@ -211,7 +211,7 @@ fn sso_cache_key(session: &SessionInfo) -> Result<SsoSessionKey, AuthorityError>
     Ok(SsoSessionKey::from_session(sso))
 }
 
-fn session_storage_id(session: &SsoSessionInfo) -> String {
+pub(super) fn session_storage_id(session: &SsoSessionInfo) -> String {
     let mut bytes = Vec::with_capacity(64);
     bytes.extend_from_slice(&session.session_id_own);
     bytes.extend_from_slice(&session.session_id_peer);

@@ -252,7 +252,7 @@ typedef void (*UniffiCallbackInterfaceChainMessageListenerMethod0)(uint64_t, Rus
 #endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CHAIN_MESSAGE_LISTENER_METHOD1
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CHAIN_MESSAGE_LISTENER_METHOD1
-typedef void (*UniffiCallbackInterfaceChainMessageListenerMethod1)(uint64_t, void* _Nonnull, 
+typedef void (*UniffiCallbackInterfaceChainMessageListenerMethod1)(uint64_t, RustBuffer, void* _Nonnull, 
         RustCallStatus *_Nonnull uniffiCallStatus
     );
 
@@ -309,7 +309,7 @@ void uniffi_truapi_provider_fn_method_chainmessagelistener_on_message(uint64_t p
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_PROVIDER_FN_METHOD_CHAINMESSAGELISTENER_ON_CLOSED
 #define UNIFFI_FFIDEF_UNIFFI_TRUAPI_PROVIDER_FN_METHOD_CHAINMESSAGELISTENER_ON_CLOSED
-void uniffi_truapi_provider_fn_method_chainmessagelistener_on_closed(uint64_t ptr, RustCallStatus *_Nonnull out_status
+void uniffi_truapi_provider_fn_method_chainmessagelistener_on_closed(uint64_t ptr, RustBuffer reason, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TRUAPI_PROVIDER_FN_CLONE_CHAINPROVIDER

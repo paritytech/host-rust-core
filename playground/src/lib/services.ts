@@ -10,9 +10,9 @@ import { WEBRTC_SERVICE } from "./webrtc-check";
 export type { MethodInfo, ProductExecutionKind, ServiceInfo };
 export { servicesForExecution };
 
-// Generated SPA-compatible services plus the synthetic WebRTC browser-capability
+// Generated App-compatible services plus the synthetic WebRTC browser-capability
 // method, which is exercised the same way (an example) but is not a wire method.
 export const services: ServiceInfo[] = [
-  ...servicesForExecution(generatedServices, "Spa"),
+  ...servicesForExecution(generatedServices, "App"),
   WEBRTC_SERVICE,
 ];

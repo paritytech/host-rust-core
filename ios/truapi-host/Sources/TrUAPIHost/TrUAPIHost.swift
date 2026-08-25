@@ -62,7 +62,7 @@ public struct RuntimeConfig: Sendable {
 
     public init(
         productId: String,
-        executionKind: ProductExecutionKind = .spa,
+        executionKind: ProductExecutionKind = .app,
         hostName: String,
         hostIcon: String? = nil,
         hostVersion: String? = nil,
@@ -178,13 +178,24 @@ public struct ProductExecutionConfig: Sendable, Equatable {
 /// cdylib is built with the `ws-bridge` feature.
 public enum LocalhostBridgeBootstrap {
     /// Returns a `<script>`-injectable snippet that publishes the endpoint
-    /// metadata on `window.__truapi_localhost`, exposes the legacy
+    /// metadata on `window.__truapi_localhost`, the pre-resolved permission
+    /// decisions on `window.__truapi_policy__`, exposes the legacy
     /// `window.__HOST_API_PORT__` webview transport shape, and fires a
     /// `truapi-native-ready` event.
-    public static func script(port: UInt16, token: String) -> String {
+    ///
+    /// `webRtcAllowed` must come from `permissionAuthorizationStatus` for
+    /// `RemotePermission.remote(.webRtc)` — a peek, never a prompt. It is baked
+    /// in as a literal because the container enforces it inside the product's
+    /// own realm, where an asynchronous permission request would be forgeable:
+    /// product script can hook the primitives such a request's bookkeeping
+    /// relies on and resolve it itself. A settled value has nothing to steal.
+    /// The consequence is that a fresh grant only takes effect once the web
+    /// view reloads.
+    public static func script(port: UInt16, token: String, webRtcAllowed: Bool) -> String {
         let url = "ws://127.0.0.1:\(port)/?t=\(token)"
         let safeUrl = jsStringLiteral(url)
         let safeToken = jsStringLiteral(token)
+        let safeWebRtc = webRtcAllowed ? "true" : "false"
         return """
         (function() {
           var endpoint = { url: \(safeUrl), token: \(safeToken) };
@@ -256,6 +267,7 @@ public enum LocalhostBridgeBootstrap {
           }
 
           window.__truapi_localhost = endpoint;
+          window.__truapi_policy__ = { webRtcAllowed: \(safeWebRtc) };
           window.__HOST_WEBVIEW_MARK__ = true;
           window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
           window.dispatchEvent(new Event('truapi-native-ready'));
@@ -305,6 +317,7 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func renewStatementAllowances() throws -> StatementRenewalReport
     func startStatementAllowanceRenewal()
     func nextStatementRenewalDelay() -> TimeInterval
+    func lastStatementRenewalReport() -> StatementRenewalReport?
 }
 
 /// Product-scoped key-value storage provided by the embedding host.
@@ -826,6 +839,17 @@ public final class TrUAPIHostRuntime: @unchecked Sendable {
     public func nextStatementRenewalDelay() -> TimeInterval {
         inner.nextStatementRenewalDelay()
     }
+
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `nil` until a pass has run, which is "not yet" rather than healthy.
+    /// ``startStatementAllowanceRenewal()`` returns nothing, so a host driving the
+    /// loop reads its result here. `slotsExhausted` on the last pass means a
+    /// period filled up and an allowance went unrenewed, which retrying cannot
+    /// fix and a person may need telling about.
+    public func lastStatementRenewalReport() -> StatementRenewalReport? {
+        inner.lastStatementRenewalReport()
+    }
 }
 
 /// An account renewal should keep allowed on the Statement Store.
@@ -877,7 +901,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     func sessionChatIdentityKey() throws -> Data?
 }
 
-/// One SPA or Chat executable connected to a shared host runtime.
+/// One App, Widget, or Worker executable connected to a shared host runtime.
 public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unchecked Sendable {
     private let inner: NativeProductExecution
     private let callbackRetainer: HostCallbacks
@@ -1066,6 +1090,17 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
         inner.nextStatementRenewalDelay()
     }
 
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `nil` until a pass has run, which is "not yet" rather than healthy.
+    /// ``startStatementAllowanceRenewal()`` returns nothing, so a host driving the
+    /// loop reads its result here. `slotsExhausted` on the last pass means a
+    /// period filled up and an allowance went unrenewed, which retrying cannot
+    /// fix and a person may need telling about.
+    public func lastStatementRenewalReport() -> StatementRenewalReport? {
+        inner.lastStatementRenewalReport()
+    }
+
     /// Read a stored permission authorization status without prompting.
     public func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
@@ -1158,4 +1193,18 @@ private final class CustomRendererStreamObserver: NativeCustomRendererObserver, 
     func onComplete() {
         continuation.finish()
     }
+
+    /// The product could not serve the render, so the last tree yielded is
+    /// partial. Finishing with an error keeps that distinct from a clean end.
+    func onError(reason: String) {
+        continuation.finish(throwing: CustomRendererStreamError(reason: reason))
+    }
+}
+
+/// A render the product declined or could not encode.
+public struct CustomRendererStreamError: Error, CustomStringConvertible {
+    /// Why the product ended the render.
+    public let reason: String
+
+    public var description: String { reason }
 }

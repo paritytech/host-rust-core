@@ -17,9 +17,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::channel::mpsc;
+use futures::future::{AbortHandle, Abortable};
 use futures::stream::{self, BoxStream, Stream, StreamExt};
 use js_sys::{Array, Function, Reflect, Uint8Array};
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, Encode};
 use send_wrapper::SendWrapper;
 use truapi::v01;
 #[cfg(feature = "wasm-signing-host")]
@@ -464,6 +465,7 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+    let asset_hub = get_required_object(value, "assetHub", "runtimeConfig.assetHub")?;
     let pairing = get_required_object(value, "pairing", "runtimeConfig.pairing")?;
 
     PairingHostConfig::new(
@@ -489,6 +491,11 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
             &bulletin,
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
+        )?,
+        get_required_bytes32_at(
+            &asset_hub,
+            "genesisHash",
+            "runtimeConfig.assetHub.genesisHash",
         )?,
         get_required_string_at(
             &pairing,
@@ -547,11 +554,12 @@ fn product_context_from_js(value: &JsValue) -> Result<ProductContext, JsValue> {
         match get_optional_string_at(value, "executionKind", "runtimeConfig.executionKind")?
             .as_deref()
         {
-            None | Some("Spa") => ProductExecutionKind::Spa,
-            Some("Chat") => ProductExecutionKind::Chat,
+            None | Some("App") => ProductExecutionKind::App,
+            Some("Widget") => ProductExecutionKind::Widget,
+            Some("Worker") => ProductExecutionKind::Worker,
             Some(other) => {
                 return Err(JsValue::from_str(&format!(
-                    "runtimeConfig.executionKind must be Spa or Chat, got {other:?}"
+                    "runtimeConfig.executionKind must be App, Widget or Worker, got {other:?}"
                 )));
             }
         };
@@ -566,6 +574,7 @@ fn runtime_config_field_to_js(field: &str) -> &str {
         "pairing_deeplink_scheme" => "pairing.deeplinkScheme",
         "people_chain_genesis_hash" => "people.genesisHash",
         "bulletin_chain_genesis_hash" => "bulletin.genesisHash",
+        "asset_hub_chain_genesis_hash" => "assetHub.genesisHash",
         other => other,
     }
 }
@@ -822,6 +831,22 @@ impl WasmPairingHostRuntime {
             .map_err(generic_error_to_js)
     }
 
+    /// Resolve a product's hard-subtree public key from the cache, the
+    /// persisted slot, or the Account Holder. `timeoutMs` bounds that wait and
+    /// exceeding it rejects. `undefined` when no session is active.
+    #[wasm_bindgen(js_name = productSubtreePublicKey)]
+    pub async fn product_subtree_public_key(
+        &self,
+        product_id: String,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
+        self.runtime
+            .product_subtree_public_key(&product_id, timeout_ms)
+            .await
+            .map(|key| key.map(|key| key.to_vec()))
+            .map_err(generic_error_to_js)
+    }
+
     /// Activate an externally persisted canonical session without writing it
     /// to core storage; resolves only after product frames may use it.
     #[wasm_bindgen(js_name = activateExternalSession)]
@@ -1019,6 +1044,38 @@ impl WasmSigningHostRuntime {
     }
 }
 
+/// Soft-derive a product account public key from a product's hard-subtree key
+/// and a SCALE-encoded `DerivationIndex`.
+///
+/// The index crosses encoded rather than as a number so the chain code stays
+/// core-owned: a host that rebuilds it wrongly gets a valid-looking wrong
+/// address rather than an error.
+#[wasm_bindgen(js_name = deriveProductAccountPublicKey)]
+pub fn derive_product_account_public_key(
+    product_subtree_public_key: Vec<u8>,
+    derivation_index: Vec<u8>,
+) -> Result<Vec<u8>, JsValue> {
+    let subtree = <[u8; 32]>::try_from(product_subtree_public_key.as_slice())
+        .map_err(|_| JsValue::from_str("product subtree public key must be 32 bytes"))?;
+    let index = v01::DerivationIndex::decode(&mut derivation_index.as_slice())
+        .map_err(|err| JsValue::from_str(&format!("derivation index did not decode: {err}")))?;
+    crate::host_logic::product_account::derive_product_public_key(
+        subtree,
+        crate::host_logic::product_account::derivation_index_bytes(&index),
+    )
+    .map(|public_key| public_key.to_vec())
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+/// Format a product account public key as the SS58 address host-spec C.6
+/// mandates, so hosts do not each pick a prefix.
+#[wasm_bindgen(js_name = productAccountAddress)]
+pub fn product_account_address(public_key: Vec<u8>) -> Result<String, JsValue> {
+    let public_key = <[u8; 32]>::try_from(public_key.as_slice())
+        .map_err(|_| JsValue::from_str("product account public key must be 32 bytes"))?;
+    Ok(crate::host_logic::product_account::product_public_key_to_address(public_key))
+}
+
 /// Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`).
 /// Hosts may call this during boot, or again at any time to re-tune verbosity.
 /// Unknown values are parsed as `off`.
@@ -1180,5 +1237,87 @@ impl WasmProductRuntime {
     pub async fn disconnect_session(&self) -> Result<(), JsValue> {
         self.inner.core.disconnect_session().await;
         Ok(())
+    }
+
+    /// Start the host-initiated render subscription for one stored custom Chat
+    /// message. `onUpdate` receives each replacement tree as a SCALE-encoded
+    /// `CustomRendererNode`. Exactly one terminal follows: `onComplete` when the
+    /// stream ended with the last tree standing, or `onError` when the product
+    /// could not serve the render and the last tree is partial. Rejects when
+    /// this connection may not reach Chat.
+    #[wasm_bindgen(js_name = renderCustomMessage)]
+    pub fn render_custom_message(
+        &self,
+        message_id: String,
+        message_type: String,
+        payload: Vec<u8>,
+        on_update: Function,
+        on_complete: Function,
+        on_error: Function,
+    ) -> Result<WasmCustomRendererSubscription, JsValue> {
+        let mut stream = self
+            .inner
+            .core
+            .control()
+            .render_custom_message(message_id, message_type, payload)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+        let on_update = SendWrapper::new(on_update);
+        let on_complete = SendWrapper::new(on_complete);
+        let on_error = SendWrapper::new(on_error);
+        let (abort, registration) = AbortHandle::new_pair();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = Abortable::new(
+                async move {
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(node) => {
+                                let bytes = Uint8Array::from(node.encode().as_slice());
+                                let _ = on_update.call1(&JsValue::NULL, &bytes);
+                            }
+                            Err(error) => {
+                                let _ = on_error
+                                    .call1(&JsValue::NULL, &JsValue::from_str(&error.reason));
+                                return;
+                            }
+                        }
+                    }
+                    let _ = on_complete.call0(&JsValue::NULL);
+                },
+                registration,
+            )
+            .await;
+        });
+        Ok(WasmCustomRendererSubscription { abort: Some(abort) })
+    }
+
+    /// Publish one host-authored Chat action into this connection's action
+    /// stream, buffered until the product subscribes. Takes a SCALE-encoded
+    /// `HostChatActionSubscribeItem`.
+    #[wasm_bindgen(js_name = publishChatAction)]
+    pub fn publish_chat_action(&self, action: Vec<u8>) -> Result<(), JsValue> {
+        let action = v01::HostChatActionSubscribeItem::decode(&mut action.as_slice())
+            .map_err(|err| JsValue::from_str(&format!("chat action did not decode: {err}")))?;
+        self.inner
+            .core
+            .control()
+            .publish_chat_action(action)
+            .map_err(|err| JsValue::from_str(&err.to_string()))
+    }
+}
+
+/// Cancellable observation of one custom-message render instance. Dropping the
+/// handle on the JS side does not stop the stream; call `cancel`.
+#[wasm_bindgen]
+pub struct WasmCustomRendererSubscription {
+    abort: Option<AbortHandle>,
+}
+
+#[wasm_bindgen]
+impl WasmCustomRendererSubscription {
+    /// Stop delivering renderer updates. Idempotent.
+    pub fn cancel(&mut self) {
+        if let Some(abort) = self.abort.take() {
+            abort.abort();
+        }
     }
 }

@@ -150,7 +150,7 @@ jobs:
           toolchain: stable
 
       - if: steps.version.outputs.proceed == 'true'
-        uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install dependencies
         if: steps.version.outputs.proceed == 'true'
@@ -206,12 +206,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.NPM_PUBLISH_AUTOMATION_TOKEN }}
 
-      - name: Create release tags
+      # The dispatch only reports acceptance, so the registry is the only proof
+      # a version landed. continue-on-error still tags the confirmed subset: a
+      # later run drops anything already on npm, so it must be tagged here.
+      - name: Confirm packages reached npm
+        id: confirm
         if: steps.version.outputs.proceed == 'true'
+        continue-on-error: true
+        # Above the script's own budget, so its deadline decides the outcome.
+        # If this fires first, the confirmed subset is never written.
+        timeout-minutes: 15
+        env:
+          STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
+        run: printf '%s' "${STEPS_VERSION_OUTPUTS_PACKAGES}" | node scripts/wait-for-npm-publish.mjs
+
+      # Skip rather than loop over an empty list, which yields an empty tag.
+      - name: Create release tags
+        if: steps.version.outputs.proceed == 'true' && steps.confirm.outputs.published != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
-          STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
+          STEPS_CONFIRM_OUTPUTS_PUBLISHED: ${{ steps.confirm.outputs.published }}
         run: |
           set -euo pipefail
           while IFS='|' read -r _name _path _version tag; do
@@ -222,13 +237,13 @@ jobs:
             gh api --method POST "repos/${{ github.repository }}/git/refs" \
               -f ref="refs/tags/${tag}" \
               -f sha="${RELEASE_SHA}"
-          done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
+          done <<< "${STEPS_CONFIRM_OUTPUTS_PUBLISHED}"
 
       - name: Create GitHub Release
-        if: steps.version.outputs.proceed == 'true'
+        if: steps.version.outputs.proceed == 'true' && steps.confirm.outputs.published != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          STEPS_VERSION_OUTPUTS_PACKAGES: ${{ steps.version.outputs.packages }}
+          STEPS_CONFIRM_OUTPUTS_PUBLISHED: ${{ steps.confirm.outputs.published }}
         run: |
           set -euo pipefail
           while IFS='|' read -r name _path version tag; do
@@ -242,7 +257,11 @@ jobs:
                 --generate-notes \
                 "artifacts/${tarball_name}"
             fi
-          done <<< "${STEPS_VERSION_OUTPUTS_PACKAGES}"
+          done <<< "${STEPS_CONFIRM_OUTPUTS_PUBLISHED}"
+
+      - name: Fail if any package did not reach npm
+        if: steps.confirm.outcome == 'failure'
+        run: exit 1
 
   publish-ios:
     name: Publish iOS host
@@ -266,7 +285,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: ios-host-release
 

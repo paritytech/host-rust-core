@@ -21,7 +21,8 @@ One binary, `truapi-host`:
 | --- | --- |
 | `pairing-host` | Seedless host: serves product frames, emits pairing deeplinks, and can run product scripts. |
 | `signing-host` | Wallet-local host: owns signer identity, can run product scripts, accepts pairing deeplinks, registers statement allowance on-chain, signs. |
-| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username. |
+| `identity-check` | Probe the root and canonical `uid.dot` identity account for a registered username (read from the dotNS contracts on Asset Hub). |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name` on Asset Hub, linked to a lite username or standalone with a chat key. |
 | `alloc-check` | Diagnose (or `--submit`) on-chain statement-store allowance: ring membership, chosen slot, and the `set_statement_store_account` extrinsic. On a full period it prints each occupied slot's age and which one would be replaced. |
 | `pgas-check` | Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring membership on People, whether Asset Hub has imported that ring revision, the day's first unclaimed slot, and the `Pgas.claim_pgas` extrinsic. |
 
@@ -102,7 +103,10 @@ Commands always start with `/`:
 | `/product <id>` | Switch the product used by future scripts and frame connections. |
 | `/session` | Show the current session name, path, and user id (signing host). |
 | `/session <name>` | Switch to or create an isolated signing-host session. |
+| `/session --mnemonic "<phrase>"` | Import an existing signer as a durable session. |
 | `/session --list` | List user sessions for the current network. |
+| `/session --clear <name>` | Permanently clear one signing-host session. |
+| `/session --clear-all` | Permanently clear every signing-host session for the current network. |
 | `/help` | Show commands and keyboard shortcuts. |
 | `/clear` | Clear the visible transcript. |
 | `/copy` | Copy the retained transcript to the system clipboard. |
@@ -110,7 +114,9 @@ Commands always start with `/`:
 
 Typing `/` opens autocomplete. Up/Down selects a completion; with the menu
 closed it navigates process-local command history. Tab inserts a completion,
-and `/script` completes filesystem paths. Ctrl-U/Ctrl-D scroll by half a
+and `/script` completes filesystem paths. Mnemonic characters are masked while
+typing and mnemonic commands are never retained in command history or the
+transcript. Ctrl-U/Ctrl-D scroll by half a
 viewport, End restores auto-follow, Esc closes autocomplete, and Ctrl-C clears
 input, cancels a running command, or exits when idle. Deeplinks are deliberately
 not persisted in history across processes.
@@ -170,11 +176,30 @@ letters, digits, `.`, `_`, or `-`; they cannot be paths. Switching prepares the
 target while the old session remains active, then stops its pairing responder
 and resets product WebSocket connections so clients reconnect against the new
 runtime.
+
+`/session --mnemonic "<phrase>"` brings an already-onboarded account into the
+session catalog. The host derives its `uid.dot` identity, reads any existing
+full or Lite username from dotNS, falls back to the identity backend's assigned
+username records when no dotNS mirror exists, and confirms its People or
+LitePeople ring membership. This lookup is read-only and never registers a new
+username. On success, the resolved identity username becomes the session name;
+only an account absent from both sources uses a deterministic
+`imported-<key fingerprint>` name and connects the account without username
+metadata. The mnemonic is written to that session's `0600` account store and
+the exact account record is remembered for restart. An invalid phrase or an
+account without ring membership on the selected network leaves the current
+runtime active. A username-less session can sign and connect, but
+`account.getUserId()` cannot return a primary username until one source has a
+record. Use the interactive command when practical: putting the same command in
+`exec` also puts the phrase in your shell's arguments/history.
+
 New auto-managed accounts use the session name as their Lite username prefix;
 characters other than lowercase letters are omitted. For example, session
 `pgtest` creates usernames beginning with `pgtest`. An explicit
 `--lite-username-prefix` takes precedence, and `default` retains the historical
-`headless` prefix.
+`headless` prefix. `--reserved-username <label>` additionally reserves a
+full-person base name on dotNS for a newly created account, to be claimed later
+with `register-name`; the CLI refuses labels the registrar has already minted.
 The selected username and last script reference are cached in `session.json`
 inside the displayed session path. Scratch scripts use a portable filename;
 explicit scripts use an absolute path. On restart, an
@@ -184,6 +209,16 @@ session's editor context. A session with no signer yet reports
 `<not provisioned>` and the transcript prompts the user to run
 `/session <name>`. Inspecting with bare `/session` never starts network
 onboarding; naming a different session creates and connects its user.
+
+`/session --clear <name>` permanently deletes that session's local signer
+keys, scripts, core/product storage, and permissions. `/session --clear-all`
+does the same for every signing-host session on the current network, including
+legacy bootstrap state, while preserving other networks and pairing-host
+state. Neither command deregisters an on-chain username. The interactive UI
+asks for `[y/N]` confirmation. `exec` treats the explicit one-shot command as
+confirmation and runs it immediately. Clearing an inactive named session keeps
+the host running; clearing the active session or all sessions stops the signing
+host after its runtime and product connections have shut down.
 
 Select or create a session at startup with:
 
@@ -201,6 +236,8 @@ come first):
 
 ```bash
 truapi-host signing-host exec '/session'
+truapi-host signing-host exec '/session --clear alice.01'
+truapi-host signing-host exec '/session --clear-all'
 truapi-host signing-host --auto-accept exec '/script ./js/scripts/ring-vrf-smoke.ts'
 truapi-host signing-host exec '/pair polkadotapp://pair?handshake=...'
 ```
@@ -246,8 +283,8 @@ res.match(
 );
 ```
 
-`--product-id` (a dotNS name ending in `.dot` or `.paseo`, or a `localhost`
-identifier; default
+`--product-id` (a dotNS name ending in `.dot`, `.paseo` or `.test`, or a
+`localhost` identifier; default
 `headless-playground.dot`) sets the initial product. `/product <id>` changes it
 for the lifetime of the process. Switching disconnects active product
 WebSockets so clients reconnect with a new product context; the network,
@@ -458,20 +495,16 @@ The network preset owns the identity backend URL, the People, Bulletin and Asset
 Hub RPCs, and their genesis hashes; there is
 no public `--statement-store` flag. Pick `previewnet` when a product's runtime
 descriptors target previewnet, so its statements, its host chain routes and its
-own chain reads all land on one network. Sessions are per preset, so each network
+own chain reads all land on one network. The CLI mints the identity backend's
+bearer token itself (SPEC.md §12.3). Sessions are per preset, so each network
 gets its own signer identity on the same machine.
-
-One limit on `previewnet` today: its identity backend requires a bearer token for
-write requests, so auto-provisioning a fresh lite username fails with
-
-```
-username registration failed (401 Unauthorized): Missing Authorization Header
-```
-
-Reads against it work, and everything that does not go through the backend works
-normally, so use `--mnemonic` (or `HOST_CLI_SIGNER_MNEMONIC`) with an account that
-already carries a previewnet username. `paseo-next-v2` still provisions on its
-own, unauthenticated. Both also accept `--frame-listen <address>`
+`HOST_CLI_IDENTITY_BACKEND_BASE` swaps only
+the identity backend (for a local one); `HOST_CLI_IDENTITY_BACKEND_TOKEN`
+supplies its bearer token instead of the CLI minting one. For username
+registration, an injected token's subject must match the session's `uid.dot`
+candidate account. The automatically minted token uses that identity; and
+`HOST_CLI_DOTNS_POP_CONTROLLER` overrides on-chain `DotnsPopController`
+discovery (see SPEC.md §21). Both also accept `--frame-listen <address>`
 to opt into a TCP product-frame WebSocket; without it, the CLI creates and
 cleans up a unique temporary Unix socket.
 
@@ -525,8 +558,8 @@ one-shot modes.
 - **Ring-VRF product-account aliases and proofs** are implemented by the
   signing host via the `verifiable` crate (`get_account_alias` and
   `create_account_proof`).
-- **`get_user_id`** resolves the signing account's username from People-chain
-  `Resources.Consumers`. Auto-managed signing accounts register fresh lite
+- **`get_user_id`** resolves the signing account's username from the dotNS
+  contracts on Asset Hub. Auto-managed signing accounts register fresh lite
   usernames via the identity backend (`src/attestation.rs`); first registration
   is backend-async and can take minutes (ring onboarding). `truapi-host
   identity-check --mnemonic <m>` probes which derivation carries a username.

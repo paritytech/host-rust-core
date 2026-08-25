@@ -267,7 +267,7 @@ console.log(
     diagnosisVerified: expectDiagnosis,
     customRendererVerified: expectCustomRenderer,
     productUrl,
-    verifiedExecutions: ["Chat"],
+    verifiedExecutions: ["Worker"],
     worker,
     workerDestination,
     workerDestinations,

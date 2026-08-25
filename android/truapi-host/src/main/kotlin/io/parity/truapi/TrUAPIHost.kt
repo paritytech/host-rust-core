@@ -93,13 +93,15 @@ enum class PairingDeeplinkScheme {
 
 /** Trusted kind of executable attached to a product connection. */
 enum class ProductExecutionKind {
-    SPA,
-    CHAT;
+    APP,
+    WIDGET,
+    WORKER;
 
     internal fun toNative(): UniFfiProductExecutionKind =
         when (this) {
-            SPA -> UniFfiProductExecutionKind.SPA
-            CHAT -> UniFfiProductExecutionKind.CHAT
+            APP -> UniFfiProductExecutionKind.APP
+            WIDGET -> UniFfiProductExecutionKind.WIDGET
+            WORKER -> UniFfiProductExecutionKind.WORKER
         }
 }
 
@@ -115,7 +117,7 @@ enum class ProductExecutionKind {
  */
 data class RuntimeConfig(
     val productId: String,
-    val executionKind: ProductExecutionKind = ProductExecutionKind.SPA,
+    val executionKind: ProductExecutionKind = ProductExecutionKind.APP,
     val hostName: String,
     val hostIcon: String? = null,
     val hostVersion: String? = null,
@@ -629,15 +631,41 @@ private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeCh
 object LocalhostBridgeBootstrap {
     /**
      * Returns a `<script>`-injectable snippet that publishes the endpoint
-     * metadata on `window.__truapi_localhost`, exposes the legacy
+     * metadata on `window.__truapi_localhost`, the pre-resolved permission
+     * decisions on `window.__truapi_policy__`, exposes the legacy
      * `window.__HOST_API_PORT__` webview transport shape, and fires a
      * `truapi-native-ready` event. Inject at document start (before the product
      * page scripts run) so the page can dial the bridge immediately.
+     *
+     * [webRtcAllowed] must come from `permissionAuthorizationStatus` for
+     * `RemotePermission.Remote.WebRtc` — a peek, never a prompt. It is baked in
+     * as a literal because the container enforces it inside the product's own
+     * realm, where an asynchronous permission request would be forgeable:
+     * product script can hook the primitives such a request's bookkeeping
+     * relies on and resolve it itself. A settled value has nothing to steal.
+     * The consequence is that a fresh grant only takes effect once the web view
+     * reloads.
+     *
+     * The parameter is required so that every host has to answer, but a `Boolean`
+     * cannot force the answer to be a real one: passing a literal `true`
+     * compiles and grants WebRTC unconditionally, which is the pre-gate
+     * behaviour. Nothing downstream can detect that, so read the status from the
+     * core and pass what it returns. A type that only a
+     * [PermissionAuthorizationStatus] could produce would make the mistake
+     * unrepresentable; it is deliberately deferred until Android enforces the
+     * decision at all (see the container note where the policy is published).
      */
-    fun script(port: UShort, token: String): String {
+    fun script(port: UShort, token: String, webRtcAllowed: Boolean): String {
         val url = "ws://127.0.0.1:$port/?t=$token"
         val safeUrl = jsStringLiteral(url)
         val safeToken = jsStringLiteral(token)
+        // Published for the lockdown container to read, but Android does not
+        // inject the container, so on Android nothing reads it and WebRTC stays
+        // reachable regardless of the decision. This is a policy value, not an
+        // enforcement point: it is here so the bootstrap contract matches iOS,
+        // where the container is injected and does enforce it. Android
+        // enforcement is tracked separately (#334 scopes the gate to iOS).
+        val safeWebRtc = if (webRtcAllowed) "true" else "false"
         return """
         (function() {
           var endpoint = { url: $safeUrl, token: $safeToken };
@@ -705,6 +733,7 @@ object LocalhostBridgeBootstrap {
           }
 
           window.__truapi_localhost = endpoint;
+          window.__truapi_policy__ = { webRtcAllowed: $safeWebRtc };
           window.__HOST_WEBVIEW_MARK__ = true;
           window.__HOST_API_PORT__ = createWebSocketMessagePort(endpoint.url);
           window.dispatchEvent(new Event('truapi-native-ready'));
@@ -864,6 +893,17 @@ class TrUAPIHostCore private constructor(
      * waking hourly.
      */
     fun nextStatementRenewalDelay(): java.time.Duration = inner.nextStatementRenewalDelay()
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `null` until a pass has run, which is "not yet" rather than healthy.
+     * [startStatementAllowanceRenewal] returns nothing, so a host driving the loop
+     * reads its result here. `slotsExhausted` on the last pass means a period
+     * filled up and an allowance went unrenewed, which retrying cannot fix and a
+     * person may need telling about.
+     */
+    fun lastStatementRenewalReport(): StatementRenewalReport? = inner.lastStatementRenewalReport()
 
     /** Read a stored permission authorization status without prompting. */
     @Throws(HostRejection::class)

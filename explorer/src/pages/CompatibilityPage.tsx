@@ -1,9 +1,15 @@
 import { Fragment, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import { Check, ChevronDown, Minus, X } from "lucide-react";
-import type { ProductExecutionKind, VersionEntry } from "../data/types";
+import type { VersionEntry } from "../data/types";
 import { methodPath } from "../data/registry";
 import { chatCompatibility, compatibility } from "../data/compatibility";
+
+/**
+ * Execution kinds that serve the Chat modality. `Chat` is the name protocol
+ * versions up to 0.9.0 declared; `Worker` is the name that replaced it.
+ */
+const CHAT_EXECUTIONS: ReadonlySet<string> = new Set(["Chat", "Worker"]);
 import type {
   CompatibilityMatrix,
   CompatStatus,
@@ -86,9 +92,9 @@ export default function CompatibilityPage() {
 
       <div className="space-y-10">
         <CompatibilitySection
-          title="SPA compatibility"
-          description="API coverage measured from the visible SPA execution."
-          execution="Spa"
+          title="App compatibility"
+          description="API coverage measured from a visible App or Widget execution."
+          executions={null}
           matrix={compatibility}
           version={version}
           expandedId={expandedId}
@@ -96,8 +102,8 @@ export default function CompatibilityPage() {
         />
         <CompatibilitySection
           title="Chat compatibility"
-          description="Chat API coverage measured from the product's native Chat worker."
-          execution="Chat"
+          description="Chat API coverage measured from the product's Worker execution."
+          executions={CHAT_EXECUTIONS}
           matrix={chatCompatibility}
           version={version}
           expandedId={expandedId}
@@ -111,7 +117,7 @@ export default function CompatibilityPage() {
 function CompatibilitySection({
   title,
   description,
-  execution,
+  executions,
   matrix,
   version,
   expandedId,
@@ -119,7 +125,12 @@ function CompatibilitySection({
 }: {
   title: string;
   description: string;
-  execution: ProductExecutionKind;
+  /**
+   * Kinds whose gated services belong in this section, or `null` for the
+   * ungated ones. A set rather than one name because each archived version
+   * records the kind name that version declared.
+   */
+  executions: ReadonlySet<string> | null;
   matrix: CompatibilityMatrix;
   version: VersionEntry;
   expandedId: string | null;
@@ -154,8 +165,9 @@ function CompatibilitySection({
           <tbody>
             {version.services
               .filter((service) =>
-                execution === "Chat"
-                  ? service.requiredExecution === "Chat"
+                executions
+                  ? service.requiredExecution !== undefined &&
+                    executions.has(service.requiredExecution)
                   : service.requiredExecution === undefined,
               )
               .map((service) => ({

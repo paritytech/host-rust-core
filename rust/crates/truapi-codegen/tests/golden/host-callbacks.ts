@@ -167,7 +167,19 @@ export type CoreStorageKey =
    * logout and any per-user namespacing: once it changes, peers addressing
    * the previous key can no longer reach this device.
    */
-  | { tag: "DeviceEncryptionKey"; value?: undefined };
+  | { tag: "DeviceEncryptionKey"; value?: undefined }
+  /**
+   * One product's hard-subtree public key, as the Account Holder answered it
+   * for this paired session. Product account is a hard derivation, so the
+   * answer is fixed for the pair and read back instead of re-asking the
+   * wallet on every launch.
+   *
+   * The value is the 32-byte key with no framing, so a host can derive
+   * product account addresses from the slot it already stores. These are
+   * public keys: every address derived from them already appears on the
+   * reviews the host draws.
+   */
+  | { tag: "ProductSubtree"; value: { sessionId: string; productId: string } };
 
 /**
  * Review shown before a product creates a ring-VRF proof (RFC 0004).
@@ -321,8 +333,25 @@ export interface ProductContext {
 
 /**
  * Trusted kind of product executable attached to a TrUAPI connection.
+ *
+ * Mirrors the executable kinds a product manifest declares. The variants are
+ * capability classes: a connection reaches an execution-gated service only
+ * when its kind matches exactly, so `App` and `Widget` carry the same
+ * capability and differ only in how the host presents them, and `Worker` is
+ * the only kind that may serve the Chat modality.
  */
-export type ProductExecutionKind = "Spa" | "Chat";
+export type ProductExecutionKind = "App" | "Widget" | "Worker";
+
+/**
+ * Review shown before a product resolves its own account subtree over SSO,
+ * when the value is not cached and the core must ask the Account Holder.
+ */
+export interface ProductSubtreeReview {
+  /**
+   * Product resolving its own account.
+   */
+  productId: string;
+}
 
 /**
  * Review shown before allocating resources for a product. Names the
@@ -352,7 +381,7 @@ export interface SessionUiInfo {
   publicKey: Bytes32;
 
   /**
-   * Wallet identity account id used for People-chain username lookup.
+   * Wallet identity account id used for the dotNS username lookup on Asset Hub.
    */
   identityAccountId?: Bytes32;
 
@@ -377,12 +406,12 @@ export interface SessionUiInfo {
   peerStatementAccountId?: Bytes32;
 
   /**
-   * Short username from the People-chain identity record.
+   * Short username from the dotNS identity record on Asset Hub.
    */
   liteUsername?: string;
 
   /**
-   * Fully qualified username from the People-chain identity record.
+   * Fully qualified username from the dotNS identity record on Asset Hub.
    */
   fullUsername?: string;
 }
@@ -493,7 +522,11 @@ export type UserConfirmationReview =
   /**
    * Sign an RFC-0023 VRF transcript with a product account.
    */
-  | { tag: "SignVrf"; value: SignVrfReview };
+  | { tag: "SignVrf"; value: SignVrfReview }
+  /**
+   * Resolve a product's own account subtree over SSO.
+   */
+  | { tag: "ProductSubtree"; value: ProductSubtreeReview };
 
 /**
  * Review shown before a product asks to access another product account.
@@ -569,6 +602,10 @@ export const CoreStorageKey: S.Codec<CoreStorageKey> = S.lazy(
       }>,
       StatementRenewalTargets: S._void,
       DeviceEncryptionKey: S._void,
+      ProductSubtree: S.Struct({
+        sessionId: S.str,
+        productId: S.str,
+      }) as S.Codec<{ sessionId: string; productId: string }>,
     }),
 );
 
@@ -689,9 +726,24 @@ export const ProductContext: S.Codec<ProductContext> = S.lazy(
 
 /**
  * Trusted kind of product executable attached to a TrUAPI connection.
+ *
+ * Mirrors the executable kinds a product manifest declares. The variants are
+ * capability classes: a connection reaches an execution-gated service only
+ * when its kind matches exactly, so `App` and `Widget` carry the same
+ * capability and differ only in how the host presents them, and `Worker` is
+ * the only kind that may serve the Chat modality.
  */
 export const ProductExecutionKind: S.Codec<ProductExecutionKind> = S.lazy(
-  (): S.Codec<ProductExecutionKind> => S.Status("Spa", "Chat"),
+  (): S.Codec<ProductExecutionKind> => S.Status("App", "Widget", "Worker"),
+);
+
+/**
+ * Review shown before a product resolves its own account subtree over SSO,
+ * when the value is not cached and the core must ask the Account Holder.
+ */
+export const ProductSubtreeReview: S.Codec<ProductSubtreeReview> = S.lazy(
+  (): S.Codec<ProductSubtreeReview> =>
+    S.Struct({ productId: S.str }) as S.Codec<ProductSubtreeReview>,
 );
 
 /**
@@ -790,6 +842,7 @@ export const UserConfirmationReview: S.Codec<UserConfirmationReview> = S.lazy(
       PreimageSubmit: PreimageSubmitReview,
       AccountAccess: AccountAccessReview,
       SignVrf: SignVrfReview,
+      ProductSubtree: ProductSubtreeReview,
     }),
 );
 
@@ -948,10 +1001,46 @@ export interface CoreAdmin {
    * the install and matches the public key peers were told to address.
    */
   getDeviceEncryptionKey(): Promise<Bytes32>;
+
+  /**
+   * Read `product_id`'s hard-subtree public key, so a host can name the
+   * account a review will sign with instead of showing a bare derivation
+   * path.
+   *
+   * Resolves from the memory cache, then the persisted slot, then the
+   * Account Holder. A pairing host reaching the wallet sends an SSO request,
+   * which answers without prompting the user, though it can wake the phone.
+   * A signing host derives locally and never waits.
+   *
+   * `timeout_ms` bounds that wait, and exceeding it is an error rather than
+   * ``undefined``. The underlying wait has no deadline of its own, so a host
+   * calling this while drawing a review should pass a timeout it is willing
+   * to block for. ``undefined`` uses a default sized for a product awaiting a
+   * signature, which is far too long to hold a render.
+   *
+   * ``undefined`` means no active session. Derive account public keys from the
+   * answer with `deriveProductAccountPublicKey`.
+   */
+  getProductSubtreePublicKey(
+    productId: string,
+    timeoutMs: number | undefined,
+  ): Promise<Bytes32 | undefined>;
 }
 
 /**
  * Host-private persistence for core-owned state.
+ *
+ * Clearing product-indexed slots is the host's job. The core drops the ones
+ * it is holding when a session ends, but a product it never opened this run
+ * has no entry to drop, so those slots outlive the disconnect. A host that
+ * removes a product must clear them with the rest of that product's state, or
+ * they accumulate for the life of the install.
+ *
+ * `describe_core_storage_key` names the product owning a slot:
+ * `CoreStorageKeyDescription::product_id` is `Some` exactly for the
+ * product-indexed variants, which are `PermissionAuthorization`,
+ * `AutoSigningKey`, and `ProductSubtree`. Keying host storage by that value
+ * makes the sweep a prefix delete rather than a scan.
  */
 export interface CoreStorage {
   /**

@@ -78,7 +78,9 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   To publish the binary, include `@parity/ios-host <version>`
   in the `release:` PR title. The release workflow rebuilds and simulator-tests
   the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
-  only after the asset is live. `publish.sh <version>` is the manual fallback.
+  only after the asset is live. When the title also names an npm package, the
+  iOS job waits on that publish being confirmed on npm.
+  `publish.sh <version>` is the manual fallback.
   Keep `useLocalBinary = false` in committed manifests; `true` is for local
   testing against the rebuilt XCFramework only.
 
