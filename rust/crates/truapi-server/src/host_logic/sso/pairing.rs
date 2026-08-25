@@ -647,6 +647,7 @@ mod tests {
             },
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test runtime config is valid")

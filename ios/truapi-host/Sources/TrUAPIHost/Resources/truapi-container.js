@@ -1,6 +1,15 @@
 "use strict";
 (() => {
-  // src/index.ts
+  // src/freeze.ts
+  var failures = [];
+  function describe(obj) {
+    if (obj === globalThis) return "window";
+    const name = obj?.constructor?.name;
+    return typeof name === "string" && name.length > 0 ? name : "object";
+  }
+  function recordFailure(obj, prop) {
+    failures.push(`${describe(obj)}.${prop}`);
+  }
   function freezeAndDelete(obj, prop) {
     try {
       Object.defineProperty(obj, prop, {
@@ -15,6 +24,9 @@
       } catch {
       }
     }
+    if (obj?.[prop] !== void 0) {
+      recordFailure(obj, prop);
+    }
   }
   function freezeValue(obj, prop, value) {
     try {
@@ -26,7 +38,53 @@
       });
     } catch {
     }
+    if (obj?.[prop] !== value) {
+      recordFailure(obj, prop);
+    }
   }
+  function freezeCustom(obj, prop, descriptor, verify) {
+    try {
+      Object.defineProperty(obj, prop, { configurable: false, ...descriptor });
+    } catch {
+    }
+    let locked = false;
+    try {
+      locked = verify(obj?.[prop]);
+    } catch {
+    }
+    if (!locked) {
+      recordFailure(obj, prop);
+    }
+  }
+  function reportLockdownFailures() {
+    if (failures.length === 0) {
+      return;
+    }
+    const message = `TrUAPI container lockdown failed for: ${failures.join(", ")}`;
+    try {
+      console.error(message);
+    } catch {
+    }
+    throw new Error(message);
+  }
+
+  // src/webrtc.ts
+  var POLICY_GLOBAL = "__truapi_policy__";
+  function installWebRtcPolicy(win, allowed) {
+    if (allowed === true) {
+      return;
+    }
+    freezeAndDelete(win, "RTCPeerConnection");
+    freezeAndDelete(win, "webkitRTCPeerConnection");
+    freezeAndDelete(win, "mozRTCPeerConnection");
+  }
+  function consumeWebRtcPolicy(win) {
+    const allowed = win?.[POLICY_GLOBAL]?.webRtcAllowed;
+    freezeAndDelete(win, POLICY_GLOBAL);
+    return allowed;
+  }
+
+  // src/index.ts
   var _nativeFetch = window.fetch.bind(window);
   var _NativeWebSocket = window.WebSocket;
   var _bridgeUrl = window.__truapi_localhost?.url;
@@ -39,14 +97,12 @@
     }
   });
   freezeValue(window, "WebSocket", _GatedWebSocket);
-  try {
-    Object.defineProperty(_NativeWebSocket.prototype, "constructor", {
-      value: _GatedWebSocket,
-      writable: false,
-      configurable: false
-    });
-  } catch {
-  }
+  freezeCustom(
+    _NativeWebSocket.prototype,
+    "constructor",
+    { value: _GatedWebSocket, writable: false },
+    (current) => current === _GatedWebSocket
+  );
   freezeValue(window, "fetch", (input, init) => {
     try {
       const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -63,29 +119,26 @@
   freezeValue(navigator, "sendBeacon", () => false);
   freezeAndDelete(window, "indexedDB");
   freezeAndDelete(window, "caches");
-  try {
-    Object.defineProperty(document, "cookie", {
-      get: () => "",
-      set: () => {
-      },
-      configurable: false
-    });
-  } catch {
-  }
+  freezeCustom(
+    document,
+    "cookie",
+    { get: () => "", set: () => {
+    } },
+    (current) => current === ""
+  );
   freezeAndDelete(window, "SharedWorker");
   if (navigator.serviceWorker) {
-    try {
-      Object.defineProperty(navigator, "serviceWorker", {
-        value: Object.freeze({
-          register: () => {
-            throw new Error("ServiceWorker is not available");
-          }
-        }),
-        writable: false,
-        configurable: false
-      });
-    } catch {
-    }
+    const _stubServiceWorker = Object.freeze({
+      register: () => {
+        throw new Error("ServiceWorker is not available");
+      }
+    });
+    freezeCustom(
+      navigator,
+      "serviceWorker",
+      { value: _stubServiceWorker, writable: false },
+      (current) => current === _stubServiceWorker
+    );
   }
   var _createElement = document.createElement.bind(document);
   freezeValue(document, "createElement", (tagName, options) => {
@@ -94,4 +147,6 @@
     }
     return _createElement(tagName, options);
   });
+  installWebRtcPolicy(window, consumeWebRtcPolicy(window));
+  reportLockdownFailures();
 })();

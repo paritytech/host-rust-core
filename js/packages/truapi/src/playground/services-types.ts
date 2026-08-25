@@ -19,12 +19,16 @@ export interface MethodInfo {
 }
 
 /** Trusted executable kind required to access a generated service. */
-export type ProductExecutionKind = "Spa" | "Chat";
+export type ProductExecutionKind = "App" | "Widget" | "Worker";
 
 export interface ServiceInfo {
   name: string;
-  /** Executable kind required by the host, or unrestricted when absent. */
-  requiredExecution?: ProductExecutionKind;
+  /**
+   * Executable kind required by the host, or unrestricted when absent. Typed
+   * as a string because the explorer's frozen per-version snapshots record the
+   * kind each past protocol version declared, not today's variants.
+   */
+  requiredExecution?: string;
   methods: MethodInfo[];
 }
 

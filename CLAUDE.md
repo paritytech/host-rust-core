@@ -71,7 +71,8 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   bindings, and the `ios-swift` job compiles the package and its test target on
   pull requests touching `ios/`, `Package.swift`, the `Makefile` or `native*`,
   which is what catches a hand-written conformer that missed a new protocol
-  requirement. `TrUAPIHost.kt` and the embedding apps are compiled by neither.
+  requirement. `TrUAPIHost.kt` and the embedding apps are compiled by neither;
+  run `make android-check` after touching the Kotlin surface.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
   callbacks; `TrUAPIHostRuntime` and `TrUAPIHostCore` both accept one.
   To publish the binary, include `@parity/ios-host <version>`

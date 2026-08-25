@@ -13,3 +13,5 @@ export default init;
 export const WasmPairingHostRuntime: WasmModuleShape["WasmPairingHostRuntime"];
 export const WasmProductRuntime: WasmModuleShape["WasmProductRuntime"];
 export const setLogLevel: (level: string) => void;
+export const deriveProductAccountPublicKey: WasmModuleShape["deriveProductAccountPublicKey"];
+export const productAccountAddress: WasmModuleShape["productAccountAddress"];

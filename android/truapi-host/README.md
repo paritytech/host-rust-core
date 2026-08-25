@@ -50,6 +50,80 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
 - `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, local-session activation, permission-authorization status, and native change notifications for session storage, theme, and preimage updates.
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
+- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
+- `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
+
+## Chat
+
+A host serving the Chat modality implements `ChatHostBridge` (`createRoom`, `registerBot`, `postMessage`, `listRooms`) and opens the execution with `ProductExecutionKind.CHAT`:
+
+```kotlin
+import io.parity.truapi.*
+import uniffi.truapi.ChatBotRegistrationStatus
+import uniffi.truapi.ChatMessageContent
+import uniffi.truapi.ChatRoom
+import uniffi.truapi.ChatRoomParticipation
+import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi_server.HostRejection
+
+// Called from a shared dispatch pool, so the backing store must be
+// thread-safe, and a slow call here stalls other product executions.
+class MyChatBridge(private val store: ChatStore) : ChatHostBridge {
+    override fun createRoom(roomId: String, name: String, icon: String) =
+        if (store.putRoom(roomId, name, icon)) ChatRoomRegistrationStatus.NEW
+        else ChatRoomRegistrationStatus.EXISTS
+
+    override fun registerBot(botId: String, name: String, icon: String) =
+        if (store.putBot(botId, name, icon)) ChatBotRegistrationStatus.NEW
+        else ChatBotRegistrationStatus.EXISTS
+
+    override fun postMessage(roomId: String, content: ChatMessageContent): String {
+        if (content is ChatMessageContent.File) {
+            // Declining a variant is how a host opts out of rendering one.
+            throw HostRejection.Rejected("this host cannot render file cards")
+        }
+        return store.append(roomId, content)
+    }
+
+    override fun listRooms(): List<ChatRoom> = store.rooms()
+}
+
+val runtime = TrUAPIHostRuntime(
+    bridge = bridge,
+    runtimeConfig = HostRuntimeConfig(
+        hostName = "My Chat Host",
+        peopleChainGenesisHash = peopleChainGenesisHash,   // exactly 32 bytes
+        bulletinChainGenesisHash = bulletinChainGenesisHash,
+    ),
+)
+// Chat needs an active session; without one every Chat call answers `Denied`.
+runtime.activateLocalSession(secret)
+
+val execution = runtime.openProductExecution(
+    bridge = bridge,
+    configuration = ProductExecutionConfig("chat.dot", ProductExecutionKind.CHAT),
+    chat = MyChatBridge(store),
+)
+val endpoint = execution.startWsBridge()
+webView.evaluateJavascript(
+    LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
+    null,
+)
+```
+
+Chat requires an active session: `openProductExecution` succeeds without one,
+but every Chat call then answers `Denied` until `activateLocalSession` or SSO
+pairing completes.
+
+The core bounds and screens the product-supplied fields it forwards — ids,
+names, icons, message bodies, URLs, and the action and media counts. Ids and
+names are also normalized; a message body is bounded and screened but passed
+through byte-for-byte, and `ChatFile.size_bytes` is product-asserted and
+unverified. Contextual output escaping is the host's job.
+
+`postMessage` receives any `ChatMessageContent` variant; throw from it for one this host cannot render. The id it returns is the correlation key `ActionTrigger.messageId` carries back, so it must name that message for as long as the host stores it.
+
+On the execution: `publishChatAction` delivers a user's action back to the product (buffered until it subscribes), `notifyChatRoomsChanged` republishes the room list, `renderCustomMessage` returns a `Flow` of typed UI for a stored custom message, and `sessionChatIdentityKey` reads the session's X25519 chat identity key.
 
 ## Architecture
 
@@ -106,6 +180,23 @@ if (report.slotsExhausted) {
 ```
 
 One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed run is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
+
+### Answering the scheduler
+
+A pass reports per target and only throws when it could not run at all, so decide from the report rather than from the absence of an exception:
+
+- every status `Registered` or `AlreadyAllocated`: `Result.success()`.
+- any status `Failed`: `Result.retry()`. The grace window means the retry can wait for the worker's own backoff rather than a tight loop.
+- any status `SkippedExhausted`, or `report.slotsExhausted`: `Result.success()`. Retrying cannot free a slot, only time or a replacement can, so a retry here only burns the worker's budget. It does mean an allowance went unrenewed, so tell the person rather than only logging it.
+- an exception carrying `Disconnected` before a session is restored: not ready rather than failed. Restore a session and let the next run take it.
+
+Scheduling is one of three layers, and only the first needs the OS:
+
+1. a `WorkManager` run, which is the only one that covers an app nobody opens.
+2. a pass on session activation, which covers an app somebody does.
+3. on-demand allocation, which registers a product's own account for the current period when that product asks for a statement-store allowance and none is held. That covers the asking product, not the rest of the ledger, so it narrows the window rather than closing it.
+
+`lastStatementRenewalReport()` returns the most recent pass the in-process loop ran, or `null` if none has, which is "not yet" rather than healthy. The loop returns nothing to its caller, so this is where a host driving it reads what it achieved; checking on resume is enough to catch an exhausted period. A direct `renewStatementAllowances()` hands back its own report and does not write here.
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
 
@@ -261,7 +352,20 @@ core.notifyChainClosed(chainConnectionId)
 // following `loadUrl` replaces, so the product would lose the endpoint. Scope
 // it to the product origin. The page reads `window.__truapi_localhost.url` and
 // passes it to `@parity/truapi`'s `createWebSocketProvider`.
-val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token)
+// A peek, never a prompt — see LocalhostBridgeBootstrap.script. Baked in as a
+// literal because the container enforces it inside the product's own realm,
+// where an async permission request would be forgeable. A fresh grant therefore
+// only takes effect once the web view reloads.
+//
+// Read this as a policy value, not a gate: Android injects no lockdown
+// container, so nothing consumes the decision and WebRTC is reachable on
+// Android whatever the status says. Pass what the core returns anyway — a
+// literal `true` compiles and would silently keep that open once the container
+// does land (#334 scopes the gate to iOS).
+val webRtcAllowed = core.permissionAuthorizationStatus(
+    PermissionAuthorizationRequest.Remote(RemotePermissionRequest(RemotePermission.WebRtc))
+) == PermissionAuthorizationStatus.AUTHORIZED
+val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token, webRtcAllowed)
 main.post {
     val productUrl = "https://your-product.example/"
     if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -358,3 +462,7 @@ the generator. The `codegen` profile is required because uniffi-bindgen scans
 the cdylib's exported metadata symbols, which the `release` profile strips — a
 plain `--release` build produces a stripped library and no bindings. (`make
 uniffi` regenerates the Swift bindings; use `make uniffi-kotlin` for Android.)
+
+No CI job compiles this package. After changing `TrUAPIHost.kt` or the UniFFI
+surface it wraps, run `make android-check` locally — it regenerates the Kotlin
+bindings and compiles the module against them.

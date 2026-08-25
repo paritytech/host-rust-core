@@ -1,5 +1,27 @@
 # @parity/truapi-host
 
+## 0.7.0
+
+### Minor Changes
+
+- Host runtime over the current Rust core. A JS host can serve Chat as an
+  optional capability: bot registration, every message variant forwarded,
+  manifest execution-kind matching, and custom chat rendering. The runtime
+  retains and exposes session identity material, emits the opening auth state
+  with a typed `LoginFailed` kind, forwards session activation, yields the named
+  theme from `subscribe_theme`, and reads person usernames from Asset Hub dotNS.
+  External navigation is gated on a per-host remote grant, own-account subtree
+  consent is gated with a bounded deadline, and statement-store allowance
+  renewal pools PGAS slots and reports what the last pass achieved. Fixes:
+  workers are disposed cleanly, a misbehaving product or host no longer aborts
+  the process, and the wasm glue is imported by a literal specifier.
+
+### Patch Changes
+
+- Updated dependencies [d872d64]
+- Updated dependencies [d49f253]
+  - @parity/truapi@0.10.0
+
 ## 0.6.0
 
 ### Minor Changes

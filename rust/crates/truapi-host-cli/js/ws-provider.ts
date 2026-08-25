@@ -1,9 +1,13 @@
 // WebSocket `WireProvider` for @parity/truapi: one binary WebSocket message
-// per SCALE protocol frame. TCP endpoints use Bun's native WebSocket; Unix
-// endpoints perform the same RFC 6455 protocol over a filesystem socket.
+// per SCALE protocol frame. TCP endpoints reuse `createWebSocketProvider` from
+// the client package; Unix endpoints perform the same RFC 6455 protocol over a
+// filesystem socket, which no browser needs and only this CLI speaks.
 import { createHash, randomBytes } from "node:crypto";
 import { connect, type Socket } from "node:net";
-import type { WireProvider } from "../../../../js/packages/truapi/src/index.ts";
+import {
+  createWebSocketProvider,
+  type WireProvider,
+} from "../../../../js/packages/truapi/src/index.ts";
 
 type FrameProvider = WireProvider & { opened: Promise<void> };
 
@@ -16,61 +20,8 @@ export function wsProvider(url: string): FrameProvider {
   if (url.startsWith(UNIX_WS_PREFIX)) {
     return unixWsProvider(parseUnixSocketPath(url));
   }
-  return nativeWsProvider(url);
-}
-
-function nativeWsProvider(url: string): FrameProvider {
-  const ws = new WebSocket(url);
-  ws.binaryType = "arraybuffer";
-  const listeners = new Set<(message: Uint8Array) => void>();
-  const closeListeners = new Set<(error: Error) => void>();
-  const pending: Uint8Array[] = [];
-  let open = false;
-
-  let resolveOpened!: () => void;
-  let rejectOpened!: (error: Error) => void;
-  const opened = new Promise<void>((resolve, reject) => {
-    resolveOpened = resolve;
-    rejectOpened = reject;
-  });
-
-  ws.addEventListener("open", () => {
-    open = true;
-    for (const frame of pending.splice(0)) ws.send(frame);
-    resolveOpened();
-  });
-  ws.addEventListener("message", (event) => {
-    const bytes = new Uint8Array(event.data as ArrayBuffer);
-    for (const listener of listeners) listener(bytes);
-  });
-  ws.addEventListener("close", () => {
-    const error = new Error("websocket closed");
-    for (const listener of closeListeners) listener(error);
-  });
-  ws.addEventListener("error", () => {
-    const error = new Error("websocket error");
-    rejectOpened(error);
-    for (const listener of closeListeners) listener(error);
-  });
-
-  return {
-    opened,
-    postMessage(message: Uint8Array) {
-      if (open) ws.send(message);
-      else pending.push(message);
-    },
-    subscribe(cb: (message: Uint8Array) => void) {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
-    subscribeClose(cb: (error: Error) => void) {
-      closeListeners.add(cb);
-      return () => closeListeners.delete(cb);
-    },
-    dispose() {
-      ws.close();
-    },
-  };
+  // The TCP path is plain WebSocket, so `@parity/truapi` owns it now.
+  return createWebSocketProvider(url);
 }
 
 function parseUnixSocketPath(url: string): string {

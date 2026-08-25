@@ -11,7 +11,7 @@ use crate::wire;
 use crate::{CallContext, CallError, Subscription};
 
 /// Chat room, bot, and message APIs.
-#[crate::service(required_execution = Chat)]
+#[crate::service(required_execution = Worker)]
 #[crate::async_trait]
 pub trait Chat: Send + Sync {
     /// Create a chat room.
@@ -70,6 +70,18 @@ pub trait Chat: Send + Sync {
     }
 
     /// Post a message to a chat room.
+    ///
+    /// The host bounds and screens what it forwards. Message text is capped at
+    /// 16 KiB and keeps line breaks and tabs, but is rejected for other
+    /// control characters and for bidirectional overrides. Identifiers and
+    /// display names are normalized and screened. A message carries at most 32
+    /// actions and 32 media items, a custom payload at most 256 KiB, and a URL
+    /// at most 2 KiB which must be `https` or an inline raster image. A
+    /// rejection reports `MessageTooLarge` when the body or custom payload is
+    /// over budget, and `Unknown` with a reason naming the field otherwise.
+    ///
+    /// The returned `messageId` is the correlation key for any action the
+    /// message carries: a later `actionSubscribe` trigger names it.
     ///
     /// ```ts
     /// const result = await truapi.chat.postMessage({

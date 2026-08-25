@@ -1,6 +1,6 @@
 import { Observable } from "rxjs";
 import { err, ok, type Result } from "neverthrow";
-import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
 import {
   AccountId,
   Blake2128Concat,
@@ -51,7 +51,10 @@ export type BuildCreateTransactionPayload = (opts: {
   callData: HexString;
 }) => Promise<Result<ProductAccountTxPayload, Error>>;
 
-const usernameOwnerOfStorage = Storage("Resources")("UsernameOwnerOf", [
+// Lite usernames are keyed by their dotted label ("alice.01") on the Asset
+// Hub gateway pallet. Full-person ownership lives contract-side as H160 only.
+// Name→account resolution therefore covers lite usernames.
+const liteLabelOwnerStorage = Storage("DotnsGateway")("LiteLabelOwner", [
   Bytes(),
   Blake2128Concat,
 ]);
@@ -113,7 +116,7 @@ export function createAccountIdForDotNsUsername(
       return err(new Error("DotNS username is empty"));
     }
 
-    const key = usernameOwnerOfStorage.enc(
+    const key = liteLabelOwnerStorage.enc(
       new TextEncoder().encode(dotNsUsername),
     ) as HexString;
 
@@ -137,7 +140,7 @@ export function createAccountIdForDotNsUsername(
         switch (item.tag) {
           case "Initialized": {
             const result = await truapi.chain.getHeadStorage({
-              genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+              genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
               followSubscriptionId: sub.subscriptionId,
               hash: item.value.finalizedBlockHashes[0],
               items: [{ key, queryType: "Value" }],
@@ -188,7 +191,7 @@ export function createAccountIdForDotNsUsername(
       const sub = truapi.chain
         .followHeadSubscribe({
           request: {
-            genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+            genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
             withRuntime: false,
           },
         })

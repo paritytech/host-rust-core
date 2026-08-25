@@ -1958,14 +1958,15 @@ public protocol NativeChatCallbacks: AnyObject, Sendable {
     func registerBot(botId: String, name: String, icon: String) throws  -> ChatBotRegistrationStatus
 
     /**
-     * Persist a text message in native Chat storage.
+     * Persist a product-authored message in native Chat storage. A host that
+     * cannot render a given content variant returns a rejection for it.
+     *
+     * The returned id is what [`ActionTrigger::message_id`] carries back, so
+     * it must name this message for as long as the host stores it.
+     *
+     * [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
      */
-    func postTextMessage(roomId: String, text: String) throws  -> String
-
-    /**
-     * Persist a custom message in native Chat storage.
-     */
-    func postCustomMessage(roomId: String, messageType: String, payload: Data) throws  -> String
+    func postMessage(roomId: String, content: ChatMessageContent) throws  -> String
 
     /**
      * Return the current product-scoped native Chat room list.
@@ -2064,30 +2065,21 @@ open func registerBot(botId: String, name: String, icon: String)throws  -> ChatB
 }
 
     /**
-     * Persist a text message in native Chat storage.
+     * Persist a product-authored message in native Chat storage. A host that
+     * cannot render a given content variant returns a rejection for it.
+     *
+     * The returned id is what [`ActionTrigger::message_id`] carries back, so
+     * it must name this message for as long as the host stores it.
+     *
+     * [`ActionTrigger::message_id`]: truapi::latest::ActionTrigger
      */
-open func postTextMessage(roomId: String, text: String)throws  -> String  {
+open func postMessage(roomId: String, content: ChatMessageContent)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
         uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativechatcallbacks_post_text_message(
+    uniffi_truapi_server_fn_method_nativechatcallbacks_post_message(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(roomId),
-        FfiConverterString.lower(text),uniffiCallStatus
-    )
-})
-}
-
-    /**
-     * Persist a custom message in native Chat storage.
-     */
-open func postCustomMessage(roomId: String, messageType: String, payload: Data)throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativechatcallbacks_post_custom_message(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(roomId),
-        FfiConverterString.lower(messageType),
-        FfiConverterData.lower(payload),uniffiCallStatus
+        FfiConverterTypeChatMessageContent_lower(content),uniffiCallStatus
     )
 })
 }
@@ -2190,10 +2182,10 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
                 lowerError: FfiConverterTypeHostRejection_lower
             )
         },
-        postTextMessage: { (
+        postMessage: { (
             uniffiHandle: UInt64,
             roomId: RustBuffer,
-            text: RustBuffer,
+            content: RustBuffer,
             uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -2202,38 +2194,9 @@ fileprivate struct UniffiCallbackInterfaceNativeChatCallbacks {
                 guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
-                return try uniffiObj.postTextMessage(
+                return try uniffiObj.postMessage(
                      roomId: try FfiConverterString.lift(roomId),
-                     text: try FfiConverterString.lift(text)
-                )
-            }
-
-
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterString.lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeHostRejection_lower
-            )
-        },
-        postCustomMessage: { (
-            uniffiHandle: UInt64,
-            roomId: RustBuffer,
-            messageType: RustBuffer,
-            payload: RustBuffer,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> String in
-                guard let uniffiObj = try? FfiConverterTypeNativeChatCallbacks.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.postCustomMessage(
-                     roomId: try FfiConverterString.lift(roomId),
-                     messageType: try FfiConverterString.lift(messageType),
-                     payload: try FfiConverterData.lift(payload)
+                     content: try FfiConverterTypeChatMessageContent_lift(content)
                 )
             }
 
@@ -2518,6 +2481,14 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
     func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
 
     /**
+     * Resolve a product's hard-subtree public key for hosts naming the account
+     * a review will sign with. Answers from the cache, the persisted slot, or
+     * the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+     * an error; `None` means no active session.
+     */
+    func productSubtreePublicKey(productId: String, timeoutMs: UInt32?) throws  -> Bytes32?
+
+    /**
      * Publish one native Chat action, buffering it until the product
      * connection subscribes.
      */
@@ -2704,6 +2675,23 @@ open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)
 }
 
     /**
+     * Resolve a product's hard-subtree public key for hosts naming the account
+     * a review will sign with. Answers from the cache, the persisted slot, or
+     * the Account Holder, and `timeout_ms` bounds that wait. Exceeding it is
+     * an error; `None` means no active session.
+     */
+open func productSubtreePublicKey(productId: String, timeoutMs: UInt32?)throws  -> Bytes32?  {
+    return try  FfiConverterOptionTypeBytes32.lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativeproductexecution_product_subtree_public_key(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(productId),
+        FfiConverterOptionUInt32.lower(timeoutMs),uniffiCallStatus
+    )
+})
+}
+
+    /**
      * Publish one native Chat action, buffering it until the product
      * connection subscribes.
      */
@@ -2883,6 +2871,17 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
      * the host's main/UI thread.
      */
     func disconnect()
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
 
     /**
      * The in-process loop's own cadence, capped at an hour. An allowance stays
@@ -3136,6 +3135,24 @@ open func disconnect()  {try! rustCall() {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 }
+}
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapicore_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -3461,6 +3478,17 @@ public protocol NativeTrUApiHostRuntimeProtocol: AnyObject, Sendable {
     func handleSsoRequest(message: Data) async throws  -> SsoRequestOutcome
 
     /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+    func lastStatementRenewalReport()  -> StatementRenewalReport?
+
+    /**
      * The in-process loop's own cadence: at most an hour, tightening to land
      * just after the next period boundary.
      *
@@ -3651,6 +3679,24 @@ open func handleSsoRequest(message: Data)async throws  -> SsoRequestOutcome  {
             liftFunc: FfiConverterTypeSsoRequestOutcome_lift,
             errorHandler: FfiConverterTypeHostRejection_lift
         )
+}
+
+    /**
+     * The most recent pass the in-process renewal loop ran.
+     *
+     * `None` until a pass has run, which is "not yet" rather than healthy.
+     * [`Self::start_statement_allowance_renewal`] has no return value, so a host
+     * driving the loop reads its result here: `slots_exhausted` on the last pass
+     * means a period filled up and an allowance went unrenewed, which is the one
+     * outcome retrying cannot fix and a person may need telling about.
+     */
+open func lastStatementRenewalReport() -> StatementRenewalReport?  {
+    return try!  FfiConverterOptionTypeStatementRenewalReport.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_truapi_server_fn_method_nativetruapihostruntime_last_statement_renewal_report(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
 
     /**
@@ -5808,9 +5854,16 @@ public protocol NativeCustomRendererObserver: AnyObject, Sendable {
     func onUpdate(node: CustomRendererNode)
 
     /**
-     * Report that the renderer stream ended.
+     * Report that the renderer stream ended without drawing further trees.
+     * The last tree delivered stands.
      */
     func onComplete()
+
+    /**
+     * Report that the product could not serve this render. The last tree
+     * delivered, if any, is partial and must not be treated as final.
+     */
+    func onError(reason: String)
 
 }
 
@@ -5872,6 +5925,30 @@ fileprivate struct UniffiCallbackInterfaceNativeCustomRendererObserver {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onComplete(
+                )
+            }
+
+
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
+        },
+        onError: { (
+            uniffiHandle: UInt64,
+            reason: RustBuffer,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceNativeCustomRendererObserver.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.onError(
+                     reason: try FfiConverterString.lift(reason)
                 )
             }
 
@@ -6077,6 +6154,30 @@ fileprivate struct FfiConverterOptionTypeProductAccountId: FfiConverterRustBuffe
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeProductAccountId.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeStatementRenewalReport: FfiConverterRustBuffer {
+    typealias SwiftType = StatementRenewalReport?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeStatementRenewalReport.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeStatementRenewalReport.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -6486,13 +6587,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_register_bot() != 59357) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_text_message() != 49314) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_message() != 56893) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_post_custom_message() != 28844) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 37616) {
+    if (uniffi_truapi_server_checksum_method_nativechatcallbacks_list_rooms() != 21374) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_device_encryption_key() != 18707) {
@@ -6514,6 +6612,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_product_subtree_public_key() != 63238) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_publish_chat_action() != 31503) {
@@ -6544,6 +6645,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_disconnect() != 18254) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_last_statement_renewal_report() != 25210) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_next_statement_renewal_delay() != 13069) {
@@ -6603,6 +6707,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_handle_sso_request() != 21060) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_last_statement_renewal_report() != 40119) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_truapi_server_checksum_method_nativetruapihostruntime_next_statement_renewal_delay() != 33452) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -6639,7 +6746,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_update() != 1079) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 43817) {
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_complete() != 32694) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_nativecustomrendererobserver_on_error() != 21230) {
         return InitializationResult.apiChecksumMismatch
     }
 
