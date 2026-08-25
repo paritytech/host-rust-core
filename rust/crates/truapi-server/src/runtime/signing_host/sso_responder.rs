@@ -142,6 +142,11 @@ pub struct PairedSsoPeer {
     pub encryption_public_key: [u8; 32],
 }
 
+struct EstablishedPairing {
+    session: SsoSessionInfo,
+    replay_scope: SsoReplayScope,
+}
+
 impl PairedSsoPeer {
     /// Extract the public peer material carried by a pairing deeplink.
     pub fn from_deeplink(deeplink: &str) -> Result<Self, String> {
@@ -244,6 +249,31 @@ pub(crate) async fn respond_to_pairing(
     signing_host: Arc<SigningHost>,
     deeplink: &str,
 ) -> Result<ResponderExit, String> {
+    let established = establish_pairing_session(&services, &signing_host, deeplink).await?;
+    serve_session(
+        services,
+        signing_host,
+        established.session,
+        established.replay_scope,
+    )
+    .await
+}
+
+/// Answer a pairing host's handshake without entering its long-lived serve loop.
+pub(crate) async fn establish_pairing(
+    services: Arc<RuntimeServices>,
+    signing_host: Arc<SigningHost>,
+    deeplink: &str,
+) -> Result<(), String> {
+    establish_pairing_session(&services, &signing_host, deeplink).await?;
+    Ok(())
+}
+
+async fn establish_pairing_session(
+    services: &Arc<RuntimeServices>,
+    signing_host: &Arc<SigningHost>,
+    deeplink: &str,
+) -> Result<EstablishedPairing, String> {
     let peer = PairedSsoPeer::from_deeplink(deeplink)?;
     let entropy = signing_host
         .root_entropy()
@@ -278,19 +308,16 @@ pub(crate) async fn respond_to_pairing(
         .statement_store
         .submit(statement, "sso-responder handshake")
         .await?;
-    debug!("answered pairing handshake, serving SSO session");
+    debug!("answered pairing handshake");
 
-    serve_session(
-        services,
-        signing_host,
+    Ok(EstablishedPairing {
         session,
-        SsoReplayScope {
+        replay_scope: SsoReplayScope {
             root_public_key: root.public.to_bytes(),
             peer_statement_account_id: peer.statement_account_id,
             peer_encryption_public_key: peer.encryption_public_key,
         },
-    )
-    .await
+    })
 }
 
 /// Resume a previously paired SSO session from its persisted public peer keys.

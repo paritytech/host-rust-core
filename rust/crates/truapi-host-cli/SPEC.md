@@ -783,13 +783,17 @@ Before a signing host answers a link, it:
    registry instead);
 6. grants or reuses Statement Store allowance for the identity account;
 7. grants or reuses allowance for every saved pairing device and the
-   candidate; and
-8. starts the real SSO responder.
+   candidate;
+8. submits the encrypted handshake response;
+9. after a successful submission, stores the candidate for a managed session;
+   and
+10. starts the resumable SSO responder.
 
 For a managed session, `/pair` stores the candidate in `paired-hosts.json`
-before starting the responder. The statement account ID is the key. Pairing the
-same host again updates its public key and display metadata and replaces only
-that host's responder. Responders for other statement accounts keep running.
+after the handshake succeeds and before starting the resumable responder. The
+statement account ID is the key. Pairing the same host again updates its public
+key and display metadata and replaces only that host's responder. Responders for
+other statement accounts keep running.
 
 Interactive mode and `--serve` restore every saved peer for the selected
 session. Background responders treat transient failures and ended subscriptions
@@ -803,8 +807,9 @@ request is recorded as started before its messages execute and as completed
 afterward. Either state suppresses execution of an unexpired duplicate while
 still publishing the statement-level success acknowledgement. A duplicate
 `Disconnected` request still terminates and removes that peer. Expired entries
-are pruned. At 1,024 live entries the ledger rejects a new request before
-executing it instead of evicting an unexpired replay marker.
+are pruned. Missing or overly distant peer expiry is retained for at most the
+seven-day SSO statement lifetime. At 1,024 live entries the ledger rejects a new
+request before executing it instead of evicting an unexpired replay marker.
 
 In `exec`, `/pair` waits for the responder to finish. With `--deeplink` plus
 another `exec` command or a script, the responder runs only for that command's

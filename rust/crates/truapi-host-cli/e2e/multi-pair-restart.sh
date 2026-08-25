@@ -38,7 +38,7 @@ process_running() {
 cleanup() {
   local status=$?
   stop_process "$SIGNER_PID"
-  for process_id in "${PAIRING_PIDS[@]}"; do
+  for process_id in ${PAIRING_PIDS[@]+"${PAIRING_PIDS[@]}"}; do
     stop_process "$process_id"
   done
   rm -rf -- "$PAIRING_A_BASE" "$PAIRING_B_BASE"

@@ -29,7 +29,9 @@ use subxt::utils::{AccountId32, MultiSignature};
 pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
 pub use sso_responder::{PairedSsoPeer, ResponderExit};
-pub(crate) use sso_responder::{answer_remote_message, respond_to_pairing, resume_pairing};
+pub(crate) use sso_responder::{
+    answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
+};
 
 use super::authority::{
     AccountAliasAuthorityRequest, AuthorityError, AuthoritySession, BulletinAllowanceKey,

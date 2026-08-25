@@ -1032,7 +1032,7 @@ async fn run_signing_host(
             frame_server,
             async move {
                 ensure_signer(&mut session).await?;
-                restore_paired_responders(&mut session).await?;
+                restore_paired_responders(&mut session).await;
                 if let Some(deeplink) = serve_deeplink {
                     start_deeplink_responder(&mut session, deeplink).await?;
                 }
@@ -1079,7 +1079,7 @@ async fn run_signing_host(
     }
 
     let terminal_ui = terminal_ui.context("interactive terminal was not initialized")?;
-    restore_paired_responders(&mut session).await?;
+    restore_paired_responders(&mut session).await;
     let cleanup_catalog = session.catalog.clone();
     let clear_target = with_frame_server(
         runtime_for_frames,
@@ -1479,7 +1479,13 @@ fn safe_display_metadata(value: String) -> Option<String> {
     let value = value
         .trim()
         .chars()
-        .filter(|character| !character.is_control())
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    character,
+                    '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+        })
         .take(512)
         .collect::<String>();
     (!value.is_empty()).then_some(value)
@@ -1502,18 +1508,13 @@ fn persist_paired_host(session: &SigningHostSession, host: &PairedHost) -> Resul
 fn spawn_supervised_responder(
     runtime: Arc<SigningHostRuntime>,
     host: PairedHost,
-    deeplink: Option<String>,
     persisted: Option<(SessionCatalog, SessionProfile)>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let peer = paired_sso_peer(&host);
         let mut retry_delay = std::time::Duration::from_secs(1);
         loop {
-            let result = if let Some(deeplink) = &deeplink {
-                runtime.respond_to_pairing(deeplink).await
-            } else {
-                runtime.resume_pairing(peer).await
-            };
+            let result = runtime.resume_pairing(peer).await;
             match result {
                 Ok(ResponderExit::PeerDisconnected) => {
                     if let Some((catalog, profile)) = &persisted {
@@ -1566,50 +1567,54 @@ fn spawn_supervised_responder(
     })
 }
 
-fn start_paired_host_responder(
-    session: &mut SigningHostSession,
-    host: PairedHost,
-    deeplink: Option<String>,
-) {
+fn start_paired_host_responder(session: &mut SigningHostSession, host: PairedHost) {
     let statement_account_id = host.statement_account_id();
     let persisted = session
         .profile
         .clone()
         .map(|profile| (session.catalog.clone(), profile));
-    let task = spawn_supervised_responder(session.runtime.clone(), host, deeplink, persisted);
+    let task = spawn_supervised_responder(session.runtime.clone(), host, persisted);
     session.responders.insert(statement_account_id, task);
     terminal_ui::output_event(SystemEvent::SigningHostResponderStarted);
 }
 
-async fn restore_paired_responders(session: &mut SigningHostSession) -> Result<()> {
+async fn restore_paired_responders(session: &mut SigningHostSession) {
     let Some(profile) = session.profile.clone() else {
-        return Ok(());
+        return;
     };
-    let paired_hosts = session.catalog.paired_hosts(&profile)?;
+    let paired_hosts = match session.catalog.paired_hosts(&profile) {
+        Ok(paired_hosts) => paired_hosts,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read saved paired devices");
+            return;
+        }
+    };
     if paired_hosts.is_empty() {
-        return Ok(());
+        return;
     }
-    ensure_signer(session).await?;
+    if let Err(error) = ensure_signer(session).await {
+        tracing::warn!(%error, "failed to activate the signer for saved paired devices");
+        return;
+    }
     let mut renewal_targets = vec![StatementRenewalTarget::WalletSso];
     renewal_targets.extend(
         paired_hosts
             .iter()
             .map(|host| pairing_device_renewal_target(host.statement_account_id())),
     );
-    session
+    if let Err(error) = session
         .runtime
         .track_statement_renewal_targets(renewal_targets)
         .await
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "failed to restore paired-device allowance renewal: {}",
-                error.reason
-            )
-        })?;
-    for paired_host in paired_hosts {
-        start_paired_host_responder(session, paired_host, None);
+    {
+        tracing::warn!(
+            reason = %error.reason,
+            "failed to restore paired-device allowance renewal"
+        );
     }
-    Ok(())
+    for paired_host in paired_hosts {
+        start_paired_host_responder(session, paired_host);
+    }
 }
 
 /// Park until the operator stops the process. Ctrl-C is awaited so the host owns
@@ -1649,8 +1654,15 @@ async fn ensure_signer(session: &mut SigningHostSession) -> Result<()> {
         })
         .await?,
     );
-    promote_current_profile(session)?;
-    activate_current_signer(session).await
+    if let Err(error) = promote_current_profile(session) {
+        session.signer = None;
+        return Err(error);
+    }
+    if let Err(error) = activate_current_signer(session).await {
+        session.signer = None;
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
@@ -1728,14 +1740,11 @@ async fn activate_current_signer(session: &mut SigningHostSession) -> Result<()>
     Ok(())
 }
 
-async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &str) -> Result<()> {
-    let candidate = paired_host_from_deeplink(deeplink)?;
-    let existing = session
-        .profile
-        .as_ref()
-        .map(|profile| session.catalog.paired_hosts(profile))
-        .transpose()?
-        .unwrap_or_default();
+async fn prepare_pairing_response(
+    session: &mut SigningHostSession,
+    candidate: &PairedHost,
+    existing: &[PairedHost],
+) -> Result<()> {
     let mut attempts = 0usize;
     loop {
         ensure_signer(session).await?;
@@ -1746,7 +1755,7 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
                 .context("signer has not been resolved")?;
             (signer.auto_managed, signer.account_name.clone())
         };
-        match renew_pairing_allowances(session, &existing, &candidate).await {
+        match renew_pairing_allowances(session, existing, candidate).await {
             Ok(()) => return Ok(()),
             Err(err)
                 if signer_identity_may_rotate(auto_managed, existing.len())
@@ -1799,6 +1808,59 @@ async fn prepare_pairing_response(session: &mut SigningHostSession, deeplink: &s
             }
             Err(err) => return Err(err),
         }
+    }
+}
+
+async fn establish_paired_host(
+    session: &mut SigningHostSession,
+    deeplink: &str,
+) -> Result<PairedHost> {
+    let candidate = paired_host_from_deeplink(deeplink)?;
+    let existing = session
+        .profile
+        .as_ref()
+        .map(|profile| session.catalog.paired_hosts(profile))
+        .transpose()?
+        .unwrap_or_default();
+    let candidate_is_existing = existing
+        .iter()
+        .any(|host| host.statement_account_id() == candidate.statement_account_id());
+    if let Err(error) = prepare_pairing_response(session, &candidate, &existing).await {
+        discard_new_pairing_candidate(session, &candidate, candidate_is_existing).await;
+        return Err(error);
+    }
+
+    let result = async {
+        session
+            .runtime
+            .establish_pairing(deeplink)
+            .await
+            .map_err(|error| anyhow::anyhow!("pairing failed: {}", error.reason))?;
+        persist_paired_host(session, &candidate)
+    }
+    .await;
+    if let Err(error) = result {
+        discard_new_pairing_candidate(session, &candidate, candidate_is_existing).await;
+        return Err(error);
+    }
+    Ok(candidate)
+}
+
+async fn discard_new_pairing_candidate(
+    session: &SigningHostSession,
+    candidate: &PairedHost,
+    candidate_is_existing: bool,
+) {
+    if !candidate_is_existing
+        && let Err(error) = session
+            .runtime
+            .untrack_statement_renewal_account(&candidate.statement_account_id())
+            .await
+    {
+        tracing::warn!(
+            reason = %error.reason,
+            "failed to discard abandoned pairing allowance renewal"
+        );
     }
 }
 
@@ -1998,13 +2060,11 @@ fn mark_current_account_exhausted(session: &SigningHostSession) -> Result<()> {
 }
 
 async fn respond_to_deeplink(session: &mut SigningHostSession, deeplink: String) -> Result<()> {
-    let host = paired_host_from_deeplink(&deeplink)?;
-    prepare_pairing_response(session, &deeplink).await?;
-    persist_paired_host(session, &host)?;
+    let host = establish_paired_host(session, &deeplink).await?;
     let statement_account_id = host.statement_account_id();
     let exit = session
         .runtime
-        .respond_to_pairing(&deeplink)
+        .resume_pairing(paired_sso_peer(&host))
         .await
         .map_err(|err| anyhow::anyhow!("pairing failed: {}", err.reason))?;
     if exit == ResponderExit::PeerDisconnected && session.profile.is_some() {
@@ -2020,10 +2080,8 @@ async fn start_deeplink_responder(
     session: &mut SigningHostSession,
     deeplink: String,
 ) -> Result<()> {
-    let host = paired_host_from_deeplink(&deeplink)?;
-    prepare_pairing_response(session, &deeplink).await?;
-    persist_paired_host(session, &host)?;
-    start_paired_host_responder(session, host, Some(deeplink));
+    let host = establish_paired_host(session, &deeplink).await?;
+    start_paired_host_responder(session, host);
     Ok(())
 }
 
@@ -2051,16 +2109,16 @@ async fn remove_paired_host(
         .catalog
         .remove_paired_host(profile, statement_account_id)?;
     session.responders.remove(statement_account_id);
-    session
+    if let Err(error) = session
         .runtime
         .untrack_statement_renewal_account(statement_account_id)
         .await
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "paired device was removed, but its allowance renewal could not be removed: {}",
-                error.reason
-            )
-        })?;
+    {
+        tracing::warn!(
+            reason = %error.reason,
+            "paired device was removed, but its allowance renewal could not be removed"
+        );
+    }
     Ok(paired_host)
 }
 
@@ -2370,7 +2428,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         }
     }
     terminal_ui::output_event(session_status_event(session));
-    restore_paired_responders(session).await?;
+    restore_paired_responders(session).await;
     Ok(())
 }
 
@@ -2487,7 +2545,7 @@ async fn import_mnemonic_session(
         ActivityState::Succeeded,
     );
     terminal_ui::output_event(session_status_event(session));
-    restore_paired_responders(session).await?;
+    restore_paired_responders(session).await;
     Ok(())
 }
 
@@ -3170,7 +3228,10 @@ mod cli_tests {
                 encryption_public_key: [2; 32],
             },
             metadata: vec![
-                MetadataEntry(MetadataKey::HostName, " Desktop\nHost ".to_string()),
+                MetadataEntry(
+                    MetadataKey::HostName,
+                    " Desk\u{202e}top\u{2066}\nHost\u{061c} ".to_string(),
+                ),
                 MetadataEntry(MetadataKey::HostVersion, "1.2.3".to_string()),
             ],
         });

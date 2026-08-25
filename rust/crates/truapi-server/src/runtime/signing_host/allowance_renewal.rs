@@ -186,19 +186,21 @@ async fn track_targets(
 async fn untrack_account(
     storage: &(impl CoreStorage + ?Sized),
     ledger_lock: &Mutex<()>,
+    owner: [u8; 32],
     account_id: &[u8; 32],
 ) -> Result<bool, String> {
     let _guard = ledger_lock.lock().await;
     let mut entries = read_entries(storage).await?;
     let original_len = entries.len();
     entries.retain(|entry| {
-        !matches!(
-            &entry.target,
-            StatementRenewalTarget::Account {
-                account_id: existing,
-                ..
-            } if existing == account_id
-        )
+        entry.owner != Some(owner)
+            || !matches!(
+                &entry.target,
+                StatementRenewalTarget::Account {
+                    account_id: existing,
+                    ..
+                } if existing == account_id
+            )
     });
     if entries.len() == original_len {
         return Ok(false);
@@ -291,9 +293,11 @@ pub(super) async fn untrack_account_for_signing_host(
     signing_host: &SigningHost,
     account_id: &[u8; 32],
 ) -> Result<bool, String> {
+    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
     untrack_account(
         signing_host.platform.as_ref(),
         signing_host.renewal.ledger_lock(),
+        owner_key(&entropy)?,
         account_id,
     )
     .await
@@ -1009,7 +1013,11 @@ mod tests {
             .await
             .unwrap();
 
-            assert!(untrack_account(&storage, &lock(), &[8; 32]).await.unwrap());
+            assert!(
+                untrack_account(&storage, &lock(), OWNER, &[8; 32])
+                    .await
+                    .unwrap()
+            );
             assert_eq!(
                 read_targets(&storage, OWNER).await.unwrap(),
                 vec![StatementRenewalTarget::WalletSso, second]
@@ -1035,7 +1043,7 @@ mod tests {
                 .await
                 .unwrap();
             let (removed, tracked) = futures::join!(
-                untrack_account(&storage, &ledger_lock, &[8; 32]),
+                untrack_account(&storage, &ledger_lock, OWNER, &[8; 32]),
                 track_targets(&storage, &ledger_lock, OWNER, vec![second.clone()]),
             );
             assert!(removed.unwrap());
@@ -1099,6 +1107,37 @@ mod tests {
             assert_eq!(
                 read_targets(&storage, OTHER_OWNER).await.unwrap(),
                 vec![device]
+            );
+        });
+    }
+
+    #[test]
+    fn untracking_a_device_preserves_the_other_identitys_entry() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &lock(), OWNER, vec![device.clone()])
+                .await
+                .unwrap();
+            track_targets(&storage, &lock(), OTHER_OWNER, vec![device.clone()])
+                .await
+                .unwrap();
+
+            assert!(
+                untrack_account(&storage, &lock(), OWNER, &[9; 32])
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                (
+                    read_targets(&storage, OWNER).await.unwrap(),
+                    read_targets(&storage, OTHER_OWNER).await.unwrap(),
+                ),
+                (Vec::new(), vec![device])
             );
         });
     }

@@ -34,7 +34,7 @@ use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequ
 use crate::runtime::{
     ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
     PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
-    SigningHostRole, answer_remote_message, respond_to_pairing, resume_pairing,
+    SigningHostRole, answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -582,6 +582,14 @@ impl SigningHostRuntime {
         deeplink: &str,
     ) -> Result<ResponderExit, v01::GenericError> {
         respond_to_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Answer a pairing host's handshake without entering its long-lived serve loop.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.establish_pairing"))]
+    pub async fn establish_pairing(&self, deeplink: &str) -> Result<(), v01::GenericError> {
+        establish_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
             .await
             .map_err(|reason| v01::GenericError { reason })
     }

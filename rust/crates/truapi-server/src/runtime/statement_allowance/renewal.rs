@@ -170,8 +170,8 @@ pub struct RenewalChainContext<'a> {
 /// slots than exist.
 ///
 /// `registration_lock` is held for one target operation at a time, not for the
-/// whole pass, so an on-demand allocation sharing the lock waits at most one
-/// scan or registration.
+/// whole pass. A target without an existing slot is rescanned and registered
+/// under one guard so no other allocation can claim its cached free slot.
 pub async fn renew_targets(
     context: &RenewalChainContext<'_>,
     period: u32,
@@ -211,24 +211,41 @@ pub async fn renew_targets(
         };
         let result = {
             let _guard = registration_lock.lock().await;
-            register_statement_account_pooled(
-                context.rpc,
-                context.metadata,
-                context.chain_state,
-                &scans,
-                context.memberships,
-                PooledRegistrationParams {
-                    target: &target.account_id,
+            let scans = if allocated_in(&scans).is_some() {
+                Ok(scans)
+            } else {
+                scan_collections(
+                    context.rpc,
+                    context.metadata,
+                    context.candidates,
                     period,
-                    reuse_existing: true,
-                    // Renewal exists to keep the ledger's targets alive across a
-                    // period boundary, so it may reclaim space when full.
-                    allow_eviction: true,
-                    protected: &claimed,
-                },
-            )
-            .await
-            .map_err(RenewalFailure::from)
+                    &target.account_id,
+                    true,
+                )
+                .await
+                .map_err(RenewalFailure::from)
+            };
+            match scans {
+                Ok(scans) => register_statement_account_pooled(
+                    context.rpc,
+                    context.metadata,
+                    context.chain_state,
+                    &scans,
+                    context.memberships,
+                    PooledRegistrationParams {
+                        target: &target.account_id,
+                        period,
+                        reuse_existing: true,
+                        // Renewal exists to keep the ledger's targets alive across a
+                        // period boundary, so it may reclaim space when full.
+                        allow_eviction: true,
+                        protected: &claimed,
+                    },
+                )
+                .await
+                .map_err(RenewalFailure::from),
+                Err(failure) => Err(failure),
+            }
         };
         log_target_result(period, &target.label, &result);
         if let Ok(outcome) = &result {
@@ -400,18 +417,21 @@ mod tests {
             target_with("second", [0xa2; 32]),
         ];
 
-        // Every target's slot table is scanned before registration begins. The
-        // scripted chain does not mutate, so only protection of slot 0 can push
-        // the second target elsewhere.
+        // Every target's slot table is scanned before registration begins. Each
+        // missing target is then rescanned under the registration lock.
         let mut owned = Vec::new();
         for _ in &targets {
             owned.extend((0..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
         }
-        for target in &targets {
-            owned.push(clock());
-            owned.push("null".to_string());
-            owned.push(entry(target.account_id, NOW));
-        }
+        owned.extend((0..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
+        owned.push(clock());
+        owned.push("null".to_string());
+        owned.push(entry(targets[0].account_id, NOW));
+        owned.push(entry(targets[0].account_id, NOW));
+        owned.extend((1..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
+        owned.push(clock());
+        owned.push("null".to_string());
+        owned.push(entry(targets[1].account_id, NOW));
         let responses: Vec<&str> = owned.iter().map(String::as_str).collect();
         let scripted = ScriptedRpc::new(responses);
         scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
@@ -446,6 +466,103 @@ mod tests {
             vec![0, 1],
             "the second target must not reclaim the first target's slot: {:?}",
             report.outcomes
+        );
+    }
+
+    #[test]
+    fn a_pass_rescans_before_claiming_fresh_slots() {
+        use parity_scale_codec::Encode;
+        use subxt_rpcs::RpcClient as HostRpcClient;
+
+        use crate::runtime::statement_allowance::CollectionMembership;
+        use crate::runtime::statement_allowance::extension::{ChainState, Metadata};
+        use crate::runtime::statement_allowance::proof;
+        use crate::runtime::statement_allowance::ring::RingParams;
+        use crate::runtime::statement_allowance::rpc::RpcClient;
+        use crate::runtime::statement_allowance::rpc::testing::ScriptedRpc;
+
+        const FIXTURE: &[u8] =
+            include_bytes!("../../../tests/fixtures/paseo-next-v2-metadata.scale");
+        const NOW: u64 = 10_000_000;
+
+        fn entry(account: [u8; 32]) -> String {
+            format!(r#""0x{}""#, hex::encode((account, 0u32, NOW).encode()))
+        }
+
+        let metadata = Metadata::decode(FIXTURE).unwrap();
+        let chain_state = ChainState {
+            spec_version: 1_000_000,
+            transaction_version: 1,
+            genesis_hash: [0xab; 32],
+            nonce: 0,
+            restrict_origins: false,
+        };
+        let entropy = [0x11; 32];
+        let memberships = [CollectionMembership {
+            entropy,
+            ring: RingParams {
+                collection: PersonhoodCollection::LitePeople,
+                members: vec![proof::member_key(entropy)],
+                exponent: 9,
+                ring_index: 0,
+                block_hash: "0xfinal".to_string(),
+            },
+        }];
+        let targets = [
+            target_with("first", [0xa1; 32]),
+            target_with("second", [0xa2; 32]),
+        ];
+
+        let mut responses = vec!["null".to_string(); 20];
+        responses.extend(vec!["null".to_string(); 10]);
+        responses.push("null".to_string());
+        responses.push(entry(targets[0].account_id));
+        responses.push(entry(targets[0].account_id));
+        responses.extend(vec!["null".to_string(); 9]);
+        responses.push("null".to_string());
+        responses.push(entry(targets[1].account_id));
+        let scripted = ScriptedRpc::new(responses.iter().map(String::as_str).collect::<Vec<_>>());
+        scripted.script_subscription([r#"{"inBlock":"0xb10c"}"#]);
+        scripted.script_subscription([r#"{"inBlock":"0xb10d"}"#]);
+        let rpc = RpcClient::new(HostRpcClient::new(scripted));
+
+        let candidates = [CollectionCandidate {
+            collection: PersonhoodCollection::LitePeople,
+            entropy,
+        }];
+        let context = RenewalChainContext {
+            rpc: &rpc,
+            metadata: &metadata,
+            chain_state: &chain_state,
+            candidates: &candidates,
+            memberships: &memberships,
+        };
+        let report =
+            futures::executor::block_on(renew_targets(&context, 7, &targets, &Mutex::new(())));
+
+        assert_eq!(
+            report,
+            StatementRenewalReport {
+                period: 7,
+                outcomes: vec![
+                    StatementRenewalOutcome {
+                        label: "first".to_string(),
+                        status: TargetRenewalStatus::Registered {
+                            seq: 0,
+                            block_hash: "0xb10c".to_string(),
+                        },
+                    },
+                    StatementRenewalOutcome {
+                        label: "second".to_string(),
+                        status: TargetRenewalStatus::Registered {
+                            seq: 1,
+                            block_hash: "0xb10d".to_string(),
+                        },
+                    },
+                ],
+                pruned: Vec::new(),
+                slots_exhausted: false,
+            }
         );
     }
 
@@ -498,6 +615,8 @@ mod tests {
         let mut owned = vec![entry(existing_target.account_id, 1_000)];
         owned.extend((1..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
         owned.push(entry(existing_target.account_id, 1_000));
+        owned.push(entry(existing_target.account_id, 1_000));
+        owned.extend((1..10u64).map(|seq| entry([0x99; 32], 1_000 + seq)));
         owned.push(clock());
         owned.push("null".to_string());
         owned.push(entry(new_target.account_id, NOW));

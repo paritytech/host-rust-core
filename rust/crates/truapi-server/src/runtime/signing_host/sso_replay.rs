@@ -6,6 +6,8 @@ use futures::lock::Mutex as AsyncMutex;
 use parity_scale_codec::{Decode, Encode};
 use truapi_platform::{CoreStorage, CoreStorageKey};
 
+use crate::runtime::sso_remote::DEFAULT_SSO_STATEMENT_EXPIRY_SECS;
+
 pub(super) const MAX_REQUEST_LEDGER_ENTRIES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -81,6 +83,12 @@ impl RequestLedger {
                 "SSO replay ledger is full with {MAX_REQUEST_LEDGER_ENTRIES} unexpired requests"
             ));
         }
+        let maximum_expiry = now_unix_secs.saturating_add(DEFAULT_SSO_STATEMENT_EXPIRY_SECS);
+        let expires_at_unix_secs = Some(
+            expires_at_unix_secs
+                .unwrap_or(maximum_expiry)
+                .min(maximum_expiry),
+        );
         self.entries.push(RequestLedgerEntry {
             request_id,
             expires_at_unix_secs,
@@ -104,7 +112,7 @@ impl RequestLedger {
         self.entries.retain(|entry| {
             entry
                 .expires_at_unix_secs
-                .is_none_or(|expiry| expiry >= now_unix_secs)
+                .is_some_and(|expiry| expiry >= now_unix_secs)
         });
         self.entries.len() != previous_len
     }
@@ -235,12 +243,89 @@ mod tests {
                     },
                     RequestLedgerEntry {
                         request_id: "unbounded".to_string(),
-                        expires_at_unix_secs: None,
+                        expires_at_unix_secs: Some(50 + DEFAULT_SSO_STATEMENT_EXPIRY_SECS),
                         state: RequestLedgerState::Started,
                     },
                 ],
             }
         );
+    }
+
+    #[test]
+    fn ledger_bounds_missing_and_distant_expiry() {
+        let mut ledger = RequestLedger::default();
+        ledger.start("missing".to_string(), None, 100).unwrap();
+        ledger
+            .start("distant".to_string(), Some(u64::MAX), 100)
+            .unwrap();
+        ledger.start("near".to_string(), Some(200), 100).unwrap();
+
+        assert_eq!(
+            ledger,
+            RequestLedger {
+                entries: vec![
+                    RequestLedgerEntry {
+                        request_id: "missing".to_string(),
+                        expires_at_unix_secs: Some(100 + DEFAULT_SSO_STATEMENT_EXPIRY_SECS),
+                        state: RequestLedgerState::Started,
+                    },
+                    RequestLedgerEntry {
+                        request_id: "distant".to_string(),
+                        expires_at_unix_secs: Some(100 + DEFAULT_SSO_STATEMENT_EXPIRY_SECS),
+                        state: RequestLedgerState::Started,
+                    },
+                    RequestLedgerEntry {
+                        request_id: "near".to_string(),
+                        expires_at_unix_secs: Some(200),
+                        state: RequestLedgerState::Started,
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_unbounded_entries_do_not_block_new_requests() {
+        futures::executor::block_on(async {
+            let platform = StubPlatform::default();
+            let request_scope = scope(1, 2, 3);
+            let ledger = RequestLedger {
+                entries: (0..MAX_REQUEST_LEDGER_ENTRIES)
+                    .map(|index| RequestLedgerEntry {
+                        request_id: format!("legacy-{index}"),
+                        expires_at_unix_secs: None,
+                        state: RequestLedgerState::Completed,
+                    })
+                    .collect(),
+            };
+            write_ledger(&platform, request_scope, &ledger)
+                .await
+                .unwrap();
+
+            let result = execute_once(
+                &platform,
+                &SsoReplayLocks::default(),
+                request_scope,
+                "fresh",
+                Some(200),
+                100,
+                || async { Ok::<_, String>("executed") },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(result, ReplayExecution::Executed("executed"));
+            assert_eq!(
+                read_ledger(&platform, request_scope).await.unwrap(),
+                RequestLedger {
+                    entries: vec![RequestLedgerEntry {
+                        request_id: "fresh".to_string(),
+                        expires_at_unix_secs: Some(200),
+                        state: RequestLedgerState::Completed,
+                    }],
+                }
+            );
+        });
     }
 
     #[test]

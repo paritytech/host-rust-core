@@ -68,8 +68,8 @@ pub(crate) use services::RuntimeServices;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
-    resume_pairing,
+    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, establish_pairing,
+    respond_to_pairing, resume_pairing,
 };
 pub use signing_host::{PairedSsoPeer, ResponderExit};
 

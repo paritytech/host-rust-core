@@ -214,16 +214,19 @@ onboarding; naming a different session creates and connects its user.
 
 Each managed session stores all of its paired hosts in `paired-hosts.json`.
 Mutations are serialized through `paired-hosts.json.lock`. `/pair` inserts or
-updates the host selected by its statement account ID and leaves every other
-responder running. Interactive mode and `--serve` restore responders for all
-saved hosts at startup. Transient responder failures and ended subscriptions are
-retried with backoff. A remote `Disconnected` message removes only that peer's
-saved pairing and responder.
+updates the host selected by its statement account ID only after the encrypted
+handshake response is submitted, and leaves every other responder running.
+Interactive mode and `--serve` restore responders for all saved hosts at
+startup. Transient responder failures and ended subscriptions are retried with
+backoff. A remote `Disconnected` message removes only that peer's saved pairing
+and responder.
 
 Handled SSO request IDs are stored per signing identity and paired host. The
 signing host records a request before executing it, so restarting or retrying a
 responder acknowledges an unexpired duplicate without repeating its side
 effects.
+Missing or overly distant request expiry is bounded to the seven-day SSO
+statement lifetime.
 
 `/devices` and `/devices --list` show the saved statement account IDs in stable
 order with available host and platform metadata. Interactive
