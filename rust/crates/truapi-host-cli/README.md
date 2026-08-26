@@ -66,8 +66,13 @@ That script installs the same `window.__HOST_API_PORT__` a native webview host
 injects, so the SDK adopts it with no product-side package, import, or
 environment variable. `--app-port` names the development server's port when it
 is not 3000, and the product id defaults to that origin, so the host and the
-product cannot disagree about who they are. Stopping the command stops the whole
-tree it started.
+product cannot disagree about who they are.
+
+The development command stays in this process's group, so a terminal interrupt
+or a supervisor that signals the group takes the whole tree down at once. A
+signal sent to this process alone is forwarded to the group, because package
+managers reach the actual dev server through intermediate processes that would
+otherwise leave it holding its port.
 
 A host that should outlive the development server, or one whose confirmations
 you want to approve by hand in the terminal UI, is the same host started

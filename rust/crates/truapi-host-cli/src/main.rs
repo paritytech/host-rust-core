@@ -1720,39 +1720,30 @@ async fn run_dev(
 
 /// Run the wrapped development command, returning the code to exit with.
 ///
-/// The command gets its own process group, so stopping the host stops the whole
-/// tree it spawned. Package managers reach the actual dev server through two or
-/// three intermediate processes, and signalling only the direct child leaves
-/// that server holding its port.
+/// The command stays in this process's group, so anything that signals the
+/// group (a terminal interrupt, a test runner, a service manager) reaches the
+/// whole tree even when it never gives this process a chance to clean up. On
+/// the graceful path the group is signalled from here instead, because package
+/// managers reach the actual dev server through two or three intermediate
+/// processes and signalling only the direct child leaves it holding its port.
 async fn run_dev_command(command: Vec<String>) -> Result<i32> {
     let (program, arguments) = command
         .split_first()
         .expect("an empty dev command is never supervised");
-    let mut builder = tokio::process::Command::new(program);
-    builder.args(arguments);
-    #[cfg(unix)]
-    builder.process_group(0);
-    let mut child = builder
+    let mut child = tokio::process::Command::new(program)
+        .args(arguments)
         .spawn()
         .with_context(|| format!("failed to start {program}"))?;
-    let group = child.id();
 
     tokio::select! {
         status = child.wait() => {
             // Intermediate processes exit before the server they spawned.
-            stop_process_group(group, Stop::Terminate);
+            stop_own_process_group();
             Ok(status?.code().unwrap_or(1))
         }
         _ = wait_for_shutdown() => {
-            // The group is its own, so it never saw the terminal's interrupt.
-            stop_process_group(group, Stop::Terminate);
-            if tokio::time::timeout(DEV_COMMAND_GRACE, child.wait())
-                .await
-                .is_err()
-            {
-                stop_process_group(group, Stop::Kill);
-                child.wait().await.ok();
-            }
+            stop_own_process_group();
+            let _ = tokio::time::timeout(DEV_COMMAND_GRACE, child.wait()).await;
             // The command was interrupted, not failed. Report the interrupt
             // rather than whatever a terminated package manager last said.
             Ok(INTERRUPTED_EXIT_CODE)
@@ -1760,35 +1751,52 @@ async fn run_dev_command(command: Vec<String>) -> Result<i32> {
     }
 }
 
-/// How firmly to stop the development command's process group.
-#[derive(Clone, Copy)]
-enum Stop {
-    Terminate,
-    Kill,
-}
-
-/// Signal every process in the development command's group.
+/// Terminate this process's group, which is where the development command and
+/// everything it spawned live.
+///
+/// Safe to call on ourselves: both interrupt and termination are handled, so
+/// the signal only wakes a shutdown already under way.
 #[cfg(unix)]
-fn stop_process_group(group: Option<u32>, stop: Stop) {
-    use rustix::process::{Pid, Signal, kill_process_group};
+fn stop_own_process_group() {
+    use rustix::process::{Signal, getpgrp, kill_process_group};
 
-    let Some(pid) = group
-        .and_then(|group| i32::try_from(group).ok())
-        .and_then(Pid::from_raw)
-    else {
-        return;
-    };
-    let signal = match stop {
-        Stop::Terminate => Signal::TERM,
-        Stop::Kill => Signal::KILL,
-    };
-    let _ = kill_process_group(pid, signal);
+    let _ = kill_process_group(getpgrp(), Signal::TERM);
 }
 
 #[cfg(not(unix))]
-fn stop_process_group(_group: Option<u32>, _stop: Stop) {}
+fn stop_own_process_group() {}
 
+/// Resolve once the process is asked to stop.
+///
+/// Termination counts alongside interruption: a supervisor stopping this
+/// process (a test runner, systemd, a container) sends `SIGTERM`, and the
+/// shutdown path is what releases responders and stops the development command,
+/// which runs in its own process group and so never sees the signal itself.
 async fn wait_for_shutdown() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = wait_for_interrupt() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(error) => {
+                terminal_ui::output_event(SystemEvent::SigningHostError {
+                    reason: format!("SIGTERM handling unavailable: {error}"),
+                });
+                wait_for_interrupt().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    wait_for_interrupt().await;
+}
+
+async fn wait_for_interrupt() {
     if let Err(error) = tokio::signal::ctrl_c().await {
         // Nothing to await without a signal handler, so stay up and serve until
         // the process is killed rather than exiting as soon as it starts.
