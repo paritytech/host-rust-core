@@ -1709,6 +1709,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],
@@ -1717,6 +1718,7 @@ mod tests {
         .expect("signing host config is valid");
         let services = RuntimeServices::new(
             platform.clone(),
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             test_spawner(),

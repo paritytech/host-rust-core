@@ -186,7 +186,8 @@ use truapi::versioned::signing::{
 use truapi::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
     HostGetProductContextError, HostGetProductContextRequest, HostGetProductContextResponse,
-    HostNavigateToError, HostNavigateToRequest, HostNavigateToResponse,
+    HostInfoError, HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
+    HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
 use truapi::{CallContext, CallError, CancellationReason, Subscription};
@@ -429,6 +430,7 @@ impl ProductRuntimeHost {
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://example.invalid/dotli.png".to_string()),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             truapi_platform::PlatformInfo::default(),
             [0; 32],
@@ -476,6 +478,7 @@ impl ProductRuntimeHost {
     ) -> (Self, Arc<PairingHost>) {
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -837,6 +840,21 @@ impl System for ProductRuntimeHost {
             .await
             .map(HostFeatureSupportedResponse::V1)
             .map_err(|err| CallError::Domain(HostFeatureSupportedError::V1(err)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "system.host_info"))]
+    async fn host_info(
+        &self,
+        _cx: &CallContext,
+        request: HostInfoRequest,
+    ) -> Result<HostInfoResponse, CallError<HostInfoError>> {
+        let HostInfoRequest::V1 = request;
+        let info = &self.services.host_info;
+        Ok(HostInfoResponse::V1(v01::HostInfo {
+            platform: info.platform.clone(),
+            name: info.name.clone(),
+            version: info.version.clone().unwrap_or_default(),
+        }))
     }
 
     #[instrument(skip_all, fields(runtime.method = "system.navigate_to"))]
@@ -3158,6 +3176,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3300,6 +3319,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3383,6 +3403,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3467,6 +3488,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3513,6 +3535,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),

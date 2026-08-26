@@ -496,6 +496,12 @@ pub const SYSTEM_GET_PRODUCT_CONTEXT: RequestFrameIds = RequestFrameIds {
     response_id: 191,
 };
 
+/// Wire discriminants for `system_host_info`.
+pub const SYSTEM_HOST_INFO: RequestFrameIds = RequestFrameIds {
+    request_id: 192,
+    response_id: 193,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -778,5 +784,9 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "system_get_product_context",
         kind: WireKind::Request(SYSTEM_GET_PRODUCT_CONTEXT),
+    },
+    WireEntry {
+        method: "system_host_info",
+        kind: WireKind::Request(SYSTEM_HOST_INFO),
     },
 ];

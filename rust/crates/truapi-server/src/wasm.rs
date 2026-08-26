@@ -22,6 +22,7 @@ use futures::stream::{self, BoxStream, Stream, StreamExt};
 use js_sys::{Array, Function, Reflect, Uint8Array};
 use parity_scale_codec::{Decode, Encode};
 use send_wrapper::SendWrapper;
+use truapi::latest::HostPlatform;
 use truapi::v01;
 #[cfg(feature = "wasm-signing-host")]
 use truapi_platform::SigningHostConfig;
@@ -474,6 +475,11 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
             name: get_required_string_at(&host, "name", "runtimeConfig.host.name")?,
             icon: get_optional_string_at(&host, "icon", "runtimeConfig.host.icon")?,
             version: get_optional_string_at(&host, "version", "runtimeConfig.host.version")?,
+            platform: host_platform_from_js(get_optional_string_at(
+                &host,
+                "platform",
+                "runtimeConfig.host.platform",
+            )?)?,
         },
         PlatformInfo {
             kind: platform
@@ -507,6 +513,23 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
     .map_err(runtime_config_validation_to_js)
 }
 
+/// Parse the optional `runtimeConfig.host.platform` category. Hosts that do
+/// not declare one report `Unknown` to products.
+fn host_platform_from_js(value: Option<String>) -> Result<HostPlatform, JsValue> {
+    match value.as_deref() {
+        None => Ok(HostPlatform::Unknown),
+        Some("Web") => Ok(HostPlatform::Web),
+        Some("Android") => Ok(HostPlatform::Android),
+        Some("Ios") => Ok(HostPlatform::Ios),
+        Some("Desktop") => Ok(HostPlatform::Desktop),
+        Some("Cli") => Ok(HostPlatform::Cli),
+        Some("Unknown") => Ok(HostPlatform::Unknown),
+        Some(other) => Err(JsValue::from_str(&format!(
+            "runtimeConfig.host.platform must be one of Web, Android, Ios, Desktop, Cli, or Unknown, got {other:?}"
+        ))),
+    }
+}
+
 #[cfg(feature = "wasm-signing-host")]
 fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsValue> {
     if value.is_null() || value.is_undefined() {
@@ -523,6 +546,11 @@ fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsV
             name: get_required_string_at(&host, "name", "runtimeConfig.host.name")?,
             icon: get_optional_string_at(&host, "icon", "runtimeConfig.host.icon")?,
             version: get_optional_string_at(&host, "version", "runtimeConfig.host.version")?,
+            platform: host_platform_from_js(get_optional_string_at(
+                &host,
+                "platform",
+                "runtimeConfig.host.platform",
+            )?)?,
         },
         PlatformInfo {
             kind: platform

@@ -118,6 +118,7 @@ impl PairingHostRuntime {
         let platform: Arc<dyn Platform> = platform;
         let services = RuntimeServices::with_chat_platform(
             platform,
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -436,6 +437,7 @@ impl SigningHostRuntime {
         let platform: Arc<dyn Platform> = platform;
         let services = RuntimeServices::with_chat_platform(
             platform,
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
@@ -1550,6 +1552,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],
@@ -1595,6 +1598,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],

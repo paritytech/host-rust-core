@@ -4004,6 +4004,11 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
      */
     public var hostVersion: String?
     /**
+     * Platform category this host runs on, reported to products via
+     * `System::host_info`.
+     */
+    public var hostPlatform: HostPlatform
+    /**
      * Optional platform/browser name shown by the wallet during SSO pairing.
      */
     public var platformType: String?
@@ -4041,6 +4046,10 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
          * Optional host version shown by the wallet during SSO pairing.
          */hostVersion: String?,
         /**
+         * Platform category this host runs on, reported to products via
+         * `System::host_info`.
+         */hostPlatform: HostPlatform,
+        /**
          * Optional platform/browser name shown by the wallet during SSO pairing.
          */platformType: String?,
         /**
@@ -4061,6 +4070,7 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
+        self.hostPlatform = hostPlatform
         self.platformType = platformType
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
@@ -4088,6 +4098,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
                 hostVersion: FfiConverterOptionString.read(from: &buf),
+                hostPlatform: FfiConverterTypeHostPlatform.read(from: &buf),
                 platformType: FfiConverterOptionString.read(from: &buf),
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
@@ -4101,6 +4112,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
         FfiConverterOptionString.write(value.hostVersion, into: &buf)
+        FfiConverterTypeHostPlatform.write(value.hostPlatform, into: &buf)
         FfiConverterOptionString.write(value.platformType, into: &buf)
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
@@ -4220,6 +4232,11 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
      */
     public var hostVersion: String?
     /**
+     * Platform category this host runs on, reported to products via
+     * `System::host_info`.
+     */
+    public var hostPlatform: HostPlatform
+    /**
      * Optional platform/browser name shown by the wallet during SSO pairing.
      */
     public var platformType: String?
@@ -4267,6 +4284,10 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          * Optional host version shown by the wallet during SSO pairing.
          */hostVersion: String?,
         /**
+         * Platform category this host runs on, reported to products via
+         * `System::host_info`.
+         */hostPlatform: HostPlatform,
+        /**
          * Optional platform/browser name shown by the wallet during SSO pairing.
          */platformType: String?,
         /**
@@ -4292,6 +4313,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
+        self.hostPlatform = hostPlatform
         self.platformType = platformType
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
@@ -4322,6 +4344,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
                 hostVersion: FfiConverterOptionString.read(from: &buf),
+                hostPlatform: FfiConverterTypeHostPlatform.read(from: &buf),
                 platformType: FfiConverterOptionString.read(from: &buf),
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
@@ -4338,6 +4361,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
         FfiConverterOptionString.write(value.hostVersion, into: &buf)
+        FfiConverterTypeHostPlatform.write(value.hostPlatform, into: &buf)
         FfiConverterOptionString.write(value.platformType, into: &buf)
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)

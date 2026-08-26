@@ -1975,6 +1975,7 @@ mod tests {
                 name: "Test Host".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],

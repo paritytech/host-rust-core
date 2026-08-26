@@ -5500,6 +5500,121 @@ public func FfiConverterTypeHostNavigateToError_lower(_ value: HostNavigateToErr
 
 
 /**
+ * Platform category a host runs on.
+ */
+
+public enum HostPlatform: Equatable, Hashable {
+
+    /**
+     * Browser-embedded product (an iframe inside a web host).
+     */
+    case web
+    /**
+     * Android application.
+     */
+    case android
+    /**
+     * iOS application.
+     */
+    case ios
+    /**
+     * Desktop application.
+     */
+    case desktop
+    /**
+     * Command-line host running in a terminal or headless environment.
+     */
+    case cli
+    /**
+     * Host could not classify its platform.
+     */
+    case unknown
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension HostPlatform: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostPlatform: FfiConverterRustBuffer {
+    typealias SwiftType = HostPlatform
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostPlatform {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .web
+
+        case 2: return .android
+
+        case 3: return .ios
+
+        case 4: return .desktop
+
+        case 5: return .cli
+
+        case 6: return .unknown
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: HostPlatform, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .web:
+            writeInt(&buf, Int32(1))
+
+
+        case .android:
+            writeInt(&buf, Int32(2))
+
+
+        case .ios:
+            writeInt(&buf, Int32(3))
+
+
+        case .desktop:
+            writeInt(&buf, Int32(4))
+
+
+        case .cli:
+            writeInt(&buf, Int32(5))
+
+
+        case .unknown:
+            writeInt(&buf, Int32(6))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostPlatform_lift(_ buf: RustBuffer) throws -> HostPlatform {
+    return try FfiConverterTypeHostPlatform.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostPlatform_lower(_ value: HostPlatform) -> RustBuffer {
+    return FfiConverterTypeHostPlatform.lower(value)
+}
+
+
+
+/**
  * Layout and styling modifiers applied to custom renderer components.
  */
 
