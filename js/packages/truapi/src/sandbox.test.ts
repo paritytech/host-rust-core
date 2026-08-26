@@ -326,3 +326,122 @@ describe("connectWebSocketHost", () => {
         );
     });
 });
+
+/** The transport adopts its port off a promise, not inline. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function closePipe(port: MessagePort): void {
+    const hook = port.onmessageerror;
+    if (!hook) throw new Error("no messageerror hook installed on the port");
+    hook.call(port, new MessageEvent("messageerror"));
+}
+
+function installFakeWebviewWindow(port: MessagePort) {
+    const harness = installFakeIframeWindow({});
+    // Top-level, so isIframe() reads false.
+    (harness.win as unknown as { top: Window }).top = harness.win;
+    harness.win.__HOST_WEBVIEW_MARK__ = true;
+    harness.win.__HOST_API_PORT__ = port;
+    return harness;
+}
+
+describe("sandbox after the pipe closes", () => {
+    async function connectedSandbox(port: MessagePort) {
+        const harness = installFakeIframeWindow({
+            referrer: "https://host.example/product",
+        });
+        currentWindow = harness;
+        harness.win.__HOST_API_PORT__ = port;
+        const sandbox = await importSandbox();
+        const client = sandbox.getClientSync();
+        expect(client).not.toBeNull();
+        await settle();
+        return { client, harness, sandbox };
+    }
+
+    it("gives a subscriber arriving after a close a negotiation that can complete", async () => {
+        const channel = trackChannel();
+        const { harness, sandbox } = await connectedSandbox(channel.port1);
+        closePipe(channel.port1);
+
+        const statuses: string[] = [];
+        sandbox.subscribeConnectionStatus((status) => statuses.push(status));
+        expect(statuses).toEqual(["connecting"]);
+
+        const rebuilt = trackChannel();
+        harness.dispatch({
+            source: harness.parent,
+            origin: "https://host.example",
+            data: { type: "truapi-init" },
+            ports: [rebuilt.port1],
+        });
+
+        // Pre-fix this "connecting" was permanent: nothing listened for the answer.
+        expect(statuses).toEqual(["connecting", "connected"]);
+    });
+
+    it("builds a new client after a close instead of handing back the closed one", async () => {
+        const channel = trackChannel();
+        const { client, sandbox } = await connectedSandbox(channel.port1);
+        closePipe(channel.port1);
+
+        const rebuilt = sandbox.getClientSync();
+
+        expect(rebuilt).not.toBeNull();
+        expect(rebuilt).not.toBe(client);
+    });
+
+    it("drops the injected port so a rebuild cannot re-adopt the closed one", async () => {
+        const channel = trackChannel();
+        const { harness } = await connectedSandbox(channel.port1);
+        expect(harness.win.__HOST_API_PORT__).toBe(channel.port1);
+
+        closePipe(channel.port1);
+
+        expect(harness.win.__HOST_API_PORT__).toBeUndefined();
+    });
+
+    it("renegotiates with the parent on the next build", async () => {
+        const channel = trackChannel();
+        const { harness, sandbox } = await connectedSandbox(channel.port1);
+        // An injected port skips the handshake, so nothing was posted yet.
+        expect(harness.parentPostMessage.mock.calls).toEqual([]);
+
+        closePipe(channel.port1);
+        sandbox.getClientSync();
+
+        expect(harness.parentPostMessage.mock.calls).toEqual([
+            [{ type: "truapi-ready" }, "https://host.example"],
+        ]);
+    });
+
+    it("does not hand the closed client to a listener notified of the close", async () => {
+        const channel = trackChannel();
+        const { client, sandbox } = await connectedSandbox(channel.port1);
+        const seen: unknown[] = [];
+        sandbox.subscribeConnectionStatus((status) => {
+            if (status === "disconnected") seen.push(sandbox.getClientSync());
+        });
+
+        closePipe(channel.port1);
+
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).not.toBeNull();
+        expect(seen[0]).not.toBe(client);
+    });
+
+    it("keeps a marked webview page hosted after the port is dropped", async () => {
+        const channel = trackChannel();
+        const harness = installFakeWebviewWindow(channel.port1);
+        currentWindow = harness;
+        const sandbox = await importSandbox();
+        expect(sandbox.isCorrectEnvironment()).toBe(true);
+        expect(sandbox.getClientSync()).not.toBeNull();
+        await settle();
+
+        closePipe(channel.port1);
+
+        expect(harness.win.__HOST_API_PORT__).toBeUndefined();
+        expect(sandbox.isCorrectEnvironment()).toBe(true);
+    });
+});
