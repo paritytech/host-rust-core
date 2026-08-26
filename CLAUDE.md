@@ -74,7 +74,7 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   requirement. `TrUAPIHost.kt` and the embedding apps are compiled by neither;
   run `make android-check` after touching the Kotlin surface.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
-  callbacks; `TrUAPIHostRuntime` and `TrUAPIHostCore` both accept one.
+  callbacks; `TrUAPIHostRuntime` and each product execution retain one.
   To publish the binary, include `@parity/ios-host <version>`
   in the `release:` PR title. The release workflow rebuilds and simulator-tests
   the XCFramework, uploads it, and makes the `Package.swift` follow-up commit

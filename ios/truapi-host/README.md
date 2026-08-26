@@ -8,8 +8,8 @@ The package lives in the truapi repo next to the Rust core it wraps. `Package.sw
 
 The `TrUAPIHost` SPM package an iOS host app imports directly. It carries:
 
-- [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostCore` (owning wrapper around the UniFFI-generated `NativeTrUApiCore`, with the localhost WS bridge, session controls, and native change notifications), `TrUAPIHostCoreProtocol`, `RuntimeConfig`, and `LocalhostBridgeBootstrap`.
-- [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) — `TrUAPIHost.installProductScripts(into:core:endpoint:)`, which registers the bootstrap and the lockdown container with the frame scopes the lockdown depends on and peeks the WebRTC decision. The supported way to wire a product web view.
+- [`Sources/TrUAPIHost/TrUAPIHost.swift`](Sources/TrUAPIHost/TrUAPIHost.swift) — the hand-written shell: `TrUAPIHostRuntime`, `TrUAPIProductExecution`, their configuration and bridge protocols, and `LocalhostBridgeBootstrap`.
+- [`Sources/TrUAPIHost/ProductScripts.swift`](Sources/TrUAPIHost/ProductScripts.swift) — `TrUAPIHost.installProductScripts(into:execution:endpoint:)`, which registers the bootstrap and the lockdown container with the frame scopes the lockdown depends on and peeks the WebRTC decision. The supported way to wire a product web view.
 - the Rust core as a binary target — a GitHub release asset by default (`publishedBinaryURL` in the root `Package.swift`), or the locally built `Binaries/truapi_server.xcframework` when `useLocalBinary` is flipped to true.
 - `Sources/TrUAPIHost/truapi_server.swift` and `Sources/truapi_serverFFI/include/` — the generated UniFFI bindings.
 - [`js/container/`](../../js/container) — the TS lockdown container; built into `Sources/TrUAPIHost/Resources/truapi-container.js` and exposed via `ContainerScriptBundle.load()`.
@@ -47,11 +47,11 @@ build-for-testing`. It is path-filtered to pull requests touching `ios/`,
 `Package.swift`, the `Makefile` or `rust/crates/truapi-server/src/native*`.
 Nothing compiles `TrUAPIHost.kt` or the embedding apps.
 
-Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiCore` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, and makes the `Package.swift` follow-up commit only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
+Run `rebuild.sh` after changing anything host-visible — the `NativeTrUApiHostRuntime` or `NativeProductExecution` methods, `HostCallbacks`, the native mirror types in `rust/crates/truapi-server/src/native*`, or `js/container/src` — and commit the regenerated bindings/container together with the source change. To publish from a release PR, add `@parity/ios-host <version>` to its `release:` title. After the release commit passes CI, the release workflow rebuilds and simulator-tests the XCFramework on macOS, uploads it, and makes the `Package.swift` follow-up commit only after the asset is live. `publish.sh` remains available for an ad hoc manual release.
 
 For local iteration without publishing, flip `useLocalBinary = true` in the root `Package.swift` to build against `Binaries/` directly; flip it back before committing.
 
-The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, feature support, and the served chain set. UI-decision callbacks are `async` and awaited by the Rust core. `HostCallbackAdapter` translates it to the UniFFI-generated `HostCallbacks` protocol, and both `TrUAPIHostRuntime` and `TrUAPIHostCore` take a `HostBridge`. Conform to `HostBridge` rather than to the generated protocol: its extension defaults the optional callbacks, so a newly added one does not break the build. Storage arrives as the `storage` and `coreStorage` sub-objects, which the adapter flattens.
+The embedding app implements `HostBridge` (defined in `TrUAPIHost.swift`): navigation, push, permissions, auth state, scoped + core storage, chain JSON-RPC, confirmations, preimage, theme, feature support, and the served chain set. UI-decision callbacks are `async` and awaited by the Rust core. `HostCallbackAdapter` translates it to the UniFFI-generated `HostCallbacks` protocol; `TrUAPIHostRuntime` and each product execution retain their own adapter. Conform to `HostBridge` rather than to the generated protocol: its extension defaults the optional callbacks, so a newly added one does not break the build. Storage arrives as the `storage` and `coreStorage` sub-objects, which the adapter flattens.
 
 ## Integrating in an iOS app
 
@@ -156,7 +156,7 @@ product app in WKWebView
   Uint8Array frames via @parity/truapi createWebSocketProvider
            |
            v   ws://127.0.0.1:<port>/?t=<token>
-TrUAPIHostCore.startWsBridge()
+TrUAPIProductExecution.startWsBridge()
   → libtruapi_server (tokio WS server)
   → Rust dispatcher
 ```
@@ -170,7 +170,7 @@ The core's `Permissions` platform trait has two methods, and so does `HostCallba
 - `devicePermission(request:)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
 - `remotePermission(request:)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
-Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+Both return a `Bool` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## SSO session handling
 
@@ -245,8 +245,6 @@ Scheduling is one of three layers, and only the first needs the OS:
 
 An account id must be exactly 32 bytes. Anything else is rejected as `NativeRenewalTargetError.InvalidAccountId` before any chain work happens.
 
-`TrUAPIHostCore` exposes the same four calls for hosts that use it instead of `TrUAPIHostRuntime`.
-
 ## Example
 
 > **Threading:** the Rust core invokes every `HostCallbacks` method on a
@@ -267,9 +265,25 @@ import Foundation
 import WebKit
 import TrUAPIHost
 
-final class MyCallbacks: HostCallbacks, @unchecked Sendable {
-    private var storage: [String: Data] = [:]
-    private var coreStorage: [Data: Data] = [:]
+final class MyStorage: HostStorageBackend, @unchecked Sendable {
+    private var values: [String: Data] = [:]
+
+    func read(key: String) throws -> Data? { values[key] }
+    func write(key: String, value: Data) throws { values[key] = value }
+    func clear(key: String) throws { values.removeValue(forKey: key) }
+}
+
+final class MyCoreStorage: HostCoreStorageBackend, @unchecked Sendable {
+    private var values: [Data: Data] = [:]
+
+    func read(key: Data) throws -> Data? { values[key] }
+    func write(key: Data, value: Data) throws { values[key] = value }
+    func clear(key: Data) throws { values.removeValue(forKey: key) }
+}
+
+final class MyBridge: HostBridge, @unchecked Sendable {
+    let storage: HostStorageBackend = MyStorage()
+    let coreStorage: HostCoreStorageBackend = MyCoreStorage()
 
     func onCoreLog(marker: String, detail: String) { /* log */ }
 
@@ -300,22 +314,16 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
     // Core-owned auth state stream: render `.connected`/`.disconnected` as the
     // account badge and `.loginFailed` as a retryable error, unless its `kind`
     // is `.noFreeAllowanceSlots`, which is unlikely to succeed before the
-    // period rolls over, so retry should not be the primary action. This core
-    // is a signing host — it owns the signer and never
-    // pairs — so `.pairing` and `.authenticating` are not emitted and
-    // `core.cancelLogin()` is inert.
-    // Activate the session with `core.activateLocalSession(secret:...)`.
+    // period rolls over, so retry should not be the primary action. This native
+    // runtime is a signing host, so `.pairing` and `.authenticating` are not
+    // emitted. Activate the session with `runtime.activateLocalSession(...)`.
     func authStateChanged(state: AuthState) {
         DispatchQueue.main.async { /* render the state */ }
     }
 
-    func coreStorageRead(key: Data) throws -> Data? { coreStorage[key] }
-    func coreStorageWrite(key: Data, value: Data) throws { coreStorage[key] = value }
-    func coreStorageClear(key: Data) throws { coreStorage.removeValue(forKey: key) }
-
     func chainConnect(genesisHash: Data) throws -> UInt32? {
         let id: UInt32 = 1
-        DispatchQueue.main.async { /* open JSON-RPC connection, forward responses via core.notifyChainResponse */ }
+        DispatchQueue.main.async { /* open JSON-RPC connection, forward responses via runtime.notifyChainResponse */ }
         return id
     }
 
@@ -335,34 +343,40 @@ final class MyCallbacks: HostCallbacks, @unchecked Sendable {
 
     func lookupPreimage(key: Data) async throws -> Data? { nil }
 
-    func currentTheme() throws -> ThemeVariant { .dark }
+    func currentTheme() throws -> HostThemeSubscribeItem {
+        HostThemeSubscribeItem(name: .default, variant: .dark)
+    }
 
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool { false }
 
-    func localStorageRead(key: String) throws -> Data? { storage[key] }
-    func localStorageWrite(key: String, value: Data) throws { storage[key] = value }
-    func localStorageClear(key: String) throws { storage.removeValue(forKey: key) }
 }
 
-let callbacks = MyCallbacks()
-let runtimeConfig = RuntimeConfig(
-    productId: "my-product.dot",
+let bridge = MyBridge()
+let runtimeConfig = HostRuntimeConfig(
     hostName: "My Host",
     hostIcon: "https://host.example/icon.png",
     peopleChainGenesisHash: Data(repeating: 0, count: 32),
-    bulletinChainGenesisHash: Data(repeating: 0, count: 32),
-    pairingDeeplinkScheme: .polkadotApp
+    bulletinChainGenesisHash: Data(repeating: 0, count: 32)
 )
-let core = try TrUAPIHostCore(callbacks: callbacks, runtimeConfig: runtimeConfig)
-try core.activateLocalSession(secret: entropyBytes, liteUsername: nil)
-let endpoint = try core.startWsBridge()
+let runtime = try TrUAPIHostRuntime(bridge: bridge, runtimeConfig: runtimeConfig)
+try runtime.activateLocalSession(secret: entropyBytes, liteUsername: nil)
+let execution = try runtime.openProductExecution(
+    bridge: bridge,
+    configuration: ProductExecutionConfig(
+        productId: "my-product.dot",
+        executionKind: .app
+    )
+)
+let endpoint = try execution.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates
 // after their immediate current item.
-core.notifyThemeChanged(theme: .dark)
-core.notifyPreimageChanged(key: preimageKey, value: preimageBytesOrNil)
-core.notifyChainResponse(connectionId: chainConnectionId, json: jsonRpcResponse)
-core.notifyChainClosed(connectionId: chainConnectionId)
+execution.notifyThemeChanged(
+    theme: HostThemeSubscribeItem(name: .default, variant: .dark)
+)
+execution.notifyPreimageChanged(key: preimageKey, value: preimageBytesOrNil)
+runtime.notifyChainResponse(connectionId: chainConnectionId, json: jsonRpcResponse)
+runtime.notifyChainClosed(connectionId: chainConnectionId)
 
 // Register the bootstrap + lockdown container before the web view loads the
 // product page. `installProductScripts` owns the two properties that are easy to
@@ -370,12 +384,12 @@ core.notifyChainClosed(connectionId: chainConnectionId)
 // without it has pristine fetch/WebSocket/RTCPeerConnection, and a product
 // reaches one through an `<iframe>` in its own HTML), while the bootstrap stays
 // main-frame-only so a subframe has no bridge and no policy and fails closed. It
-// also resolves the WebRTC decision by peeking the core rather than prompting.
+// also resolves the WebRTC decision by peeking the execution rather than prompting.
 // Do not register these scripts by hand.
 let contentController = WKUserContentController()
 try TrUAPIHost.installProductScripts(
     into: contentController,
-    core: core,
+    execution: execution,
     endpoint: endpoint
 )
 
@@ -385,7 +399,7 @@ let webView = WKWebView(frame: .zero, configuration: configuration)
 webView.load(URLRequest(url: URL(string: "https://your-product.example/")!))
 
 // On logout:
-core.disconnect()
+runtime.disconnect()
 ```
 
 The product page reads `window.__truapi_localhost.url` (set by the bootstrap script) and passes it to `@parity/truapi`'s `createWebSocketProvider(url)`.

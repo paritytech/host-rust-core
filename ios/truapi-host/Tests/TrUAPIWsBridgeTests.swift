@@ -5,13 +5,21 @@ import TrUAPIHost
 struct TrUAPIWsBridgeTests {
     @Test(.timeLimit(.minutes(1)))
     func testFeatureSupportedRoundTripOverWsBridge() async throws {
-        let core = try TrUAPIHostCore(
-            bridge: StubHostBridge(),
-            runtimeConfig: Self.makeRuntimeConfig()
+        let bridge = StubHostBridge()
+        let runtime = try TrUAPIHostRuntime(
+            bridge: bridge,
+            runtimeConfig: Self.makeHostRuntimeConfig()
+        )
+        let execution = try runtime.openProductExecution(
+            bridge: bridge,
+            configuration: ProductExecutionConfig(
+                productId: "test.dot",
+                executionKind: .app
+            )
         )
 
-        let endpoint = try core.startWsBridge(bindPort: 0)
-        defer { core.stopWsBridge() }
+        let endpoint = try execution.startWsBridge(bindPort: 0)
+        defer { execution.stopWsBridge() }
 
         let url = try #require(URL(string: "ws://127.0.0.1:\(endpoint.port)/?t=\(endpoint.token)"))
         let task = URLSession.shared.webSocketTask(with: url)
@@ -31,9 +39,8 @@ struct TrUAPIWsBridgeTests {
 }
 
 private extension TrUAPIWsBridgeTests {
-    static func makeRuntimeConfig() -> RuntimeConfig {
-        RuntimeConfig(
-            productId: "test.dot",
+    static func makeHostRuntimeConfig() -> HostRuntimeConfig {
+        HostRuntimeConfig(
             hostName: "truapi-host-tests",
             peopleChainGenesisHash: Data(repeating: 0, count: 32),
             bulletinChainGenesisHash: Data(repeating: 0, count: 32)
