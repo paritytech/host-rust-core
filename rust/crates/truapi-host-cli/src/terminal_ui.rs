@@ -17,6 +17,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
+use qrcode::{Color as QrColor, QrCode};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -41,6 +42,8 @@ const STREAM_LINE_BYTE_LIMIT: usize = 16 * 1024;
 const EVENT_BATCH_LIMIT: usize = 256;
 const MAX_VISIBLE_COMPLETIONS: usize = 8;
 const COMPOSER_HORIZONTAL_PADDING: u16 = 1;
+const QR_INDENT: usize = 2;
+const QR_QUIET_ZONE: usize = 4;
 
 /// Tracing target reserved for SSO summaries that must remain visible at every log level.
 pub const SSO_TRANSCRIPT_TARGET: &str = "truapi_server::sso_transcript";
@@ -76,6 +79,7 @@ enum FeedItem {
         title: String,
         detail: Option<String>,
     },
+    PairingQr(PairingQr),
     Command(String),
     Stream {
         kind: StreamKind,
@@ -102,6 +106,43 @@ enum FeedItem {
         elapsed_ms: Option<u64>,
         reason: Option<String>,
     },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PairingQr {
+    side: usize,
+    modules: Vec<bool>,
+}
+
+impl PairingQr {
+    fn encode(url: &str) -> qrcode::types::QrResult<Self> {
+        let code = QrCode::new(url.as_bytes())?;
+        Ok(Self {
+            side: code.width(),
+            modules: code
+                .to_colors()
+                .into_iter()
+                .map(|color| color == QrColor::Dark)
+                .collect(),
+        })
+    }
+
+    fn module(&self, row: usize, column: usize) -> bool {
+        if row < QR_QUIET_ZONE
+            || column < QR_QUIET_ZONE
+            || row >= self.side + QR_QUIET_ZONE
+            || column >= self.side + QR_QUIET_ZONE
+        {
+            return false;
+        }
+        let row = row - QR_QUIET_ZONE;
+        let column = column - QR_QUIET_ZONE;
+        self.modules[row * self.side + column]
+    }
+
+    fn rendered_side(&self) -> usize {
+        self.side + QR_QUIET_ZONE * 2
+    }
 }
 
 /// Stable lifecycle events with separate machine and interactive presentations.
@@ -1447,7 +1488,16 @@ impl App {
                     "Pairing link ready".to_string(),
                     Some("Open the dedicated link shown by the pairing host.".to_string()),
                 );
+                let qr = PairingQr::encode(&url);
                 self.notice(NoticeTone::Info, "Pairing link".to_string(), Some(url));
+                match qr {
+                    Ok(qr) => self.push(FeedItem::PairingQr(qr)),
+                    Err(error) => self.notice(
+                        NoticeTone::Warning,
+                        "Could not render pairing QR code".to_string(),
+                        Some(error.to_string()),
+                    ),
+                }
             }
             SystemEvent::PairingAuthenticating => self.activity(
                 "pairing".to_string(),
@@ -1789,7 +1839,13 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let transcript_lines = app
         .entries
         .iter()
-        .flat_map(|item| feed_item_lines(item, usize::from(areas[0].width)))
+        .flat_map(|item| {
+            feed_item_lines(
+                item,
+                usize::from(areas[0].width),
+                usize::from(areas[0].height),
+            )
+        })
         .collect::<Vec<_>>();
     let transcript = Paragraph::new(transcript_lines).wrap(Wrap { trim: false });
     let content_height = transcript.line_count(areas[0].width);
@@ -2197,12 +2253,15 @@ fn completion_window(total: usize, selected: usize, max_visible: usize) -> Range
 }
 
 fn feed_item_cost(item: &FeedItem) -> (usize, usize) {
+    if let FeedItem::PairingQr(qr) = item {
+        return (qr.rendered_side().div_ceil(2), qr.modules.len());
+    }
     let lines = feed_item_plain_lines(item);
     let bytes = lines.iter().map(String::len).sum();
     (lines.len().max(1), bytes)
 }
 
-fn feed_item_lines(item: &FeedItem, width: usize) -> Vec<Line<'static>> {
+fn feed_item_lines(item: &FeedItem, width: usize, height: usize) -> Vec<Line<'static>> {
     match item {
         FeedItem::Log(text) => text
             .lines()
@@ -2218,6 +2277,7 @@ fn feed_item_lines(item: &FeedItem, width: usize) -> Vec<Line<'static>> {
             title,
             detail,
         } => status_lines(*tone, title, detail.as_deref()),
+        FeedItem::PairingQr(qr) => pairing_qr_lines(qr, width, height),
         FeedItem::Command(command) => {
             vec![
                 Line::default(),
@@ -2297,6 +2357,43 @@ fn feed_item_lines(item: &FeedItem, width: usize) -> Vec<Line<'static>> {
             activity_lines(*state, &label, detail.as_deref())
         }
     }
+}
+
+fn pairing_qr_lines(qr: &PairingQr, width: usize, height: usize) -> Vec<Line<'static>> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let rendered_side = qr.rendered_side();
+    let required_width = QR_INDENT + rendered_side;
+    let required_height = rendered_side.div_ceil(2);
+    if width < required_width || height < required_height {
+        return vec![Line::from(Span::styled(
+            format!("  QR code needs {required_width} columns × {required_height} rows"),
+            Style::default().add_modifier(Modifier::DIM),
+        ))];
+    }
+    let qr_style = Style::default().fg(Color::Black).bg(Color::White);
+    (0..required_height)
+        .map(|terminal_row| {
+            let top_row = terminal_row * 2;
+            let bottom_row = top_row + 1;
+            let mut row = String::with_capacity(rendered_side);
+            for column in 0..rendered_side {
+                let top = qr.module(top_row, column);
+                let bottom = bottom_row < rendered_side && qr.module(bottom_row, column);
+                row.push(match (top, bottom) {
+                    (true, true) => '█',
+                    (true, false) => '▀',
+                    (false, true) => '▄',
+                    (false, false) => ' ',
+                });
+            }
+            Line::from(vec![
+                Span::raw(" ".repeat(QR_INDENT)),
+                Span::styled(row, qr_style),
+            ])
+        })
+        .collect()
 }
 
 fn command_divider_line(command: &str, width: usize) -> Line<'static> {
@@ -2395,7 +2492,10 @@ fn activity_lines(state: ActivityState, label: &str, detail: Option<&str>) -> Ve
 }
 
 fn feed_item_plain_lines(item: &FeedItem) -> Vec<String> {
-    feed_item_lines(item, 0)
+    if matches!(item, FeedItem::PairingQr(_)) {
+        return Vec::new();
+    }
+    feed_item_lines(item, 0, 0)
         .into_iter()
         .map(|line| {
             let line = line
@@ -3034,6 +3134,127 @@ mod tests {
         };
 
         assert!(event.human().contains("polkadotapp://pair?handshake=0123"));
+    }
+
+    #[test]
+    fn pairing_deeplink_renders_a_high_contrast_qr_without_copying_it() {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(16)
+        );
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let lines = app
+            .entries
+            .iter()
+            .flat_map(|item| feed_item_lines(item, 120, usize::MAX))
+            .collect::<Vec<_>>();
+        let qr_style = Style::default().fg(Color::Black).bg(Color::White);
+        let qr_rows = lines
+            .iter()
+            .filter_map(|line| line.spans.iter().find(|span| span.style == qr_style))
+            .collect::<Vec<_>>();
+        assert!(qr_rows.len() > 10);
+        assert!(qr_rows.iter().any(|row| {
+            row.content
+                .chars()
+                .any(|character| matches!(character, '▀' | '▄' | '█'))
+        }));
+        assert!(qr_rows.windows(2).all(
+            |rows| text_display_width(&rows[0].content) == text_display_width(&rows[1].content)
+        ));
+        assert_eq!(
+            app.transcript_text(),
+            "◌ Pairing link ready\n  Open the dedicated link shown by the pairing host.\n• Pairing link\n  <pairing link>"
+        );
+    }
+
+    #[test]
+    fn pairing_event_encodes_the_exact_deeplink() {
+        let mut app = test_app();
+        let url = "polkadotapp://pair?handshake=exact-payload".to_string();
+        let expected_code = QrCode::new(url.as_bytes()).expect("encode expected QR code");
+        let expected = PairingQr {
+            side: expected_code.width(),
+            modules: expected_code
+                .to_colors()
+                .into_iter()
+                .map(|color| color == QrColor::Dark)
+                .collect(),
+        };
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let actual = app.entries.iter().find_map(|item| match item {
+            FeedItem::PairingQr(qr) => Some(qr),
+            _ => None,
+        });
+        assert_eq!(actual, Some(&expected));
+    }
+
+    #[test]
+    fn narrow_terminal_keeps_the_link_without_rendering_a_wrapped_qr() {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(16)
+        );
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let lines = app
+            .entries
+            .iter()
+            .flat_map(|item| feed_item_lines(item, 40, usize::MAX))
+            .collect::<Vec<_>>();
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("QR code needs"));
+        assert!(
+            !lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| { span.style == Style::default().fg(Color::Black).bg(Color::White) })
+        );
+        assert!(app.transcript_text().contains("<pairing link>"));
+    }
+
+    #[test]
+    fn short_terminal_keeps_the_link_without_clipping_the_qr() -> Result<()> {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(16)
+        );
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let (screen, _) = render_app(&mut app, 120, 12)?;
+
+        assert!(screen.contains("QR code needs"));
+        assert!(
+            !screen
+                .chars()
+                .any(|character| matches!(character, '▀' | '▄' | '█'))
+        );
+        assert!(app.transcript_text().contains("<pairing link>"));
+        Ok(())
+    }
+
+    #[test]
+    fn unencodable_pairing_deeplink_keeps_the_link_and_reports_the_qr_failure() {
+        let mut app = test_app();
+        let url = format!("polkadotapp://pair?handshake={}", "01".repeat(3_000));
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let transcript = app.transcript_text();
+        assert!(transcript.contains("<pairing link>"));
+        assert!(transcript.contains("Could not render pairing QR code"));
     }
 
     #[test]

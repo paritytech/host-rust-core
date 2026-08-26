@@ -352,8 +352,8 @@ truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789
 ```
 
 `exec '/script'` needs a TTY because it opens an editor. In non-TTY execution,
-use `exec '/script <path>'` instead. `/copy` is unavailable. `/clear` and
-`/quit` are successful no-ops in one-shot mode.
+use `exec '/script <path>'` instead. `/copy` and `/approval` are unavailable.
+`/clear` and `/quit` are successful no-ops in one-shot mode.
 
 `exec '/devices'` and `exec '/devices --list'` inspect the selected session's
 saved pairings without starting their responders. `exec '/devices --remove
@@ -456,12 +456,15 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | --- | :---: | :---: | --- |
 | `/script` | yes | yes | Edit and run the remembered script, creating a scratch script when needed. |
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
-| `/login` | yes | no | Start or join pairing for the current product and copy the new link. |
+| `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --remove <statement-account-id>` | no | yes | Remove one paired device by its 32-byte statement account ID. |
+| `/approval` | no | yes | Print the current manual or automatic approval mode. TUI only. |
+| `/approval manual` | no | yes | Prompt for every future confirmation. TUI only. |
+| `/approval automatic` | no | yes | Approve every future confirmation automatically. TUI only. |
 | `/product` | yes | yes | Print the current product id. |
 | `/product <id>` | yes | yes | Switch product and reset product connections. |
 | `/session` | no | yes | Show current session, user, and path. |
@@ -560,6 +563,8 @@ from link generation through authentication to its final state.
 - `/script` followed by a space completes filesystem entries.
 - `/devices` followed by a space completes `--list` and `--remove` for the
   signing host.
+- `/approval` followed by a space completes `manual` and `automatic` for the
+  signing host.
 - `/session` followed by a space completes known signing sessions, `--list`,
   `--mnemonic`, `--clear`, and `--clear-all`; `/session --clear ` completes
   known names.
@@ -613,6 +618,13 @@ without the full-screen UI. Complete pairing links are replaced by
 Operator `/login` copies the first generated pairing link automatically. A
 clipboard failure is reported as a warning and does not cancel pairing.
 Product-driven `requestLogin()` does not automatically copy its link.
+
+Every pairing link received by the interactive UI is followed by a compact QR
+code that encodes the exact deeplink. QR rows use an explicit white background,
+black modules, and a four-module quiet zone. If the terminal cannot fit the QR
+without wrapping or clipping, the UI keeps the raw link and reports the
+required columns and rows. Encoding failure is reported without cancelling
+pairing. Streaming output and copied transcripts remain text-only.
 
 ### 9.7 Output safety and bounds
 
@@ -740,6 +752,10 @@ Scratch scripts store only their filename in `session.json`, so they remain
 valid if a session directory is promoted. Explicit scripts outside the session
 store their absolute path. A missing remembered file is ignored and replaced
 by a new scratch file.
+
+The default scratch file is a dependency-free Bun script that calls
+`truapi.account.getUserId()` and prints `user id` followed by the returned
+value. It does not emit terminal styling.
 
 Mnemonic-backed ephemeral signing sessions remember a path only for the
 current process and create scratch files under the system temporary
@@ -1554,6 +1570,13 @@ and do not add a CLI-only prompt.
 ### 17.1 Prompt policy
 
 Without `--auto-accept`, platform approval is deny-by-default.
+
+The interactive signing host accepts `/approval`, `/approval manual`, and
+`/approval automatic`. The bare command reports the current mode. A setter
+changes every future platform confirmation and remains active when a session
+or identity switch rebuilds the runtime. The setting is process-local and is
+not written to session state. A new process derives its initial policy from
+`--auto-accept` again.
 
 In the TUI it uses the approval card described in section 9. In plain mode:
 

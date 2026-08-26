@@ -138,9 +138,12 @@ Commands always start with `/`:
 | `/pair <url>` | Validate and answer a `polkadotapp://pair?...` deeplink (signing host). |
 | `/devices` or `/devices --list` | List every paired device saved for the active signing-host session. |
 | `/devices --remove <statement-account-id>` | Remove one paired device by its 32-byte statement account ID. |
+| `/approval` | Show whether signing-host confirmations are manual or automatic. |
+| `/approval manual` | Prompt for every future signing-host confirmation. |
+| `/approval automatic` | Approve every future signing-host confirmation automatically. |
 | `/script` | Reopen the session's last TypeScript scratch script (or create one), then run it. |
 | `/script <path>` | Remember and run an existing JS/TS product script through the public frame endpoint. |
-| `/login` | Start pairing for the selected product and copy its deeplink to the clipboard. |
+| `/login` | Start pairing for the selected product, show its QR code, and copy its deeplink to the clipboard. |
 | `/logout` | Disconnect the pairing host and discard its old pairing keypair. |
 | `/log <level>` | Change tracing to `error`, `warn`, `info`, `debug`, or `trace`. |
 | `/product` | Show the currently selected product. |
@@ -170,9 +173,13 @@ current signing host, and removes the old pairing identity. The next product
 login request or operator `/login` generates a new keypair and emits a fresh
 link that can be answered by another signing host. `/login` uses the current
 `/product` selection, copies the generated deeplink to the system clipboard,
-and remains interactive while the TUI renders pairing progress. A clipboard
-failure is reported without cancelling pairing. Logout does not clear product
-storage, scripts, or the selected product.
+and remains interactive while the TUI renders a scannable QR code and pairing
+progress. Product-driven login requests show the same QR code without changing
+clipboard contents. The raw link remains in the transcript, and a terminal
+that cannot fit the whole QR falls back to that link instead of wrapping or
+clipping it. A clipboard or QR-rendering failure is reported without cancelling
+pairing.
+Logout does not clear product storage, scripts, or the selected product.
 
 Both `pairing-host` and `signing-host` use the same interactive UI and command
 bar. It uses a quiet, command-centered transcript: submitted
@@ -199,8 +206,9 @@ Bare `/script` reopens the last script recorded for the active session,
 including a path previously selected with `/script <path>`. If that file is
 missing or the session has no script yet, it creates a durable Bun TypeScript
 file under the active host state's `scripts/` directory. The dependency-free
-starter uses ANSI colors and calls `truapi.account.getUserId()`. Scripts opened
-from an npm project can import packages installed by that project.
+starter calls `truapi.account.getUserId()` and prints the returned user id.
+Scripts opened from an npm project can import packages installed by that
+project.
 The TUI temporarily yields the terminal to `$VISUAL`, then `$EDITOR`, or
 `vi` when neither is set. After the editor exits successfully, the TUI is
 restored and the saved script runs through the public frame endpoint. Editor
@@ -492,6 +500,12 @@ In non-interactive `exec` mode, a TTY gets a plain yes/no prompt and non-TTY
 stdin safely rejects instead of hanging. Same-product Ring-VRF requests do not
 prompt, matching the iOS signing host. Pass `--auto-accept` for unattended
 runs; every auto-approved decision is still printed.
+
+The interactive signing host can inspect or change its running policy with
+`/approval`, `/approval manual`, and `/approval automatic`. A change applies to
+future confirmations and survives session switches within that process. It is
+not saved, so the next process starts from `--auto-accept` again. These commands
+are unavailable on the pairing host and in one-shot `exec` mode.
 
 ## Logging
 

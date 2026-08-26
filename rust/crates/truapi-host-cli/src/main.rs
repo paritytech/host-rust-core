@@ -62,8 +62,8 @@ use crate::sessions::{
     SessionProfile,
 };
 use crate::signing_shell::{
-    DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, ProductCommand, SessionCommand, ShellCommand,
-    parse_command,
+    ApprovalCommand, DeviceCommand, HELP_TEXT, PAIRING_HELP_TEXT, ProductCommand, SessionCommand,
+    ShellCommand, parse_command,
 };
 use crate::terminal_ui::{
     ActiveTerminalUi, ActivityState, DriveResult, SystemEvent, TerminalUi, UiHandle,
@@ -1168,6 +1168,7 @@ async fn run_signing_host(
 
 struct SigningHostSession {
     runtime: Arc<SigningHostRuntime>,
+    platform: Arc<CliPlatform>,
     runtime_factory: Arc<frame_server::SwitchableSigningRuntime>,
     responders: ResponderManager,
     signer: Option<ResolvedSigner>,
@@ -1180,7 +1181,6 @@ struct SigningHostSession {
     default_account: Option<String>,
     lite_username_prefix: Option<String>,
     reserved_username: Option<String>,
-    approval: ApprovalPolicy,
     ui: Option<UiHandle>,
     /// Set when this host serves a chat product. Held across runtime rebuilds
     /// so switching session keeps the rooms and messages already posted.
@@ -1313,7 +1313,7 @@ async fn start_signing_host(
     }
     let approval = approval_policy(args.auto_accept);
     let chat = args.execution_kind.chat_host();
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         network,
         storage_profile.path,
         storage_profile.product_storage_dir,
@@ -1367,6 +1367,7 @@ async fn start_signing_host(
 
     Ok(SigningHostSession {
         runtime,
+        platform,
         runtime_factory,
         responders: ResponderManager::default(),
         signer,
@@ -1379,7 +1380,6 @@ async fn start_signing_host(
         default_account,
         lite_username_prefix: normalized(args.lite_username_prefix.clone()),
         reserved_username: normalized(args.reserved_username.clone()),
-        approval,
         ui,
         chat,
     })
@@ -1392,7 +1392,7 @@ fn build_signing_runtime(
     approval: ApprovalPolicy,
     ui: Option<UiHandle>,
     chat: Option<Arc<chat::CliChatHost>>,
-) -> Result<Arc<SigningHostRuntime>> {
+) -> Result<(Arc<SigningHostRuntime>, Arc<CliPlatform>)> {
     let platform = CliPlatform::new(
         network,
         Some(CliStoragePaths::new(storage_path, product_storage_dir)),
@@ -1407,13 +1407,13 @@ fn build_signing_runtime(
     )
     .context("invalid signing host config")?;
     let runtime = Arc::new(SigningHostRuntime::with_chat_platform(
-        platform,
+        platform.clone(),
         config,
         tokio_spawner(),
         chat.map(|chat| chat as Arc<dyn ChatPlatform>),
     ));
     runtime.start_statement_allowance_renewal();
-    Ok(runtime)
+    Ok((runtime, platform))
 }
 
 impl Drop for SigningHostSession {
@@ -1906,16 +1906,17 @@ fn promote_current_profile(session: &mut SigningHostSession) -> Result<()> {
     }
     let promoted = session.catalog.promote_to_user(current, &user_id)?;
     let last_script = session.catalog.last_script(&promoted)?;
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         session.network,
         promoted.path.clone(),
         promoted.product_storage_dir.clone(),
-        session.approval,
+        session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
     )?;
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
+    session.platform = platform;
     session.last_script = last_script;
     session.profile = Some(promoted);
     session.catalog.set_current(&user_id)?;
@@ -2611,11 +2612,11 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
         provisional_profile
     };
     let last_script = session.catalog.last_script(&profile)?;
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         session.network,
         profile.path.clone(),
         profile.product_storage_dir.clone(),
-        session.approval,
+        session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
     )?;
@@ -2637,6 +2638,7 @@ async fn switch_session(session: &mut SigningHostSession, name: String) -> Resul
     session.responders.stop_all();
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
+    session.platform = platform;
     session.cached_user_id = signer.lite_username.clone();
     session.signer = Some(signer);
     session.last_script = last_script;
@@ -2699,11 +2701,11 @@ async fn import_mnemonic_session(
 
     let profile = session.catalog.ensure_profile(&session_name)?;
     let last_script = session.catalog.last_script(&profile)?;
-    let runtime = build_signing_runtime(
+    let (runtime, platform) = build_signing_runtime(
         session.network,
         profile.path.clone(),
         profile.product_storage_dir.clone(),
-        session.approval,
+        session.platform.approval_policy(),
         session.ui.clone(),
         session.chat.clone(),
     )?;
@@ -2741,6 +2743,7 @@ async fn import_mnemonic_session(
     session.responders.stop_all();
     session.runtime_factory.replace(runtime.clone());
     session.runtime = runtime;
+    session.platform = platform;
     session.cached_user_id = username.clone();
     session.signer = Some(signer);
     session.last_script = last_script;
@@ -2882,6 +2885,7 @@ async fn pairing_interactive_loop(
             }
             ShellCommand::Pair(_)
             | ShellCommand::Devices(_)
+            | ShellCommand::Approval(_)
             | ShellCommand::Session(_)
             | ShellCommand::Renew => {
                 ui.error("command is only available on the signing host");
@@ -3016,6 +3020,31 @@ async fn signing_interactive_loop(
                     ui.set_log_level(level);
                     ui.event(SystemEvent::LogLevelChanged { level });
                 }
+            }
+            ShellCommand::Approval(ApprovalCommand::Current) => {
+                let mode = match session.platform.approval_policy() {
+                    ApprovalPolicy::Prompt => "manual",
+                    ApprovalPolicy::AutoAccept => "automatic",
+                };
+                ui.system(format!("Approval mode: {mode}"));
+            }
+            ShellCommand::Approval(ApprovalCommand::Manual) => {
+                session.platform.set_approval_policy(ApprovalPolicy::Prompt);
+                ui.success(
+                    "Approval mode set to manual",
+                    Some("Future product confirmations will require approval.".to_string()),
+                );
+            }
+            ShellCommand::Approval(ApprovalCommand::Automatic) => {
+                session
+                    .platform
+                    .set_approval_policy(ApprovalPolicy::AutoAccept);
+                ui.success(
+                    "Approval mode set to automatic",
+                    Some(
+                        "Future product confirmations will be approved automatically.".to_string(),
+                    ),
+                );
             }
             ShellCommand::Product(ProductCommand::Current) => ui.system(product.current()),
             ShellCommand::Product(ProductCommand::Switch(product_id)) => {
@@ -3217,7 +3246,7 @@ async fn execute_interactive_operation(
         ShellCommand::Renew => run_renew(session).await?,
         ShellCommand::Login => bail!("/login is only available on the pairing host"),
         ShellCommand::Logout => bail!("/logout is only available on the pairing host"),
-        ShellCommand::Product(_) | ShellCommand::Devices(_) => {
+        ShellCommand::Product(_) | ShellCommand::Devices(_) | ShellCommand::Approval(_) => {
             bail!("command must be handled by the terminal UI")
         }
         ShellCommand::Help
@@ -3269,6 +3298,9 @@ async fn execute_non_interactive_command(
         ShellCommand::Help => println!("{HELP_TEXT}"),
         ShellCommand::Clear | ShellCommand::Quit => {}
         ShellCommand::Copy => bail!("/copy is only available in the terminal UI"),
+        ShellCommand::Approval(_) => {
+            bail!("/approval is only available in the terminal UI")
+        }
         ShellCommand::Login => bail!("/login is only available on the pairing host"),
         ShellCommand::Logout => bail!("/logout is only available on the pairing host"),
         ShellCommand::Log(level) => {
