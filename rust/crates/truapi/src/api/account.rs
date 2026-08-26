@@ -41,9 +41,12 @@ pub trait Account: Send + Sync {
     /// Retrieve a product-scoped account.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const result = await truapi.account.getAccount({
     ///   productAccountId: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     /// });
@@ -71,13 +74,16 @@ pub trait Account: Send + Sync {
     /// Retrieve the contextual alias for a context and ring.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
     /// const PEOPLE_COLLECTION_ID =
     ///   "0x706f703a706f6c6b61646f742e6e6574776f726b2f70656f706c652d6c697465" as const;
     /// const keyHandle = {
-    ///   dotNsIdentifier: "truapi-playground.dot",
+    ///   dotNsIdentifier: productContext.value.productId,
     ///   derivationIndex: { tag: "Index" as const, value: 0 },
     /// };
     /// const ringLocation = {
@@ -94,7 +100,7 @@ pub trait Account: Send + Sync {
     ///
     /// const result = await truapi.account.getAccountAlias({
     ///   keyHandle,
-    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Index", value: 0 } },
+    ///   context: { productId: productContext.value.productId, suffix: { tag: "Index", value: 0 } },
     ///   ringLocation,
     /// });
     /// assert(result.isOk(), "getAccountAlias failed:", result);
@@ -112,6 +118,9 @@ pub trait Account: Send + Sync {
     /// Generate a ring VRF proof with an explicitly registered member key.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const people = await truapi.chain.getChainInfo({ chain: "People" });
     /// assert(people.isOk(), "getChainInfo failed:", people);
     ///
@@ -123,7 +132,7 @@ pub trait Account: Send + Sync {
     ///     dotNsIdentifier: "peopl.dot",
     ///     derivationIndex: { tag: "Index", value: 1 },
     ///   },
-    ///   context: { productId: "truapi-playground.dot", suffix: { tag: "Index", value: 0 } },
+    ///   context: { productId: productContext.value.productId, suffix: { tag: "Index", value: 0 } },
     ///   ringLocation: {
     ///     chainId: people.value.genesisHash,
     ///     junctions: [
@@ -159,9 +168,12 @@ pub trait Account: Send + Sync {
     /// account, otherwise a per-call user confirmation.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const result = await truapi.account.signVrf({
     ///   account: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   transcriptLabel: "0x706f703a61697264726f70",
@@ -215,8 +227,11 @@ pub trait Account: Send + Sync {
     /// List registered ring-VRF keys owned by a product.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const result = await truapi.account.listRingVrfKeys({
-    ///   owner: "truapi-playground.dot",
+    ///   owner: productContext.value.productId,
     ///   disclosure: "PublicKey",
     /// });
     /// assert(result.isOk(), "listRingVrfKeys failed:", result);
@@ -235,9 +250,12 @@ pub trait Account: Send + Sync {
     /// Sign bytes directly with a registered ring-VRF member key.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// const result = await truapi.account.ringVrfSign({
     ///   keyHandle: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   message: "0x48656c6c6f",

@@ -3,6 +3,13 @@ use parity_scale_codec::{Decode, Encode};
 
 use super::common::GenericError;
 
+/// Response containing the product context bound to the current host runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostGetProductContextResponse {
+    /// Full canonical identifier used for authorization and account derivation.
+    pub product_id: String,
+}
+
 /// Request to query whether a feature is supported by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]

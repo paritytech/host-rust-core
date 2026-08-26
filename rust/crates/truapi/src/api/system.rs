@@ -2,6 +2,7 @@
 
 use crate::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
+    HostGetProductContextError, HostGetProductContextRequest, HostGetProductContextResponse,
     HostHandshakeError, HostHandshakeRequest, HostHandshakeResponse, HostNavigateToError,
     HostNavigateToRequest, HostNavigateToResponse,
 };
@@ -9,7 +10,7 @@ use crate::wire;
 use crate::{CallContext, CallError};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
-/// and navigation.
+/// navigation, and runtime information.
 #[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.
@@ -79,4 +80,20 @@ pub trait System: Send + Sync {
         cx: &CallContext,
         request: HostNavigateToRequest,
     ) -> Result<HostNavigateToResponse, CallError<HostNavigateToError>>;
+
+    /// Return the product context bound to the current host runtime.
+    ///
+    /// ```ts
+    /// const context = await truapi.system.getProductContext();
+    /// assert(context.isOk(), "getProductContext failed:", context);
+    /// console.log("product id:", context.value.productId);
+    /// ```
+    #[wire(request_id = 190)]
+    async fn get_product_context(
+        &self,
+        _cx: &CallContext,
+        _request: HostGetProductContextRequest,
+    ) -> Result<HostGetProductContextResponse, CallError<HostGetProductContextError>> {
+        Err(CallError::unavailable())
+    }
 }
