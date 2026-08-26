@@ -132,6 +132,15 @@ pub enum HostInfoError { V1 => v01::GenericError }
 The error is the `GenericError` catch-all, matching `feature_supported`; the
 call is host-local introspection with no domain-specific failure modes.
 
+### Who declares the platform
+
+The web host declares its platform in `runtimeConfig.host.platform`, defaulting
+to `Unknown` when omitted, because one WASM bundle serves hosts that are not
+all browsers. The iOS and Android bindings declare theirs instead of the
+embedding app, since an app that reaches the `TrUAPIHost` SPM package is by
+construction an iOS app and one that reaches the `truapi-host-android` AAR is
+an Android app. Leaving it to the app would only create a way to get it wrong.
+
 
 ## Compatibility
 

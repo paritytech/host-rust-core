@@ -18,7 +18,7 @@ use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
-use truapi::{Bytes32, v01};
+use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
     HostInfo, JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
@@ -188,6 +188,9 @@ pub struct NativeRuntimeConfig {
     pub host_icon: Option<String>,
     /// Optional host version shown by the wallet during SSO pairing.
     pub host_version: Option<String>,
+    /// Platform category this host runs on, reported to products via
+    /// `System::host_info`.
+    pub host_platform: HostPlatform,
     /// Optional platform/browser name shown by the wallet during SSO pairing.
     pub platform_type: Option<String>,
     /// Optional platform/browser version shown by the wallet during SSO pairing.
@@ -213,6 +216,9 @@ pub struct NativeHostRuntimeConfig {
     pub host_icon: Option<String>,
     /// Optional host version shown by the wallet during SSO pairing.
     pub host_version: Option<String>,
+    /// Platform category this host runs on, reported to products via
+    /// `System::host_info`.
+    pub host_platform: HostPlatform,
     /// Optional platform/browser name shown by the wallet during SSO pairing.
     pub platform_type: Option<String>,
     /// Optional platform/browser version shown by the wallet during SSO pairing.
@@ -312,6 +318,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
             host_name,
             host_icon,
             host_version,
+            host_platform,
             platform_type,
             platform_version,
             people_chain_genesis_hash,
@@ -324,6 +331,7 @@ impl TryFrom<NativeRuntimeConfig> for NativeResolvedRuntimeConfig {
             host_name,
             host_icon,
             host_version,
+            host_platform,
             platform_type,
             platform_version,
             people_chain_genesis_hash,
@@ -362,7 +370,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                 name: config.host_name,
                 icon: config.host_icon,
                 version: config.host_version,
-                platform: truapi::latest::HostPlatform::Unknown,
+                platform: config.host_platform,
             },
             PlatformInfo {
                 kind: config.platform_type,
@@ -2348,6 +2356,7 @@ mod tests {
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
+            host_platform: HostPlatform::Unknown,
             platform_type: None,
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
@@ -2363,6 +2372,7 @@ mod tests {
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
+            host_platform: HostPlatform::Unknown,
             platform_type: None,
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
@@ -3121,6 +3131,20 @@ mod tests {
         execution.notify_chain_closed(41);
         assert_eq!(futures::executor::block_on(shared_responses.next()), None);
         assert_eq!(futures::executor::block_on(scoped_responses.next()), None);
+    }
+
+    #[test]
+    fn runtime_config_reports_the_declared_host_platform() {
+        let resolved = NativeResolvedRuntimeConfig::try_from(NativeRuntimeConfig {
+            host_platform: HostPlatform::Ios,
+            ..native_runtime_config("app.dot")
+        })
+        .expect("config is valid");
+
+        assert_eq!(
+            resolved.host.signing.host.host_info.platform,
+            HostPlatform::Ios
+        );
     }
 
     #[test]

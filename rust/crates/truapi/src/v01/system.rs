@@ -74,6 +74,7 @@ pub struct HostNavigateToRequest {
 }
 
 /// Platform category a host runs on.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub enum HostPlatform {
     /// Browser-embedded product (an iframe inside a web host).
