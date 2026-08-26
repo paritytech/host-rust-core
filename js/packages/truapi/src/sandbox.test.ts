@@ -68,6 +68,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 async function until(predicate: () => boolean): Promise<void> {
     for (let i = 0; i < 200 && !predicate(); i += 1) await settle();
+    if (!predicate()) throw new Error("until() gave up after 200 turns");
 }
 
 let currentWindow: ReturnType<typeof installFakeIframeWindow> | null = null;
@@ -278,7 +279,7 @@ describe("connectWebSocketHost", () => {
 
     afterEach(async () => {
         for (const server of servers.splice(0)) server.stop(true);
-        // Let the close land here: it clears the port on whatever window it finds.
+        // A finished module's close still runs; keep it out of the next test.
         await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
