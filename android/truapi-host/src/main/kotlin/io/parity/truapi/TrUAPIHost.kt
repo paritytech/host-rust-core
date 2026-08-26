@@ -40,6 +40,7 @@ import uniffi.truapi.CustomRendererNode
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.HostPlatform
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
 import uniffi.truapi.HostThemeSubscribeItem
@@ -113,7 +114,9 @@ enum class ProductExecutionKind {
  * describe the host to the wallet during SSO pairing.
  * [peopleChainGenesisHash] and [bulletinChainGenesisHash] must each be exactly
  * 32 bytes. [localSessionSecret] optionally activates a local signing session
- * from host-held BIP-39 entropy (no SSO pairing needed).
+ * from host-held BIP-39 entropy (no SSO pairing needed). The platform category
+ * products read through `System.host_info` is not configurable: reaching this
+ * library at all means the host is an Android app.
  */
 data class RuntimeConfig(
     val productId: String,
@@ -136,6 +139,7 @@ data class RuntimeConfig(
             hostName = hostName,
             hostIcon = hostIcon,
             hostVersion = hostVersion,
+            hostPlatform = HostPlatform.ANDROID,
             platformType = platformType,
             platformVersion = platformVersion,
             peopleChainGenesisHash = peopleChainGenesisHash,
@@ -203,6 +207,7 @@ data class HostRuntimeConfig(
             hostName = hostName,
             hostIcon = hostIcon,
             hostVersion = hostVersion,
+            hostPlatform = HostPlatform.ANDROID,
             platformType = platformType,
             platformVersion = platformVersion,
             peopleChainGenesisHash = peopleChainGenesisHash,
@@ -1050,6 +1055,12 @@ class TrUAPIHostRuntime private constructor(
     }
 }
 
+/** A render the product declined or could not encode. */
+class CustomRendererStreamException(
+    /** Why the product ended the render. */
+    val reason: String,
+) : Exception(reason)
+
 /**
  * One SPA or Chat executable connected to a shared [TrUAPIHostRuntime]. Closing
  * it shuts the connection down permanently; the runtime stays usable.
@@ -1104,15 +1115,21 @@ class TrUAPIProductExecution internal constructor(
         callbackFlow {
             val observer =
                 object : NativeCustomRendererObserver {
-                    // The core declares both infallible, so uniffi has no error
-                    // type to convert a throw into and panics -- which aborts
-                    // under `panic = "abort"`.
+                    // The core declares all three infallible, so uniffi has no
+                    // error type to convert a throw into and panics -- which
+                    // aborts under `panic = "abort"`.
                     override fun onUpdate(node: CustomRendererNode) {
                         runCatching { trySend(node) }
                     }
 
                     override fun onComplete() {
                         runCatching { close() }
+                    }
+
+                    // The last tree sent is partial, so closing with a cause
+                    // keeps this distinct from a clean end for the collector.
+                    override fun onError(reason: String) {
+                        runCatching { close(CustomRendererStreamException(reason)) }
                     }
                 }
             val subscription = inner.renderCustomMessage(messageId, messageType, payload, observer)

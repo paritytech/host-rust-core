@@ -205,11 +205,14 @@ android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs 
 	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
 		-o $(ANDROID_JNILIBS) \
 		build --release -p truapi-server --features ws-bridge
+	# cargo-ndk also copies dependency cdylib intermediates (hash-suffixed,
+	# statically linked into libtruapi_server.so already); keep only ours.
+	find $(ANDROID_JNILIBS) -name '*.so' ! -name 'libtruapi_server.so' -delete
 
 android-check: uniffi-kotlin ## Compile the Kotlin host adapter against freshly generated bindings (needs Gradle + Android SDK).
 	gradle :truapi-host:compileReleaseKotlin
 
-android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
+android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 as io.parity:truapi-host-android:0.0.0-local (needs Gradle + JDK 17). Run `make android-jni` first to bundle the per-ABI cdylibs into the AAR.
 	gradle :truapi-host:publishReleasePublicationToMavenLocal
 
 # truapi-provider ships as its own per-platform artifacts (iOS xcframework,

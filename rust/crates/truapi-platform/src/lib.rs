@@ -37,7 +37,7 @@ use truapi::latest::{
     HostChatPostMessageResponse, HostChatRegisterBotError, HostChatRegisterBotRequest,
     HostChatRegisterBotResponse, HostDevicePermissionRequest, HostDevicePermissionResponse,
     HostFeatureSupportedRequest, HostFeatureSupportedResponse, HostLocalStorageReadError,
-    HostNavigateToError, HostPushNotificationRequest, HostPushNotificationResponse,
+    HostNavigateToError, HostPlatform, HostPushNotificationRequest, HostPushNotificationResponse,
     HostSignPayloadRequest, HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
     HostSignRawWithLegacyAccountRequest, HostThemeSubscribeItem, LegacyAccountTxPayload,
     NotificationId, ProductAccountId, ProductAccountTxPayload, ProductProofContext,
@@ -141,6 +141,9 @@ pub struct HostInfo {
     pub icon: Option<String>,
     /// Optional host version.
     pub version: Option<String>,
+    /// Platform category the host runs on, reported to products via
+    /// `System::host_info`.
+    pub platform: HostPlatform,
 }
 
 /// Platform metadata.
@@ -273,6 +276,31 @@ pub fn has_dotns_tld(normalized: &str) -> bool {
     normalized
         .rsplit_once('.')
         .is_some_and(|(_, tld)| DOTNS_TLDS.contains(&tld))
+}
+
+/// Bare product labels whose products hold every [`RemotePermission`] without a
+/// user prompt.
+///
+/// These are first-party surfaces shipped alongside the host, so their remote
+/// access belongs to the host's own trust boundary rather than to a per-product
+/// decision. The list covers remote permissions only: device permissions,
+/// identity disclosure and cross-product account access are always asked for.
+/// Entries carry no TLD, so one entry covers the product on every network in
+/// [`DOTNS_TLDS`].
+pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", "dim2", "stash"];
+
+/// Whether `product_id` holds every [`RemotePermission`] without prompting.
+///
+/// Expects the [`normalize_product_identifier`] form. Matches the whole label
+/// and nothing else: `peopl.dot` and `peopl.paseo` are trusted, while
+/// `app.peopl.dot` and any `localhost` identifier are separate products and are
+/// not. The label is only read out of an id that [`has_dotns_tld`] accepts, so a
+/// widened product-id policy cannot promote an arbitrary single-label host.
+pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
+    has_dotns_tld(product_id)
+        && product_id
+            .rsplit_once('.')
+            .is_some_and(|(label, _tld)| REMOTE_PERMISSION_TRUSTED_LABELS.contains(&label))
 }
 
 /// Normalize product identifiers before derivation and policy checks.
@@ -2043,6 +2071,68 @@ mod tests {
             decoded,
             ProductContext::new("app.dot".to_string()).expect("product id is valid")
         );
+    }
+
+    #[test]
+    fn trusted_remote_permission_labels_match_the_bare_product_label() {
+        for product_id in [
+            "peopl.dot",
+            "peopl.paseo",
+            "peopl.test",
+            "dim2.dot",
+            "stash.dot",
+        ] {
+            assert!(
+                has_trusted_remote_permissions(product_id),
+                "{product_id} must hold remote permissions without a prompt"
+            );
+        }
+        for product_id in [
+            "app.peopl.dot",
+            "sub.dim2.paseo",
+            "peopl",
+            "peopl.com",
+            "peoplx.dot",
+            "my-peopl.dot",
+            "localhost",
+            "localhost:3000",
+            "",
+            "dot",
+        ] {
+            assert!(
+                !has_trusted_remote_permissions(product_id),
+                "{product_id} is a separate product and must prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn every_trusted_remote_permission_label_is_a_product_identifier() {
+        // A label that product-id validation rejects would never reach the
+        // permission engine, so the whitelist entry would be silently inert.
+        for label in REMOTE_PERMISSION_TRUSTED_LABELS {
+            for tld in DOTNS_TLDS {
+                let product_id = format!("{label}.{tld}");
+                assert!(
+                    is_product_identifier(&product_id),
+                    "{product_id} must be an accepted product identifier"
+                );
+                assert!(
+                    has_trusted_remote_permissions(&product_id),
+                    "{product_id} must be recognized as trusted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trusted_remote_permission_labels_are_bare_lowercase_labels() {
+        // The predicate compares against the label of an already-normalized id,
+        // so an entry carrying a TLD or an uppercase letter can never match.
+        for label in REMOTE_PERMISSION_TRUSTED_LABELS {
+            assert!(!label.contains('.'), "{label} must not carry a TLD");
+            assert_eq!(*label, label.to_lowercase(), "{label} must be lowercase");
+        }
     }
 
     #[test]

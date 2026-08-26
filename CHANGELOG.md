@@ -5,6 +5,12 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [Unreleased]
+
+### Added
+
+- expose the current canonical product identifier through `system.getProductContext`
+
 ## [0.10.0] - 2026-08-24
 
 ### Added

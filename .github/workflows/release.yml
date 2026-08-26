@@ -33,6 +33,7 @@ jobs:
       attestations: write
     outputs:
       ios_version: ${{ steps.version.outputs.ios_version }}
+      android_version: ${{ steps.version.outputs.android_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +58,7 @@ jobs:
           release="${subject#release: }"
           packages=""
           ios_version=""
+          android_version=""
           seen_names="|"
 
           IFS=',' read -ra targets <<< "${release}"
@@ -68,7 +70,7 @@ jobs:
             # Trim whitespace around comma-separated targets.
             target="${target#"${target%%[![:space:]]*}"}"
             target="${target%"${target##*[![:space:]]}"}"
-            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/ios-host)[[:space:]]+([^[:space:]]+)$ ]]; then
+            if [[ ! "${target}" =~ ^(@parity/truapi|@parity/truapi-host|@parity/ios-host|@parity/android-host)[[:space:]]+([^[:space:]]+)$ ]]; then
               echo "::error::Unsupported release target '${target}' in subject: ${subject}"
               exit 1
             fi
@@ -92,6 +94,14 @@ jobs:
                 ios_version="${declared_version}"
                 continue
                 ;;
+              @parity/android-host)
+                if [[ ! "${declared_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+                  echo "::error::Invalid Android host version '${declared_version}'."
+                  exit 1
+                fi
+                android_version="${declared_version}"
+                continue
+                ;;
             esac
 
             version="$(jq -r '.version' "${path}/package.json")"
@@ -113,6 +123,7 @@ jobs:
           done
 
           echo "ios_version=${ios_version}" >> "$GITHUB_OUTPUT"
+          echo "android_version=${android_version}" >> "$GITHUB_OUTPUT"
 
           if [ -z "${packages}" ]; then
             echo "No requested npm packages need publishing."
@@ -262,6 +273,18 @@ jobs:
       - name: Fail if any package did not reach npm
         if: steps.confirm.outcome == 'failure'
         run: exit 1
+
+  publish-android:
+    name: Publish Android host
+    needs: release
+    if: needs.release.outputs.android_version != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/release-android.yml
+    with:
+      version: ${{ needs.release.outputs.android_version }}
+      ref: ${{ github.event.workflow_run.head_sha }}
 
   publish-ios:
     name: Publish iOS host

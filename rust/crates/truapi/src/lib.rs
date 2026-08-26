@@ -54,8 +54,8 @@ pub mod latest {
         AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
         ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
         ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
-        ContextualAlias, DerivationIndex, GenericError, HostSignPayloadData, NotificationId,
-        OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
+        ContextualAlias, DerivationIndex, GenericError, HostPlatform, HostSignPayloadData,
+        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
         RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
         RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
         RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
@@ -127,6 +127,9 @@ pub mod latest {
     /// Feature-support query result.
     pub type HostFeatureSupportedResponse =
         LatestOf<versioned::system::HostFeatureSupportedResponse>;
+    /// Product context bound to the current host runtime.
+    pub type HostGetProductContextResponse =
+        LatestOf<versioned::system::HostGetProductContextResponse>;
     /// Local storage operation error.
     pub type HostLocalStorageReadError =
         LatestOf<versioned::local_storage::HostLocalStorageReadError>;
