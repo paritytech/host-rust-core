@@ -43,6 +43,15 @@ function hostWindow(): Window | null {
   return typeof window === "undefined" ? null : window;
 }
 
+/** A closed port a host locked in place, so it survived being dropped. */
+let lockedDeadPort: MessagePort | null = null;
+
+/** The injected port a build may adopt, skipping one already closed. */
+function liveHostPort(): MessagePort | null {
+  const port = hostWindow()?.__HOST_API_PORT__;
+  return port && port !== lockedDeadPort ? port : null;
+}
+
 /** Drop the injected port, or a rebuild re-adopts the closed one. */
 function forgetHostPort(): void {
   const win = hostWindow();
@@ -52,6 +61,7 @@ function forgetHostPort(): void {
   } catch {
     // A host may lock the property; the close must still be reported.
   }
+  lockedDeadPort = win.__HOST_API_PORT__ ?? null;
 }
 
 function isIframe(): boolean {
@@ -116,7 +126,7 @@ async function waitForWebviewPort(
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (signal?.aborted) throw new Error("waitForWebviewPort aborted");
-    const port = hostWindow()?.__HOST_API_PORT__;
+    const port = liveHostPort();
     if (port) return port;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -200,7 +210,7 @@ function createIframeCompatibilityProvider(
     }
   }
 
-  const existing = win.__HOST_API_PORT__;
+  const existing = liveHostPort();
   if (existing) {
     adoptPort(existing);
   } else {

@@ -574,6 +574,42 @@ describe("sandbox after the pipe closes", () => {
         expect(statuses).toEqual(["connected", "disconnected"]);
     });
 
+    it("does not re-adopt a port it could not delete", async () => {
+        const harness = installFakeIframeWindow({
+            referrer: "https://host.example/product",
+        });
+        currentWindow = harness;
+        const sandbox = await importSandbox();
+        const channel = trackChannel();
+        // A locked global, as the container's freeze helpers make one.
+        Object.defineProperty(harness.win, "__HOST_API_PORT__", {
+            get: () => channel.port1,
+            set() {},
+            configurable: false,
+        });
+        const statuses: string[] = [];
+        sandbox.subscribeConnectionStatus((status) => statuses.push(status));
+        await settle();
+        closePipe(channel.port1);
+        expect(statuses).toEqual(["connected", "disconnected"]);
+
+        sandbox.getClientSync();
+
+        // The port is still on the window, and must not count as a live one.
+        expect(harness.win.__HOST_API_PORT__).toBe(channel.port1);
+        expect(statuses).toEqual(["connected", "disconnected"]);
+
+        const fresh = trackChannel();
+        harness.dispatch({
+            source: harness.parent,
+            origin: "https://host.example",
+            data: { type: "truapi-init" },
+            ports: [fresh.port1],
+        });
+
+        expect(statuses).toEqual(["connected", "disconnected", "connected"]);
+    });
+
     it("keeps a marked webview page hosted after the port is dropped", async () => {
         const channel = trackChannel();
         const harness = installFakeWebviewWindow();
