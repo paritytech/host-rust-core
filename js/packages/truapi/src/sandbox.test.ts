@@ -336,12 +336,11 @@ function closePipe(port: MessagePort): void {
     hook.call(port, new MessageEvent("messageerror"));
 }
 
-function installFakeWebviewWindow(port: MessagePort) {
+function installFakeWebviewWindow() {
     const harness = installFakeIframeWindow({});
     // Top-level, so isIframe() reads false.
     (harness.win as unknown as { top: Window }).top = harness.win;
     harness.win.__HOST_WEBVIEW_MARK__ = true;
-    harness.win.__HOST_API_PORT__ = port;
     return harness;
 }
 
@@ -351,8 +350,9 @@ describe("sandbox after the pipe closes", () => {
             referrer: "https://host.example/product",
         });
         currentWindow = harness;
-        harness.win.__HOST_API_PORT__ = port;
         const sandbox = await importSandbox();
+        // After the import: a stale module still closing would clear this global.
+        harness.win.__HOST_API_PORT__ = port;
         const client = sandbox.getClientSync();
         expect(client).not.toBeNull();
         await settle();
@@ -432,9 +432,10 @@ describe("sandbox after the pipe closes", () => {
 
     it("keeps a marked webview page hosted after the port is dropped", async () => {
         const channel = trackChannel();
-        const harness = installFakeWebviewWindow(channel.port1);
+        const harness = installFakeWebviewWindow();
         currentWindow = harness;
         const sandbox = await importSandbox();
+        harness.win.__HOST_API_PORT__ = channel.port1;
         expect(sandbox.isCorrectEnvironment()).toBe(true);
         expect(sandbox.getClientSync()).not.toBeNull();
         await settle();

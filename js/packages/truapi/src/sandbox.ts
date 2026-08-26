@@ -43,6 +43,12 @@ function hostWindow(): Window | null {
   return typeof window === "undefined" ? null : window;
 }
 
+/** Drop the injected port, or a rebuild re-adopts the closed one. */
+function forgetHostPort(): void {
+  const win = hostWindow();
+  if (win) delete win.__HOST_API_PORT__;
+}
+
 function isIframe(): boolean {
   try {
     return window !== window.top;
@@ -270,7 +276,12 @@ export function getClientSync(): TrUApiClient | null {
   try {
     const provider = createSandboxProvider(() => setStatus("connected"));
     cachedClient = createClient(createTransport(provider));
-    provider.subscribeClose?.(() => setStatus("disconnected"));
+    provider.subscribeClose?.(() => {
+      // Cleared first: a listener may call getClientSync from the notify below.
+      cachedClient = null;
+      forgetHostPort();
+      setStatus("disconnected");
+    });
     return cachedClient;
   } catch {
     return null;
