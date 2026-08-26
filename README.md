@@ -192,9 +192,16 @@ reaches it through a development-only `<script>` tag:
 
 The host serves that script itself, so the page needs no package, no imports,
 and no environment variables. It installs the same `window.__HOST_API_PORT__`
-that native webview hosts inject, and the SDK adopts it unchanged. Frame
-connections are limited to loopback origins, because WebSocket is not subject
-to CORS and confirmations here are auto-approved.
+that native webview hosts inject, and the SDK adopts it unchanged. TCP frame
+connections are accepted only from loopback peers, and browser WebSocket
+origins must also name localhost or a loopback IP. WebSocket is not subject to
+CORS, and confirmations here are auto-approved.
+
+The CLI owns the wrapped command's process group on Unix. On shutdown it sends
+SIGTERM to the group, waits up to five seconds, then sends SIGKILL if a
+descendant still remains. This prevents a package-manager child from keeping a
+development port open. A natural child exit keeps its status, while SIGINT or
+SIGTERM cleanup exits with status 130.
 
 A host that should outlive the dev server, or one whose confirmations you want
 to approve by hand in its terminal UI, is the existing command with your dev

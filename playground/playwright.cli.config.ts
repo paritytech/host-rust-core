@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const isCI = !!process.env.CI;
+const hostBinary = process.env.TRUAPI_HOST_BIN ?? "truapi-host";
 
 /**
  * The playground driven in a plain browser tab against a local `truapi-host
@@ -38,9 +39,10 @@ export default defineConfig({
     {
       // One process: the signing host binds :9955 and serves the bridge, then
       // runs the dev server once its signer exists.
-      command: "../target/release/truapi-host dev -- yarn dev",
+      command: 'exec "$TRUAPI_HOST_BIN" dev -- yarn dev',
+      env: { TRUAPI_HOST_BIN: hostBinary },
       url: "http://localhost:3000",
-      reuseExistingServer: !isCI,
+      reuseExistingServer: false,
       timeout: 5 * 60 * 1000,
       stdout: "pipe",
       stderr: "pipe",

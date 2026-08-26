@@ -350,7 +350,7 @@ e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local s
 
 e2e-cli-diagnosis: ## Full playground diagnosis in a plain browser tab, hosted by `truapi-host dev`.
 	cargo build --release -p truapi-host-cli
-	cd $(PLAYGROUND) && bun tests/e2e/cli-diagnosis.ts
+	cd $(PLAYGROUND) && TRUAPI_HOST_BIN="$(abspath target/release/truapi-host)" bun tests/e2e/cli-diagnosis.ts
 
 e2e-signing-cli: ## Run the generated battery against the direct signing-host CLI.
 	scripts/battery.sh --signing-host

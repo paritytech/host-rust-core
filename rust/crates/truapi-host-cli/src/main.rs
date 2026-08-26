@@ -1678,10 +1678,8 @@ async fn restore_paired_responders(session: &mut SigningHostSession) {
     }
 }
 
-/// Park until the operator stops the process. Ctrl-C is awaited so the host owns
-/// its own shutdown; SIGTERM keeps its default action and ends the process.
-/// How long the wrapped development command has to exit after an interrupt
-/// before it is killed.
+/// How long the wrapped development command has to exit after termination is
+/// requested before it is killed.
 const DEV_COMMAND_GRACE: Duration = Duration::from_secs(5);
 
 /// Conventional exit code for a process stopped by an interrupt.
@@ -1720,30 +1718,24 @@ async fn run_dev(
 
 /// Run the wrapped development command, returning the code to exit with.
 ///
-/// The command stays in this process's group, so anything that signals the
-/// group (a terminal interrupt, a test runner, a service manager) reaches the
-/// whole tree even when it never gives this process a chance to clean up. On
-/// the graceful path the group is signalled from here instead, because package
-/// managers reach the actual dev server through two or three intermediate
-/// processes and signalling only the direct child leaves it holding its port.
+/// The command owns a process group whose id is retained after its direct child
+/// exits, because package managers can leave the actual development server
+/// running two or three intermediate processes away.
 async fn run_dev_command(command: Vec<String>) -> Result<i32> {
     let (program, arguments) = command
         .split_first()
         .expect("an empty dev command is never supervised");
-    let mut child = tokio::process::Command::new(program)
-        .args(arguments)
-        .spawn()
-        .with_context(|| format!("failed to start {program}"))?;
+    let mut command = DevCommand::spawn(program, arguments)?;
 
     tokio::select! {
-        status = child.wait() => {
-            // Intermediate processes exit before the server they spawned.
-            stop_dev_command(&child);
-            Ok(status?.code().unwrap_or(1))
+        status = command.child.wait() => {
+            let exit_code = status?.code().unwrap_or(1);
+            stop_dev_command(&mut command).await;
+            Ok(exit_code)
         }
         _ = wait_for_shutdown() => {
-            stop_dev_command(&child);
-            let _ = tokio::time::timeout(DEV_COMMAND_GRACE, child.wait()).await;
+            stop_dev_command(&mut command).await;
+            let _ = command.child.wait().await;
             // The command was interrupted, not failed. Report the interrupt
             // rather than whatever a terminated package manager last said.
             Ok(INTERRUPTED_EXIT_CODE)
@@ -1751,37 +1743,75 @@ async fn run_dev_command(command: Vec<String>) -> Result<i32> {
     }
 }
 
-/// Terminate the development command and everything it spawned.
-///
-/// The command shares this process's group, so the group is what has to be
-/// signalled: package managers reach the real dev server through intermediate
-/// processes, and signalling the direct child leaves that server holding its
-/// port. Signalling ourselves is harmless, since both interrupt and termination
-/// are handled and only wake a shutdown already under way.
-///
-/// A group is only ours to signal when we lead it. A supervisor that spawned us
-/// into its own group would otherwise be torn down alongside our child, so that
-/// case falls back to the direct child; such a supervisor should spawn us
-/// detached, which is what makes the group ours.
-#[cfg(unix)]
-fn stop_dev_command(child: &tokio::process::Child) {
-    use rustix::process::{Signal, getpgrp, getpid, kill_process, kill_process_group};
+struct DevCommand {
+    child: tokio::process::Child,
+    #[cfg(unix)]
+    process_group: rustix::process::Pid,
+}
 
-    if getpgrp() == getpid() {
-        let _ = kill_process_group(getpgrp(), Signal::TERM);
-        return;
-    }
-    if let Some(pid) = child
-        .id()
-        .and_then(|pid| i32::try_from(pid).ok())
-        .and_then(rustix::process::Pid::from_raw)
-    {
-        let _ = kill_process(pid, Signal::TERM);
+impl DevCommand {
+    fn spawn(program: &str, arguments: &[String]) -> Result<Self> {
+        let mut command = tokio::process::Command::new(program);
+        command.args(arguments);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+
+            command.as_std_mut().process_group(0);
+        }
+        let child = command
+            .spawn()
+            .with_context(|| format!("failed to start {program}"))?;
+        #[cfg(unix)]
+        let process_group = child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(rustix::process::Pid::from_raw)
+            .context("development command has no process group id")?;
+        Ok(Self {
+            child,
+            #[cfg(unix)]
+            process_group,
+        })
     }
 }
 
+/// Terminate the development command and everything it spawned.
+#[cfg(unix)]
+async fn stop_dev_command(command: &mut DevCommand) {
+    use rustix::process::{Signal, kill_process_group};
+
+    let _ = kill_process_group(command.process_group, Signal::TERM);
+    if wait_for_dev_process_group_exit(command).await {
+        return;
+    }
+    let _ = kill_process_group(command.process_group, Signal::KILL);
+    let _ = wait_for_dev_process_group_exit(command).await;
+}
+
+#[cfg(unix)]
+async fn wait_for_dev_process_group_exit(command: &mut DevCommand) -> bool {
+    let exited = async {
+        loop {
+            let _ = command.child.try_wait();
+            if matches!(
+                rustix::process::test_kill_process_group(command.process_group),
+                Err(rustix::io::Errno::SRCH)
+            ) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(DEV_COMMAND_GRACE, exited)
+        .await
+        .is_ok()
+}
+
 #[cfg(not(unix))]
-fn stop_dev_command(_child: &tokio::process::Child) {}
+async fn stop_dev_command(command: &mut DevCommand) {
+    let _ = command.child.start_kill();
+}
 
 /// Resolve once the process is asked to stop.
 ///
@@ -3625,6 +3655,72 @@ mod cli_tests {
         assert_eq!(args.product_id.as_deref(), Some("playground.paseo"));
         assert_eq!(args.app_port, 3000);
         assert!(args.command.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dev_force_kills_a_term_ignoring_descendant_after_its_launcher_exits() -> Result<()> {
+        const READY_PATH_ENV: &str = "TRUAPI_DEV_COMMAND_TEST_READY_PATH";
+
+        if let Some(ready_path) = std::env::var_os(READY_PATH_ENV) {
+            let _terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            let _listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+            std::fs::write(
+                ready_path,
+                format!("{} {}", _listener.local_addr()?, std::process::id()),
+            )?;
+            return std::future::pending().await;
+        }
+
+        let temporary = tempfile::tempdir()?;
+        let ready_path = temporary.path().join("descendant-ready");
+        let executable = std::env::current_exe()?.to_string_lossy().into_owned();
+        let launcher = r#"
+"$1" --exact cli_tests::dev_force_kills_a_term_ignoring_descendant_after_its_launcher_exits --nocapture &
+attempts=0
+while [ ! -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH" ] && [ "$attempts" -lt 500 ]; do
+    attempts=$((attempts + 1))
+    sleep 0.01
+done
+test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
+"#;
+        let started = std::time::Instant::now();
+        let exit_code = run_dev_command(vec![
+            "env".to_string(),
+            format!("{READY_PATH_ENV}={}", ready_path.display()),
+            "sh".to_string(),
+            "-c".to_string(),
+            launcher.to_string(),
+            "sh".to_string(),
+            executable,
+        ])
+        .await?;
+        let ready = std::fs::read_to_string(&ready_path)?;
+        let (address, pid) = ready
+            .split_once(' ')
+            .context("descendant readiness record is incomplete")?;
+        let address = address.parse::<SocketAddr>()?;
+        let port_was_released = std::net::TcpListener::bind(address).is_ok();
+        if !port_was_released {
+            let pid = pid
+                .trim()
+                .parse::<i32>()
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+                .context("descendant pid is invalid")?;
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+        }
+
+        assert_eq!(
+            (
+                exit_code,
+                port_was_released,
+                started.elapsed() >= DEV_COMMAND_GRACE,
+            ),
+            (0, true, true)
+        );
+        Ok(())
     }
 
     #[test]

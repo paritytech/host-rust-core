@@ -197,6 +197,7 @@ Commands:
 | Command | Purpose |
 | --- | --- |
 | `pairing-host` | Run the seedless product-facing host. |
+| `dev` | Run a development command against a loopback signing host and browser bridge. |
 | `signing-host` | Run the wallet-local signing host. |
 | `identity-check` | Probe dotNS identity records on Asset Hub for a mnemonic. |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name`. |
@@ -366,6 +367,45 @@ paired host saved for the selected managed session, optionally adds the host
 from `--deeplink`, and serves product frames until Ctrl-C or external process
 termination. `--auto-accept` is needed for confirmations because this mode has
 no terminal prompt.
+
+### 6.6 Top-level `dev`
+
+```sh
+truapi-host dev [options] [-- <development-command>...]
+```
+
+`dev` is the plain-browser development topology built on the signing host. It
+needs no TTY, ensures and activates a signer, auto-accepts confirmations, binds
+the loopback frame server and browser bridge, then starts the wrapped command.
+When no command follows `--`, it serves the host until stopped.
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--app-port <port>` | `3000` | Port of the development server. The default product id becomes `localhost:<port>`. |
+| `--port <port>` | `9955` | Loopback port for product frames and `/bootstrap.js`. A product tag using another port must change with it. |
+| `--product-id <id>` | `localhost:<app-port>` | Override the product scope. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete network preset. |
+| `--session <name>` | remembered session | Restore or create a persistent signing-host session. |
+| `--mnemonic <phrase>` | none | Use a disposable testnet signer instead of the managed session. `HOST_CLI_SIGNER_MNEMONIC` supplies the same value. |
+| `--base-path <path>` | section 12.1 | Root for account, session, core, and product state. |
+
+The product includes a development-only blocking tag before product code:
+
+```html
+<script src="http://127.0.0.1:9955/bootstrap.js"></script>
+```
+
+The JavaScript creates a `MessageChannel`, connects its private side to the
+same-port WebSocket, assigns the public side to `window.__HOST_API_PORT__`, sets
+the native-webview marker, and dispatches `truapi-native-ready`. Frames posted
+before the WebSocket opens are queued. Production builds must omit the tag.
+
+On Unix the wrapped command is the leader of a process group retained by the
+CLI. A natural direct-launcher exit preserves its status and still cleans up
+descendants. On CLI SIGINT or SIGTERM, cleanup reports status 130. Both paths
+send SIGTERM to the group, wait up to five seconds while reaping the direct
+child, then send SIGKILL and wait again if any group member remains. On
+non-Unix platforms the CLI stops and reaps the direct child.
 
 ## 7. Product identifiers and switching
 
@@ -1340,9 +1380,19 @@ connections.
 
 ### 14.2 Product-frame WebSocket
 
-The listener uses plain `ws://`. Defaults are loopback, but any
-`SocketAddr` accepted by the OS can be supplied. v0.1 has no authentication,
-TLS, origin check, or non-loopback warning.
+The listener uses plain `ws://`. Any `SocketAddr` accepted by the OS can be
+bound, but a TCP frame connection is accepted only when its actual peer IP is
+loopback. A browser WebSocket handshake must also carry an `Origin` whose host
+is `localhost`, a loopback IPv4 address, or a loopback IPv6 address. Malformed
+and non-loopback origins are rejected. Unix-socket connections and loopback TCP
+clients without `Origin` are treated as local non-browser clients.
+
+For a TCP listener, `GET /bootstrap.js` on the same port returns the development
+bridge as a plain HTTP JavaScript response with `no-store` and connection-close
+headers. Other HTTP paths return 404. The bridge embeds the endpoint that was
+actually bound, so `--port` and its generated WebSocket URL remain consistent.
+The HTTP response does not grant cross-origin access; browser frame access is
+enforced during the later WebSocket handshake.
 
 Each accepted WebSocket:
 
@@ -1754,6 +1804,8 @@ them; on-demand allocation for a product reports exhaustion instead.
 | `1` | General runtime/state/network error, invalid product at runtime construction, or failed `exec` script. |
 | `2` | Clap/explicit invocation error, non-TTY interactive use, malformed slash command passed to `exec`, or runner connection timeout in top-level script mode. |
 | child status | Top-level pairing/signing `--script` preserves a normal Bun exit status. |
+| wrapped status | `dev` preserves a normally exiting direct launcher's status after descendant cleanup. |
+| `130` | `dev` received SIGINT or SIGTERM and completed wrapped-command cleanup. |
 
 Interactive command errors do not terminate the host. They finalize running
 activities, display the error, and return to the command bar.
@@ -1762,9 +1814,10 @@ Dropping a `SigningHostSession` stops all of its background responders. Leaving
 the TUI restores the cursor, bracketed-paste mode, alternate screen, and raw mode.
 The frame accept task is aborted when its owning command body completes.
 
-The CLI has no explicit SIGTERM/SIGINT signal orchestration. Interactive
-Ctrl-C is handled as a terminal key; external process termination follows
-normal operating-system behavior.
+`dev` owns explicit SIGINT/SIGTERM orchestration and the wrapped-command
+lifecycle described in section 6.6. Other commands have no global signal
+controller. Interactive Ctrl-C is handled as a terminal key; external process
+termination follows normal operating-system behavior.
 
 Top-level `--script` uses `std::process::exit` after the frame-server scope has
 ended. This preserves the child status but bypasses later Rust destructors.
@@ -1776,7 +1829,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_LOG` | Default `--log-level`. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
-| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
+| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
 | `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
@@ -1802,11 +1855,11 @@ These are part of the as-built specification:
 - there is no structured/JSON output mode;
 - there is no `--version`;
 - there is no script timeout option;
-- there is no global signal-aware graceful-shutdown controller;
+- commands other than `dev` have no global signal-aware graceful-shutdown controller;
 - onboarding can wait for the fixed identity/ring polling windows;
 - session/core/product state has no inter-process mutation lock;
 - corrupt core storage is treated as empty after a warning;
-- non-loopback product listeners have no authentication or warning;
+- non-loopback product listeners can bind but reject every TCP frame peer;
 - product text WebSocket frames are accepted as protocol bytes;
 - product-frame and chain outbound queues are unbounded;
 - unknown chain genesis hashes fall back to People;

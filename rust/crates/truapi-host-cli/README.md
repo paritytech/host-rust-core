@@ -66,13 +66,16 @@ That script installs the same `window.__HOST_API_PORT__` a native webview host
 injects, so the SDK adopts it with no product-side package, import, or
 environment variable. `--app-port` names the development server's port when it
 is not 3000, and the product id defaults to that origin, so the host and the
-product cannot disagree about who they are.
+product cannot disagree about who they are. `--port` changes the bridge and
+frame port, but the development-only tag must change to the same value.
 
-The development command stays in this process's group, so a terminal interrupt
-or a supervisor that signals the group takes the whole tree down at once. A
-signal sent to this process alone is forwarded to the group, because package
-managers reach the actual dev server through intermediate processes that would
-otherwise leave it holding its port.
+On Unix the development command starts in a process group owned by the CLI. If
+the direct launcher exits, or the CLI receives SIGINT or SIGTERM, the CLI sends
+SIGTERM to the complete group, waits up to five seconds, then sends SIGKILL if
+anything remains. This catches the intermediate processes that package
+managers put in front of the actual dev server. A natural launcher exit keeps
+its exit status; an interrupted run exits with status 130. Non-Unix platforms
+stop and reap the direct child.
 
 A host that should outlive the development server, or one whose confirmations
 you want to approve by hand in the terminal UI, is the same host started
@@ -92,10 +95,11 @@ import { connectWebSocketHost } from "@parity/truapi/sandbox";
 connectWebSocketHost("ws://127.0.0.1:9955");
 ```
 
-Frame connections are limited to loopback origins. WebSocket is not subject to
-CORS, so without that check any page open in the same browser could drive a host
-that auto-approves confirmations. Clients that send no `Origin` at all are local
-processes and are allowed.
+TCP frame connections are accepted only from loopback peers. Browser WebSocket
+requests must also carry a `localhost` or loopback-IP `Origin`. WebSocket is not
+subject to CORS, so without both checks another page or remote non-browser
+client could drive a host that auto-approves confirmations. Unix-socket clients
+and loopback TCP clients that send no `Origin` are treated as local processes.
 
 The product is then detected as hosted and holds the real product account for
 its own `.dot` name, so signing, statements, entropy, permissions and storage

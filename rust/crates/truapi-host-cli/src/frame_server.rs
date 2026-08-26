@@ -6,12 +6,14 @@
 //! `ProtocolMessage`, matching the browser transport's framing.
 
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 #[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::net::{TcpListener, TcpStream};
@@ -291,40 +293,118 @@ async fn accept_tcp_loop(
 
 /// Serve one TCP peer, which is either a product opening the frame socket or a
 /// browser fetching the bridge script.
-///
-/// The request head is peeked rather than read so a WebSocket handshake reaches
-/// the tungstenite server exactly as the peer sent it.
 async fn serve_tcp_connection(
     runtime: Arc<dyn ProductRuntimeFactory>,
     product: Arc<ProductSelection>,
     mut stream: TcpStream,
     endpoint: &str,
 ) -> Result<()> {
-    let head = tokio::time::timeout(REQUEST_HEAD_TIMEOUT, peek_request_head(&stream))
+    let peer = ConnectionPeer::Tcp(stream.peer_addr().context("read TCP peer address")?);
+    let request = tokio::time::timeout(REQUEST_HEAD_TIMEOUT, read_request_head(&mut stream))
         .await
         .context("timed out reading the request head")??;
-    if is_websocket_upgrade(&head) {
-        return serve_connection(runtime, product, stream).await;
+    if is_websocket_upgrade(request.head()) {
+        return serve_connection(runtime, product, request.replay(stream), peer).await;
     }
-    serve_bridge_script(&mut stream, &head, endpoint).await
+    serve_bridge_script(&mut stream, request.head(), endpoint).await
 }
 
-/// Buffer the peer's request head without consuming it.
-async fn peek_request_head(stream: &TcpStream) -> Result<Vec<u8>> {
-    let mut buffer = vec![0u8; MAX_REQUEST_HEAD];
+struct BufferedRequestHead {
+    consumed: Vec<u8>,
+    head_end: usize,
+}
+
+impl BufferedRequestHead {
+    fn head(&self) -> &[u8] {
+        &self.consumed[..self.head_end]
+    }
+
+    fn replay<S>(self, stream: S) -> ReplayStream<S> {
+        ReplayStream {
+            prefix: self.consumed,
+            prefix_position: 0,
+            stream,
+        }
+    }
+}
+
+async fn read_request_head<S>(stream: &mut S) -> Result<BufferedRequestHead>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut consumed = Vec::with_capacity(1024);
+    let mut buffer = [0u8; 1024];
     loop {
-        stream.readable().await?;
-        let peeked = stream.peek(&mut buffer).await?;
-        if peeked == 0 {
-            anyhow::bail!("peer closed before sending a request");
-        }
-        let head = &buffer[..peeked];
-        if let Some(end) = find_head_end(head) {
-            return Ok(head[..end].to_vec());
-        }
-        if peeked == buffer.len() {
+        let remaining = MAX_REQUEST_HEAD - consumed.len();
+        if remaining == 0 {
             anyhow::bail!("request head exceeded {MAX_REQUEST_HEAD} bytes");
         }
+        let read_limit = remaining.min(buffer.len());
+        let read = stream.read(&mut buffer[..read_limit]).await?;
+        if read == 0 {
+            anyhow::bail!("peer closed before sending a request");
+        }
+        consumed.extend_from_slice(&buffer[..read]);
+        if let Some(head_end) = find_head_end(&consumed) {
+            return Ok(BufferedRequestHead {
+                consumed,
+                head_end: head_end + HEAD_TERMINATOR.len(),
+            });
+        }
+    }
+}
+
+struct ReplayStream<S> {
+    prefix: Vec<u8>,
+    prefix_position: usize,
+    stream: S,
+}
+
+impl<S> AsyncRead for ReplayStream<S>
+where
+    S: AsyncRead + Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let stream = self.get_mut();
+        if stream.prefix_position < stream.prefix.len() {
+            let available = &stream.prefix[stream.prefix_position..];
+            let read = available.len().min(buffer.remaining());
+            buffer.put_slice(&available[..read]);
+            stream.prefix_position += read;
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut stream.stream).poll_read(context, buffer)
+    }
+}
+
+impl<S> AsyncWrite for ReplayStream<S>
+where
+    S: AsyncWrite + Unpin,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().stream).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        context: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(context)
     }
 }
 
@@ -353,11 +433,6 @@ fn header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a str> {
 /// secret. What keeps another page from using the endpoint it names is the
 /// origin check on the WebSocket handshake.
 async fn serve_bridge_script(stream: &mut TcpStream, head: &[u8], endpoint: &str) -> Result<()> {
-    // The head was peeked, not read. Closing with it still buffered would reset
-    // the connection and lose the response, so drain it first.
-    let mut consumed = vec![0u8; head.len() + HEAD_TERMINATOR.len()];
-    stream.read_exact(&mut consumed).await?;
-
     let response = match request_path(head).as_deref() {
         Some(bootstrap::PATH) => http_response(
             "200 OK",
@@ -394,40 +469,48 @@ fn request_path(head: &[u8]) -> Option<String> {
     Some(target.split(['?', '#']).next()?.to_string())
 }
 
-/// Whether a browser-supplied `Origin` may open a frame connection.
-///
-/// Browsers always send `Origin` on a WebSocket handshake and a page cannot
-/// forge its own, so this is what separates the product under development from
-/// any other page the developer happens to have open: WebSocket is not subject
-/// to CORS, so without this any site could drive a host that auto-approves.
-/// It also defeats DNS rebinding, because the origin stays the attacker's
-/// however their name resolves. A missing `Origin` is a non-browser client on
-/// loopback, which can already read the host's state directory.
-fn origin_allowed(origin: Option<&str>) -> bool {
-    let Some(origin) = origin else {
-        return true;
-    };
-    origin_host(origin).is_some_and(is_loopback_host)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectionPeer {
+    Tcp(SocketAddr),
+    LocalSocket,
 }
 
-/// Handshake callback that rejects a browser origin outside loopback.
+/// A browser proves its page origin, while the transport proves where the
+/// client process is. A remote process can forge `Origin`, so TCP requires both
+/// signals to be local. Unix sockets are already limited to local processes.
+fn connection_allowed(peer: ConnectionPeer, origin: Option<&str>) -> bool {
+    if matches!(peer, ConnectionPeer::Tcp(address) if !address.ip().is_loopback()) {
+        return false;
+    }
+    match origin {
+        None => true,
+        Some(origin) => origin_host(origin).is_some_and(is_loopback_host),
+    }
+}
+
+/// Handshake callback that rejects a non-loopback peer or browser origin.
 // The signature is tungstenite's `Callback` contract, so the error type is not
 // ours to shrink.
 #[allow(clippy::result_large_err)]
-fn check_origin(request: &Request, response: Response) -> Result<Response, ErrorResponse> {
+fn check_origin(
+    peer: ConnectionPeer,
+    request: &Request,
+    response: Response,
+) -> Result<Response, ErrorResponse> {
     let origin = request
         .headers()
         .get(header::ORIGIN)
         .map(|value| value.to_str().unwrap_or_default());
-    if origin_allowed(origin) {
+    if connection_allowed(peer, origin) {
         return Ok(response);
     }
     warn!(
+        ?peer,
         origin = origin.unwrap_or_default(),
-        "rejected a frame connection from a non-loopback origin"
+        "rejected a non-loopback frame connection"
     );
     let mut rejection = ErrorResponse::new(Some(
-        "frame connections are limited to loopback origins".to_string(),
+        "frame connections are limited to loopback clients and origins".to_string(),
     ));
     *rejection.status_mut() = StatusCode::FORBIDDEN;
     Err(rejection)
@@ -465,7 +548,9 @@ async fn accept_unix_loop(
         let runtime = runtime.clone();
         let product = product.clone();
         tokio::spawn(async move {
-            if let Err(err) = serve_connection(runtime, product, stream).await {
+            if let Err(err) =
+                serve_connection(runtime, product, stream, ConnectionPeer::LocalSocket).await
+            {
                 debug!(?peer, %err, "frame connection ended");
             }
         });
@@ -476,6 +561,7 @@ async fn serve_connection<S>(
     runtime: Arc<dyn ProductRuntimeFactory>,
     selected_product: Arc<ProductSelection>,
     stream: S,
+    peer: ConnectionPeer,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -484,7 +570,11 @@ where
     // only cause an extra reconnect, never leave a connection on stale state.
     let mut reset = runtime.connection_reset();
     let mut product_updates = selected_product.subscribe();
-    let ws = accept_hdr_async(stream, check_origin).await?;
+    #[allow(clippy::result_large_err)]
+    let ws = accept_hdr_async(stream, move |request: &Request, response: Response| {
+        check_origin(peer, request, response)
+    })
+    .await?;
     let (mut write, mut read) = ws.split();
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
 
@@ -549,40 +639,95 @@ async fn connection_reset(reset: &mut Option<watch::Receiver<u64>>) {
 mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+    use tokio::task::JoinHandle;
     use tokio_tungstenite::client_async;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-    /// Only a browser sends `Origin`, and it cannot forge it. WebSocket
-    /// ignores CORS, so without this any page the developer has open could
-    /// drive a host that auto-approves confirmations.
+    struct UnusedRuntimeFactory;
+
+    impl ProductRuntimeFactory for UnusedRuntimeFactory {
+        fn product_runtime(
+            &self,
+            _product: ProductContext,
+            _sink: Arc<dyn FrameSink>,
+        ) -> ProductRuntime {
+            panic!("HTTP requests and rejected handshakes must not create a product runtime")
+        }
+    }
+
+    async fn start_tcp_server(
+        runtime: Arc<dyn ProductRuntimeFactory>,
+    ) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let endpoint = format!("ws://{address}");
+        let product = ProductSelection::new("localhost:3000".into(), ProductExecutionKind::App)?;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            serve_tcp_connection(runtime, product, stream, &endpoint).await
+        });
+        Ok((address, server))
+    }
+
+    fn signing_runtime() -> Result<Arc<dyn ProductRuntimeFactory>> {
+        let network = crate::network::Network::default().config();
+        let platform = crate::platform::CliPlatform::new(
+            network,
+            None,
+            crate::platform::ApprovalPolicy::AutoAccept,
+            None,
+        );
+        let config = truapi_platform::SigningHostConfig::new(
+            truapi_platform::HostInfo {
+                name: "Frame server test".into(),
+                icon: None,
+                version: None,
+            },
+            truapi_platform::PlatformInfo {
+                kind: Some("test".into()),
+                version: None,
+            },
+            network.people_genesis,
+            network.bulletin_genesis,
+        )?;
+        let spawner: truapi_server::subscription::Spawner = Arc::new(|_| {});
+        Ok(Arc::new(SigningHostRuntime::new(platform, config, spawner)))
+    }
+
     #[test]
-    fn only_loopback_browser_origins_may_open_frame_connections() {
-        for allowed in [
-            "http://localhost:3000",
-            "http://LocalHost:3000",
-            "http://127.0.0.1:3000",
-            "http://127.0.0.2:8080",
-            "http://[::1]:5173",
-            "https://localhost",
-        ] {
-            assert!(origin_allowed(Some(allowed)), "{allowed} should be allowed");
-        }
-        for rejected in [
-            "https://evil.com",
-            "http://localhost.evil.com:3000",
-            "http://evil.com:3000",
-            // A rebinding attacker keeps their own origin however the name
-            // resolves, which is exactly what this catches.
-            "http://rebind.evil.com",
-            "null",
-            "file://",
-        ] {
-            assert!(
-                !origin_allowed(Some(rejected)),
-                "{rejected} should be rejected"
-            );
-        }
-        // A local process, which can already read the host's state directory.
-        assert!(origin_allowed(None));
+    fn the_peer_and_origin_policy_requires_both_tcp_signals_to_be_local() -> Result<()> {
+        let loopback = ConnectionPeer::Tcp("127.0.0.1:3000".parse()?);
+        let remote = ConnectionPeer::Tcp("192.0.2.1:3000".parse()?);
+        let expected = [
+            (ConnectionPeer::LocalSocket, None, true),
+            (
+                ConnectionPeer::LocalSocket,
+                Some("http://localhost:3000"),
+                true,
+            ),
+            (
+                ConnectionPeer::LocalSocket,
+                Some("https://evil.example"),
+                false,
+            ),
+            (loopback, None, true),
+            (loopback, Some("http://LocalHost:3000"), true),
+            (loopback, Some("http://127.0.0.2:3000"), true),
+            (loopback, Some("http://[::1]:5173"), true),
+            (loopback, Some("https://evil.example"), false),
+            (loopback, Some("http://localhost.evil.example"), false),
+            (loopback, Some("http://rebind.evil.example"), false),
+            (loopback, Some("null"), false),
+            (loopback, Some("file://"), false),
+            (remote, None, false),
+            (remote, Some("http://localhost:3000"), false),
+            (remote, Some("https://evil.example"), false),
+        ];
+        let actual =
+            expected.map(|(peer, origin, _)| (peer, origin, connection_allowed(peer, origin)));
+
+        assert_eq!(actual, expected);
+        Ok(())
     }
 
     #[test]
@@ -609,9 +754,9 @@ mod tests {
             let endpoint = endpoint.to_string();
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await?;
-                let head = peek_request_head(&stream).await?;
-                assert!(!is_websocket_upgrade(&head));
-                serve_bridge_script(&mut stream, &head, &endpoint).await
+                let request = read_request_head(&mut stream).await?;
+                assert!(!is_websocket_upgrade(request.head()));
+                serve_bridge_script(&mut stream, request.head(), &endpoint).await
             });
 
             let mut client = TcpStream::connect(address).await?;
@@ -636,6 +781,130 @@ mod tests {
 
         let missing = fetch("/nope", endpoint).await?;
         assert!(missing.starts_with("HTTP/1.1 404 Not Found"), "{missing}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_tcp_server_routes_the_bridge_script() -> Result<()> {
+        let (address, server) = start_tcp_server(Arc::new(UnusedRuntimeFactory)).await?;
+        let mut client = TcpStream::connect(address).await?;
+        client
+            .write_all(
+                format!(
+                    "GET {} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n",
+                    bootstrap::PATH
+                )
+                .as_bytes(),
+            )
+            .await?;
+
+        let mut response = String::new();
+        client.read_to_string(&mut response).await?;
+        server.await??;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(
+            response.contains(&format!(r#"var url = "ws://{address}";"#)),
+            "{response}"
+        );
+        Ok(())
+    }
+
+    /// A partial head must yield until more bytes arrive. Peeking the same
+    /// unread bytes in a loop monopolizes a current-thread executor, so the
+    /// client task can never send the second fragment.
+    #[tokio::test(flavor = "current_thread")]
+    async fn fragmented_request_heads_do_not_starve_the_executor() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let mut client = TcpStream::connect(address).await?;
+        let (server_stream, _) = listener.accept().await?;
+        client.write_all(b"GET /boot").await?;
+        let product = ProductSelection::new("localhost:3000".into(), ProductExecutionKind::App)?;
+        let endpoint = format!("ws://{address}");
+
+        let client_exchange = async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            client
+                .write_all(b"strap.js HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await?;
+            let mut response = String::new();
+            client.read_to_string(&mut response).await?;
+            anyhow::ensure!(response.starts_with("HTTP/1.1 200 OK\r\n"), response);
+            Ok::<(), anyhow::Error>(())
+        };
+        let server_exchange = serve_tcp_connection(
+            Arc::new(UnusedRuntimeFactory),
+            product,
+            server_stream,
+            &endpoint,
+        );
+
+        tokio::try_join!(server_exchange, client_exchange)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_loopback_origin_may_open_the_tcp_websocket() -> Result<()> {
+        let (address, server) = start_tcp_server(signing_runtime()?).await?;
+        let mut request = format!("ws://{address}/").into_client_request()?;
+        request.headers_mut().insert(
+            header::ORIGIN,
+            "http://localhost:3000".parse().expect("valid origin"),
+        );
+        let stream = TcpStream::connect(address).await?;
+
+        let (websocket, response) = client_async(request, stream).await?;
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        drop(websocket);
+        server.abort();
+        assert!(
+            server
+                .await
+                .expect_err("aborted connection task must be cancelled")
+                .is_cancelled()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_loopback_tcp_client_may_omit_origin() -> Result<()> {
+        let (address, server) = start_tcp_server(signing_runtime()?).await?;
+        let request = format!("ws://{address}/").into_client_request()?;
+        assert!(!request.headers().contains_key(header::ORIGIN));
+        let stream = TcpStream::connect(address).await?;
+
+        let (websocket, response) = client_async(request, stream).await?;
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        drop(websocket);
+        server.abort();
+        assert!(
+            server
+                .await
+                .expect_err("aborted connection task must be cancelled")
+                .is_cancelled()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_non_loopback_origin_cannot_open_the_tcp_websocket() -> Result<()> {
+        let (address, server) = start_tcp_server(Arc::new(UnusedRuntimeFactory)).await?;
+        let mut request = format!("ws://{address}/").into_client_request()?;
+        request.headers_mut().insert(
+            header::ORIGIN,
+            "https://evil.example".parse().expect("valid origin"),
+        );
+        let stream = TcpStream::connect(address).await?;
+
+        let error = client_async(request, stream)
+            .await
+            .expect_err("a non-loopback browser origin must be rejected");
+        let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+            panic!("expected an HTTP handshake rejection, got {error}")
+        };
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(server.await?.is_err());
         Ok(())
     }
 
