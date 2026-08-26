@@ -335,6 +335,54 @@ describe("connectWebSocketHost", () => {
         );
     });
 
+    it("keeps a natively injected port when the socket closes", async () => {
+        currentWindow = installFakeWebviewWindow();
+        const channel = trackChannel();
+        const sandbox = await importSandbox();
+        currentWindow.win.__HOST_API_PORT__ = channel.port1;
+        sandbox.connectWebSocketHost(frameServer());
+        let connected = false;
+        let closed = false;
+        sandbox.subscribeConnectionStatus((status) => {
+            if (status === "connected") connected = true;
+            if (status === "disconnected" && connected) closed = true;
+        });
+
+        await until(() => connected);
+        for (const server of servers.splice(0)) server.stop(true);
+        await until(() => closed);
+
+        expect(currentWindow.win.__HOST_API_PORT__).toBe(channel.port1);
+    });
+
+    it("does not end on connected when the host hangs up on open", async () => {
+        const server = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request, server) {
+                if (server.upgrade(request)) return;
+                return new Response("websocket upgrade required", { status: 426 });
+            },
+            websocket: {
+                open(socket) {
+                    socket.close();
+                },
+                message() {},
+            },
+        });
+        servers.push(server);
+        const sandbox = await importSandbox();
+        sandbox.connectWebSocketHost(`ws://127.0.0.1:${server.port}`);
+        const statuses: string[] = [];
+        sandbox.subscribeConnectionStatus((status) => statuses.push(status));
+
+        await until(() => statuses.includes("disconnected"));
+        await settle();
+
+        // Whichever order the open and close land in, the close is the truth.
+        expect(statuses[statuses.length - 1]).toBe("disconnected");
+    });
+
     it("re-dials the same endpoint after the host hangs up", async () => {
         let connections = 0;
         const server = Bun.serve({
@@ -484,6 +532,46 @@ describe("sandbox after the pipe closes", () => {
         expect(seen).toHaveLength(1);
         expect(seen[0]).not.toBeNull();
         expect(seen[0]).not.toBe(client);
+    });
+
+    it("stops delivering a status that a listener has replaced", async () => {
+        const channel = trackChannel();
+        const { sandbox } = await connectedSandbox(channel.port1);
+        const seen: string[] = [];
+        sandbox.subscribeConnectionStatus((status) => {
+            // A product remounting its status view on a disconnect.
+            if (status === "disconnected") {
+                sandbox.subscribeConnectionStatus(() => {});
+            }
+        });
+        sandbox.subscribeConnectionStatus((status) => seen.push(status));
+
+        closePipe(channel.port1);
+
+        expect(seen).toEqual(["connected", "connecting"]);
+    });
+
+    it("still reports the close when the port cannot be deleted", async () => {
+        const harness = installFakeIframeWindow({
+            referrer: "https://host.example/product",
+        });
+        currentWindow = harness;
+        const sandbox = await importSandbox();
+        const channel = trackChannel();
+        // A locked global, as the container's freeze helpers make one.
+        Object.defineProperty(harness.win, "__HOST_API_PORT__", {
+            get: () => channel.port1,
+            set() {},
+            configurable: false,
+        });
+        const statuses: string[] = [];
+        sandbox.subscribeConnectionStatus((status) => statuses.push(status));
+        await settle();
+        expect(statuses).toEqual(["connected"]);
+
+        closePipe(channel.port1);
+
+        expect(statuses).toEqual(["connected", "disconnected"]);
     });
 
     it("keeps a marked webview page hosted after the port is dropped", async () => {

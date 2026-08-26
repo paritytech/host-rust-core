@@ -46,7 +46,12 @@ function hostWindow(): Window | null {
 /** Drop the injected port, or a rebuild re-adopts the closed one. */
 function forgetHostPort(): void {
   const win = hostWindow();
-  if (win) delete win.__HOST_API_PORT__;
+  if (!win) return;
+  try {
+    delete win.__HOST_API_PORT__;
+  } catch {
+    // A host may lock the property; the close must still be reported.
+  }
 }
 
 function isIframe(): boolean {
@@ -237,17 +242,29 @@ function createIframeCompatibilityProvider(
  * webview). `onEstablished` fires once the host channel is live.
  */
 function createSandboxProvider(onEstablished: () => void): WireProvider {
+  // Both branches settle off a promise, so the pipe may be dead by then.
+  let closed = false;
+  const established = () => {
+    if (!closed) onEstablished();
+  };
+  const watchClose = <T extends WireProvider>(provider: T): T => {
+    provider.subscribeClose?.(() => {
+      closed = true;
+    });
+    return provider;
+  };
+
   if (webSocketEndpoint !== null) {
-    const provider = createWebSocketProvider(webSocketEndpoint);
-    provider.opened.then(onEstablished, () => {});
+    const provider = watchClose(createWebSocketProvider(webSocketEndpoint));
+    provider.opened.then(established, () => {});
     return provider;
   }
-  if (isIframe()) return createIframeCompatibilityProvider(onEstablished);
+  if (isIframe()) return createIframeCompatibilityProvider(established);
 
   const portController = new AbortController();
   const portPromise = waitForWebviewPort(portController.signal);
-  portPromise.then(onEstablished, () => {});
-  const provider = createMessagePortProvider(portPromise);
+  const provider = watchClose(createMessagePortProvider(portPromise));
+  portPromise.then(established, () => {});
   const baseDispose = provider.dispose;
   provider.dispose = () => {
     portController.abort();
@@ -263,7 +280,11 @@ const statusListeners = new Set<(status: ConnectionStatus) => void>();
 function setStatus(next: ConnectionStatus): void {
   if (status === next) return;
   status = next;
-  for (const listener of statusListeners) listener(next);
+  for (const listener of [...statusListeners]) {
+    // A listener can change the status, and that call notified everyone.
+    if (status !== next) return;
+    listener(next);
+  }
 }
 
 /**
@@ -280,7 +301,7 @@ export function getClientSync(): TrUApiClient | null {
     provider.subscribeClose?.(() => {
       // Cleared first: a listener may call getClientSync from the notify below.
       cachedClient = null;
-      forgetHostPort();
+      if (webSocketEndpoint === null) forgetHostPort();
       setStatus("disconnected");
     });
     return cachedClient;
@@ -303,9 +324,10 @@ export function getClientSync(): TrUApiClient | null {
  * connectWebSocketHost("ws://127.0.0.1:9955");
  * ```
  *
- * Call it before anything else touches the client. It throws if a client for a
- * different transport has already been built, because that client is cached and
- * cannot be redirected.
+ * Call it before anything else touches the client. It throws while a live
+ * client for a different transport exists, because that client is cached and
+ * cannot be redirected. Once the pipe closes there is no client to redirect, so
+ * a different endpoint is accepted.
  */
 export function connectWebSocketHost(url: string): TrUApiClient | null {
   if (cachedClient !== null && webSocketEndpoint !== url) {
