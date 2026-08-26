@@ -19,6 +19,7 @@
     "test:unit": "bun test tests/unit",
     "e2e": "playwright test",
     "e2e:cli": "TRUAPI_E2E_HOST=cli playwright test --config playwright.cli.config.ts",
+    "e2e:cli-diagnosis": "bun tests/e2e/cli-diagnosis.ts",
     "e2e:headed": "playwright test --headed",
     "e2e:ui": "playwright test --ui"
   },

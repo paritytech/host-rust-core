@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli e2e-chat-cli headless install matrix explorer xcframework
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli headless install matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -347,6 +347,10 @@ e2e-dotli: ## Fully automated dotli + playground diagnosis e2e using the local s
 	@$(MAKE) dev-bootstrap
 	cargo build -p truapi-host-cli
 	cd $(PLAYGROUND) && bun tests/e2e/dotli-diagnosis.ts
+
+e2e-cli-diagnosis: ## Full playground diagnosis in a plain browser tab, hosted by `truapi-host dev`.
+	cargo build --release -p truapi-host-cli
+	cd $(PLAYGROUND) && bun tests/e2e/cli-diagnosis.ts
 
 e2e-signing-cli: ## Run the generated battery against the direct signing-host CLI.
 	scripts/battery.sh --signing-host
