@@ -929,7 +929,8 @@ A new auto account:
 2. generates a 12-word mnemonic;
 3. derives the RFC-0022 `uid.dot` index-0 sr25519 identity account;
 4. chooses `auto-<n>` as its local name;
-5. tries up to eight available Lite username bases;
+5. checks that the requested Lite username base has an available numerical
+   alias;
 6. saves a pending account record;
 7. builds and submits identity-backend registration proofs, including the dotNS
    gateway reservation signature timestamped with Asset Hub chain time. A
@@ -960,11 +961,9 @@ dotSpark v1 envelope whose per-name value carries a `status` field.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
-with no letters becomes `session`. `--lite-username-prefix` overrides this and
-must contain lowercase ASCII letters only.
-
-The generated base is at least 12 characters and, for prefixes of six or more
-characters, appends six pseudo-random lowercase letters.
+with fewer than six letters becomes `session`. `--lite-username-prefix`
+overrides this and must contain at least six lowercase ASCII letters. The
+requested base is used unchanged because dotNS assigns its numerical alias.
 
 ### 12.4 Cached startup
 

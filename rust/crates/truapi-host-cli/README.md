@@ -241,7 +241,9 @@ New auto-managed accounts use the session name as their Lite username prefix;
 characters other than lowercase letters are omitted. For example, session
 `pgtest` creates usernames beginning with `pgtest`. An explicit
 `--lite-username-prefix` takes precedence, and `default` retains the historical
-`headless` prefix. `--reserved-username <label>` additionally reserves a
+`headless` prefix. Prefixes are used unchanged because dotNS assigns the
+numerical alias; session names with fewer than six letters use `session`.
+`--reserved-username <label>` additionally reserves a
 full-person base name on dotNS for a newly created account, to be claimed later
 with `register-name`; the CLI refuses labels the registrar has already minted.
 The selected username and last script reference are cached in `session.json`
@@ -611,7 +613,7 @@ device saved in the selected session, and stays up until stopped. Output is one
 line per event:
 
 ```
-✓ Paired with headlessyvqhet.43
+✓ Paired with headless.43
 ✓ Signing host ready
 • Listening for product frames
   ws://127.0.0.1:9955
