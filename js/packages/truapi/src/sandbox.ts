@@ -5,7 +5,7 @@
  * the matching {@link WireProvider}, and exposes a lazily-created, cached
  * {@link TrUApiClient} via {@link getClientSync} so embedders don't
  * re-implement the wiring. {@link subscribeConnectionStatus} surfaces a
- * connected / disconnected signal over the same cached client.
+ * connected / disconnected signal over that client.
  *
  * @module
  */
@@ -268,7 +268,8 @@ function setStatus(next: ConnectionStatus): void {
 
 /**
  * Build (or return the cached) {@link TrUApiClient}. Returns `null` outside a
- * host container or if the provider can't be built.
+ * host container or if the provider can't be built. A close drops the cache,
+ * so the next call renegotiates.
  */
 export function getClientSync(): TrUApiClient | null {
   if (cachedClient) return cachedClient;
