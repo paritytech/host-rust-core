@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, warn};
+use truapi_platform::ProductExecutionKind;
 use truapi_server::{
     FrameSink, PairingHostRuntime, ProductContext, ProductRuntime, SigningHostRuntime,
 };
@@ -35,15 +36,22 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// Process-local product selection shared by the command loop and frame server.
 pub struct ProductSelection {
     current: watch::Sender<ProductContext>,
+    /// Execution kind every selection keeps. A host serves one kind for its
+    /// lifetime: the core reads it per connection, and chat is denied to a
+    /// connection that opened as `App`.
+    execution_kind: ProductExecutionKind,
 }
 
 impl ProductSelection {
     /// Validate and normalize the initial product id.
-    pub fn new(product_id: String) -> Result<Arc<Self>> {
-        let product = ProductContext::new(product_id)
+    pub fn new(product_id: String, execution_kind: ProductExecutionKind) -> Result<Arc<Self>> {
+        let product = ProductContext::new_with_execution(product_id, execution_kind)
             .map_err(|error| anyhow::anyhow!("invalid product id: {error}"))?;
         let (current, _) = watch::channel(product);
-        Ok(Arc::new(Self { current }))
+        Ok(Arc::new(Self {
+            current,
+            execution_kind,
+        }))
     }
 
     /// Return the normalized current product id.
@@ -53,7 +61,7 @@ impl ProductSelection {
 
     /// Select a validated product, returning whether the selection changed.
     pub fn select(&self, product_id: String) -> Result<bool> {
-        let product = ProductContext::new(product_id)
+        let product = ProductContext::new_with_execution(product_id, self.execution_kind)
             .map_err(|error| anyhow::anyhow!("invalid product id: {error}"))?;
         Ok(self.current.send_if_modified(|current| {
             if current == &product {
@@ -110,6 +118,11 @@ impl SwitchableSigningRuntime {
     /// Replace the runtime and disconnect every product using the old one.
     pub fn replace(&self, runtime: Arc<SigningHostRuntime>) {
         *self.current.write().expect("runtime lock poisoned") = runtime;
+        self.reset_connections();
+    }
+
+    /// Disconnect every product currently using the active signing runtime.
+    pub fn reset_connections(&self) {
         self.generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
@@ -361,7 +374,7 @@ mod tests {
 
     #[test]
     fn product_selection_validates_and_normalizes_ids() -> Result<()> {
-        let product = ProductSelection::new(" Dotli.DOT ".to_string())?;
+        let product = ProductSelection::new(" Dotli.DOT ".to_string(), ProductExecutionKind::App)?;
 
         assert_eq!(product.current(), "dotli.dot");
         assert!(product.select("localhost:3000".to_string())?);
@@ -373,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn changing_product_notifies_connections() -> Result<()> {
-        let product = ProductSelection::new("first.dot".to_string())?;
+        let product = ProductSelection::new("first.dot".to_string(), ProductExecutionKind::App)?;
         let mut connection = product.subscribe();
 
         assert!(product.select("second.dot".to_string())?);

@@ -56,8 +56,10 @@ android {
 dependencies {
     // UniFFI Kotlin bindings use JNA for FFI.
     api("net.java.dev.jna:jna:5.14.0@aar")
-    // UniFFI async functions and callbacks use cancellable continuations and jobs.
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    // UniFFI async functions and callbacks use cancellable continuations and
+    // jobs, and `TrUAPIProductExecution.renderCustomMessage` returns a `Flow`,
+    // so consumers compile against this.
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 
 // Coordinates for the local Maven publication (`publishToMavenLocal`).

@@ -265,3 +265,64 @@ describe("sandbox iframe MessagePort handshake", () => {
         );
     });
 });
+
+describe("connectWebSocketHost", () => {
+    const servers: ReturnType<typeof Bun.serve>[] = [];
+
+    afterEach(() => {
+        for (const server of servers.splice(0)) server.stop(true);
+    });
+
+    /** Loopback frame socket, standing in for `truapi-host --frame-listen`. */
+    function frameServer() {
+        const server = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request, server) {
+                if (server.upgrade(request)) return;
+                return new Response("websocket upgrade required", { status: 426 });
+            },
+            websocket: {
+                message() {},
+            },
+        });
+        servers.push(server);
+        return `ws://127.0.0.1:${server.port}`;
+    }
+
+    it("makes a plain page count as hosted and caches one client", async () => {
+        const sandbox = await importSandbox();
+        expect(sandbox.isCorrectEnvironment()).toBe(false);
+
+        const client = sandbox.connectWebSocketHost(frameServer());
+
+        expect(sandbox.isCorrectEnvironment()).toBe(true);
+        expect(client).not.toBeNull();
+        expect(sandbox.getClientSync()).toBe(client);
+    });
+
+    it("reports connected once the socket is open", async () => {
+        const sandbox = await importSandbox();
+        const statuses: string[] = [];
+        const connected = new Promise<void>((resolve) => {
+            sandbox.subscribeConnectionStatus((status) => {
+                statuses.push(status);
+                if (status === "connected") resolve();
+            });
+        });
+
+        sandbox.connectWebSocketHost(frameServer());
+        await connected;
+
+        expect(statuses).toContain("connected");
+    });
+
+    it("refuses to redirect a client that already exists", async () => {
+        const sandbox = await importSandbox();
+        sandbox.connectWebSocketHost(frameServer());
+
+        expect(() => sandbox.connectWebSocketHost(frameServer())).toThrow(
+            /before the TrUAPI client is created/,
+        );
+    });
+});

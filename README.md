@@ -69,7 +69,8 @@ js/packages/
                           (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
-android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
+                           compiled by no CI job, so run `make android-check` after changing it
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
@@ -168,6 +169,7 @@ scripts/battery.sh --signing-host   # direct phase only
 scripts/battery.sh --pairing-host   # paired phase only
 make e2e-signing-cli                # same direct signing-host phase
 make e2e-pairing-cli                # same paired pairing-host phase
+make e2e-chat-cli                   # chat content screening against a chat signing-host
 ```
 
 To run the playground locally:

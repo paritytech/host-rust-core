@@ -114,7 +114,7 @@ as the paired path.
 `truapi-host-cli` owns:
 
 - argument and slash-command parsing;
-- the single supported network preset;
+- the supported network presets (`paseo-next-v2`, `previewnet`);
 - local signer selection and onboarding;
 - local persistence and account-store locking;
 - approvals and `--auto-accept`;
@@ -198,7 +198,8 @@ Commands:
 | --- | --- |
 | `pairing-host` | Run the seedless product-facing host. |
 | `signing-host` | Run the wallet-local signing host. |
-| `identity-check` | Probe People-chain identity records for a mnemonic. |
+| `identity-check` | Probe dotNS identity records on Asset Hub for a mnemonic. |
+| `register-name` | Register a full-person username via `DotnsGateway.register_name`. |
 | `alloc-check` | Inspect or submit Statement Store allowance registration. |
 | `pgas-check` | Inspect or submit an Asset Hub PGAS allowance claim. |
 
@@ -231,7 +232,7 @@ truapi-host pairing-host [options]
 | `--product-id <id>` | `headless-playground.dot` | Initial product scope. |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` selects an available TCP port. |
 | `--base-path <path>` | section 12.1 | Root for network, identity, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
 
 Without `--script`, both stdin and stdout must be terminals. The command enters
@@ -268,10 +269,12 @@ truapi-host signing-host [options] [exec '<slash-command>']
 | `--account <name>` | none | Use one named account from the default account store. |
 | `--session <name>` | remembered session | Restore or create a managed session. |
 | `--lite-username-prefix <prefix>` | session-derived | Prefix for newly generated Lite username bases. |
+| `--reserved-username <label>` | none | Full-person base name a newly created auto account reserves on dotNS alongside its lite username (§12.3). |
 | `--base-path <path>` | section 12.1 | Root for account, session, core, script, and product state. |
-| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete endpoint/genesis preset (`paseo-next-v2`, `previewnet`). |
 | `--frame-listen <socket>` | none | Opt into a TCP product WebSocket listener. When omitted, use a private per-process Unix socket. Port `0` is allowed. |
 | `--auto-accept` | off | Approve platform confirmations automatically. |
+| `--serve` | off | Run without a terminal UI, restore every paired host saved for the selected managed session, and stay up until stopped. |
 
 `HOST_CLI_SIGNER_MNEMONIC` supplies `--mnemonic` when the option is omitted.
 
@@ -281,11 +284,14 @@ The CLI rejects these combinations with invocation status `2` before runtime
 startup:
 
 - `--script` with `exec`;
+- `--serve` with `--script` or `exec`;
 - `--mnemonic` with `--account`;
 - `--mnemonic` with `--session`;
-- `--mnemonic` with `--lite-username-prefix`;
-- `--account` with `--session`; and
-- `--account` with `--lite-username-prefix`.
+- `--mnemonic` with `--lite-username-prefix` or `--reserved-username`;
+- `--account` with `--session`;
+- `--account` with `--lite-username-prefix` or `--reserved-username`; and
+- a `--reserved-username` that is not a full-person base label (lowercase ASCII
+  letters only, 6 to 32 bytes).
 
 The same conflicts apply when the mnemonic came from
 `HOST_CLI_SIGNER_MNEMONIC`.
@@ -295,15 +301,17 @@ as absent after trimming.
 
 ### 6.2 Interactive mode
 
-When neither `--script` nor `exec` is present, stdin and stdout must be
+When `--script`, `--serve`, and `exec` are all absent, stdin and stdout must be
 terminals. The signing host:
 
 1. resolves the selected session and any locally cached signer;
 2. creates the signing runtime;
 3. activates a cached signer without a network onboarding round trip;
 4. binds and reports the product-frame listener;
-5. starts `--deeplink`, when supplied, as an initial `/pair` operation; and
-6. enters the command loop.
+5. restores a responder for every paired host saved in the selected managed
+   session;
+6. starts `--deeplink`, when supplied, as an additional `/pair` operation; and
+7. enters the command loop.
 
 Signer provisioning is otherwise lazy. Merely starting the UI, using `/help`,
 using `/product`, or inspecting sessions does not create a new account.
@@ -311,8 +319,9 @@ using `/product`, or inspecting sessions does not create a new account.
 ### 6.3 One-shot `--script`
 
 The host binds its product listener, optionally starts a background responder
-for `--deeplink`, ensures and activates a signer, runs Bun with inherited stdio,
-aborts the responder after the script, and exits with the child status.
+for the explicitly supplied `--deeplink`, ensures and activates a signer, runs
+Bun with inherited stdio, stops that responder after the script, and exits with
+the child status. It does not restore saved responders.
 
 ### 6.4 `signing-host exec`
 
@@ -327,20 +336,42 @@ truapi-host signing-host [parent options] exec '<slash-command>'
 - does not enter raw mode or the alternate screen;
 - writes human output to normal stdout/stderr;
 - optionally runs `--deeplink` in the background for the command lifetime;
-- aborts that responder when the command completes; and
+- does not restore saved responders;
+- stops the explicitly started responder when the command completes; and
 - exits after the command.
 
 Parent options must appear before `exec`.
+
+For example:
+
+```sh
+truapi-host signing-host --session alice.01 exec '/devices'
+truapi-host signing-host --session alice.01 exec '/devices --list'
+truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+```
 
 `exec '/script'` needs a TTY because it opens an editor. In non-TTY execution,
 use `exec '/script <path>'` instead. `/copy` is unavailable. `/clear` and
 `/quit` are successful no-ops in one-shot mode.
 
+`exec '/devices'` and `exec '/devices --list'` inspect the selected session's
+saved pairings without starting their responders. `exec '/devices --remove
+<statement-account-id>'` is an explicit removal and does not ask for another
+confirmation.
+
+### 6.5 `--serve`
+
+`--serve` needs no TTY. It ensures and activates the signer, restores every
+paired host saved for the selected managed session, optionally adds the host
+from `--deeplink`, and serves product frames until Ctrl-C or external process
+termination. `--auto-accept` is needed for confirmations because this mode has
+no terminal prompt.
+
 ## 7. Product identifiers and switching
 
 Accepted product identifiers are:
 
-- a name ending in a dotNS TLD (`.dot` or `.paseo`);
+- a name ending in a dotNS TLD (`.dot`, `.paseo` or `.test`);
 - `localhost`; or
 - a string beginning with `localhost:`.
 
@@ -388,11 +419,17 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | `/login` | yes | no | Start or join pairing for the current product and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
+| `/devices` | no | yes | List paired devices saved for the active managed session. |
+| `/devices --list` | no | yes | List paired devices saved for the active managed session. |
+| `/devices --remove <statement-account-id>` | no | yes | Remove one paired device by its 32-byte statement account ID. |
 | `/product` | yes | yes | Print the current product id. |
 | `/product <id>` | yes | yes | Switch product and reset product connections. |
 | `/session` | no | yes | Show current session, user, and path. |
 | `/session <name>` | no | yes | Switch to or create and provision a session. |
+| `/session --mnemonic "<phrase>"` | no | yes | Import an existing ring member into a durable local session. |
 | `/session --list` | no | yes | List network-scoped user sessions and mark the active one. |
+| `/session --clear <name>` | no | yes | Permanently clear one network-scoped signing session. |
+| `/session --clear-all` | no | yes | Permanently clear all signing sessions for the current network. |
 | `/log <level>` | yes | yes | Replace the runtime log filter. |
 | `/help` | yes | yes | Show role-specific commands and key bindings. |
 | `/clear` | yes | yes | Clear the retained visible transcript. |
@@ -402,6 +439,12 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 The shared parser recognizes every command, then the active role rejects
 commands it cannot execute. `/pair` performs a fast prefix check; the Rust core
 then fully decodes and validates the V2 handshake.
+
+`/devices` and `/devices --list` are equivalent. They sort peers by statement
+account ID and print each ID with any available host and platform metadata.
+`/devices --remove` accepts exactly one 32-byte hexadecimal statement account ID
+with an optional `0x` prefix. Interactive removal uses the `[y/N]` approval and
+describes that only the selected peer is affected. `exec` removal runs directly.
 
 Unknown commands, missing required arguments, invalid log levels, invalid
 products, invalid session names, and arguments passed to no-argument commands
@@ -475,13 +518,21 @@ from link generation through authentication to its final state.
 - Tab accepts the selected completion.
 - Enter first accepts a differing selected completion; a later Enter submits.
 - `/script` followed by a space completes filesystem entries.
-- `/session` followed by a space completes known signing sessions and `--list`.
+- `/devices` followed by a space completes `--list` and `--remove` for the
+  signing host.
+- `/session` followed by a space completes known signing sessions, `--list`,
+  `--mnemonic`, `--clear`, and `--clear-all`; `/session --clear ` completes
+  known names.
 - Left/Right, Home/End, Backspace, and Delete edit by Unicode character.
 - Long input scrolls horizontally and retains a native terminal cursor.
 - Bracketed paste is enabled; pasted control characters are discarded.
 - At most eight completion rows are visible.
 
 Command history is in memory only and disappears when the process exits.
+Mnemonic import commands are excluded from history, debug rendering, busy
+labels, and transcripts. Their phrase is masked character-for-character in the
+command bar. `exec` cannot hide a phrase from the invoking shell's history or
+the operating system's process arguments.
 
 ### 9.4 Scrolling and cancellation
 
@@ -731,16 +782,39 @@ Before a signing host answers a link, it:
    the current ring in each (RFC-0024 operational key selection uses the
    registry instead);
 6. grants or reuses Statement Store allowance for the identity account;
-7. grants or reuses allowance for the pairing device; and
-8. starts the real SSO responder.
+7. grants or reuses allowance for every saved pairing device and the
+   candidate;
+8. submits the encrypted handshake response;
+9. after a successful submission, stores the candidate for a managed session;
+   and
+10. starts the resumable SSO responder.
 
-`/pair` replaces an existing background responder after preparation succeeds.
-The old task is aborted. The responder reports its final protocol outcome or
-failure.
+For a managed session, `/pair` stores the candidate in `paired-hosts.json`
+after the handshake succeeds and before starting the resumable responder. The
+statement account ID is the key. Pairing the same host again updates its public
+key and display metadata and replaces only that host's responder. Responders for
+other statement accounts keep running.
+
+Interactive mode and `--serve` restore every saved peer for the selected
+session. Background responders treat transient failures and ended subscriptions
+as retryable, with exponential backoff capped at 30 seconds. A remote
+`Disconnected` protocol message stops retrying and removes only that peer from
+`paired-hosts.json` and allowance renewal. Other peers remain saved and active.
+
+Each responder uses a durable, versioned replay ledger scoped by the root
+public key, peer statement account ID, and peer encryption public key. A
+request is recorded as started before its messages execute and as completed
+afterward. Either state suppresses execution of an unexpired duplicate while
+still publishing the statement-level success acknowledgement. A duplicate
+`Disconnected` request still terminates and removes that peer. Expired entries
+are pruned. Missing or overly distant peer expiry is retained for at most the
+seven-day SSO statement lifetime. At 1,024 live entries the ledger rejects a new
+request before executing it instead of evicting an unexpired replay marker.
 
 In `exec`, `/pair` waits for the responder to finish. With `--deeplink` plus
 another `exec` command or a script, the responder runs only for that command's
-lifetime and is then aborted.
+lifetime and is then stopped. One-shot `exec` and `--script` do not restore
+other saved responders.
 
 ### 11.3 Logout and re-pairing
 
@@ -797,7 +871,11 @@ Explicit mnemonic mode:
 - does not read or write an account record;
 - has no cached username;
 - reports the session as `ephemeral`; and
-- disables `/session <name>`.
+- disables commands that switch or import managed sessions.
+
+It can answer a deeplink for the current process, but it has no managed profile
+in which to save the peer. It does not restore paired hosts, and `/devices` is
+unavailable.
 
 Explicit account mode looks up a named record in the default account store and
 ensures its on-chain identity and ring readiness. It is not considered
@@ -813,13 +891,32 @@ A new auto account:
 4. chooses `auto-<n>` as its local name;
 5. tries up to eight available Lite username bases;
 6. saves a pending account record;
-7. builds and submits identity-backend registration proofs;
-8. polls `Resources.Consumers` for the final `name.discriminator`;
+7. builds and submits identity-backend registration proofs, including the dotNS
+   gateway reservation signature timestamped with Asset Hub chain time. A
+   reserved base name (`--reserved-username`) must be a full-person label and
+   unminted on the dotNS registrar (`DotnsRegistrar.ownerOf` reverts for its
+   node under the network TLD): a reservation for a registered name could never
+   be claimed and would hold that stem's reservation queue for the whole
+   reservation window;
+8. polls the dotNS contracts on Asset Hub for the final `name.discriminator`;
 9. waits for inclusion in a personhood ring; and
 10. marks and saves the account as attested.
 
-Identity and ring polling each allow 10 attempts with four seconds between
+Identity and ring polling each allow 30 attempts with four seconds between
 attempts. Identity-backend HTTP clients use a 30-second timeout.
+
+The backend's username routes are bearer-gated. Unless
+`HOST_CLI_IDENTITY_BACKEND_TOKEN` supplies one, the CLI mints an access token
+for the mnemonic's RFC-0022 `uid.dot` account. It takes a challenge from
+`auth/challenges`. It answers `auth/token` with an sr25519 proof over
+`SHA256(challenge || clientId || SHA256(body))`, signed by that identity key.
+The backend requires the JWT subject to equal `candidateAccountId` on
+`POST /usernames`; using the same key for availability and registration also
+prevents a pre-registration request from caching a token for another subject.
+Tokens are cached per backend and identity account. A cached token rejected with
+401 is evicted and minted again for the same account before the request is
+retried once. The CLI accepts both the legacy flat availability map and the
+dotSpark v1 envelope whose per-name value carries a `status` field.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
@@ -836,11 +933,17 @@ from `accounts.json` without contacting the identity backend or checking ring
 membership on every restart. The current Statement Store period is still used
 to skip locally marked exhausted accounts.
 
+Imported accounts are stored with an explicit `imported` origin and are never
+eligible for the auto-account pool or slot rotation. `session.json` binds a
+durable session to its exact local account name even when it has no dotNS
+username, so restart selects the imported record instead of whichever auto
+account happens to appear first.
+
 ### 12.5 Statement Store slot rotation
 
 Before pairing, allowance is registered for both the signing wallet and device
-accounts. If registration reports no free slot and the signer is auto-managed,
-the CLI:
+accounts. If registration reports no free slot, the signer is auto-managed, and
+the session has no saved pairing, the CLI:
 
 1. records the current Statement Store period in that account;
 2. selects or creates another account;
@@ -848,7 +951,11 @@ the CLI:
 4. retries pairing preparation.
 
 At most eight rotations are attempted. Explicit mnemonic and explicit account
-modes return the slot error instead of changing identity.
+modes return the slot error instead of changing identity. A managed session
+with one or more saved pairings also preserves its signer. Pairing another
+device returns the slot error with guidance to remove a paired device or wait
+for a new allowance period. An exhausted background renewal leaves the current
+auto-managed account eligible because the saved peers depend on that identity.
 
 ### 12.6 Session identity and naming
 
@@ -871,7 +978,7 @@ known, the public and durable session name becomes its Lite username and its
 directory becomes `<username>_signing_host`. The bootstrap name is not
 user-selectable and is omitted from session completion and listing.
 
-### 12.7 Session inspection and switching
+### 12.7 Session inspection, switching, and clearing
 
 `/session` reports:
 
@@ -897,14 +1004,59 @@ The active session is marked with `*`.
 4. load its remembered script and storage;
 5. build and activate the replacement runtime;
 6. persist `current-session`;
-7. stop any pairing responder;
+7. stop every responder for the old session;
 8. swap the runtime;
-9. disconnect product WebSockets using the old runtime; and
-10. update status and completion.
+9. disconnect product WebSockets using the old runtime;
+10. update status and completion; and
+11. restore every paired host saved for the target session.
 
 If activation fails, the previous `current-session` pointer is restored and the
 old in-memory runtime remains active. Files created while preparing the target
 may remain.
+
+`/session --mnemonic "<phrase>"` is an import-only flow:
+
+1. parse and normalize the BIP-39 phrase;
+2. derive the RFC-0022 `uid.dot` identity;
+3. read its optional full or Lite dotNS username from Asset Hub;
+4. when no dotNS mirror exists, search the identity backend's assigned username
+   records for the derived candidate account;
+5. confirm membership in a People or LitePeople ring;
+6. use that username as the session name, or derive a deterministic
+   `imported-<key fingerprint>` name when neither source has a username;
+7. build and activate a replacement runtime off-side;
+8. persist the mnemonic as the named `imported` account and atomically write
+   the session's account binding plus its username when present;
+9. persist `current-session`;
+10. stop every responder for the old session;
+11. swap runtimes and disconnect old product connections; and
+12. restore every paired host saved for the imported session.
+
+The backend fallback uses authenticated, cursor-paginated, prefix searches
+because the backend has no account-indexed read route. It only accepts an
+`ASSIGNED` row whose candidate account equals the derived identity and it never
+calls a registration route. A username missing from both dotNS and the backend
+does not prevent local activation; the connected session simply has no primary
+username for `account.getUserId()`. A mnemonic without ring membership on the
+selected network is rejected and the old in-memory runtime remains active. The
+phrase is not written locally until the replacement runtime activates
+successfully.
+
+`/session --clear <name>` removes the durable name shown by `/session --list`,
+its identity or legacy session directory, any separate legacy product storage,
+and the matching network account cached in the compatibility account store.
+`/session --clear-all` removes every such session, the network's signing-host
+bootstrap state, and every compatibility account record for that network. It
+does not remove pairing-host state, another network's records, externally
+referenced scripts, or on-chain usernames.
+
+The interactive UI describes the data loss and uses the existing `[y/N]`
+approval. `exec` executes these explicit one-shot commands without another
+flag or prompt. Clearing an inactive named session updates completion and keeps
+the current runtime active. Clearing the active session or all sessions first
+ends the command loop, aborts the frame server, drops the runtime, and only then
+deletes the data; the signing host exits afterward. Session clearing is
+unavailable in explicit-mnemonic mode.
 
 ## 13. Persistence
 
@@ -921,6 +1073,8 @@ The layout may contain compatibility paths as well as identity-owned paths:
     signing-host/
       current-session
       session.json                    # default/bootstrap metadata, when used
+      paired-hosts.json               # default/bootstrap paired hosts, when used
+      paired-hosts.json.lock
       core-storage.json               # default/bootstrap core state
       scripts/
       storage/
@@ -940,6 +1094,8 @@ The layout may contain compatibility paths as well as identity-owned paths:
       accounts.json
       accounts.json.lock
       session.json
+      paired-hosts.json
+      paired-hosts.json.lock
       core-storage.json
       scripts/
       storage/
@@ -954,7 +1110,8 @@ The layout may contain compatibility paths as well as identity-owned paths:
 ```
 
 An explicit mnemonic has no account profile, but its signing runtime uses the
-default/bootstrap signing storage path for core and product state.
+default/bootstrap signing storage path for core and product state. It does not
+read or write that path's paired-host store.
 
 ### 13.2 Pairing-user storage switching
 
@@ -1001,7 +1158,24 @@ session's `scripts/` directory. Explicit external scripts use an absolute path.
 Invalid multi-component relative values are rejected. Missing scripts are
 treated as not remembered.
 
-### 13.4 Product storage
+### 13.4 Paired-host store
+
+`paired-hosts.json` is version `1`. It contains a list of versioned peer records.
+Each record contains:
+
+- the statement account ID used as its unique key;
+- the public encryption key needed to resume SSO; and
+- sanitized host name, host version, icon, platform type, and platform version
+  metadata when the proposal supplied them.
+
+Records are returned and written in stable statement-account order. `/pair`
+uses read-modify-write upsert semantics, so it updates the matching statement
+account without replacing unrelated peers. Removal deletes exactly one matching
+statement account. Both operations hold an exclusive
+`paired-hosts.json.lock`. Changes are written to a process-specific temporary
+file and renamed over the store.
+
+### 13.5 Product storage
 
 Each normalized product has one file:
 
@@ -1042,7 +1216,7 @@ document prevents the backup rename.
 Noncanonical product filenames, unsupported versions, invalid ids, and invalid
 hex values are ignored with warnings.
 
-### 13.5 Core storage
+### 13.6 Core storage
 
 `core-storage.json` is a versionless JSON object whose keys and values are hex:
 
@@ -1057,7 +1231,7 @@ hex values are ignored with warnings.
 Core state includes auth sessions, pairing bootstrap material, permission
 state, and other role-owned runtime data.
 
-### 13.6 Account store
+### 13.7 Account store
 
 `accounts.json` is versioned and stores records containing:
 
@@ -1074,7 +1248,7 @@ Account mutations hold an exclusive `accounts.json.lock`. Secret-file writes
 use a temporary file, flush, atomic rename, and `0600` permissions on Unix.
 The lock file can be created during a read-only cached-signer lookup.
 
-### 13.7 Write and corruption behavior
+### 13.8 Write and corruption behavior
 
 Product and core storage writes:
 
@@ -1084,28 +1258,36 @@ Product and core storage writes:
 - atomically rename;
 - and sync the parent directory on Unix.
 
-Session metadata and current-user/session pointers use temporary-file rename
-but do not apply the account file's explicit secret permissions.
+Session metadata, paired-host records, and current-user/session pointers use
+temporary-file rename but do not apply the account file's explicit secret
+permissions.
 
-Malformed account or session JSON is a startup/command error. Malformed core
-JSON is warned about and loaded as empty. Malformed product files are warned
-about and skipped.
+Malformed account, session, or paired-host JSON is a startup or command error
+when that data is loaded. Malformed core JSON is warned about and loaded as
+empty. Malformed product files are warned about and skipped.
 
-There is no session-wide process lock. The account store is locked, but
-simultaneous processes can still race on session, core, product, and current
-selection files.
+There is no session-wide process lock. Account and paired-host mutations use
+separate lock files, but simultaneous processes can still race on session,
+core, product, and current selection files.
 
 ## 14. Network and transport
 
 ### 14.1 Network presets
 
-`--network` selects one of two presets. `paseo-next-v2` is the default.
+`--network` selects one of two presets. `paseo-next-v2` is the default. Every
+preset is a test network; the account store keeps BIP-39 entropy for
+disposable test identities only.
+
+Auto-account onboarding (§12.3) needs an identity backend that records the
+lite username on the dotNS gateway. Each preset points at its matching dotSpark
+identity backend, and the CLI reports the complete backend response when
+registration fails.
 
 #### `paseo-next-v2`
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://identity-backend-next.parity-testnet.parity.io/api/v1` |
+| Identity backend | `https://identity.dotspark.app/api/v1` |
 | People RPC | `wss://paseo-people-next-system-rpc.polkadot.io` |
 | People genesis | `0x89a63b11fef2c0273fc72c0d864da0793a665dade5db153e0cab995348c5440f` |
 | Bulletin RPC | `wss://paseo-bulletin-next-rpc.polkadot.io` |
@@ -1117,38 +1299,38 @@ selection files.
 
 The network that front-runs `paseo-next-v2`: it carries the runtime that reaches
 nextv2 later, and it is where products with previewnet descriptors do their
-on-chain testing. Its identity backend is the same service on its staging
-environment (`/api/v1/version` reports `"environment": "staging"`).
+on-chain testing.
 
 | Purpose | Value |
 | --- | --- |
-| Identity backend | `https://polkadot-app-stg.parity.io/api/v1` |
+| Identity backend | `https://identity-previewnet.dotspark.app/api/v1` |
 | People RPC | `wss://previewnet.substrate.dev/people` |
-| People genesis | `0x3138c6d4ce58c760047a413c2a930e919b4673a841ab4890de59aac3bd037f3d` |
+| People genesis | `0x34999c298555e25bf17a7f3ea20efe7f6fdab1dfec7f808fbcfd36ca8aa5d220` |
 | Bulletin RPC | `wss://previewnet.substrate.dev/bulletin` |
-| Bulletin genesis | `0x2778b1c94c4362e49a54be57d3056bc714f3712e4486625312704ffb74eb973d` |
+| Bulletin genesis | `0x1144acd27f0e5b2c88da7dc12c111e396983dec036ccfb42da5bbb0dd7104e89` |
 | Asset Hub RPC | `wss://previewnet.substrate.dev/asset-hub` |
-| Asset Hub genesis | `0x4d11c803cc6921429e3876638977ad006ea1bba8cd3976a0bca2f164e7026210` |
+| Asset Hub genesis | `0x627f54413120c81161261b2ca87f60f0020963107dc28367491e09ec2dd29659` |
 
 Sessions are per network (`SessionCatalog::new` keys on the preset id), so a
 signer provisioned on one preset is not visible from the other. Two presets means
 two identities on one machine, which is deliberate: the lite username and the
 statement-store allowance are per chain.
 
-`previewnet`'s identity backend requires a bearer token for write requests, which
-the CLI does not send, so auto-managed account creation fails there with
-`401 Unauthorized (Missing Authorization Header)`. Reads against the backend
-succeed, and every non-backend path is unaffected, so a `previewnet` signer needs
-`--mnemonic` for an account that already holds a username on that chain.
+The backend's username routes are bearer-gated; the CLI mints the access token
+itself through the backend's `auth/challenges` → `auth/token` handshake
+(§12.3), or takes one from `HOST_CLI_IDENTITY_BACKEND_TOKEN`, so auto-managed
+account creation works here.
 
-There are no public endpoint override flags.
+There are no public endpoint override flags. `HOST_CLI_IDENTITY_BACKEND_BASE`
+replaces only the identity backend base URL (§21).
 
 Every role the preset serves — People, Bulletin and Asset Hub — is always routed,
 because host internals require all three: statement-store traffic addressed to the
-People genesis, preimage submission, and PGAS claims respectively. The SSO sentinel is
+People genesis, preimage submission, and PGAS claims plus dotNS username reads
+respectively. The SSO sentinel is
 a separate case — it is an unmapped genesis and reaches People through the fallback
 below, not through People's own route. `E2E_LIVE_CHAIN=1` only widens routing to endpoints the
-preset carries without serving them as a role, of which `paseo-next-v2` has none.
+preset carries without serving them as a role, of which neither preset has any.
 
 The all-zero SSO sentinel and every genesis hash not present in the active
 route map fall back to the People RPC.
@@ -1481,7 +1663,50 @@ IDENTITY_ERROR path=<path> account=<ss58> error=<reason>
 Per-path RPC errors are printed and do not make the command itself fail.
 Mnemonic parsing failures do fail the command. The mnemonic is not persisted.
 
-### 19.2 `alloc-check`
+### 19.2 `register-name`
+
+```text
+truapi-host register-name \
+  --mnemonic <BIP-39> \
+  --label <base-label> \
+  [--network paseo-next-v2] \
+  [--link-lite <name.NN> | --chat-key <65-byte-hex>]
+```
+
+Registers `label` as the full-person username of the mnemonic's RFC-0022
+`uid.dot` identity account, through `DotnsGateway.register_name` on Asset Hub.
+The account must be a recognized full person: its ring-VRF key must be built
+into a People-collection ring root on People, and Asset Hub's
+`members-subscriber` must already hold that root revision (the command waits for
+it). The People ring, its members and its root revision are read at one
+finalized People block.
+
+`--link-lite` links the new name to a dotted lite username, inheriting that
+name's chat key; without it and without `--chat-key`, the account's own lite
+username (from dotNS) is linked. `--chat-key` registers standalone with the
+given ECDH key. The two are mutually exclusive.
+
+The transaction is a General (v5) extrinsic authorized by the `AsDotnsGateway`
+extension: `RegisterFullName { proof, ring_index, revision, signature }`, where
+`signature` is the account's sr25519 signature over the inherited-implication
+digest and `proof` the ring-VRF membership proof, built for the `revision` read
+above. `RestrictOrigins` carries `true`. Success prints:
+
+```text
+REGISTER_SUBMITTED label=<label> block=<hash>
+REGISTER_ALIAS alias=0x<alias>
+REGISTER_CONFIRMED label=<label> full_username=<name>
+```
+
+`REGISTER_ALIAS` is printed once `DotnsGateway.AccountAlias` records the
+account, `REGISTER_CONFIRMED` once the dotNS contracts return the name (or
+`<pending>`). Before signing: the label must be unminted on `DotnsRegistrar` (a
+pending reservation is not a mint and stays claimable); the account must not
+already hold a `DotnsGateway.AccountAlias`; a linked lite username must be
+owned by the account per `DotnsGateway.LiteLabelOwner`; and runtimes whose
+`RegisterFullName` shape differs are rejected.
+
+### 19.3 `alloc-check`
 
 ```text
 truapi-host alloc-check \
@@ -1533,8 +1758,8 @@ them; on-demand allocation for a product reports exhaustion instead.
 Interactive command errors do not terminate the host. They finalize running
 activities, display the error, and return to the command bar.
 
-Dropping a `SigningHostSession` aborts its background responder. Leaving the
-TUI restores the cursor, bracketed-paste mode, alternate screen, and raw mode.
+Dropping a `SigningHostSession` stops all of its background responders. Leaving
+the TUI restores the cursor, bracketed-paste mode, alternate screen, and raw mode.
 The frame accept task is aborted when its owning command body completes.
 
 The CLI has no explicit SIGTERM/SIGINT signal orchestration. Interactive
@@ -1551,13 +1776,16 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_LOG` | Default `--log-level`. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
-| `HOST_CLI_SIGNER_MNEMONIC` | Signing, identity, and allowance mnemonic input. |
+| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
+| `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
+| `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
+| `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
 | `XDG_STATE_HOME` | Preferred default state parent. |
 | `HOME` | Fallback default state parent. |
 | `VISUAL` | Preferred script editor. |
 | `EDITOR` | Fallback script editor. |
 | `TRUAPI_HOST_RUNNER` | Override `js/runner.ts`. |
-| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on `paseo-next-v2`. |
+| `E2E_LIVE_CHAIN` | Value `1` widens routing to endpoints the preset does not serve as a role; no effect on either preset. |
 | `NO_COLOR` | Disable CLI semantic colors and battery reporter color. |
 | `COLORFGBG` | Infer TUI background color. |
 | `COLORTERM` | Select true-color TUI rendering. |
@@ -1569,7 +1797,7 @@ ended. This preserves the child status but bypasses later Rust destructors.
 
 These are part of the as-built specification:
 
-- only `paseo-next-v2` is selectable;
+- only the `paseo-next-v2` and `previewnet` test presets are selectable; there is no mainnet preset;
 - product scripts require Bun and, by default, the source checkout;
 - there is no structured/JSON output mode;
 - there is no `--version`;

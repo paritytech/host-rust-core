@@ -30,7 +30,7 @@ use tracing_subscriber::layer::{Context as LayerContext, Layer};
 use unicode_width::UnicodeWidthChar;
 
 use crate::LogLevel;
-use crate::signing_shell::{CommandEditor, parse_approval};
+use crate::signing_shell::{CommandEditor, contains_mnemonic, mask_mnemonic, parse_approval};
 
 const TRANSCRIPT_LIMIT: usize = 10_000;
 const TRANSCRIPT_LINE_LIMIT: usize = 10_000;
@@ -110,6 +110,10 @@ pub enum SystemEvent {
     FramesListening {
         url: String,
     },
+    ServeReady {
+        url: String,
+        auto_accept: bool,
+    },
     SigningHostReady,
     SigningHostNeedsSession,
     SigningHostAccountExhausted {
@@ -123,13 +127,6 @@ pub enum SystemEvent {
         reason: String,
     },
     SigningHostResponderStarted,
-    RingInfo {
-        ring_index: u32,
-        members: usize,
-    },
-    AllowanceChecking {
-        target: String,
-    },
     AllowanceReady {
         target: String,
         sequence: u32,
@@ -668,6 +665,29 @@ impl ActiveTerminalUi {
     /// Record an immediate command error.
     pub fn error(&mut self, text: impl Into<String>) {
         self.app.notice(NoticeTone::Error, text.into(), None);
+    }
+
+    /// Record an error and every source attached to it.
+    ///
+    /// Operational errors commonly add local context around a backend or
+    /// chain response. Keeping the outer context as the title and rendering
+    /// the remaining sources as detail preserves the remote explanation in
+    /// the interactive transcript.
+    pub fn error_with_causes(&mut self, error: &anyhow::Error) {
+        let mut causes = error.chain();
+        let title = causes
+            .next()
+            .expect("an anyhow error always contains itself")
+            .to_string();
+        let detail = causes
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.app.notice(
+            NoticeTone::Error,
+            title,
+            (!detail.is_empty()).then_some(detail),
+        );
     }
 
     /// Clear the visible transcript.
@@ -1282,6 +1302,18 @@ impl App {
                 "Listening for product frames".to_string(),
                 Some(url),
             ),
+            SystemEvent::ServeReady { url, auto_accept } => self.notice(
+                NoticeTone::Info,
+                "Serving product frames until stopped".to_string(),
+                Some(format!(
+                    "{url}\n{}",
+                    if auto_accept {
+                        "Confirmations are approved automatically"
+                    } else {
+                        "Confirmations will be denied: there is no terminal to prompt on, so pass --auto-accept"
+                    }
+                )),
+            ),
             SystemEvent::SigningHostReady => self.activity(
                 "signer".to_string(),
                 "Signing host ready".to_string(),
@@ -1314,19 +1346,6 @@ impl App {
                 "Waiting for the pairing host".to_string(),
                 None,
                 ActivityState::Running,
-            ),
-            SystemEvent::RingInfo {
-                ring_index,
-                members,
-            } => self.notice(
-                NoticeTone::Success,
-                "LitePeople ring ready".to_string(),
-                Some(format!("Ring {ring_index} · {members} members")),
-            ),
-            SystemEvent::AllowanceChecking { target } => self.start_activity(
-                format!("allowance:{target}"),
-                format!("Preparing {} access", allowance_name(&target)),
-                None,
             ),
             SystemEvent::AllowanceReady {
                 target,
@@ -1844,7 +1863,8 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     }
 
     let approval = app.pending_approval.is_some();
-    let input = app.editor.text();
+    let raw_input = app.editor.text();
+    let input = mask_mnemonic(&raw_input).unwrap_or(raw_input);
     let prompt_area = Rect::new(
         composer_content_area.x,
         surface_area
@@ -2441,7 +2461,9 @@ fn text_display_width(text: &str) -> usize {
 }
 
 fn redact_command(command: &str) -> String {
-    if command.trim_start().starts_with("/pair ") {
+    if contains_mnemonic(command) {
+        "/session --mnemonic <redacted>".to_string()
+    } else if command.trim_start().starts_with("/pair ") {
         "/pair <pairing link>".to_string()
     } else {
         sanitize_terminal_text(command)
@@ -2638,17 +2660,20 @@ mod tests {
     }
 
     #[test]
-    fn transcript_copy_uses_natural_grouped_output_and_redacts_deeplinks() {
+    fn transcript_copy_uses_natural_grouped_output_and_redacts_secrets() {
         let mut app = test_app();
         app.handle_system_event(SystemEvent::SigningHostReady);
         app.push_command("/pair polkadotapp://pair?handshake=secret".to_string());
+        app.push_command("/session --mnemonic \"abandon abandon abandon about\"".to_string());
         app.stream(StreamKind::Stdout, "user id: alice.dot".to_string());
 
         let transcript = app.transcript_text();
         assert!(transcript.contains("✓ Signing host ready"));
         assert!(transcript.contains("─ /pair <pairing link>"));
+        assert!(transcript.contains("─ /session --mnemonic <redacted>"));
         assert!(transcript.contains("  user id: alice.dot"));
         assert!(!transcript.contains("handshake=secret"));
+        assert!(!transcript.contains("abandon"));
         assert!(!transcript.contains("SCRIPT ·"));
     }
 
@@ -2742,6 +2767,30 @@ mod tests {
     }
 
     #[test]
+    fn interactive_error_preserves_backend_cause_chain() {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let mut ui = ActiveTerminalUi {
+            terminal: None,
+            events: None,
+            receiver,
+            sender,
+            app: test_app(),
+            clipboard: None,
+            copy_next_pairing_deeplink: false,
+        };
+        let error = anyhow::anyhow!("backend supplied explanation")
+            .context("username registration failed (503 Service Unavailable)")
+            .context("attest account auto-1");
+
+        ui.error_with_causes(&error);
+
+        assert_eq!(
+            ui.app.transcript_text(),
+            "× attest account auto-1\n  username registration failed (503 Service Unavailable)\n  backend supplied explanation"
+        );
+    }
+
+    #[test]
     fn script_streams_group_lines_and_preserve_blank_lines() {
         let mut app = test_app();
         app.stream(StreamKind::Stdout, "first".to_string());
@@ -2815,17 +2864,20 @@ mod tests {
             .lines()
             .find(|line| line.contains("edit the last"))
             .context("render script completion")?;
-        let clear = screen
+        let renew = screen
             .lines()
-            .find(|line| line.contains("clear the visible"))
-            .context("render clear completion")?;
+            .find(|line| line.contains("renew statement-store"))
+            .context("render renew completion")?;
 
         let column = |line: &str, description: &str| {
             line.find(description)
                 .map(|index| text_display_width(&line[..index]))
         };
         assert_eq!(column(deeplink, "answer"), column(script, "edit"));
-        assert_eq!(column(script, "edit"), column(clear, "clear the visible"));
+        assert_eq!(
+            column(script, "edit"),
+            column(renew, "renew statement-store")
+        );
         Ok(())
     }
 

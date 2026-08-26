@@ -36,7 +36,7 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: cargo build
         run: cargo build --workspace --all-targets --all-features
@@ -65,7 +65,7 @@ jobs:
     name: truapi-provider (wasm browser tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -74,7 +74,7 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
@@ -112,7 +112,7 @@ jobs:
           toolchain: nightly
           components: rustfmt
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -159,7 +159,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       # Swift bindgen is pure Rust codegen, so this needs neither Xcode nor the
       # iOS targets, unlike rebuild.sh which also builds the xcframework.
@@ -229,7 +229,7 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-ios-sim
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           shared-key: ios-swift-gate
 
@@ -277,6 +277,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
+
+      # Node builtins only, so this needs neither the codegen output nor npm ci.
+      - name: Test scripts
+        run: npm run test:scripts
 
       - name: Download codegen output
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

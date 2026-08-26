@@ -11,11 +11,16 @@ on:
         type: string
         required: false
         default: ""
-  # Push a `truapi-provider-dev` or `truapi-provider-dev-<suffix>` tag to publish
-  # a dev snapshot; the part after `truapi-provider-dev-` becomes the dist-tag suffix.
+  # Triggers: a `truapi-provider-dev[-<suffix>]` tag (suffix becomes the
+  # dist-tag suffix), or a chain-spec change landing on main. The paths filter
+  # only applies to branch pushes, never tags.
   push:
     tags:
       - "truapi-provider-dev*"
+    branches:
+      - main
+    paths:
+      - "rust/crates/truapi-provider/networks/**"
 
 permissions:
   contents: read
@@ -32,7 +37,7 @@ jobs:
     name: Verify truapi-provider
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -42,7 +47,7 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.8.1
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2.8.1
 
       - run: cargo +nightly fmt -p truapi-provider --check
 
@@ -57,11 +62,11 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -71,7 +76,7 @@ jobs:
           toolchain: stable
           targets: wasm32-unknown-unknown
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.14.0 --locked
@@ -148,3 +153,13 @@ jobs:
           inputs: '${{ format(''{{ "repo": "{0}", "run_id": "{1}", "artifact_name": "truapi-provider-dev-{2}", "npm_tag": "{3}" }}'', github.repository, github.run_id, github.sha, steps.devver.outputs.tag) }}'
         env:
           GITHUB_TOKEN: ${{ secrets.NPM_PUBLISH_AUTOMATION_TOKEN }}
+
+      # No tags to gate here, so a missing version just fails the job. The check
+      # is version-addressed, so the dist-tag above does not affect it.
+      - name: Confirm the dev snapshot reached npm
+        timeout-minutes: 15
+        env:
+          DEV_VERSION: ${{ steps.devver.outputs.version }}
+        run: |
+          node scripts/wait-for-npm-publish.mjs \
+            --package @parity/truapi-provider --version "${DEV_VERSION}"

@@ -19,7 +19,7 @@ use truapi_platform::{CoreStorage, CoreStorageKey};
 use super::SigningHost;
 use super::sso_responder::current_unix_secs;
 use crate::host_logic::product_account::{
-    derive_root_keypair_from_entropy, derive_sr25519_hard_path,
+    derive_identity_keypair, derive_root_keypair_from_entropy, derive_sr25519_hard_path,
 };
 use crate::runtime::RuntimeServices;
 use crate::runtime::authority::ProductAuthority;
@@ -105,6 +105,12 @@ pub(super) struct RenewalState {
     /// allocation cannot drop another's entry.
     ledger_lock: Mutex<()>,
     loop_started: AtomicBool,
+    /// The most recent pass, so a host that drives the in-process loop can read
+    /// what it achieved. The loop computes a report on every tick and has no
+    /// caller to hand it to, and exhaustion is the outcome a host most needs to
+    /// act on. A blocking lock rather than an async one: every use is a clone or
+    /// a store with no await in between.
+    last_report: std::sync::Mutex<Option<StatementRenewalReport>>,
 }
 
 impl RenewalState {
@@ -114,6 +120,19 @@ impl RenewalState {
 
     fn ledger_lock(&self) -> &Mutex<()> {
         &self.ledger_lock
+    }
+
+    /// Record the pass a host has not seen the return value of.
+    fn record_report(&self, report: &StatementRenewalReport) {
+        if let Ok(mut last) = self.last_report.lock() {
+            *last = Some(report.clone());
+        }
+    }
+
+    /// The most recent pass the loop ran. `None` until one has run, which a host
+    /// should read as "not yet" rather than as healthy.
+    pub(super) fn last_report(&self) -> Option<StatementRenewalReport> {
+        self.last_report.lock().ok().and_then(|last| last.clone())
     }
 }
 
@@ -162,6 +181,32 @@ async fn track_targets(
         return Ok(());
     }
     write_entries(storage, &entries).await
+}
+
+async fn untrack_account(
+    storage: &(impl CoreStorage + ?Sized),
+    ledger_lock: &Mutex<()>,
+    owner: [u8; 32],
+    account_id: &[u8; 32],
+) -> Result<bool, String> {
+    let _guard = ledger_lock.lock().await;
+    let mut entries = read_entries(storage).await?;
+    let original_len = entries.len();
+    entries.retain(|entry| {
+        entry.owner != Some(owner)
+            || !matches!(
+                &entry.target,
+                StatementRenewalTarget::Account {
+                    account_id: existing,
+                    ..
+                } if existing == account_id
+            )
+    });
+    if entries.len() == original_len {
+        return Ok(false);
+    }
+    write_entries(storage, &entries).await?;
+    Ok(true)
 }
 
 async fn write_entries(
@@ -215,8 +260,7 @@ fn resolve_target(
             })
         }
         StatementRenewalTarget::WalletSso => {
-            let pair = derive_sr25519_hard_path(entropy, &["wallet", "sso"])
-                .map_err(|err| err.to_string())?;
+            let pair = derive_identity_keypair(entropy).map_err(|err| err.to_string())?;
             Ok(ResolvedRenewalTarget {
                 label,
                 account_id: pair.public.to_bytes(),
@@ -240,6 +284,21 @@ pub(super) async fn track(
         signing_host.renewal.ledger_lock(),
         owner_key(&entropy)?,
         targets,
+    )
+    .await
+}
+
+/// Stop renewing one fixed statement account for the active identity.
+pub(super) async fn untrack_account_for_signing_host(
+    signing_host: &SigningHost,
+    account_id: &[u8; 32],
+) -> Result<bool, String> {
+    let entropy = signing_host.root_entropy().map_err(|err| err.to_string())?;
+    untrack_account(
+        signing_host.platform.as_ref(),
+        signing_host.renewal.ledger_lock(),
+        owner_key(&entropy)?,
+        account_id,
     )
     .await
 }
@@ -418,20 +477,36 @@ async fn run_tick(services: &Arc<RuntimeServices>, signing_host: &SigningHost) {
         debug!("skipping statement-store renewal tick; no active session");
         return;
     }
-    match renew_now(services, signing_host).await {
-        Ok(report) if report.slots_exhausted => {
-            warn!(
-                period = report.period,
-                "statement-store renewal hit slot exhaustion"
-            );
-        }
+    absorb_tick(
+        &signing_host.renewal,
+        renew_now(services, signing_host).await,
+    );
+}
+
+/// Record and log what one tick achieved.
+///
+/// Split out from [`run_tick`] so the recording is reachable without a runtime: a
+/// loop that logged but forgot to record would leave a host unable to see
+/// exhaustion, and that is exactly the wiring worth a test.
+fn absorb_tick(state: &RenewalState, result: Result<StatementRenewalReport, String>) {
+    match result {
         Ok(report) => {
-            info!(
-                period = report.period,
-                targets = report.outcomes.len(),
-                "statement-store renewal pass complete"
-            );
+            if report.slots_exhausted {
+                warn!(
+                    period = report.period,
+                    "statement-store renewal hit slot exhaustion"
+                );
+            } else {
+                info!(
+                    period = report.period,
+                    targets = report.outcomes.len(),
+                    "statement-store renewal pass complete"
+                );
+            }
+            state.record_report(&report);
         }
+        // A tick that could not run leaves the previous pass readable rather than
+        // replacing it with nothing: "the last thing we know" beats "no idea".
         Err(reason) => warn!(%reason, "statement-store renewal tick failed"),
     }
 }
@@ -559,6 +634,84 @@ mod tests {
             targets.sort_by_key(|target| format!("{target:?}"));
             assert_eq!(targets, vec![product("a.dot"), product("b.dot")]);
         });
+    }
+
+    /// The in-process loop returns nothing, so a host reads what a pass achieved
+    /// from the recorded report. Recording only in the direct path would leave a
+    /// loop-driven host unable to see exhaustion at all.
+    #[test]
+    fn the_last_report_is_readable_once_a_pass_has_run() {
+        let state = RenewalState::default();
+        assert!(
+            state.last_report().is_none(),
+            "no pass has run, which is not the same as a healthy one"
+        );
+
+        absorb_tick(
+            &state,
+            Ok(StatementRenewalReport {
+                period: 7,
+                outcomes: Vec::new(),
+                pruned: Vec::new(),
+                slots_exhausted: true,
+            }),
+        );
+
+        let seen = state.last_report().expect("a pass has run");
+        assert_eq!(seen.period, 7);
+        assert!(
+            seen.slots_exhausted,
+            "exhaustion is the outcome a host most needs to read back"
+        );
+    }
+
+    /// Only the newest matters: a host reads this on resume and wants the state
+    /// now, not the first exhaustion it ever hit.
+    #[test]
+    fn the_last_report_keeps_the_newest_pass() {
+        let state = RenewalState::default();
+        for period in [7, 8] {
+            absorb_tick(
+                &state,
+                Ok(StatementRenewalReport {
+                    period,
+                    outcomes: Vec::new(),
+                    pruned: Vec::new(),
+                    slots_exhausted: period == 7,
+                }),
+            );
+        }
+
+        let seen = state.last_report().expect("a pass has run");
+        assert_eq!(seen.period, 8);
+        assert!(
+            !seen.slots_exhausted,
+            "the older exhaustion should not stick"
+        );
+    }
+
+    /// A tick that could not run at all must not erase the last pass a host has
+    /// not read yet.
+    #[test]
+    fn a_failed_tick_leaves_the_previous_report_readable() {
+        let state = RenewalState::default();
+        absorb_tick(
+            &state,
+            Ok(StatementRenewalReport {
+                period: 7,
+                outcomes: Vec::new(),
+                pruned: Vec::new(),
+                slots_exhausted: true,
+            }),
+        );
+
+        absorb_tick(&state, Err("no active session".to_string()));
+
+        let seen = state
+            .last_report()
+            .expect("the earlier pass is still there");
+        assert_eq!(seen.period, 7);
+        assert!(seen.slots_exhausted);
     }
 
     /// Pruning rewrites the whole ledger, so it has to hold the lock across its
@@ -821,9 +974,9 @@ mod tests {
     }
 
     #[test]
-    fn wallet_sso_target_resolves_to_wallet_sso_derivation() {
+    fn wallet_sso_target_resolves_to_the_responder_identity() {
         let entropy = [7u8; 32];
-        let expected = derive_sr25519_hard_path(&entropy, &["wallet", "sso"])
+        let expected = crate::host_logic::product_account::derive_identity_keypair(&entropy)
             .unwrap()
             .public
             .to_bytes();
@@ -836,6 +989,68 @@ mod tests {
                 account_id: expected,
             }
         );
+    }
+
+    #[test]
+    fn untracking_one_device_preserves_wallet_sso_and_other_devices() {
+        let storage = MemStorage::default();
+        let first = StatementRenewalTarget::Account {
+            account_id: [8; 32],
+            label: "device:08".to_string(),
+        };
+        let second = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device:09".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(
+                &storage,
+                &lock(),
+                OWNER,
+                vec![StatementRenewalTarget::WalletSso, first, second.clone()],
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                untrack_account(&storage, &lock(), OWNER, &[8; 32])
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                read_targets(&storage, OWNER).await.unwrap(),
+                vec![StatementRenewalTarget::WalletSso, second]
+            );
+        });
+    }
+
+    #[test]
+    fn concurrent_track_and_untrack_preserve_an_unrelated_device() {
+        let storage = YieldingStorage::default();
+        let ledger_lock = lock();
+        let first = StatementRenewalTarget::Account {
+            account_id: [8; 32],
+            label: "device:08".to_string(),
+        };
+        let second = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device:09".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &ledger_lock, OWNER, vec![first])
+                .await
+                .unwrap();
+            let (removed, tracked) = futures::join!(
+                untrack_account(&storage, &ledger_lock, OWNER, &[8; 32]),
+                track_targets(&storage, &ledger_lock, OWNER, vec![second.clone()]),
+            );
+            assert!(removed.unwrap());
+            tracked.unwrap();
+
+            assert_eq!(read_targets(&storage.0, OWNER).await.unwrap(), vec![second]);
+        });
     }
 
     #[test]
@@ -892,6 +1107,37 @@ mod tests {
             assert_eq!(
                 read_targets(&storage, OTHER_OWNER).await.unwrap(),
                 vec![device]
+            );
+        });
+    }
+
+    #[test]
+    fn untracking_a_device_preserves_the_other_identitys_entry() {
+        let storage = MemStorage::default();
+        let device = StatementRenewalTarget::Account {
+            account_id: [9; 32],
+            label: "device".to_string(),
+        };
+
+        futures::executor::block_on(async {
+            track_targets(&storage, &lock(), OWNER, vec![device.clone()])
+                .await
+                .unwrap();
+            track_targets(&storage, &lock(), OTHER_OWNER, vec![device.clone()])
+                .await
+                .unwrap();
+
+            assert!(
+                untrack_account(&storage, &lock(), OWNER, &[9; 32])
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                (
+                    read_targets(&storage, OWNER).await.unwrap(),
+                    read_targets(&storage, OTHER_OWNER).await.unwrap(),
+                ),
+                (Vec::new(), vec![device])
             );
         });
     }

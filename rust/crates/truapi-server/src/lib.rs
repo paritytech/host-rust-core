@@ -2,6 +2,9 @@
     clippy::double_must_use,
     reason = "async-trait generates must_use futures for async trait methods"
 )]
+// The pairing-flow future nests the chain, SSO and identity futures deeply
+// enough that proving the tree's auto traits exceeds the default limit.
+#![recursion_limit = "256"]
 
 //! TrUAPI server runtime: dispatcher, frames, SCALE encoding, stream management.
 //!
@@ -53,12 +56,12 @@ pub use host_core::{
 pub use host_logic::session::{
     ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
 };
-pub use runtime::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::StatementRenewalTarget;
 pub use runtime::login_failure::reports_exhausted_period;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::statement_allowance;
+pub use runtime::{PairedSsoPeer, ResponderExit};
 pub use truapi_platform::{
     CoreStorageKeyDescription, CoreStorageKeyDescriptionError, HostRuntimeConfig,
     PairingHostConfig, PermissionAuthorizationRequest, PermissionAuthorizationStatus, Platform,
