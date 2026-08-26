@@ -63,6 +63,13 @@ function installFakeIframeWindow(options: { referrer?: string; ancestorOrigins?:
     };
 }
 
+/** The transport adopts its port off a promise, not inline. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+async function until(predicate: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !predicate(); i += 1) await settle();
+}
+
 let currentWindow: ReturnType<typeof installFakeIframeWindow> | null = null;
 const openPorts: MessagePort[] = [];
 
@@ -269,8 +276,10 @@ describe("sandbox iframe MessagePort handshake", () => {
 describe("connectWebSocketHost", () => {
     const servers: ReturnType<typeof Bun.serve>[] = [];
 
-    afterEach(() => {
+    afterEach(async () => {
         for (const server of servers.splice(0)) server.stop(true);
+        // Let the close land here: it clears the port on whatever window it finds.
+        await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     /** Loopback frame socket, standing in for `truapi-host --frame-listen`. */
@@ -325,10 +334,57 @@ describe("connectWebSocketHost", () => {
             /before the TrUAPI client is created/,
         );
     });
-});
 
-/** The transport adopts its port off a promise, not inline. */
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    it("re-dials the same endpoint after the host hangs up", async () => {
+        let connections = 0;
+        const server = Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch(request, server) {
+                if (server.upgrade(request)) return;
+                return new Response("websocket upgrade required", { status: 426 });
+            },
+            websocket: {
+                open(socket) {
+                    connections += 1;
+                    // Drop the first connection, accept the rebuild's.
+                    if (connections === 1) socket.close();
+                },
+                message() {},
+            },
+        });
+        servers.push(server);
+        const sandbox = await importSandbox();
+
+        const first = sandbox.connectWebSocketHost(`ws://127.0.0.1:${server.port}`);
+        await until(() => connections === 1);
+        await settle();
+        const rebuilt = sandbox.getClientSync();
+        await until(() => connections === 2);
+
+        expect(rebuilt).not.toBeNull();
+        expect(rebuilt).not.toBe(first);
+        expect(connections).toBe(2);
+    });
+
+    it("accepts a different endpoint once the pipe has closed", async () => {
+        const sandbox = await importSandbox();
+        let connected = false;
+        let closed = false;
+        sandbox.subscribeConnectionStatus((status) => {
+            if (status === "connected") connected = true;
+            if (status === "disconnected" && connected) closed = true;
+        });
+
+        sandbox.connectWebSocketHost(frameServer());
+        await until(() => connected);
+        for (const server of servers.splice(0)) server.stop(true);
+        await until(() => closed);
+
+        // The guard is on a live client, and the close cleared it.
+        expect(() => sandbox.connectWebSocketHost(frameServer())).not.toThrow();
+    });
+});
 
 function closePipe(port: MessagePort): void {
     const hook = port.onmessageerror;
