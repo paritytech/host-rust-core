@@ -45,7 +45,9 @@ public enum PairingDeeplinkScheme: Sendable {
 /// `hostName`, `hostIcon`, `hostVersion`, `platformType`, and
 /// `platformVersion` describe the host to the wallet during SSO pairing.
 /// `peopleChainGenesisHash` and `bulletinChainGenesisHash` must each be
-/// exactly 32 bytes.
+/// exactly 32 bytes. The platform category products read through
+/// `System.host_info` is not configurable: reaching this package at all means
+/// the host is an iOS app.
 public struct RuntimeConfig: Sendable {
     public let productId: String
     public let executionKind: ProductExecutionKind
@@ -95,6 +97,7 @@ public struct RuntimeConfig: Sendable {
             hostName: hostName,
             hostIcon: hostIcon,
             hostVersion: hostVersion,
+            hostPlatform: .ios,
             platformType: platformType,
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,
@@ -145,6 +148,7 @@ public struct HostRuntimeConfig: Sendable, Equatable {
             hostName: hostName,
             hostIcon: hostIcon,
             hostVersion: hostVersion,
+            hostPlatform: .ios,
             platformType: platformType,
             platformVersion: platformVersion,
             peopleChainGenesisHash: peopleChainGenesisHash,

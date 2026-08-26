@@ -14,7 +14,7 @@ use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
-use truapi_platform::{JsonRpcConnection, Platform};
+use truapi_platform::{HostInfo, JsonRpcConnection, Platform};
 
 /// Upper bound on the in-core preimage cache. The cache is a bridge until
 /// content propagates to the lookup backend, not a store, so it stays small.
@@ -28,6 +28,8 @@ const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
 pub(crate) struct RuntimeServices {
     /// Host platform backing all syscalls.
     pub(crate) platform: Arc<dyn Platform>,
+    /// Host identity reported to products via `System::host_info`.
+    pub(crate) host_info: HostInfo,
     /// Host chat adapter, when the host serves the Chat capability. `None`
     /// makes every product chat call resolve as `Unsupported`.
     pub(crate) chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
@@ -57,11 +59,13 @@ pub(crate) struct RuntimeServices {
 }
 
 impl RuntimeServices {
-    /// Build role-neutral runtime services from the platform, the People-chain
-    /// genesis hash used by statement-store backed protocols, and the
-    /// Bulletin-chain genesis hash used for in-core preimage submission.
+    /// Build role-neutral runtime services from the platform, the host
+    /// identity reported to products, the People-chain genesis hash used by
+    /// statement-store backed protocols, and the Bulletin-chain genesis hash
+    /// used for in-core preimage submission.
     pub(crate) fn new(
         platform: Arc<dyn Platform>,
+        host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
@@ -75,6 +79,7 @@ impl RuntimeServices {
         let bulletin = BulletinRpc::new(chain.clone(), bulletin_chain_genesis_hash);
         Arc::new(Self {
             platform,
+            host_info,
             chat_platform: None,
             chain,
             statement_store,
@@ -92,6 +97,7 @@ impl RuntimeServices {
     /// Same as [`Self::new`], with the host's chat adapter installed.
     pub(crate) fn with_chat_platform(
         platform: Arc<dyn Platform>,
+        host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
@@ -99,6 +105,7 @@ impl RuntimeServices {
     ) -> Arc<Self> {
         let services = Self::new(
             platform,
+            host_info,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
             spawner,

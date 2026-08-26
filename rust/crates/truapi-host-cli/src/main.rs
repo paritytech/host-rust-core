@@ -829,6 +829,7 @@ fn host_info(name: &str) -> HostInfo {
         name: name.to_string(),
         icon: None,
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        platform: truapi::latest::HostPlatform::Cli,
     }
 }
 
