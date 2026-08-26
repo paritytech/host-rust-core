@@ -1738,11 +1738,11 @@ async fn run_dev_command(command: Vec<String>) -> Result<i32> {
     tokio::select! {
         status = child.wait() => {
             // Intermediate processes exit before the server they spawned.
-            stop_own_process_group();
+            stop_dev_command(&child);
             Ok(status?.code().unwrap_or(1))
         }
         _ = wait_for_shutdown() => {
-            stop_own_process_group();
+            stop_dev_command(&child);
             let _ = tokio::time::timeout(DEV_COMMAND_GRACE, child.wait()).await;
             // The command was interrupted, not failed. Report the interrupt
             // rather than whatever a terminated package manager last said.
@@ -1751,20 +1751,37 @@ async fn run_dev_command(command: Vec<String>) -> Result<i32> {
     }
 }
 
-/// Terminate this process's group, which is where the development command and
-/// everything it spawned live.
+/// Terminate the development command and everything it spawned.
 ///
-/// Safe to call on ourselves: both interrupt and termination are handled, so
-/// the signal only wakes a shutdown already under way.
+/// The command shares this process's group, so the group is what has to be
+/// signalled: package managers reach the real dev server through intermediate
+/// processes, and signalling the direct child leaves that server holding its
+/// port. Signalling ourselves is harmless, since both interrupt and termination
+/// are handled and only wake a shutdown already under way.
+///
+/// A group is only ours to signal when we lead it. A supervisor that spawned us
+/// into its own group would otherwise be torn down alongside our child, so that
+/// case falls back to the direct child; such a supervisor should spawn us
+/// detached, which is what makes the group ours.
 #[cfg(unix)]
-fn stop_own_process_group() {
-    use rustix::process::{Signal, getpgrp, kill_process_group};
+fn stop_dev_command(child: &tokio::process::Child) {
+    use rustix::process::{Signal, getpgrp, getpid, kill_process, kill_process_group};
 
-    let _ = kill_process_group(getpgrp(), Signal::TERM);
+    if getpgrp() == getpid() {
+        let _ = kill_process_group(getpgrp(), Signal::TERM);
+        return;
+    }
+    if let Some(pid) = child
+        .id()
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = kill_process(pid, Signal::TERM);
+    }
 }
 
 #[cfg(not(unix))]
-fn stop_own_process_group() {}
+fn stop_dev_command(_child: &tokio::process::Child) {}
 
 /// Resolve once the process is asked to stop.
 ///
