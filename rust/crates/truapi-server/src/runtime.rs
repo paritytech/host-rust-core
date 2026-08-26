@@ -867,7 +867,7 @@ impl System for ProductRuntimeHost {
         _request: HostGetProductContextRequest,
     ) -> Result<HostGetProductContextResponse, CallError<HostGetProductContextError>> {
         Ok(HostGetProductContextResponse::V1(
-            v01::GetProductContextResponse {
+            v01::HostGetProductContextResponse {
                 product_id: self.product.product_id.clone(),
             },
         ))
@@ -3011,7 +3011,7 @@ mod tests {
 
             assert_eq!(
                 context,
-                v01::GetProductContextResponse {
+                v01::HostGetProductContextResponse {
                     product_id: expected.to_string(),
                 },
                 "configured product id {configured:?}",

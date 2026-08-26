@@ -13,6 +13,6 @@ truapi_macros::versioned_type! {
     pub enum HostNavigateToResponse { V1 }
     pub enum HostNavigateToError { V1 => v01::HostNavigateToError }
     pub enum HostGetProductContextRequest { V1 }
-    pub enum HostGetProductContextResponse { V1 => v01::GetProductContextResponse }
+    pub enum HostGetProductContextResponse { V1 => v01::HostGetProductContextResponse }
     pub enum HostGetProductContextError { V1 => v01::GenericError }
 }

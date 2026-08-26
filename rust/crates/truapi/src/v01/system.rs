@@ -5,7 +5,7 @@ use super::common::GenericError;
 
 /// Response containing the product context bound to the current host runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct GetProductContextResponse {
+pub struct HostGetProductContextResponse {
     /// Full canonical identifier used for authorization and account derivation.
     pub product_id: String,
 }
