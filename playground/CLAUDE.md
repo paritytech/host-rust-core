@@ -7,9 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 An interactive explorer for the TrUAPI, the Host API surface exposed to products running inside the Polkadot Desktop Browser webview. The app must be opened from within a Host environment. It talks to the host over iframe `postMessage` frames or the native webview `window.__HOST_API_PORT__` MessagePort.
 
 To develop locally, run `yarn dev` and open the app via `https://dot.li/localhost:3000` inside the Desktop Host.
-For host-backed diagnosis/e2e runs, signer-bot settings may live in the
-repo-root `.env`; if they are not present in the current worktree environment,
-load or copy them from that file before treating signer-bot as unavailable.
+For host-backed diagnosis/e2e runs, `make e2e-dotli` builds and launches the
+repo's signing-host CLI. An explicitly exported `HOST_CLI_SIGNER_MNEMONIC` is
+used when present; otherwise the CLI auto-manages a reusable isolated test
+identity. Set `E2E_DOTLI_SIGNING_HOST_BASE_PATH` to use different state while
+debugging.
 
 ## Commands
 
@@ -21,6 +23,7 @@ yarn lint              # ESLint + tsc --noEmit + tsc -p tsconfig.examples.json
 yarn lint:fix          # Auto-fix ESLint issues
 yarn typecheck         # tsc --noEmit on playground sources
 yarn typecheck:examples # Typecheck generated client examples
+yarn test:unit         # Chat diagnosis unit tests
 yarn e2e               # Playwright e2e suite
 ```
 
@@ -37,12 +40,15 @@ The Diagnosis screen emits a per-host markdown report via "Copy report". Aggrega
 
 | File | Role |
 | --- | --- |
-| `src/lib/services.ts` | Re-exports `services` from `@parity/truapi/playground/services`, which the Rust codegen produces from rustdoc `ts` examples. Read-only. |
+| `src/lib/services.ts` | Filters the generated service metadata to APIs available to an `App` execution. Services requiring `Worker` are owned by the worker diagnosis instead. |
 | `src/lib/transport.ts` | Singleton `Provider`/`Transport`/`TrUApiClient` over iframe postMessage or webview MessagePort. Owns the handshake and connection status. |
 | `src/lib/example-runner.ts` | Transpiles each rustdoc `ts` example via sucrase, runs it inside an `AsyncFunction` with `truapi`, `console`, rxjs, and an ambient `assert` as bindings. Failure is explicit: an example fails iff it throws (via `assert(...)`, a timeout, or any uncaught error); `console.*` is pure output. A tracking Proxy auto-unsubscribes inner `.subscribe(...)` calls so subscriptions clean up when the run ends or the user navigates away. |
 | `src/lib/monaco-setup.ts` | Configures Monaco's TS worker: registers the bundled `@parity/truapi` types (`truapi-dts`), every rxjs `.d.ts`, and an ambient block (`declare const truapi: Client`, `assert`, `crypto`, `Uint8Array` hex helpers) so examples typecheck without manual imports. Defines the light/dark themes that match the design tokens. |
 | `src/lib/auto-test.ts` | Runs each method's example and reports pass / fail. A method passes when its example resolves within the timeout and fails when it throws (the thrown/`assert` message plus any logs become the failure output); unary and subscription examples are awaited identically. `runDiagnosis` runs every method one at a time, in service order; methods that prompt the user (signing, permission/resource requests) block on their host dialog before the run continues. `runSingleTest` replays one method (used by the Diagnosis row replay). |
-| `src/lib/diagnosis-report.ts` | Renders the diagnosis results as a copy-pasteable GitHub-flavoured markdown table: a `## Truapi <Web\|Desktop\|Android\|iOS> Diagnosis` title (host mode via `detectHostMode` — a native host (Electron UA or `__HOST_WEBVIEW_MARK__`) is split by user-agent into Desktop / Android / iOS, a browser iframe ⇒ Web) a `**N success · N failed**` summary line, and one row per method. Skipped methods are reported as failed (`❌`) with the skip reason in the Details column, so every truapi method stays in the compatibility matrix (the aggregator keeps only `✅`/`❌` cells). Deterministic for a given set of results (no timestamp). `renderReportMarkdown(…, { dropSuccessDetails })` emits a compact variant (success-row details blanked, failures kept) for the length-limited issue URL; `reportIssueUrl` caps the whole URL and falls back to a "paste from clipboard" body when a report is still too large. Consumed by the explorer's matrix aggregator. |
+| `src/lib/diagnosis-report.ts` | Adapts App results to the shared deterministic Markdown formatter and adds host-mode detection and issue submission. |
+| `shared/diagnosis.ts` | Framework-independent diagnosis result model and Markdown formatter shared by the App and Worker executables. |
+| `worker/index.ts` | Coordinates the Chat diagnosis over the generated Chat API, from a `Worker` execution. |
+| `worker/diagnosis.ts` | Owns ordered Chat-only result state and renders both Markdown and native custom-renderer trees. |
 | `src/lib/host-api-bridge.ts` | Just `stringify`, the JSON-with-bigint helper shared across components. |
 | `src/components/ExampleEditor.tsx` | Monaco editor wrapper. Auto-folds `// #region helpers` blocks on mount. |
 | `src/components/MethodView.tsx` | Per-method view: signature link to cargo doc, Example / Output tabs, status LED, Run / Stop buttons. Output is the example's `console.*` log; an explicit `assert`/error throw flips the LED to error and shows the thrown message. |
@@ -52,7 +58,7 @@ The Diagnosis screen emits a per-host markdown report via "Copy report". Aggrega
 
 ### Source of Truth for Methods
 
-`@parity/truapi/playground/services` is generated from the truapi crate's rustdoc JSON. Each method entry carries:
+`@parity/truapi/playground/services` is generated from the truapi crate's rustdoc JSON. Each service may carry `requiredExecution`, and each method entry carries:
 
 - `name`, `type` (`"unary"` or `"subscription"`)
 - `signature`: the TS-shaped method signature shown in the API panel

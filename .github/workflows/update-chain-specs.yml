@@ -1,0 +1,75 @@
+name: Refresh Chain Specs
+
+# Refresh the smoldot chain specs bundled in truapi-provider (fresh relay
+# lightSyncState checkpoints and genesis stateRootHash). The refresh only
+# reaches consumers after a new @parity/truapi-provider is published, so this
+# runs weekly rather than hourly.
+on:
+  schedule:
+    # Mondays at 00:00 UTC.
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      skip_bootnode_check:
+        description: "Skip bootnode health check (keep existing bootnodes)"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Update Chain Specs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6.0.0
+        with:
+          node-version: "22"
+
+      - name: Refresh chain specs
+        run: bash scripts/update-chain-specs.sh
+        env:
+          SKIP_BOOTNODE_CHECK: ${{ inputs.skip_bootnode_check == '' && 'true' || inputs.skip_bootnode_check }}
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet rust/crates/truapi-provider/networks/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          title: "chore(truapi-provider): refresh bundled chain specs"
+          body: |
+            Automated refresh of the smoldot chain specs bundled in truapi-provider.
+
+            This branch is force-pushed on every run, so the newest head can end up with no
+            checks attached even though earlier ones had them. If none are shown below, push an
+            empty commit before merging rather than assuming the suite passed.
+
+            If `every_catalog_genesis_hash_matches_its_bundled_spec` fails, a chain has been
+            re-genesised and its `genesis_hex` in `rust/crates/truapi-provider/src/networks.rs`
+            needs updating too. The refresh only rewrites the specs, never the catalog constants.
+            The failure names the network and service, and prints the hash the refreshed spec
+            derives to on the left and the stale catalog constant on the right. Copy the left one
+            into `networks.rs`, and update any consumer that pins the old hash.
+
+            Merging this publishes a dev snapshot of `@parity/truapi-provider` automatically
+            (dev-publish.yml triggers on chain-spec changes landing on main). Consumers still
+            need to bump to the new snapshot to pick up the refresh.
+          branch: auto/chain-spec-update
+          commit-message: "chore(truapi-provider): refresh bundled chain specs"
+          delete-branch: true
+          labels: dependencies

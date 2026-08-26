@@ -190,8 +190,8 @@ pub const CHAT_ACTION_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
     receive_id: 51,
 };
 
-/// Wire discriminants for `chat_custom_message_render_subscribe`.
-pub const CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE: SubscriptionFrameIds = SubscriptionFrameIds {
+/// Wire discriminants for `chat_custom_message_render`.
+pub const CHAT_CUSTOM_MESSAGE_RENDER: SubscriptionFrameIds = SubscriptionFrameIds {
     start_id: 52,
     stop_id: 53,
     interrupt_id: 54,
@@ -460,10 +460,46 @@ pub const COIN_PAYMENT_LISTEN_FOR_PAYMENT: SubscriptionFrameIds = SubscriptionFr
     receive_id: 163,
 };
 
-/// Wire discriminants for `system_host_info`.
-pub const SYSTEM_HOST_INFO: RequestFrameIds = RequestFrameIds {
+/// Wire discriminants for `account_sign_vrf`.
+pub const ACCOUNT_SIGN_VRF: RequestFrameIds = RequestFrameIds {
     request_id: 164,
     response_id: 165,
+};
+
+/// Wire discriminants for `chain_get_chain_info`.
+pub const CHAIN_GET_CHAIN_INFO: RequestFrameIds = RequestFrameIds {
+    request_id: 166,
+    response_id: 167,
+};
+
+/// Wire discriminants for `account_register_ring_vrf_key`.
+pub const ACCOUNT_REGISTER_RING_VRF_KEY: RequestFrameIds = RequestFrameIds {
+    request_id: 168,
+    response_id: 169,
+};
+
+/// Wire discriminants for `account_list_ring_vrf_keys`.
+pub const ACCOUNT_LIST_RING_VRF_KEYS: RequestFrameIds = RequestFrameIds {
+    request_id: 170,
+    response_id: 171,
+};
+
+/// Wire discriminants for `account_ring_vrf_sign`.
+pub const ACCOUNT_RING_VRF_SIGN: RequestFrameIds = RequestFrameIds {
+    request_id: 172,
+    response_id: 173,
+};
+
+/// Wire discriminants for `system_get_product_context`.
+pub const SYSTEM_GET_PRODUCT_CONTEXT: RequestFrameIds = RequestFrameIds {
+    request_id: 190,
+    response_id: 191,
+};
+
+/// Wire discriminants for `system_host_info`.
+pub const SYSTEM_HOST_INFO: RequestFrameIds = RequestFrameIds {
+    request_id: 192,
+    response_id: 193,
 };
 
 /// The full wire table. Ordering is part of the wire protocol;
@@ -562,8 +598,8 @@ pub const WIRE_TABLE: &[WireEntry] = &[
         kind: WireKind::Subscription(CHAT_ACTION_SUBSCRIBE),
     },
     WireEntry {
-        method: "chat_custom_message_render_subscribe",
-        kind: WireKind::Subscription(CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE),
+        method: "chat_custom_message_render",
+        kind: WireKind::Subscription(CHAT_CUSTOM_MESSAGE_RENDER),
     },
     WireEntry {
         method: "statement_store_subscribe",
@@ -724,6 +760,30 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "coin_payment_listen_for_payment",
         kind: WireKind::Subscription(COIN_PAYMENT_LISTEN_FOR_PAYMENT),
+    },
+    WireEntry {
+        method: "account_sign_vrf",
+        kind: WireKind::Request(ACCOUNT_SIGN_VRF),
+    },
+    WireEntry {
+        method: "chain_get_chain_info",
+        kind: WireKind::Request(CHAIN_GET_CHAIN_INFO),
+    },
+    WireEntry {
+        method: "account_register_ring_vrf_key",
+        kind: WireKind::Request(ACCOUNT_REGISTER_RING_VRF_KEY),
+    },
+    WireEntry {
+        method: "account_list_ring_vrf_keys",
+        kind: WireKind::Request(ACCOUNT_LIST_RING_VRF_KEYS),
+    },
+    WireEntry {
+        method: "account_ring_vrf_sign",
+        kind: WireKind::Request(ACCOUNT_RING_VRF_SIGN),
+    },
+    WireEntry {
+        method: "system_get_product_context",
+        kind: WireKind::Request(SYSTEM_GET_PRODUCT_CONTEXT),
     },
     WireEntry {
         method: "system_host_info",

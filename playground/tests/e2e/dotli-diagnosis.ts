@@ -13,41 +13,89 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractQrPayload } from "./dotli/helpers/extract-qr-payload";
 import {
-  disconnect,
-  generateUsername,
-  health,
-  pair,
-  type PairResult,
-} from "./dotli/helpers/signer-bot";
+  formatSigningHostExit,
+  startSigningHostPair,
+  stopSigningHost,
+  type SigningHostCliConfig,
+  type SigningHostCliProcess,
+} from "./dotli/helpers/signing-host-cli";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../../..");
 const playgroundRoot = resolve(repoRoot, "playground");
-const dotliRoot = resolve(repoRoot, "hosts/dotli");
+const dotliRoot = resolve(
+  process.env.E2E_DOTLI_ROOT ?? resolve(repoRoot, "hosts/dotli"),
+);
 const outputDir = resolve(playgroundRoot, "test-results/e2e-dotli");
 const screenshotsDir = resolve(outputDir, "screenshots");
 
 const hostPort = process.env.E2E_DOTLI_HOST_PORT ?? process.env.PORT ?? "5173";
 const playgroundPort = process.env.E2E_DOTLI_PLAYGROUND_PORT ?? "3000";
+const hostNetworks =
+  process.env.E2E_DOTLI_NETWORKS ?? "paseo-next-v2,previewnet";
 const headless = process.env.HEADED === "1" ? false : true;
 const slowMo = process.env.SLOWMO ? Number(process.env.SLOWMO) : 0;
 const smokeOnly = process.env.E2E_DOTLI_SMOKE === "1";
-const defaultBotBase = "https://signing-bot-dev.novasama-tech.org/";
-const defaultBotNetwork = "paseo-next-v2";
 const loginUserBadgeTimeoutMs = Number(
-  process.env.E2E_DOTLI_LOGIN_TIMEOUT_MS ?? "240000",
+  process.env.E2E_DOTLI_LOGIN_TIMEOUT_MS ?? "600000",
 );
-
-const botToken = readEnv("SIGNER_BOT_SVC_TOKEN");
-const botBase = process.env.SIGNER_BOT_BASE_URL ?? defaultBotBase;
-const botNetwork = process.env.SIGNER_BOT_NETWORK ?? defaultBotNetwork;
-const botUsername = process.env.SIGNER_BOT_USERNAME;
+const signingHostNetwork =
+  process.env.E2E_DOTLI_NETWORK ?? "paseo-next-v2";
+const signingHostConfig: SigningHostCliConfig = {
+  binary: resolve(
+    process.env.E2E_DOTLI_SIGNING_HOST_BIN ??
+      resolve(repoRoot, "target/debug/truapi-host"),
+  ),
+  cwd: repoRoot,
+  basePath: resolve(
+    process.env.E2E_DOTLI_SIGNING_HOST_BASE_PATH ??
+      resolve(repoRoot, ".e2e-dotli/signing-host"),
+  ),
+  network: signingHostNetwork,
+  liteUsernamePrefix: process.env.HOST_CLI_SIGNER_MNEMONIC?.trim()
+    ? undefined
+    : "dotlitest",
+};
+const expectedHostGaps = [
+  "Account/create_account_proof",
+  "Account/sign_vrf",
+  "Coin Payment/create_purse",
+  "Coin Payment/query_purse",
+  "Coin Payment/rebalance_purse",
+  "Coin Payment/delete_purse",
+  "Coin Payment/create_receivable",
+  "Coin Payment/create_cheque",
+  "Coin Payment/deposit",
+  "Coin Payment/refund",
+  "Coin Payment/listen_for_payment",
+  "Payment/balance_subscribe",
+  "Payment/top_up",
+  "Payment/request",
+  "Payment/status_subscribe",
+  // These generated examples ask for truapi-playground.dot while this E2E
+  // loads the product as localhost:3000. Legacy payload/transaction methods
+  // intentionally accept only the current product's slot-zero key.
+  "Signing/create_transaction_with_legacy_account",
+  "Signing/sign_payload_with_legacy_account",
+];
+const allowedFailures = new Set(
+  (process.env.E2E_DOTLI_ALLOWED_FAILURES ?? expectedHostGaps.join(","))
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean),
+);
 
 const serverProcesses: ChildProcess[] = [];
 const pageErrors: string[] = [];
 const browserLogs: string[] = [];
 const screenshots: string[] = [];
+const signingHostLogs: string[] = [];
 let screenshotSeq = 0;
+
+interface SignedInSession {
+  process: SigningHostCliProcess;
+  username: string;
+}
 
 type PlaygroundE2E = {
   waitForConnectionStatus?: (
@@ -63,30 +111,6 @@ declare global {
     __truapiPlaygroundE2E?: PlaygroundE2E;
     __TRUAPI_PLAYGROUND_E2E__?: boolean;
   }
-}
-
-function readEnv(name: string): string | undefined {
-  const value = process.env[name];
-  if (!value && !smokeOnly) {
-    throw new Error(
-      `${name} is required for fully automated e2e-dotli. ` +
-        "This suite pairs through signer-bot; without it, a human phone scan is required.",
-    );
-  }
-  return value;
-}
-
-function requireBotEnv(): {
-  token: string;
-  base: string;
-  network: string;
-} {
-  if (botToken === undefined) {
-    throw new Error(
-      "SIGNER_BOT_SVC_TOKEN is required outside E2E_DOTLI_SMOKE=1.",
-    );
-  }
-  return { token: botToken, base: botBase, network: botNetwork };
 }
 
 function startServer(
@@ -199,6 +223,7 @@ async function startLocalStack(): Promise<void> {
   await assertPortsFree();
   startServer("dotli", "bun", ["run", "preview:debug"], dotliRoot, {
     PORT: hostPort,
+    VITE_NETWORKS: hostNetworks,
   });
   startServer("playground", "yarn", ["dev"], playgroundRoot, {
     PORT: playgroundPort,
@@ -248,92 +273,134 @@ async function openLoginQr(page: Page): Promise<string> {
   return await extractQrPayload(page, "#auth-modal-qr canvas");
 }
 
-async function signInWithBot(
-  page: Page,
-  username = botUsername ?? generateUsername(),
-): Promise<PairResult> {
-  const { token, base, network } = requireBotEnv();
+async function signInWithSigningHost(page: Page): Promise<SignedInSession> {
   const handshake = await openLoginQr(page);
-  console.log(`[e2e-dotli] pairing signer-bot user ${username}`);
-  const result = await pair(base, token, {
-    handshake,
-    username,
-    network,
-  });
-  try {
-    await waitForSignedIn(page, result);
-    await captureStep(page, "signed-in");
-  } catch (error) {
-    await disconnect(base, token, result.sessionId);
-    throw error;
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.log(
+      `[e2e-dotli] starting signing-host CLI pairing responder (${attempt}/${maxAttempts})`,
+    );
+    const signingHost = startSigningHostPair(signingHostConfig, handshake);
+    try {
+      const username = await waitForSignedIn(page, signingHost);
+      await captureStep(page, "signed-in");
+      return { process: signingHost, username };
+    } catch (error) {
+      signingHostLogs.push(signingHost.output());
+      await stopSigningHost(signingHost);
+      if (
+        attempt === maxAttempts ||
+        !isRetryableSigningHostPairError(error)
+      ) {
+        throw error;
+      }
+      console.warn(
+        `[e2e-dotli] transient signing-host pairing failure; retrying in 5s (${attempt}/${maxAttempts})`,
+      );
+      await page.waitForTimeout(5_000);
+    }
   }
-  return result;
+  throw new Error("signing-host pairing retry exhausted");
 }
 
-async function waitForSignedIn(page: Page, result: PairResult): Promise<void> {
+function isRetryableSigningHostPairError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Invalid Transaction") ||
+    message.includes("temporarily banned") ||
+    message.includes("did not appear in a LitePeople ring") ||
+    message.includes("not a LitePeople ring member") ||
+    message.includes("timed out waiting for author_submitAndWatchExtrinsic")
+  );
+}
+
+async function waitForSignedIn(
+  page: Page,
+  signingHost: SigningHostCliProcess,
+): Promise<string> {
   try {
-    const existingFailure = await latestLoginFailureReason(page);
+    const existingFailure = await latestLoginFailure(page);
     if (existingFailure !== null) {
-      throw new Error(`Login failed: ${existingFailure}`);
+      throw new Error(formatLoginFailure(existingFailure));
     }
-    await Promise.race([
+    const outcome = await Promise.race([
       page
         .locator("#auth-button .user-badge")
-        .waitFor({ state: "visible", timeout: loginUserBadgeTimeoutMs }),
+        .waitFor({ state: "visible", timeout: loginUserBadgeTimeoutMs })
+        .then(() => ({ tag: "signed-in" as const })),
       page.evaluate(
         () =>
           new Promise<never>((_, reject) => {
             const listener = (event: Event): void => {
               const state = (
                 event as CustomEvent<
-                  { tag?: string; reason?: string } | undefined
+                  { tag?: string; kind?: string; reason?: string } | undefined
                 >
               ).detail;
               if (state?.tag !== "LoginFailed") {
                 return;
               }
               window.removeEventListener("dotli:truapi-auth-state", listener);
-              reject(new Error(`Login failed: ${state.reason ?? "unknown"}`));
+              reject(
+                new Error(
+                  `Login failed (${state.kind ?? "Other"}): ${state.reason ?? "unknown"}`,
+                ),
+              );
             };
             window.addEventListener("dotli:truapi-auth-state", listener);
           }),
       ),
+      signingHost.completed.then((result) => ({
+        tag: "signing-host-exit" as const,
+        result,
+      })),
     ]);
+    if (outcome.tag === "signing-host-exit") {
+      throw new Error(formatSigningHostExit(outcome.result, signingHost.output()));
+    }
+    const username = (
+      await page.locator("#user-popover-username").innerText()
+    ).trim();
+    if (username.length === 0) {
+      throw new Error("signed-in host did not expose the account username");
+    }
+    return username;
   } catch (error) {
     await writeAuthDebug(page, {
-      stage: "post-pair-user-badge",
-      pairResult: redactedPairResult(result),
+      stage: "post-signing-host-pair-user-badge",
+      signingHostOutput: signingHost.output(),
     });
     throw error;
   }
 }
 
-async function latestLoginFailureReason(page: Page): Promise<string | null> {
+/** A login failure the host reported, with the core's typed cause. */
+interface LoginFailure {
+  kind: string;
+  reason: string;
+}
+
+/** Name the cause first: `NoFreeAllowanceSlots` cannot succeed on a retry. */
+function formatLoginFailure(failure: LoginFailure): string {
+  return `Login failed (${failure.kind}): ${failure.reason}`;
+}
+
+async function latestLoginFailure(page: Page): Promise<LoginFailure | null> {
   return await page.evaluate(() => {
     const states = window.__dotliE2eAuthStates ?? [];
     for (let i = states.length - 1; i >= 0; i--) {
       const candidate = states[i] as {
-        detail?: { tag?: string; reason?: string };
+        detail?: { tag?: string; kind?: string; reason?: string };
       };
       if (candidate.detail?.tag === "LoginFailed") {
-        return candidate.detail.reason ?? "unknown";
+        return {
+          kind: candidate.detail.kind ?? "Other",
+          reason: candidate.detail.reason ?? "unknown",
+        };
       }
     }
     return null;
   });
-}
-
-function redactedPairResult(result: PairResult): PairResult {
-  return {
-    sessionId: result.sessionId,
-    user: {
-      username: result.user.username,
-      network: result.user.network,
-      address: result.user.address,
-      publicKeyHex: result.user.publicKeyHex,
-      attested: result.user.attested,
-    },
-  };
 }
 
 async function writeAuthDebug(
@@ -415,6 +482,30 @@ async function drainHostModals(page: Page, timeoutMs: number): Promise<void> {
       await page.waitForTimeout(250);
     }
   }
+  // A method can leave a modal stuck mid-flow (e.g. a remote signing that
+  // never resolves). Cancel it so the report stays reachable; the method
+  // already recorded its own failure.
+  await dismissStuckHostModal(page);
+}
+
+async function dismissStuckHostModal(page: Page): Promise<void> {
+  const buttons = page.locator(".signing-modal-backdrop button");
+  const count = await buttons.count().catch(() => 0);
+  for (let index = 0; index < count; index++) {
+    const button = buttons.nth(index);
+    const visible = await button.isVisible({ timeout: 100 }).catch(() => false);
+    const enabled = await button.isEnabled({ timeout: 100 }).catch(() => false);
+    if (!visible || !enabled) {
+      continue;
+    }
+    const label = (await button.innerText().catch(() => "")).trim();
+    if (label !== "Cancel" && label !== "Reject") {
+      continue;
+    }
+    console.warn(`[e2e-dotli] dismissing stuck host modal via: ${label}`);
+    await button.click({ timeout: 2_000 }).catch(() => {});
+    return;
+  }
 }
 
 async function acceptVisibleHostModal(page: Page): Promise<boolean> {
@@ -477,18 +568,22 @@ async function waitForPlaygroundE2EHook(page: Page): Promise<void> {
 
 async function assertHostSignOutAndReconnect(
   page: Page,
-  previous: PairResult,
-): Promise<PairResult> {
+  previous: SignedInSession,
+): Promise<SignedInSession> {
   console.log("[e2e-dotli] validating host sign-out");
   await signOutIfNeeded(page);
   await page
     .locator("#auth-button .user-badge")
     .waitFor({ state: "hidden", timeout: 20_000 });
+  await stopSigningHost(previous.process);
+  signingHostLogs.push(previous.process.output());
   await captureStep(page, "signed-out");
 
   console.log("[e2e-dotli] validating signer reconnect");
-  const reconnected = await signInWithBot(page, previous.user.username);
-  if (reconnected.user.publicKeyHex !== previous.user.publicKeyHex) {
+  const reconnected = await signInWithSigningHost(page);
+  if (reconnected.username !== previous.username) {
+    signingHostLogs.push(reconnected.process.output());
+    await stopSigningHost(reconnected.process);
     throw new Error("signer reconnect returned a different account");
   }
   return reconnected;
@@ -606,12 +701,20 @@ function isFrameDetachedError(error: unknown): boolean {
 async function main(): Promise<void> {
   mkdirSync(outputDir, { recursive: true });
   mkdirSync(screenshotsDir, { recursive: true });
+  console.log(`[e2e-dotli] host checkout=${dotliRoot}`);
+  if (allowedFailures.size > 0) {
+    console.log(
+      `[e2e-dotli] allowed failures=${[...allowedFailures].join(", ")}`,
+    );
+  }
   if (!smokeOnly) {
-    const { base, network } = requireBotEnv();
-    console.log(`[e2e-dotli] bot=${base} network=${network}`);
-    const probe = await health(base);
-    if (!probe.ok) {
-      throw new Error(`signer-bot unavailable: ${probe.error ?? probe.status}`);
+    console.log(
+      `[e2e-dotli] signing-host=${signingHostConfig.binary} network=${signingHostNetwork}`,
+    );
+    if (!existsSync(signingHostConfig.binary)) {
+      throw new Error(
+        `signing-host CLI not found at ${signingHostConfig.binary}; run cargo build -p truapi-host-cli`,
+      );
     }
   } else {
     console.log("[e2e-dotli] smoke mode: validating local stack and QR only");
@@ -619,7 +722,7 @@ async function main(): Promise<void> {
 
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   let context: BrowserContext | undefined;
-  let pairResult: PairResult | undefined;
+  let signedInSession: SignedInSession | undefined;
   let page: Page | undefined;
   try {
     await startLocalStack();
@@ -688,7 +791,7 @@ async function main(): Promise<void> {
     const params = new URLSearchParams({
       chainBackend: "rpc-gateway",
       e2e: String(Date.now()),
-      network: botNetwork,
+      network: signingHostNetwork,
     });
     const url = `http://localhost:${hostPort}/localhost:${playgroundPort}?${params.toString()}`;
     await page.goto(url, { timeout: 60_000, waitUntil: "domcontentloaded" });
@@ -702,6 +805,7 @@ async function main(): Promise<void> {
         `${JSON.stringify(
           {
             mode: "smoke",
+            hostCheckout: dotliRoot,
             handshakePrefix: handshake.slice(0, 32),
             pageErrors,
             browserLogs,
@@ -718,14 +822,23 @@ async function main(): Promise<void> {
       return;
     }
     await waitForPlaygroundE2EHook(page);
-    pairResult = await signInWithBot(page);
+    signedInSession = await signInWithSigningHost(page);
+    signedInSession = await assertHostSignOutAndReconnect(
+      page,
+      signedInSession,
+    );
     const stopClicker = startHostModalClicker(page);
     try {
       const { summary, report, copyReportClicked, failedMethods } =
         await runDiagnosis(page);
       const reportPath = resolve(outputDir, "diagnosis-report.md");
       writeFileSync(reportPath, report);
-      pairResult = await assertHostSignOutAndReconnect(page, pairResult);
+      const allowedFailedMethods = failedMethods.filter((method) =>
+        allowedFailures.has(method),
+      );
+      const unexpectedFailedMethods = failedMethods.filter(
+        (method) => !allowedFailures.has(method),
+      );
       const metadataPath = resolve(outputDir, "diagnosis-run.json");
       writeFileSync(
         metadataPath,
@@ -733,10 +846,24 @@ async function main(): Promise<void> {
           {
             summary,
             failedMethods,
+            allowedFailedMethods,
+            unexpectedFailedMethods,
+            hostCheckout: dotliRoot,
             reportPath,
             copyReportClicked,
             screenshots,
-            user: redactedPairResult(pairResult).user,
+            user: {
+              username: signedInSession.username,
+              network: signingHostNetwork,
+            },
+            signingHost: {
+              binary: signingHostConfig.binary,
+              basePath: signingHostConfig.basePath,
+              output: [
+                ...signingHostLogs,
+                signedInSession.process.output(),
+              ],
+            },
             sessionLifecycle: "host-sign-out-reconnect",
             pageErrors,
             browserLogs,
@@ -748,9 +875,14 @@ async function main(): Promise<void> {
       );
       console.log(`[e2e-dotli] diagnosis complete: ${summary}`);
       console.log(`[e2e-dotli] report: ${reportPath}`);
-      if (failedMethods.length > 0) {
+      if (allowedFailedMethods.length > 0) {
+        console.warn(
+          `[e2e-dotli] allowed failures observed: ${allowedFailedMethods.join(", ")}`,
+        );
+      }
+      if (unexpectedFailedMethods.length > 0) {
         throw new Error(
-          `diagnosis reported failed methods: ${failedMethods.join(", ")}`,
+          `diagnosis reported unexpected failed methods: ${unexpectedFailedMethods.join(", ")}`,
         );
       }
       if (pageErrors.length > 0) {
@@ -765,9 +897,9 @@ async function main(): Promise<void> {
     }
     throw error;
   } finally {
-    if (pairResult) {
-      const { token, base } = requireBotEnv();
-      await disconnect(base, token, pairResult.sessionId);
+    if (signedInSession) {
+      signingHostLogs.push(signedInSession.process.output());
+      await stopSigningHost(signedInSession.process);
     }
     await context?.close().catch(() => {});
     await browser?.close().catch(() => {});

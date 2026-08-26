@@ -14,30 +14,29 @@ jobs:
     if: github.event.pull_request.user.login != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      # ── Check that the RFC document exists ──
-      - name: Require RFC document
+      # ── A new RFC must land with the interfaces it specifies ──
+      # Edits to an already-accepted RFC (addenda recording what the host
+      # actually does) are not gated: they describe behavior that often lives
+      # entirely in the runtime crates.
+      - name: Require truapi interface changes for new RFCs
         run: |
           BASE=${{ github.event.pull_request.base.sha }}
-          RFC_CHANGED=$(git diff --name-only "$BASE"...HEAD -- docs/rfcs/)
-          if [ -z "$RFC_CHANGED" ]; then
-            echo "::error::RFC PRs must include an RFC document in docs/rfcs/."
-            exit 1
+          NEW_RFCS=$(git diff --name-only --diff-filter=A "$BASE"...HEAD -- docs/rfcs/ ':!docs/rfcs/_index.md')
+          if [ -z "$NEW_RFCS" ]; then
+            echo "No new RFC documents; nothing to gate."
+            exit 0
           fi
-          echo "RFC changes detected:"
-          echo "$RFC_CHANGED"
+          echo "New RFCs:"
+          echo "$NEW_RFCS"
 
-      # ── Check that truapi interfaces are updated ──
-      - name: Require truapi interface changes
-        run: |
-          BASE=${{ github.event.pull_request.base.sha }}
           API_CHANGED=$(git diff --name-only "$BASE"...HEAD -- rust/crates/truapi/)
           if [ -z "$API_CHANGED" ]; then
-            echo "::error::RFC PRs must include corresponding changes to the truapi interfaces in rust/crates/truapi/."
+            echo "::error::PRs adding an RFC must include corresponding changes to the truapi interfaces in rust/crates/truapi/."
             exit 1
           fi
           echo "API changes detected:"

@@ -13,6 +13,7 @@ use crate::wire;
 use crate::{CallContext, CallError, Subscription};
 
 /// Statement store methods.
+#[crate::async_trait]
 pub trait StatementStore: Send + Sync {
     /// Subscribe to statements matching a topic filter.
     ///
@@ -37,18 +38,23 @@ pub trait StatementStore: Send + Sync {
     /// assert(submitted.isOk(), "failed to submit statement:", submitted);
     /// console.log("statement submitted");
     ///
-    /// const page = await firstValueFrom(
-    ///   from(
-    ///     truapi.statementStore.subscribe({
-    ///       request: { tag: "MatchAll", value: [topic] },
-    ///     }),
-    ///   ),
-    /// );
-    /// assert(
-    ///   page.statements.some((item) => item.topics.includes(topic)),
-    ///   "subscription did not return the submitted statement:",
-    ///   page,
-    /// );
+    /// const waitForStatement = async () => {
+    ///   for (let attempt = 0; attempt < 15; attempt++) {
+    ///     const page = await firstValueFrom(
+    ///       from(
+    ///         truapi.statementStore.subscribe({
+    ///           request: { tag: "MatchAll", value: [topic] },
+    ///         }),
+    ///       ),
+    ///     );
+    ///     if (page.statements.some((item) => item.topics.includes(topic))) {
+    ///       return page;
+    ///     }
+    ///     await new Promise((resolve) => setTimeout(resolve, 1_000));
+    ///   }
+    ///   throw new Error("submitted statement was not visible after 15 seconds");
+    /// };
+    /// const page = await waitForStatement();
     /// console.log("subscribe received", page);
     /// ```
     #[wire(start_id = 56)]
@@ -71,6 +77,9 @@ pub trait StatementStore: Send + Sync {
     /// when their signing channel cannot sign statement proof payloads exactly.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// // Expiry packs a Unix-seconds timestamp in the high 32 bits; a day out
     /// // keeps the statement unexpired when it is submitted.
     /// const expiry = BigInt(Math.floor(Date.now() / 1000) + 86400) << 32n;
@@ -79,8 +88,8 @@ pub trait StatementStore: Send + Sync {
     /// const statement = { expiry, topics: [topic] };
     /// const result = await truapi.statementStore.createProof({
     ///   productAccountId: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
-    ///     derivationIndex: 0,
+    ///     dotNsIdentifier: productContext.value.productId,
+    ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   statement,
     /// });

@@ -5,17 +5,17 @@
 //! without knowing where the key material lives.
 
 use async_trait::async_trait;
-use core::fmt;
-use core::time::Duration;
 use std::sync::Arc;
 use truapi::latest::{
     AccountId, HostAccountCreateProofResponse, HostAccountGetAliasResponse,
-    HostCreateTransactionResponse, HostRequestResourceAllocationRequest,
-    HostRequestResourceAllocationResponse, HostSignPayloadRequest, HostSignPayloadResponse,
-    HostSignPayloadWithLegacyAccountRequest, HostSignRawRequest,
-    HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload, ProductAccountId,
-    ProductAccountTxPayload, ProductProofContext, RingLocation,
+    HostAccountListRingVrfKeysResponse, HostAccountRegisterRingVrfKeyResponse,
+    HostAccountRingVrfSignResponse, HostCreateTransactionResponse,
+    HostRequestResourceAllocationRequest, HostRequestResourceAllocationResponse,
+    HostSignPayloadRequest, HostSignPayloadResponse, HostSignPayloadWithLegacyAccountRequest,
+    HostSignRawRequest, HostSignRawWithLegacyAccountRequest, LegacyAccountTxPayload,
+    ProductAccountId, ProductAccountTxPayload, ProductProofContext, RingLocation,
 };
+use truapi::v01::{HostAccountSignVrfRequest, VrfSignature};
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, CancellationReason};
 use truapi_platform::ProductContext;
@@ -35,6 +35,7 @@ pub(crate) struct BulletinAllowanceKey {
 }
 
 impl BulletinAllowanceKey {
+    /// Wrap a 64-byte sr25519 secret; other lengths are `Unavailable`.
     pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
         let secret: [u8; 64] =
             secret
@@ -48,11 +49,37 @@ impl BulletinAllowanceKey {
         Ok(Self { secret })
     }
 
+    /// Raw secret for the in-core Bulletin signer.
     pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
         &self.secret
     }
 }
 
+/// Persisted AutoSigning capability for one hard product subtree.
+#[derive(Clone, zeroize::Zeroize, zeroize::ZeroizeOnDrop, derive_more::Debug)]
+pub(crate) struct AutoSigningKey {
+    #[debug("\"<redacted>\"")]
+    secret: [u8; 64],
+    #[debug("\"<redacted>\"")]
+    ring_vrf_domain_entropy: [u8; 32],
+}
+
+impl AutoSigningKey {
+    pub(crate) fn from_parts(secret: [u8; 64], ring_vrf_domain_entropy: [u8; 32]) -> Self {
+        Self {
+            secret,
+            ring_vrf_domain_entropy,
+        }
+    }
+
+    pub(crate) fn as_secret_bytes(&self) -> &[u8; 64] {
+        &self.secret
+    }
+
+    pub(crate) fn ring_vrf_domain_entropy(&self) -> &[u8; 32] {
+        &self.ring_vrf_domain_entropy
+    }
+}
 /// Snapshot of an account-authority session selected by the authority.
 ///
 /// This is the neutral session projection product runtimes can use while
@@ -64,15 +91,16 @@ pub(crate) struct AuthoritySession {
     pub public_key: [u8; 32],
     /// Identity account resolved from the signing host, when available.
     pub identity_account_id: Option<[u8; 32]>,
-    /// Lightweight username resolved from People-chain identity, when available.
+    /// Lightweight username resolved from the dotNS contracts on Asset Hub, when available.
     pub lite_username: Option<String>,
-    /// Fully qualified username resolved from People-chain identity, when available.
+    /// Fully qualified username resolved from the dotNS contracts on Asset Hub, when available.
     pub full_username: Option<String>,
     /// Opaque session token used to reject stale pre-confirmation snapshots.
     pub validation_id: Vec<u8>,
 }
 
 impl AuthoritySession {
+    /// Project the neutral snapshot out of a concrete session.
     pub(crate) fn from_session_info(info: &SessionInfo, validation_id: Vec<u8>) -> Self {
         Self {
             public_key: info.public_key,
@@ -83,6 +111,7 @@ impl AuthoritySession {
         }
     }
 
+    /// Preferred display username: full over lite, skipping empty values.
     pub(crate) fn primary_username(&self) -> Option<&str> {
         self.full_username
             .as_deref()
@@ -119,64 +148,35 @@ pub(crate) enum AuthorityError {
     Unknown { reason: String },
 }
 
-impl AuthorityError {
-    pub(crate) fn reason(self) -> String {
-        self.to_string()
-    }
-}
-
 impl From<AuthorityError> for RingVrfError {
     fn from(err: AuthorityError) -> Self {
         match err {
             AuthorityError::Rejected => RingVrfError::Rejected,
             other => RingVrfError::Unknown {
-                reason: other.reason(),
+                reason: other.to_string(),
             },
         }
     }
 }
 
 /// Cancellation cause for an account-authority call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, derive_more::Display)]
+#[display(
+    "Account authority request {reason}{}",
+    if request_id.is_empty() { String::new() } else { format!(" for {request_id}") }
+)]
 pub(crate) struct AuthorityCancelError {
     request_id: String,
     reason: CancellationReason,
 }
 
 impl AuthorityCancelError {
+    /// Cancellation attributed to the request it interrupted.
     pub(crate) fn new(request_id: &str, reason: CancellationReason) -> Self {
         Self {
             request_id: request_id.to_string(),
             reason,
         }
-    }
-}
-
-impl fmt::Display for AuthorityCancelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let request = if self.request_id.is_empty() {
-            String::new()
-        } else {
-            format!(" for {}", self.request_id)
-        };
-        match &self.reason {
-            CancellationReason::Cancelled => {
-                write!(f, "Account authority request cancelled{request}")
-            }
-            CancellationReason::TimedOut { timeout } => write!(
-                f,
-                "Account authority request timed out after {}{request}",
-                format_timeout_duration(*timeout)
-            ),
-        }
-    }
-}
-
-fn format_timeout_duration(duration: Duration) -> String {
-    if duration.subsec_millis() == 0 {
-        format!("{}s", duration.as_secs())
-    } else {
-        format!("{}ms", duration.as_millis())
     }
 }
 
@@ -220,40 +220,83 @@ pub(crate) enum CreateTransactionAuthorityRequest {
         /// Original legacy-account transaction request.
         request: LegacyAccountTxPayload,
     },
+    /// Create a transaction with the active wallet's identity account.
+    IdentityAccount(LegacyAccountTxPayload),
 }
 
-/// Contextual-alias request forwarded to the account authority (RFC 0004).
+/// Contextual-alias request forwarded to the account authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AccountAliasAuthorityRequest {
     /// Calling product, so the Account Holder can scope context derivation.
     pub calling_product_id: String,
+    /// Explicit ring-VRF key handle.
+    pub key_handle: ProductAccountId,
     /// Product-scoped context the derived alias is bound to.
     pub context: ProductProofContext,
-    /// Ring whose member key the Account Holder selects.
+    /// Ring the explicit key must be registered for.
     pub ring_location: RingLocation,
 }
 
-/// Ring-VRF proof request forwarded to the account authority (RFC 0004).
+/// Ring-VRF proof request forwarded to the account authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CreateProofAuthorityRequest {
     /// Calling product, so the Account Holder can scope context derivation.
     pub calling_product_id: String,
+    /// Explicit ring-VRF key handle.
+    pub key_handle: ProductAccountId,
     /// Product-scoped context the derived alias is bound to.
     pub context: ProductProofContext,
-    /// Ring whose member key the Account Holder selects.
+    /// Ring the explicit key must be registered for.
     pub ring_location: RingLocation,
     /// Opaque message bound into the proof.
+    pub message: Vec<u8>,
+}
+
+/// Ring-VRF key registration request forwarded to the account authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RegisterRingVrfKeyAuthorityRequest {
+    /// Calling product that owns the key.
+    pub calling_product_id: String,
+    /// Key derivation index within the caller's ring-VRF domain.
+    pub index: truapi::v01::DerivationIndex,
+    /// Declared ring for the key.
+    pub ring: RingLocation,
+}
+
+/// Ring-VRF key listing request forwarded to the account authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ListRingVrfKeysAuthorityRequest {
+    /// Calling product requesting the list.
+    pub calling_product_id: String,
+    /// Owner product whose entries should be listed.
+    pub owner: String,
+    /// Disclosure requested by the caller.
+    pub disclosure: truapi::v01::RingVrfKeyDisclosure,
+}
+
+/// Direct ring-VRF member-key signing request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RingVrfSignAuthorityRequest {
+    /// Calling product requesting the signature.
+    pub calling_product_id: String,
+    /// Registered key handle.
+    pub key_handle: ProductAccountId,
+    /// Message to sign.
     pub message: Vec<u8>,
 }
 
 /// Statement-store allowance signing material held by the authority layer.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct StatementStoreAllowanceKey {
+    /// sr25519 secret used to sign allowance statements.
     pub(crate) secret: [u8; 64],
+    /// Public key derived from `secret`.
     pub(crate) public_key: [u8; 32],
 }
 
 impl StatementStoreAllowanceKey {
+    /// Wrap a 64-byte sr25519 secret and derive its public key; other lengths
+    /// are `Unavailable`.
     pub(crate) fn from_secret_bytes(secret: Vec<u8>) -> Result<Self, AuthorityError> {
         let secret: [u8; 64] =
             secret
@@ -286,6 +329,16 @@ pub(crate) trait ProductAuthority: Send + Sync {
     /// concrete authority keeps ownership of the actual session material.
     fn session_state(&self) -> Arc<SessionState>;
 
+    /// Seed a paired product subtree in unit tests that exercise later authority calls.
+    #[cfg(test)]
+    fn cache_product_subtree_for_test(
+        &self,
+        _session: &SessionInfo,
+        _product_id: &str,
+        _public_key: [u8; 32],
+    ) {
+    }
+
     /// Request account connection for the calling product.
     async fn request_login(
         &self,
@@ -300,6 +353,37 @@ pub(crate) trait ProductAuthority: Send + Sync {
     async fn refresh_session_identity(&self) -> Option<AuthoritySession> {
         self.current_session()
     }
+
+    /// Return the public key of `//product//{product_id}`.
+    ///
+    /// Pairing hosts obtain this consent-free value from the Account Holder;
+    /// signing hosts derive it locally from root entropy.
+    async fn product_subtree_public_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        product_id: String,
+    ) -> Result<[u8; 32], AuthorityError>;
+
+    /// Whether resolving `product_id`'s subtree would reach the Account Holder
+    /// over SSO rather than resolve locally. Gates a host consent prompt: a
+    /// pairing host returns `true` only on a cold cache; a signing host derives
+    /// locally and returns `false`. Required rather than defaulted, so a new
+    /// authority cannot skip the consent gate by omission.
+    async fn subtree_resolution_reaches_account_holder(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+    ) -> bool;
+
+    /// Sign an RFC-0023 Merlin transcript with a product account.
+    async fn sign_vrf(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        calling_product_id: String,
+        request: HostAccountSignVrfRequest,
+    ) -> Result<VrfSignature, AuthorityError>;
 
     /// Sign a SCALE transaction payload for a product account.
     async fn sign_payload(
@@ -317,7 +401,8 @@ pub(crate) trait ProductAuthority: Send + Sync {
         request: SignRawAuthorityRequest,
     ) -> Result<HostSignPayloadResponse, AuthorityError>;
 
-    /// Build and sign a transaction for a product account.
+    /// Build a transaction for a product account, signed unless the request
+    /// supplies its own V5 `VerifyMultiSignature` extension.
     async fn create_transaction(
         &self,
         cx: &CallContext,
@@ -325,9 +410,9 @@ pub(crate) trait ProductAuthority: Send + Sync {
         request: CreateTransactionAuthorityRequest,
     ) -> Result<HostCreateTransactionResponse, AuthorityError>;
 
-    /// Derive a product-scoped contextual alias for a ring (RFC 0004).
+    /// Derive a product-scoped contextual alias for an explicit registered key.
     ///
-    /// The Account Holder selects the member key for `ring_location` and derives
+    /// The Account Holder resolves `key_handle` from the registry and derives
     /// the alias bound to `context`; `create_proof` derives the same alias.
     async fn account_alias(
         &self,
@@ -336,16 +421,40 @@ pub(crate) trait ProductAuthority: Send + Sync {
         request: AccountAliasAuthorityRequest,
     ) -> Result<HostAccountGetAliasResponse, RingVrfError>;
 
-    /// Create a ring-VRF proof bound to a context and message (RFC 0004).
+    /// Create a ring-VRF proof bound to a context and message.
     ///
-    /// Uses the same ring resolution and member-key selection as `account_alias`,
-    /// so the returned `contextual_alias` matches that method's output.
+    /// Uses the request's explicit registered key, so the returned
+    /// `contextual_alias` matches `account_alias` for the same inputs.
     async fn create_proof(
         &self,
         cx: &CallContext,
         session: &AuthoritySession,
         request: CreateProofAuthorityRequest,
     ) -> Result<HostAccountCreateProofResponse, RingVrfError>;
+
+    /// Register a ring-VRF key owned by the calling product.
+    async fn register_ring_vrf_key(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: RegisterRingVrfKeyAuthorityRequest,
+    ) -> Result<HostAccountRegisterRingVrfKeyResponse, RingVrfError>;
+
+    /// List registered ring-VRF keys.
+    async fn list_ring_vrf_keys(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: ListRingVrfKeysAuthorityRequest,
+    ) -> Result<HostAccountListRingVrfKeysResponse, RingVrfError>;
+
+    /// Sign bytes directly with a registered ring-VRF key.
+    async fn ring_vrf_sign(
+        &self,
+        cx: &CallContext,
+        session: &AuthoritySession,
+        request: RingVrfSignAuthorityRequest,
+    ) -> Result<HostAccountRingVrfSignResponse, RingVrfError>;
 
     /// Ask the account authority to allocate product-scoped resources.
     async fn allocate_resources(

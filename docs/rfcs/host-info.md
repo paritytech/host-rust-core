@@ -61,7 +61,7 @@ Add to the `System` trait (`rust/crates/truapi/src/api/system.rs`):
 
 ```rust
 /// Report the host's identity and version.
-#[wire(request_id = 164)]
+#[wire(request_id = 192)]
 async fn host_info(
     &self,
     cx: &CallContext,

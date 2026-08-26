@@ -1,6 +1,6 @@
 import { Observable } from "rxjs";
 import { err, ok, type Result } from "neverthrow";
-import { PASEO_NEXT_V2_INDIVIDUALITY } from "@parity/truapi";
+import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
 import {
   AccountId,
   Blake2128Concat,
@@ -51,7 +51,10 @@ export type BuildCreateTransactionPayload = (opts: {
   callData: HexString;
 }) => Promise<Result<ProductAccountTxPayload, Error>>;
 
-const usernameOwnerOfStorage = Storage("Resources")("UsernameOwnerOf", [
+// Lite usernames are keyed by their dotted label ("alice.01") on the Asset
+// Hub gateway pallet. Full-person ownership lives contract-side as H160 only.
+// Name→account resolution therefore covers lite usernames.
+const liteLabelOwnerStorage = Storage("DotnsGateway")("LiteLabelOwner", [
   Bytes(),
   Blake2128Concat,
 ]);
@@ -113,92 +116,104 @@ export function createAccountIdForDotNsUsername(
       return err(new Error("DotNS username is empty"));
     }
 
-    const key = usernameOwnerOfStorage.enc(
+    const key = liteLabelOwnerStorage.enc(
       new TextEncoder().encode(dotNsUsername),
     ) as HexString;
 
     return new Promise<Result<HexString, Error>>((resolve) => {
       let operationId: string | null = null;
+      let settled = false;
+      let eventQueue = Promise.resolve();
+      const fail = (reason: unknown) => {
+        if (settled) return;
+        settled = true;
+        sub.unsubscribe();
+        resolve(err(toError(reason)));
+      };
+      const succeed = (account: HexString) => {
+        if (settled) return;
+        settled = true;
+        sub.unsubscribe();
+        resolve(ok(account));
+      };
+      const handleItem = async (item: RemoteChainHeadFollowItem) => {
+        switch (item.tag) {
+          case "Initialized": {
+            const result = await truapi.chain.getHeadStorage({
+              genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+              followSubscriptionId: sub.subscriptionId,
+              hash: item.value.finalizedBlockHashes[0],
+              items: [{ key, queryType: "Value" }],
+            });
+            if (result.isErr()) {
+              fail(result.error);
+              return;
+            }
+            if (result.value.operation.tag !== "Started") {
+              fail(new Error("getHeadStorage operation limit reached"));
+              return;
+            }
+            operationId = result.value.operation.value.operationId;
+            return;
+          }
+          case "OperationStorageItems":
+            if (item.value.operationId === operationId) {
+              const account = findStorageValue(item.value.items, key);
+              if (!account) {
+                fail(`No account owns DotNS username "${dotNsUsername}"`);
+                return;
+              }
+              succeed(account);
+            }
+            return;
+          case "OperationStorageDone":
+            if (item.value.operationId === operationId) {
+              fail(`No account owns DotNS username "${dotNsUsername}"`);
+            }
+            return;
+          case "OperationError":
+            if (item.value.operationId === operationId) {
+              fail(`getHeadStorage failed: ${item.value.error}`);
+            }
+            return;
+          case "OperationInaccessible":
+            if (item.value.operationId === operationId) {
+              fail("getHeadStorage operation inaccessible");
+            }
+            return;
+          case "Stop":
+            fail(
+              "chain head subscription stopped before username lookup finished",
+            );
+            return;
+        }
+      };
       const sub = truapi.chain
         .followHeadSubscribe({
           request: {
-            genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
+            genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
             withRuntime: false,
           },
         })
         .subscribe({
-          next: async (item) => {
-            const fail = (reason: unknown) => {
-              sub.unsubscribe();
-              resolve(err(toError(reason)));
-            };
-
-            try {
-              switch (item.tag) {
-                case "Initialized": {
-                  const result = await truapi.chain.getHeadStorage({
-                    genesisHash: PASEO_NEXT_V2_INDIVIDUALITY.genesis,
-                    followSubscriptionId: sub.subscriptionId,
-                    hash: item.value.finalizedBlockHashes[0],
-                    items: [{ key, queryType: "Value" }],
-                  });
-                  if (result.isErr()) {
-                    fail(result.error);
-                    return;
-                  }
-                  if (result.value.operation.tag !== "Started") {
-                    fail(new Error("getHeadStorage operation limit reached"));
-                    return;
-                  }
-                  operationId = result.value.operation.value.operationId;
-                  return;
-                }
-                case "OperationStorageItems":
-                  if (item.value.operationId === operationId) {
-                    const account = findStorageValue(item.value.items, key);
-                    if (!account) {
-                      fail(`No account owns DotNS username "${dotNsUsername}"`);
-                      return;
-                    }
-                    sub.unsubscribe();
-                    resolve(ok(account));
-                  }
-                  return;
-                case "OperationStorageDone":
-                  if (item.value.operationId === operationId) {
-                    fail(`No account owns DotNS username "${dotNsUsername}"`);
-                  }
-                  return;
-                case "OperationError":
-                  if (item.value.operationId === operationId) {
-                    fail(`getHeadStorage failed: ${item.value.error}`);
-                  }
-                  return;
-                case "OperationInaccessible":
-                  if (item.value.operationId === operationId) {
-                    fail("getHeadStorage operation inaccessible");
-                  }
-                  return;
-                case "Stop":
-                  fail(
-                    "chain head subscription stopped before username lookup finished",
-                  );
-                  return;
-              }
-            } catch (error) {
-              sub.unsubscribe();
-              resolve(err(toError(error)));
-            }
+          next: (item) => {
+            // RxJS does not await async `next` handlers. Serialize follow
+            // events so storage items cannot overtake the unary response that
+            // tells us which operation ID to match.
+            eventQueue = eventQueue
+              .then(() => handleItem(item))
+              .catch((error) => fail(error));
           },
-          error: (error) => resolve(err(toError(error))),
-          complete: () =>
-            resolve(
-              err(
+          error: (error) => fail(error),
+          complete: () => {
+            eventQueue = eventQueue.then(() =>
+              fail(
                 new Error(
                   "chain head subscription completed before username lookup finished",
                 ),
               ),
-            ),
+            );
+          },
         });
     });
   };

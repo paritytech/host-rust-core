@@ -12,10 +12,14 @@ import type { ChainConnect } from "../runtime.js";
 
 export const CALLBACK_NAMES = [
   "authStateChanged",
+  "createChatRoom",
+  "registerChatBot",
+  "postChatMessage",
   "readCoreStorage",
   "writeCoreStorage",
   "clearCoreStorage",
   "featureSupported",
+  "supportedChains",
   "navigateTo",
   "pushNotification",
   "cancelNotification",
@@ -28,7 +32,11 @@ export const CALLBACK_NAMES = [
 ] as const;
 export type CallbackName = (typeof CALLBACK_NAMES)[number];
 
-export const SUBSCRIPTION_NAMES = ["lookupPreimage", "subscribeTheme"] as const;
+export const SUBSCRIPTION_NAMES = [
+  "subscribeChatRooms",
+  "lookupPreimage",
+  "subscribeTheme",
+] as const;
 export type SubscriptionName = (typeof SUBSCRIPTION_NAMES)[number];
 
 export interface WorkerCallbackBridge {
@@ -47,66 +55,91 @@ export interface WorkerCallbackBridge {
 
 function rawCallbacks(
   bridge: WorkerCallbackBridge,
-): Required<Pick<RawCallbacks, CallbackName>> {
+): Required<
+  Pick<
+    RawCallbacks,
+    | "authStateChanged"
+    | "readCoreStorage"
+    | "writeCoreStorage"
+    | "clearCoreStorage"
+    | "featureSupported"
+    | "supportedChains"
+    | "navigateTo"
+    | "pushNotification"
+    | "cancelNotification"
+    | "devicePermission"
+    | "remotePermission"
+    | "read"
+    | "write"
+    | "clear"
+    | "confirmUserAction"
+  >
+> {
   return {
     authStateChanged: (state) =>
       void bridge.callbackRequest("authStateChanged", [state]).catch(() => {}),
     readCoreStorage: (key) =>
       bridge.callbackRequest("readCoreStorage", [key]) as ReturnType<
-        RawCallbacks["readCoreStorage"]
+        Required<RawCallbacks>["readCoreStorage"]
       >,
     writeCoreStorage: (key, value) =>
       bridge.callbackRequest("writeCoreStorage", [key, value]) as ReturnType<
-        RawCallbacks["writeCoreStorage"]
+        Required<RawCallbacks>["writeCoreStorage"]
       >,
     clearCoreStorage: (key) =>
       bridge.callbackRequest("clearCoreStorage", [key]) as ReturnType<
-        RawCallbacks["clearCoreStorage"]
+        Required<RawCallbacks>["clearCoreStorage"]
       >,
     featureSupported: (request) =>
       bridge.callbackRequest("featureSupported", [request]) as ReturnType<
-        RawCallbacks["featureSupported"]
+        Required<RawCallbacks>["featureSupported"]
+      >,
+    supportedChains: () =>
+      bridge.callbackRequest("supportedChains", []) as ReturnType<
+        Required<RawCallbacks>["supportedChains"]
       >,
     navigateTo: (url) =>
       bridge.callbackRequest("navigateTo", [url]) as ReturnType<
-        RawCallbacks["navigateTo"]
+        Required<RawCallbacks>["navigateTo"]
       >,
     pushNotification: (notification) =>
       bridge.callbackRequest("pushNotification", [notification]) as ReturnType<
-        RawCallbacks["pushNotification"]
+        Required<RawCallbacks>["pushNotification"]
       >,
     cancelNotification: (id) =>
       bridge.callbackRequest("cancelNotification", [id]) as ReturnType<
-        RawCallbacks["cancelNotification"]
+        Required<RawCallbacks>["cancelNotification"]
       >,
     devicePermission: (request) =>
       bridge.callbackRequest("devicePermission", [request]) as ReturnType<
-        RawCallbacks["devicePermission"]
+        Required<RawCallbacks>["devicePermission"]
       >,
     remotePermission: (request) =>
       bridge.callbackRequest("remotePermission", [request]) as ReturnType<
-        RawCallbacks["remotePermission"]
+        Required<RawCallbacks>["remotePermission"]
       >,
     read: (key) =>
-      bridge.callbackRequest("read", [key]) as ReturnType<RawCallbacks["read"]>,
+      bridge.callbackRequest("read", [key]) as ReturnType<
+        Required<RawCallbacks>["read"]
+      >,
     write: (key, value) =>
       bridge.callbackRequest("write", [key, value]) as ReturnType<
-        RawCallbacks["write"]
+        Required<RawCallbacks>["write"]
       >,
     clear: (key) =>
       bridge.callbackRequest("clear", [key]) as ReturnType<
-        RawCallbacks["clear"]
+        Required<RawCallbacks>["clear"]
       >,
     confirmUserAction: (review) =>
       bridge.callbackRequest("confirmUserAction", [review]) as ReturnType<
-        RawCallbacks["confirmUserAction"]
+        Required<RawCallbacks>["confirmUserAction"]
       >,
   };
 }
 
 function subscriptionRawCallbacks(
   bridge: WorkerCallbackBridge,
-): Required<Pick<RawCallbacks, SubscriptionName>> {
+): Required<Pick<RawCallbacks, "lookupPreimage" | "subscribeTheme">> {
   return {
     lookupPreimage: (key, sendItem, sendError) =>
       bridge.startSubscription("lookupPreimage", key, sendItem, sendError),
@@ -115,14 +148,63 @@ function subscriptionRawCallbacks(
   };
 }
 
+function chatRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<
+  Pick<
+    RawCallbacks,
+    | "createChatRoom"
+    | "registerChatBot"
+    | "postChatMessage"
+    | "subscribeChatRooms"
+  >
+> {
+  return {
+    createChatRoom: (product, request) =>
+      bridge.callbackRequest("createChatRoom", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["createChatRoom"]>,
+    registerChatBot: (product, request) =>
+      bridge.callbackRequest("registerChatBot", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["registerChatBot"]>,
+    postChatMessage: (product, request) =>
+      bridge.callbackRequest("postChatMessage", [
+        product,
+        request,
+      ]) as ReturnType<Required<RawCallbacks>["postChatMessage"]>,
+    subscribeChatRooms: (product, sendItem, sendError) =>
+      bridge.startSubscription(
+        "subscribeChatRooms",
+        product,
+        sendItem,
+        sendError,
+      ),
+  };
+}
+
+/**
+ * Optional capabilities the main-thread host actually serves. A
+ * capability left out here is not proxied into the worker, so the
+ * core answers its product calls with `Unsupported`.
+ */
+export interface OptionalCapabilities {
+  /** Whether the host serves this capability. */
+  chat?: boolean;
+}
+
 export function createWorkerRawCallbacks(
   bridge: WorkerCallbackBridge,
+  capabilities: OptionalCapabilities = {},
 ): Record<string, unknown> {
   const callbacks: Record<string, unknown> = {
     ...rawCallbacks(bridge),
     ...subscriptionRawCallbacks(bridge),
     chainConnect: bridge.chainConnect,
   };
+  if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
   return callbacks;
 }
 
@@ -134,6 +216,12 @@ export function startRawSubscription(
   sendError: (error: GenericError) => void,
 ): (() => void) | void {
   switch (name) {
+    case "subscribeChatRooms":
+      if (payload === null) {
+        console.warn(`[truapi worker] ${name} requires payload`);
+        return undefined;
+      }
+      return callbacks.subscribeChatRooms?.(payload, sendItem, sendError);
     case "lookupPreimage":
       if (payload === null) {
         console.warn(`[truapi worker] ${name} requires payload`);

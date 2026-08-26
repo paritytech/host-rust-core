@@ -4,13 +4,15 @@ use crate::versioned::chat::{
     HostChatActionSubscribeItem, HostChatCreateRoomError, HostChatCreateRoomRequest,
     HostChatCreateRoomResponse, HostChatListSubscribeItem, HostChatPostMessageError,
     HostChatPostMessageRequest, HostChatPostMessageResponse, HostChatRegisterBotError,
-    HostChatRegisterBotRequest, HostChatRegisterBotResponse,
-    ProductChatCustomMessageRenderSubscribeItem, ProductChatCustomMessageRenderSubscribeRequest,
+    HostChatRegisterBotRequest, HostChatRegisterBotResponse, ProductChatCustomMessageRenderItem,
+    ProductChatCustomMessageRenderRequest,
 };
 use crate::wire;
 use crate::{CallContext, CallError, Subscription};
 
 /// Chat room, bot, and message APIs.
+#[crate::service(required_execution = Worker)]
+#[crate::async_trait]
 pub trait Chat: Send + Sync {
     /// Create a chat room.
     ///
@@ -69,6 +71,18 @@ pub trait Chat: Send + Sync {
 
     /// Post a message to a chat room.
     ///
+    /// The host bounds and screens what it forwards. Message text is capped at
+    /// 16 KiB and keeps line breaks and tabs, but is rejected for other
+    /// control characters and for bidirectional overrides. Identifiers and
+    /// display names are normalized and screened. A message carries at most 32
+    /// actions and 32 media items, a custom payload at most 256 KiB, and a URL
+    /// at most 2 KiB which must be `https` or an inline raster image. A
+    /// rejection reports `MessageTooLarge` when the body or custom payload is
+    /// over budget, and `Unknown` with a reason naming the field otherwise.
+    ///
+    /// The returned `messageId` is the correlation key for any action the
+    /// message carries: a later `actionSubscribe` trigger names it.
+    ///
     /// ```ts
     /// const result = await truapi.chat.postMessage({
     ///   roomId: "test-room",
@@ -104,32 +118,20 @@ pub trait Chat: Send + Sync {
         Subscription::empty()
     }
 
-    /// Subscribe to custom message render requests from the host. Each
-    /// emitted item is a [`CustomRendererNode`](crate::v01::CustomRendererNode)
-    /// tree describing the rendered UI.
+    /// Streams renderer trees for one stored custom message.
     ///
     /// ```ts
-    /// import { firstValueFrom, from } from "rxjs";
-    ///
-    /// const item = await firstValueFrom(
-    ///   from(
-    ///     truapi.chat.customMessageRenderSubscribe({
-    ///       request: {
-    ///         messageId: "msg-1",
-    ///         messageType: "custom-render-demo",
-    ///         payload: "0x",
-    ///       },
-    ///     }),
-    ///   ),
-    /// );
-    /// console.log("render request received:", item);
+    /// import { of } from "rxjs";
+    /// truapi.chat.onCustomMessageRender(({ messageType, payload }) => {
+    ///   return of({ tag: "String", value: { text: `${messageType}: ${payload}` } });
+    /// });
     /// ```
-    #[wire(start_id = 52)]
-    async fn custom_message_render_subscribe(
+    #[wire(host_initiated, start_id = 52)]
+    fn custom_message_render(
         &self,
         _cx: &CallContext,
-        _request: ProductChatCustomMessageRenderSubscribeRequest,
-    ) -> Subscription<ProductChatCustomMessageRenderSubscribeItem> {
+        _request: ProductChatCustomMessageRenderRequest,
+    ) -> Subscription<ProductChatCustomMessageRenderItem> {
         Subscription::empty()
     }
 }

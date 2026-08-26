@@ -59,6 +59,7 @@ pub fn test_runtime_config() -> (PairingHostConfig, ProductContext) {
             PlatformInfo::default(),
             [0xa2; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),
@@ -66,6 +67,8 @@ pub fn test_runtime_config() -> (PairingHostConfig, ProductContext) {
     )
 }
 
+/// Platform stub whose callbacks return fixed no-op values, enough for
+/// wire-shape tests that only inspect emitted frames.
 pub struct WireShapePlatform;
 
 #[truapi_platform::async_trait]
@@ -130,6 +133,16 @@ impl Features for WireShapePlatform {
     ) -> Result<v01::HostFeatureSupportedResponse, v01::GenericError> {
         Ok(v01::HostFeatureSupportedResponse { supported: true })
     }
+
+    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
+        Ok(truapi_platform::HostChainSet {
+            network: "paseo".to_string(),
+            chains: vec![truapi_platform::HostChainEntry {
+                identifier: v01::ChainIdentifier::AssetHub,
+                genesis_hash: [0xaa; 32],
+            }],
+        })
+    }
 }
 
 struct DeadConnection;
@@ -185,7 +198,9 @@ impl UserConfirmation for WireShapePlatform {
 }
 
 impl ThemeHost for WireShapePlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         Box::pin(stream::empty())
     }
 }

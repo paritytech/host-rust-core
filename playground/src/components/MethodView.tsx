@@ -9,11 +9,11 @@ import { methodTestId, revealInRail, serviceTestId } from "@/src/lib/rail";
 import { services } from "@/src/lib/services";
 import type { MethodInfo, ServiceInfo } from "@/src/lib/services";
 
-const CALL_TIMEOUT_MS = 30_000;
+const CALL_TIMEOUT_MS = 45_000;
 
 const CARGO_DOC_BASE =
   process.env.NEXT_PUBLIC_CARGO_DOC_BASE ??
-  "https://paritytech.github.io/truapi/cargo_doc";
+  "https://paritytech.github.io/host-rust-core/cargo_doc";
 
 /** Deployed playground served inside the Polkadot Desktop Host. */
 const HOSTED_PLAYGROUND_URL = "https://truapi-playground.dot.li";
@@ -124,7 +124,7 @@ export function MethodView({
       const client = getClientSync();
       if (!client) {
         throw new Error(
-          "App must be opened inside a TrUAPI host (iframe or webview).",
+          "SPA must be opened inside a TrUAPI host (iframe or webview).",
         );
       }
       const run = await runExample({ source, client, onLog });

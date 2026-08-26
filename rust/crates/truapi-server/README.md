@@ -84,14 +84,21 @@ stage in the frame path; the host's `Platform` impl is the syscall floor.
 `ProductRuntimeHost` handles everything role-neutral (id normalization,
 permission gating, confirmation, soft product-key derivation), then delegates
 the wallet-authority tail (`sign_*`, `create_transaction`, `account_alias`,
-`allocate_resources`, `derive_entropy`) through an `Arc<dyn ProductAuthority>`
-handle with an `AuthoritySession` snapshot the role revalidates before touching
-key material.
+`create_proof`, `allocate_resources`, `derive_entropy`) through an
+`Arc<dyn ProductAuthority>` handle with an `AuthoritySession` snapshot the
+role revalidates before touching key material.
 
 ### Permission flow
 
 Permission grants are scoped by product id and typed request, so a grant for
 one product never authorizes another product or another permission class.
+
+Remote permissions carry one exception. A product whose label is listed in
+`truapi_platform::REMOTE_PERMISSION_TRUSTED_LABELS` holds every
+`RemotePermission` without a prompt: while nothing is stored the lookup reports
+`Authorized` and writes nothing. A stored `Denied` still wins, so the admin
+surface revokes it. Device permissions, identity disclosure and account access
+always prompt.
 
 ```text
 Product app
@@ -122,8 +129,8 @@ CoreStorage lookup
         |
         +-- Denied -------------------> return PermissionDenied / deny call
         |
-        +-- NotDetermined / missing ---+
-                                       |
+        +-- NotDetermined / missing ---+   (remote + trusted label: allow,
+                                       |    see below)
                                        v
                               Platform prompt callback
                                        |
@@ -149,6 +156,23 @@ CoreStorage lookup
                     allow call                    deny call
 ```
 
+#### Auto-granted remote permissions
+
+A remote permission resolves in this order:
+
+1. `Remote { domains: [] }` is `Denied`. An empty bundle grants nothing, so
+   failing closed outranks the whitelist.
+2. A stored decision wins — the exact slot for a non-domain variant, or the most
+   specific matching `remote_domain_candidates` entry for a domain.
+3. Nothing stored and the product's label is trusted: `Authorized`, with no
+   prompt and no write.
+4. Nothing stored and the label is untrusted: `NotDetermined`, so the lookup
+   prompts and persists the answer.
+
+Because a trusted product's grant is never written, revoking its domain access
+means writing `Denied` for the `*` pattern; denying a single host leaves every
+other host granted.
+
 Permission administration uses the same key without prompting:
 
 ```text
@@ -169,8 +193,11 @@ CoreStorageKey::PermissionAuthorization { product_id, request }
 The embedder builds a role handle, `PairingHostRuntime::new(...)` or
 `SigningHostRuntime::new(...)`, then calls `product_runtime(product, sink)` for
 each product connection. Role-specific operations live only on the matching handle:
-`cancel_pairing` and `notify_session_store_changed` on the pairing handle,
-`activate_local_session` on the signing handle. Calling the wrong operation is
+`cancel_pairing`, `notify_session_store_changed`, `activate_stored_session`,
+`activate_external_session`, and `reset_session_state` on the pairing handle,
+`activate_local_session` on the signing handle. Both handles expose
+`clear_product_state` to revoke one product's capability material without
+touching the session or other products. Calling the wrong operation is
 a compile error, not a runtime `Unavailable`.
 
 ### The two roles
@@ -180,14 +207,25 @@ role-specific lifecycle, so no method exists on a role that can't mean it:
 
 - **`PairingHost`** (seedless): the user's keys live in an external wallet, so
   signing/aliases/entropy relay over an encrypted SSO channel (statement store
-  on the People chain; the channel lives in `pairing_host/sso_channel.rs`). It
-  owns pairing/login state, persisted auth-session reload, and remote
-  signing-host liveness monitoring.
+  on the People chain; the channel lives in `pairing_host/sso_channel.rs`). The
+  v2 wire protocol uses raw X25519 keys, HKDF-SHA256, and
+  ChaCha20-Poly1305. It owns pairing/login state, persisted auth-session reload,
+  and remote signing-host liveness monitoring.
 - **`SigningHost`** (wallet-local): signs on device from local BIP-39 entropy,
   no pairing flow. `signing_host/local_activation.rs` establishes a session
-  from host-held secret material. Extrinsic signing / transaction construction /
-  ring-VRF aliases / resource allocation currently return `Unavailable` pending
-  chain-metadata and on-chain support.
+  from host-held secret material. Its public identity is the RFC-0022
+  `uid.dot` index-0 product account. RFC-0024 ring-VRF keys are explicit,
+  product-owned registry entries; aliases, proofs, direct signatures, and
+  internal personhood flows use the requested or user-selected registered key
+  without a compiled-in fallback. It resolves RFC-0004 `RingLocation` values
+  against the chain's `Members` pallet and pins membership, ring pages,
+  exponent, and revision reads to one finalized block before creating a proof.
+  Extrinsic-payload signing and v4 transaction construction work from
+  pre-encoded payload fields, so no chain metadata is needed;
+  statement-store and Bulletin allowance allocation are native-only (wasm
+  builds report them as unavailable) and do need metadata, which they take from
+  the `RuntimeServices`-owned per-chain cache rather than re-reading it per
+  call.
 
 `host_logic` stays pure: the orchestrators above call into it for codecs,
 session/SSO crypto, key derivation, and permission policy, while all I/O

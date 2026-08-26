@@ -16,12 +16,16 @@ use super::authority::AuthorityError;
 use super::sso_remote::SsoSessionKey;
 use crate::host_logic::session::{SessionInfo, SsoSessionInfo};
 
+/// Chain resource an allowance key grants access to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Encode, Decode)]
 pub(super) enum AllowanceResource {
+    /// Bulletin-chain transaction storage.
     Bulletin,
+    /// People-chain statement store.
     StatementStore,
 }
 
+/// Memory-cache key: `(session, product_id, resource)`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct AllowanceCacheKey {
     session: SsoSessionKey,
@@ -30,6 +34,7 @@ pub(super) struct AllowanceCacheKey {
 }
 
 impl AllowanceCacheKey {
+    /// Cache key for the session's SSO pair; fails when the session has none.
     pub(super) fn new(
         session: &SessionInfo,
         product_id: &str,
@@ -42,18 +47,25 @@ impl AllowanceCacheKey {
         })
     }
 
+    /// Whether this key belongs to the given SSO session.
     pub(super) fn is_for_session(&self, session: SsoSessionKey) -> bool {
         self.session == session
     }
+
+    /// Whether this key belongs to the given product.
+    pub(super) fn is_for_product(&self, product_id: &str) -> bool {
+        self.product_id == product_id
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Clone, PartialEq, Eq, Encode, Decode)]
 struct StoredAllowanceEntry {
     product_id: String,
     resource: AllowanceResource,
     slot_account_key: Vec<u8>,
 }
 
+/// Read the persisted allowance key for `(product_id, resource)`, if any.
 pub(super) async fn read_allowance_key(
     storage: &(impl CoreStorage + ?Sized),
     session: &SessionInfo,
@@ -67,6 +79,8 @@ pub(super) async fn read_allowance_key(
         .map(|entry| entry.slot_account_key))
 }
 
+/// Persist an allowance key, replacing any prior key for the same
+/// `(product_id, resource)`.
 pub(super) async fn write_allowance_key(
     storage: &(impl CoreStorage + ?Sized),
     session: &SessionInfo,
@@ -87,6 +101,8 @@ pub(super) async fn write_allowance_key(
         .map_err(storage_error)
 }
 
+/// Remove the persisted allowance key for `(product_id, resource)`; a miss is
+/// not an error.
 pub(super) async fn remove_allowance_key(
     storage: &(impl CoreStorage + ?Sized),
     session: &SessionInfo,
@@ -105,6 +121,43 @@ pub(super) async fn remove_allowance_key(
         .map_err(storage_error)
 }
 
+/// Remove every persisted allowance key for `product_id` in the active SSO
+/// session while preserving entries owned by other products.
+pub(super) async fn clear_product_allowance_keys(
+    storage: &(impl CoreStorage + ?Sized),
+    session: &SessionInfo,
+    product_id: &str,
+) -> Result<(), AuthorityError> {
+    let key = storage_key(session)?;
+    let Some(blob) = storage
+        .read_core_storage(key.clone())
+        .await
+        .map_err(storage_error)?
+    else {
+        return Ok(());
+    };
+    let mut entries = match decode_entries(&blob) {
+        Ok(entries) => entries,
+        Err(_) => {
+            return storage.clear_core_storage(key).await.map_err(storage_error);
+        }
+    };
+    let before = entries.len();
+    entries.retain(|entry| entry.product_id != product_id);
+    if entries.len() == before {
+        return Ok(());
+    }
+    if entries.is_empty() {
+        storage.clear_core_storage(key).await.map_err(storage_error)
+    } else {
+        storage
+            .write_core_storage(key, encode_entries(entries))
+            .await
+            .map_err(storage_error)
+    }
+}
+
+/// Drop every persisted allowance key belonging to the session.
 pub(super) async fn clear_session_allowance_keys(
     storage: &(impl CoreStorage + ?Sized),
     session: &SessionInfo,
@@ -158,7 +211,7 @@ fn sso_cache_key(session: &SessionInfo) -> Result<SsoSessionKey, AuthorityError>
     Ok(SsoSessionKey::from_session(sso))
 }
 
-fn session_storage_id(session: &SsoSessionInfo) -> String {
+pub(super) fn session_storage_id(session: &SsoSessionInfo) -> String {
     let mut bytes = Vec::with_capacity(64);
     bytes.extend_from_slice(&session.session_id_own);
     bytes.extend_from_slice(&session.session_id_peer);

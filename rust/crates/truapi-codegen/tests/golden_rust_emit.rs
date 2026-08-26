@@ -10,6 +10,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+fn nightly_toolchain() -> String {
+    std::env::var("TRUAPI_NIGHTLY_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string())
+}
+
 fn quoted_strings_in_const_array(src: &str, const_name: &str) -> Vec<String> {
     let marker = format!("export const {const_name} = [");
     let start = src
@@ -58,16 +62,16 @@ fn produce_rustdoc_json_for_package(
     target_dir: &Path,
     package: &str,
 ) -> PathBuf {
-    let output = Command::new("cargo")
-        .args(["+nightly", "rustdoc", "-p", package, "--target-dir"])
+    let mut command = Command::new("cargo");
+    command
+        .arg(format!("+{}", nightly_toolchain()))
+        .args(["rustdoc", "-p", package, "--target-dir"])
         .arg(target_dir)
         .args(["--", "-Z", "unstable-options", "--output-format", "json"])
-        .current_dir(workspace_root)
-        .output()
-        .expect(
-            "failed to spawn `cargo +nightly rustdoc`; install nightly via \
-             `rustup toolchain install nightly`",
-        );
+        .current_dir(workspace_root);
+    let output = command.output().expect(
+        "failed to spawn nightly rustdoc; install the selected nightly toolchain via rustup",
+    );
     assert!(
         output.status.success(),
         "`cargo +nightly rustdoc -p {package}` failed (status {}); nightly toolchain is required.\nstdout:\n{}\nstderr:\n{}",
@@ -93,13 +97,31 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn workspace_tempdir(workspace: &Path) -> tempfile::TempDir {
+    let parent = workspace.join("target/codegen-test-tmp");
+    fs::create_dir_all(&parent).expect("create workspace codegen temp directory");
+    tempfile::Builder::new()
+        .prefix("golden-")
+        .tempdir_in(parent)
+        .expect("workspace tempdir")
+}
+
 fn rustfmt_generated(files: &[PathBuf]) {
     if files.is_empty() {
         return;
     }
 
+    // Keep this hermetic: rustfmt otherwise walks up from the generated file
+    // in the system temp directory and may inherit another checkout's config.
+    let config_dir = tempfile::tempdir().expect("rustfmt config tempdir");
+    let config_path = config_dir.path().join("rustfmt.toml");
+    fs::write(&config_path, "edition = \"2024\"\n").expect("write rustfmt config");
+
     let mut command = Command::new("rustfmt");
-    command.args(["+nightly", "--edition", "2024"]);
+    command
+        .arg(format!("+{}", nightly_toolchain()))
+        .args(["--edition", "2024", "--config-path"])
+        .arg(config_path);
     for file in files {
         command.arg(file);
     }
@@ -129,6 +151,8 @@ fn prettier_generated(workspace_root: &Path, files: &[PathBuf]) {
             "--",
             "prettier",
             "--write",
+            "--ignore-path",
+            "/dev/null",
             "--config",
         ])
         .arg(workspace_root.join(".prettierrc"));
@@ -153,7 +177,7 @@ fn golden_dispatcher_and_wire_table() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = workspace_root();
 
-    let tempdir = tempfile::tempdir().expect("tempdir");
+    let tempdir = workspace_tempdir(&workspace);
     let rustdoc_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
 
     let out = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
@@ -207,11 +231,11 @@ fn golden_dispatcher_and_wire_table() {
 #[test]
 fn binary_emission_is_idempotent() {
     let workspace = workspace_root();
-    let tempdir = tempfile::tempdir().expect("tempdir");
+    let tempdir = workspace_tempdir(&workspace);
     let rustdoc_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
 
     let run_once = || -> (String, String) {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = workspace_tempdir(&workspace);
         let status = Command::new(env!("CARGO_BIN_EXE_truapi-codegen"))
             .args([
                 "--input",
@@ -242,7 +266,7 @@ fn golden_host_callbacks_ts() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = workspace_root();
 
-    let tempdir = tempfile::tempdir().expect("tempdir");
+    let tempdir = workspace_tempdir(&workspace);
     let truapi_json = produce_rustdoc_json(&workspace, &tempdir.path().join("rustdoc-target"));
     let platform_json = produce_rustdoc_json_for_package(
         &workspace,
@@ -347,8 +371,12 @@ fn golden_host_callbacks_ts() {
         "SUBSCRIPTION_NAMES",
     ));
     for name in generated_names {
+        // Callbacks of an optional capability bind through the optional getter;
+        // either way the bridge must name every callback the worker proxies.
         assert!(
-            wasm_bridge_actual.contains(&format!("get_function(callbacks, \"{name}\")?")),
+            wasm_bridge_actual.contains(&format!("get_function(callbacks, \"{name}\")?"))
+                || wasm_bridge_actual
+                    .contains(&format!("get_optional_function(callbacks, \"{name}\")?")),
             "generated wasm bridge must bind worker callback `{name}`"
         );
     }

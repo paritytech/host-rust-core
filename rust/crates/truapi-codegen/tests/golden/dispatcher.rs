@@ -25,6 +25,7 @@ use truapi::api::{
     Theme,
 };
 use truapi::versioned::{self, Versioned};
+use truapi_platform::ProductExecutionKind;
 
 use crate::dispatcher::Dispatcher;
 use crate::frame::encode_versioned_err_payload;
@@ -32,7 +33,8 @@ use crate::frame::encode_versioned_interrupt_payload;
 use crate::frame::encode_versioned_ok_payload;
 use crate::frame::encode_versioned_unit_ok_payload;
 use crate::generated::wire_table;
-use crate::subscription::subscription_stream;
+use crate::subscription::{HostInitiatedSubscriptionManager, subscription_stream};
+use crate::transport::Transport;
 
 /// Register every TrUAPI method with the dispatcher.
 pub fn register<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
@@ -54,6 +56,21 @@ where
     register_statement_store(dispatcher, host.clone());
     register_system(dispatcher, host.clone());
     register_theme(dispatcher, host);
+}
+
+/// Start the host-initiated `chat_custom_message_render` subscription.
+pub(crate) fn chat_custom_message_render(
+    subscriptions: &HostInitiatedSubscriptionManager,
+    transport: Arc<dyn Transport>,
+    request: versioned::chat::ProductChatCustomMessageRenderRequest,
+) -> truapi::Subscription<
+    Result<versioned::chat::ProductChatCustomMessageRenderItem, truapi::latest::GenericError>,
+> {
+    subscriptions.start(
+        wire_table::CHAT_CUSTOM_MESSAGE_RENDER,
+        parity_scale_codec::Encode::encode(&request),
+        transport,
+    )
 }
 
 fn register_account<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
@@ -147,6 +164,118 @@ where
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id.clone());
                 let response: versioned::account::HostAccountCreateProofResponse = match host.create_account_proof(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::ACCOUNT_SIGN_VRF, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::account::HostAccountSignVrfRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::account::HostAccountSignVrfError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::account::HostAccountSignVrfError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::account::HostAccountSignVrfResponse = match host.sign_vrf(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::ACCOUNT_REGISTER_RING_VRF_KEY, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::account::HostAccountRegisterRingVrfKeyRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::account::HostAccountRegisterRingVrfKeyError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::account::HostAccountRegisterRingVrfKeyError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::account::HostAccountRegisterRingVrfKeyResponse = match host.register_ring_vrf_key(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::ACCOUNT_LIST_RING_VRF_KEYS, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::account::HostAccountListRingVrfKeysRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::account::HostAccountListRingVrfKeysError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::account::HostAccountListRingVrfKeysError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::account::HostAccountListRingVrfKeysResponse = match host.list_ring_vrf_keys(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::ACCOUNT_RING_VRF_SIGN, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::account::HostAccountRingVrfSignRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::account::HostAccountRingVrfSignError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::account::HostAccountRingVrfSignError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::account::HostAccountRingVrfSignResponse = match host.ring_vrf_sign(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
                         return Ok(encode_versioned_err_payload(err, target_version));
@@ -570,7 +699,7 @@ where
         });
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_request(wire_table::CHAIN_STOP_TRANSACTION, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
@@ -597,6 +726,34 @@ where
             })
         });
     }
+    {
+        let host = host;
+        dispatcher.on_request(wire_table::CHAIN_GET_CHAIN_INFO, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::chain::RemoteChainInfoRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::chain::RemoteChainInfoError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::chain::RemoteChainInfoError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::chain::RemoteChainInfoResponse = match host.get_chain_info(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
 }
 
 fn register_chat<P>(dispatcher: &mut Dispatcher, host: Arc<P>)
@@ -604,6 +761,7 @@ where
     P: Chat + Send + Sync + 'static,
 {
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(wire_table::CHAT_CREATE_ROOM, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -621,6 +779,11 @@ where
                 };
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::chat::HostChatCreateRoomError> =
+                        truapi::CallError::Denied;
+                    return Ok(encode_versioned_err_payload(error, target_version));
+                }
                 let response: versioned::chat::HostChatCreateRoomResponse = match host.create_room(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -632,6 +795,7 @@ where
         });
     }
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(wire_table::CHAT_REGISTER_BOT, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -649,6 +813,11 @@ where
                 };
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::chat::HostChatRegisterBotError> =
+                        truapi::CallError::Denied;
+                    return Ok(encode_versioned_err_payload(error, target_version));
+                }
                 let response: versioned::chat::HostChatRegisterBotResponse = match host.register_bot(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -660,18 +829,21 @@ where
         });
     }
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_subscription(wire_table::CHAT_LIST_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
                 let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed { return Err(Vec::new()); }
                 let stream = host.list_subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::chat::HostChatListSubscribeItem, _>(stream))
             })
         });
     }
     {
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(wire_table::CHAT_POST_MESSAGE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -689,6 +861,11 @@ where
                 };
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed {
+                    let error: truapi::CallError<versioned::chat::HostChatPostMessageError> =
+                        truapi::CallError::Denied;
+                    return Ok(encode_versioned_err_payload(error, target_version));
+                }
                 let response: versioned::chat::HostChatPostMessageResponse = match host.post_message(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -700,29 +877,16 @@ where
         });
     }
     {
-        let host = host.clone();
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
+        let host = host;
         dispatcher.on_subscription(wire_table::CHAT_ACTION_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
                 let _ = bytes;
                 let cx = CallContext::with_request_id(request_id.clone());
+                if !execution_allowed { return Err(Vec::new()); }
                 let stream = host.action_subscribe(&cx).await;
                 Ok(subscription_stream::<versioned::chat::HostChatActionSubscribeItem, _>(stream))
-            })
-        });
-    }
-    {
-        let host = host;
-        dispatcher.on_subscription(wire_table::CHAT_CUSTOM_MESSAGE_RENDER_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
-            let host = host.clone();
-            Box::pin(async move {
-                let request: versioned::chat::ProductChatCustomMessageRenderSubscribeRequest = match Decode::decode(&mut &bytes[..]) {
-                    Ok(request) => request,
-                    Err(_) => return Err(Vec::new()),
-                };
-                let cx = CallContext::with_request_id(request_id.clone());
-                let stream = host.custom_message_render_subscribe(&cx, request).await;
-                Ok(subscription_stream::<versioned::chat::ProductChatCustomMessageRenderSubscribeItem, _>(stream))
             })
         });
     }
@@ -1831,7 +1995,7 @@ where
         });
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_request(wire_table::SYSTEM_HOST_INFO, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
@@ -1849,6 +2013,34 @@ where
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id.clone());
                 let response: versioned::system::HostInfoResponse = match host.host_info(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_request(wire_table::SYSTEM_GET_PRODUCT_CONTEXT, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::system::HostGetProductContextRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::system::HostGetProductContextError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::system::HostGetProductContextError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::system::HostGetProductContextResponse = match host.get_product_context(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
                         return Ok(encode_versioned_err_payload(err, target_version));

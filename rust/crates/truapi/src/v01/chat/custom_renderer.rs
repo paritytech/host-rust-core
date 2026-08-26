@@ -6,9 +6,27 @@ use parity_scale_codec::{Compact, Decode, Encode, OptionBool};
 /// byte on the wire instead of eight.
 pub type Size = Compact<u64>;
 
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(Size, u64, {
+    remote,
+    lower: |size| size.0,
+    try_lift: |size| Ok(Compact(size)),
+});
+
+/// An optional boolean with the compact SCALE encoding used by renderer props.
+pub type OptionalBool = OptionBool;
+
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(OptionalBool, Option<bool>, {
+    remote,
+    lower: |value| value.0,
+    try_lift: |value| Ok(OptionBool(value)),
+});
+
 /// CSS-like dimensions: (top, end, bottom, start).
 /// Bottom defaults to top, start defaults to end when `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Dimensions {
     /// Top dimension.
     pub top: Size,
@@ -22,79 +40,125 @@ pub struct Dimensions {
 
 /// Text typography presets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum TypographyStyle {
+    /// Large headline text.
     HeadlineLarge,
+    /// Medium title text, regular weight.
     TitleMediumRegular,
+    /// Large body text, regular weight.
     BodyLargeRegular,
+    /// Medium body text, regular weight.
     BodyMediumRegular,
+    /// Small body text, regular weight.
     BodySmallRegular,
 }
 
 /// Button style variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ButtonVariant {
+    /// Emphasized button for the primary action.
     Primary,
+    /// De-emphasized button for secondary actions.
     Secondary,
+    /// Text-only button without a background.
     Text,
 }
 
 /// Semantic color tokens for theming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ColorToken {
+    /// Primary foreground (text) color.
     FgPrimary,
+    /// Secondary foreground color.
     FgSecondary,
+    /// Tertiary foreground color.
     FgTertiary,
+    /// Main surface background.
     BgSurfaceMain,
+    /// Container surface background.
     BgSurfaceContainer,
+    /// Nested surface background.
     BgSurfaceNested,
+    /// Foreground color for success states.
     FgSuccess,
+    /// Foreground color for error states.
     FgError,
+    /// Foreground color for warning states.
     FgWarning,
 }
 
 /// 2D content alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ContentAlignment {
+    /// Top edge, start side.
     TopStart,
+    /// Top edge, horizontally centered.
     TopCenter,
+    /// Top edge, end side.
     TopEnd,
+    /// Vertically centered, start side.
     CenterStart,
+    /// Centered on both axes.
     Center,
+    /// Vertically centered, end side.
     CenterEnd,
+    /// Bottom edge, start side.
     BottomStart,
+    /// Bottom edge, horizontally centered.
     BottomCenter,
+    /// Bottom edge, end side.
     BottomEnd,
 }
 
 /// Horizontal alignment options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HorizontalAlignment {
+    /// Align to the start edge.
     Start,
+    /// Center horizontally.
     Center,
+    /// Align to the end edge.
     End,
 }
 
 /// Vertical alignment options.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum VerticalAlignment {
+    /// Align to the top.
     Top,
+    /// Center vertically.
     Center,
+    /// Align to the bottom.
     Bottom,
 }
 
 /// Layout arrangement (like CSS flexbox `justify-content`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Arrangement {
+    /// Pack children at the start.
     Start,
+    /// Pack children at the end.
     End,
+    /// Pack children in the center.
     Center,
+    /// Distribute with space between children.
     SpaceBetween,
+    /// Distribute with space around each child.
     SpaceAround,
+    /// Distribute with equal space between and around children.
     SpaceEvenly,
 }
 
 /// Shape for borders and backgrounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Shape {
     /// Border radius value.
     Rounded {
@@ -107,6 +171,7 @@ pub enum Shape {
 
 /// Border styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct BorderStyle {
     /// Border width.
     pub width: Size,
@@ -118,6 +183,7 @@ pub struct BorderStyle {
 
 /// Background styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Background {
     /// Background color.
     pub color: ColorToken,
@@ -127,6 +193,7 @@ pub struct Background {
 
 /// Layout and styling modifiers applied to custom renderer components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Modifier {
     /// Outer spacing.
     Margin(Dimensions),
@@ -170,6 +237,7 @@ pub enum Modifier {
 
 /// Properties for a [`CustomRendererNode::Box`] container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct BoxProps {
     /// Content alignment within the box.
     pub content_alignment: Option<ContentAlignment>,
@@ -177,6 +245,7 @@ pub struct BoxProps {
 
 /// Properties for a [`CustomRendererNode::Column`] layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ColumnProps {
     /// Horizontal alignment of children.
     pub horizontal_alignment: Option<HorizontalAlignment>,
@@ -186,6 +255,7 @@ pub struct ColumnProps {
 
 /// Properties for a [`CustomRendererNode::Row`] layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct RowProps {
     /// Vertical alignment of children.
     pub vertical_alignment: Option<VerticalAlignment>,
@@ -195,6 +265,7 @@ pub struct RowProps {
 
 /// Properties for a [`CustomRendererNode::Text`] display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct TextProps {
     /// Typography preset.
     pub style: Option<TypographyStyle>,
@@ -204,21 +275,23 @@ pub struct TextProps {
 
 /// Properties for a [`CustomRendererNode::Button`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ButtonProps {
     /// Button label text.
     pub text: String,
     /// Button style variant.
     pub variant: Option<ButtonVariant>,
     /// Whether the button is enabled. Absent leaves the default to the host.
-    pub enabled: OptionBool,
+    pub enabled: OptionalBool,
     /// Whether the button shows a loading state. Absent leaves the default to the host.
-    pub loading: OptionBool,
+    pub loading: OptionalBool,
     /// Action identifier triggered on click.
     pub click_action: Option<String>,
 }
 
 /// Properties for a [`CustomRendererNode::TextField`].
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct TextFieldProps {
     /// Current text value.
     pub text: String,
@@ -227,26 +300,15 @@ pub struct TextFieldProps {
     /// Field label.
     pub label: Option<String>,
     /// Whether the field is enabled. Absent leaves the default to the host.
-    pub enabled: OptionBool,
+    pub enabled: OptionalBool,
     /// Action identifier triggered when the value changes.
     pub value_change_action: Option<String>,
 }
 
-/// A component in the custom renderer UI tree, combining modifiers, typed props,
-/// and recursive children.
+/// A node in the custom renderer UI tree. Component variants contain recursive
+/// `children` fields.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct Component<P> {
-    /// Layout and styling modifiers.
-    pub modifiers: Vec<Modifier>,
-    /// Component-specific properties.
-    pub props: P,
-    /// Child nodes.
-    pub children: Vec<CustomRendererNode>,
-}
-
-/// A node in the custom renderer UI tree. Can be nested recursively via the
-/// `children` field of each [`Component`].
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum CustomRendererNode {
     /// Empty node.
     Nil,
@@ -256,29 +318,154 @@ pub enum CustomRendererNode {
         text: String,
     },
     /// Generic container.
-    Box(Component<BoxProps>),
+    Box {
+        /// Layout and styling modifiers.
+        modifiers: Vec<Modifier>,
+        /// Box properties.
+        props: BoxProps,
+        /// Child nodes.
+        children: Vec<CustomRendererNode>,
+    },
     /// Vertical layout.
-    Column(Component<ColumnProps>),
+    Column {
+        /// Layout and styling modifiers.
+        modifiers: Vec<Modifier>,
+        /// Column properties.
+        props: ColumnProps,
+        /// Child nodes.
+        children: Vec<CustomRendererNode>,
+    },
     /// Horizontal layout.
-    Row(Component<RowProps>),
+    Row {
+        /// Layout and styling modifiers.
+        modifiers: Vec<Modifier>,
+        /// Row properties.
+        props: RowProps,
+        /// Child nodes.
+        children: Vec<CustomRendererNode>,
+    },
     /// Flexible space.
-    Spacer(Component<()>),
+    Spacer {
+        /// Layout and styling modifiers.
+        modifiers: Vec<Modifier>,
+        /// Child nodes.
+        children: Vec<CustomRendererNode>,
+    },
     /// Text display.
-    Text(Component<TextProps>),
+    Text {
+        /// Layout and styling modifiers.
+        modifiers: Vec<Modifier>,
+        /// Text properties.
+        props: TextProps,
+        /// Child nodes.
+        children: Vec<CustomRendererNode>,
+    },
     /// Interactive button.
-    Button(Component<ButtonProps>),
+    Button {
+        /// Layout and styling modifiers.
+        modifiers: Vec<Modifier>,
+        /// Button properties.
+        props: ButtonProps,
+        /// Child nodes.
+        children: Vec<CustomRendererNode>,
+    },
     /// Text input.
-    TextField(Component<TextFieldProps>),
+    TextField {
+        /// Layout and styling modifiers.
+        modifiers: Vec<Modifier>,
+        /// Text-field properties.
+        props: TextFieldProps,
+        /// Child nodes.
+        children: Vec<CustomRendererNode>,
+    },
 }
 
-/// Subscribe payload identifying the chat message to render. The host responds
-/// with a stream of [`CustomRendererNode`] trees describing the rendered UI.
+/// Render work sent by the host when a native custom-message cell appears.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct ProductChatCustomMessageRenderSubscribeRequest {
-    /// Message identifier.
+pub struct ProductChatCustomMessageRenderRequest {
+    /// Stable identifier used to correlate triggered actions.
     pub message_id: String,
-    /// Application-defined message type.
+    /// Product-defined discriminator used to select a renderer.
     pub message_type: String,
-    /// Binary payload.
+    /// Stored product-defined message payload.
     pub payload: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Encode)]
+    struct RendererWireComponent<P> {
+        modifiers: Vec<Modifier>,
+        props: P,
+        children: Vec<CustomRendererNode>,
+    }
+
+    #[derive(Encode)]
+    enum RendererWireNode<P> {
+        #[codec(index = 3)]
+        Column(RendererWireComponent<P>),
+    }
+
+    fn renderer_node() -> CustomRendererNode {
+        CustomRendererNode::Column {
+            modifiers: vec![Modifier::Padding(Dimensions {
+                top: Compact(12),
+                end: Compact(8),
+                bottom: None,
+                start: Some(Compact(4)),
+            })],
+            props: ColumnProps {
+                horizontal_alignment: Some(HorizontalAlignment::Center),
+                vertical_arrangement: Some(Arrangement::SpaceBetween),
+            },
+            children: vec![
+                CustomRendererNode::String {
+                    text: "Votes: 1".to_string(),
+                },
+                CustomRendererNode::Button {
+                    modifiers: Vec::new(),
+                    props: ButtonProps {
+                        text: "Vote".to_string(),
+                        variant: Some(ButtonVariant::Primary),
+                        enabled: OptionBool(Some(true)),
+                        loading: OptionBool(None),
+                        click_action: Some("vote".to_string()),
+                    },
+                    children: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn renderer_node_preserves_the_component_wire_shape() {
+        let node = renderer_node();
+        let CustomRendererNode::Column {
+            modifiers,
+            props,
+            children,
+        } = node.clone()
+        else {
+            unreachable!();
+        };
+        let wire = RendererWireNode::Column(RendererWireComponent {
+            modifiers,
+            props,
+            children,
+        });
+
+        assert_eq!(node.encode(), wire.encode());
+    }
+
+    #[cfg(feature = "uniffi")]
+    #[test]
+    fn renderer_node_round_trips_through_uniffi() {
+        let node = renderer_node();
+        let ffi = <CustomRendererNode as uniffi::Lower<crate::UniFfiTag>>::lower(node.clone());
+        let lifted = <CustomRendererNode as uniffi::Lift<crate::UniFfiTag>>::try_lift(ffi).unwrap();
+
+        assert_eq!(lifted, node);
+    }
 }

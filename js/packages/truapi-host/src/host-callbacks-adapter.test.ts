@@ -2,22 +2,31 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
+  HostChatCreateRoomRequest,
+  HostChatCreateRoomResponse,
   HostDevicePermissionRequest,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   RemotePermissionRequest,
   RemotePermissionResponse,
+} from "@parity/truapi";
+import type {
+  GenericError,
+  HostSignPayloadData,
+  HostThemeSubscribeItem as HostThemeSubscribeItemValue,
   ThemeVariant,
 } from "@parity/truapi";
-import type { GenericError, HostSignPayloadData } from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "./generated/host-callbacks-adapter.js";
 import {
   AuthState,
   CoreStorageKey,
+  ProductContext,
+  ProductExecutionKind,
   UserConfirmationReview,
 } from "./generated/host-callbacks.js";
 import { makeHostCallbacks, settle } from "./test-support.js";
@@ -28,13 +37,26 @@ import { makeHostCallbacks, settle } from "./test-support.js";
 // `Uint8Array`. Primitives, strings and byte blobs pass through unchanged.
 
 const GENESIS = `0x${"11".repeat(32)}` as `0x${string}`;
+
+const defaultTheme = (variant: ThemeVariant): HostThemeSubscribeItemValue => ({
+  name: { tag: "Default" },
+  variant,
+});
+
+const namedTheme = (
+  name: string,
+  variant: ThemeVariant,
+): HostThemeSubscribeItemValue => ({
+  name: { tag: "Custom", value: name },
+  variant,
+});
 const PRODUCT_ACCOUNT = {
   dotNsIdentifier: "playground.dot",
-  derivationIndex: 0,
+  derivationIndex: { tag: "Index" as const, value: 0 },
 };
 const PROOF_CONTEXT = {
   productId: "playground.dot",
-  suffix: "0x00" as const,
+  suffix: { tag: "Index" as const, value: 0 },
 };
 const RING_LOCATION = {
   chainId: GENESIS,
@@ -189,7 +211,7 @@ describe("createWasmRawCallbacks", () => {
               case "CreateTransaction":
                 return (
                   review.value.tag === "Product" &&
-                  review.value.value.signer.derivationIndex === 0 &&
+                  review.value.value.signer.derivationIndex.tag === "Index" &&
                   review.value.value.callData === "0x0506"
                 );
               case "AccountAlias":
@@ -202,7 +224,7 @@ describe("createWasmRawCallbacks", () => {
               case "CreateProof":
                 return (
                   review.value.callingProductId === "playground.dot" &&
-                  review.value.context.suffix === "0x00" &&
+                  review.value.context.suffix.tag === "Index" &&
                   review.value.message[0] === 7
                 );
               case "AccountAccess":
@@ -220,6 +242,8 @@ describe("createWasmRawCallbacks", () => {
                   review.value.size,
                 ]);
                 return review.value.size === 42n;
+              default:
+                return false;
             }
           },
         },
@@ -233,8 +257,11 @@ describe("createWasmRawCallbacks", () => {
     );
 
     const preimageEvents: (number[] | null)[] = [];
-    const disposePreimages = raw.lookupPreimage!(new Uint8Array([9]), (value) =>
-      preimageEvents.push(value ? [...value] : null),
+    const preimageErrors: string[] = [];
+    const disposePreimages = raw.lookupPreimage!(
+      new Uint8Array([9]),
+      (value) => preimageEvents.push(value ? [...value] : null),
+      (error) => preimageErrors.push(error.reason),
     );
 
     raw.authStateChanged?.(
@@ -338,6 +365,7 @@ describe("createWasmRawCallbacks", () => {
         UserConfirmationReview.enc({
           tag: "ResourceAllocation",
           value: {
+            callingProductId: "playground.dot",
             resources: [{ tag: "StatementStoreAllowance" }],
           },
         }),
@@ -369,10 +397,49 @@ describe("createWasmRawCallbacks", () => {
     disposePreimages?.();
   });
 
+  it("omits the chat callbacks when the host does not serve chat", () => {
+    const raw = createWasmRawCallbacks(makeHostCallbacks());
+
+    expect(raw.createChatRoom).toBeUndefined();
+    expect(raw.registerChatBot).toBeUndefined();
+    expect(raw.postChatMessage).toBeUndefined();
+    expect(raw.subscribeChatRooms).toBeUndefined();
+  });
+
+  it("adapts the chat callbacks when the host serves chat", async () => {
+    const seen: string[] = [];
+    const raw = createWasmRawCallbacks(
+      makeHostCallbacks({
+        chat: {
+          createChatRoom: async (product, request) => {
+            seen.push(`${product.productId}:${request.roomId}`);
+            return { status: "Exists" };
+          },
+        },
+      }),
+    );
+
+    const product = ProductContext.enc({
+      productId: "chat.dot",
+      executionKind: "Worker",
+    });
+    const request = HostChatCreateRoomRequest.enc({
+      roomId: "room",
+      name: "Support",
+      icon: "",
+    });
+    const response = await raw.createChatRoom!(product, request);
+
+    expect(seen).toEqual(["chat.dot:room"]);
+    expect(HostChatCreateRoomResponse.dec(response)).toEqual({
+      status: "Exists",
+    });
+  });
+
   it("adapts typed result subscriptions", async () => {
     async function* themes() {
-      yield ok<ThemeVariant>("Dark");
-      yield ok<ThemeVariant>("Light");
+      yield ok<HostThemeSubscribeItemValue>(namedTheme("midnight", "Dark"));
+      yield ok<HostThemeSubscribeItemValue>(defaultTheme("Light"));
     }
 
     const raw = createWasmRawCallbacks(
@@ -382,21 +449,28 @@ describe("createWasmRawCallbacks", () => {
         },
       }),
     );
-    const seen: ThemeVariant[] = [];
-    const dispose = raw.subscribeTheme?.((theme) =>
-      seen.push(ThemeVariant.dec(theme!)),
+    const seen: HostThemeSubscribeItemValue[] = [];
+    const themeErrors: string[] = [];
+    const dispose = raw.subscribeTheme?.(
+      (theme) => seen.push(HostThemeSubscribeItem.dec(theme!)),
+      (error) => themeErrors.push(error.reason),
     );
 
     await settle();
 
-    expect(seen).toEqual(["Dark", "Light"]);
+    expect(seen).toEqual([
+      namedTheme("midnight", "Dark"),
+      defaultTheme("Light"),
+    ]);
     dispose?.();
   });
 
   it("propagates typed result subscription errors", async () => {
     async function* themes() {
-      yield ok<ThemeVariant>("Dark");
-      yield err<ThemeVariant, GenericError>({ reason: "theme stream failed" });
+      yield ok<HostThemeSubscribeItemValue>(defaultTheme("Dark"));
+      yield err<HostThemeSubscribeItemValue, GenericError>({
+        reason: "theme stream failed",
+      });
     }
 
     const raw = createWasmRawCallbacks(
@@ -406,23 +480,23 @@ describe("createWasmRawCallbacks", () => {
         },
       }),
     );
-    const seen: ThemeVariant[] = [];
+    const seen: HostThemeSubscribeItemValue[] = [];
     const errors: GenericError[] = [];
     const dispose = raw.subscribeTheme?.(
-      (theme) => seen.push(ThemeVariant.dec(theme!)),
+      (theme) => seen.push(HostThemeSubscribeItem.dec(theme!)),
       (error) => errors.push(error),
     );
 
     await settle();
 
-    expect(seen).toEqual(["Dark"]);
+    expect(seen).toEqual([defaultTheme("Dark")]);
     expect(errors).toEqual([{ reason: "theme stream failed" }]);
     dispose?.();
   });
 
   it("propagates thrown subscription iterator errors", async () => {
     async function* themes() {
-      yield ok<ThemeVariant>("Dark");
+      yield ok<HostThemeSubscribeItemValue>(defaultTheme("Dark"));
       throw new Error("theme iterator failed");
     }
 
@@ -433,16 +507,16 @@ describe("createWasmRawCallbacks", () => {
         },
       }),
     );
-    const seen: ThemeVariant[] = [];
+    const seen: HostThemeSubscribeItemValue[] = [];
     const errors: GenericError[] = [];
     const dispose = raw.subscribeTheme?.(
-      (theme) => seen.push(ThemeVariant.dec(theme!)),
+      (theme) => seen.push(HostThemeSubscribeItem.dec(theme!)),
       (error) => errors.push(error),
     );
 
     await settle();
 
-    expect(seen).toEqual(["Dark"]);
+    expect(seen).toEqual([defaultTheme("Dark")]);
     expect(errors).toEqual([{ reason: "theme iterator failed" }]);
     dispose?.();
   });
@@ -486,5 +560,27 @@ describe("createWasmRawCallbacks", () => {
     expect(received).toEqual(responses);
     connection!.close();
     expect(closes).toBe(1);
+  });
+});
+
+describe("ProductContext codec", () => {
+  // Mirror of the Rust test
+  // `product_context_encoding_matches_the_generated_host_codec` in
+  // `rust/crates/truapi-platform/src/lib.rs`, which pins these same bytes
+  // through `parity-scale-codec`. Both halves must be edited together: a
+  // ProductContext travels the wasm callback boundary encoded in Rust and
+  // decoded here.
+  it("product context encoding matches the Rust platform codec", () => {
+    expect([...ProductExecutionKind.enc("App")]).toEqual([0]);
+    expect([...ProductExecutionKind.enc("Widget")]).toEqual([1]);
+    expect([...ProductExecutionKind.enc("Worker")]).toEqual([2]);
+
+    const context = { productId: "app.dot", executionKind: "Worker" } as const;
+    expect([...ProductContext.enc(context)]).toEqual([
+      28,
+      ...new TextEncoder().encode("app.dot"),
+      2,
+    ]);
+    expect(ProductContext.dec(ProductContext.enc(context))).toEqual(context);
   });
 });

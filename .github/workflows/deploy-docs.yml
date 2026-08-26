@@ -20,7 +20,7 @@ jobs:
       pages: write
       id-token: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -28,13 +28,14 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
       - name: Configure Pages
+        id: pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
@@ -56,7 +57,7 @@ jobs:
         run: yarn install --frozen-lockfile
 
       - name: Cache Next.js build
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: playground/.next/cache
           key: ${{ runner.os }}-nextjs-${{ hashFiles('playground/yarn.lock') }}-${{ hashFiles('playground/src/**', 'playground/scripts/**', 'playground/public/**', 'playground/next.config.js', 'playground/tsconfig.json', 'playground/package.json') }}
@@ -66,7 +67,7 @@ jobs:
       - name: Build playground (static export)
         working-directory: playground
         env:
-          NEXT_PUBLIC_BASE_PATH: /truapi/playground
+          NEXT_PUBLIC_BASE_PATH: ${{ steps.pages.outputs.base_path }}/playground
         run: yarn build
 
       - name: Install explorer dependencies
@@ -76,7 +77,7 @@ jobs:
       - name: Build explorer (static export)
         working-directory: explorer
         env:
-          EXPLORER_BASE_PATH: /truapi/
+          EXPLORER_BASE_PATH: ${{ steps.pages.outputs.base_path }}/
         run: npm run build
 
       - name: Assemble GitHub Pages site
@@ -87,7 +88,7 @@ jobs:
           cp -R explorer/dist/. site/
           # GitHub Pages serves the site-root 404.html for every missing path.
           # Serving a copy of the SPA index lets React Router resolve explorer
-          # deep links (e.g. /truapi/v/main/method/foo) on a fresh load.
+          # deep links (e.g. /host-rust-core/v/main/method/foo) on a fresh load.
           cp site/index.html site/404.html
           # Playground mounted at /playground/ (its Next.js basePath).
           mkdir -p site/playground

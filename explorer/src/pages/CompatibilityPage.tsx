@@ -3,17 +3,26 @@ import { Link, useOutletContext } from "react-router-dom";
 import { Check, ChevronDown, Minus, X } from "lucide-react";
 import type { VersionEntry } from "../data/types";
 import { methodPath } from "../data/registry";
-import { compatibility } from "../data/compatibility";
-import type { CompatStatus } from "../data/compatibility-types";
+import { chatCompatibility, compatibility } from "../data/compatibility";
+
+/**
+ * Execution kinds that serve the Chat modality. `Chat` is the name protocol
+ * versions up to 0.9.0 declared; `Worker` is the name that replaced it.
+ */
+const CHAT_EXECUTIONS: ReadonlySet<string> = new Set(["Chat", "Worker"]);
+import type {
+  CompatibilityMatrix,
+  CompatStatus,
+} from "../data/compatibility-types";
 import { playgroundDiagnosisUrl } from "../data/playground";
 
 /** Per-method host compatibility, aggregated from per-host diagnosis reports. */
 export default function CompatibilityPage() {
   const { version } = useOutletContext<{ version: VersionEntry }>();
-  const { generatedAt, hosts, methods } = compatibility;
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const hostCount = compatibility.hosts.length + chatCompatibility.hosts.length;
 
-  if (hosts.length === 0) {
+  if (hostCount === 0) {
     return (
       <div className="max-w-4xl mx-auto">
         <h1 className="text-2xl lg:text-3xl font-bold text-white font-display tracking-tight mb-3">
@@ -41,8 +50,6 @@ export default function CompatibilityPage() {
     );
   }
 
-  const byId = new Map(methods.map((m) => [m.id, m]));
-
   return (
     <div className="max-w-5xl mx-auto">
       <div className="mb-8 animate-slide-up">
@@ -60,9 +67,12 @@ export default function CompatibilityPage() {
           </a>
         </div>
         <p className="text-sm text-slate-400 mt-2">
-          Aggregated from {hosts.length} host{hosts.length === 1 ? "" : "s"} —
-          generated{" "}
-          <span className="font-mono text-slate-300">{generatedAt}</span>.
+          Aggregated from {hostCount} execution report
+          {hostCount === 1 ? "" : "s"} — generated{" "}
+          <span className="font-mono text-slate-300">
+            {compatibility.generatedAt}
+          </span>
+          .
         </p>
         <div className="flex flex-wrap items-center gap-4 mt-4 text-xs text-slate-400">
           <span className="inline-flex items-center gap-1.5">
@@ -80,6 +90,61 @@ export default function CompatibilityPage() {
         </div>
       </div>
 
+      <div className="space-y-10">
+        <CompatibilitySection
+          title="App compatibility"
+          description="API coverage measured from a visible App or Widget execution."
+          executions={null}
+          matrix={compatibility}
+          version={version}
+          expandedId={expandedId}
+          onToggle={setExpandedId}
+        />
+        <CompatibilitySection
+          title="Chat compatibility"
+          description="Chat API coverage measured from the product's Worker execution."
+          executions={CHAT_EXECUTIONS}
+          matrix={chatCompatibility}
+          version={version}
+          expandedId={expandedId}
+          onToggle={setExpandedId}
+        />
+      </div>
+    </div>
+  );
+}
+
+function CompatibilitySection({
+  title,
+  description,
+  executions,
+  matrix,
+  version,
+  expandedId,
+  onToggle,
+}: {
+  title: string;
+  description: string;
+  /**
+   * Kinds whose gated services belong in this section, or `null` for the
+   * ungated ones. A set rather than one name because each archived version
+   * records the kind name that version declared.
+   */
+  executions: ReadonlySet<string> | null;
+  matrix: CompatibilityMatrix;
+  version: VersionEntry;
+  expandedId: string | null;
+  onToggle: (id: string | null) => void;
+}) {
+  if (matrix.hosts.length === 0) return null;
+  const byId = new Map(matrix.methods.map((method) => [method.id, method]));
+
+  return (
+    <section>
+      <div className="mb-3">
+        <h2 className="text-lg font-semibold text-white font-display">{title}</h2>
+        <p className="text-sm text-slate-400 mt-1">{description}</p>
+      </div>
       <div className="overflow-auto max-h-[70vh] bg-slate-800/30 border border-slate-700/50 rounded-xl shadow-[0_4px_24px_rgba(0,0,0,0.25)]">
         <table className="w-full border-separate border-spacing-0">
           <thead>
@@ -87,7 +152,7 @@ export default function CompatibilityPage() {
               <th className="sticky left-0 top-0 z-30 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-400 font-display px-5 py-3 bg-slate-900 border-b border-slate-700/60">
                 Method
               </th>
-              {hosts.map((h) => (
+              {matrix.hosts.map((h) => (
                 <th
                   key={h.label}
                   className="sticky top-0 z-20 text-center text-[11px] font-semibold uppercase tracking-wider text-slate-400 font-display px-5 py-3 w-28 whitespace-nowrap bg-slate-900 border-b border-l border-slate-700/60"
@@ -99,43 +164,45 @@ export default function CompatibilityPage() {
           </thead>
           <tbody>
             {version.services
+              .filter((service) =>
+                executions
+                  ? service.requiredExecution !== undefined &&
+                    executions.has(service.requiredExecution)
+                  : service.requiredExecution === undefined,
+              )
               .map((service) => ({
                 name: service.name,
-                // Only methods the matrix actually measured. Methods absent from
-                // the matrix (e.g. skipped services) are dropped, and a service
-                // left with none is not rendered at all.
-                methods: service.methods.flatMap((m) => {
+                // Every generated method, measured or not. A method with no
+                // matrix row renders as not-reported across all hosts rather
+                // than vanishing, so an unexercised method reads as a gap
+                // instead of shrinking the denominator.
+                methods: service.methods.map((m) => {
                   const id = `${service.name}/${m.name}`;
                   const row = byId.get(id);
-                  return row
-                    ? [
-                        {
-                          name: m.name,
-                          id,
-                          results: row.results,
-                          details: row.details,
-                        },
-                      ]
-                    : [];
+                  return {
+                    name: m.name,
+                    id,
+                    results: row?.results,
+                    details: row?.details,
+                  };
                 }),
               }))
-              .filter((service) => service.methods.length > 0)
               .map((service, i) => (
                 <ServiceRows
                   key={service.name}
                   serviceName={service.name}
                   serviceIndex={i}
                   methods={service.methods}
-                  hosts={hosts.map((h) => h.label)}
+                  hosts={matrix.hosts.map((h) => h.label)}
                   versionId={version.id}
                   expandedId={expandedId}
-                  onToggle={setExpandedId}
+                  onToggle={onToggle}
                 />
               ))}
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 }
 

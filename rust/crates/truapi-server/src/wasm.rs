@@ -17,19 +17,24 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::channel::mpsc;
+use futures::future::{AbortHandle, Abortable};
 use futures::stream::{self, BoxStream, Stream, StreamExt};
 use js_sys::{Array, Function, Reflect, Uint8Array};
-use parity_scale_codec::Decode;
+use parity_scale_codec::{Decode, Encode};
 use send_wrapper::SendWrapper;
 use truapi::latest::HostPlatform;
 use truapi::v01;
+#[cfg(feature = "wasm-signing-host")]
+use truapi_platform::SigningHostConfig;
 use truapi_platform::{
-    ChainProvider, HostInfo, JsonRpcConnection, PairingHostConfig, PlatformInfo, ProductContext,
-    RuntimeConfigValidationError,
+    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig, PlatformInfo,
+    ProductContext, ProductExecutionKind, RuntimeConfigValidationError,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "wasm-signing-host")]
+use crate::SigningHostRuntime;
 use crate::subscription::Spawner;
 use crate::{
     FrameSink, PairingHostRuntime, PermissionAuthorizationRequest, PermissionAuthorizationStatus,
@@ -423,8 +428,27 @@ fn get_optional_function(callbacks: &JsValue, name: &str) -> Result<Option<Funct
         .map_err(|_| JsValue::from_str(&format!("callbacks.{name} must be a function")))
 }
 
+/// Both stubs below are built from Rust closures rather than from source text:
+/// `Function::new_no_args` compiles a string the way `eval` does, which a
+/// Content-Security-Policy without `unsafe-eval` blocks even where it still
+/// allows WebAssembly. They run at startup for every host, so a source-string
+/// stub would keep the whole runtime from starting, not just the capability it
+/// stands in for.
 fn noop_function() -> Function {
-    Function::new_no_args("")
+    Closure::<dyn Fn()>::new(|| {})
+        .into_js_value()
+        .unchecked_into()
+}
+
+/// Stand-in for a callback of an optional capability the host left out. The
+/// core only holds an adapter for a capability the bridge reports as present,
+/// so this is never invoked; it throws rather than returning a value the
+/// decoder would misread.
+fn missing_callback(name: &str) -> Function {
+    let message = format!("host callback {name} is not implemented");
+    Closure::<dyn Fn() -> Result<(), JsValue>>::new(move || Err(JsValue::from_str(&message)))
+        .into_js_value()
+        .unchecked_into()
 }
 
 fn runtime_config_from_js(value: &JsValue) -> Result<(PairingHostConfig, ProductContext), JsValue> {
@@ -442,6 +466,7 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
     let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
     let people = get_required_object(value, "people", "runtimeConfig.people")?;
     let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+    let asset_hub = get_required_object(value, "assetHub", "runtimeConfig.assetHub")?;
     let pairing = get_required_object(value, "pairing", "runtimeConfig.pairing")?;
 
     PairingHostConfig::new(
@@ -473,6 +498,11 @@ fn pairing_host_config_from_js(value: &JsValue) -> Result<PairingHostConfig, JsV
             "genesisHash",
             "runtimeConfig.bulletin.genesisHash",
         )?,
+        get_required_bytes32_at(
+            &asset_hub,
+            "genesisHash",
+            "runtimeConfig.assetHub.genesisHash",
+        )?,
         get_required_string_at(
             &pairing,
             "deeplinkScheme",
@@ -499,16 +529,70 @@ fn host_platform_from_js(value: Option<String>) -> Result<HostPlatform, JsValue>
     }
 }
 
+#[cfg(feature = "wasm-signing-host")]
+fn signing_host_config_from_js(value: &JsValue) -> Result<SigningHostConfig, JsValue> {
+    if value.is_null() || value.is_undefined() {
+        return Err(JsValue::from_str("hostConfig is required"));
+    }
+
+    let host = get_required_object(value, "host", "runtimeConfig.host")?;
+    let platform = get_optional_object(value, "platform", "runtimeConfig.platform")?;
+    let people = get_required_object(value, "people", "runtimeConfig.people")?;
+    let bulletin = get_required_object(value, "bulletin", "runtimeConfig.bulletin")?;
+
+    SigningHostConfig::new(
+        HostInfo {
+            name: get_required_string_at(&host, "name", "runtimeConfig.host.name")?,
+            icon: get_optional_string_at(&host, "icon", "runtimeConfig.host.icon")?,
+            version: get_optional_string_at(&host, "version", "runtimeConfig.host.version")?,
+            platform: host_platform_from_js(get_optional_string_at(
+                &host,
+                "platform",
+                "runtimeConfig.host.platform",
+            )?)?,
+        },
+        PlatformInfo {
+            kind: platform
+                .as_ref()
+                .map(|p| get_optional_string_at(p, "type", "runtimeConfig.platform.type"))
+                .transpose()?
+                .flatten(),
+            version: platform
+                .as_ref()
+                .map(|p| get_optional_string_at(p, "version", "runtimeConfig.platform.version"))
+                .transpose()?
+                .flatten(),
+        },
+        get_required_bytes32_at(&people, "genesisHash", "runtimeConfig.people.genesisHash")?,
+        get_required_bytes32_at(
+            &bulletin,
+            "genesisHash",
+            "runtimeConfig.bulletin.genesisHash",
+        )?,
+    )
+    .map_err(runtime_config_validation_to_js)
+}
+
 fn product_context_from_js(value: &JsValue) -> Result<ProductContext, JsValue> {
     if value.is_null() || value.is_undefined() {
         return Err(JsValue::from_str("product is required"));
     }
-    ProductContext::new(get_required_string_at(
-        value,
-        "productId",
-        "runtimeConfig.productId",
-    )?)
-    .map_err(runtime_config_validation_to_js)
+    let product_id = get_required_string_at(value, "productId", "runtimeConfig.productId")?;
+    let execution_kind =
+        match get_optional_string_at(value, "executionKind", "runtimeConfig.executionKind")?
+            .as_deref()
+        {
+            None | Some("App") => ProductExecutionKind::App,
+            Some("Widget") => ProductExecutionKind::Widget,
+            Some("Worker") => ProductExecutionKind::Worker,
+            Some(other) => {
+                return Err(JsValue::from_str(&format!(
+                    "runtimeConfig.executionKind must be App, Widget or Worker, got {other:?}"
+                )));
+            }
+        };
+    ProductContext::new_with_execution(product_id, execution_kind)
+        .map_err(runtime_config_validation_to_js)
 }
 
 fn runtime_config_field_to_js(field: &str) -> &str {
@@ -518,6 +602,7 @@ fn runtime_config_field_to_js(field: &str) -> &str {
         "pairing_deeplink_scheme" => "pairing.deeplinkScheme",
         "people_chain_genesis_hash" => "people.genesisHash",
         "bulletin_chain_genesis_hash" => "bulletin.genesisHash",
+        "asset_hub_chain_genesis_hash" => "assetHub.genesisHash",
         other => other,
     }
 }
@@ -528,8 +613,8 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
             "runtimeConfig.{} must not be empty",
             runtime_config_field_to_js(field)
         )),
-        RuntimeConfigValidationError::InvalidHostIcon { reason } => JsValue::from_str(&format!(
-            "runtimeConfig.host.icon must be an absolute HTTPS URL: {reason}"
+        RuntimeConfigValidationError::InvalidHostIcon { source } => JsValue::from_str(&format!(
+            "runtimeConfig.host.icon must be an absolute HTTPS URL: {source}"
         )),
         RuntimeConfigValidationError::InsecureHostIcon { scheme } => JsValue::from_str(&format!(
             "runtimeConfig.host.icon must use https scheme, got {scheme:?}"
@@ -539,7 +624,7 @@ fn runtime_config_validation_to_js(err: RuntimeConfigValidationError) -> JsValue
         ),
         RuntimeConfigValidationError::InvalidProductId { product_id } => {
             JsValue::from_str(&format!(
-                "runtimeConfig.productId must be a .dot or localhost product identifier, got {product_id:?}"
+                "runtimeConfig.productId must be a dotNS or localhost product identifier, got {product_id:?}"
             ))
         }
     }
@@ -709,13 +794,20 @@ impl WasmPairingHostRuntime {
         console_error_panic_hook::set_once();
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
+        let has_chat = bridge.has_chat();
         let platform = Arc::new(WasmPlatform::new(bridge));
+        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = pairing_host_config_from_js(&host_config)?;
         Ok(Self {
-            runtime: Rc::new(PairingHostRuntime::new(platform, host_config, spawner)),
+            runtime: Rc::new(PairingHostRuntime::with_chat_platform(
+                platform,
+                host_config,
+                spawner,
+                chat_platform,
+            )),
         })
     }
 
@@ -745,6 +837,61 @@ impl WasmPairingHostRuntime {
     #[wasm_bindgen(js_name = cancelPairing)]
     pub fn cancel_pairing(&self) {
         self.runtime.cancel_pairing();
+    }
+
+    /// Read the active session's X25519 chat identity private key, or
+    /// `undefined` when no session is active.
+    #[wasm_bindgen(js_name = sessionChatIdentityKey)]
+    pub fn session_chat_identity_key(&self) -> Option<Vec<u8>> {
+        self.runtime
+            .session_chat_identity_key()
+            .map(|key| key.to_vec())
+    }
+
+    /// Read this device's X25519 encryption secret, generating and persisting
+    /// it on first read.
+    #[wasm_bindgen(js_name = deviceEncryptionKey)]
+    pub async fn device_encryption_key(&self) -> Result<Vec<u8>, JsValue> {
+        self.runtime
+            .device_encryption_key()
+            .await
+            .map(|key| key.to_vec())
+            .map_err(generic_error_to_js)
+    }
+
+    /// Resolve a product's hard-subtree public key from the cache, the
+    /// persisted slot, or the Account Holder. `timeoutMs` bounds that wait and
+    /// exceeding it rejects. `undefined` when no session is active.
+    #[wasm_bindgen(js_name = productSubtreePublicKey)]
+    pub async fn product_subtree_public_key(
+        &self,
+        product_id: String,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<Vec<u8>>, JsValue> {
+        self.runtime
+            .product_subtree_public_key(&product_id, timeout_ms)
+            .await
+            .map(|key| key.map(|key| key.to_vec()))
+            .map_err(generic_error_to_js)
+    }
+
+    /// Activate an externally persisted canonical session without writing it
+    /// to core storage; resolves only after product frames may use it.
+    #[wasm_bindgen(js_name = activateExternalSession)]
+    pub async fn activate_external_session(&self, blob: Vec<u8>) -> Result<(), JsValue> {
+        self.runtime
+            .activate_external_session(&blob)
+            .await
+            .map_err(generic_error_to_js)
+    }
+
+    /// Restore the persisted auth session and resolve only after it is active.
+    #[wasm_bindgen(js_name = activateStoredSession)]
+    pub async fn activate_stored_session(&self) -> Result<(), JsValue> {
+        self.runtime
+            .activate_stored_session()
+            .await
+            .map_err(generic_error_to_js)
     }
 
     /// Notify the runtime that the auth session slot may have changed.
@@ -804,6 +951,157 @@ impl WasmPairingHostRuntime {
             .await
             .map_err(generic_error_to_js)
     }
+
+    /// Clear one product's durable and in-memory capability state.
+    #[wasm_bindgen(js_name = clearProductState)]
+    pub async fn clear_product_state(&self, product_id: String) -> Result<(), JsValue> {
+        self.runtime
+            .clear_product_state(&product_id)
+            .await
+            .map_err(generic_error_to_js)
+    }
+
+    /// Clear canonical paired-session state without notifying the peer.
+    #[wasm_bindgen(js_name = resetSessionState)]
+    pub async fn reset_session_state(&self) {
+        self.runtime.reset_session_state().await;
+    }
+}
+
+/// Strictly decode a SCALE-encoded core-storage key for host storage policy.
+#[wasm_bindgen(js_name = describeCoreStorageKey)]
+pub fn describe_core_storage_key_for_wasm(encoded: Vec<u8>) -> Result<JsValue, JsValue> {
+    let description = truapi_platform::describe_core_storage_key(&encoded)
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let value = js_sys::Object::new();
+    Reflect::set(
+        &value,
+        &JsValue::from_str("kind"),
+        &JsValue::from_str(description.kind),
+    )?;
+    if let Some(product_id) = description.product_id {
+        Reflect::set(
+            &value,
+            &JsValue::from_str("productId"),
+            &JsValue::from_str(&product_id),
+        )?;
+    }
+    Ok(value.into())
+}
+
+#[cfg(feature = "wasm-signing-host")]
+/// JS-callable handle to a wallet-local signing-host runtime.
+#[wasm_bindgen]
+pub struct WasmSigningHostRuntime {
+    runtime: Rc<SigningHostRuntime>,
+}
+
+#[cfg(feature = "wasm-signing-host")]
+#[wasm_bindgen]
+impl WasmSigningHostRuntime {
+    /// Build a shared signing runtime from host callbacks and host config.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        callbacks: JsValue,
+        host_config: JsValue,
+    ) -> Result<WasmSigningHostRuntime, JsValue> {
+        console_error_panic_hook::set_once();
+        crate::logging::init();
+        let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
+        let platform = Arc::new(WasmPlatform::new(bridge));
+        let spawner: Spawner = Arc::new(|fut| {
+            wasm_bindgen_futures::spawn_local(fut);
+        });
+        let host_config = signing_host_config_from_js(&host_config)?;
+        Ok(Self {
+            runtime: Rc::new(SigningHostRuntime::new(platform, host_config, spawner)),
+        })
+    }
+
+    /// Build one product-scoped runtime from this signing host.
+    #[wasm_bindgen(js_name = productRuntime)]
+    pub fn product_runtime(
+        &self,
+        product: JsValue,
+        core_callbacks: JsValue,
+    ) -> Result<WasmProductRuntime, JsValue> {
+        let product = product_context_from_js(&product)?;
+        let channel = CoreChannel::from_js(&core_callbacks)?;
+        let sink = Arc::new(WasmFrameSink {
+            emit_frame: SendWrapper::new(channel.emit_frame),
+        });
+        let runtime = self.runtime.product_runtime(product, sink);
+        Ok(WasmProductRuntime::from_parts(runtime, channel.dispose))
+    }
+
+    /// Disconnect the active wallet-local session.
+    #[wasm_bindgen(js_name = disconnectSession)]
+    pub async fn disconnect_session(&self) {
+        self.runtime.disconnect_session().await;
+    }
+
+    /// Activate a wallet-local session from raw BIP-39 entropy.
+    #[wasm_bindgen(js_name = activateLocalSession)]
+    pub async fn activate_local_session(&self, secret: Vec<u8>) -> Result<(), JsValue> {
+        self.runtime
+            .activate_local_session(secret)
+            .await
+            .map_err(generic_error_to_js)
+    }
+
+    /// Activate a wallet-local session and attach known identity metadata.
+    #[wasm_bindgen(js_name = activateLocalSessionWithIdentity)]
+    pub async fn activate_local_session_with_identity(
+        &self,
+        secret: Vec<u8>,
+        lite_username: Option<String>,
+    ) -> Result<(), JsValue> {
+        self.runtime
+            .activate_local_session_with_identity(secret, lite_username)
+            .await
+            .map_err(generic_error_to_js)
+    }
+
+    /// Revoke one product's grants from the current local activation.
+    #[wasm_bindgen(js_name = clearProductState)]
+    pub async fn clear_product_state(&self, product_id: String) -> Result<(), JsValue> {
+        self.runtime
+            .clear_product_state(&product_id)
+            .await
+            .map_err(generic_error_to_js)
+    }
+}
+
+/// Soft-derive a product account public key from a product's hard-subtree key
+/// and a SCALE-encoded `DerivationIndex`.
+///
+/// The index crosses encoded rather than as a number so the chain code stays
+/// core-owned: a host that rebuilds it wrongly gets a valid-looking wrong
+/// address rather than an error.
+#[wasm_bindgen(js_name = deriveProductAccountPublicKey)]
+pub fn derive_product_account_public_key(
+    product_subtree_public_key: Vec<u8>,
+    derivation_index: Vec<u8>,
+) -> Result<Vec<u8>, JsValue> {
+    let subtree = <[u8; 32]>::try_from(product_subtree_public_key.as_slice())
+        .map_err(|_| JsValue::from_str("product subtree public key must be 32 bytes"))?;
+    let index = v01::DerivationIndex::decode(&mut derivation_index.as_slice())
+        .map_err(|err| JsValue::from_str(&format!("derivation index did not decode: {err}")))?;
+    crate::host_logic::product_account::derive_product_public_key(
+        subtree,
+        crate::host_logic::product_account::derivation_index_bytes(&index),
+    )
+    .map(|public_key| public_key.to_vec())
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+/// Format a product account public key as the SS58 address host-spec C.6
+/// mandates, so hosts do not each pick a prefix.
+#[wasm_bindgen(js_name = productAccountAddress)]
+pub fn product_account_address(public_key: Vec<u8>) -> Result<String, JsValue> {
+    let public_key = <[u8; 32]>::try_from(public_key.as_slice())
+        .map_err(|_| JsValue::from_str("product account public key must be 32 bytes"))?;
+    Ok(crate::host_logic::product_account::product_public_key_to_address(public_key))
 }
 
 /// Set the live log level (`off`/`error`/`warn`/`info`/`debug`/`trace`).
@@ -852,17 +1150,20 @@ impl WasmProductRuntime {
         let frame_sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
+        let has_chat = bridge.has_chat();
         let platform = Arc::new(WasmPlatform::new(bridge));
+        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let (host_config, product) = runtime_config_from_js(&runtime_config)?;
-        let core = ProductRuntime::from_platform_with_config(
+        let core = ProductRuntime::from_platform_with_chat_platform(
             platform,
             host_config,
             product,
             spawner,
             frame_sink,
+            chat_platform,
         );
         Ok(Self::from_parts(core, channel.dispose))
     }
@@ -964,5 +1265,87 @@ impl WasmProductRuntime {
     pub async fn disconnect_session(&self) -> Result<(), JsValue> {
         self.inner.core.disconnect_session().await;
         Ok(())
+    }
+
+    /// Start the host-initiated render subscription for one stored custom Chat
+    /// message. `onUpdate` receives each replacement tree as a SCALE-encoded
+    /// `CustomRendererNode`. Exactly one terminal follows: `onComplete` when the
+    /// stream ended with the last tree standing, or `onError` when the product
+    /// could not serve the render and the last tree is partial. Rejects when
+    /// this connection may not reach Chat.
+    #[wasm_bindgen(js_name = renderCustomMessage)]
+    pub fn render_custom_message(
+        &self,
+        message_id: String,
+        message_type: String,
+        payload: Vec<u8>,
+        on_update: Function,
+        on_complete: Function,
+        on_error: Function,
+    ) -> Result<WasmCustomRendererSubscription, JsValue> {
+        let mut stream = self
+            .inner
+            .core
+            .control()
+            .render_custom_message(message_id, message_type, payload)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+        let on_update = SendWrapper::new(on_update);
+        let on_complete = SendWrapper::new(on_complete);
+        let on_error = SendWrapper::new(on_error);
+        let (abort, registration) = AbortHandle::new_pair();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = Abortable::new(
+                async move {
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(node) => {
+                                let bytes = Uint8Array::from(node.encode().as_slice());
+                                let _ = on_update.call1(&JsValue::NULL, &bytes);
+                            }
+                            Err(error) => {
+                                let _ = on_error
+                                    .call1(&JsValue::NULL, &JsValue::from_str(&error.reason));
+                                return;
+                            }
+                        }
+                    }
+                    let _ = on_complete.call0(&JsValue::NULL);
+                },
+                registration,
+            )
+            .await;
+        });
+        Ok(WasmCustomRendererSubscription { abort: Some(abort) })
+    }
+
+    /// Publish one host-authored Chat action into this connection's action
+    /// stream, buffered until the product subscribes. Takes a SCALE-encoded
+    /// `HostChatActionSubscribeItem`.
+    #[wasm_bindgen(js_name = publishChatAction)]
+    pub fn publish_chat_action(&self, action: Vec<u8>) -> Result<(), JsValue> {
+        let action = v01::HostChatActionSubscribeItem::decode(&mut action.as_slice())
+            .map_err(|err| JsValue::from_str(&format!("chat action did not decode: {err}")))?;
+        self.inner
+            .core
+            .control()
+            .publish_chat_action(action)
+            .map_err(|err| JsValue::from_str(&err.to_string()))
+    }
+}
+
+/// Cancellable observation of one custom-message render instance. Dropping the
+/// handle on the JS side does not stop the stream; call `cancel`.
+#[wasm_bindgen]
+pub struct WasmCustomRendererSubscription {
+    abort: Option<AbortHandle>,
+}
+
+#[wasm_bindgen]
+impl WasmCustomRendererSubscription {
+    /// Stop delivering renderer updates. Idempotent.
+    pub fn cancel(&mut self) {
+        if let Some(abort) = self.abort.take() {
+            abort.abort();
+        }
     }
 }

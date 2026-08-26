@@ -1,5 +1,69 @@
 # @parity/truapi
 
+## 0.10.0
+
+### Minor Changes
+
+- d872d64: Export `PREVIEWNET_INDIVIDUALITY` and `PREVIEWNET_ASSET_HUB` well-known chains,
+  so a product on previewnet can pin the genesis hashes it signs `CheckGenesis`
+  over the same way a product on `paseo-next-v2` does. Pairs with the CLI gaining a
+  `previewnet` network preset.
+- d49f253: Add `createWebSocketProvider(url)` for hosts that serve protocol frames over a
+  WebSocket, and `connectWebSocketHost(url)` on the sandbox path so a plain
+  browser tab using such a host is detected as hosted and shares the cached
+  client. Both native host READMEs already pointed products at
+  `createWebSocketProvider`, which until now did not exist, so every browser
+  product had to hand-write the bridge. `truapi-host signing-host --frame-listen`
+  is now reachable from an ordinary tab, and the CLI's own TCP provider delegates
+  to the shared implementation.
+
+## 0.9.0
+
+### Minor Changes
+
+- Add the RFC-0024 ring-VRF key management surface. `account.registerRingVrfKey`
+  registers a product-owned member key for a ring and returns its public key,
+  `account.listRingVrfKeys` reports an owner product's registry entries at either
+  `Anonymized` or `PublicKey` disclosure, and `account.ringVrfSign` signs bytes
+  directly with a registered key.
+
+  `account.getAccountAlias` and `account.createAccountProof` take a `keyHandle`
+  naming the registered member key the host must use, and ring locations address
+  the collection directly without a pallet-instance junction. Their error unions
+  carry `KeyNotRegistered` and `KeyNotInRing`; proof creation also reports
+  `NotAllowlisted` when a foreign key's owner has not allowlisted the caller.
+
+## 0.8.0
+
+### Minor Changes
+
+- Add `chain.getChainInfo` (RFC 0026): products resolve a `ChainIdentifier` role
+  (`Relay`, `AssetHub`, `People`, `Bulletin`) against the host's configured
+  environment and receive the network string plus the chain's genesis hash, so
+  genesis hashes no longer need to be hard-coded into product bundles.
+
+## 0.7.0
+
+### Minor Changes
+
+- Publish the package version paired with the RFC-0022 mobile host cutover and
+  the completed RFC-0023 account VRF signing flow.
+
+## 0.6.0
+
+### Minor Changes
+
+- Represent product-account derivation indexes as tagged selectors that support
+  both compact numeric values and raw 32-byte values. Add the general-purpose
+  sr25519 `account.signVrf` API and its generated request, response, transcript,
+  error, and callback types.
+
+## 0.5.1
+
+### Patch Changes
+
+- Support the sandbox client in legacy Nova and dotli iframe hosts while the Rust Core transport migration rolls out.
+
 ## 0.5.0
 
 ### Minor Changes

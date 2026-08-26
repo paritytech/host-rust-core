@@ -17,18 +17,10 @@ use crate::subscription::Spawner;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::subscription::thread_per_subscription_spawner;
 
-use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
 use futures::Stream;
 use futures::stream::{self, BoxStream};
-use hkdf::Hkdf;
-use p256::PublicKey as P256PublicKey;
-use p256::SecretKey as P256SecretKey;
-use p256::ecdh::diffie_hellman;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
 use parity_scale_codec::{Decode, Encode};
 use schnorrkel::{ExpansionMode, MiniSecretKey};
-use sha2::Sha256;
 use truapi::v01;
 use truapi::versioned::account::{HostAccountCreateProofRequest, HostAccountGetAliasRequest};
 use truapi::versioned::resource_allocation::HostRequestResourceAllocationRequest;
@@ -37,9 +29,11 @@ use truapi_platform::{
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
     JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
     PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
-    ProductContext, ProductStorage as PlatformProductStorage, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    ProductContext, ProductStorage as PlatformProductStorage, ProductSubtreeReview,
+    ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
 /// Test spawner that matches the current target.
 pub(crate) fn test_spawner() -> Spawner {
@@ -70,6 +64,12 @@ pub type StorageWriteHook = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 pub(crate) struct StubPlatform {
     pub(crate) remote_permission_denied: bool,
+    /// Every `remote_permission` request, in order, so a test can assert which
+    /// domains reached the prompt and that a stored grant suppresses a re-ask.
+    pub(crate) remote_permission_requests: Arc<Mutex<Vec<v01::RemotePermissionRequest>>>,
+    /// URLs handed to `navigate_to`. Empty means the gate blocked before the
+    /// platform was ever reached.
+    pub(crate) navigations: Arc<Mutex<Vec<String>>>,
     pub(crate) account_alias_confirmed: bool,
     pub(crate) account_alias_error: Option<&'static str>,
     pub(crate) create_proof_confirmed: bool,
@@ -77,6 +77,10 @@ pub(crate) struct StubPlatform {
     pub(crate) account_access_confirmed: bool,
     pub(crate) account_access_error: Option<&'static str>,
     pub(crate) account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
+    /// Inverted so the derived default (`false`) approves, matching the
+    /// pre-consent behavior where a cold own-account resolve was not gated.
+    pub(crate) product_subtree_denied: bool,
+    pub(crate) product_subtree_reviews: Arc<Mutex<Vec<ProductSubtreeReview>>>,
     pub(crate) identity_disclosure_confirmed: bool,
     pub(crate) identity_disclosure_error: Option<&'static str>,
     pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
@@ -84,10 +88,18 @@ pub(crate) struct StubPlatform {
     pub(crate) sign_payload_error: Option<&'static str>,
     pub(crate) sign_raw_confirmed: bool,
     pub(crate) sign_raw_error: Option<&'static str>,
+    pub(crate) sign_vrf_confirmed: bool,
+    pub(crate) sign_vrf_error: Option<&'static str>,
+    pub(crate) sign_vrf_reviews: Arc<Mutex<Vec<SignVrfReview>>>,
+    /// Every `StatementStoreProductSign` review passed to `confirm_user_action`, in order.
+    pub(crate) statement_store_product_sign_reviews:
+        Arc<Mutex<Vec<StatementStoreProductSignReview>>>,
     pub(crate) create_transaction_confirmed: bool,
     pub(crate) create_transaction_error: Option<&'static str>,
     pub(crate) resource_allocation_confirmed: bool,
     pub(crate) resource_allocation_error: Option<&'static str>,
+    /// Every `ResourceAllocation` review passed to `confirm_user_action`, in order.
+    pub(crate) resource_allocation_reviews: Arc<Mutex<Vec<ResourceAllocationReview>>>,
     pub(crate) session_blob: Option<Vec<u8>>,
     pub(crate) session_error: Option<&'static str>,
     pub(crate) session_clears: Arc<Mutex<usize>>,
@@ -115,6 +127,14 @@ pub(crate) struct StubPlatform {
     pub(crate) cancelled_notifications: Arc<Mutex<Vec<v01::NotificationId>>>,
     pub(crate) sent_rpc: Arc<Mutex<Vec<String>>>,
     pub(crate) rpc_responses: Vec<String>,
+    /// Responses keyed by JSON-RPC method, answered as each request arrives with
+    /// that request's own id echoed back.
+    ///
+    /// Unlike `rpc_responses` this assumes nothing about request order and waits
+    /// indefinitely for the next request, so a slow step between two requests
+    /// cannot outrun the response pump. Prefer it whenever a test drives a path
+    /// that decodes metadata or does other work between calls.
+    pub(crate) rpc_method_responses: Vec<(&'static str, String)>,
     pub(crate) sso_response_script: Option<SsoResponseScript>,
     /// When set, `connect` fails with this reason.
     pub(crate) chain_connect_error: Option<&'static str>,
@@ -130,15 +150,16 @@ pub(crate) struct StubPlatform {
     pub(crate) local_storage_error: Option<&'static str>,
 }
 
+/// Scripted peer behavior for the recording connection's SSO exchange.
 #[derive(Clone)]
 pub(crate) enum SsoResponseScript {
+    /// Peer acknowledges the request and replies with `response`.
     Success {
         session: SessionInfo,
-        response: RemoteMessage,
+        response: Box<RemoteMessage>,
     },
-    PeerDisconnect {
-        session: SessionInfo,
-    },
+    /// Peer acknowledges the request and then sends `Disconnected`.
+    PeerDisconnect { session: SessionInfo },
 }
 
 struct PendingThemeStream {
@@ -152,7 +173,7 @@ impl Drop for PendingThemeStream {
 }
 
 impl Stream for PendingThemeStream {
-    type Item = Result<v01::ThemeVariant, v01::GenericError>;
+    type Item = Result<v01::HostThemeSubscribeItem, v01::GenericError>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -192,6 +213,7 @@ pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductCon
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),
@@ -218,6 +240,8 @@ pub(crate) fn session_info() -> crate::host_logic::session::SessionInfo {
             0xb8, 0xf5, 0x81, 0xaa, 0x99, 0xe3, 0x49, 0x3b, 0xf4, 0x96, 0xed, 0xf1, 0x51, 0xab,
             0xc1, 0xd7, 0x20, 0x23,
         ]),
+        identity_chat_private_key: None,
+        device_enc_public_key: None,
         lite_username: Some("alice".to_string()),
         full_username: Some("Alice Smith".to_string()),
     }
@@ -229,18 +253,13 @@ pub(crate) fn sso_session_info() -> crate::host_logic::session::SessionInfo {
     let mini_secret = MiniSecretKey::from_bytes(&[7; 32]).unwrap();
     let keypair = mini_secret.expand_to_keypair(ExpansionMode::Ed25519);
     let (_, peer_public_key) = peer_statement_keypair();
-    let core_secret = P256SecretKey::from_slice(&[1; 32]).unwrap();
-    let peer_secret = P256SecretKey::from_slice(&[2; 32]).unwrap();
+    let core_secret = X25519SecretKey::from([1; 32]);
+    let peer_secret = X25519SecretKey::from([2; 32]);
     session.sso = Some(crate::host_logic::session::SsoSessionInfo {
         ss_secret: keypair.secret.to_bytes(),
         ss_public_key: keypair.public.to_bytes(),
-        enc_secret: core_secret.to_bytes().into(),
-        peer_enc_pubkey: peer_secret
-            .public_key()
-            .to_encoded_point(false)
-            .as_bytes()
-            .try_into()
-            .unwrap(),
+        enc_secret: core_secret.to_bytes(),
+        peer_enc_pubkey: X25519PublicKey::from(&peer_secret).to_bytes(),
         identity_account_id: peer_public_key,
         session_id_own: [4; 32],
         session_id_peer: [5; 32],
@@ -374,7 +393,7 @@ pub(crate) fn sso_success_response_script(
 ) -> SsoResponseScript {
     SsoResponseScript::Success {
         session: session.clone(),
-        response,
+        response: Box::new(response),
     }
 }
 
@@ -425,10 +444,12 @@ pub(crate) fn subscribe_ack_frame(request_id: &str, subscription_id: &str) -> St
 }
 
 fn statement_submit_ack_frame(request_id: &str) -> String {
+    // Mirror the real `statement_submit` result shape (`SubmitResult`); `submit`
+    // treats only `new`/`known` as accepted.
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,
-        "result": "0xok",
+        "result": { "status": "new" },
     })
     .to_string()
 }
@@ -461,7 +482,7 @@ fn sso_statement(
     data: pairing::SsoStatementData,
     nonce_seed: u8,
 ) -> Vec<u8> {
-    let mut nonce = [0; pairing::AES_GCM_NONCE_LEN];
+    let mut nonce = [0; pairing::AEAD_NONCE_LEN];
     nonce[0] = nonce_seed;
     let encrypted = pairing::encrypt_session_statement_data_with_nonce(
         session.sso.as_ref().unwrap(),
@@ -472,12 +493,12 @@ fn sso_statement(
     signed_test_statement(encrypted)
 }
 
-fn core_encryption_public_key_from_deeplink(deeplink: &str) -> [u8; 65] {
+fn core_encryption_public_key_from_deeplink(deeplink: &str) -> [u8; 32] {
     pairing_device_from_deeplink(deeplink).1
 }
 
 /// Pairing device statement and encryption keys encoded in a deeplink.
-pub(crate) fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 65]) {
+pub(crate) fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 32]) {
     let encoded = deeplink
         .split("handshake=")
         .nth(1)
@@ -492,6 +513,7 @@ pub(crate) fn pairing_device_from_deeplink(deeplink: &str) -> ([u8; 32], [u8; 65
     )
 }
 
+/// Signed wallet handshake statement answering `deeplink` with pairing success.
 pub(crate) fn wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
@@ -508,6 +530,7 @@ fn pending_wallet_handshake_statement(deeplink: &str) -> Vec<u8> {
     )
 }
 
+/// Signed wallet handshake statement answering `deeplink` with failure `reason`.
 pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) -> Vec<u8> {
     wallet_handshake_statement_with_response(
         deeplink,
@@ -516,20 +539,22 @@ pub(crate) fn failed_wallet_handshake_statement(deeplink: &str, reason: &str) ->
     )
 }
 
+/// Wallet device X25519 public key distinct from the persistent SSO key, so
+/// tests catch a session that keys device-scoped material off the SSO channel
+/// key by mistake.
+pub(crate) fn wallet_device_encryption_public_key() -> [u8; 32] {
+    pairing::x25519_public_key([9; 32])
+}
+
 fn wallet_handshake_success() -> pairing::v2::Success {
-    let wallet_persistent_public: [u8; 65] = P256SecretKey::from_slice(&[2; 32])
-        .unwrap()
-        .public_key()
-        .to_encoded_point(false)
-        .as_bytes()
-        .try_into()
-        .unwrap();
+    let wallet_persistent_secret = X25519SecretKey::from([2; 32]);
+    let wallet_persistent_public = X25519PublicKey::from(&wallet_persistent_secret).to_bytes();
     pairing::v2::Success {
         identity_account_id: peer_statement_keypair().1,
         root_account_id: session_info().public_key,
         identity_chat_private_key: [0x77; 32],
         sso_enc_pub_key: wallet_persistent_public,
-        device_enc_pub_key: wallet_persistent_public,
+        device_enc_pub_key: wallet_device_encryption_public_key(),
         root_entropy_source: [0x66; 32],
     }
 }
@@ -537,34 +562,11 @@ fn wallet_handshake_success() -> pairing::v2::Success {
 fn wallet_handshake_statement_with_response(
     deeplink: &str,
     answer: pairing::v2::EncryptedResponse,
-    nonce_seed: u8,
+    _nonce_seed: u8,
 ) -> Vec<u8> {
-    let core_public_key =
-        P256PublicKey::from_sec1_bytes(&core_encryption_public_key_from_deeplink(deeplink))
-            .expect("core encryption public key should decode");
-    let wallet_ephemeral_secret = P256SecretKey::from_slice(&[3; 32]).unwrap();
-    let wallet_ephemeral_public = wallet_ephemeral_secret.public_key().to_encoded_point(false);
-    let mut wallet_ephemeral_public_bytes = [0u8; 65];
-    wallet_ephemeral_public_bytes.copy_from_slice(wallet_ephemeral_public.as_bytes());
-    let shared_secret = diffie_hellman(
-        wallet_ephemeral_secret.to_nonzero_scalar(),
-        core_public_key.as_affine(),
-    );
-    let hkdf = Hkdf::<Sha256>::new(None, shared_secret.raw_secret_bytes());
-    let mut aes_key = [0u8; 32];
-    hkdf.expand(&[], &mut aes_key).unwrap();
-    let nonce = [nonce_seed; pairing::AES_GCM_NONCE_LEN];
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
-    let mut encrypted_message = nonce.to_vec();
-    encrypted_message.extend(
-        cipher
-            .encrypt(Nonce::from_slice(&nonce), answer.encode().as_slice())
-            .unwrap(),
-    );
-    let handshake = pairing::VersionedHandshakeResponse::V2 {
-        encrypted_message,
-        public_key: wallet_ephemeral_public_bytes,
-    };
+    let core_public_key = core_encryption_public_key_from_deeplink(deeplink);
+    let handshake = pairing::encrypt_v2_handshake_response(core_public_key, &answer)
+        .expect("wallet handshake response should encrypt");
 
     signed_test_statement(handshake.encode())
 }
@@ -611,11 +613,12 @@ pub(crate) fn sign_raw_legacy_response_message(
     }
 }
 
-/// Product account id fixture for `identifier` and derivation slot.
-pub(crate) fn account_id(identifier: &str, derivation_index: u32) -> v01::ProductAccountId {
+/// Product account id fixture for `identifier`; the derivation suffix is the
+/// canonical decimal form of `index`.
+pub(crate) fn account_id(identifier: &str, index: u32) -> v01::ProductAccountId {
     v01::ProductAccountId {
         dot_ns_identifier: identifier.to_string(),
-        derivation_index,
+        derivation_index: v01::DerivationIndex::Index(index),
     }
 }
 
@@ -630,7 +633,7 @@ pub(crate) fn raw_payload() -> v01::RawPayload {
 pub(crate) fn product_proof_context(product_id: &str) -> v01::ProductProofContext {
     v01::ProductProofContext {
         product_id: product_id.to_string(),
-        suffix: vec![7],
+        suffix: v01::DerivationIndex::Index(7),
     }
 }
 
@@ -645,6 +648,10 @@ pub(crate) fn ring_location_fixture() -> v01::RingLocation {
 /// Contextual-alias request fixture for `product_id`.
 pub(crate) fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequest {
     HostAccountGetAliasRequest::V1(v01::HostAccountGetAliasRequest {
+        key_handle: v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index: v01::DerivationIndex::Index(0),
+        },
         context: product_proof_context(product_id),
         ring_location: ring_location_fixture(),
     })
@@ -653,6 +660,10 @@ pub(crate) fn account_alias_request(product_id: &str) -> HostAccountGetAliasRequ
 /// Ring-VRF proof request fixture for `product_id`.
 pub(crate) fn create_proof_request(product_id: &str) -> HostAccountCreateProofRequest {
     HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
+        key_handle: v01::ProductAccountId {
+            dot_ns_identifier: product_id.to_string(),
+            derivation_index: v01::DerivationIndex::Index(0),
+        },
         context: product_proof_context(product_id),
         ring_location: ring_location_fixture(),
         message: vec![4, 5, 6],
@@ -860,7 +871,11 @@ pub(crate) fn core_storage_test_key(key: CoreStorageKey) -> String {
 
 #[truapi_platform::async_trait]
 impl PlatformNavigation for StubPlatform {
-    async fn navigate_to(&self, _url: String) -> Result<(), v01::HostNavigateToError> {
+    async fn navigate_to(&self, url: String) -> Result<(), v01::HostNavigateToError> {
+        self.navigations
+            .lock()
+            .expect("navigation list mutex poisoned")
+            .push(url);
         Ok(())
     }
 }
@@ -900,8 +915,12 @@ impl PlatformPermissions for StubPlatform {
 
     async fn remote_permission(
         &self,
-        _request: v01::RemotePermissionRequest,
+        request: v01::RemotePermissionRequest,
     ) -> Result<v01::RemotePermissionResponse, v01::GenericError> {
+        self.remote_permission_requests
+            .lock()
+            .expect("remote permission list mutex poisoned")
+            .push(request);
         Ok(v01::RemotePermissionResponse {
             granted: !self.remote_permission_denied,
         })
@@ -916,11 +935,22 @@ impl PlatformFeatures for StubPlatform {
     ) -> Result<v01::HostFeatureSupportedResponse, v01::GenericError> {
         Ok(v01::HostFeatureSupportedResponse { supported: true })
     }
+
+    async fn supported_chains(&self) -> Result<truapi_platform::HostChainSet, v01::GenericError> {
+        Ok(truapi_platform::HostChainSet {
+            network: "paseo".to_string(),
+            chains: vec![truapi_platform::HostChainEntry {
+                identifier: v01::ChainIdentifier::AssetHub,
+                genesis_hash: [0xaa; 32],
+            }],
+        })
+    }
 }
 
 struct RecordingConnection {
     sent: Arc<Mutex<Vec<String>>>,
     responses: Vec<String>,
+    method_responses: Vec<(&'static str, String)>,
     sso_response_script: Option<SsoResponseScript>,
     auth_states: Arc<Mutex<Vec<AuthState>>>,
     pairing_success_response: bool,
@@ -970,6 +1000,21 @@ fn retarget_sso_response(mut response: RemoteMessage, message_id: &str) -> Remot
             response.responding_to = message_id.to_string();
         }
         RemoteMessageData::V1(v1::RemoteMessage::SignRawLegacyResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::SignVrfResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::ProductSubtreeResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::RegisterRingVrfKeyResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::ListRingVrfKeysResponse(response)) => {
+            response.responding_to = message_id.to_string();
+        }
+        RemoteMessageData::V1(v1::RemoteMessage::RingVrfSignResponse(response)) => {
             response.responding_to = message_id.to_string();
         }
         RemoteMessageData::V1(v1::RemoteMessage::ResourceAllocationResponse(response)) => {
@@ -1027,7 +1072,7 @@ fn sso_scripted_responses(
                 4 => match script {
                     SsoResponseScript::Success { session, response } => {
                         let (_, request) = submitted_sso_request(&sent, &session);
-                        let response = retarget_sso_response(response, &request.message_id);
+                        let response = retarget_sso_response(*response, &request.message_id);
                         Some((
                             new_statements_frame(
                                 "peer-sub",
@@ -1225,6 +1270,9 @@ impl JsonRpcConnection for RecordingConnection {
         if let Some(script) = self.sso_response_script.clone() {
             return sso_scripted_responses(self.sent.clone(), script);
         }
+        if !self.method_responses.is_empty() {
+            return method_keyed_responses(self.sent.clone(), self.method_responses.clone());
+        }
         if self.responses.is_empty() {
             Box::pin(futures::stream::pending())
         } else {
@@ -1245,6 +1293,45 @@ impl JsonRpcConnection for RecordingConnection {
     }
 
     fn close(&self) {}
+}
+
+/// Answer each request as it arrives, by method, echoing its id.
+///
+/// Waits indefinitely for the next request rather than giving up after a fixed
+/// number of polls, so work between requests cannot race the pump.
+fn method_keyed_responses(
+    sent: Arc<Mutex<Vec<String>>>,
+    answers: Vec<(&'static str, String)>,
+) -> BoxStream<'static, String> {
+    Box::pin(stream::unfold(0usize, move |answered| {
+        let sent = sent.clone();
+        let answers = answers.clone();
+        async move {
+            loop {
+                let request = sent
+                    .lock()
+                    .expect("rpc list mutex poisoned")
+                    .get(answered)
+                    .cloned();
+                if let Some(request) = request {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&request).expect("request is valid JSON");
+                    let id = value["id"].as_str().expect("request carries a string id");
+                    let method = value["method"].as_str().expect("request carries a method");
+                    let result = answers
+                        .iter()
+                        .find(|(candidate, _)| *candidate == method)
+                        .map(|(_, body)| body.clone())
+                        .unwrap_or_else(|| panic!("no scripted response for method `{method}`"));
+                    return Some((
+                        format!(r#"{{"jsonrpc":"2.0","id":"{id}","result":{result}}}"#),
+                        answered + 1,
+                    ));
+                }
+                futures_timer::Delay::new(Duration::from_millis(1)).await;
+            }
+        }
+    }))
 }
 
 async fn wait_for_matching_request_id(sent: Arc<Mutex<Vec<String>>>, response: &str) {
@@ -1301,6 +1388,7 @@ impl ChainProvider for StubPlatform {
         Ok(Box::new(RecordingConnection {
             sent: self.sent_rpc.clone(),
             responses: self.rpc_responses.clone(),
+            method_responses: self.rpc_method_responses.clone(),
             sso_response_script: self.sso_response_script.clone(),
             auth_states: self.auth_states.clone(),
             pairing_success_response: self.pairing_success_response,
@@ -1339,6 +1427,20 @@ impl UserConfirmation for StubPlatform {
                 (self.sign_payload_error, self.sign_payload_confirmed)
             }
             UserConfirmationReview::SignRaw(_) => (self.sign_raw_error, self.sign_raw_confirmed),
+            UserConfirmationReview::SignVrf(review) => {
+                self.sign_vrf_reviews
+                    .lock()
+                    .expect("VRF signing review list mutex poisoned")
+                    .push(review);
+                (self.sign_vrf_error, self.sign_vrf_confirmed)
+            }
+            UserConfirmationReview::StatementStoreProductSign(review) => {
+                self.statement_store_product_sign_reviews
+                    .lock()
+                    .expect("statement store product sign review list mutex poisoned")
+                    .push(review);
+                (self.sign_raw_error, self.sign_raw_confirmed)
+            }
             UserConfirmationReview::CreateTransaction(_) => (
                 self.create_transaction_error,
                 self.create_transaction_confirmed,
@@ -1364,11 +1466,24 @@ impl UserConfirmation for StubPlatform {
                     self.identity_disclosure_confirmed,
                 )
             }
-            UserConfirmationReview::ResourceAllocation(_) => (
-                self.resource_allocation_error,
-                self.resource_allocation_confirmed,
-            ),
+            UserConfirmationReview::ResourceAllocation(review) => {
+                self.resource_allocation_reviews
+                    .lock()
+                    .expect("resource allocation review list mutex poisoned")
+                    .push(review);
+                (
+                    self.resource_allocation_error,
+                    self.resource_allocation_confirmed,
+                )
+            }
             UserConfirmationReview::PreimageSubmit(_) => (None, true),
+            UserConfirmationReview::ProductSubtree(review) => {
+                self.product_subtree_reviews
+                    .lock()
+                    .expect("product subtree review list mutex poisoned")
+                    .push(review);
+                (None, !self.product_subtree_denied)
+            }
         };
         if let Some(reason) = error {
             return Err(v01::GenericError {
@@ -1380,13 +1495,22 @@ impl UserConfirmation for StubPlatform {
 }
 
 impl ThemeHost for StubPlatform {
-    fn subscribe_theme(&self) -> BoxStream<'static, Result<v01::ThemeVariant, v01::GenericError>> {
+    fn subscribe_theme(
+        &self,
+    ) -> BoxStream<'static, Result<v01::HostThemeSubscribeItem, v01::GenericError>> {
         if self.theme_stream_pending {
             return Box::pin(PendingThemeStream {
                 dropped: self.theme_stream_dropped.clone(),
             });
         }
-        Box::pin(stream::once(async { Ok(v01::ThemeVariant::Dark) }))
+        // A custom name, not `Default`: the core must forward whatever the host
+        // reports instead of substituting a name of its own.
+        Box::pin(stream::once(async {
+            Ok(v01::HostThemeSubscribeItem {
+                name: v01::ThemeName::Custom("midnight".to_string()),
+                variant: v01::ThemeVariant::Dark,
+            })
+        }))
     }
 }
 

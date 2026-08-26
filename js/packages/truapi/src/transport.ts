@@ -106,6 +106,18 @@ export interface ObservableLike<Item, Reason = never> {
 }
 
 /**
+ * Observable source accepted by generated channel methods as the
+ * product-to-host request stream. Structurally satisfied by RxJS subjects and
+ * observables as well as generated `ObservableLike` values.
+ **/
+export interface ObservableSource<Item> {
+  /**
+   * Start consuming the source until the returned handle unsubscribes.
+   **/
+  subscribe(observer: Partial<Observer<Item>>): { unsubscribe(): void };
+}
+
+/**
  * Numeric frame ids for a one-shot request method.
  **/
 export interface RequestFrameIds {
@@ -197,6 +209,35 @@ export interface SubscribeRawParams {
 }
 
 /**
+ * Handler for a subscription initiated by the native host.
+ **/
+export type HostInitiatedSubscriptionHandler<Request, Item> = (
+  request: Request,
+) => ObservableSource<Item>;
+
+/** Product-side registration for one host-initiated subscription method. **/
+export interface HostInitiatedSubscriptionRegistration<Request, Item> {
+  /** Install or replace the handler used for future start frames. **/
+  setHandler(handler: HostInitiatedSubscriptionHandler<Request, Item>): {
+    unsubscribe(): void;
+  };
+}
+
+/** Options used to register a host-initiated subscription method. **/
+export interface RegisterHostInitiatedSubscriptionParams<Request, Item> {
+  /** Wire discriminants for the host-initiated subscription. **/
+  ids: SubscriptionFrameIds;
+  /** Decode the host's start payload. **/
+  decodeRequest(payload: Uint8Array): Request;
+  /** Encode one product renderer emission. **/
+  encodeItem(item: Item): Uint8Array;
+  /** Exact payload used when the product declines a render instance. **/
+  interruptPayload: Uint8Array;
+  /** Number of starts retained before a handler is installed. **/
+  bufferCapacity: number;
+}
+
+/**
  * Byte-level transport used by generated client stubs.
  **/
 export interface TrUApiTransport {
@@ -218,6 +259,11 @@ export interface TrUApiTransport {
    * Start a subscription and return a handle that can stop it.
    **/
   subscribeRaw(params: SubscribeRawParams): Subscription;
+
+  /** Register product-side handling for a host-initiated subscription. **/
+  registerHostInitiatedSubscription<Request, Item>(
+    params: RegisterHostInitiatedSubscriptionParams<Request, Item>,
+  ): HostInitiatedSubscriptionRegistration<Request, Item>;
 
   /**
    * Tear down the transport and release the listeners it registered on the
@@ -290,6 +336,16 @@ export interface WireProvider {
    * Release provider resources and close the underlying pipe.
    **/
   dispose(): void;
+}
+
+/**
+ * A {@link WireProvider} backed by a WebSocket, which reports when its socket
+ * is up. Awaiting {@link WebSocketWireProvider.opened} is optional: frames
+ * posted earlier are queued and flushed on open.
+ **/
+export interface WebSocketWireProvider extends WireProvider {
+  /** Resolves once the socket is open, rejects if it never connects. */
+  opened: Promise<void>;
 }
 
 /**
@@ -563,6 +619,91 @@ export function createMessagePortProvider(
     subscribeClose: base.subscribeClose,
     dispose() {
       base.close(new Error("message port provider disposed"));
+      pending.length = 0;
+    },
+  };
+}
+
+/**
+ * Wire provider over a binary WebSocket, one message per SCALE frame.
+ *
+ * This is the transport a host exposes on a loopback socket: the Rust core's
+ * `ws-bridge`, and `truapi-host signing-host --frame-listen`. The frame bytes
+ * are identical to what the {@link createMessagePortProvider} path carries, so
+ * this is a pipe and nothing more.
+ *
+ * Frames posted before the socket opens are queued and flushed on open, so a
+ * caller never has to await {@link WebSocketWireProvider.opened} first.
+ **/
+export function createWebSocketProvider(url: string): WebSocketWireProvider {
+  const base = createBaseProvider();
+  const socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+  const pending: Uint8Array[] = [];
+  let open = false;
+
+  // `send` types its view as ArrayBuffer-backed. Frames never come from a
+  // SharedArrayBuffer, and only the view's own bytes go on the wire, so a
+  // frame that is a window into a larger buffer stays correct.
+  const send = (frame: Uint8Array) =>
+    socket.send(frame as Uint8Array<ArrayBuffer>);
+
+  let resolveOpened!: () => void;
+  let rejectOpened!: (error: Error) => void;
+  const opened = new Promise<void>((resolve, reject) => {
+    resolveOpened = resolve;
+    rejectOpened = reject;
+  });
+  // `opened` is optional for callers, so a failed connection must not surface as
+  // an unhandled rejection. Close still reaches every `subscribeClose`.
+  opened.catch(() => {});
+
+  socket.addEventListener("open", () => {
+    open = true;
+    for (const frame of pending.splice(0)) send(frame);
+    resolveOpened();
+  });
+  socket.addEventListener("message", (event: MessageEvent) => {
+    base.deliver(new Uint8Array(event.data as ArrayBuffer));
+  });
+  socket.addEventListener("error", () => {
+    const error = new Error(`websocket error (${url})`);
+    rejectOpened(error);
+    base.close(error);
+  });
+  socket.addEventListener("close", () => {
+    const error = new Error(`websocket closed (${url})`);
+    rejectOpened(error);
+    base.close(error);
+  });
+  base.onClose(() => {
+    try {
+      socket.close();
+    } catch {
+      // ignore duplicate close during shutdown
+    }
+  });
+
+  return {
+    opened,
+    postMessage(message) {
+      const error = base.closed();
+      if (error) throw error;
+      if (open) {
+        try {
+          send(message);
+        } catch (error) {
+          base.close(error);
+          throw toError(error);
+        }
+      } else {
+        pending.push(message);
+      }
+    },
+    subscribe: base.subscribe,
+    subscribeClose: base.subscribeClose,
+    dispose() {
+      base.close(new Error("websocket provider disposed"));
       pending.length = 0;
     },
   };

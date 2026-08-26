@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use futures::future::LocalBoxFuture;
+use futures::future::BoxFuture;
 use tracing::instrument;
 
 use crate::frame::{Payload, ProtocolMessage};
@@ -17,19 +17,20 @@ use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds};
 use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
 use crate::transport::Transport;
 
-/// A handler for a request-response method. The returned future is not
-/// required to be `Send` because the truapi trait uses `async fn`, whose
-/// auto-Send-ness is not guaranteed. The `request_id` is the per-frame
-/// identifier; handlers thread it into the `CallContext` so trait methods
-/// can correlate logs/cancellation with the originating request. On the
-/// error path handlers return the complete SCALE-encoded response payload.
+/// A handler for a request-response method. TrUAPI service traits require
+/// their returned futures to be [`Send`], allowing native dispatch to move
+/// across executor threads while WASM remains free to poll the same future on
+/// its local executor. The `request_id` is the per-frame identifier; handlers
+/// thread it into the `CallContext` so trait methods can correlate
+/// logs/cancellation with the originating request. On the error path handlers
+/// return the complete SCALE-encoded response payload.
 pub type RequestHandler =
-    Arc<dyn Fn(String, Vec<u8>) -> LocalBoxFuture<'static, Result<Vec<u8>, Vec<u8>>> + Send + Sync>;
+    Arc<dyn Fn(String, Vec<u8>) -> BoxFuture<'static, Result<Vec<u8>, Vec<u8>>> + Send + Sync>;
 
 /// A handler for a subscription method. On the error path the handler returns
 /// the complete SCALE-encoded `_interrupt` payload.
 pub type SubscriptionHandler = Arc<
-    dyn Fn(String, Vec<u8>) -> LocalBoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
+    dyn Fn(String, Vec<u8>) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
         + Send
         + Sync,
 >;
@@ -53,6 +54,9 @@ pub struct Dispatcher {
     by_start: HashMap<u8, SubscriptionEntry>,
     stop_ids: HashSet<u8>,
     subscriptions: SubscriptionManager,
+    /// Trusted executable kind bound to this connection; `None` leaves the
+    /// surface unrestricted for direct dispatcher embeddings.
+    execution: Option<truapi_platform::ProductExecutionKind>,
 }
 
 impl Dispatcher {
@@ -63,7 +67,24 @@ impl Dispatcher {
             by_start: HashMap::new(),
             stop_ids: HashSet::new(),
             subscriptions: SubscriptionManager::new(spawner),
+            execution: None,
         }
+    }
+
+    /// Construct a dispatcher bound to a trusted executable kind.
+    pub fn for_execution(
+        spawner: Spawner,
+        execution: truapi_platform::ProductExecutionKind,
+    ) -> Self {
+        Self {
+            execution: Some(execution),
+            ..Self::new(spawner)
+        }
+    }
+
+    /// Return whether this connection may access a service execution kind.
+    pub fn allows_execution(&self, required: truapi_platform::ProductExecutionKind) -> bool {
+        self.execution.is_none_or(|actual| actual == required)
     }
 
     /// Register a request-response handler, keyed on `ids.request_id`. Returns
@@ -72,7 +93,7 @@ impl Dispatcher {
     /// since each request id must own exactly one handler.
     pub fn on_request<F>(&mut self, ids: RequestFrameIds, handler: F) -> Option<RequestEntry>
     where
-        F: Fn(String, Vec<u8>) -> LocalBoxFuture<'static, Result<Vec<u8>, Vec<u8>>>
+        F: Fn(String, Vec<u8>) -> BoxFuture<'static, Result<Vec<u8>, Vec<u8>>>
             + Send
             + Sync
             + 'static,
@@ -95,7 +116,7 @@ impl Dispatcher {
         handler: F,
     ) -> Option<SubscriptionEntry>
     where
-        F: Fn(String, Vec<u8>) -> LocalBoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
+        F: Fn(String, Vec<u8>) -> BoxFuture<'static, Result<SubscriptionStream, Vec<u8>>>
             + Send
             + Sync
             + 'static,
@@ -133,9 +154,10 @@ impl Dispatcher {
             // Reserve the slot before awaiting the handler so a `_stop`
             // arriving while the handler resolves cancels the pending
             // subscription instead of racing the registration.
-            let token = self.subscriptions.reserve(message.request_id.clone());
             let request_id = message.request_id.clone();
-            match (entry.handler)(request_id, message.payload.value).await {
+            let token = self.subscriptions.reserve(request_id.clone());
+            let result = (entry.handler)(request_id, message.payload.value).await;
+            match result {
                 Ok(stream) => {
                     self.subscriptions.activate(
                         token,
@@ -273,5 +295,23 @@ mod tests {
             prev.is_some(),
             "second registration must return the previous handler"
         );
+    }
+
+    #[test]
+    fn execution_filter_is_bound_to_the_connection() {
+        let app =
+            Dispatcher::for_execution(test_spawner(), truapi_platform::ProductExecutionKind::App);
+        let widget = Dispatcher::for_execution(
+            test_spawner(),
+            truapi_platform::ProductExecutionKind::Widget,
+        );
+        let worker = Dispatcher::for_execution(
+            test_spawner(),
+            truapi_platform::ProductExecutionKind::Worker,
+        );
+
+        assert!(!app.allows_execution(truapi_platform::ProductExecutionKind::Worker));
+        assert!(!widget.allows_execution(truapi_platform::ProductExecutionKind::Worker));
+        assert!(worker.allows_execution(truapi_platform::ProductExecutionKind::Worker));
     }
 }

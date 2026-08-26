@@ -8,9 +8,14 @@
 
 use std::sync::Arc;
 
+use core::time::Duration;
 use serde_json::{Value, json};
+
 use subxt_rpcs::RpcClient;
 use subxt_rpcs::client::{RpcSubscription, rpc_params};
+use thiserror::Error;
+use tracing::warn;
+use truapi::latest::GenericError;
 use truapi_platform::{JsonRpcConnection, Platform};
 
 use crate::host_logic::statement_store::{
@@ -19,6 +24,22 @@ use crate::host_logic::statement_store::{
 };
 use crate::host_rpc_client::HostRpcClient;
 use crate::subscription::Spawner;
+
+const SSO_NO_ALLOWANCE_RETRY_ATTEMPTS: usize = 5;
+const SSO_NO_ALLOWANCE_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Error opening a statement-store RPC client over the host platform.
+#[derive(Debug, Error)]
+pub(crate) enum StatementStoreRpcClientError {
+    /// The host failed to open a People-chain JSON-RPC connection.
+    #[error("{label} connect failed: {error:?}")]
+    Connect {
+        /// Operation label requesting the connection.
+        label: &'static str,
+        /// Host platform error.
+        error: GenericError,
+    },
+}
 
 /// People-chain statement-store RPC client factory.
 #[derive(Clone)]
@@ -42,9 +63,26 @@ impl StatementStoreRpc {
         }
     }
 
+    /// Open a People-chain RPC client already scoped to its genesis hash, for
+    /// the native allowance paths that key the chain-context cache by it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn chain_client(
+        &self,
+        label: &'static str,
+    ) -> Result<crate::runtime::statement_allowance::ChainClient, StatementStoreRpcClientError>
+    {
+        Ok(crate::runtime::statement_allowance::ChainClient::new(
+            crate::runtime::statement_allowance::rpc::RpcClient::new(self.client(label).await?),
+            self.people_chain_genesis_hash,
+        ))
+    }
+
     /// Open a statement-store RPC client over the host-provided People-chain
     /// connection.
-    pub(super) async fn client(&self, label: &'static str) -> Result<RpcClient, String> {
+    pub(super) async fn client(
+        &self,
+        label: &'static str,
+    ) -> Result<RpcClient, StatementStoreRpcClientError> {
         let connection = self.connect(label).await?;
         Ok(RpcClient::new(HostRpcClient::new(
             connection,
@@ -58,8 +96,20 @@ impl StatementStoreRpc {
         statement: Vec<u8>,
         label: &'static str,
     ) -> Result<(), String> {
-        let rpc_client = self.client(label).await?;
+        let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
         submit(&rpc_client, statement).await
+    }
+
+    /// Submit an SSO statement, tolerating the short propagation window after
+    /// an allowance registration is included but not yet visible to the
+    /// Statement Store RPC backend.
+    pub(super) async fn submit_sso(
+        &self,
+        statement: Vec<u8>,
+        label: &'static str,
+    ) -> Result<(), String> {
+        let rpc_client = self.client(label).await.map_err(|err| err.to_string())?;
+        submit_sso(&rpc_client, statement, label).await
     }
 
     /// Submit a SCALE-encoded statement without waiting for the JSON-RPC ack.
@@ -68,7 +118,7 @@ impl StatementStoreRpc {
         statement: Vec<u8>,
         label: &'static str,
     ) -> Result<(), String> {
-        let connection = self.connect(label).await?;
+        let connection = self.connect(label).await.map_err(|err| err.to_string())?;
         HostRpcClient::new(connection, self.spawner.clone())
             .send_fire_and_forget(
                 SUBMIT_STATEMENT_METHOD,
@@ -77,12 +127,15 @@ impl StatementStoreRpc {
             .map_err(rpc_error_message)
     }
 
-    async fn connect(&self, label: &'static str) -> Result<Arc<dyn JsonRpcConnection>, String> {
+    async fn connect(
+        &self,
+        label: &'static str,
+    ) -> Result<Arc<dyn JsonRpcConnection>, StatementStoreRpcClientError> {
         self.platform
             .connect(self.people_chain_genesis_hash)
             .await
             .map(Arc::from)
-            .map_err(|err| format!("{label} connect failed: {err:?}"))
+            .map_err(|error| StatementStoreRpcClientError::Connect { label, error })
     }
 }
 
@@ -109,16 +162,54 @@ pub(super) async fn subscribe_match_all(
     subscribe(rpc_client, TopicFilterKind::MatchAll, topics).await
 }
 
-/// Submit a SCALE-encoded statement and wait for the JSON-RPC ack.
+/// Submit a SCALE-encoded statement and confirm the store accepted it.
+///
+/// `statement_submit` returns an RPC error only for internal failures; a
+/// rejected or invalid statement (e.g. `NoAllowance`, `BadProof`) comes back as
+/// `Ok(SubmitResult)`. Treat only `new`/`known` as success, so allowance/proof
+/// rejections surface instead of being silently dropped.
 pub(super) async fn submit(rpc_client: &RpcClient, statement: Vec<u8>) -> Result<(), String> {
-    rpc_client
+    let result = rpc_client
         .request::<Value>(
             SUBMIT_STATEMENT_METHOD,
             rpc_params![format!("0x{}", hex::encode(&statement))],
         )
         .await
-        .map(|_| ())
-        .map_err(rpc_error_message)
+        .map_err(rpc_error_message)?;
+    match result.get("status").and_then(Value::as_str) {
+        Some("new") | Some("known") => Ok(()),
+        _ => Err(format!("statement_submit not accepted: {result}")),
+    }
+}
+
+pub(super) async fn submit_sso(
+    rpc_client: &RpcClient,
+    statement: Vec<u8>,
+    label: &'static str,
+) -> Result<(), String> {
+    for attempt in 1..=SSO_NO_ALLOWANCE_RETRY_ATTEMPTS {
+        match submit(rpc_client, statement.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(reason)
+                if is_transient_no_allowance(&reason)
+                    && attempt < SSO_NO_ALLOWANCE_RETRY_ATTEMPTS =>
+            {
+                warn!(
+                    label,
+                    attempt,
+                    max_attempts = SSO_NO_ALLOWANCE_RETRY_ATTEMPTS,
+                    "SSO allowance not visible yet; retrying statement submission"
+                );
+                futures_timer::Delay::new(SSO_NO_ALLOWANCE_RETRY_DELAY).await;
+            }
+            Err(reason) => return Err(reason),
+        }
+    }
+    unreachable!("the bounded SSO submit loop always returns")
+}
+
+fn is_transient_no_allowance(reason: &str) -> bool {
+    reason.contains("noAllowance")
 }
 
 /// Statement-store topic filter encoded as JSON-RPC params.
@@ -136,5 +227,20 @@ pub(super) fn rpc_error_message(error: subxt_rpcs::Error) -> String {
     match error {
         subxt_rpcs::Error::User(error) => error.message,
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient_no_allowance;
+
+    #[test]
+    fn identifies_no_allowance_submit_rejections_for_retry() {
+        assert!(is_transient_no_allowance(
+            r#"statement_submit not accepted: {"reason":"noAllowance","status":"rejected"}"#
+        ));
+        assert!(!is_transient_no_allowance(
+            r#"statement_submit not accepted: {"reason":"badProof","status":"rejected"}"#
+        ));
     }
 }

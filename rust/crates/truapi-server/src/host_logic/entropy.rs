@@ -9,10 +9,13 @@ use thiserror::Error;
 
 const DOMAIN_SEPARATOR: &[u8] = b"product-entropy-derivation";
 
+/// Error deriving product-scoped entropy.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProductEntropyError {
+    /// Caller key is outside the 1..=32 byte range the contract allows.
     #[error("\"key\" must be between 1 and 32 bytes, got {0}")]
     InvalidKeyLength(usize),
+    /// Session has no entropy secret to derive from.
     #[error("entropy secret is missing")]
     MissingSecret,
 }
@@ -23,8 +26,14 @@ pub fn derive_product_entropy(
     product_id: &str,
     key: &[u8],
 ) -> Result<[u8; 32], ProductEntropyError> {
-    let root_entropy_source = blake2b256_keyed(entropy_secret, DOMAIN_SEPARATOR);
-    derive_product_entropy_from_source(&root_entropy_source, product_id, key)
+    derive_product_entropy_from_source(&root_entropy_source(entropy_secret), product_id, key)
+}
+
+/// Pre-hashed root entropy source (RFC-0007 layer 1). Signing hosts share this
+/// value with paired hosts during the SSO handshake so both sides derive the
+/// same product entropy.
+pub fn root_entropy_source(entropy_secret: &[u8]) -> [u8; 32] {
+    blake2b256_keyed(entropy_secret, DOMAIN_SEPARATOR)
 }
 
 /// Derive product-scoped entropy when the session already stores the
@@ -50,7 +59,7 @@ fn blake2b256_keyed(message: &[u8], key: &[u8]) -> [u8; 32] {
         .hash(message)
         .as_bytes()
         .try_into()
-        .expect("BLAKE2b-256 returns 32 bytes")
+        .expect("hash_length(32) configures BLAKE2b output to exactly 32 bytes; qed")
 }
 
 #[cfg(test)]

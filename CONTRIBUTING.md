@@ -3,7 +3,7 @@
 ## Reporting Issues
 
 If you have found what you think is a bug,
-please [file an issue](https://github.com/paritytech/truapi/issues/new/choose).
+please [file an issue](https://github.com/paritytech/host-rust-core/issues/new/choose).
 
 ## Suggesting New Features
 
@@ -99,4 +99,4 @@ Use an appropriate commit type. Be especially careful with breaking changes.
 
 ## Releasing
 
-See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for the `@parity/truapi` npm publishing flow.
+See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for the release flow, covering the npm packages and the iOS and Android host artifacts.

@@ -2,6 +2,7 @@
 
 use crate::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
+    HostGetProductContextError, HostGetProductContextRequest, HostGetProductContextResponse,
     HostHandshakeError, HostHandshakeRequest, HostHandshakeResponse, HostInfoError,
     HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
     HostNavigateToResponse,
@@ -10,7 +11,8 @@ use crate::wire;
 use crate::{CallContext, CallError};
 
 /// General-purpose TrUAPI methods for handshake, feature detection,
-/// and navigation.
+/// navigation, and runtime information.
+#[crate::async_trait]
 pub trait System: Send + Sync {
     /// Negotiate the wire codec version with the product.
     ///
@@ -38,12 +40,13 @@ pub trait System: Send + Sync {
     /// Query whether the host supports a specific feature.
     ///
     /// ```ts
-    /// import { PASEO_NEXT_V2_ASSET_HUB } from "@parity/truapi";
+    /// const assetHub = await truapi.chain.getChainInfo({ chain: "AssetHub" });
+    /// assert(assetHub.isOk(), "getChainInfo failed:", assetHub);
     ///
     /// const result = await truapi.system.featureSupported({
     ///   tag: "Chain",
     ///   value: {
-    ///     genesisHash: PASEO_NEXT_V2_ASSET_HUB.genesis,
+    ///     genesisHash: assetHub.value.genesisHash,
     ///   },
     /// });
     /// assert(result.isOk(), "featureSupported failed:", result);
@@ -57,6 +60,13 @@ pub trait System: Send + Sync {
     ) -> Result<HostFeatureSupportedResponse, CallError<HostFeatureSupportedError>>;
 
     /// Request the host to open a URL.
+    ///
+    /// An `http` or `https` URL outside the ecosystem needs a
+    /// `RemotePermission::Remote` grant for the target host, and prompts for one
+    /// on first use. dotNS names, `localhost`, and the app-handoff schemes
+    /// (`mailto:`, `tel:`, `polkadot:`, `dot:`) consume no grant. The grant is
+    /// per host and shared with outbound data access to that host, so approving
+    /// one covers the other.
     ///
     /// ```ts
     /// const result = await truapi.system.navigateTo({
@@ -85,10 +95,26 @@ pub trait System: Send + Sync {
     /// const info = result.value;
     /// console.log(`${info.name} ${info.version} on ${info.platform}`);
     /// ```
-    #[wire(request_id = 164)]
+    #[wire(request_id = 192)]
     async fn host_info(
         &self,
         cx: &CallContext,
         request: HostInfoRequest,
     ) -> Result<HostInfoResponse, CallError<HostInfoError>>;
+
+    /// Return the product context bound to the current host runtime.
+    ///
+    /// ```ts
+    /// const context = await truapi.system.getProductContext();
+    /// assert(context.isOk(), "getProductContext failed:", context);
+    /// console.log("product id:", context.value.productId);
+    /// ```
+    #[wire(request_id = 190)]
+    async fn get_product_context(
+        &self,
+        _cx: &CallContext,
+        _request: HostGetProductContextRequest,
+    ) -> Result<HostGetProductContextResponse, CallError<HostGetProductContextError>> {
+        Err(CallError::unavailable())
+    }
 }

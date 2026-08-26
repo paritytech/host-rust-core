@@ -1,16 +1,23 @@
 [package]
 name = "truapi"
-version = "0.5.0"
+version = "0.10.0"
 edition.workspace = true
 license.workspace = true
 description = "TrUAPI trait and type definitions"
 
 [dependencies]
+async-trait = "0.1"
 derive_more = { version = "2", features = ["display"] }
 futures = "0.3"
 hex = "0.4"
 parity-scale-codec = { version = "3", features = ["derive"] }
 truapi-macros = { path = "../truapi-macros" }
+uniffi = { workspace = true, optional = true }
 
 [features]
 default = []
+# FFI derives on the protocol types consumed by native hosts.
+uniffi = ["dep:uniffi"]
+
+[lints]
+workspace = true

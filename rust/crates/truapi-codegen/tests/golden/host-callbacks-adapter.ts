@@ -6,20 +6,29 @@
 // primitives and byte blobs pass through unchanged.
 
 import {
+  HostChatCreateRoomRequest,
+  HostChatCreateRoomResponse,
+  HostChatListSubscribeItem,
+  HostChatPostMessageRequest,
+  HostChatPostMessageResponse,
+  HostChatRegisterBotRequest,
+  HostChatRegisterBotResponse,
   HostDevicePermissionRequest,
   HostDevicePermissionResponse,
   HostFeatureSupportedRequest,
   HostFeatureSupportedResponse,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
+  HostThemeSubscribeItem,
   RemotePermissionRequest,
   RemotePermissionResponse,
-  ThemeVariant,
 } from "@parity/truapi";
 import type { GenericError, NotificationId } from "@parity/truapi";
 import {
   AuthState,
   CoreStorageKey,
+  HostChainSet,
+  ProductContext,
   UserConfirmationReview,
 } from "./host-callbacks.js";
 import type { RequiredHostCallbacks } from "./host-callbacks.js";
@@ -27,13 +36,36 @@ import type { RequiredHostCallbacks } from "./host-callbacks.js";
 import type { ChainConnect } from "../runtime.js";
 import { chainConnectAdapter, driveResultStream } from "../adapter-support.js";
 
+/**
+ * Byte-oriented callback surface the WASM core invokes. Members of an
+ * optional capability are absent when the host omits the capability;
+ * the core then answers the matching product calls with `Unsupported`.
+ */
 export interface RawCallbacks {
   authStateChanged(state: Uint8Array): void;
   chainConnect: ChainConnect;
+  createChatRoom?(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  registerChatBot?(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  postChatMessage?(
+    product: Uint8Array,
+    request: Uint8Array,
+  ): Promise<Uint8Array>;
+  subscribeChatRooms?(
+    product: Uint8Array,
+    sendItem: (item?: Uint8Array) => void,
+    sendError: (error: GenericError) => void,
+  ): (() => void) | void;
   readCoreStorage(key: Uint8Array): Promise<Uint8Array | null | undefined>;
   writeCoreStorage(key: Uint8Array, value: Uint8Array): Promise<void>;
   clearCoreStorage(key: Uint8Array): Promise<void>;
   featureSupported(request: Uint8Array): Promise<Uint8Array>;
+  supportedChains(): Promise<Uint8Array>;
   navigateTo(url: string): Promise<void>;
   pushNotification(notification: Uint8Array): Promise<Uint8Array>;
   cancelNotification(id: NotificationId): Promise<void>;
@@ -58,10 +90,42 @@ export interface RawCallbacks {
 export function createWasmRawCallbacks(
   callbacks: RequiredHostCallbacks,
 ): RawCallbacks {
+  const chat = callbacks.chat;
   return {
     authStateChanged: async (state) =>
       await callbacks.auth.authStateChanged(AuthState.dec(state)),
     chainConnect: chainConnectAdapter(callbacks.chain),
+    ...(chat
+      ? {
+          createChatRoom: async (product, request) =>
+            HostChatCreateRoomResponse.enc(
+              await chat.createChatRoom(
+                ProductContext.dec(product),
+                HostChatCreateRoomRequest.dec(request),
+              ),
+            ),
+          registerChatBot: async (product, request) =>
+            HostChatRegisterBotResponse.enc(
+              await chat.registerChatBot(
+                ProductContext.dec(product),
+                HostChatRegisterBotRequest.dec(request),
+              ),
+            ),
+          postChatMessage: async (product, request) =>
+            HostChatPostMessageResponse.enc(
+              await chat.postChatMessage(
+                ProductContext.dec(product),
+                HostChatPostMessageRequest.dec(request),
+              ),
+            ),
+          subscribeChatRooms: (product, sendItem, sendError) =>
+            driveResultStream(
+              chat.subscribeChatRooms(ProductContext.dec(product)),
+              (item) => sendItem(HostChatListSubscribeItem.enc(item)),
+              sendError,
+            ),
+        }
+      : {}),
     readCoreStorage: async (key) =>
       await callbacks.coreStorage.readCoreStorage(CoreStorageKey.dec(key)),
     writeCoreStorage: async (key, value) =>
@@ -77,6 +141,8 @@ export function createWasmRawCallbacks(
           HostFeatureSupportedRequest.dec(request),
         ),
       ),
+    supportedChains: async () =>
+      HostChainSet.enc(await callbacks.features.supportedChains()),
     navigateTo: async (url) => await callbacks.navigation.navigateTo(url),
     pushNotification: async (notification) =>
       HostPushNotificationResponse.enc(
@@ -111,7 +177,7 @@ export function createWasmRawCallbacks(
     subscribeTheme: (sendItem, sendError) =>
       driveResultStream(
         callbacks.theme.subscribeTheme(),
-        (item) => sendItem(ThemeVariant.enc(item)),
+        (item) => sendItem(HostThemeSubscribeItem.enc(item)),
         sendError,
       ),
     confirmUserAction: async (review) =>

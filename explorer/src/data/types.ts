@@ -5,6 +5,8 @@ export type MethodKind = "unary" | "subscription";
 export interface MethodInfo {
   name: string;
   type: MethodKind;
+  /** Whether the host initiates this subscription into the product. */
+  hostInitiated?: boolean;
   signature?: string;
   docUrl?: string;
   description?: string;
@@ -18,6 +20,12 @@ export interface MethodInfo {
 /** A grouping of related methods. */
 export interface ServiceInfo {
   name: string;
+  /**
+   * Executable kind the host must attach, or unrestricted when absent. Typed
+   * as a string because each archived version records the kind name that
+   * version declared, not today's variants.
+   */
+  requiredExecution?: string;
   methods: MethodInfo[];
 }
 

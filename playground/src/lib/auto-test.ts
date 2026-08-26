@@ -1,10 +1,12 @@
 import { runExample, type LogEntry, type RunResult } from "./example-runner";
 import { getClientSync } from "@parity/truapi/sandbox";
 import type { MethodInfo, ServiceInfo } from "./services";
+import { WEBRTC_SERVICE_NAME } from "./webrtc-check";
+import type { DiagnosisStatus } from "@/shared/diagnosis";
 
 export const DIAGNOSIS_ID = "__diagnosis__";
 
-export type TestStatus = "idle" | "running" | "pass" | "fail" | "skipped";
+export type TestStatus = DiagnosisStatus;
 
 export interface TestEntry {
   status: TestStatus;
@@ -19,10 +21,16 @@ const SSO_TIMEOUT_MS = 60_000;
 // preimage cap, leaving time for the result to cross the iframe boundary.
 const LIVE_ALLOCATION_TIMEOUT_MS = 420_000;
 
-// Services skipped wholesale in the diagnosis until hosts wire them up.
-const SKIPPED_SERVICES = new Set(["Chat", "Coin Payment", "Payment"]);
-// Individual methods skipped while the host surface is intentionally deferred.
-const SKIPPED_METHODS = new Set(["Account/create_account_proof"]);
+// Services skipped wholesale in the diagnosis, keyed to the reason shown on the
+// skipped rows.
+const SKIPPED_SERVICES = new Map<string, string>([
+  ["Coin Payment", "Coin Payment service not yet wired up by hosts"],
+  ["Payment", "Payment service not yet wired up by hosts"],
+  [
+    WEBRTC_SERVICE_NAME,
+    "WebRTC needs a live camera/microphone grant, and a first-time WebRtc grant only takes effect after a reload; run it interactively from the method browser",
+  ],
+]);
 // Methods that trigger a host permission/signing prompt, so they need the
 // longer signing-class timeout to allow for the user to respond.
 const LONG_TIMEOUT_METHODS = new Set([
@@ -40,6 +48,7 @@ const LONG_TIMEOUT_METHODS = new Set([
 
 const METHOD_TIMEOUT_MS = new Map<string, number>([
   ["Account/get_account_alias", SSO_TIMEOUT_MS],
+  ["Account/create_account_proof", SSO_TIMEOUT_MS],
   ["Resource Allocation/request", LIVE_ALLOCATION_TIMEOUT_MS],
   ["Preimage/lookup_subscribe", LIVE_ALLOCATION_TIMEOUT_MS],
   ["Preimage/submit", LIVE_ALLOCATION_TIMEOUT_MS],
@@ -62,18 +71,9 @@ async function runOne({
 }: RunOneOpts): Promise<void> {
   const id = `${serviceName}/${method.name}`;
 
-  if (SKIPPED_SERVICES.has(serviceName)) {
-    onUpdate(id, {
-      status: "skipped",
-      output: `${serviceName} service not yet wired up by hosts`,
-    });
-    return;
-  }
-  if (SKIPPED_METHODS.has(id)) {
-    onUpdate(id, {
-      status: "skipped",
-      output: "host surface intentionally deferred",
-    });
+  const skipReason = SKIPPED_SERVICES.get(serviceName);
+  if (skipReason !== undefined) {
+    onUpdate(id, { status: "skipped", output: skipReason });
     return;
   }
   if (!method.exampleSource) {
@@ -105,7 +105,7 @@ async function runOne({
     const client = getClientSync();
     if (!client) {
       throw new Error(
-        "App must be opened inside a TrUAPI host (iframe or webview).",
+        "SPA must be opened inside a TrUAPI host (iframe or webview).",
       );
     }
     run = await Promise.race([

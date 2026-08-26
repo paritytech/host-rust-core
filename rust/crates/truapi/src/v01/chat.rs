@@ -1,3 +1,4 @@
+/// UI tree types for host-rendered custom chat messages.
 pub mod custom_renderer;
 pub use custom_renderer::*;
 
@@ -16,8 +17,11 @@ pub struct HostChatCreateRoomRequest {
 
 /// Whether the room was newly created or already existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChatRoomRegistrationStatus {
+    /// The room was created.
     New,
+    /// A room with this ID already existed.
     Exists,
 }
 
@@ -34,7 +38,10 @@ pub enum HostChatCreateRoomError {
     /// Not allowed.
     PermissionDenied,
     /// Catch-all.
-    Unknown { reason: String },
+    Unknown {
+        /// Human-readable reason.
+        reason: String,
+    },
 }
 
 /// Request to register a chat bot.
@@ -50,8 +57,11 @@ pub struct HostChatRegisterBotRequest {
 
 /// Whether the bot was newly registered or already existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChatBotRegistrationStatus {
+    /// The bot was registered.
     New,
+    /// A bot with this ID already existed.
     Exists,
 }
 
@@ -68,18 +78,25 @@ pub enum HostChatRegisterBotError {
     /// Not allowed.
     PermissionDenied,
     /// Catch-all.
-    Unknown { reason: String },
+    Unknown {
+        /// Human-readable reason.
+        reason: String,
+    },
 }
 
 /// How the product participates in a chat room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChatRoomParticipation {
+    /// The product owns and hosts the room.
     RoomHost,
+    /// The product participates as a registered bot.
     Bot,
 }
 
 /// A chat room the product participates in.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatRoom {
     /// Room identifier.
     pub room_id: String,
@@ -89,6 +106,7 @@ pub struct ChatRoom {
 
 /// A clickable action button in a chat message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatAction {
     /// Action identifier.
     pub action_id: String,
@@ -98,13 +116,17 @@ pub struct ChatAction {
 
 /// Layout for action buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChatActionLayout {
+    /// Buttons stacked vertically.
     Column,
+    /// Buttons arranged in a grid.
     Grid,
 }
 
 /// A set of action buttons with optional text.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatActions {
     /// Optional message text.
     pub text: Option<String>,
@@ -116,6 +138,7 @@ pub struct ChatActions {
 
 /// A media attachment.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatMedia {
     /// Media URL.
     pub url: String,
@@ -123,6 +146,7 @@ pub struct ChatMedia {
 
 /// Rich text message with optional media.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatRichText {
     /// Optional text content.
     pub text: Option<String>,
@@ -132,6 +156,7 @@ pub struct ChatRichText {
 
 /// A file attachment in a chat message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatFile {
     /// File download URL.
     pub url: String,
@@ -147,6 +172,7 @@ pub struct ChatFile {
 
 /// A reaction to a chat message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatReaction {
     /// Message being reacted to.
     pub message_id: String,
@@ -156,6 +182,7 @@ pub struct ChatReaction {
 
 /// A custom message with application-defined type and binary payload.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatCustomMessage {
     /// Application-defined type key.
     pub message_type: String,
@@ -165,6 +192,7 @@ pub struct ChatCustomMessage {
 
 /// Content of a chat message -- one of several types.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChatMessageContent {
     /// Plain text message.
     Text {
@@ -197,7 +225,8 @@ pub struct HostChatPostMessageRequest {
 /// Result of posting a message.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct HostChatPostMessageResponse {
-    /// Assigned message ID.
+    /// Host-assigned message id, and the correlation key for any action the
+    /// message carries: a trigger names it in [`ActionTrigger::message_id`].
     pub message_id: String,
 }
 
@@ -207,13 +236,18 @@ pub enum HostChatPostMessageError {
     /// Message exceeded size limit.
     MessageTooLarge,
     /// Catch-all.
-    Unknown { reason: String },
+    Unknown {
+        /// Human-readable reason.
+        reason: String,
+    },
 }
 
 /// Payload when a user clicks an action button.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ActionTrigger {
-    /// Message containing the action.
+    /// Message containing the action, as returned by `Chat::post_message` in
+    /// [`HostChatPostMessageResponse::message_id`].
     pub message_id: String,
     /// Which action was triggered.
     pub action_id: String,
@@ -223,6 +257,7 @@ pub struct ActionTrigger {
 
 /// A slash command from a chat user.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ChatCommand {
     /// Command name.
     pub command: String,
@@ -232,6 +267,7 @@ pub struct ChatCommand {
 
 /// Payload of a received chat action.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ChatActionPayload {
     /// A peer posted a message.
     MessagePosted(ChatMessageContent),
@@ -243,6 +279,7 @@ pub enum ChatActionPayload {
 
 /// A chat action received from the host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct HostChatActionSubscribeItem {
     /// Room where the action occurred.
     pub room_id: String,

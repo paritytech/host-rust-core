@@ -1,9 +1,18 @@
+use derive_more::Display;
 use parity_scale_codec::{Decode, Encode};
 
 use super::common::GenericError;
 
+/// Response containing the product context bound to the current host runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostGetProductContextResponse {
+    /// Full canonical identifier used for authorization and account derivation.
+    pub product_id: String,
+}
+
 /// Request to query whether a feature is supported by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostFeatureSupportedRequest {
     /// Ask whether the host can interact with the chain identified by genesis hash.
     Chain {
@@ -13,12 +22,20 @@ pub enum HostFeatureSupportedRequest {
 }
 
 /// Error from [`crate::api::System::navigate_to`].
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, Display)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum HostNavigateToError {
-    /// User denied the navigation prompt.
+    /// The target host is not authorized for outbound access: the user answered
+    /// no to the prompt, a stored decision already refused it, or no prompt
+    /// could be put to the user.
+    #[display("navigation to this host is not authorized")]
     PermissionDenied,
     /// Catch-all.
-    Unknown { reason: String },
+    #[display("{reason}")]
+    Unknown {
+        /// Human-readable failure reason.
+        reason: String,
+    },
 }
 
 /// Error from [`crate::api::System::handshake`] (RFC 0009).

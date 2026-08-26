@@ -10,8 +10,32 @@ flows, permission state, and auth state transitions.
 
 ## Type Imports
 
-Host-facing wire types are imported from `truapi::latest` by this crate and are
-exposed through the trait signatures below.
+Most host-facing wire types are imported from `truapi::latest` by this crate and
+are exposed through the trait signatures below. `ProductContext` and
+`ProductExecutionKind` are defined here instead, and codegen emits their host
+codecs from these definitions. Both are SCALE-encodable so they can cross the
+wasm callback boundary, where every parameter is encoded with
+`parity-scale-codec`; `ProductContext` decodes through its validating
+constructor, so a context off the wire carries a normalized product id.
+
+## Product Identity
+
+`normalize_product_identifier` is the single chokepoint that turns a host- or
+wire-supplied product id into the canonical form derivation, product storage and
+permission scopes are keyed by; `is_product_identifier` is its boolean form.
+
+`DOTNS_TLDS` (`dot`, `paseo`, `test`) backs it: the TLDs dotNS deployments
+register product names under, one entry per network a host can be pointed at. A
+name ending in one of them is also what navigation resolves back into the host's
+own product surface, so it bypasses the outbound domain grant.
+
+`REMOTE_PERMISSION_TRUSTED_LABELS` lists bare product labels — no TLD, so one
+entry covers every network in `DOTNS_TLDS` — whose products hold every
+`RemotePermission` without a user prompt, tested with
+`has_trusted_remote_permissions`. It covers remote permissions only: device
+permissions, identity disclosure and cross-product account access always prompt.
+A stored decision outranks the list, so a `Denied` written through `CoreAdmin`
+revokes the grant.
 
 ## Host Callback Traits
 
@@ -28,12 +52,21 @@ exposed through the trait signatures below.
   preimage actions before the core asks the paired wallet.
 - `ThemeHost`: stream the host theme into the runtime.
 - `PreimageHost`: submit and look up preimages through the host-selected backend.
+- `ChatPlatform`: create product-scoped native chat rooms, register product
+  chat bots, post messages into rooms, and stream the product's room list.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above.
+traits above except `ChatPlatform`, which `OptionalPlatform` lists instead: a
+host supplies it only when it serves the Chat modality, and the core answers
+Chat calls `Unsupported` otherwise. Codegen reads `OptionalPlatform` to emit
+each listed capability as an optional group on the host-callback surface.
 
 ## Core-Owned Admin API
 
 `CoreAdmin` is not part of the host-provided `Platform` callback surface. It is
 the core-owned control API exposed to host UI for logout, pairing cancellation,
 session-store refresh, and permission administration.
+
+It also serves the session's X25519 chat identity private key. Public session
+material a host needs to address the identity or the paired device travels on
+`SessionUiInfo` instead; only the secret requires this deliberate call.

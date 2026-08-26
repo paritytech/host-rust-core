@@ -67,6 +67,63 @@ fn feature_supported_ok_response_uses_ok_discriminant() {
 }
 
 #[test]
+fn get_chain_info_ok_response_round_trips_over_the_wire() {
+    let core = make_core();
+    let request =
+        truapi::versioned::chain::RemoteChainInfoRequest::V1(v01::RemoteChainInfoRequest {
+            chain: v01::ChainIdentifier::AssetHub,
+        });
+    let ids = request_ids("chain_get_chain_info").expect("known request method");
+    let frame = ProtocolMessage {
+        request_id: "p:9".into(),
+        payload: Payload {
+            id: ids.request_id,
+            value: request.encode(),
+        },
+    };
+    let response = dispatch(&core, frame);
+    assert_eq!(response.request_id, "p:9");
+    assert_eq!(response.payload.id, ids.response_id);
+
+    // Wire payload: [V1 disc=0x00][Ok disc=0x00][encoded response body].
+    let mut expected = vec![0x00u8, 0x00u8];
+    v01::RemoteChainInfoResponse {
+        network: "paseo".to_string(),
+        chain: v01::ChainIdentifier::AssetHub,
+        genesis_hash: [0xaa; 32],
+    }
+    .encode_to(&mut expected);
+    assert_eq!(response.payload.value, expected);
+}
+
+#[test]
+fn get_chain_info_unserved_chain_uses_err_discriminant() {
+    let core = make_core();
+    let request =
+        truapi::versioned::chain::RemoteChainInfoRequest::V1(v01::RemoteChainInfoRequest {
+            chain: v01::ChainIdentifier::Bulletin,
+        });
+    let ids = request_ids("chain_get_chain_info").expect("known request method");
+    let frame = ProtocolMessage {
+        request_id: "p:10".into(),
+        payload: Payload {
+            id: ids.request_id,
+            value: request.encode(),
+        },
+    };
+    let response = dispatch(&core, frame);
+    assert_eq!(response.payload.id, ids.response_id);
+
+    // Wire payload: [V1 disc=0x00][Err disc=0x01][encoded domain error].
+    let mut expected = vec![0x00u8, 0x01u8];
+    CallError::Domain(truapi::versioned::chain::RemoteChainInfoError::V1(
+        v01::RemoteChainInfoError::NotSupported,
+    ))
+    .encode_to(&mut expected);
+    assert_eq!(response.payload.value, expected);
+}
+
+#[test]
 fn local_storage_read_err_response_uses_err_discriminant() {
     let core = make_core();
     let request = truapi::versioned::local_storage::HostLocalStorageReadRequest::V1(
@@ -180,12 +237,16 @@ fn version_index(version: u8) -> u8 {
 }
 
 #[test]
-fn account_proof_declined_confirmation_returns_rejected() {
+fn foreign_account_proof_returns_not_allowlisted_without_confirmation() {
     let core = make_core();
     let request = account::HostAccountCreateProofRequest::V1(v01::HostAccountCreateProofRequest {
+        key_handle: v01::ProductAccountId {
+            dot_ns_identifier: "peopl.dot".to_string(),
+            derivation_index: v01::DerivationIndex::Index(0),
+        },
         context: v01::ProductProofContext {
             product_id: "myapp.dot".to_string(),
-            suffix: Vec::new(),
+            suffix: v01::DerivationIndex::Index(0),
         },
         ring_location: v01::RingLocation {
             chain_id: [0u8; 32],
@@ -207,10 +268,9 @@ fn account_proof_declined_confirmation_returns_rejected() {
     );
     assert_eq!(response.request_id, "p:account-proof");
     assert_eq!(response.payload.id, ids.response_id);
-    // The wire-shape platform declines the confirmation prompt, so the proof
-    // request maps to a `Rejected` domain error in the standard Result-Err envelope.
+    // RFC-0024 forbids a prompt fallback for bearer proofs made with a foreign key.
     let expected = versioned_result_err_payload(account::HostAccountCreateProofError::V1(
-        v01::HostAccountCreateProofError::Rejected,
+        v01::HostAccountCreateProofError::NotAllowlisted,
     ));
     assert_eq!(response.payload.value, expected);
 }
@@ -238,7 +298,7 @@ fn deferred_payment_requests_return_dotli_not_implemented_errors() {
         into: None,
         amount: 1,
         source: v01::PaymentTopUpSource::ProductAccount {
-            derivation_index: 0,
+            derivation_index: v01::DerivationIndex::Index(0),
         },
     });
     assert_request_returns_domain_error(
@@ -424,6 +484,8 @@ fn subscription_start_receive_stop_through_wire_boundary() {
             sso: None,
             root_entropy_source: None,
             identity_account_id: None,
+            identity_chat_private_key: None,
+            device_enc_public_key: None,
             lite_username: None,
             full_username: None,
         });
@@ -434,4 +496,28 @@ fn subscription_start_receive_stop_through_wire_boundary() {
         1,
         "stopped subscription must emit no further frames"
     );
+}
+
+/// Coin Payment answers `Unsupported` rather than the trait default's
+/// `HostFailure`, which a product's retry logic reads as transient.
+#[test]
+fn coin_payment_request_reports_unsupported_on_the_wire() {
+    let core = make_core();
+    let request = truapi::versioned::coin_payment::HostCoinPaymentQueryPurseRequest::V1(
+        v01::HostCoinPaymentQueryPurseRequest {
+            purse: v01::MAIN_PURSE,
+        },
+    );
+    let ids = request_ids("coin_payment_query_purse").expect("known request method");
+    let frame = ProtocolMessage {
+        request_id: "p:coin".into(),
+        payload: Payload {
+            id: ids.request_id,
+            value: request.encode(),
+        },
+    };
+    let response = dispatch(&core, frame);
+    assert_eq!(response.payload.id, ids.response_id);
+    // [V1 disc=0x00][Err disc=0x01][CallError::Unsupported=0x02], and nothing more.
+    assert_eq!(response.payload.value, vec![0x00u8, 0x01u8, 0x02u8]);
 }

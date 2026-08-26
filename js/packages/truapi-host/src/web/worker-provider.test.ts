@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { err, ok } from "neverthrow";
 
 import {
+  CustomRendererNode,
   HostPushNotificationRequest,
   HostPushNotificationResponse,
 } from "@parity/truapi";
+import { bytesToHex } from "@parity/truapi/scale";
 import type { GenericError, Result, ThemeVariant } from "@parity/truapi";
 
 import { createWasmRawCallbacks } from "../generated/host-callbacks-adapter.js";
@@ -94,6 +96,10 @@ function runtimeConfig(
       genesisHash:
         "0xbbcccc1cbe333151b8ed63b17e9e0dec61ee53b57296f1fbe2d161ae3e6fb4dc",
     },
+    assetHub: {
+      genesisHash:
+        "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    },
     pairing: {
       deeplinkScheme: "polkadotapp",
     },
@@ -104,7 +110,11 @@ function runtimeConfig(
 function hostConfigFromRuntimeConfig(
   config: ProductRuntimeConfig,
 ): CreateWebWorkerPairingHostRuntimeOptions["hostConfig"] {
-  const { productId: _productId, ...hostConfig } = config;
+  const {
+    productId: _productId,
+    executionKind: _executionKind,
+    ...hostConfig
+  } = config;
   return hostConfig;
 }
 
@@ -146,7 +156,11 @@ async function createProviderFromRuntime(
     ...runtimeOptions,
     hostConfig: hostConfigFromRuntimeConfig(cfg),
   });
-  const provider = await runtime.createProvider({ productId: cfg.productId });
+  const provider = await runtime.createProvider(
+    cfg.executionKind === undefined
+      ? { productId: cfg.productId }
+      : { productId: cfg.productId, executionKind: cfg.executionKind },
+  );
   return {
     ...provider,
     dispose(): void {
@@ -154,6 +168,17 @@ async function createProviderFromRuntime(
       runtime.dispose();
     },
   };
+}
+
+async function readyRuntime(worker: FakeWorker) {
+  const runtimePromise = createWebWorkerPairingHostRuntime(
+    asWorker(worker),
+    makeHostCallbacks(),
+    { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+  );
+  worker.emit({ kind: "loaded" });
+  worker.emit({ kind: "ready" });
+  return runtimePromise;
 }
 
 async function readyProvider(worker: FakeWorker, options: ReadyOptions = {}) {
@@ -195,6 +220,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       kind: "init",
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
+      capabilities: { chat: false },
     });
 
     worker.emit({ kind: "ready" });
@@ -210,6 +236,23 @@ describe("createWebWorkerPairingHostRuntime", () => {
     expect(typeof provider.disconnectSession).toBe("function");
 
     provider.dispose();
+  });
+
+  it("reports the chat capability to the worker when the host serves it", async () => {
+    const worker = new FakeWorker();
+    void createWebWorkerPairingHostRuntime(
+      asWorker(worker),
+      makeHostCallbacks({
+        chat: { createChatRoom: async () => ({ status: "New" }) },
+      }),
+      { hostConfig: hostConfigFromRuntimeConfig(runtimeConfig()) },
+    );
+
+    worker.emit({ kind: "loaded" });
+
+    expect(lastMessageOfKind(worker, "init").capabilities).toEqual({
+      chat: true,
+    });
   });
 
   it("creates multiple product cores on one worker runtime", async () => {
@@ -271,6 +314,29 @@ describe("createWebWorkerPairingHostRuntime", () => {
 
     runtime.dispose();
     expect(worker.messages.at(-1)).toEqual({ kind: "dispose" });
+  });
+
+  it("binds a host-selected execution kind to the product core", async () => {
+    const worker = new FakeWorker();
+    const config = runtimeConfig({ executionKind: "Worker" });
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      { runtimeConfig: config },
+    );
+
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    await settle();
+
+    const createCore = lastMessageOfKind(worker, "createCore");
+    expect(createCore).toEqual({
+      kind: "createCore",
+      coreId: 1,
+      product: { productId: "dotli.dot", executionKind: "Worker" },
+    });
+    worker.emit({ kind: "coreReady", coreId: 1 });
+    (await providerPromise).dispose();
   });
 
   it("dev global setLogLevel updates every live worker provider", async () => {
@@ -400,6 +466,202 @@ describe("createWebWorkerPairingHostRuntime", () => {
     provider.dispose();
   });
 
+  it("returns the session chat identity key as hex, and undefined when absent", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x77);
+    const pending = provider.getSessionChatIdentityKey();
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getSessionChatIdentityKey");
+
+    worker.emit({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    // A session that predates retention reports absence rather than an error.
+    const missing = provider.getSessionChatIdentityKey();
+    worker.emit({
+      kind: "sessionChatIdentityKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: true,
+      key: undefined,
+    });
+    expect(await missing).toBeUndefined();
+
+    provider.dispose();
+  });
+
+  it("returns a product subtree key as hex and surfaces a wallet deadline", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x31);
+    const pending = provider.getProductSubtreePublicKey("myapp.dot", 5000);
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getProductSubtreePublicKey");
+    expect(msg.productId).toBe("myapp.dot");
+    expect(msg.timeoutMs).toBe(5000);
+
+    worker.emit({
+      kind: "productSubtreePublicKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    // A wallet that never answers ends at the deadline, and that is an error
+    // rather than an absent key, so a host can tell it apart from having no
+    // session at all.
+    const late = provider.getProductSubtreePublicKey("slow.dot", 1);
+    worker.emit({
+      kind: "productSubtreePublicKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: false,
+      error: "Account authority request timed out after 1ms",
+    });
+    await expect(late).rejects.toThrow("timed out");
+
+    provider.dispose();
+  });
+
+  it("returns the device encryption key as hex and fails once disposed", async () => {
+    const worker = new FakeWorker();
+    const providerPromise = createProviderFromRuntime(
+      asWorker(worker),
+      makeHostCallbacks(),
+      {
+        runtimeConfig: runtimeConfig(),
+      },
+    );
+    worker.emit({ kind: "loaded" });
+    worker.emit({ kind: "ready" });
+    const provider = await finishProviderReady(worker, providerPromise);
+
+    const keyBytes = new Uint8Array(32).fill(0x5a);
+    const pending = provider.getDeviceEncryptionKey();
+    const msg = worker.messages.at(-1)!;
+    expect(msg.kind).toBe("getDeviceEncryptionKey");
+
+    worker.emit({
+      kind: "deviceEncryptionKeyResponse",
+      requestId: msg.requestId,
+      ok: true,
+      key: keyBytes,
+    });
+    expect(await pending).toBe(bytesToHex(keyBytes));
+
+    const failing = provider.getDeviceEncryptionKey();
+    worker.emit({
+      kind: "deviceEncryptionKeyResponse",
+      requestId: worker.messages.at(-1)!.requestId,
+      ok: false,
+      error: "no device key",
+    });
+    await expect(failing).rejects.toThrow("no device key");
+
+    // A key has no safe empty value, so a closed connection rejects.
+    provider.dispose();
+    await expect(provider.getDeviceEncryptionKey()).rejects.toThrow(
+      "product connection is closed",
+    );
+  });
+
+  it("forwards session activation calls and resolves their responses", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const blob = new Uint8Array([1, 2, 3]);
+
+    for (const [kind, call] of [
+      ["activateStoredSession", () => runtime.activateStoredSession()],
+      ["activateExternalSession", () => runtime.activateExternalSession(blob)],
+      ["resetSessionState", () => runtime.resetSessionState()],
+    ] as const) {
+      const pending = call();
+      const msg = lastMessageOfKind(worker, kind);
+      expect(typeof msg.requestId).toBe("number");
+      worker.emit({
+        kind: "sessionActivationResponse",
+        requestId: msg.requestId,
+        ok: true,
+      });
+      await pending;
+    }
+
+    expect(lastMessageOfKind(worker, "activateExternalSession").blob).toEqual(
+      blob,
+    );
+
+    runtime.dispose();
+  });
+
+  it("rejects a session activation the core could not complete", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+
+    const pending = runtime.activateStoredSession();
+    const msg = lastMessageOfKind(worker, "activateStoredSession");
+    worker.emit({
+      kind: "sessionActivationResponse",
+      requestId: msg.requestId,
+      ok: false,
+      error: "no stored session",
+    });
+
+    await expect(pending).rejects.toThrow("no stored session");
+
+    runtime.dispose();
+  });
+
+  it("rejects a session activation still in flight when the worker faults", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+
+    const pending = runtime.activateStoredSession();
+    worker.emitError("boom");
+
+    await expect(pending).rejects.toThrow(/boom/);
+  });
+
+  it("rejects session activation calls made after the runtime is gone", async () => {
+    const worker = new FakeWorker();
+    const runtime = await readyRuntime(worker);
+    const blob = new Uint8Array([1, 2, 3]);
+    worker.emitError("boom");
+
+    // Resolving here would tell a host at boot that the activation ran and
+    // found no session, when nothing was ever sent to the worker.
+    await expect(runtime.activateStoredSession()).rejects.toThrow(/boom/);
+    await expect(runtime.activateExternalSession(blob)).rejects.toThrow(/boom/);
+    await expect(runtime.resetSessionState()).rejects.toThrow(/boom/);
+
+    runtime.dispose();
+    await expect(runtime.activateStoredSession()).rejects.toThrow();
+  });
+
   it("dispatches callback requests to host hooks", async () => {
     const worker = new FakeWorker();
     let clears = 0;
@@ -487,8 +749,9 @@ describe("createWebWorkerPairingHostRuntime", () => {
     worker.emit({ kind: "loaded" });
     worker.emit({ kind: "ready" });
     const provider = await finishProviderReady(worker, providerPromise);
-    const publicKey = new Uint8Array(32);
-    publicKey.set([1, 2]);
+    const publicKeyBytes = new Uint8Array(32);
+    publicKeyBytes.set([1, 2]);
+    const publicKey = bytesToHex(publicKeyBytes);
 
     worker.emit({
       kind: "callbackRequest",
@@ -891,5 +1154,69 @@ describe("createWebWorkerPairingHostRuntime", () => {
       deeplink: undefined,
       scheduledAt: undefined,
     });
+  });
+  it("ends a render whose tree cannot be decoded instead of stranding it", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+    const coreId = lastMessageOfKind(worker, "createCore").coreId;
+
+    const errors: Error[] = [];
+    let completed = 0;
+    provider.renderCustomMessage!(
+      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
+      {
+        onUpdate: () => {},
+        onComplete: () => completed++,
+        onError: (error) => errors.push(error),
+      },
+    );
+    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+
+    // 0xff is not a CustomRendererNode discriminant.
+    expect(() =>
+      worker.emit({
+        kind: "renderCustomMessageItem",
+        renderId,
+        node: new Uint8Array([0xff]),
+      }),
+    ).not.toThrow();
+
+    expect(errors).toHaveLength(1);
+    expect(completed).toBe(0);
+    // The worker must be told to stop, or its wasm subscription leaks.
+    expect(lastMessageOfKind(worker, "renderCustomMessageStop").renderId).toBe(
+      renderId,
+    );
+  });
+
+  it("keeps a throwing render sink from breaking the worker listener", async () => {
+    const worker = new FakeWorker();
+    const provider = await readyProvider(worker);
+
+    provider.renderCustomMessage!(
+      { messageId: "m", messageType: "vote", payload: new Uint8Array() },
+      {
+        onUpdate: () => {
+          throw new Error("renderer exploded");
+        },
+        onError: () => {
+          throw new Error("and so did onError");
+        },
+      },
+    );
+    const { renderId } = lastMessageOfKind(worker, "renderCustomMessageStart");
+
+    expect(() =>
+      worker.emit({
+        kind: "renderCustomMessageItem",
+        renderId,
+        node: CustomRendererNode.enc({ tag: "Nil", value: undefined }),
+      }),
+    ).not.toThrow();
+
+    // Still live: a later frame must still reach the provider.
+    expect(() =>
+      worker.emit({ kind: "frame", coreId: 0, bytes: new Uint8Array([1]) }),
+    ).not.toThrow();
   });
 });
