@@ -50,8 +50,8 @@ pub mod native_renderer;
 pub mod wasm;
 
 pub use host_core::{
-    FrameSink, HostAdmin, PairingHostRuntime, ProductRuntime, ProductRuntimeControl,
-    ProductRuntimeError, SigningHostRuntime,
+    FrameSink, HostAdmin, HostAllowanceOrigin, PairingHostRuntime, ProductRuntime,
+    ProductRuntimeControl, ProductRuntimeError, SigningHostRuntime,
 };
 pub use host_logic::session::{
     ExternalPairedSession, SsoSessionInfo, decode_persisted_session, encode_external_paired_session,
