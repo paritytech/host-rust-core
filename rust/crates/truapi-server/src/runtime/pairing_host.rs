@@ -1943,7 +1943,21 @@ impl PairingHost {
             }
         })?;
         if caller != handle.dot_ns_identifier {
-            return Err(RingVrfError::NotAllowlisted);
+            // LOCAL SPIKE (dim2): interim allowlist source so the RFC-0024
+            // cross-product path is testable before the manifest RFC lands.
+            // Format: TRUAPI_RING_VRF_ALLOWLIST="owner:caller,owner:caller".
+            let permitted = std::env::var("TRUAPI_RING_VRF_ALLOWLIST")
+                .ok()
+                .is_some_and(|list| {
+                    list.split(',').any(|pair| {
+                        pair.trim().split_once(':').is_some_and(|(owner, allowed)| {
+                            owner == handle.dot_ns_identifier && allowed == caller
+                        })
+                    })
+                });
+            if !permitted {
+                return Err(RingVrfError::NotAllowlisted);
+            }
         }
         Ok(())
     }

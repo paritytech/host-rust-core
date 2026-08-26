@@ -243,6 +243,21 @@ enum LegacySignerError {
     ProductDerivation(String),
 }
 
+fn spike_ring_vrf_allowlisted(owner: &str, caller: &str) -> bool {
+    // LOCAL SPIKE (dim2): interim source for the RFC-0024 cross-product gate,
+    // pending the manifest allowlist RFC. TRUAPI_RING_VRF_ALLOWLIST is a
+    // comma-separated list of "owner:caller" pairs.
+    std::env::var("TRUAPI_RING_VRF_ALLOWLIST")
+        .ok()
+        .is_some_and(|list| {
+            list.split(',').any(|pair| {
+                pair.trim()
+                    .split_once(':')
+                    .is_some_and(|(o, c)| o == owner && c == caller)
+            })
+        })
+}
+
 impl LegacySignerError {
     fn into_reason(self, unavailable_reason: &'static str) -> String {
         match self {
@@ -1118,7 +1133,9 @@ impl Account for ProductRuntimeHost {
                 },
             ))
         })?;
-        if key_handle.dot_ns_identifier != self.product_id() {
+        if key_handle.dot_ns_identifier != self.product_id()
+            && !spike_ring_vrf_allowlisted(&key_handle.dot_ns_identifier, &self.product_id())
+        {
             return Err(CallError::Domain(HostAccountCreateProofError::V1(
                 v01::HostAccountCreateProofError::NotAllowlisted,
             )));
@@ -1258,7 +1275,9 @@ impl Account for ProductRuntimeHost {
                 v01::HostAccountRingVrfSignError::NotConnected,
             )));
         };
-        if request.key_handle.dot_ns_identifier != self.product_id() {
+        if request.key_handle.dot_ns_identifier != self.product_id()
+            && !spike_ring_vrf_allowlisted(&request.key_handle.dot_ns_identifier, &self.product_id())
+        {
             return Err(CallError::Domain(HostAccountRingVrfSignError::V1(
                 v01::HostAccountRingVrfSignError::NotAllowlisted,
             )));
