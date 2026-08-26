@@ -889,7 +889,11 @@ impl WasmPairingHostRuntime {
         self.runtime.notify_session_store_changed();
     }
 
-    /// Read a stored permission authorization status for a product.
+    /// Read a permission authorization status for a product.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[wasm_bindgen(js_name = permissionAuthorizationStatus)]
     pub async fn permission_authorization_status(
         &self,
@@ -905,7 +909,11 @@ impl WasmPairingHostRuntime {
         Ok(permission_authorization_status_to_js(status))
     }
 
-    /// Read stored permission authorization statuses for a product.
+    /// Read permission authorization statuses for a product.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[wasm_bindgen(js_name = permissionAuthorizationStatuses)]
     pub async fn permission_authorization_statuses(
         &self,
@@ -1167,7 +1175,11 @@ impl WasmProductRuntime {
             .map_err(|err| JsValue::from_str(&err.to_string()))
     }
 
-    /// Read a stored permission authorization status without prompting.
+    /// Read a permission authorization status without prompting.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     ///
     /// `payload` is a SCALE-encoded `PermissionAuthorizationRequest`.
     #[wasm_bindgen(js_name = permissionAuthorizationStatus)]
@@ -1185,7 +1197,11 @@ impl WasmProductRuntime {
         Ok(permission_authorization_status_to_js(status))
     }
 
-    /// Read stored permission authorization statuses without prompting.
+    /// Read permission authorization statuses without prompting.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     ///
     /// `payloads` is an array of SCALE-encoded
     /// `PermissionAuthorizationRequest` values. Results follow the same order.

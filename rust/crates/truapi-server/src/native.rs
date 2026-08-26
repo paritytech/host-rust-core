@@ -1047,13 +1047,19 @@ impl NativeProductExecution {
 #[uniffi::export]
 impl NativeProductExecution {
     /// Read a product-scoped permission authorization without prompting.
-    pub fn permission_authorization_status(
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, which means calling `device_permission_status` on the host. It
+    /// is async for that reason: blocking a thread on a host callback
+    /// deadlocks any implementation that hops to the same thread to answer.
+    pub async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin().permission_authorization_status(request),
-        )?)
+        Ok(self
+            .admin()
+            .permission_authorization_status(request)
+            .await?)
     }
 
     /// Update a product-scoped permission authorization.
@@ -1287,19 +1293,18 @@ impl NativeTrUApiCore {
     /// surface still link.
     pub fn cancel_login(&self) {}
 
-    /// Read a stored permission authorization status without prompting.
+    /// Read a permission authorization status without prompting.
     ///
-    /// A device capability also resolves the host application's OS gate, so an
-    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
     /// identity-disclosure and account-access decisions have no OS gate.
-    ///
-    /// Blocks the calling thread on the storage read, so call it off the host's
-    /// main/UI thread.
-    pub fn permission_authorization_status(
+    pub async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, HostRejection> {
-        self.execution.permission_authorization_status(request)
+        self.execution
+            .permission_authorization_status(request)
+            .await
     }
 
     /// Update a stored permission authorization status. Passing
@@ -3810,16 +3815,14 @@ mod tests {
             )
             .expect("execution should open");
 
-        let camera = execution
-            .permission_authorization_status(PermissionAuthorizationRequest::Device(
-                v01::HostDevicePermissionRequest::Camera,
-            ))
-            .expect("status read");
-        let microphone = execution
-            .permission_authorization_status(PermissionAuthorizationRequest::Device(
-                v01::HostDevicePermissionRequest::Microphone,
-            ))
-            .expect("status read");
+        let camera = futures::executor::block_on(execution.permission_authorization_status(
+            PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Camera),
+        ))
+        .expect("status read");
+        let microphone = futures::executor::block_on(execution.permission_authorization_status(
+            PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Microphone),
+        ))
+        .expect("status read");
 
         // Camera is refused by the OS; the microphone has no OS gate and no
         // stored decision, so its question is still open.

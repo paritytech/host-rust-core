@@ -936,9 +936,15 @@ class TrUAPIHostCore private constructor(
      */
     fun lastStatementRenewalReport(): StatementRenewalReport? = inner.lastStatementRenewalReport()
 
-    /** Read a stored permission authorization status without prompting. */
+    /**
+     * Read a permission authorization status without prompting.
+     *
+     * A device capability resolves the OS gate as well as storage, so an OS
+     * refusal reads as `Denied` whatever is stored. Remote, identity disclosure
+     * and account access decisions have no OS gate.
+     */
     @Throws(HostRejection::class)
-    fun permissionAuthorizationStatus(
+    suspend fun permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus =
         inner.permissionAuthorizationStatus(request)
@@ -1164,9 +1170,15 @@ class TrUAPIProductExecution internal constructor(
     @Throws(HostRejection::class)
     fun sessionChatIdentityKey(): ByteArray? = inner.sessionChatIdentityKey()
 
-    /** Read a stored permission authorization status without prompting. */
+    /**
+     * Read a permission authorization status without prompting.
+     *
+     * A device capability resolves the OS gate as well as storage, so an OS
+     * refusal reads as `Denied` whatever is stored. Remote, identity disclosure
+     * and account access decisions have no OS gate.
+     */
     @Throws(HostRejection::class)
-    fun permissionAuthorizationStatus(
+    suspend fun permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus = inner.permissionAuthorizationStatus(request)
 

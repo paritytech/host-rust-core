@@ -32,8 +32,8 @@ public extension TrUAPIHost {
         into controller: WKUserContentController,
         core: any TrUAPIHostCoreProtocol,
         endpoint: WsBridgeEndpoint
-    ) throws {
-        let webRtcAllowed = try core.permissionAuthorizationStatus(
+    ) async throws {
+        let webRtcAllowed = try await core.permissionAuthorizationStatus(
             request: .remote(RemotePermissionRequest(permission: .webRtc))
         ) == .authorized
 

@@ -304,7 +304,7 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func activateLocalSession(secret: Data, liteUsername: String?) throws
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus
+    ) async throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
@@ -911,7 +911,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     ) throws -> AsyncThrowingStream<CustomRendererNode, Error>
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus
+    ) async throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
@@ -977,8 +977,8 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(request: request)
+    ) async throws -> PermissionAuthorizationStatus {
+        try await inner.permissionAuthorizationStatus(request: request)
     }
 
     public func setPermissionAuthorizationStatus(
@@ -1124,11 +1124,15 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
         inner.lastStatementRenewalReport()
     }
 
-    /// Read a stored permission authorization status without prompting.
+    /// Read a permission authorization status without prompting.
+    ///
+    /// A device capability resolves the OS gate as well as storage, so an OS
+    /// refusal reads as `.denied` whatever is stored. Remote, identity
+    /// disclosure and account access decisions have no OS gate.
     public func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(request: request)
+    ) async throws -> PermissionAuthorizationStatus {
+        try await inner.permissionAuthorizationStatus(request: request)
     }
 
     /// Update a stored permission authorization status. `.notDetermined`

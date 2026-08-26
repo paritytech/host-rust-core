@@ -2562,8 +2562,13 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
 
     /**
      * Read a product-scoped permission authorization without prompting.
+     *
+     * A device capability resolves the host application's OS gate as well as
+     * storage, which means calling `device_permission_status` on the host. It
+     * is async for that reason: blocking a thread on a host callback
+     * deadlocks any implementation that hops to the same thread to answer.
      */
-    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) async throws  -> PermissionAuthorizationStatus
 
     /**
      * Resolve a product's hard-subtree public key for hosts naming the account
@@ -2748,15 +2753,26 @@ open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
 
     /**
      * Read a product-scoped permission authorization without prompting.
+     *
+     * A device capability resolves the host application's OS gate as well as
+     * storage, which means calling `device_permission_status` on the host. It
+     * is async for that reason: blocking a thread on a host callback
+     * deadlocks any implementation that hops to the same thread to answer.
      */
-open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
-    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
-    )
-})
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)async throws  -> PermissionAuthorizationStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
+                        self.uniffiCloneHandle(),FfiConverterTypePermissionAuthorizationRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePermissionAuthorizationStatus_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
 }
 
     /**
@@ -3010,16 +3026,13 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
 
     /**
-     * Read a stored permission authorization status without prompting.
+     * Read a permission authorization status without prompting.
      *
-     * A device capability also resolves the host application's OS gate, so an
-     * OS refusal reads as `Denied` whatever is stored. Remote,
+     * A device capability resolves the host application's OS gate as well as
+     * storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
      * identity-disclosure and account-access decisions have no OS gate.
-     *
-     * Blocks the calling thread on the storage read, so call it off the host's
-     * main/UI thread.
      */
-    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) async throws  -> PermissionAuthorizationStatus
 
     /**
      * Run one renewal pass now and report what each tracked target got.
@@ -3329,23 +3342,26 @@ open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
 }
 
     /**
-     * Read a stored permission authorization status without prompting.
+     * Read a permission authorization status without prompting.
      *
-     * A device capability also resolves the host application's OS gate, so an
-     * OS refusal reads as `Denied` whatever is stored. Remote,
+     * A device capability resolves the host application's OS gate as well as
+     * storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
      * identity-disclosure and account-access decisions have no OS gate.
-     *
-     * Blocks the calling thread on the storage read, so call it off the host's
-     * main/UI thread.
      */
-open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
-    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
-    )
-})
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)async throws  -> PermissionAuthorizationStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
+                        self.uniffiCloneHandle(),FfiConverterTypePermissionAuthorizationRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePermissionAuthorizationStatus_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
 }
 
     /**
@@ -6807,7 +6823,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_theme_changed() != 3284) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 27339) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_product_subtree_public_key() != 63238) {
@@ -6864,7 +6880,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 49601) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 39901) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 42776) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 57273) {
