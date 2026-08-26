@@ -11,11 +11,16 @@ on:
         type: string
         required: false
         default: ""
-  # Push a `truapi-provider-dev` or `truapi-provider-dev-<suffix>` tag to publish
-  # a dev snapshot; the part after `truapi-provider-dev-` becomes the dist-tag suffix.
+  # Triggers: a `truapi-provider-dev[-<suffix>]` tag (suffix becomes the
+  # dist-tag suffix), or a chain-spec change landing on main. The paths filter
+  # only applies to branch pushes, never tags.
   push:
     tags:
       - "truapi-provider-dev*"
+    branches:
+      - main
+    paths:
+      - "rust/crates/truapi-provider/networks/**"
 
 permissions:
   contents: read
@@ -148,3 +153,13 @@ jobs:
           inputs: '${{ format(''{{ "repo": "{0}", "run_id": "{1}", "artifact_name": "truapi-provider-dev-{2}", "npm_tag": "{3}" }}'', github.repository, github.run_id, github.sha, steps.devver.outputs.tag) }}'
         env:
           GITHUB_TOKEN: ${{ secrets.NPM_PUBLISH_AUTOMATION_TOKEN }}
+
+      # No tags to gate here, so a missing version just fails the job. The check
+      # is version-addressed, so the dist-tag above does not affect it.
+      - name: Confirm the dev snapshot reached npm
+        timeout-minutes: 15
+        env:
+          DEV_VERSION: ${{ steps.devver.outputs.version }}
+        run: |
+          node scripts/wait-for-npm-publish.mjs \
+            --package @parity/truapi-provider --version "${DEV_VERSION}"

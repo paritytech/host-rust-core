@@ -275,6 +275,31 @@ pub fn has_dotns_tld(normalized: &str) -> bool {
         .is_some_and(|(_, tld)| DOTNS_TLDS.contains(&tld))
 }
 
+/// Bare product labels whose products hold every [`RemotePermission`] without a
+/// user prompt.
+///
+/// These are first-party surfaces shipped alongside the host, so their remote
+/// access belongs to the host's own trust boundary rather than to a per-product
+/// decision. The list covers remote permissions only: device permissions,
+/// identity disclosure and cross-product account access are always asked for.
+/// Entries carry no TLD, so one entry covers the product on every network in
+/// [`DOTNS_TLDS`].
+pub const REMOTE_PERMISSION_TRUSTED_LABELS: &[&str] = &["peopl", "dim2", "stash"];
+
+/// Whether `product_id` holds every [`RemotePermission`] without prompting.
+///
+/// Expects the [`normalize_product_identifier`] form. Matches the whole label
+/// and nothing else: `peopl.dot` and `peopl.paseo` are trusted, while
+/// `app.peopl.dot` and any `localhost` identifier are separate products and are
+/// not. The label is only read out of an id that [`has_dotns_tld`] accepts, so a
+/// widened product-id policy cannot promote an arbitrary single-label host.
+pub fn has_trusted_remote_permissions(product_id: &str) -> bool {
+    has_dotns_tld(product_id)
+        && product_id
+            .rsplit_once('.')
+            .is_some_and(|(label, _tld)| REMOTE_PERMISSION_TRUSTED_LABELS.contains(&label))
+}
+
 /// Normalize product identifiers before derivation and policy checks.
 pub fn normalize_product_identifier(
     product_id: &str,
@@ -1222,6 +1247,18 @@ pub enum CoreStorageKey {
         /// Product whose hard subtree this key roots.
         product_id: String,
     },
+    /// Signing-host request replay state for one wallet and pairing peer.
+    ///
+    /// The value is a versioned, bounded replay ledger owned by the core.
+    #[codec(index = 11)]
+    SsoResponderRequestLedger {
+        /// Root public key of the wallet that served the requests.
+        root_public_key: [u8; 32],
+        /// Pairing peer's statement-store account id.
+        peer_statement_account_id: [u8; 32],
+        /// Pairing peer's X25519 public key.
+        peer_encryption_public_key: [u8; 32],
+    },
 }
 
 /// Stable metadata describing one strictly decoded [`CoreStorageKey`].
@@ -1273,6 +1310,7 @@ pub fn describe_core_storage_key(
         CoreStorageKey::RingVrfRegistry { .. } => ("RingVrfRegistry", None),
         CoreStorageKey::StatementRenewalTargets => ("StatementRenewalTargets", None),
         CoreStorageKey::DeviceEncryptionKey => ("DeviceEncryptionKey", None),
+        CoreStorageKey::SsoResponderRequestLedger { .. } => ("SsoResponderRequestLedger", None),
     };
     Ok(CoreStorageKeyDescription { kind, product_id })
 }
@@ -1964,6 +2002,21 @@ mod tests {
     }
 
     #[test]
+    fn sso_responder_request_ledger_key_has_stable_encoding() {
+        let key = CoreStorageKey::SsoResponderRequestLedger {
+            root_public_key: [0x11; 32],
+            peer_statement_account_id: [0x22; 32],
+            peer_encryption_public_key: [0x33; 32],
+        };
+        let mut expected = vec![11];
+        expected.extend([0x11; 32]);
+        expected.extend([0x22; 32]);
+        expected.extend([0x33; 32]);
+
+        assert_eq!(key.encode(), expected);
+    }
+
+    #[test]
     fn product_context_encoding_matches_the_generated_host_codec() {
         // The generated TS host codec is
         // `S.Struct({productId: S.str, executionKind: S.Status("App", "Widget", "Worker")})`,
@@ -2015,6 +2068,68 @@ mod tests {
             decoded,
             ProductContext::new("app.dot".to_string()).expect("product id is valid")
         );
+    }
+
+    #[test]
+    fn trusted_remote_permission_labels_match_the_bare_product_label() {
+        for product_id in [
+            "peopl.dot",
+            "peopl.paseo",
+            "peopl.test",
+            "dim2.dot",
+            "stash.dot",
+        ] {
+            assert!(
+                has_trusted_remote_permissions(product_id),
+                "{product_id} must hold remote permissions without a prompt"
+            );
+        }
+        for product_id in [
+            "app.peopl.dot",
+            "sub.dim2.paseo",
+            "peopl",
+            "peopl.com",
+            "peoplx.dot",
+            "my-peopl.dot",
+            "localhost",
+            "localhost:3000",
+            "",
+            "dot",
+        ] {
+            assert!(
+                !has_trusted_remote_permissions(product_id),
+                "{product_id} is a separate product and must prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn every_trusted_remote_permission_label_is_a_product_identifier() {
+        // A label that product-id validation rejects would never reach the
+        // permission engine, so the whitelist entry would be silently inert.
+        for label in REMOTE_PERMISSION_TRUSTED_LABELS {
+            for tld in DOTNS_TLDS {
+                let product_id = format!("{label}.{tld}");
+                assert!(
+                    is_product_identifier(&product_id),
+                    "{product_id} must be an accepted product identifier"
+                );
+                assert!(
+                    has_trusted_remote_permissions(&product_id),
+                    "{product_id} must be recognized as trusted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trusted_remote_permission_labels_are_bare_lowercase_labels() {
+        // The predicate compares against the label of an already-normalized id,
+        // so an entry carrying a TLD or an uppercase letter can never match.
+        for label in REMOTE_PERMISSION_TRUSTED_LABELS {
+            assert!(!label.contains('.'), "{label} must not carry a TLD");
+            assert_eq!(*label, label.to_lowercase(), "{label} must be lowercase");
+        }
     }
 
     #[test]
@@ -2073,6 +2188,15 @@ mod tests {
             (
                 CoreStorageKey::DeviceEncryptionKey,
                 "DeviceEncryptionKey",
+                None,
+            ),
+            (
+                CoreStorageKey::SsoResponderRequestLedger {
+                    root_public_key: [0x11; 32],
+                    peer_statement_account_id: [0x22; 32],
+                    peer_encryption_public_key: [0x33; 32],
+                },
+                "SsoResponderRequestLedger",
                 None,
             ),
         ] {

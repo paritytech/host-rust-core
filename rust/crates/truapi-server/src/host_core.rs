@@ -32,9 +32,9 @@ use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
 use crate::runtime::{
-    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairingHostRole,
-    ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices, SigningHostRole,
-    answer_remote_message, respond_to_pairing,
+    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
+    PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
+    SigningHostRole, answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -447,7 +447,7 @@ impl SigningHostRuntime {
 
     /// Build one product connection with adapters scoped to one native
     /// executable while sharing this runtime's authentication and services.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
     pub(crate) fn product_runtime_with(
         &self,
         product: ProductContext,
@@ -586,6 +586,28 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Answer a pairing host's handshake without entering its long-lived serve loop.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.establish_pairing"))]
+    pub async fn establish_pairing(&self, deeplink: &str) -> Result<(), v01::GenericError> {
+        establish_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Resume a previously paired host from its persisted public peer keys.
+    ///
+    /// Only [`ResponderExit::PeerDisconnected`] authorizes removing the durable
+    /// pairing. Retain it after [`ResponderExit::SubscriptionEnded`] or an error.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.resume_pairing"))]
+    pub async fn resume_pairing(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<ResponderExit, v01::GenericError> {
+        resume_pairing(self.services.clone(), self.signing_host.clone(), peer)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Answer one decrypted SSO remote message with this signing host.
     ///
     /// Session control stays with the caller: `Disconnected` is reported as an
@@ -624,6 +646,18 @@ impl SigningHostRuntime {
     ) -> Result<(), v01::GenericError> {
         self.signing_host
             .track_statement_renewal_targets(targets)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Stop renewing one fixed statement account.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.untrack_statement_renewal_account"))]
+    pub async fn untrack_statement_renewal_account(
+        &self,
+        account_id: &[u8; 32],
+    ) -> Result<bool, v01::GenericError> {
+        self.signing_host
+            .untrack_statement_renewal_account(account_id)
             .await
             .map_err(|reason| v01::GenericError { reason })
     }

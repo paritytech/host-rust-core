@@ -16,6 +16,7 @@
 mod allowance_renewal;
 mod local_activation;
 pub(super) mod ring_vrf;
+mod sso_replay;
 mod sso_responder;
 
 use std::collections::HashSet;
@@ -27,8 +28,10 @@ use subxt::utils::{AccountId32, MultiSignature};
 #[cfg(not(target_arch = "wasm32"))]
 pub use allowance_renewal::StatementRenewalTarget;
 pub(crate) use local_activation::LocalActivation;
-pub use sso_responder::ResponderExit;
-pub(crate) use sso_responder::{answer_remote_message, respond_to_pairing};
+pub use sso_responder::{PairedSsoPeer, ResponderExit};
+pub(crate) use sso_responder::{
+    answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
+};
 
 use super::authority::{
     AccountAliasAuthorityRequest, AuthorityError, AuthoritySession, BulletinAllowanceKey,
@@ -65,6 +68,7 @@ use ring_vrf::{
     ChainRingResolver, MemberCandidate, RingResolver, alias_from_entropy, context_bytes,
     create_proof, member_from_entropy, sign_from_entropy,
 };
+use sso_replay::SsoReplayLocks;
 
 use truapi::versioned::account::{HostRequestLoginError, HostRequestLoginResponse};
 use truapi::{CallContext, CallError, v01};
@@ -117,6 +121,8 @@ pub(crate) struct SigningHost {
     local_grants: Mutex<LocalGrantState>,
     /// Durable RFC-0024 registry, scoped by the active wallet root.
     ring_vrf_registry: Arc<RingVrfRegistryStore>,
+    /// Serializes replay-ledger updates within each wallet and peer scope.
+    sso_replay_locks: SsoReplayLocks,
     #[cfg(not(target_arch = "wasm32"))]
     renewal: allowance_renewal::RenewalState,
 }
@@ -135,6 +141,7 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
+            sso_replay_locks: SsoReplayLocks::default(),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
@@ -160,6 +167,7 @@ impl SigningHost {
             root_entropy: Mutex::new(None),
             local_grants: Mutex::new(LocalGrantState::default()),
             ring_vrf_registry: RingVrfRegistryStore::new(platform),
+            sso_replay_locks: SsoReplayLocks::default(),
             #[cfg(not(target_arch = "wasm32"))]
             renewal: allowance_renewal::RenewalState::default(),
         })
@@ -191,6 +199,10 @@ impl SigningHost {
         derive_product_subtree_keypair(&root, &product_id)
             .map(|keypair| keypair.secret.to_bytes())
             .map_err(product_authority_error)
+    }
+
+    fn sso_replay_locks(&self) -> &SsoReplayLocks {
+        &self.sso_replay_locks
     }
 
     fn grant_auto_signing(
@@ -533,6 +545,14 @@ impl SigningHost {
         targets: Vec<StatementRenewalTarget>,
     ) -> Result<(), String> {
         allowance_renewal::track(self, targets).await
+    }
+
+    /// Stop renewing one fixed statement account.
+    pub(crate) async fn untrack_statement_renewal_account(
+        &self,
+        account_id: &[u8; 32],
+    ) -> Result<bool, String> {
+        allowance_renewal::untrack_account_for_signing_host(self, account_id).await
     }
 
     /// Run one statement-store renewal pass over the tracked targets.
