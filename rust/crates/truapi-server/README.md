@@ -93,6 +93,13 @@ role revalidates before touching key material.
 Permission grants are scoped by product id and typed request, so a grant for
 one product never authorizes another product or another permission class.
 
+Remote permissions carry one exception. A product whose label is listed in
+`truapi_platform::REMOTE_PERMISSION_TRUSTED_LABELS` holds every
+`RemotePermission` without a prompt: while nothing is stored the lookup reports
+`Authorized` and writes nothing. A stored `Denied` still wins, so the admin
+surface revokes it. Device permissions, identity disclosure and account access
+always prompt.
+
 ```text
 Product app
 (product_id = "my-product")
@@ -122,8 +129,8 @@ CoreStorage lookup
         |
         +-- Denied -------------------> return PermissionDenied / deny call
         |
-        +-- NotDetermined / missing ---+
-                                       |
+        +-- NotDetermined / missing ---+   (remote + trusted label: allow,
+                                       |    see below)
                                        v
                               Platform prompt callback
                                        |
@@ -148,6 +155,23 @@ CoreStorage lookup
                     Authorized                    Denied
                     allow call                    deny call
 ```
+
+#### Auto-granted remote permissions
+
+A remote permission resolves in this order:
+
+1. `Remote { domains: [] }` is `Denied`. An empty bundle grants nothing, so
+   failing closed outranks the whitelist.
+2. A stored decision wins — the exact slot for a non-domain variant, or the most
+   specific matching `remote_domain_candidates` entry for a domain.
+3. Nothing stored and the product's label is trusted: `Authorized`, with no
+   prompt and no write.
+4. Nothing stored and the label is untrusted: `NotDetermined`, so the lookup
+   prompts and persists the answer.
+
+Because a trusted product's grant is never written, revoking its domain access
+means writing `Denied` for the `*` pattern; denying a single host leaves every
+other host granted.
 
 Permission administration uses the same key without prompting:
 

@@ -2228,7 +2228,7 @@ where
         );
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_request(
             wire_table::SYSTEM_NAVIGATE_TO,
             move |request_id: String, bytes: Vec<u8>| {
@@ -2253,6 +2253,42 @@ where
                     let cx = CallContext::with_request_id(request_id.clone());
                     let response: versioned::system::HostNavigateToResponse =
                         match host.navigate_to(&cx, request).await {
+                            Ok(value) => value,
+                            Err(err) => {
+                                return Ok(encode_versioned_err_payload(err, target_version));
+                            }
+                        };
+                    Ok(encode_versioned_ok_payload(response))
+                })
+            },
+        );
+    }
+    {
+        let host = host;
+        dispatcher.on_request(
+            wire_table::SYSTEM_GET_PRODUCT_CONTEXT,
+            move |request_id: String, bytes: Vec<u8>| {
+                let host = host.clone();
+                Box::pin(async move {
+                    let request: versioned::system::HostGetProductContextRequest =
+                        match Decode::decode(&mut &bytes[..]) {
+                            Ok(request) => request,
+                            Err(err) => {
+                                let error: truapi::CallError<
+                                    versioned::system::HostGetProductContextError,
+                                > = truapi::CallError::MalformedFrame {
+                                    reason: err.to_string(),
+                                };
+                                return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::system::HostGetProductContextError as Versioned>::LATEST,
+                        ));
+                            }
+                        };
+                    let target_version = request.version();
+                    let cx = CallContext::with_request_id(request_id.clone());
+                    let response: versioned::system::HostGetProductContextResponse =
+                        match host.get_product_context(&cx, request).await {
                             Ok(value) => value,
                             Err(err) => {
                                 return Ok(encode_versioned_err_payload(err, target_version));

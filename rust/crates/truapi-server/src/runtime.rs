@@ -65,12 +65,13 @@ pub(crate) use chat::{ChatConnection, chat_platform_for};
 use pairing_host::PairingHost;
 pub(crate) use pairing_host::PairingHost as PairingHostRole;
 pub(crate) use services::RuntimeServices;
-pub use signing_host::ResponderExit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use signing_host::StatementRenewalTarget;
 pub(crate) use signing_host::{
-    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, respond_to_pairing,
+    LocalActivation, SigningHost as SigningHostRole, answer_remote_message, establish_pairing,
+    respond_to_pairing, resume_pairing,
 };
+pub use signing_host::{PairedSsoPeer, ResponderExit};
 
 pub(crate) use authority::AuthorityError;
 use authority::{
@@ -184,6 +185,7 @@ use truapi::versioned::signing::{
 };
 use truapi::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
+    HostGetProductContextError, HostGetProductContextRequest, HostGetProductContextResponse,
     HostNavigateToError, HostNavigateToRequest, HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
@@ -878,6 +880,19 @@ impl System for ProductRuntimeHost {
             .await
             .map(|()| HostNavigateToResponse::V1)
             .map_err(|err| CallError::Domain(HostNavigateToError::V1(err)))
+    }
+
+    #[instrument(skip_all, fields(runtime.method = "system.get_product_context"))]
+    async fn get_product_context(
+        &self,
+        _cx: &CallContext,
+        _request: HostGetProductContextRequest,
+    ) -> Result<HostGetProductContextResponse, CallError<HostGetProductContextError>> {
+        Ok(HostGetProductContextResponse::V1(
+            v01::HostGetProductContextResponse {
+                product_id: self.product.product_id.clone(),
+            },
+        ))
     }
 }
 
@@ -2992,6 +3007,36 @@ mod tests {
         let response = futures::executor::block_on(host.feature_supported(&cx, request)).unwrap();
         let HostFeatureSupportedResponse::V1(inner) = response;
         assert!(inner.supported);
+    }
+
+    #[test]
+    fn get_product_context_returns_the_runtime_canonical_product_id() {
+        for (configured, expected) in [
+            (" TrUAPI-Playground.DOT ", "truapi-playground.dot"),
+            ("truapi-playground.paseo", "truapi-playground.paseo"),
+            ("truapi-playground.test", "truapi-playground.test"),
+            ("localhost", "localhost"),
+            ("LOCALHOST:3000", "localhost:3000"),
+        ] {
+            let host = ProductRuntimeHost::new(
+                stub_platform(),
+                runtime_config(configured),
+                test_spawner(),
+            );
+            let response = futures::executor::block_on(
+                host.get_product_context(&CallContext::default(), HostGetProductContextRequest::V1),
+            )
+            .unwrap();
+            let HostGetProductContextResponse::V1(context) = response;
+
+            assert_eq!(
+                context,
+                v01::HostGetProductContextResponse {
+                    product_id: expected.to_string(),
+                },
+                "configured product id {configured:?}",
+            );
+        }
     }
 
     #[test]
