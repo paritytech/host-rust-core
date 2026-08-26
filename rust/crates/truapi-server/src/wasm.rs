@@ -27,8 +27,9 @@ use truapi::v01;
 #[cfg(feature = "wasm-signing-host")]
 use truapi_platform::SigningHostConfig;
 use truapi_platform::{
-    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig, PlatformInfo,
-    ProductContext, ProductExecutionKind, RuntimeConfigValidationError,
+    ChainProvider, ChatPlatform, HostInfo, JsonRpcConnection, PairingHostConfig,
+    PermissionStatusHost, PlatformInfo, ProductContext, ProductExecutionKind,
+    RuntimeConfigValidationError,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -776,6 +777,24 @@ struct WasmCoreInner {
     disposing: Cell<bool>,
 }
 
+/// Build the platform from a JS bridge together with the optional capability
+/// adapters the host actually supplied. Both are the same object; a host that
+/// omits a group gets `None` and the core answers accordingly.
+fn wasm_platform(
+    bridge: Arc<JsBridge>,
+) -> (
+    Arc<WasmPlatform>,
+    Option<Arc<dyn ChatPlatform>>,
+    Option<Arc<dyn PermissionStatusHost>>,
+) {
+    let has_chat = bridge.has_chat();
+    let has_permission_status = bridge.has_permission_status();
+    let platform = Arc::new(WasmPlatform::new(bridge));
+    let chat = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
+    let status = has_permission_status.then(|| platform.clone() as Arc<dyn PermissionStatusHost>);
+    (platform, chat, status)
+}
+
 /// JS-callable handle to a long-lived pairing-host runtime shared by product
 /// cores.
 #[wasm_bindgen]
@@ -794,20 +813,18 @@ impl WasmPairingHostRuntime {
         console_error_panic_hook::set_once();
         crate::logging::init();
         let bridge = Arc::new(JsBridge::from_js(&callbacks)?);
-        let has_chat = bridge.has_chat();
-        let platform = Arc::new(WasmPlatform::new(bridge));
-        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
+        let (platform, chat_platform, status_host) = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let host_config = pairing_host_config_from_js(&host_config)?;
+        let runtime =
+            PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        if let Some(status_host) = status_host {
+            runtime.set_permission_status_host(status_host);
+        }
         Ok(Self {
-            runtime: Rc::new(PairingHostRuntime::with_chat_platform(
-                platform,
-                host_config,
-                spawner,
-                chat_platform,
-            )),
+            runtime: Rc::new(runtime),
         })
     }
 
@@ -900,7 +917,11 @@ impl WasmPairingHostRuntime {
         self.runtime.notify_session_store_changed();
     }
 
-    /// Read a stored permission authorization status for a product.
+    /// Read a permission authorization status for a product.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[wasm_bindgen(js_name = permissionAuthorizationStatus)]
     pub async fn permission_authorization_status(
         &self,
@@ -916,7 +937,11 @@ impl WasmPairingHostRuntime {
         Ok(permission_authorization_status_to_js(status))
     }
 
-    /// Read stored permission authorization statuses for a product.
+    /// Read permission authorization statuses for a product.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[wasm_bindgen(js_name = permissionAuthorizationStatuses)]
     pub async fn permission_authorization_statuses(
         &self,
@@ -1150,21 +1175,19 @@ impl WasmProductRuntime {
         let frame_sink = Arc::new(WasmFrameSink {
             emit_frame: SendWrapper::new(channel.emit_frame),
         });
-        let has_chat = bridge.has_chat();
-        let platform = Arc::new(WasmPlatform::new(bridge));
-        let chat_platform = has_chat.then(|| platform.clone() as Arc<dyn ChatPlatform>);
+        let (platform, chat_platform, status_host) = wasm_platform(bridge);
         let spawner: Spawner = Arc::new(|fut| {
             wasm_bindgen_futures::spawn_local(fut);
         });
         let (host_config, product) = runtime_config_from_js(&runtime_config)?;
-        let core = ProductRuntime::from_platform_with_chat_platform(
-            platform,
-            host_config,
-            product,
-            spawner,
-            frame_sink,
-            chat_platform,
-        );
+        // The status adapter installs on the host runtime the product hangs off,
+        // not on the product runtime itself.
+        let pairing =
+            PairingHostRuntime::with_chat_platform(platform, host_config, spawner, chat_platform);
+        if let Some(status_host) = status_host {
+            pairing.set_permission_status_host(status_host);
+        }
+        let core = pairing.product_runtime(product, frame_sink);
         Ok(Self::from_parts(core, channel.dispose))
     }
 
@@ -1180,7 +1203,11 @@ impl WasmProductRuntime {
             .map_err(|err| JsValue::from_str(&err.to_string()))
     }
 
-    /// Read a stored permission authorization status without prompting.
+    /// Read a permission authorization status without prompting.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     ///
     /// `payload` is a SCALE-encoded `PermissionAuthorizationRequest`.
     #[wasm_bindgen(js_name = permissionAuthorizationStatus)]
@@ -1198,7 +1225,11 @@ impl WasmProductRuntime {
         Ok(permission_authorization_status_to_js(status))
     }
 
-    /// Read stored permission authorization statuses without prompting.
+    /// Read permission authorization statuses without prompting.
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     ///
     /// `payloads` is an array of SCALE-encoded
     /// `PermissionAuthorizationRequest` values. Results follow the same order.

@@ -56,6 +56,7 @@ import uniffi.truapi_platform.UserConfirmationReview
 import uniffi.truapi_server.HostCallbacks
 import uniffi.truapi_server.NativeChatCallbacks
 import uniffi.truapi_server.NativeCustomRendererObserver
+import uniffi.truapi_server.NativeDevicePermissionStatus
 import uniffi.truapi_server.NativeProductExecution
 import uniffi.truapi_server.NativeTrUApiHostRuntime
 import uniffi.truapi_server.ProductRuntimeException
@@ -74,6 +75,7 @@ import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDe
 import uniffi.truapi_server.NativeRuntimeConfig as UniFfiNativeRuntimeConfig
 import uniffi.truapi_server.NativeHostRuntimeConfig as UniFfiNativeHostRuntimeConfig
 import uniffi.truapi_server.NativeProductExecutionConfig as UniFfiNativeProductExecutionConfig
+
 
 /** Package metadata. */
 object TrUAPIHost {
@@ -350,6 +352,26 @@ interface HostBridge {
     suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean
 
     /**
+     * Report the OS status of a device capability without prompting. Answer from
+     * `ContextCompat.checkSelfPermission` and friends.
+     *
+     * The core calls this before every device-permission request and status
+     * read, so it must not show UI. A capability with no OS gate on Android
+     * answers [NativeDevicePermissionStatus.NOT_APPLICABLE], which leaves the stored
+     * product decision governing.
+     *
+     * Note that Android auto-revokes runtime permissions for unused apps, which
+     * surfaces here as [NativeDevicePermissionStatus.NOT_DETERMINED]. The core does not
+     * treat that as a refusal, so re-requesting is the host's call.
+     *
+     * Defaults to [NativeDevicePermissionStatus.NOT_APPLICABLE], so an app that does
+     * not implement it keeps today's behaviour.
+     */
+    suspend fun devicePermissionStatus(
+        request: HostDevicePermissionRequest,
+    ): NativeDevicePermissionStatus = NativeDevicePermissionStatus.NOT_APPLICABLE
+
+    /**
      * Prompt for a remote (product-scoped) permission bundle. Invoked on a
      * blocking-pool thread; present the prompt on the main thread and block the
      * calling thread until the user decides. Blocking here does not stall other
@@ -499,6 +521,10 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override suspend fun devicePermission(request: HostDevicePermissionRequest): Boolean =
         withHostRejection { bridge.devicePermission(request) }
+
+    override suspend fun devicePermissionStatus(
+        request: HostDevicePermissionRequest,
+    ): NativeDevicePermissionStatus = withHostRejection { bridge.devicePermissionStatus(request) }
 
     override suspend fun remotePermission(request: RemotePermission): Boolean =
         withHostRejection { bridge.remotePermission(request) }
@@ -910,9 +936,15 @@ class TrUAPIHostCore private constructor(
      */
     fun lastStatementRenewalReport(): StatementRenewalReport? = inner.lastStatementRenewalReport()
 
-    /** Read a stored permission authorization status without prompting. */
+    /**
+     * Read a permission authorization status without prompting.
+     *
+     * A device capability resolves the OS gate as well as storage, so an OS
+     * refusal reads as `Denied` whatever is stored. Remote, identity disclosure
+     * and account access decisions have no OS gate.
+     */
     @Throws(HostRejection::class)
-    fun permissionAuthorizationStatus(
+    suspend fun permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus =
         inner.permissionAuthorizationStatus(request)
@@ -1143,9 +1175,15 @@ class TrUAPIProductExecution internal constructor(
     @Throws(HostRejection::class)
     fun sessionChatIdentityKey(): ByteArray? = inner.sessionChatIdentityKey()
 
-    /** Read a stored permission authorization status without prompting. */
+    /**
+     * Read a permission authorization status without prompting.
+     *
+     * A device capability resolves the OS gate as well as storage, so an OS
+     * refusal reads as `Denied` whatever is stored. Remote, identity disclosure
+     * and account access decisions have no OS gate.
+     */
     @Throws(HostRejection::class)
-    fun permissionAuthorizationStatus(
+    suspend fun permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
     ): PermissionAuthorizationStatus = inner.permissionAuthorizationStatus(request)
 

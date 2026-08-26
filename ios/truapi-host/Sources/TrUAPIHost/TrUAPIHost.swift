@@ -308,7 +308,7 @@ public protocol TrUAPIHostCoreProtocol: AnyObject {
     func activateLocalSession(secret: Data, liteUsername: String?) throws
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus
+    ) async throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
@@ -385,6 +385,19 @@ public protocol HostBridge: AnyObject, Sendable {
     /// block the calling thread until the user decides. Blocking here does
     /// not stall other TrUAPI traffic.
     func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool
+
+    /// Report the OS status of a device capability without prompting. Answer
+    /// from the platform's authorization APIs, for example
+    /// `AVCaptureDevice.authorizationStatus(for:)` or
+    /// `UNUserNotificationCenter.getNotificationSettings`.
+    ///
+    /// The core calls this before every device-permission request and status
+    /// read, so it must not show UI. A capability your app has no OS gate for
+    /// answers `.notApplicable`, which leaves the stored product decision
+    /// governing. Defaults to `.notApplicable`, so an app that does not
+    /// implement it keeps today's behaviour.
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
+        -> NativeDevicePermissionStatus
 
     /// Prompt for a remote (product-scoped) permission bundle. Invoked on a
     /// blocking-pool thread; present the prompt on the main thread and block
@@ -498,6 +511,8 @@ public extension HostBridge {
         HostThemeSubscribeItem(name: .default, variant: .dark)
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
+        -> NativeDevicePermissionStatus { .notApplicable }
 }
 
 /// Adapter that bridges the public `ChatHostBridge` to the generated UniFFI
@@ -585,6 +600,14 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func devicePermission(request: HostDevicePermissionRequest) async throws -> Bool {
         try await withHostRejection {
             try await bridge.devicePermission(request: request)
+        }
+    }
+
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
+        -> NativeDevicePermissionStatus
+    {
+        try await withHostRejection {
+            try await bridge.devicePermissionStatus(request: request)
         }
     }
 
@@ -892,7 +915,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
     ) throws -> AsyncThrowingStream<CustomRendererNode, Error>
     func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus
+    ) async throws -> PermissionAuthorizationStatus
     func setPermissionAuthorizationStatus(
         request: PermissionAuthorizationRequest,
         status: PermissionAuthorizationStatus
@@ -958,8 +981,8 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(request: request)
+    ) async throws -> PermissionAuthorizationStatus {
+        try await inner.permissionAuthorizationStatus(request: request)
     }
 
     public func setPermissionAuthorizationStatus(
@@ -1105,11 +1128,15 @@ public final class TrUAPIHostCore: TrUAPIHostCoreProtocol {
         inner.lastStatementRenewalReport()
     }
 
-    /// Read a stored permission authorization status without prompting.
+    /// Read a permission authorization status without prompting.
+    ///
+    /// A device capability resolves the OS gate as well as storage, so an OS
+    /// refusal reads as `.denied` whatever is stored. Remote, identity
+    /// disclosure and account access decisions have no OS gate.
     public func permissionAuthorizationStatus(
         request: PermissionAuthorizationRequest
-    ) throws -> PermissionAuthorizationStatus {
-        try inner.permissionAuthorizationStatus(request: request)
+    ) async throws -> PermissionAuthorizationStatus {
+        try await inner.permissionAuthorizationStatus(request: request)
     }
 
     /// Update a stored permission authorization status. `.notDetermined`

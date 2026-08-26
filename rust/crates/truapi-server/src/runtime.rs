@@ -345,6 +345,8 @@ pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// Live OS permission state for this connection, when the host serves it.
+    permission_status: Option<Arc<dyn truapi_platform::PermissionStatusHost>>,
     authority: Arc<dyn ProductAuthority>,
     product: ProductContext,
     /// Stable per-product-runtime id used to scope long-lived chain follow
@@ -367,6 +369,7 @@ impl ProductRuntimeHost {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
+            permission_status: adapters.permission_status,
             authority,
             product,
             core_instance,
@@ -377,6 +380,20 @@ impl ProductRuntimeHost {
     /// Role-neutral services shared with the owning host runtime.
     pub(crate) fn services(&self) -> &Arc<RuntimeServices> {
         &self.services
+    }
+
+    /// Permission service for this product.
+    ///
+    /// Every device-reaching path is built here so a request and a status read
+    /// resolve the same two gates. Remote, identity-disclosure and
+    /// account-access decisions have no OS gate and are unaffected by the
+    /// status adapter.
+    fn permissions_service<'a>(
+        &'a self,
+        product_id: &'a str,
+    ) -> PermissionsService<'a, dyn Platform, dyn Platform> {
+        PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), product_id)
+            .with_status_host(self.permission_status.as_deref())
     }
 
     /// Trusted executable kind attached to this product connection.
@@ -473,6 +490,7 @@ impl ProductRuntimeHost {
             services,
             platform,
             chat_platform: None,
+            permission_status: None,
             authority: pairing_host.clone(),
             product,
             core_instance,
@@ -588,26 +606,32 @@ impl ProductRuntimeHost {
 
 impl ProductRuntimeHost {
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_status"))]
     pub(crate) async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.authorization_status(&request).await
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_statuses"))]
     pub(crate) async fn permission_authorization_statuses(
         &self,
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.authorization_statuses(&requests).await
     }
 
@@ -620,8 +644,7 @@ impl ProductRuntimeHost {
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.set_authorization_status(&request, status).await
     }
 
@@ -631,8 +654,7 @@ impl ProductRuntimeHost {
         permission: v01::RemotePermission,
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service
             .check_or_prompt_remote(v01::RemotePermissionRequest { permission })
             .await
@@ -667,8 +689,7 @@ impl ProductRuntimeHost {
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         let cached = service
             .authorization_status(&request)
             .await
@@ -907,8 +928,7 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
         let HostDevicePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         match service.check_or_prompt_device(inner).await {
             Ok(decision) => Ok(HostDevicePermissionResponse::V1(
                 v01::HostDevicePermissionResponse {
@@ -929,8 +949,7 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
         let RemotePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         match service.check_or_prompt_remote(inner).await {
             Ok(decision) => Ok(RemotePermissionResponse::V1(
                 v01::RemotePermissionResponse {
