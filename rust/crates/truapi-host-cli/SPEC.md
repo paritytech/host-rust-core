@@ -231,12 +231,12 @@ The running process is never replaced. A new version takes effect on the next
 run, and the CLI logs one line when one is waiting. Versions other than the
 running one and the active one are pruned.
 
-The check is a detached task, so a short command can exit before it finishes.
-Reading the pointer costs a few bytes and almost always completes, which is the
-common "nothing new" case; a download interrupted this way is retried after the
-next throttle window, and a long-running host session completes it. Partial
-state is confined to a `versions/.<version>.incoming` directory that the next
-attempt removes.
+The check runs alongside the command rather than delaying it, and the process
+waits for it before exiting, so even a one-shot command completes the download
+it started. A download in progress is announced, because an otherwise quick
+command would seem to hang. That wait is bounded at 150 seconds, so a stalled
+network cannot hold the CLI open; a download cut short leaves only a
+`versions/.<version>.incoming` directory that the next attempt removes.
 
 `truapi-host update` performs the same work synchronously, ignores the
 four-hour throttle, and reports the outcome on stdout.

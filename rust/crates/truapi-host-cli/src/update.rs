@@ -33,9 +33,14 @@ const STABLE_TAG: &str = "truapi-host-cli-stable";
 /// How long a recorded check suppresses the next one.
 const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 
-/// Budget for each release request. Generous, because the archive is ~13 MB and
-/// this runs in the background.
+/// Budget for each release request. Generous, because the archive is several MB
+/// and may be fetched over a slow link.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long the process waits at exit for a check it started. A command holds
+/// itself open so the download it began actually lands, but a stalled network
+/// must not keep a CLI open indefinitely.
+const FINISH_BUDGET: Duration = Duration::from_secs(150);
 
 /// Where the throttle timestamp lives, relative to the install root.
 const CHECK_STATE_FILE: &str = "update-check.json";
@@ -360,6 +365,9 @@ async fn check_and_install(force: bool) -> Result<Outcome> {
         return Ok(Outcome::Installed(published.to_owned()));
     }
 
+    // Announced because the process waits for this before exiting, and a silent
+    // pause on an otherwise quick command reads as a hang.
+    tracing::info!("downloading truapi-host {published}");
     let name = archive_name(published, target);
     let archive = fetch_bytes(&client, &asset_url(&base, published, &name)).await?;
     let checksum = fetch_text(
@@ -397,6 +405,18 @@ pub async fn run_background_check() {
         }
         Ok(outcome) => tracing::debug!("update check: {outcome:?}"),
         Err(error) => tracing::debug!("update check failed: {error:#}"),
+    }
+}
+
+/// Wait for a check spawned by `run_background_check` to finish.
+///
+/// A short command would otherwise exit while its own download was still in
+/// flight, so an install could take several attempts to land. Bounded, because
+/// a stalled network must not hold the CLI open; a download cut short here
+/// leaves only a staging directory that the next attempt clears.
+pub async fn finish_background_check(check: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(FINISH_BUDGET, check).await.is_err() {
+        tracing::info!("update still downloading; leaving it for the next run");
     }
 }
 

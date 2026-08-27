@@ -404,19 +404,36 @@ async fn main() -> Result<()> {
         .with(log_layer)
         .init();
 
-    // A background check keeps a managed install current without delaying the
-    // command that was actually asked for. It reports through `tracing`, which
-    // the terminal UI renders in its transcript, so it cannot corrupt the
-    // full-screen display.
-    if !matches!(cli.command, Command::Update) {
+    // A background check runs alongside the command rather than delaying it, and
+    // reports through `tracing`, which the terminal UI renders in its transcript
+    // so it cannot corrupt the full-screen display. The command then waits for
+    // it at exit, so even a short one completes the download it started.
+    let check = (!matches!(cli.command, Command::Update)).then(|| {
         update::report_pending_version();
-        tokio::spawn(update::run_background_check());
-    }
+        tokio::spawn(update::run_background_check())
+    });
 
-    match cli.command {
+    let outcome = dispatch(cli.command, cli.log_level, log_controller).await;
+
+    if let Some(check) = check {
+        update::finish_background_check(check).await;
+    }
+    outcome
+}
+
+/// Run the requested command.
+///
+/// Separate from `main` so that the `?` several arms use returns here, leaving
+/// `main` free to always wait for the update check it started.
+async fn dispatch(
+    command: Command,
+    log_level: LogLevel,
+    log_controller: LogController,
+) -> Result<()> {
+    match command {
         Command::Update => update::run_update_command().await,
-        Command::PairingHost(args) => run_pairing_host(args, cli.log_level, log_controller).await,
-        Command::SigningHost(args) => run_signing_host(args, cli.log_level, log_controller).await,
+        Command::PairingHost(args) => run_pairing_host(args, log_level, log_controller).await,
+        Command::SigningHost(args) => run_signing_host(args, log_level, log_controller).await,
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?

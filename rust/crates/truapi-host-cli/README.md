@@ -58,11 +58,13 @@ this is required for browser clients, which cannot open filesystem sockets.
 
 ### Staying current
 
-A managed install checks for a new release at most once every four hours, in
-the background, and installs it into the version store. The running process is
-never replaced underneath itself: the new version takes effect the next time
-you start `truapi-host`, and the CLI says so when one is waiting. Every archive
-is checked against its published SHA-256 before it is unpacked.
+A managed install checks for a new release at most once every four hours,
+alongside whatever command you ran rather than delaying it, and installs it into
+the version store. A command that finishes first waits for the download, so even
+a one-shot run lands the update; it prints a line while downloading. The running
+process is never replaced underneath itself: the new version takes effect the
+next time you start `truapi-host`, and the CLI says so when one is waiting.
+Every archive is checked against its published SHA-256 before it is unpacked.
 
 ```bash
 truapi-host update            # check and install now

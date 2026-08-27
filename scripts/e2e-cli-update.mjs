@@ -68,6 +68,7 @@ async function main() {
 
   const release = await startReleaseServer();
   release.publish(version, target, readFileSync(packaged));
+  let secondHome;
 
   const home = mkdtempSync(join(tmpdir(), "truapi-host-e2e-"));
   const root = join(home, "share");
@@ -181,9 +182,41 @@ async function main() {
       readlinkSync(join(root, "current")),
       `versions/${nextVersion}`,
     );
+
+    console.log("7. a short command finishes the update it started");
+    // A fresh install, because the checks above have already recorded a check
+    // timestamp and would throttle this one.
+    release.setPointer(version);
+    secondHome = mkdtempSync(join(tmpdir(), "truapi-host-e2e-"));
+    const secondEnvironment = {
+      ...process.env,
+      ...installEnvironment(secondHome, release.baseUrl),
+    };
+    await run("bash", [installer], { env: secondEnvironment });
+    const secondRoot = join(secondHome, "share");
+
+    const shortVersion = `${version}-short`;
+    release.publish(
+      shortVersion,
+      target,
+      versionReportingArchive(shortVersion),
+    );
+    // Fails almost immediately, so the process only stays alive long enough to
+    // finish the download if it deliberately waits for it.
+    await run(
+      join(secondRoot, "current/truapi-host"),
+      ["identity-check", "--mnemonic", "bogus"],
+      { env: secondEnvironment },
+    );
+    check(
+      "the download completed before the command exited",
+      readlinkSync(join(secondRoot, "current")),
+      `versions/${shortVersion}`,
+    );
   } finally {
     await release.close();
     rmSync(home, { recursive: true, force: true });
+    if (secondHome) rmSync(secondHome, { recursive: true, force: true });
   }
 
   console.log();
