@@ -231,6 +231,13 @@ The running process is never replaced. A new version takes effect on the next
 run, and the CLI logs one line when one is waiting. Versions other than the
 running one and the active one are pruned.
 
+The check is a detached task, so a short command can exit before it finishes.
+Reading the pointer costs a few bytes and almost always completes, which is the
+common "nothing new" case; a download interrupted this way is retried after the
+next throttle window, and a long-running host session completes it. Partial
+state is confined to a `versions/.<version>.incoming` directory that the next
+attempt removes.
+
 `truapi-host update` performs the same work synchronously, ignores the
 four-hour throttle, and reports the outcome on stdout.
 
