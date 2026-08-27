@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
+use truapi::v01;
 use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
     JsonRpcConnection, Navigation, Notifications, PermissionStatusHost, Permissions, PreimageHost,
@@ -433,9 +434,9 @@ async fn prompt_yes_no(action: &str, detail: &str) -> bool {
 
 #[async_trait]
 impl ProductStorage for CliPlatform {
-    async fn read(&self, key: String) -> Result<Option<Vec<u8>>, api::HostLocalStorageReadError> {
+    async fn read(&self, key: String) -> Result<Option<Vec<u8>>, v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         Ok(self
             .product_storage
             .lock()
@@ -449,9 +450,9 @@ impl ProductStorage for CliPlatform {
         &self,
         key: String,
         value: Vec<u8>,
-    ) -> Result<(), api::HostLocalStorageReadError> {
+    ) -> Result<(), v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         let mut storage = self
             .product_storage
             .lock()
@@ -459,12 +460,12 @@ impl ProductStorage for CliPlatform {
         let values = storage.entry(scoped.product_id().to_string()).or_default();
         values.insert(scoped.key().to_string(), value);
         self.persist_product_storage(scoped.product_id(), values)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
     }
 
-    async fn clear(&self, key: String) -> Result<(), api::HostLocalStorageReadError> {
+    async fn clear(&self, key: String) -> Result<(), v01::HostLocalStorageReadError> {
         let scoped = ProductStorageKey::decode(&key)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })?;
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })?;
         let mut storage = self
             .product_storage
             .lock()
@@ -472,7 +473,7 @@ impl ProductStorage for CliPlatform {
         let values = storage.entry(scoped.product_id().to_string()).or_default();
         values.remove(scoped.key());
         self.persist_product_storage(scoped.product_id(), values)
-            .map_err(|reason| api::HostLocalStorageReadError::Unknown { reason })
+            .map_err(|reason| v01::HostLocalStorageReadError::Unknown { reason })
     }
 }
 

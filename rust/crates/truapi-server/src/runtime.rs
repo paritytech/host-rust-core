@@ -89,6 +89,8 @@ use truapi::api::{
     Account, Chain, Chat, CoinPayment, Entropy, LocalStorage, Notifications, Payment, Permissions,
     Preimage, ResourceAllocation, Signing, System, Theme,
 };
+use truapi::v02;
+use truapi::versioned::IntoLatest;
 use truapi::versioned::account::{
     HostAccountConnectionStatusSubscribeItem, HostAccountCreateProofError,
     HostAccountCreateProofRequest, HostAccountCreateProofResponse, HostAccountGetAliasError,
@@ -975,14 +977,38 @@ impl LocalStorage for ProductRuntimeHost {
         _cx: &CallContext,
         request: HostLocalStorageReadRequest,
     ) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
-        let HostLocalStorageReadRequest::V1(v01::HostLocalStorageReadRequest { key }) = request;
+        let v02::HostLocalStorageReadRequest { product, key } = request.into_latest();
+
+        // A foreign read needs the `storage` scope from the owning product's
+        // manifest, and no manifest reader exists yet, so every foreign read is
+        // refused. The refusal is deliberately indistinguishable from "that
+        // product granted you nothing": telling them apart would make this call
+        // a probe for which products exist and which hold data. The RFC also
+        // forbids falling back to a prompt here — stored values are opaque
+        // bytes, so the user would be approving something nobody can inspect.
+        if let Some(target) = product
+            && normalize_product_identifier(&target).ok().as_deref()
+                != Some(self.product_id().as_str())
+        {
+            return Err(CallError::Domain(HostLocalStorageReadError::V2(
+                v02::HostLocalStorageReadError::AccessNotGranted,
+            )));
+        }
+
         self.platform
             .read(self.product_storage_key(key))
             .await
             .map(|value| {
-                HostLocalStorageReadResponse::V1(v01::HostLocalStorageReadResponse { value })
+                HostLocalStorageReadResponse::V2(v01::HostLocalStorageReadResponse { value })
             })
-            .map_err(|err| CallError::Domain(HostLocalStorageReadError::V1(err)))
+            .map_err(|err| {
+                CallError::Domain(HostLocalStorageReadError::V2(match err {
+                    v01::HostLocalStorageReadError::Full => v02::HostLocalStorageReadError::Full,
+                    v01::HostLocalStorageReadError::Unknown { reason } => {
+                        v02::HostLocalStorageReadError::Unknown { reason }
+                    }
+                }))
+            })
     }
 
     #[instrument(skip_all, fields(runtime.method = "local_storage.write"))]
@@ -3069,6 +3095,79 @@ mod tests {
         assert_eq!(inner.network, "paseo");
         assert_eq!(inner.chain, v01::ChainIdentifier::AssetHub);
         assert_eq!(inner.genesis_hash, [0xaa; 32]);
+    }
+
+    fn read_storage(
+        host: &ProductRuntimeHost,
+        product: Option<&str>,
+        key: &str,
+    ) -> Result<HostLocalStorageReadResponse, CallError<HostLocalStorageReadError>> {
+        futures::executor::block_on(LocalStorage::read(
+            host,
+            &CallContext::default(),
+            HostLocalStorageReadRequest::V2(v02::HostLocalStorageReadRequest {
+                product: product.map(str::to_string),
+                key: key.to_string(),
+            }),
+        ))
+    }
+
+    #[test]
+    fn an_unaddressed_read_reaches_the_callers_own_storage() {
+        // `product: None` is what every v0.1 read meant, so it must not become
+        // a foreign read and must not consult a grant.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert!(read_storage(&host, None, "k").is_ok());
+    }
+
+    #[test]
+    fn a_read_naming_the_caller_itself_is_not_a_foreign_read() {
+        // Addressing your own id explicitly is the same call as omitting it.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let own = host.product_id();
+        assert!(read_storage(&host, Some(&own), "k").is_ok());
+    }
+
+    #[test]
+    fn a_read_naming_the_caller_in_another_spelling_is_still_its_own() {
+        // Normalized before comparison, so casing cannot turn an own-storage
+        // read into a refusal.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let shouted = host.product_id().to_uppercase();
+        assert!(read_storage(&host, Some(&shouted), "k").is_ok());
+    }
+
+    #[test]
+    fn a_foreign_read_is_refused_without_a_manifest_reader() {
+        // No manifest reader exists, so no grant can be established and every
+        // foreign read is refused. The refusal must be the dedicated variant,
+        // not a generic error a product would retry.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        assert_eq!(
+            read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+            CallError::Domain(HostLocalStorageReadError::V2(
+                v02::HostLocalStorageReadError::AccessNotGranted
+            ))
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_product_is_refused_identically_to_an_ungranted_one() {
+        // One answer for every reason, so the call cannot be used to probe which
+        // products exist.
+        let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
+        let refusal = CallError::Domain(HostLocalStorageReadError::V2(
+            v02::HostLocalStorageReadError::AccessNotGranted,
+        ));
+        assert_eq!(
+            read_storage(&host, Some("not a product"), "k").unwrap_err(),
+            refusal
+        );
+        assert_eq!(read_storage(&host, Some(""), "k").unwrap_err(), refusal);
+        assert_eq!(
+            read_storage(&host, Some("wallet.dot"), "k").unwrap_err(),
+            refusal
+        );
     }
 
     #[test]
