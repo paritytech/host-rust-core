@@ -29,7 +29,8 @@ use tracing::{debug, warn};
 use crate::bootstrap;
 use truapi_platform::ProductExecutionKind;
 use truapi_server::{
-    FrameSink, PairingHostRuntime, ProductContext, ProductRuntime, SigningHostRuntime,
+    FrameSink, PairingHostRuntime, ProductContext, ProductRuntime, ProductRuntimeError,
+    SigningHostRuntime,
 };
 
 /// Pause after a failed `accept()` before trying again.
@@ -104,6 +105,23 @@ pub trait ProductRuntimeFactory: Send + Sync + 'static {
     /// Subscribe to a signal that invalidates existing product connections.
     fn connection_reset(&self) -> Option<watch::Receiver<u64>> {
         None
+    }
+}
+
+#[async_trait::async_trait]
+trait ConnectionRuntime: Send + Sync + 'static {
+    async fn receive_frame(&self, frame: Vec<u8>) -> Result<(), ProductRuntimeError>;
+    fn dispose(&self);
+}
+
+#[async_trait::async_trait]
+impl ConnectionRuntime for ProductRuntime {
+    async fn receive_frame(&self, frame: Vec<u8>) -> Result<(), ProductRuntimeError> {
+        ProductRuntime::receive_frame(self, frame).await
+    }
+
+    fn dispose(&self) {
+        ProductRuntime::dispose(self);
     }
 }
 
@@ -568,16 +586,43 @@ where
 {
     // Subscribe before resolving the runtime so a concurrent replacement can
     // only cause an extra reconnect, never leave a connection on stale state.
-    let mut reset = runtime.connection_reset();
-    let mut product_updates = selected_product.subscribe();
+    let reset = runtime.connection_reset();
+    let product_updates = selected_product.subscribe();
     #[allow(clippy::result_large_err)]
     let ws = accept_hdr_async(stream, move |request: &Request, response: Response| {
         check_origin(peer, request, response)
     })
     .await?;
-    let (mut write, mut read) = ws.split();
-    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
+    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<Message>();
+    let product = product_updates.borrow().clone();
+    let sink = Arc::new(WsFrameSink {
+        outbound: outbound_tx.clone(),
+    });
+    let product_runtime = Arc::new(runtime.product_runtime(product, sink));
 
+    drive_connection(
+        ws,
+        product_runtime,
+        reset,
+        product_updates,
+        outbound_tx,
+        outbound_rx,
+    )
+    .await
+}
+
+async fn drive_connection<S>(
+    ws: tokio_tungstenite::WebSocketStream<S>,
+    product_runtime: Arc<dyn ConnectionRuntime>,
+    mut reset: Option<watch::Receiver<u64>>,
+    mut product_updates: watch::Receiver<ProductContext>,
+    outbound_tx: mpsc::UnboundedSender<Message>,
+    mut outbound_rx: mpsc::UnboundedReceiver<Message>,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut write, mut read) = ws.split();
     let writer = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
             if write.send(message).await.is_err() {
@@ -585,12 +630,7 @@ where
             }
         }
     });
-
-    let product = product_updates.borrow().clone();
-    let sink = Arc::new(WsFrameSink {
-        outbound: outbound_tx.clone(),
-    });
-    let product_runtime = runtime.product_runtime(product, sink);
+    let mut in_flight = tokio::task::JoinSet::new();
 
     loop {
         let message = tokio::select! {
@@ -601,26 +641,25 @@ where
         let Some(message) = message else {
             break;
         };
-        match message {
-            Ok(Message::Binary(bytes)) => {
-                if let Err(err) = product_runtime.receive_frame(bytes.to_vec()).await {
-                    debug!(%err, "product runtime rejected frame");
-                }
-            }
-            Ok(Message::Text(text)) => {
-                if let Err(err) = product_runtime
-                    .receive_frame(text.as_bytes().to_vec())
-                    .await
-                {
-                    debug!(%err, "product runtime rejected text frame");
-                }
-            }
+        let frame = match message {
+            Ok(Message::Binary(bytes)) => bytes.to_vec(),
+            Ok(Message::Text(text)) => text.as_bytes().to_vec(),
             Ok(Message::Close(_)) | Err(_) => break,
-            Ok(_) => {}
-        }
+            Ok(_) => continue,
+        };
+        while in_flight.try_join_next().is_some() {}
+        let product_runtime = product_runtime.clone();
+        in_flight.spawn(async move {
+            if let Err(err) = product_runtime.receive_frame(frame).await {
+                debug!(%err, "product runtime rejected frame");
+            }
+        });
     }
 
     product_runtime.dispose();
+    in_flight.abort_all();
+    while in_flight.join_next().await.is_some() {}
+    drop(product_runtime);
     drop(outbound_tx);
     let _ = writer.await;
     Ok(())
@@ -639,6 +678,8 @@ async fn connection_reset(reset: &mut Option<watch::Receiver<u64>>) {
 mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::Notify;
     use tokio::task::JoinHandle;
     use tokio_tungstenite::client_async;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -652,6 +693,39 @@ mod tests {
             _sink: Arc<dyn FrameSink>,
         ) -> ProductRuntime {
             panic!("HTTP requests and rejected handshakes must not create a product runtime")
+        }
+    }
+
+    #[derive(Default)]
+    struct PendingRuntime {
+        dispatch_started: Notify,
+        second_dispatch_finished: Notify,
+        dispatch_cancelled: Arc<AtomicBool>,
+        dispose_calls: AtomicUsize,
+    }
+
+    struct DispatchCancellation(Arc<AtomicBool>);
+
+    impl Drop for DispatchCancellation {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ConnectionRuntime for PendingRuntime {
+        async fn receive_frame(&self, frame: Vec<u8>) -> Result<(), ProductRuntimeError> {
+            if frame != [0] {
+                self.second_dispatch_finished.notify_one();
+                return Ok(());
+            }
+            let _cancellation = DispatchCancellation(self.dispatch_cancelled.clone());
+            self.dispatch_started.notify_one();
+            std::future::pending().await
+        }
+
+        fn dispose(&self) {
+            self.dispose_calls.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -846,7 +920,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_loopback_origin_may_open_the_tcp_websocket() -> Result<()> {
+    async fn a_loopback_origin_connection_finishes_when_its_client_disconnects() -> Result<()> {
         let (address, server) = start_tcp_server(signing_runtime()?).await?;
         let mut request = format!("ws://{address}/").into_client_request()?;
         request.headers_mut().insert(
@@ -858,12 +932,54 @@ mod tests {
         let (websocket, response) = client_async(request, stream).await?;
         assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
         drop(websocket);
-        server.abort();
-        assert!(
-            server
-                .await
-                .expect_err("aborted connection task must be cancelled")
-                .is_cancelled()
+        tokio::time::timeout(Duration::from_secs(1), server).await???;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn disconnect_cancels_pending_dispatch_and_disposes_runtime() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let runtime = Arc::new(PendingRuntime::default());
+        let server_runtime = runtime.clone();
+        let product = ProductSelection::new("localhost:3000".into(), ProductExecutionKind::App)?;
+        let product_updates = product.subscribe();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            let websocket = accept_async(stream).await?;
+            let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+            let result = drive_connection(
+                websocket,
+                server_runtime,
+                None,
+                product_updates,
+                outbound_tx,
+                outbound_rx,
+            )
+            .await;
+            drop(product);
+            result
+        });
+
+        let stream = TcpStream::connect(address).await?;
+        let (mut websocket, _) = client_async("ws://localhost/", stream).await?;
+        websocket.send(Message::Binary(vec![0])).await?;
+        tokio::time::timeout(Duration::from_secs(1), runtime.dispatch_started.notified()).await?;
+        websocket.send(Message::Binary(vec![1])).await?;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            runtime.second_dispatch_finished.notified(),
+        )
+        .await?;
+        drop(websocket);
+
+        tokio::time::timeout(Duration::from_secs(1), server).await???;
+        assert_eq!(
+            (
+                runtime.dispose_calls.load(Ordering::SeqCst),
+                runtime.dispatch_cancelled.load(Ordering::SeqCst),
+            ),
+            (1, true),
         );
         Ok(())
     }

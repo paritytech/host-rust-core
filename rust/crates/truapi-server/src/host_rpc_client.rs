@@ -337,23 +337,23 @@ impl HostRpcClientInner {
             return Ok(());
         };
         let raw = raw_value_from_json(result)?;
+        self.deliver_or_buffer_subscription_item(subscription_id, raw);
+        Ok(())
+    }
+
+    fn deliver_or_buffer_subscription_item(&self, subscription_id: String, item: Box<RawValue>) {
+        let mut buffered = self.buffered_subscription_items.lock().unwrap();
         let sink = self
             .subscriptions
             .lock()
             .unwrap()
             .get(&subscription_id)
             .cloned();
-        match sink {
-            Some(sink) => {
-                let _ = sink.tx.unbounded_send(Ok(raw));
-            }
-            None => self.buffer_subscription_item(subscription_id, raw),
+        if let Some(sink) = sink {
+            drop(buffered);
+            let _ = sink.tx.unbounded_send(Ok(item));
+            return;
         }
-        Ok(())
-    }
-
-    fn buffer_subscription_item(&self, subscription_id: String, item: Box<RawValue>) {
-        let mut buffered = self.buffered_subscription_items.lock().unwrap();
         let known = buffered.contains_key(&subscription_id);
         if !known && buffered.len() >= MAX_BUFFERED_SUBSCRIPTIONS {
             return;
@@ -649,5 +649,38 @@ mod tests {
 
         drop(subscription);
         assert_eq!(connection.close_count(), 1);
+    }
+
+    #[test]
+    fn notification_that_races_subscription_activation_is_delivered() {
+        let connection = TrackingConnection::new();
+        let spawner: Spawner = Arc::new(|_| {});
+        let client = HostRpcClient::new(connection, spawner);
+        let (tx, mut rx) = mpsc::unbounded();
+        client
+            .inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .insert("sub-1".to_string(), SubscriptionSink { tx });
+        let item = RawValue::from_string(r#"{"event":"initialized"}"#.to_string()).unwrap();
+
+        client
+            .inner
+            .deliver_or_buffer_subscription_item("sub-1".to_string(), item);
+
+        assert!(
+            !client
+                .inner
+                .buffered_subscription_items
+                .lock()
+                .unwrap()
+                .contains_key("sub-1"),
+            "a notification observed before activation must not be stranded after activation"
+        );
+        let received = block_on(rx.next())
+            .expect("activated subscription should receive the raced notification")
+            .expect("raced notification should be successful");
+        assert_eq!(received.get(), r#"{"event":"initialized"}"#);
     }
 }
