@@ -15,6 +15,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -120,6 +121,35 @@ async function main() {
     check(
       "the packaged runner resolves without a checkout",
       /TRUAPI_FRAME_URL must be set/.test(runner.stdout + runner.stderr),
+      true,
+    );
+    const script = join(home, "script.ts");
+    writeFileSync(script, 'console.log("installed runner reached");\n');
+    const scriptRun = await run(
+      entrypoint,
+      [
+        "pairing-host",
+        "--script",
+        script,
+        "--base-path",
+        join(home, "state"),
+        "--auto-accept",
+      ],
+      {
+        env: { ...environment, TRUAPI_HOST_NO_UPDATE: "1" },
+        cwd: tmpdir(),
+      },
+    );
+    check(
+      "the installed entrypoint runs a product script",
+      scriptRun.status,
+      0,
+    );
+    check(
+      "the product script was reached through the bundled runner",
+      (scriptRun.stdout + scriptRun.stderr).includes(
+        "installed runner reached",
+      ),
       true,
     );
 
