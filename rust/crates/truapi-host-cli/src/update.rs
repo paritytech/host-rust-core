@@ -66,10 +66,13 @@ impl ManagedInstall {
 
     /// The install root of `executable`, when it sits in a version directory.
     ///
-    /// `current_exe` resolves symlinks on both Linux and macOS, so a binary
-    /// invoked through the `PATH` entry still reports its versioned path.
+    /// The path is resolved first. Linux reports `current_exe` through
+    /// `/proc/self/exe`, which is already resolved, but macOS reports the path
+    /// as invoked, so a binary started through the `PATH` symlink names that
+    /// symlink instead of the version directory it points into.
     fn from_executable(executable: &Path) -> Option<Self> {
-        let versions = executable.parent()?.parent()?;
+        let resolved = fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+        let versions = resolved.parent()?.parent()?;
         if versions.file_name()? != "versions" {
             return None;
         }
@@ -532,6 +535,33 @@ mod tests {
                 "/home/dev/.local/share/truapi-host/versions/0.10.0/truapi-host"
             )),
             Some(install_at(Path::new("/home/dev/.local/share/truapi-host")))
+        );
+    }
+
+    /// The layout the installer actually creates: the PATH entry points at
+    /// `current/truapi-host`, and `current` points at a version directory. On
+    /// macOS `current_exe` hands back that PATH symlink verbatim, so detection
+    /// has to resolve it or every installed copy looks unmanaged.
+    #[test]
+    fn a_binary_reached_through_the_path_symlink_is_managed() {
+        let install = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(install.path()).unwrap();
+        let version_dir = root.join("versions").join(CURRENT_VERSION);
+        fs::create_dir_all(&version_dir).unwrap();
+        fs::write(version_dir.join(BINARY), "binary").unwrap();
+        symlink(
+            &Path::new("versions").join(CURRENT_VERSION),
+            &root.join("current"),
+        )
+        .unwrap();
+
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        symlink(&root.join("current").join(BINARY), &bin.join(BINARY)).unwrap();
+
+        assert_eq!(
+            ManagedInstall::from_executable(&bin.join(BINARY)),
+            Some(ManagedInstall { root })
         );
     }
 

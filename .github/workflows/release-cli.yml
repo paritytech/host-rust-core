@@ -53,6 +53,13 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
+      # codegen.sh formats its generated Rust with `cargo +nightly fmt`, so the
+      # nightly toolchain needs rustfmt, exactly as the release job installs it.
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+          components: rustfmt
+
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # stable
         with:
           toolchain: stable
@@ -71,7 +78,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: cli-runner
+          name: runner-bundle
           path: target/dist/runner.js
           if-no-files-found: error
 
@@ -114,7 +121,7 @@ jobs:
       # dropping it here means the archive reuses it instead of rebuilding.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: cli-runner
+          name: runner-bundle
           path: target/dist
 
       - name: Verify the crate version matches the release
@@ -122,7 +129,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          crate="$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' rust/crates/truapi-host-cli/Cargo.toml)"
+          # awk, not `sed -n '0,/re/'`: that address form is a GNU extension and
+          # silently yields nothing on the macOS runner's BSD sed.
+          crate="$(awk -F'"' '/^version = /{print $2; exit}' rust/crates/truapi-host-cli/Cargo.toml)"
           if [ "${crate}" != "${VERSION}" ]; then
             echo "::error::truapi-host-cli is ${crate}, but the release declares ${VERSION}. Run npm run version-packages."
             exit 1
