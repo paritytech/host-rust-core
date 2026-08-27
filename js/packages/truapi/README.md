@@ -76,9 +76,8 @@ sub.unsubscribe();
 
 - **`development_createAccountProof(client, request)`** — `account.createAccountProof`
   with `context` given as the exact 32-byte hex the proof is bound to, instead of a
-  product-namespaced `ProductProofContext`. Only honoured by a signing host running
-  with `TRUAPI_RAW_PROOF_CONTEXT=1`. Yet to be removed before a production release;
-  it lives entirely in `src/development.ts`.
+  product-namespaced `ProductProofContext`. Yet to be removed before a production
+  release; it lives entirely in `src/development.ts`.
 
 ## Sandbox bootstrap
 

@@ -45,11 +45,10 @@ this is required for browser clients, which cannot open filesystem sockets.
 
 ### Raw proof contexts (development only)
 
-`TRUAPI_RAW_PROOF_CONTEXT=1 truapi-host signing-host ...` lets a product bind a
-ring-VRF proof to 32 bytes of its choosing instead of a product-namespaced
-context. Products call it through `development_createAccountProof` from
-`@parity/truapi`; without the environment variable the same call is hashed like
-any other product context. Yet to be removed before a production release.
+A product can bind a ring-VRF proof to 32 bytes of its choosing instead of a
+product-namespaced context by calling `development_createAccountProof` from
+`@parity/truapi`; the signing host honours it as is. Yet to be removed before a
+production release.
 
 ### Browser products
 

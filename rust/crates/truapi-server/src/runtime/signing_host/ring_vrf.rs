@@ -218,14 +218,12 @@ impl RingResolver for ChainRingResolver {
 mod development {
     use truapi::v01::{DerivationIndex, ProductProofContext};
 
-    const RAW_CONTEXT_ENV: &str = "TRUAPI_RAW_PROOF_CONTEXT";
     const RAW_CONTEXT_PRODUCT_ID: &str = "raw:";
 
-    /// [`super::context_bytes`], except that with `TRUAPI_RAW_PROOF_CONTEXT=1`
-    /// a `raw:` product id makes the `Raw` suffix the context, verbatim.
+    /// [`super::context_bytes`], except that the `raw:` product id (which
+    /// dotNS cannot issue) makes the `Raw` suffix the context, verbatim.
     pub(in crate::runtime) fn development_context_bytes(context: &ProductProofContext) -> [u8; 32] {
         if context.product_id == RAW_CONTEXT_PRODUCT_ID
-            && std::env::var(RAW_CONTEXT_ENV).as_deref() == Ok("1")
             && let DerivationIndex::Raw(bytes) = context.suffix
         {
             return bytes;

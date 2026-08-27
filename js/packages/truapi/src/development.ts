@@ -11,10 +11,7 @@ import type {
 import type { ResultAsync } from "./generated/client.js";
 import type { CallErrorValue, HexString } from "./scale.js";
 
-/**
- * `productId` a signing host started with `TRUAPI_RAW_PROOF_CONTEXT=1`
- * recognises as "use the suffix bytes verbatim as the proof context".
- */
+/** `productId` the signing host reads as "use the suffix bytes verbatim". */
 const RAW_PROOF_CONTEXT_PRODUCT_ID = "raw:";
 
 /** Same as `HostAccountCreateProofRequest`, with the 32-byte context given raw. */
@@ -30,9 +27,6 @@ export interface DevelopmentCreateProofRequest extends Omit<
  * `account.createAccountProof` with a verbatim 32-byte proof context instead of
  * a product-namespaced one.
  *
- * Development only: the signing host must run with `TRUAPI_RAW_PROOF_CONTEXT=1`,
- * otherwise the context is hashed like any product context and the proof will
- * not verify against the intended one.
  */
 export function development_createAccountProof(
   client: Pick<TrUApiClient, "account">,
