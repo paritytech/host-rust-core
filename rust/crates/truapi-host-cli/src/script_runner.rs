@@ -72,13 +72,27 @@ fn resolve_runner(explicit: Option<OsString>, executable: Option<&Path>) -> Path
     if let Some(path) = explicit {
         return PathBuf::from(path);
     }
-    let packaged = executable
-        .and_then(Path::parent)
-        .map(|directory| directory.join(PACKAGED_RUNNER));
+    let packaged = executable.and_then(packaged_runner);
     if let Some(packaged) = packaged.filter(|path| path.is_file()) {
         return packaged;
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("js/runner.ts")
+}
+
+fn packaged_runner(executable: &Path) -> Option<PathBuf> {
+    let executable = fs::canonicalize(executable).unwrap_or_else(|_| executable.to_path_buf());
+    let directory = executable.parent()?;
+    // `current` can move during an update; the runner must stay on this binary's version.
+    if let Some(versions) = directory.parent()
+        && versions.file_name().is_some_and(|name| name == "versions")
+    {
+        return Some(
+            versions
+                .join(env!("CARGO_PKG_VERSION"))
+                .join(PACKAGED_RUNNER),
+        );
+    }
+    Some(directory.join(PACKAGED_RUNNER))
 }
 
 /// Create a durable, uniquely-named TypeScript scratch file seeded with the
@@ -270,9 +284,56 @@ mod tests {
         let install = tempfile::tempdir().unwrap();
         let executable = install.path().join("truapi-host");
         let bundle = install.path().join(PACKAGED_RUNNER);
+        fs::write(&executable, "binary").unwrap();
         fs::write(&bundle, "packaged").unwrap();
 
-        assert_eq!(resolve_runner(None, Some(&executable)), bundle);
+        assert_eq!(
+            resolve_runner(None, Some(&executable)),
+            bundle.canonicalize().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_packaged_bundle_tracks_the_running_version_through_installer_symlinks() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir()?;
+        let root = home.path().join("share/truapi-host");
+        let version = root.join("versions").join(env!("CARGO_PKG_VERSION"));
+        let bin = home.path().join("bin");
+        fs::create_dir_all(&version)?;
+        fs::create_dir_all(&bin)?;
+
+        let installed_executable = version.join("truapi-host");
+        let installed_bundle = version.join(PACKAGED_RUNNER);
+        fs::write(&installed_executable, "binary")?;
+        fs::write(&installed_bundle, "packaged")?;
+        let current = root.join("current");
+        symlink(
+            Path::new("versions").join(env!("CARGO_PKG_VERSION")),
+            &current,
+        )?;
+
+        let entrypoint = bin.join("truapi-host");
+        symlink(root.join("current/truapi-host"), &entrypoint)?;
+
+        let expected = installed_bundle.canonicalize()?;
+        assert_eq!(resolve_runner(None, Some(&entrypoint)), expected);
+
+        let next_version = root.join("versions/next");
+        fs::create_dir_all(&next_version)?;
+        fs::write(next_version.join("truapi-host"), "next binary")?;
+        fs::write(next_version.join(PACKAGED_RUNNER), "next runner")?;
+        fs::remove_file(&current)?;
+        symlink("versions/next", current)?;
+
+        assert_eq!(
+            resolve_runner(None, Some(&entrypoint)),
+            expected,
+            "a running binary keeps using its matching runner after current moves"
+        );
+        Ok(())
     }
 
     #[test]
