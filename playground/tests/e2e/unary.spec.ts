@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { openPlaygroundInDotli, selectMethod, waitForOnline } from "./helpers";
+import { openPlayground, selectMethod, waitForOnline } from "./helpers";
 
 test.describe("unary call", () => {
   test("feature_supported runs to completion without login", async ({ page }) => {
-    const frame = await openPlaygroundInDotli(page);
+    const frame = await openPlayground(page);
     await waitForOnline(frame);
 
     await selectMethod(frame, "System", "feature_supported");

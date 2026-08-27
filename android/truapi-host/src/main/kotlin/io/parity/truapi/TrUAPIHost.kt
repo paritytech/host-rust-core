@@ -12,14 +12,13 @@
 //     `Permissions` platform trait in the Rust core.
 //   * `HostStorage` / `HostCoreStorage` - the product-scoped and core-owned
 //     key-value backends the host persists.
-//   * `TrUAPIHostCore` - owning wrapper around the UniFFI-generated
-//     `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core
-//     and exposes session + WS-bridge controls plus native change notifications.
+//   * `TrUAPIHostRuntime` / `TrUAPIProductExecution` - process-owned host state
+//     and independently scoped product connections.
 //   * `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge
 //     endpoint to the product page so it can dial back in.
 //
 // Products running inside a `WebView` connect to the Rust core via the
-// localhost WebSocket bridge. Start it with `core.startWsBridge()` and load
+// localhost WebSocket bridge. Start it with `execution.startWsBridge()` and load
 // the product page with a `LocalhostBridgeBootstrap.script(...)` snippet
 // injected at document start so the page's `@parity/truapi`
 // `createWebSocketProvider` can dial `ws://127.0.0.1:<port>/?t=<token>`.
@@ -67,31 +66,15 @@ import uniffi.truapi_platform.ProductExecutionKind as UniFfiProductExecutionKind
 import uniffi.truapi_server.NativeRenewalTargetException
 import uniffi.truapi_server.NativeRuntimeConfigException
 import uniffi.truapi_server.NativeStatementRenewalTarget
-import uniffi.truapi_server.NativeTrUApiCore
 import uniffi.truapi_server.StatementRenewalReport
 import uniffi.truapi_server.WsBridgeEndpoint
 import uniffi.truapi_server.WsBridgeStartException
-import uniffi.truapi_server.NativePairingDeeplinkScheme as UniFfiNativePairingDeeplinkScheme
-import uniffi.truapi_server.NativeRuntimeConfig as UniFfiNativeRuntimeConfig
 import uniffi.truapi_server.NativeHostRuntimeConfig as UniFfiNativeHostRuntimeConfig
 import uniffi.truapi_server.NativeProductExecutionConfig as UniFfiNativeProductExecutionConfig
-
 
 /** Package metadata. */
 object TrUAPIHost {
     const val VERSION = "0.1.0"
-}
-
-/** Deeplink scheme used when the Rust core builds SSO pairing payloads. */
-enum class PairingDeeplinkScheme {
-    POLKADOT_APP,
-    POLKADOT_APP_DEV;
-
-    internal fun toNative(): UniFfiNativePairingDeeplinkScheme =
-        when (this) {
-            POLKADOT_APP -> UniFfiNativePairingDeeplinkScheme.POLKADOT_APP
-            POLKADOT_APP_DEV -> UniFfiNativePairingDeeplinkScheme.POLKADOT_APP_DEV
-        }
 }
 
 /** Trusted kind of executable attached to a product connection. */
@@ -106,86 +89,6 @@ enum class ProductExecutionKind {
             WIDGET -> UniFfiProductExecutionKind.WIDGET
             WORKER -> UniFfiProductExecutionKind.WORKER
         }
-}
-
-/**
- * Static product and pairing config supplied before the Rust core handles
- * product calls. One core instance represents one product identity.
- *
- * [hostName], [hostIcon], [hostVersion], [platformType], and [platformVersion]
- * describe the host to the wallet during SSO pairing.
- * [peopleChainGenesisHash] and [bulletinChainGenesisHash] must each be exactly
- * 32 bytes. [localSessionSecret] optionally activates a local signing session
- * from host-held BIP-39 entropy (no SSO pairing needed). The platform category
- * products read through `System.host_info` is not configurable: reaching this
- * library at all means the host is an Android app.
- */
-data class RuntimeConfig(
-    val productId: String,
-    val executionKind: ProductExecutionKind = ProductExecutionKind.APP,
-    val hostName: String,
-    val hostIcon: String? = null,
-    val hostVersion: String? = null,
-    val platformType: String? = null,
-    val platformVersion: String? = null,
-    val peopleChainGenesisHash: ByteArray,
-    val bulletinChainGenesisHash: ByteArray,
-    val localSessionSecret: ByteArray? = null,
-    val localSessionLiteUsername: String? = null,
-    val pairingDeeplinkScheme: PairingDeeplinkScheme = PairingDeeplinkScheme.POLKADOT_APP,
-) {
-    internal fun toNative(): UniFfiNativeRuntimeConfig =
-        UniFfiNativeRuntimeConfig(
-            productId = productId,
-            executionKind = executionKind.toNative(),
-            hostName = hostName,
-            hostIcon = hostIcon,
-            hostVersion = hostVersion,
-            hostPlatform = HostPlatform.ANDROID,
-            platformType = platformType,
-            platformVersion = platformVersion,
-            peopleChainGenesisHash = peopleChainGenesisHash,
-            bulletinChainGenesisHash = bulletinChainGenesisHash,
-            localSessionSecret = localSessionSecret,
-            localSessionLiteUsername = localSessionLiteUsername,
-            pairingDeeplinkScheme = pairingDeeplinkScheme.toNative(),
-        )
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is RuntimeConfig) return false
-        return productId == other.productId &&
-            executionKind == other.executionKind &&
-            hostName == other.hostName &&
-            hostIcon == other.hostIcon &&
-            hostVersion == other.hostVersion &&
-            platformType == other.platformType &&
-            platformVersion == other.platformVersion &&
-            peopleChainGenesisHash.contentEquals(other.peopleChainGenesisHash) &&
-            bulletinChainGenesisHash.contentEquals(other.bulletinChainGenesisHash) &&
-            // Compare nullability explicitly so null (no session) is distinct
-            // from an empty secret (invalid input) — matching hashCode, which
-            // hashes null to 0 and an empty array to 1.
-            localSessionSecret.contentEquals(other.localSessionSecret) &&
-            localSessionLiteUsername == other.localSessionLiteUsername &&
-            pairingDeeplinkScheme == other.pairingDeeplinkScheme
-    }
-
-    override fun hashCode(): Int {
-        var result = productId.hashCode()
-        result = 31 * result + executionKind.hashCode()
-        result = 31 * result + hostName.hashCode()
-        result = 31 * result + (hostIcon?.hashCode() ?: 0)
-        result = 31 * result + (hostVersion?.hashCode() ?: 0)
-        result = 31 * result + (platformType?.hashCode() ?: 0)
-        result = 31 * result + (platformVersion?.hashCode() ?: 0)
-        result = 31 * result + peopleChainGenesisHash.contentHashCode()
-        result = 31 * result + bulletinChainGenesisHash.contentHashCode()
-        result = 31 * result + (localSessionSecret?.contentHashCode() ?: 0)
-        result = 31 * result + (localSessionLiteUsername?.hashCode() ?: 0)
-        result = 31 * result + pairingDeeplinkScheme.hashCode()
-        return result
-    }
 }
 
 /**
@@ -390,8 +293,7 @@ interface HostBridge {
      * outcome even when it is the default disconnected, so a host that awaits
      * activation before routing never has to read silence as "signed out";
      * every other emission, and every emission on a host role that has no
-     * session activation, happens only when the state actually changes. Report
-     * a user dismissal of the pairing UI through [TrUAPIHostCore.cancelLogin].
+     * session activation, happens only when the state actually changes.
      * Invoked on the dispatcher thread; marshal the state to the main thread
      * and return promptly.
      */
@@ -655,9 +557,8 @@ private class ChatCallbackAdapter(private val bridge: ChatHostBridge) : NativeCh
 }
 
 /**
- * Bootstrap helper for the native localhost WebSocket bridge that the Rust core
- * stands up via [TrUAPIHostCore.startWsBridge] when the cdylib is built with the
- * `ws-bridge` feature.
+ * Bootstrap helper for the native localhost WebSocket bridge that a product
+ * execution starts when the cdylib is built with the `ws-bridge` feature.
  */
 object LocalhostBridgeBootstrap {
     /**
@@ -804,185 +705,6 @@ object LocalhostBridgeBootstrap {
         }
         sb.append('"')
         return sb.toString()
-    }
-}
-
-/**
- * Owning wrapper around the Rust-backed [NativeTrUApiCore]. Holds the bridge
- * alive for the lifetime of the core and exposes core lifecycle + WS-bridge
- * controls plus native change notifications.
- *
- * Hosts integrating with a `WebView`-based product call [startWsBridge] and
- * inject a [LocalhostBridgeBootstrap.script] snippet at document start so the
- * product's `@parity/truapi` `createWebSocketProvider` dials
- * `ws://127.0.0.1:<port>/?t=<token>`.
- */
-class TrUAPIHostCore private constructor(
-    bridge: HostBridge,
-    runtimeConfig: UniFfiNativeRuntimeConfig,
-) : AutoCloseable {
-    @Throws(NativeRuntimeConfigException::class)
-    constructor(bridge: HostBridge, runtimeConfig: RuntimeConfig) : this(
-        bridge,
-        runtimeConfig.toNative(),
-    )
-
-    // Co-owns the adapter alongside the generated FfiConverter handle map,
-    // which is what actually keeps the callback object alive for the core.
-    private val callbackRetainer: HostCallbacks = HostCallbackAdapter(bridge)
-    private val inner: NativeTrUApiCore =
-        NativeTrUApiCore.withRuntimeConfig(callbackRetainer, runtimeConfig)
-
-    /**
-     * Start the localhost WebSocket bridge (requires the `ws-bridge` feature in
-     * the cdylib). The returned [WsBridgeEndpoint] carries the port and session
-     * token; feed them to [LocalhostBridgeBootstrap.script] to hand the URL to
-     * the product page.
-     */
-    @Throws(WsBridgeStartException::class)
-    fun startWsBridge(bindPort: UShort = 0u): WsBridgeEndpoint =
-        inner.startWsBridge(bindPort)
-
-    /** Stop the localhost WebSocket bridge (if running). */
-    fun stopWsBridge() {
-        inner.stopWsBridge()
-    }
-
-    /**
-     * Core-owned logout/disconnect path. Best-effort notifies the SSO peer,
-     * clears in-memory session state, and clears persisted session state via
-     * the core-storage backend.
-     */
-    fun disconnect() {
-        inner.disconnect()
-    }
-
-    /** Notify the core that host-global session storage changed externally. */
-    fun notifySessionStoreChanged() {
-        inner.notifySessionStoreChanged()
-    }
-
-    /**
-     * Cancel any in-flight login pairing (e.g. the user dismissed the pairing
-     * UI). The bridge receives a disconnected auth state immediately and the
-     * pending login resolves as rejected. A no-op when no login is in progress.
-     */
-    fun cancelLogin() {
-        inner.cancelLogin()
-    }
-
-    /**
-     * Activate or replace the local signing-host session from host-held secret
-     * material (raw BIP-39 entropy). Lets the host run without SSO pairing.
-     */
-    @Throws(HostRejection::class)
-    fun activateLocalSession(secret: ByteArray, liteUsername: String? = null) {
-        inner.activateLocalSession(secret, liteUsername)
-    }
-
-    /**
-     * Record the accounts renewal should keep allowed on the Statement Store.
-     * Needs an active session, so call it after [activateLocalSession] or after
-     * pairing, not at construction.
-     *
-     * The ledger is append-only: there is no untrack, and a target is only
-     * dropped when the identity that promised it changes. Recipe-shaped targets
-     * survive that; a raw [NativeStatementRenewalTarget.Account] does not, so
-     * re-track those whenever the active identity changes.
-     */
-    @Throws(NativeRenewalTargetException::class)
-    fun trackStatementRenewalTargets(targets: List<NativeStatementRenewalTarget>) {
-        inner.trackStatementRenewalTargets(targets)
-    }
-
-    /**
-     * Run one renewal pass now, reporting what each tracked target got.
-     *
-     * Submits extrinsics and blocks until they are included, so call it from a
-     * WorkManager worker rather than the main thread. There is no cancellation:
-     * a pass with several targets can outlast a short background budget, though
-     * a target registered before the process is killed is not lost and reads
-     * back as already allocated.
-     */
-    @Throws(HostRejection::class)
-    fun renewStatementAllowances(): StatementRenewalReport = inner.renewStatementAllowances()
-
-    /**
-     * Start the in-process renewal loop, for a host that stays resident. A
-     * suspended app stops ticking, so prefer scheduling
-     * [renewStatementAllowances].
-     */
-    fun startStatementAllowanceRenewal() {
-        inner.startStatementAllowanceRenewal()
-    }
-
-    /**
-     * The in-process loop's own cadence, capped at an hour. Allowances only
-     * stop being renewed at a period boundary and survive it by the chain's
-     * grace window, so a host scheduling one wake-up per period
-     * should read a value under an hour as the boundary approaching rather than
-     * waking hourly.
-     */
-    fun nextStatementRenewalDelay(): java.time.Duration = inner.nextStatementRenewalDelay()
-
-    /**
-     * The most recent pass the in-process renewal loop ran.
-     *
-     * `null` until a pass has run, which is "not yet" rather than healthy.
-     * [startStatementAllowanceRenewal] returns nothing, so a host driving the loop
-     * reads its result here. `slotsExhausted` on the last pass means a period
-     * filled up and an allowance went unrenewed, which retrying cannot fix and a
-     * person may need telling about.
-     */
-    fun lastStatementRenewalReport(): StatementRenewalReport? = inner.lastStatementRenewalReport()
-
-    /**
-     * Read a permission authorization status without prompting.
-     *
-     * A device capability resolves the OS gate as well as storage, so an OS
-     * refusal reads as `Denied` whatever is stored. Remote, identity disclosure
-     * and account access decisions have no OS gate.
-     */
-    @Throws(HostRejection::class)
-    suspend fun permissionAuthorizationStatus(
-        request: PermissionAuthorizationRequest,
-    ): PermissionAuthorizationStatus =
-        inner.permissionAuthorizationStatus(request)
-
-    /**
-     * Update a stored permission authorization status. Passing `NotDetermined`
-     * clears the stored value so the next product request prompts again.
-     */
-    @Throws(HostRejection::class)
-    fun setPermissionAuthorizationStatus(
-        request: PermissionAuthorizationRequest,
-        status: PermissionAuthorizationStatus,
-    ) {
-        inner.setPermissionAuthorizationStatus(request, status)
-    }
-
-    /** Push a host theme update to active TrUAPI theme subscriptions. */
-    fun notifyThemeChanged(theme: HostThemeSubscribeItem) {
-        inner.notifyThemeChanged(theme)
-    }
-
-    /** Push a preimage lookup update to active subscriptions for [key]. */
-    fun notifyPreimageChanged(key: ByteArray, value: ByteArray?) {
-        inner.notifyPreimageChanged(key, value)
-    }
-
-    /** Push a JSON-RPC response from a native chain connection into the core. */
-    fun notifyChainResponse(connectionId: UInt, json: String) {
-        inner.notifyChainResponse(connectionId, json)
-    }
-
-    /** Notify the core that a native chain connection closed externally. */
-    fun notifyChainClosed(connectionId: UInt) {
-        inner.notifyChainClosed(connectionId)
-    }
-
-    override fun close() {
-        inner.close()
     }
 }
 

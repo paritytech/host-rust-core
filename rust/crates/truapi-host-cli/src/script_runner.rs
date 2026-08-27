@@ -40,17 +40,13 @@ impl ScriptHostRole {
 const SCRATCH_TEMPLATE: &str = r#"#!/usr/bin/env bun
 
 // Scripts can use packages installed next to the script or in a parent project.
-const cyanBold = "\u001b[1;36m";
-const green = "\u001b[32m";
-const reset = "\u001b[0m";
-
-console.log(`${cyanBold}\n🚀 TrUAPI script\n${reset}`);
 
 const result = await truapi.account.getUserId();
 if (!result.isOk()) {
   throw new Error(`getUserId failed: ${JSON.stringify(result.error)}`);
 }
-console.log(`${green}user id:${reset}`, result.value);
+
+console.log('user id', result.value);
 "#;
 
 /// Runner bundle shipped next to the binary in a release archive. It has
@@ -297,10 +293,20 @@ mod tests {
         let script = create_scratch_script(temporary.path())?;
         let contents = fs::read_to_string(script)?;
 
-        assert!(contents.starts_with("#!/usr/bin/env bun\n"));
-        assert!(!contents.contains("from \"chalk\""));
-        assert!(contents.contains("truapi.account.getUserId()"));
-        assert_eq!(contents, SCRATCH_TEMPLATE);
+        assert_eq!(
+            contents,
+            r#"#!/usr/bin/env bun
+
+// Scripts can use packages installed next to the script or in a parent project.
+
+const result = await truapi.account.getUserId();
+if (!result.isOk()) {
+  throw new Error(`getUserId failed: ${JSON.stringify(result.error)}`);
+}
+
+console.log('user id', result.value);
+"#
+        );
         Ok(())
     }
 

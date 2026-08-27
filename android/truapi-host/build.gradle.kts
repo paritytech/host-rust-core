@@ -2,7 +2,7 @@
 //
 // Publishes `io.parity:truapi-host-android` to Maven. Products running in a
 // `WebView` connect to the Rust core via its localhost WebSocket bridge
-// (`TrUAPIHostCore.startWsBridge`); the Rust core (compiled to
+// (`TrUAPIProductExecution.startWsBridge`); the Rust core (compiled to
 // `libtruapi_server.so`) handles wire decoding, routing, subscription
 // lifecycle, and host capability dispatch.
 

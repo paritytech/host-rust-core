@@ -9,6 +9,9 @@ license = "MIT"
 name = "truapi-host"
 path = "src/main.rs"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 
@@ -29,6 +32,7 @@ futures-util = "0.3"
 fs2 = "0.4"
 hex = "0.4"
 parity-scale-codec = { version = "3", features = ["derive"] }
+qrcode = { version = "0.14.1", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "unstable-rendered-line-info"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }

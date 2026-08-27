@@ -95,7 +95,7 @@ scripts/truapi-host-installer.sh
   `make android-check` does it locally. The embedding apps are compiled by
   neither.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
-  callbacks; `TrUAPIHostRuntime` and `TrUAPIHostCore` both accept one.
+  callbacks; `TrUAPIHostRuntime` and each product execution retain one.
   To publish the binary, include `@parity/ios-host <version>`
   in the `release:` PR title. The release workflow rebuilds and simulator-tests
   the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
@@ -209,8 +209,16 @@ yarn build              # static export to out/
 yarn lint
 ```
 
-The playground must be opened from inside a TrUAPI host. The fastest local
-setup is to run dotli's preview server alongside the playground and open
+The fastest way to exercise the playground is `truapi-host dev -- yarn dev`
+from `playground/`, which starts a signing host on `127.0.0.1:9955`, serves the
+browser bridge at `/bootstrap.js`, and runs the dev server with the host live.
+The playground's root layout carries the development-only `<script>` tag that
+loads it. TCP frame peers and browser origins are limited to loopback. On Unix,
+the CLI owns the wrapped command's process group and applies a five-second
+SIGTERM grace period before killing remaining descendants.
+
+The playground must otherwise be opened from inside a TrUAPI host. The fastest
+local setup is to run dotli's preview server alongside the playground and open
 `http://localhost:5173/localhost:3000` in any browser. Use the
 [`playground-local-stack`](.claude/skills/playground-local-stack/SKILL.md)
 skill to bring both servers up in tmux (it handles the `hosts/dotli/`
