@@ -8,113 +8,62 @@ status: draft
 
 ## Summary
 
-This RFC extends the Product Manifest Format with version 2 of the App
-executable manifest. The new format makes an App's runtime and runtime
-requirements explicit.
+This RFC introduces version 2 of the App executable manifest. It allows an App
+to declare whether it runs as a web application or as a PolkaVM program.
 
-Web remains the mandatory App runtime and continues to be supported by every
-Host that implements the App modality. Version 2 additionally allows a Product
-to publish an App compiled for PolkaVM. A PolkaVM App declares the graphics,
-device-input, and audio capabilities it requires from the Host.
+Web remains the mandatory App runtime. PolkaVM is an optional runtime that a
+Host may additionally support. A PolkaVM App declares the versioned graphics
+and other runtime capabilities it requires.
 
-PolkaVM is an execution environment, not a modality or executable kind.
-Framebuffer, Tri2D, and WebGPU Raster are graphics profiles provided to a
-PolkaVM App.
+PolkaVM is a runtime, not a new modality or executable kind. A PolkaVM App
+retains the identity, lifecycle, and TruAPI access of an App.
 
 ## Motivation
 
-The version 1 App manifest describes a static web application:
+The version 1 App manifest assumes that every App is a web directory containing
+`index.html`:
 
-```ts
-type AppManifestV1 = {
-  $v: 1;
-  kind: "app";
-  appVersion: SemVer;
-};
+```json
+{
+  "$v": 1,
+  "kind": "app",
+  "appVersion": [1, 0, 0]
+}
 ```
 
-Its runtime and entrypoint are implicit. The Host assumes that the artifact is
-a web directory containing `index.html`.
+This is insufficient for an App distributed as a PolkaVM program. Before
+launch, a Host must know which runtime the artifact requires, where its
+entrypoint is, and which Host capabilities are needed to present and operate
+it.
 
-A PolkaVM App instead contains a program executed in a Host-owned sandbox. The
-program does not receive a DOM, native view, filesystem, network connection, or
-graphics device directly. It interacts with the Host through bounded,
-versioned runtime contracts.
-
-A Host must be able to determine, before launch, which runtime an artifact
-requires, where its entrypoint is, which graphics contract it uses, and whether
-the current device can satisfy its input, audio, and resource requirements.
-
-Adding these fields to manifest version 1 would be unsafe. An older Host could
-ignore them and attempt to launch a PolkaVM artifact as an `index.html` web
-application. A new manifest version makes the incompatibility explicit and
-fail-closed.
+Adding these fields to version 1 would be unsafe. An older Host could ignore
+them and attempt to launch a PolkaVM artifact as web content. Version 2 makes
+the distinction explicit and fail-closed.
 
 ## Detailed Design
 
-### App manifest v2
+### Manifest location and versioning
 
-App executable manifests are stored in the existing `executable` text record
-under:
+App manifests remain stored in the `executable` text record under:
 
 ```text
 app.<product_id>.<tld>
 ```
 
-Version 2 is a discriminated union over the runtime:
+The root Product manifest is unchanged. Manifest versions apply to individual
+records, so a version 1 root manifest may reference a version 2 App executable.
 
-```ts
-type AppManifestV2 =
-  | WebAppManifestV2
-  | PolkaVmAppManifestV2;
-
-type CommonAppFieldsV2 = {
-  $v: 2;
-  kind: "app";
-  appVersion: SemVer;
-};
-
-type WebAppManifestV2 = CommonAppFieldsV2 & {
-  runtime: WebRuntime;
-};
-
-type PolkaVmAppManifestV2 = CommonAppFieldsV2 & {
-  runtime: PolkaVmRuntime;
-  capabilities: PolkaVmCapabilities;
-};
-
-type WebRuntime = {
-  kind: "web";
-  entrypoint: string;
-};
-
-type PolkaVmRuntime = {
-  kind: "polkavm";
-  abiVersion: 1;
-  entrypoint: string;
-};
-```
-
-An entrypoint is an archive-relative path. It must be non-empty, must not begin
-with `/`, and must not contain `..` path segments. A web entrypoint must
-identify an HTML document. A PolkaVM entrypoint must identify a `.polkavm`
-program.
-
-The root Product manifest is unchanged and remains independently versioned.
-The `$v` discriminator versions the individual record in which it appears. A
-version 1 root manifest may therefore reference a version 2 App executable.
+Each version 2 App declares exactly one runtime.
 
 ### Web runtime
 
-Web is the mandatory runtime for the App modality.
-
-A Host that implements the App modality must support web App executables. A
-Host supporting App manifest version 2 must accept `runtime.kind: "web"`.
-
-App manifest version 1 remains valid and is equivalent to:
+A version 2 web App declares its entrypoint explicitly:
 
 ```json
 {
+  "$v": 2,
+  "kind": "app",
+  "appVersion": [1, 4, 0],
   "runtime": {
     "kind": "web",
     "entrypoint": "index.html"
@@ -122,206 +71,149 @@ App manifest version 1 remains valid and is equivalent to:
 }
 ```
 
+Web is the mandatory runtime for Hosts implementing the App modality. App
+manifest version 1 remains valid and continues to imply a web runtime with
+`index.html` as its entrypoint.
+
 Version 2 does not replace or deprecate the existing web execution model. It
 makes the runtime explicit so that web and PolkaVM Apps can use the same
 discovery mechanism.
 
-The PolkaVM capability declarations introduced by this RFC do not apply to web
-Apps. Web permissions and capabilities continue to be governed by the web
-sandbox and existing Host APIs.
-
 ### PolkaVM runtime
 
-PolkaVM is an optional App runtime.
+A PolkaVM App declares its program, application ABI, and required Host
+capabilities:
 
-A Host that does not implement PolkaVM skips the App executable and reports
-that its runtime is unsupported. This does not make the Product malformed or
-prevent the Host from using its other executable records.
-
-A PolkaVM App remains `ProductExecutionKind::App` for TruAPI service gating.
-Its runtime does not create a new Product identity or permission scope.
-
-Implementing PolkaVM must not reduce or replace the Host's support for web
-Apps.
-
-### PolkaVM capabilities
-
-A PolkaVM App declares the capabilities it requires:
-
-```ts
-type PolkaVmCapabilities = {
-  graphics: GraphicsRequirement;
-  deviceInput?: DeviceInputRequirement;
-  audio?: AudioRequirement;
-};
-
-type GraphicsRequirement = {
-  abiVersion: 1;
-  profile: "framebuffer" | "tri2d" | "webgpu-raster";
-  requiredFeatures: string[];
-  requiredLimits?: Record<string, number>;
-};
-
-type DeviceInputRequirement = {
-  abiVersion: 1;
-  requiredFeatures: Array<
-    "pointer" | "keyboard" | "touch" | "wheel" |
-    "text" | "ime" | "focus"
-  >;
-};
-
-type AudioRequirement = {
-  abiVersion: 1;
-  requiredFeatures: string[];
-};
+```json
+{
+  "$v": 2,
+  "kind": "app",
+  "appVersion": [0, 1, 0],
+  "runtime": {
+    "kind": "polkavm",
+    "abiVersion": 1,
+    "entrypoint": "app.polkavm"
+  },
+  "capabilities": {
+    "graphics": {
+      "abiVersion": 1,
+      "profile": "tri2d"
+    },
+    "deviceInput": {
+      "abiVersion": 1
+    },
+    "audio": {
+      "abiVersion": 1
+    }
+  }
+}
 ```
 
-Graphics is required. Device input and audio are optional and should be omitted
-when unused.
+PolkaVM support is optional. A Host that does not implement the PolkaVM runtime
+skips the App executable and reports it as unsupported. This does not make the
+Product malformed or affect its other executable records.
 
-The graphics profiles have the following roles:
+A PolkaVM App must declare a graphics capability. Device input and audio are
+optional and should be omitted when unused.
 
-- `framebuffer` accepts complete packed pixel frames;
-- `tri2d` accepts bounded texture updates and clipped indexed triangles through
-  a fixed Host rendering contract;
-- `webgpu-raster` provides a bounded raster model aligned with WebGPU
-  semantics, including retained resources, WGSL shaders, pipelines, render
-  passes, and depth attachments.
+Runtime entrypoints are relative to the executable artifact. A web entrypoint
+identifies an HTML document. A PolkaVM entrypoint identifies a `.polkavm`
+program.
 
-The profile describes application-visible behavior, not the Host's graphics
-backend. A Host may implement a profile over Metal, Vulkan, WebGPU, or another
-backend while preserving the specified behavior.
+A PolkaVM App remains `ProductExecutionKind::App`. Its runtime does not create
+a new Product identity, executable kind, or permission scope.
 
-Profile names describe application-visible Host contracts rather than
-application architecture or platform graphics APIs. The unqualified name
-`webgpu` is reserved for a future contract with a defined level of WebGPU
-conformance.
+### Graphics profiles
 
-`deviceInput` is distinct from any user-facing Input modality. It describes
-operating-system input delivered to a running App. Surface dimensions, scale,
-format, and resize generation belong to the graphics contract.
+Graphics ABI version 1 initially identifies three profiles:
 
-### Capability negotiation
+- `framebuffer` for complete packed pixel frames;
+- `tri2d` for bounded textures and clipped indexed triangles;
+- `webgpu-raster` for a bounded raster contract aligned with WebGPU semantics.
 
-Before starting a PolkaVM App, the Host compares the manifest requirements with
-its effective runtime capabilities.
+These profiles describe application-visible behavior, not the graphics backend
+used by a particular Host. Different Hosts may implement the same profile
+through different platform facilities.
 
-The Host skips the App executable when:
+The operations, wire formats, feature vocabularies, limits, error behavior,
+and conformance requirements of each profile are defined in separate
+runtime-profile specifications.
 
-- the runtime or an ABI version is unsupported;
-- the graphics profile is unsupported;
-- a required feature is unavailable;
-- an effective limit is below a declared minimum;
-- a required runtime capability cannot be initialized.
+The unqualified name `webgpu` is reserved for a future contract with a defined
+level of WebGPU conformance.
 
-Unknown required feature names and limit keys are rejected. Required limit
-values must be positive safe integers within the ceilings defined by the
-selected profile.
+Device input and audio follow the same versioning model: the App manifest
+declares the required ABI version, while a separate runtime specification
+defines its operations and behavior.
 
-The Host must not silently substitute a different runtime, graphics profile,
-or software fallback. Each App executable declares exactly one runtime.
+### Host behavior
 
-### Embedded manifest
+Before launch, the Host checks whether it supports:
 
-Every version 2 App artifact must contain its executable manifest at:
+- the declared runtime and runtime ABI;
+- the declared graphics profile and ABI;
+- the ABI versions of any other declared capabilities.
 
-```text
-manifest.json
-```
+If a requirement is unsupported, the Host skips that App executable and
+reports it as incompatible. The Product and its other executable records
+remain valid.
 
-The file must be byte-for-byte identical to the UTF-8 JSON stored in the App
-subname's `executable` text record.
+The Host must not silently substitute another runtime or graphics profile. It
+either launches the declared runtime or reports the App as unsupported.
 
-A Host installing through dotNS validates the external manifest, fetches the
-artifact identified by `contenthash`, and rejects the executable if the
-embedded manifest is absent or differs from the external record.
+A Host is not required to implement PolkaVM or every graphics profile.
+Implementing PolkaVM must not reduce or replace its support for web Apps.
 
-A Host installing an artifact locally or offline uses the embedded manifest as
-the executable description.
+### Artifact identity
 
-Publisher tooling should generate the manifest once and use the same bytes for
-both locations.
-
-### Artifact identity and versioning
-
-The App subname's `contenthash` remains the executable's immutable identity and
-update signal.
+The App subname's `contenthash` remains the executable artifact's immutable
+identity and update signal.
 
 `appVersion` remains a publisher-defined, user-visible release label. Hosts
 must not use it to determine whether executable bytes changed.
 
-The following versions evolve independently:
-
-- App manifest schema version;
-- PolkaVM application ABI version;
-- graphics, device-input, and audio ABI versions;
-- publisher-defined `appVersion`.
-
-### Runtime contract ownership
-
-This RFC defines runtime discovery and capability negotiation. It does not
-define the binary protocol of each runtime capability.
-
-Normative profile specifications, checked decoders, shared constants, and
-cross-Host conformance fixtures live in this repository under a Product
-Runtime Contracts namespace separate from ordinary TruAPI services.
-
-A platform implementation is not itself normative. A Host may advertise a
-profile only when it passes the conformance suite for the declared ABI version.
+The manifest schema, PolkaVM application ABI, runtime-capability ABIs, and
+`appVersion` evolve independently.
 
 ### Compatibility
 
-Hosts that do not recognize App manifest version 2 skip the App executable and
-report an unsupported manifest version. They must not attempt to interpret its
-artifact as a version 1 web application.
+A Host that does not recognize App manifest version 2 skips the App executable.
+It must not interpret its artifact as a version 1 web application.
 
-Hosts supporting version 2 continue to accept version 1 App manifests.
-
-Publisher tooling for version 2 must validate:
-
-- the manifest schema;
-- entrypoint paths;
-- valid runtime and capability combinations;
-- profile-defined feature and limit names;
-- the dotNS text-record size budget;
-- presence and equality of the embedded manifest;
-- required artifact files.
+A Host supporting version 2 continues to accept version 1 App manifests.
 
 This RFC changes only the App executable. Other executable kinds and
-user-facing surfaces remain outside its scope.
+user-facing surfaces are outside its scope.
 
 ## Drawbacks
 
-Hosts and publisher tooling must support two App manifest versions during
-migration.
+Hosts and publisher tooling must support two App manifest versions.
 
-A valid Product may contain an App that cannot run on a particular Host. The
-Host must present this as a compatibility limitation rather than as a malformed
-or untrusted Product.
+A valid Product may contain an App that is unavailable on a particular Host.
+The Host must present this as a compatibility limitation rather than as a
+malformed or untrusted Product.
 
-The proposal also depends on separately maintained graphics, input, and audio
-contracts with conformance coverage across participating Hosts.
-
-Embedding the manifest duplicates information stored in dotNS and introduces
-an additional publishing-integrity check.
+The runtime capabilities named by this RFC require separate specifications and
+cross-Host conformance tests.
 
 ## Alternatives
 
 ### Extend App manifest version 1
 
-Rejected because an older Host could ignore the new fields and attempt to
-launch a PolkaVM artifact as web content.
+Rejected because older Hosts could ignore the new fields and attempt to launch
+a PolkaVM artifact as web content.
 
 ### Define PolkaVM as an executable kind
 
-Rejected because PolkaVM describes how an App executes, not the surface through
-which the user encounters it.
+Rejected because PolkaVM describes how an App executes, not how the Product is
+presented to the user.
 
-### Define Graphics as a modality or executable
+### Define Graphics as a modality
 
-Rejected because graphics is a capability of the running App and does not
-introduce a separate user-facing surface or lifecycle.
+Rejected because graphics is a capability of a running App and does not
+introduce a separate user-facing surface.
 
 ## Unresolved Questions
 
-None.
+The detailed graphics, device-input, and audio contracts will be proposed
+separately.
