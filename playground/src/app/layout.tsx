@@ -46,7 +46,16 @@ export default function RootLayout({
       lang="en"
       className={`${serif.variable} ${sans.variable} ${mono.variable}`}
     >
-      <body>{children}</body>
+      <body>
+        {process.env.NODE_ENV === "development" && (
+          // Blocking on purpose: the bridge installs window.__HOST_API_PORT__,
+          // which product code reads synchronously. Stripped from production
+          // builds, so the page-weight rule this waives does not apply.
+          // eslint-disable-next-line @next/next/no-sync-scripts
+          <script src="http://127.0.0.1:9955/bootstrap.js" />
+        )}
+        {children}
+      </body>
     </html>
   );
 }
