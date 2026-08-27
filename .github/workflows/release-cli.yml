@@ -129,7 +129,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          crate="$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' rust/crates/truapi-host-cli/Cargo.toml)"
+          # awk, not `sed -n '0,/re/'`: that address form is a GNU extension and
+          # silently yields nothing on the macOS runner's BSD sed.
+          crate="$(awk -F'"' '/^version = /{print $2; exit}' rust/crates/truapi-host-cli/Cargo.toml)"
           if [ "${crate}" != "${VERSION}" ]; then
             echo "::error::truapi-host-cli is ${crate}, but the release declares ${VERSION}. Run npm run version-packages."
             exit 1
