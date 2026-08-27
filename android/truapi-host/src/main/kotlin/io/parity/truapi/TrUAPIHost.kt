@@ -26,6 +26,7 @@
 
 package io.parity.truapi
 
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.awaitClose
@@ -40,6 +41,7 @@ import uniffi.truapi.CustomRendererNode
 import uniffi.truapi.HostChatActionSubscribeItem
 import uniffi.truapi.HostDevicePermissionRequest
 import uniffi.truapi.HostFeatureSupportedRequest
+import uniffi.truapi.HostLocaleSubscribeItem
 import uniffi.truapi.HostPlatform
 import uniffi.truapi.HostPushNotificationRequest
 import uniffi.truapi.RemotePermission
@@ -429,6 +431,14 @@ interface HostBridge {
         HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK)
 
     /**
+     * Return the language this host presents its interface in, as a BCP 47 tag.
+     * Hosts with no in-app language picker report the system language.
+     */
+    @Throws(HostRejection::class)
+    fun currentLocale(): HostLocaleSubscribeItem =
+        HostLocaleSubscribeItem(Locale.getDefault().toLanguageTag())
+
+    /**
      * Answer a feature-support query. Invoked on the dispatcher thread; must
      * return promptly.
      */
@@ -565,6 +575,9 @@ private class HostCallbackAdapter(private val bridge: HostBridge) : HostCallback
 
     override fun currentTheme(): HostThemeSubscribeItem =
         withHostRejection { bridge.currentTheme() }
+
+    override fun currentLocale(): HostLocaleSubscribeItem =
+        withHostRejection { bridge.currentLocale() }
 
     override suspend fun featureSupported(request: HostFeatureSupportedRequest): Boolean =
         withHostRejection { bridge.featureSupported(request) }
@@ -966,6 +979,11 @@ class TrUAPIHostCore private constructor(
         inner.notifyThemeChanged(theme)
     }
 
+    /** Push a host locale update to active TrUAPI locale subscriptions. */
+    fun notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
+        inner.notifyLocaleChanged(locale)
+    }
+
     /** Push a preimage lookup update to active subscriptions for [key]. */
     fun notifyPreimageChanged(key: ByteArray, value: ByteArray?) {
         inner.notifyPreimageChanged(key, value)
@@ -1202,6 +1220,11 @@ class TrUAPIProductExecution internal constructor(
     /** Push a host theme update to active TrUAPI theme subscriptions. */
     fun notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme)
+    }
+
+    /** Push a host locale update to active TrUAPI locale subscriptions. */
+    fun notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
+        inner.notifyLocaleChanged(locale)
     }
 
     /** Push a preimage lookup update to active subscriptions for [key]. */
