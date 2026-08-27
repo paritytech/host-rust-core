@@ -51,6 +51,10 @@ moves that one link.
 | `TRUAPI_HOST_INSTALL_DIR` | Version store, default `$XDG_DATA_HOME/truapi-host`. |
 | `TRUAPI_HOST_BIN_DIR` | Directory the `PATH` symlink goes in, default `~/.local/bin`. |
 
+Product scripts (`--script`, `/script`) work from an installed binary: the
+archive ships a `runner.js` with the `@parity/truapi` client bundled in. You
+still need `bun` on `PATH`, since it executes the runner and your script.
+
 Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
 default, so starting either host does not reserve a TCP port. Pass
 `--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
@@ -81,9 +85,9 @@ updates it. Nothing contacts GitHub.
 
 ### Building from source
 
-Product scripts (`--script` and `/script`) need `bun`, `js/runner.ts` and the
-generated `@parity/truapi` sources, so they need a checkout even with a
-prebuilt binary installed. To build and install the CLI yourself:
+A source build resolves the product-script runner from the checkout, so it also
+needs the generated `@parity/truapi` sources. (An installed release ships its
+own bundled runner and does not.) To build and install the CLI yourself:
 
 ```bash
 make headless install  # build dependencies and install truapi-host once

@@ -103,6 +103,25 @@ async function main() {
       ).stdout.trim(),
       `truapi-host ${version}`,
     );
+    check(
+      "the product-script runner ships beside the binary",
+      existsSync(join(root, `versions/${version}/runner.js`)),
+      true,
+    );
+    // The checkout's runner imports @parity/truapi by relative path. Running the
+    // packaged one from an unrelated directory proves the client is bundled in,
+    // so a downloaded install needs no source tree: it reaches its own env check
+    // instead of failing to resolve a module.
+    const runner = await run(
+      "bun",
+      ["run", join(root, `versions/${version}/runner.js`)],
+      { env: environment, cwd: tmpdir() },
+    );
+    check(
+      "the packaged runner resolves without a checkout",
+      /TRUAPI_FRAME_URL must be set/.test(runner.stdout + runner.stderr),
+      true,
+    );
 
     console.log("2. a managed install with nothing newer published");
     check(

@@ -193,18 +193,20 @@ cargo install \
 ### 3.3 Runtime dependencies
 
 Host-only commands need the installed Rust binary. Product scripts additionally
-need:
+need `bun` on `PATH`, plus a runner (see below). A source build also needs the
+repository's generated `@parity/truapi` TypeScript sources.
 
-- `bun` on `PATH`;
-- `js/runner.ts`; and
-- the repository's generated `@parity/truapi` TypeScript sources and their
-  dependencies.
+The runner is resolved in this order: `TRUAPI_HOST_RUNNER`, then `runner.js`
+next to the running binary, then `js/runner.ts` in the source checkout
+(compiled from `CARGO_MANIFEST_DIR`).
 
-By default, the runner path is compiled from `CARGO_MANIFEST_DIR` and therefore
-points into the source checkout. `TRUAPI_HOST_RUNNER` can select another
-`runner.ts`. The v0.1 install is not a self-contained relocatable script
-runtime: deleting or moving the checkout without supplying a replacement
-runner breaks `/script` and `--script`.
+A release archive ships `runner.js` beside the binary, with `@parity/truapi`
+bundled in, so an installed copy runs product scripts with no source tree. A
+source build has no bundle and falls back to the checkout copy, whose relative
+`@parity/truapi` import means it only works from a built tree.
+
+`bun` is required either way, since the runner and user scripts are executed by
+it.
 
 The binary has `--help` and `--version`.
 
