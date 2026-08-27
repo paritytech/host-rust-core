@@ -58,6 +58,12 @@ pub struct ApiDefinition {
     pub public_trait_order: Vec<String>,
     /// Data types referenced by the trait surface.
     pub types: Vec<TypeDef>,
+    /// Framework types that are deliberately not emitted, but whose own shape is
+    /// still on the wire - `CallError`'s variants are the discriminant of every
+    /// error response. Kept so the wire schema hash can see them: excluding them
+    /// from the fingerprint let a variant be inserted, renumbering every error
+    /// discriminant, with no signal anywhere.
+    pub framework_types: Vec<TypeDef>,
 }
 
 /// Trait extracted from the rustdoc index: name, methods, and rustdoc.
@@ -121,6 +127,11 @@ pub struct WireAttrs {
     pub interrupt_id: Option<u8>,
     /// Subscription item frame discriminant.
     pub receive_id: Option<u8>,
+    /// Whether the method's payloads carry key material or bearer secrets.
+    /// Marked by `#[wire(..., sensitive)]`; folded into the wire schema-hash
+    /// fingerprint so a change in a frame's sensitivity classification is caught
+    /// as contract drift.
+    pub sensitive: bool,
 }
 
 /// Wire-shape classification of a trait method.
@@ -335,9 +346,35 @@ pub fn extract_api(krate: &Crate) -> Result<ApiDefinition> {
     }
 
     let mut types = Vec::new();
+    let mut framework_types = Vec::new();
     let mut generated_names = BTreeMap::new();
     for (name, candidates) in type_candidates {
         if should_skip_type_name(&name) {
+            // Not emitted, but still fingerprinted: a shape change here changes
+            // the wire. Parse failures are ignored - several skipped names are
+            // markers or lifetimes with no data shape to record.
+            for candidate in &candidates {
+                let Some(item) = krate.index.get(&candidate.item_id) else {
+                    continue;
+                };
+                let module_path: Vec<String> = candidate
+                    .path
+                    .iter()
+                    .take(candidate.path.len().saturating_sub(1))
+                    .cloned()
+                    .collect();
+                let extracted = if candidate.kind == "struct" {
+                    extract_struct(&candidate.item_id, item, krate, &names, module_path)
+                } else if candidate.kind == "enum" {
+                    extract_enum(&candidate.item_id, item, krate, &names, module_path)
+                } else {
+                    continue;
+                };
+                if let Ok(def) = extracted {
+                    framework_types.push(def);
+                    break;
+                }
+            }
             continue;
         }
 
@@ -387,10 +424,13 @@ pub fn extract_api(krate: &Crate) -> Result<ApiDefinition> {
     traits.sort_by(|a, b| a.name.cmp(&b.name));
     types.sort_by(|a, b| a.name.cmp(&b.name));
 
+    framework_types.sort_by(|a, b| a.name.cmp(&b.name));
+
     Ok(ApiDefinition {
         traits,
         public_trait_order,
         types,
+        framework_types,
     })
 }
 
@@ -819,6 +859,14 @@ fn extract_wire_attrs(docs: &str) -> WireAttrs {
         if line.starts_with("@wire_host_initiated") {
             attrs.host_initiated = true;
         }
+        if line.starts_with("@wire_sensitive=") {
+            attrs.sensitive = line
+                .trim_end()
+                .strip_prefix("@wire_sensitive=")
+                .and_then(|value| value.parse::<bool>().ok())
+                .unwrap_or(false);
+            continue;
+        }
         for (needle, target) in [
             ("@wire_request_id=", &mut attrs.request_id),
             ("@wire_response_id=", &mut attrs.response_id),
@@ -1042,8 +1090,18 @@ pub(crate) fn resolve_type(ty: &serde_json::Value, names: &NameContext) -> Resul
                 "Option", args,
             )?))),
             "Compact" => {
-                expect_single_arg("Compact", args)?;
-                Ok(TypeRef::Primitive("compact".to_string()))
+                // The width is carried in the primitive's NAME, not discarded.
+                // Emission still keys on the `compact` prefix, so generated
+                // output is unchanged - but the wire schema hash can now see the
+                // difference between `Compact<u32>` and `Compact<u64>`. Dropping
+                // it made every compact site render identically, so widening one
+                // left the fingerprint byte-identical while changing which values
+                // a peer can decode.
+                let inner = expect_single_arg("Compact", args)?;
+                let TypeRef::Primitive(width) = &inner else {
+                    bail!("Compact must wrap a primitive integer, found {inner:?}");
+                };
+                Ok(TypeRef::Primitive(format!("compact<{width}>")))
             }
             "OptionBool" => Ok(TypeRef::Primitive("optionBool".to_string())),
             "String" => {
@@ -1484,7 +1542,7 @@ mod tests {
 
     #[test]
     fn clean_docs_strips_wire_markers() {
-        let docs = "Trait summary.\n\n@wire_request_id=7\n@service_required_execution=Chat\n";
+        let docs = "Trait summary.\n\n@wire_request_id=7\n@wire_sensitive=true\n@service_required_execution=Chat\n";
 
         assert_eq!(clean_docs(Some(docs)).as_deref(), Some("Trait summary."));
     }
@@ -1500,6 +1558,18 @@ mod tests {
 
         assert_eq!(trait_def.required_execution(), Some("Chat"));
         assert_eq!(trait_def.public_docs().as_deref(), Some("Chat operations."));
+    }
+
+    #[test]
+    fn extract_wire_attrs_reads_sensitive_flag() {
+        let sensitive = extract_wire_attrs("@wire_request_id=114\n@wire_sensitive=true");
+        assert_eq!(sensitive.request_id, Some(114));
+        assert!(sensitive.sensitive);
+
+        // Absent marker ⇒ not sensitive (the default for every unmarked method).
+        let plain = extract_wire_attrs("@wire_request_id=22");
+        assert_eq!(plain.request_id, Some(22));
+        assert!(!plain.sensitive);
     }
 
     #[test]
