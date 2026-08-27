@@ -1,16 +1,72 @@
 import type { Result } from "neverthrow";
 import { describe, expect, it } from "bun:test";
 
-import { createTransport } from "./client.js";
+import { createTransport, REQUEST_TIMEOUT_FLOOR_MS, resolveRequestTimeoutMs } from "./client.js";
 import { CallError, indexedTaggedUnion, Result as ScaleResult, str, _void } from "./scale.js";
 import type { Codec } from "./scale.js";
 import { createClient, SubscriptionError } from "./generated/client.js";
 import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
-import { encodeWireMessage } from "./transport.js";
+import {
+    createMessagePortProvider,
+    decodeWireMessage,
+    encodeWireMessage,
+    RequestTimeoutError,
+} from "./transport.js";
 
 /** Wrap a codec in the `{ V1: [0, codec] }` indexed-tagged-union envelope. */
 const versionedV1 = <T>(codec: Codec<T>) => indexedTaggedUnion({ V1: [0, codec] });
+
+/**
+ * Request methods the host answers without waiting on a person or a chain: RPC
+ * reads, local storage, chat and notification writes, and the payment surfaces
+ * hosts answer as unsupported. Adding a generated request method to neither
+ * this set nor `REQUEST_TIMEOUT_FLOOR_MS` fails the classification test below.
+ */
+const PROMPT_FREE_REQUESTS = new Set([
+    "SYSTEM_HANDSHAKE",
+    "SYSTEM_FEATURE_SUPPORTED",
+    "SYSTEM_NAVIGATE_TO",
+    "NOTIFICATIONS_SEND_PUSH_NOTIFICATION",
+    "NOTIFICATIONS_CANCEL_PUSH_NOTIFICATION",
+    "LOCAL_STORAGE_READ",
+    "LOCAL_STORAGE_WRITE",
+    "LOCAL_STORAGE_CLEAR",
+    "ACCOUNT_GET_LEGACY_ACCOUNTS",
+    "ACCOUNT_GET_USER_ID",
+    "CHAT_CREATE_ROOM",
+    "CHAT_REGISTER_BOT",
+    "CHAT_POST_MESSAGE",
+    "CHAIN_GET_HEAD_HEADER",
+    "CHAIN_GET_HEAD_BODY",
+    "CHAIN_GET_HEAD_STORAGE",
+    "CHAIN_CALL_HEAD",
+    "CHAIN_UNPIN_HEAD",
+    "CHAIN_CONTINUE_HEAD",
+    "CHAIN_STOP_HEAD_OPERATION",
+    "CHAIN_GET_SPEC_GENESIS_HASH",
+    "CHAIN_GET_SPEC_CHAIN_NAME",
+    "CHAIN_GET_SPEC_PROPERTIES",
+    "CHAIN_GET_CHAIN_INFO",
+    "CHAIN_BROADCAST_TRANSACTION",
+    "CHAIN_STOP_TRANSACTION",
+    "ENTROPY_DERIVE",
+    "COIN_PAYMENT_CREATE_PURSE",
+    "COIN_PAYMENT_QUERY_PURSE",
+    "COIN_PAYMENT_CREATE_RECEIVABLE",
+    "COIN_PAYMENT_CREATE_CHEQUE",
+]);
+
+/**
+ * Await a promise-like and return its outcome, so a rejection can be asserted
+ * on instead of escaping the test.
+ */
+function settled<T>(promise: PromiseLike<T>): Promise<unknown> {
+    return Promise.resolve(promise).then(
+        (value: unknown) => value,
+        (error: unknown) => error,
+    );
+}
 
 function toHex(u: Uint8Array): string {
     return Array.from(u)
@@ -702,5 +758,204 @@ describe("generated client transport", () => {
         expect(errors[0].message).toBe("provider closed");
         expect((errors[0] as SubscriptionError).reason).toBeUndefined();
         expect(errors[0].cause).toBe(providerError);
+    });
+});
+
+describe("request timeouts", () => {
+    it("rejects a request the peer accepts and never answers", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+        const client = createClient(transport);
+
+        const outcome = await settled(client.system.handshake());
+
+        expect(fixture.sent).toHaveLength(1);
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+        expect((outcome as RequestTimeoutError).timeoutMs).toBe(5);
+    });
+
+    it("ignores a reply that arrives after the bound fired", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+        let decodeCalls = 0;
+
+        const outcome = await settled(
+            transport.request<undefined, never>({
+                ids: W.SYSTEM_HANDSHAKE,
+                payload: T.VersionedHostHandshakeRequest.enc({
+                    tag: "V1",
+                    value: { codecVersion: 1 },
+                }),
+                decodeResponse: () => {
+                    decodeCalls += 1;
+                    return { success: true, value: undefined };
+                },
+            }),
+        );
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+
+        const sentRequestId = unwrap(
+            decodeWireMessage(fixture.sent[0]),
+            "decode the sent request frame",
+        ).requestId;
+
+        const lateReply = unwrap(
+            encodeWireMessage({
+                requestId: sentRequestId,
+                payload: {
+                    id: W.SYSTEM_HANDSHAKE.response,
+                    value: handshakeResponsePayload({ success: true, value: undefined }),
+                },
+            }),
+            "encode late handshake_response",
+        );
+        expect(() => fixture.receive(lateReply)).not.toThrow();
+        expect(decodeCalls).toBe(0);
+    });
+
+    it("bounds a request buffered by a provider whose port never resolves", async () => {
+        const { promise: unresolvedPort } = Promise.withResolvers<MessagePort>();
+        const provider = createMessagePortProvider(unresolvedPort);
+        const transport = createTransport(provider, { requestTimeoutMs: 5 });
+        const client = createClient(transport);
+
+        const outcome = await settled(client.system.handshake());
+
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+    });
+
+    it("keeps a slow-answering method on its floor instead of the configured bound", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+
+        // Ordering, not wall-clock: the floored request carries a 420s bound, so
+        // the 5ms control request must settle first. Racing the two keeps the
+        // assertion deterministic without a guessed sleep.
+        const floored = transport
+            .request<undefined, never>({
+                ids: W.RESOURCE_ALLOCATION_REQUEST,
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true, value: undefined }),
+            })
+            .then<string, string>(
+                () => "floored",
+                () => "floored",
+            );
+        const control = transport
+            .request<undefined, never>({
+                ids: W.SYSTEM_HANDSHAKE,
+                payload: T.VersionedHostHandshakeRequest.enc({
+                    tag: "V1",
+                    value: { codecVersion: 1 },
+                }),
+                decodeResponse: () => ({ success: true, value: undefined }),
+            })
+            .then<string, string>(
+                () => "control",
+                () => "control",
+            );
+
+        expect(await Promise.race([floored, control])).toBe("control");
+        expect(fixture.sent).toHaveLength(2);
+        transport.dispose();
+        expect(await floored).toBe("floored");
+    });
+
+    it("rejects with the close error, not a timeout, when the transport is disposed", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5_000 });
+        const client = createClient(transport);
+
+        const response = client.system.handshake();
+        transport.dispose();
+
+        const outcome = await settled(response);
+        expect(outcome).toBeInstanceOf(Error);
+        expect(outcome).not.toBeInstanceOf(RequestTimeoutError);
+        expect((outcome as Error).message).toBe("transport disposed");
+    });
+
+    it("surfaces a timeout as a rejection that neither match callback sees", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider, { requestTimeoutMs: 5 });
+        const client = createClient(transport);
+        let okCalls = 0;
+        let errCalls = 0;
+
+        const outcome = await settled(
+            client.system.handshake().match(
+                () => {
+                    okCalls += 1;
+                },
+                () => {
+                    errCalls += 1;
+                },
+            ),
+        );
+
+        expect(outcome).toBeInstanceOf(RequestTimeoutError);
+        expect(okCalls).toBe(0);
+        expect(errCalls).toBe(0);
+    });
+
+    it("rejects a request bound that setTimeout cannot schedule", () => {
+        const fixture = providerFixture();
+
+        expect(() => createTransport(fixture.provider, { requestTimeoutMs: Infinity })).toThrow(
+            /Invalid TrUAPI request timeout/,
+        );
+        expect(() => createTransport(fixture.provider, { requestTimeoutMs: 0 })).toThrow(
+            /Invalid TrUAPI request timeout/,
+        );
+        expect(() =>
+            createTransport(fixture.provider, { requestTimeoutMs: 2_147_483_648 }),
+        ).toThrow(/Invalid TrUAPI request timeout/);
+    });
+
+    it("keeps a configured bound that is longer than the method's floor", () => {
+        expect(resolveRequestTimeoutMs(W.SIGNING_SIGN_PAYLOAD.request, 500_000, undefined)).toBe(
+            500_000,
+        );
+        expect(resolveRequestTimeoutMs(W.SIGNING_SIGN_PAYLOAD.request, 5, undefined)).toBe(190_000);
+        expect(resolveRequestTimeoutMs(W.SYSTEM_HANDSHAKE.request, 5, undefined)).toBe(5);
+    });
+
+    it("lets a per-request bound override both the configured bound and the floor", () => {
+        expect(resolveRequestTimeoutMs(W.SIGNING_SIGN_PAYLOAD.request, 500_000, 5)).toBe(5);
+        expect(resolveRequestTimeoutMs(W.SYSTEM_HANDSHAKE.request, 5, 90_000)).toBe(90_000);
+        expect(() => resolveRequestTimeoutMs(W.SYSTEM_HANDSHAKE.request, 5, 0)).toThrow(
+            /Invalid TrUAPI request timeout/,
+        );
+    });
+
+    it("rejects an invalid per-request bound at the call site, not through the promise", () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+
+        expect(() =>
+            transport.request<undefined, never>({
+                ids: W.SYSTEM_HANDSHAKE,
+                payload: new Uint8Array(),
+                decodeResponse: () => ({ success: true, value: undefined }),
+                timeoutMs: -1,
+            }),
+        ).toThrow(/Invalid TrUAPI request timeout/);
+        expect(fixture.sent).toHaveLength(0);
+    });
+
+    it("classifies every generated request method as floored or prompt-free", () => {
+        const unclassified = Object.entries(W)
+            .filter(([name, ids]) => {
+                if (!(ids && typeof ids === "object" && "request" in ids)) return false;
+                const requestId = ids.request;
+                return (
+                    typeof requestId === "number" &&
+                    !REQUEST_TIMEOUT_FLOOR_MS.has(requestId) &&
+                    !PROMPT_FREE_REQUESTS.has(name)
+                );
+            })
+            .map(([name]) => name);
+
+        expect(unclassified).toEqual([]);
     });
 });

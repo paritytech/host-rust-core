@@ -8,6 +8,7 @@ import {
   type ProtocolMessage,
   type RegisterHostInitiatedSubscriptionParams,
   type RequestFrameIds,
+  RequestTimeoutError,
   type RequestParams,
   type SubscriptionFrameIds,
   type SubscribeRawParams,
@@ -42,6 +43,152 @@ export interface CreateTransportOptions {
    * `TRUAPI_CODEC_VERSION` directly.
    */
   codecVersion?: number;
+
+  /**
+   * Bound applied to every request issued through this transport, in
+   * milliseconds. Must be an integer between 1 and 2147483647; there is no
+   * value that disables the bound. Defaults to `DEFAULT_REQUEST_TIMEOUT_MS`.
+   * Methods the host answers more slowly take the larger of this bound and
+   * their own floor.
+   */
+  requestTimeoutMs?: number;
+}
+
+/**
+ * Largest delay `setTimeout` schedules faithfully. Above it, and for `Infinity`
+ * or `NaN`, timers fire almost immediately, which would reject every request.
+ */
+const MAX_REQUEST_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Default bound for one request.
+ *
+ * 30s is this codebase's UI-grade budget: the package waits 20s for a
+ * host-injected message port, and the playground bounds prompt-backed protocol
+ * calls at 30s. A product that wants a tighter or looser bound sets
+ * `requestTimeoutMs`.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Floor for a request the host answers behind a remote authority, above the
+ * runtime's 180s remote-authority response deadline
+ * (`rust/crates/truapi-server/src/runtime.rs`,
+ * `DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT`).
+ */
+const REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS = 190_000;
+
+/**
+ * Floor for a request whose answer waits on a person and carries no host-side
+ * deadline at all: a pairing login, a device or remote consent dialog, a
+ * payment confirmation. The host keeps such a call pending for as long as the
+ * person takes, so this is the client's own ceiling rather than a cleared host
+ * deadline, and it matches the longest client-side budget this repo already
+ * uses for a prompt-backed call.
+ */
+const USER_APPROVAL_REQUEST_TIMEOUT_MS = 420_000;
+
+/**
+ * Floor for a request that waits on a live resource allocation or an on-chain
+ * preimage, above the runtime's 300s allocation cap and 360s preimage cap.
+ */
+const LIVE_ALLOCATION_REQUEST_TIMEOUT_MS = 420_000;
+
+/**
+ * Requests whose answer either outlives `DEFAULT_REQUEST_TIMEOUT_MS` under a
+ * host deadline or waits on a person with no host deadline at all, keyed by
+ * request frame id. The effective bound is the larger of the configured bound
+ * and the floor, so bounding a request never aborts an answer the host is
+ * still allowed to send. A method absent from this table takes the configured
+ * bound; a per-request `timeoutMs` overrides both.
+ *
+ * Every request frame id is classified here or as prompt-free in
+ * `client.test.ts`, so a generated method added without a floor fails that
+ * test rather than silently inheriting the default.
+ */
+export const REQUEST_TIMEOUT_FLOOR_MS: ReadonlyMap<number, number> = new Map([
+  [W.ACCOUNT_GET_ACCOUNT.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.ACCOUNT_GET_ACCOUNT_ALIAS.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.ACCOUNT_CREATE_ACCOUNT_PROOF.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.ACCOUNT_SIGN_VRF.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [
+    W.ACCOUNT_REGISTER_RING_VRF_KEY.request,
+    REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
+  ],
+  [W.ACCOUNT_LIST_RING_VRF_KEYS.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.ACCOUNT_RING_VRF_SIGN.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.SIGNING_SIGN_PAYLOAD.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [W.SIGNING_SIGN_RAW.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [
+    W.SIGNING_SIGN_PAYLOAD_WITH_LEGACY_ACCOUNT.request,
+    REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
+  ],
+  [
+    W.SIGNING_SIGN_RAW_WITH_LEGACY_ACCOUNT.request,
+    REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
+  ],
+  [W.SIGNING_CREATE_TRANSACTION.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [
+    W.SIGNING_CREATE_TRANSACTION_WITH_LEGACY_ACCOUNT.request,
+    REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
+  ],
+  [W.STATEMENT_STORE_CREATE_PROOF.request, REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS],
+  [
+    W.STATEMENT_STORE_CREATE_PROOF_AUTHORIZED.request,
+    REMOTE_AUTHORITY_REQUEST_TIMEOUT_MS,
+  ],
+  [W.ACCOUNT_REQUEST_LOGIN.request, USER_APPROVAL_REQUEST_TIMEOUT_MS],
+  [
+    W.PERMISSIONS_REQUEST_DEVICE_PERMISSION.request,
+    USER_APPROVAL_REQUEST_TIMEOUT_MS,
+  ],
+  [
+    W.PERMISSIONS_REQUEST_REMOTE_PERMISSION.request,
+    USER_APPROVAL_REQUEST_TIMEOUT_MS,
+  ],
+  [W.PAYMENT_REQUEST.request, USER_APPROVAL_REQUEST_TIMEOUT_MS],
+  [W.PAYMENT_TOP_UP.request, USER_APPROVAL_REQUEST_TIMEOUT_MS],
+  [W.RESOURCE_ALLOCATION_REQUEST.request, LIVE_ALLOCATION_REQUEST_TIMEOUT_MS],
+  [W.PREIMAGE_SUBMIT.request, LIVE_ALLOCATION_REQUEST_TIMEOUT_MS],
+  [W.STATEMENT_STORE_SUBMIT.request, LIVE_ALLOCATION_REQUEST_TIMEOUT_MS],
+]);
+
+/**
+ * Validate a caller-supplied request bound, rejecting the values `setTimeout`
+ * would silently collapse into an immediate fire.
+ */
+function checkRequestTimeoutMs(value: number): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > MAX_REQUEST_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `Invalid TrUAPI request timeout: ${value}. Expected an integer between 1 and ${MAX_REQUEST_TIMEOUT_MS}.`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Resolve the bound one request is armed with: a per-request `timeoutMs` wins
+ * outright, otherwise the larger of the transport's bound and the method's
+ * floor, so a product that deliberately configures a long bound keeps it and
+ * one that configures a short bound still cannot abort an answer the host is
+ * allowed to send.
+ */
+export function resolveRequestTimeoutMs(
+  requestFrameId: number,
+  transportTimeoutMs: number,
+  perRequestTimeoutMs: number | undefined,
+): number {
+  if (perRequestTimeoutMs !== undefined) {
+    return checkRequestTimeoutMs(perRequestTimeoutMs);
+  }
+  return Math.max(
+    transportTimeoutMs,
+    REQUEST_TIMEOUT_FLOOR_MS.get(requestFrameId) ?? 0,
+  );
 }
 
 /**
@@ -154,6 +301,10 @@ export function createTransport(
   options: CreateTransportOptions = {},
 ): TrUApiTransport {
   const codecVersion = options.codecVersion ?? TRUAPI_CODEC_VERSION;
+  const requestTimeoutMs =
+    options.requestTimeoutMs === undefined
+      ? DEFAULT_REQUEST_TIMEOUT_MS
+      : checkRequestTimeoutMs(options.requestTimeoutMs);
   let idCounter = 0;
   let closedError: Error | null = null;
   const pending = new Map<
@@ -162,6 +313,7 @@ export function createTransport(
       ids: RequestFrameIds;
       resolve: (value: Uint8Array) => void;
       reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
     }
   >();
   const subscriptions = new Map<
@@ -194,6 +346,19 @@ export function createTransport(
   }
 
   /**
+   * Remove a pending request and cancel its timeout timer. Every settle path
+   * goes through here, so a settled request never leaves a live timer and a
+   * frame arriving after the bound fired finds no entry to resolve.
+   */
+  function takePending(requestId: string) {
+    const entry = pending.get(requestId);
+    if (!entry) return undefined;
+    pending.delete(requestId);
+    clearTimeout(entry.timer);
+    return entry;
+  }
+
+  /**
    * Close the transport once, rejecting pending requests and notifying live
    * subscriptions.
    */
@@ -206,7 +371,7 @@ export function createTransport(
     closedError = nextError;
 
     for (const [requestId, entry] of pending) {
-      pending.delete(requestId);
+      takePending(requestId);
       entry.reject(nextError);
     }
 
@@ -302,7 +467,7 @@ export function createTransport(
       if (payload.id !== p.ids.response) {
         return;
       }
-      pending.delete(requestId);
+      takePending(requestId);
       try {
         p.resolve(payload.value);
       } catch (error) {
@@ -447,7 +612,13 @@ export function createTransport(
       ids,
       payload,
       decodeResponse,
+      timeoutMs,
     }: RequestParams<Ok, Err>): ResultAsync<Ok, Err> {
+      const bound = resolveRequestTimeoutMs(
+        ids.request,
+        requestTimeoutMs,
+        timeoutMs,
+      );
       const promise = new Promise<ResultPayload<Ok, Err>>((resolve, reject) => {
         if (closedError) {
           reject(closedError);
@@ -455,10 +626,15 @@ export function createTransport(
         }
 
         const requestId = `p:${++idCounter}`;
+        const timer = setTimeout(() => {
+          takePending(requestId);
+          reject(new RequestTimeoutError(bound));
+        }, bound);
         pending.set(requestId, {
           ids,
           resolve: (response) => resolve(decodeResponse(response)),
           reject,
+          timer,
         });
         try {
           send({
@@ -469,7 +645,7 @@ export function createTransport(
             },
           });
         } catch (error) {
-          pending.delete(requestId);
+          takePending(requestId);
           reject(toError(error));
         }
       });
@@ -543,7 +719,9 @@ export function createTransport(
       bufferCapacity,
     }: RegisterHostInitiatedSubscriptionParams<Request, Item>) {
       if (hostRoutes.has(ids.start)) {
-        throw new Error(`host-initiated subscription ${ids.start} is already registered`);
+        throw new Error(
+          `host-initiated subscription ${ids.start} is already registered`,
+        );
       }
       const route: HostRoute = {
         ids,
