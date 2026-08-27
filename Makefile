@@ -70,7 +70,9 @@ install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `m
 # CLI_VERSION defaults to the crate version, which tracks the protocol version.
 # The layout here is what scripts/truapi-host-installer.sh expects to download.
 CLI_DIST_DIR := target/dist
-CLI_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
+# Default to the triple that is actually published, not the rustc host: the
+# Linux releases are musl so one artifact per architecture runs anywhere.
+CLI_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p' | sed 's/-linux-gnu$$/-linux-musl/')
 CLI_VERSION ?= $(shell sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' rust/crates/truapi-host-cli/Cargo.toml)
 CLI_ARCHIVE := truapi-host-$(CLI_VERSION)-$(CLI_TARGET).tar.gz
 # macOS ships shasum, most Linux images ship only sha256sum.
