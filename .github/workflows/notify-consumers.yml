@@ -1,0 +1,67 @@
+# Opens a "bump TrUAPI" issue on every repository listed in
+# .github/consumers.json that consumes a package the release published, and
+# closes the notifications the new one supersedes. Routing and issue content
+# live in scripts/lib/consumer-notifications.mjs.
+name: notify-consumers
+
+on:
+  # release.yml calls this with the subset of packages that reached npm, so
+  # nothing is announced before it is actually installable.
+  workflow_call:
+    inputs:
+      published:
+        description: "Confirmed `name|path|version|tag` block from release.yml"
+        required: true
+        type: string
+      ref:
+        description: "Commit to read the consumer config from, since a called workflow does not inherit the caller's checkout"
+        required: true
+        type: string
+    secrets:
+      CONSUMER_NOTIFY_TOKEN:
+        required: true
+  # Rehearsal. Point target_repo at a scratch repository to see the real
+  # issue, label and supersede behaviour without touching a consumer.
+  workflow_dispatch:
+    inputs:
+      published:
+        description: "`name|path|version|tag` lines, e.g. @parity/truapi||0.10.0|@parity/truapi@0.10.0"
+        required: true
+        type: string
+      target_repo:
+        description: "Send everything to this owner/name instead of the consumer config"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notify-consumers
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Announce the release
+        env:
+          CONSUMER_NOTIFY_TOKEN: ${{ secrets.CONSUMER_NOTIFY_TOKEN }}
+          PUBLISHED: ${{ inputs.published }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TARGET_REPO}" ]; then
+            printf '%s' "${PUBLISHED}" | node scripts/notify-consumers.mjs --repo "${TARGET_REPO}"
+          else
+            printf '%s' "${PUBLISHED}" | node scripts/notify-consumers.mjs
+          fi

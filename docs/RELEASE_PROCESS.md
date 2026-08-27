@@ -88,6 +88,9 @@ On merge, CI runs as usual. When CI passes, the `Release` workflow:
    to ten minutes.
 6. Creates and pushes tags and publishes GitHub Releases, for the confirmed
    versions only.
+7. Opens a bump issue on each repository that
+   [`.github/consumers.json`](../.github/consumers.json) lists under a confirmed
+   package.
 
 The dispatch in step 4 returns as soon as GitHub accepts it, which is why step 5
 exists: the registry is the only proof a version landed. A green `Release` run
@@ -119,6 +122,53 @@ version input, as an escape hatch. Neither has a tag trigger, because a tag push
 cannot use the `workflow_run` gate on green CI and would be an unverified path to
 a registry.
 
+### Notifying the consumers
+
+[`.github/consumers.json`](../.github/consumers.json) maps each package to the
+repositories that consume it. `@parity/truapi` is consumed by
+`paritytech/dotli-community` and `paritytech/product-sdk`; `@parity/truapi-host`
+by `paritytech/dotli-community`. Every repository under a published package
+receives an issue naming the versions it should move to, so subscribing a
+repository to another package means adding it to that package's list.
+
+Every release target appears in that file, an unsubscribed one with an empty
+list, which is how `@parity/ios-host` and `@parity/android-host` sit today.
+Publishing a package the file does not mention at all is a warning on the run,
+since that means a new release target nobody wired up.
+
+A release that publishes several packages a repository pins produces one issue
+covering all of them, labelled `truapi-release`. An earlier notification on the
+same repository is commented on and closed as superseded only once the new issue
+covers every package it named at an equal or higher version, so a
+`@parity/truapi`-only release leaves an issue that still tracks an unbumped
+`@parity/truapi-host` open. A release cut from a release branch cannot close the
+issue for a newer version, and re-running a release finds its own issue and adds
+nothing.
+
+Both of those decisions read the consumer's open issues, and GitHub serves that
+listing from a replica that trails a write by a few seconds. Nothing is closed on
+the strength of the listing alone: each candidate is re-read by number, which is
+authoritative, so an issue another run already closed is left alone rather than
+commented on twice. The listing can still omit an issue created seconds earlier,
+which would produce a second issue for the same release. Runs minutes apart never
+see that, and the `release` concurrency group means two releases cannot overlap,
+so it is only reachable by firing the manual rehearsal twice in a row.
+
+The routing and the issue text live in
+[`scripts/lib/consumer-notifications.mjs`](../scripts/lib/consumer-notifications.mjs),
+unit-tested under `npm run test:scripts`;
+[`scripts/notify-consumers.mjs`](../scripts/notify-consumers.mjs) makes the API
+calls. The job needs the `CONSUMER_NOTIFY_TOKEN` secret, a fine-grained token
+owned by `paritytech` with `issues: write` on each consumer repository. Because
+such a token names its repositories explicitly, adding a consumer means editing
+the token as well as the config. Issues appear under the identity that owns the
+token.
+
+To rehearse a change to any of that, run the `notify-consumers` workflow by hand
+with a `target_repo` of a scratch repository you own and a `published` value of
+`@parity/truapi||0.10.0|@parity/truapi@0.10.0`. It opens the real issue there
+instead of on a consumer.
+
 ## Safety properties
 
 - A feature PR that accidentally bumps `package.json` will **not**
@@ -146,6 +196,13 @@ a registry.
 - A `release:` PR with mismatched `js/packages/truapi/package.json` and
   `rust/crates/truapi/Cargo.toml` versions is blocked at PR time by the
   `Release version check` workflow.
-- The whole flow uses the default `GITHUB_TOKEN`. No GitHub App, no bot
-  identity, no separate secrets to manage other than the org-level
-  `NPM_PUBLISH_AUTOMATION_TOKEN` that the automation itself relies on.
+- Publishing uses the default `GITHUB_TOKEN`. The only other secrets are the
+  org-level `NPM_PUBLISH_AUTOMATION_TOKEN` that the automation itself relies on,
+  and `CONSUMER_NOTIFY_TOKEN`, which is read by the notification job alone and
+  can reach nothing in this repository.
+- The consumer notifications are the last step and announce only the versions the
+  registry confirmed. A repository that cannot be reached is a warning and does
+  not stop the others, though the run still ends red so the failure is visible.
+  Nothing about the publish depends on it: tags and GitHub Releases already
+  exist by then, and re-running is safe because an issue that already announces
+  the release is left alone.
