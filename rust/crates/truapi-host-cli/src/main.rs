@@ -25,6 +25,7 @@ mod script_runner;
 mod sessions;
 mod signing_shell;
 mod terminal_ui;
+mod update;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -77,7 +78,11 @@ const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 const DEEPLINK_SCHEME: &str = "polkadotapp";
 
 #[derive(Parser)]
-#[command(name = "truapi-host", about = "Headless TrUAPI hosts for e2e testing")]
+#[command(
+    name = "truapi-host",
+    about = "Headless TrUAPI hosts for e2e testing",
+    version = update::CURRENT_VERSION
+)]
 struct Cli {
     /// Log verbosity. `RUST_LOG` takes precedence when set.
     #[arg(
@@ -220,6 +225,11 @@ enum Command {
         #[arg(long)]
         submit: bool,
     },
+    /// Install the current stable release over this one.
+    ///
+    /// Only works for a binary the installer put in place; a `cargo install`
+    /// copy or a source build is reported and left alone.
+    Update,
     /// Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring
     /// membership on People, revision propagation to Asset Hub, the day's free
     /// slot, and the `Pgas.claim_pgas` extrinsic.
@@ -394,7 +404,17 @@ async fn main() -> Result<()> {
         .with(log_layer)
         .init();
 
+    // A background check keeps a managed install current without delaying the
+    // command that was actually asked for. It reports through `tracing`, which
+    // the terminal UI renders in its transcript, so it cannot corrupt the
+    // full-screen display.
+    if !matches!(cli.command, Command::Update) {
+        update::report_pending_version();
+        tokio::spawn(update::run_background_check());
+    }
+
     match cli.command {
+        Command::Update => update::run_update_command().await,
         Command::PairingHost(args) => run_pairing_host(args, cli.log_level, log_controller).await,
         Command::SigningHost(args) => run_signing_host(args, cli.log_level, log_controller).await,
         Command::IdentityCheck { mnemonic, network } => {
