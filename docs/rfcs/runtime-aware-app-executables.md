@@ -8,8 +8,9 @@ status: draft
 
 ## Summary
 
-This RFC introduces version 2 of the App executable manifest. The new format
-makes an App's runtime and runtime requirements explicit.
+This RFC extends the Product Manifest Format with version 2 of the App
+executable manifest. The new format makes an App's runtime and runtime
+requirements explicit.
 
 Web remains the mandatory App runtime and continues to be supported by every
 Host that implements the App modality. Version 2 additionally allows a Product
@@ -22,7 +23,7 @@ PolkaVM App.
 
 ## Motivation
 
-The current App manifest describes a static web application:
+The version 1 App manifest describes a static web application:
 
 ```ts
 type AppManifestV1 = {
@@ -100,6 +101,8 @@ identify an HTML document. A PolkaVM entrypoint must identify a `.polkavm`
 program.
 
 The root Product manifest is unchanged and remains independently versioned.
+The `$v` discriminator versions the individual record in which it appears. A
+version 1 root manifest may therefore reference a version 2 App executable.
 
 ### Web runtime
 
