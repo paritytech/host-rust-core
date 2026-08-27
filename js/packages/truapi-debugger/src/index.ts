@@ -45,6 +45,8 @@ export {
   INSPECTOR_LAYOUT_CSS,
   INSPECTOR_SHELL_CSS,
 } from "./inspector-styles.js";
+export { createInAppDebugger } from "./in-app.js";
+export type { InAppDebugger } from "./in-app.js";
 export {
   operationMethod,
   isSubscription,
@@ -53,3 +55,4 @@ export {
 export type { TraceDropCounts } from "./wire-debugger.js";
 export { computeTraceStats } from "./session.js";
 export type { TraceStats } from "./session.js";
+export type { InAppFrameIdentity } from "./in-app.js";
