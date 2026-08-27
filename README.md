@@ -151,10 +151,21 @@ CI regenerates the shared bindings before building and testing both npm
 packages, so generated client and host callback changes are checked together.
 
 The native `truapi-host` utility can run pairing and signing hosts against the
-real SSO transport for local end-to-end work. Both roles provide a
-transcript-based terminal UI with commands such as `/product` and `/script`;
-the signing host also provides `/pair` and a non-interactive `exec` form for
-automation. See the
+real SSO transport for local end-to-end work. Install a prebuilt binary with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
+```
+
+That covers macOS on Apple silicon and Linux on x86_64 and arm64, needs no Rust
+toolchain, and keeps itself current: a managed install checks for a newer
+release in the background and switches to it on the next run. `truapi-host
+update` does it on demand, and `TRUAPI_HOST_NO_UPDATE=1` turns it off.
+
+Both roles provide a transcript-based terminal UI with commands such as
+`/product` and `/script`; the signing host also provides `/pair` and a
+non-interactive `exec` form for automation. Product scripts additionally need a
+source checkout. See the
 [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup,
 controls, and examples.
 
