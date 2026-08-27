@@ -173,10 +173,9 @@ test(
         const stale = join(cargoBin, "truapi-host");
         writeFileSync(stale, "#!/bin/sh\necho stale\n");
 
-        const result = await runInstaller({
-          ...installEnvironment(home, release.baseUrl),
-          CARGO_HOME: join(home, "cargo"),
-        });
+        const result = await runInstaller(
+          installEnvironment(home, release.baseUrl),
+        );
         assert.equal(result.status, 0, result.stderr);
         assert.ok(
           !existsSync(stale),
@@ -231,6 +230,33 @@ test("--uninstall keeps a PATH entry that is not ours", { skip }, async () => {
     });
     assert.equal(removal.status, 0, removal.stderr);
     assert.ok(existsSync(foreign), "a foreign binary must survive --uninstall");
+  });
+});
+
+// Neither route can assume the other ever ran.
+test("installing succeeds when no cargo copy exists", { skip }, async () => {
+  await withRelease("0.10.0", {}, async (release) => {
+    await withHome(async (home) => {
+      const environment = installEnvironment(home, release.baseUrl);
+      assert.ok(!existsSync(join(home, "cargo/bin/truapi-host")));
+
+      const result = await runInstaller(environment);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(existsSync(join(home, "bin/truapi-host")));
+    });
+  });
+});
+
+test("--uninstall succeeds when nothing is installed", { skip }, async () => {
+  await withHome(async (home) => {
+    const removal = await run("bash", ["-s", "--", "--uninstall"], {
+      input: installerSource,
+      env: {
+        ...process.env,
+        ...installEnvironment(home, "http://unused.invalid"),
+      },
+    });
+    assert.equal(removal.status, 0, removal.stderr);
   });
 });
 

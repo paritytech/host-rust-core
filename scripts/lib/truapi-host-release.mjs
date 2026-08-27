@@ -129,10 +129,17 @@ export function run(command, arguments_, options = {}) {
   });
 }
 
-/** Environment that points the installer and the updater at `baseUrl`. */
+/**
+ * Environment that points the installer and the updater at `baseUrl`.
+ *
+ * CARGO_HOME is sandboxed as well: installing clears a cargo-installed copy, so
+ * an inherited CARGO_HOME would let the suite delete a developer's real
+ * `truapi-host`.
+ */
 export function installEnvironment(home, baseUrl) {
   return {
     HOME: home,
+    CARGO_HOME: join(home, "cargo"),
     TRUAPI_HOST_RELEASE_BASE_URL: baseUrl,
     TRUAPI_HOST_INSTALL_DIR: join(home, "share"),
     TRUAPI_HOST_BIN_DIR: join(home, "bin"),
