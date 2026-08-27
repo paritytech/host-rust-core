@@ -161,6 +161,79 @@ test(
   },
 );
 
+test(
+  "installing clears a cargo-installed copy that would shadow it",
+  { skip },
+  async () => {
+    await withRelease("0.10.0", {}, async (release) => {
+      await withHome(async (home) => {
+        // No cargo on PATH here, so this exercises the plain-removal fallback.
+        const cargoBin = join(home, "cargo/bin");
+        mkdirSync(cargoBin, { recursive: true });
+        const stale = join(cargoBin, "truapi-host");
+        writeFileSync(stale, "#!/bin/sh\necho stale\n");
+
+        const result = await runInstaller({
+          ...installEnvironment(home, release.baseUrl),
+          CARGO_HOME: join(home, "cargo"),
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.ok(
+          !existsSync(stale),
+          "a cargo copy must not be left shadowing the install",
+        );
+      });
+    });
+  },
+);
+
+test(
+  "--uninstall removes the install and leaves foreign binaries alone",
+  { skip },
+  async () => {
+    await withRelease("0.10.0", {}, async (release) => {
+      await withHome(async (home) => {
+        const environment = installEnvironment(home, release.baseUrl);
+        assert.equal((await runInstaller(environment)).status, 0);
+        const root = join(home, "share");
+        assert.ok(existsSync(join(root, "versions/0.10.0/truapi-host")));
+
+        const removal = await run("bash", ["-s", "--", "--uninstall"], {
+          input: installerSource,
+          env: { ...process.env, ...environment },
+        });
+        assert.equal(removal.status, 0, removal.stderr);
+        assert.ok(
+          !existsSync(join(home, "bin/truapi-host")),
+          "PATH symlink is gone",
+        );
+        assert.ok(!existsSync(join(root, "versions")), "version store is gone");
+        assert.ok(!existsSync(join(root, "current")), "current link is gone");
+      });
+    });
+  },
+);
+
+// An unrelated truapi-host on the PATH is not ours to delete.
+test("--uninstall keeps a PATH entry that is not ours", { skip }, async () => {
+  await withHome(async (home) => {
+    const binDir = join(home, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const foreign = join(binDir, "truapi-host");
+    writeFileSync(foreign, "#!/bin/sh\necho someone elses\n");
+
+    const removal = await run("bash", ["-s", "--", "--uninstall"], {
+      input: installerSource,
+      env: {
+        ...process.env,
+        ...installEnvironment(home, "http://unused.invalid"),
+      },
+    });
+    assert.equal(removal.status, 0, removal.stderr);
+    assert.ok(existsSync(foreign), "a foreign binary must survive --uninstall");
+  });
+});
+
 test("reports an unsupported platform instead of installing something wrong", async () => {
   await withHome(async (home) => {
     const fakeBin = join(home, "fake");

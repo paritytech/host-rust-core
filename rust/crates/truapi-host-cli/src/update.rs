@@ -444,9 +444,16 @@ pub async fn run_update_command() -> Result<()> {
     Ok(())
 }
 
-/// One-line notice when a background check already staged a newer version.
-pub fn report_pending_version() {
+/// One line at startup describing this install.
+///
+/// A local build says so and shows the way back to a prebuilt copy, because it
+/// silently never updates and is otherwise indistinguishable from one.
+pub fn report_install() {
     let Some(install) = ManagedInstall::detect() else {
+        tracing::info!(
+            "truapi-host {CURRENT_VERSION} (local build), not auto-updating. \
+             Prebuilt release: curl -fsSL {INSTALLER_URL} | bash"
+        );
         return;
     };
     if let Some(version) = install.active_version()

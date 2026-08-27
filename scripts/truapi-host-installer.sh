@@ -12,10 +12,13 @@
 #   TRUAPI_HOST_INSTALL_DIR       version store (default $XDG_DATA_HOME/truapi-host)
 #   TRUAPI_HOST_BIN_DIR           directory the PATH symlink goes in (default ~/.local/bin)
 #   TRUAPI_HOST_RELEASE_BASE_URL  release host, for mirrors and tests
+#
+# Pass --uninstall to remove an install this script created.
 
 set -euo pipefail
 
 BINARY="truapi-host"
+CRATE="truapi-host-cli"
 STABLE_TAG="truapi-host-cli-stable"
 DEFAULT_BASE_URL="https://github.com/paritytech/host-rust-core"
 
@@ -109,6 +112,48 @@ activate_version() {
     ln -sfn "$root/current/$BINARY" "$bin_dir/$BINARY"
 }
 
+# True when `link` is a symlink pointing inside `root`, so an unrelated
+# truapi-host on the PATH is never removed.
+links_into() {
+    local link="$1" root="$2"
+    [ -L "$link" ] || return 1
+    case "$(readlink "$link")" in
+        "$root"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+remove_prebuilt_install() {
+    local root="$1" bin_dir="$2" removed=""
+    if links_into "$bin_dir/$BINARY" "$root"; then
+        rm -f "$bin_dir/$BINARY"
+        removed="yes"
+    fi
+    if [ -d "$root/versions" ] || [ -L "$root/current" ]; then
+        rm -rf "$root/versions" "$root/current" \
+            "$root/update-check.json" "$root/update.lock"
+        removed="yes"
+    fi
+    if [ -n "$removed" ]; then
+        echo "Removed the prebuilt $BINARY install from $root."
+    fi
+    return 0
+}
+
+# A cargo-installed copy and this one shadow each other depending on PATH
+# order, so only one of the two should ever exist.
+remove_cargo_install() {
+    local cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin/$BINARY"
+    [ -e "$cargo_bin" ] || return 0
+    if command -v cargo >/dev/null 2>&1 && cargo uninstall "$CRATE" >/dev/null 2>&1; then
+        echo "Removed the cargo-installed $BINARY."
+    else
+        rm -f "$cargo_bin"
+        echo "Removed $cargo_bin."
+    fi
+    return 0
+}
+
 report() {
     local version="$1" bin_dir="$2"
     echo "Installed $BINARY $version to $bin_dir/$BINARY"
@@ -122,17 +167,22 @@ report() {
     esac
     echo
     echo "Run '$BINARY --help' to get started, or '$BINARY signing-host' to"
-    echo "start a wallet-local host. Product scripts (--script) additionally"
-    echo "need a source checkout; see the truapi-host-cli README."
+    echo "start a wallet-local host. Product scripts (--script) also need 'bun'"
+    echo "on your PATH; see the truapi-host-cli README."
 }
 
 main() {
     local target version root bin_dir work archive checksum
 
-    target="$(detect_target)"
     root="${TRUAPI_HOST_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/truapi-host}"
     bin_dir="${TRUAPI_HOST_BIN_DIR:-$HOME/.local/bin}"
 
+    if [ "${1:-}" = "--uninstall" ]; then
+        remove_prebuilt_install "$root" "$bin_dir"
+        return 0
+    fi
+
+    target="$(detect_target)"
     WORK_DIR="$(mktemp -d)"
     work="$WORK_DIR"
 
@@ -158,6 +208,7 @@ main() {
     tar -xzf "$archive" -C "$staging" || die "could not unpack $name"
 
     activate_version "$root" "$version" "$staging" "$bin_dir"
+    remove_cargo_install
     report "$version" "$bin_dir"
 }
 

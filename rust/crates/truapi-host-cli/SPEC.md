@@ -243,6 +243,17 @@ network cannot hold the CLI open; a download cut short leaves only a
 `truapi-host update` performs the same work synchronously, ignores the
 four-hour throttle, and reports the outcome on stdout.
 
+A binary outside that layout logs one line at startup naming itself a local
+build and giving the installer command, because it never updates and is
+otherwise indistinguishable from a managed install that is up to date.
+
+The two routes shadow each other depending on `PATH` order, so each clears the
+other: the installer removes a `cargo install` copy (via `cargo uninstall
+truapi-host-cli`, falling back to deleting `$CARGO_HOME/bin/truapi-host`), and
+`make headless install` runs the installer's `--uninstall` first. `--uninstall`
+removes the version store and the `PATH` symlink, and only removes that symlink
+when it points inside the version store.
+
 ## 4. Top-level command line
 
 ```text

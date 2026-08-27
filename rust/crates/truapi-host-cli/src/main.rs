@@ -409,7 +409,7 @@ async fn main() -> Result<()> {
     // so it cannot corrupt the full-screen display. The command then waits for
     // it at exit, so even a short one completes the download it started.
     let check = (!matches!(cli.command, Command::Update)).then(|| {
-        update::report_pending_version();
+        update::report_install();
         tokio::spawn(update::run_background_check())
     });
 

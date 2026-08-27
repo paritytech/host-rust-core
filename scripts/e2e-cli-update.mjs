@@ -201,6 +201,25 @@ async function main() {
       readlinkSync(join(root, "current")),
       `versions/${nextVersion}`,
     );
+    // A local build never updates, so it has to say so rather than look
+    // identical to a managed install that is silently up to date.
+    const local = await run(
+      sourceBuild,
+      ["identity-check", "--mnemonic", "bogus"],
+      { env: environment },
+    );
+    check(
+      "a local build identifies itself",
+      /\(local build\), not auto-updating/.test(local.stderr),
+      true,
+    );
+    check(
+      "a local build shows how to get the prebuilt release",
+      local.stderr.includes(
+        "curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash",
+      ),
+      true,
+    );
 
     console.log("7. a short command finishes the update it started");
     // A fresh install, because the checks above have already recorded a check

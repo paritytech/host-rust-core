@@ -64,11 +64,19 @@ headless: ## Build the truapi-host CLI and generated TypeScript client.
 	cd $(TRUAPI_PKG) && npm run build
 
 install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `make headless install`.
+	# A prebuilt install and a cargo one shadow each other depending on PATH
+	# order, so clear the prebuilt one before taking over.
+	bash scripts/truapi-host-installer.sh --uninstall
 	cargo install --path rust/crates/truapi-host-cli --bin truapi-host --locked --force
+	@echo
+	@echo "Installed a local build of truapi-host. It does not auto-update."
+	@echo "To go back to the prebuilt release:"
+	@echo "  curl -fsSL $(CLI_INSTALLER_URL) | bash"
 
 # Release packaging for the truapi-host binary. CLI_TARGET picks the triple;
 # CLI_VERSION defaults to the crate version, which tracks the protocol version.
 # The layout here is what scripts/truapi-host-installer.sh expects to download.
+CLI_INSTALLER_URL := https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh
 CLI_DIST_DIR := target/dist
 # Default to the triple that is actually published, not the rustc host: the
 # Linux releases are musl so one artifact per architecture runs anywhere.

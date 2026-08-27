@@ -77,7 +77,18 @@ TRUAPI_HOST_NO_UPDATE=1 ...   # never check
 ```
 
 Binaries that the installer did not put in place — a `cargo install` copy, a
-source build, a distro package — are detected and never modified.
+source build, a distro package — are detected and never modified. A local build
+says so on every run and prints the install command, since it otherwise looks
+identical to a managed install that is quietly up to date.
+
+The two install routes shadow each other depending on `PATH` order, so each one
+clears the other: installing removes a `cargo install` copy, and
+`make headless install` removes a prebuilt install first. To remove a prebuilt
+install without replacing it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash -s -- --uninstall
+```
 
 `make e2e-cli-update` exercises the whole chain locally: it packages the binary,
 serves a fake release over loopback, installs it with the real installer, and
