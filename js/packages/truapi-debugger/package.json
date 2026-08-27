@@ -24,6 +24,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "typecheck:tests": "tsc -p tsconfig.test.json",
+    "serve": "bun run src/server.ts",
     "test": "bun test"
   },
   "devDependencies": {
