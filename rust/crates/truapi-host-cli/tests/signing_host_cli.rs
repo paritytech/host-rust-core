@@ -45,11 +45,31 @@ fn exec_help_is_plain_and_exits_successfully() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("/product"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/devices"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/approval automatic"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session --clear-all"));
     #[cfg(unix)]
     assert!(String::from_utf8_lossy(&output.stdout).contains("ws+unix:"));
     assert!(!output.stdout.contains(&0x1b));
     assert!(!output.stderr.contains(&0x1b));
+}
+
+#[test]
+fn exec_rejects_process_local_approval_changes() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let output = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["exec", "/approval automatic"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("reject approval mode change outside the terminal UI");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("/approval is only available in the terminal UI")
+    );
 }
 
 #[test]

@@ -780,9 +780,10 @@ pub fn validate_selectable_name(name: &str) -> Result<(), String> {
 ///
 /// Lite username bases accept lowercase ASCII letters only, while session
 /// names additionally accept digits and separators. Preserve the recognizable
-/// alphabetic portion of a named session and use a neutral fallback when its
-/// name contains no letters. The default session retains the account manager's
-/// historical default unless an explicit prefix was supplied.
+/// alphabetic portion of a named session and use a neutral fallback when it is
+/// shorter than the backend's six-letter minimum. The default session retains
+/// the account manager's historical default unless an explicit prefix was
+/// supplied.
 pub fn lite_username_prefix(name: &str, explicit: Option<&str>) -> Option<String> {
     if let Some(explicit) = explicit {
         return Some(explicit.to_string());
@@ -795,7 +796,7 @@ pub fn lite_username_prefix(name: &str, explicit: Option<&str>) -> Option<String
         .filter(u8::is_ascii_lowercase)
         .map(char::from)
         .collect();
-    Some(if prefix.is_empty() {
+    Some(if prefix.len() < 6 {
         "session".to_string()
     } else {
         prefix
@@ -842,6 +843,10 @@ mod tests {
         assert_eq!(
             lite_username_prefix("pg-test_2", None).as_deref(),
             Some("pgtest")
+        );
+        assert_eq!(
+            lite_username_prefix("bob", None).as_deref(),
+            Some("session")
         );
         assert_eq!(
             lite_username_prefix("123", None).as_deref(),

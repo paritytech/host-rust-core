@@ -9,14 +9,15 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{Context, Result};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-    KeyEventKind, KeyModifiers,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
+use qrcode::{Color as QrColor, QrCode};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -40,7 +41,10 @@ const STREAM_CHUNK_BYTE_LIMIT: usize = 64 * 1024;
 const STREAM_LINE_BYTE_LIMIT: usize = 16 * 1024;
 const EVENT_BATCH_LIMIT: usize = 256;
 const MAX_VISIBLE_COMPLETIONS: usize = 8;
+const MOUSE_SCROLL_LINES: usize = 3;
 const COMPOSER_HORIZONTAL_PADDING: u16 = 1;
+const QR_INDENT: usize = 2;
+const QR_QUIET_ZONE: usize = 4;
 
 /// Tracing target reserved for SSO summaries that must remain visible at every log level.
 pub const SSO_TRANSCRIPT_TARGET: &str = "truapi_server::sso_transcript";
@@ -76,6 +80,7 @@ enum FeedItem {
         title: String,
         detail: Option<String>,
     },
+    PairingQr(PairingQr),
     Command(String),
     Stream {
         kind: StreamKind,
@@ -104,6 +109,51 @@ enum FeedItem {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PairingQr {
+    side: usize,
+    modules: Vec<bool>,
+}
+
+impl PairingQr {
+    fn encode(url: &str) -> qrcode::types::QrResult<Self> {
+        let code = QrCode::new(url.as_bytes())?;
+        Ok(Self {
+            side: code.width(),
+            modules: code
+                .to_colors()
+                .into_iter()
+                .map(|color| color == QrColor::Dark)
+                .collect(),
+        })
+    }
+
+    fn module(&self, row: usize, column: usize) -> bool {
+        if row < QR_QUIET_ZONE
+            || column < QR_QUIET_ZONE
+            || row >= self.side + QR_QUIET_ZONE
+            || column >= self.side + QR_QUIET_ZONE
+        {
+            return false;
+        }
+        let row = row - QR_QUIET_ZONE;
+        let column = column - QR_QUIET_ZONE;
+        self.modules[row * self.side + column]
+    }
+
+    fn rendered_side(&self) -> usize {
+        self.side + QR_QUIET_ZONE * 2
+    }
+
+    fn rendered_width(&self) -> usize {
+        self.rendered_side()
+    }
+
+    fn rendered_height(&self) -> usize {
+        self.rendered_side().div_ceil(2)
+    }
+}
+
 /// Stable lifecycle events with separate machine and interactive presentations.
 #[derive(Debug, Clone)]
 pub enum SystemEvent {
@@ -113,6 +163,9 @@ pub enum SystemEvent {
     ServeReady {
         url: String,
         auto_accept: bool,
+    },
+    BridgeReady {
+        url: String,
     },
     SigningHostReady,
     SigningHostNeedsSession,
@@ -908,7 +961,20 @@ impl Drop for ActiveTerminalUi {
 fn enter_terminal() -> Result<Renderer> {
     enable_raw_mode().context("enable terminal raw mode")?;
     let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide) {
+    if let Err(error) = execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture,
+        Hide
+    ) {
+        let _ = execute!(
+            stdout,
+            Show,
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
         return Err(error).context("enter alternate terminal screen");
     }
@@ -916,7 +982,13 @@ fn enter_terminal() -> Result<Renderer> {
         Ok(terminal) => Ok(terminal),
         Err(error) => {
             let mut stdout = io::stdout();
-            let _ = execute!(stdout, Show, DisableBracketedPaste, LeaveAlternateScreen);
+            let _ = execute!(
+                stdout,
+                Show,
+                DisableMouseCapture,
+                DisableBracketedPaste,
+                LeaveAlternateScreen
+            );
             let _ = disable_raw_mode();
             Err(error).context("initialize terminal renderer")
         }
@@ -927,6 +999,7 @@ fn leave_terminal(mut terminal: Renderer) -> Result<()> {
     let screen_result = execute!(
         terminal.backend_mut(),
         Show,
+        DisableMouseCapture,
         DisableBracketedPaste,
         LeaveAlternateScreen
     )
@@ -961,6 +1034,8 @@ struct App {
     busy: Option<String>,
     scroll_from_bottom: usize,
     transcript_height: usize,
+    max_scroll_from_bottom: usize,
+    focus_pairing_qr: bool,
     next_item_id: u64,
     retained_lines: usize,
     retained_bytes: usize,
@@ -1021,6 +1096,8 @@ impl App {
             busy: None,
             scroll_from_bottom: 0,
             transcript_height: 1,
+            max_scroll_from_bottom: 0,
+            focus_pairing_qr: false,
             next_item_id: 1,
             retained_lines: 0,
             retained_bytes: 0,
@@ -1314,6 +1391,13 @@ impl App {
                     }
                 )),
             ),
+            SystemEvent::BridgeReady { url } => self.notice(
+                NoticeTone::Info,
+                "Browser bridge".to_string(),
+                Some(format!(
+                    "{url}\nLoad it from a development-only <script> tag to run a product in a plain browser tab"
+                )),
+            ),
             SystemEvent::SigningHostReady => self.activity(
                 "signer".to_string(),
                 "Signing host ready".to_string(),
@@ -1437,34 +1521,56 @@ impl App {
                     "Pairing link ready".to_string(),
                     Some("Open the dedicated link shown by the pairing host.".to_string()),
                 );
+                let qr = PairingQr::encode(&url);
                 self.notice(NoticeTone::Info, "Pairing link".to_string(), Some(url));
+                match qr {
+                    Ok(qr) => {
+                        self.push(FeedItem::PairingQr(qr));
+                        self.focus_pairing_qr = true;
+                    }
+                    Err(error) => self.notice(
+                        NoticeTone::Warning,
+                        "Could not render pairing QR code".to_string(),
+                        Some(error.to_string()),
+                    ),
+                }
             }
-            SystemEvent::PairingAuthenticating => self.activity(
-                "pairing".to_string(),
-                "Authenticating pairing".to_string(),
-                None,
-                ActivityState::Running,
-            ),
-            SystemEvent::PairingConnected { user_id } => self.activity(
-                "pairing".to_string(),
-                user_id.map_or_else(
-                    || "Paired".to_string(),
-                    |user_id| format!("Paired with {user_id}"),
-                ),
-                None,
-                ActivityState::Succeeded,
-            ),
+            SystemEvent::PairingAuthenticating => {
+                self.release_pairing_qr();
+                self.activity(
+                    "pairing".to_string(),
+                    "Authenticating pairing".to_string(),
+                    None,
+                    ActivityState::Running,
+                );
+            }
+            SystemEvent::PairingConnected { user_id } => {
+                self.release_pairing_qr();
+                self.activity(
+                    "pairing".to_string(),
+                    user_id.map_or_else(
+                        || "Paired".to_string(),
+                        |user_id| format!("Paired with {user_id}"),
+                    ),
+                    None,
+                    ActivityState::Succeeded,
+                );
+            }
             SystemEvent::PairingDisconnected => {
+                self.release_pairing_qr();
                 if self.connection != "disconnected" {
                     self.notice(NoticeTone::Info, "Pairing ended".to_string(), None);
                 }
             }
-            SystemEvent::PairingFailed { reason } => self.activity(
-                "pairing".to_string(),
-                "Pairing failed".to_string(),
-                Some(reason),
-                ActivityState::Failed,
-            ),
+            SystemEvent::PairingFailed { reason } => {
+                self.release_pairing_qr();
+                self.activity(
+                    "pairing".to_string(),
+                    "Pairing failed".to_string(),
+                    Some(reason),
+                    ActivityState::Failed,
+                );
+            }
             SystemEvent::ScriptStarted => self.activity(
                 "script".to_string(),
                 "Script running".to_string(),
@@ -1583,11 +1689,18 @@ impl App {
     fn handle_idle_event(&mut self, event: Event) -> Option<Option<String>> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if self.handle_scroll_key(key) {
+                    return None;
+                }
                 if self.pending_approval.is_some() {
                     self.handle_approval_key(key);
                     return None;
                 }
                 self.handle_common_key(key, false)
+            }
+            Event::Mouse(mouse) => {
+                self.handle_mouse_scroll(mouse.kind);
+                None
             }
             Event::Paste(text) => {
                 self.insert_paste(&text);
@@ -1600,12 +1713,19 @@ impl App {
     fn handle_busy_event(&mut self, event: Event) -> bool {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if self.handle_scroll_key(key) {
+                    return false;
+                }
                 if self.pending_approval.is_some() {
                     self.handle_approval_key(key);
                     return false;
                 }
                 self.handle_common_key(key, true)
                     .is_some_and(|value| value.is_none())
+            }
+            Event::Mouse(mouse) => {
+                self.handle_mouse_scroll(mouse.kind);
+                false
             }
             Event::Paste(text) => {
                 self.insert_paste(&text);
@@ -1624,8 +1744,6 @@ impl App {
     fn handle_common_key(&mut self, key: KeyEvent, busy: bool) -> Option<Option<String>> {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match (control, key.code) {
-            (true, KeyCode::Char('u')) => self.scroll_up(),
-            (true, KeyCode::Char('d')) => self.scroll_down(),
             (true, KeyCode::Char('c')) => {
                 if !self.editor.text().is_empty() {
                     self.editor.clear();
@@ -1641,6 +1759,7 @@ impl App {
             (false, KeyCode::Home) => self.editor.home(),
             (false, KeyCode::End) => {
                 self.editor.end();
+                self.focus_pairing_qr = false;
                 self.scroll_from_bottom = 0;
             }
             (false, KeyCode::Up) => self.editor.up(),
@@ -1683,8 +1802,6 @@ impl App {
     fn handle_approval_key(&mut self, key: KeyEvent) {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match (control, key.code) {
-            (true, KeyCode::Char('u')) => self.scroll_up(),
-            (true, KeyCode::Char('d')) => self.scroll_down(),
             (false, KeyCode::Esc) => self.answer_approval(false),
             (false, KeyCode::Char('y' | 'Y')) if self.editor.text().is_empty() => {
                 self.answer_approval(true);
@@ -1709,7 +1826,11 @@ impl App {
             (false, KeyCode::Left) => self.editor.left(),
             (false, KeyCode::Right) => self.editor.right(),
             (false, KeyCode::Home) => self.editor.home(),
-            (false, KeyCode::End) => self.editor.end(),
+            (false, KeyCode::End) => {
+                self.editor.end();
+                self.focus_pairing_qr = false;
+                self.scroll_from_bottom = 0;
+            }
             _ => {}
         }
     }
@@ -1733,15 +1854,49 @@ impl App {
     }
 
     fn scroll_up(&mut self) {
-        self.scroll_from_bottom = self
-            .scroll_from_bottom
-            .saturating_add((self.transcript_height / 2).max(1));
+        self.scroll_back((self.transcript_height / 2).max(1));
     }
 
     fn scroll_down(&mut self) {
+        self.scroll_forward((self.transcript_height / 2).max(1));
+    }
+
+    fn handle_scroll_key(&mut self, key: KeyEvent) -> bool {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        match (control, key.code) {
+            (true, KeyCode::Char('u')) => self.scroll_up(),
+            (true, KeyCode::Char('d')) => self.scroll_down(),
+            (false, KeyCode::PageUp) => self.scroll_back(self.transcript_height.max(1)),
+            (false, KeyCode::PageDown) => self.scroll_forward(self.transcript_height.max(1)),
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_mouse_scroll(&mut self, kind: MouseEventKind) {
+        match kind {
+            MouseEventKind::ScrollUp => self.scroll_back(MOUSE_SCROLL_LINES),
+            MouseEventKind::ScrollDown => self.scroll_forward(MOUSE_SCROLL_LINES),
+            _ => {}
+        }
+    }
+
+    fn scroll_back(&mut self, lines: usize) {
+        self.focus_pairing_qr = false;
         self.scroll_from_bottom = self
             .scroll_from_bottom
-            .saturating_sub((self.transcript_height / 2).max(1));
+            .saturating_add(lines)
+            .min(self.max_scroll_from_bottom);
+    }
+
+    fn scroll_forward(&mut self, lines: usize) {
+        self.focus_pairing_qr = false;
+        self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(lines);
+    }
+
+    fn release_pairing_qr(&mut self) {
+        self.focus_pairing_qr = false;
+        self.scroll_from_bottom = 0;
     }
 }
 
@@ -1776,15 +1931,45 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
         .split(frame.area());
     app.transcript_height = areas[0].height as usize;
 
-    let transcript_lines = app
-        .entries
-        .iter()
-        .flat_map(|item| feed_item_lines(item, usize::from(areas[0].width)))
-        .collect::<Vec<_>>();
+    let mut transcript_lines = Vec::new();
+    let mut focused_qr = None;
+    for item in &app.entries {
+        let item_lines = feed_item_lines(
+            item,
+            usize::from(areas[0].width),
+            usize::from(areas[0].height),
+        );
+        if let FeedItem::PairingQr(qr) = item
+            && item_lines.len() == qr.rendered_height()
+        {
+            focused_qr = Some((transcript_lines.len(), item_lines.len()));
+        }
+        transcript_lines.extend(item_lines);
+    }
+    let focused_top = if app.focus_pairing_qr {
+        focused_qr.map(|(line_index, qr_height)| {
+            let preceding_height = Paragraph::new(transcript_lines[..line_index].to_vec())
+                .wrap(Wrap { trim: false })
+                .line_count(areas[0].width);
+            preceding_height.saturating_sub(app.transcript_height.saturating_sub(qr_height))
+        })
+    } else {
+        None
+    };
     let transcript = Paragraph::new(transcript_lines).wrap(Wrap { trim: false });
     let content_height = transcript.line_count(areas[0].width);
-    let top = content_height
-        .saturating_sub(app.transcript_height)
+    let max_scroll_from_bottom = content_height.saturating_sub(app.transcript_height);
+    if let Some(focused_top) = focused_top {
+        app.scroll_from_bottom = max_scroll_from_bottom.saturating_sub(focused_top);
+    } else if app.scroll_from_bottom > 0 {
+        app.scroll_from_bottom = app
+            .scroll_from_bottom
+            .saturating_add(max_scroll_from_bottom.saturating_sub(app.max_scroll_from_bottom));
+    }
+    app.max_scroll_from_bottom = max_scroll_from_bottom;
+    app.scroll_from_bottom = app.scroll_from_bottom.min(app.max_scroll_from_bottom);
+    let top = app
+        .max_scroll_from_bottom
         .saturating_sub(app.scroll_from_bottom)
         .min(u16::MAX as usize) as u16;
     frame.render_widget(transcript.scroll((top, 0)), areas[0]);
@@ -1936,41 +2121,55 @@ fn composer_status_line(
     autocomplete: bool,
     width: u16,
 ) -> Line<'static> {
-    let mut status = header_line(app, width);
     let hint = footer_text(app, approval, autocomplete, width);
     if hint.is_empty() {
-        return status;
+        return header_line(app, width);
     }
+    let hint_width = text_display_width(&hint);
+    let available_width = usize::from(width);
+    if hint_width.saturating_add(3) > available_width {
+        return header_line(app, width);
+    }
+    let mut status = header_line(app, (available_width - hint_width - 3) as u16);
     let status_width = status
         .spans
         .iter()
         .map(|span| text_display_width(span.content.as_ref()))
         .sum::<usize>();
-    let hint_width = text_display_width(&hint);
-    let width = usize::from(width);
-    if status_width.saturating_add(hint_width).saturating_add(3) <= width {
-        status
-            .spans
-            .push(Span::raw(" ".repeat(width - status_width - hint_width)));
-        status.spans.push(Span::styled(
-            hint,
-            Style::default().add_modifier(Modifier::DIM),
-        ));
-        status
-    } else {
-        status
-    }
+    status.spans.push(Span::raw(
+        " ".repeat(available_width - status_width - hint_width),
+    ));
+    status.spans.push(Span::styled(
+        hint,
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    status
 }
 
 fn footer_text(app: &App, approval: bool, autocomplete: bool, width: u16) -> String {
     if approval {
+        if app.scroll_from_bottom > 0 {
+            return "y approve · n deny · End latest · PgUp/PgDn".to_string();
+        }
+        if app.max_scroll_from_bottom > 0 {
+            return "y approve · n deny · PgUp/PgDn scroll".to_string();
+        }
         return "y approve · n deny · Esc deny".to_string();
     }
     if let Some(command) = app.busy.as_deref() {
+        if app.scroll_from_bottom > 0 {
+            return format!("Running {command} · Ctrl-C cancel · End latest");
+        }
+        if app.max_scroll_from_bottom > 0 {
+            return format!("Running {command} · Ctrl-C cancel · PgUp/PgDn scroll");
+        }
         return format!("Running {command} · Ctrl-C cancel");
     }
     if app.scroll_from_bottom > 0 {
-        return "Ctrl-D latest · Ctrl-U/D scroll".to_string();
+        return "End latest · PgUp/PgDn · wheel".to_string();
+    }
+    if app.max_scroll_from_bottom > 0 {
+        return "PgUp/PgDn · wheel scroll".to_string();
     }
     if autocomplete && width >= 70 {
         return "↑↓ select · Tab/Enter complete".to_string();
@@ -2187,12 +2386,15 @@ fn completion_window(total: usize, selected: usize, max_visible: usize) -> Range
 }
 
 fn feed_item_cost(item: &FeedItem) -> (usize, usize) {
+    if let FeedItem::PairingQr(qr) = item {
+        return (qr.rendered_height(), qr.modules.len());
+    }
     let lines = feed_item_plain_lines(item);
     let bytes = lines.iter().map(String::len).sum();
     (lines.len().max(1), bytes)
 }
 
-fn feed_item_lines(item: &FeedItem, width: usize) -> Vec<Line<'static>> {
+fn feed_item_lines(item: &FeedItem, width: usize, height: usize) -> Vec<Line<'static>> {
     match item {
         FeedItem::Log(text) => text
             .lines()
@@ -2208,6 +2410,7 @@ fn feed_item_lines(item: &FeedItem, width: usize) -> Vec<Line<'static>> {
             title,
             detail,
         } => status_lines(*tone, title, detail.as_deref()),
+        FeedItem::PairingQr(qr) => pairing_qr_lines(qr, width, height),
         FeedItem::Command(command) => {
             vec![
                 Line::default(),
@@ -2287,6 +2490,44 @@ fn feed_item_lines(item: &FeedItem, width: usize) -> Vec<Line<'static>> {
             activity_lines(*state, &label, detail.as_deref())
         }
     }
+}
+
+fn pairing_qr_lines(qr: &PairingQr, width: usize, height: usize) -> Vec<Line<'static>> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let rendered_side = qr.rendered_side();
+    let qr_width = qr.rendered_width();
+    let required_height = qr.rendered_height();
+    let required_width = QR_INDENT + qr_width;
+    if width < required_width || height < required_height {
+        return vec![Line::from(Span::styled(
+            format!("  QR code needs {required_width} columns × {required_height} rows"),
+            Style::default().add_modifier(Modifier::DIM),
+        ))];
+    }
+    let qr_style = Style::default().fg(Color::Black).bg(Color::White);
+    (0..required_height)
+        .map(|terminal_row| {
+            let top_row = terminal_row * 2;
+            let bottom_row = top_row + 1;
+            let mut row = String::with_capacity(rendered_side);
+            for column in 0..rendered_side {
+                let top = qr.module(top_row, column);
+                let bottom = bottom_row < rendered_side && qr.module(bottom_row, column);
+                row.push(match (top, bottom) {
+                    (true, true) => '█',
+                    (true, false) => '▀',
+                    (false, true) => '▄',
+                    (false, false) => ' ',
+                });
+            }
+            Line::from(vec![
+                Span::raw(" ".repeat(QR_INDENT)),
+                Span::styled(row, qr_style),
+            ])
+        })
+        .collect()
 }
 
 fn command_divider_line(command: &str, width: usize) -> Line<'static> {
@@ -2385,7 +2626,10 @@ fn activity_lines(state: ActivityState, label: &str, detail: Option<&str>) -> Ve
 }
 
 fn feed_item_plain_lines(item: &FeedItem) -> Vec<String> {
-    feed_item_lines(item, 0)
+    if matches!(item, FeedItem::PairingQr(_)) {
+        return Vec::new();
+    }
+    feed_item_lines(item, 0, 0)
         .into_iter()
         .map(|line| {
             let line = line
@@ -2602,6 +2846,7 @@ fn sso_metadata(event: &SsoEvent) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::MouseEvent;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use tracing_subscriber::layer::SubscriberExt;
@@ -2637,16 +2882,89 @@ mod tests {
     fn ctrl_u_and_ctrl_d_scroll_half_a_viewport() {
         let mut app = test_app();
         app.transcript_height = 20;
-        app.handle_common_key(
-            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-            false,
-        );
+        app.max_scroll_from_bottom = 100;
+        app.handle_idle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
         assert_eq!(app.scroll_from_bottom, 10);
-        app.handle_common_key(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-            false,
-        );
+        app.handle_idle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )));
         assert_eq!(app.scroll_from_bottom, 0);
+    }
+
+    #[test]
+    fn page_keys_scroll_without_cancelling_a_running_command() {
+        let mut app = test_app();
+        app.transcript_height = 20;
+        app.max_scroll_from_bottom = 100;
+        app.busy = Some("/login".to_string());
+
+        assert!(footer_text(&app, false, false, 120).contains("PgUp/PgDn scroll"));
+
+        assert!(!app.handle_busy_event(Event::Key(KeyEvent::new(
+            KeyCode::PageUp,
+            KeyModifiers::NONE,
+        ))));
+        assert_eq!(app.scroll_from_bottom, 20);
+
+        assert!(!app.handle_busy_event(Event::Key(KeyEvent::new(
+            KeyCode::PageDown,
+            KeyModifiers::NONE,
+        ))));
+        assert_eq!(app.scroll_from_bottom, 0);
+    }
+
+    #[test]
+    fn mouse_wheel_and_end_navigate_while_an_approval_is_pending() {
+        let mut app = test_app();
+        app.transcript_height = 20;
+        app.max_scroll_from_bottom = 100;
+        let (response, _answer) = oneshot::channel();
+        app.handle_event(UiEvent::Approval {
+            action: "sign request".to_string(),
+            detail: "payload".to_string(),
+            response,
+        });
+        assert!(footer_text(&app, true, false, 120).contains("PgUp/PgDn scroll"));
+
+        app.handle_idle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.scroll_from_bottom, MOUSE_SCROLL_LINES);
+
+        app.handle_idle_event(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        assert_eq!(app.scroll_from_bottom, 0);
+    }
+
+    #[test]
+    fn overflowing_transcript_advertises_scroll_controls_before_first_scroll() -> Result<()> {
+        let mut app = test_app();
+        for index in 0..20 {
+            app.stream(StreamKind::Stdout, format!("retained line {index}"));
+        }
+
+        let (screen, _) = render_app(&mut app, 120, 10)?;
+
+        assert!(screen.contains("PgUp/PgDn · wheel scroll"));
+        Ok(())
+    }
+
+    #[test]
+    fn scroll_guidance_takes_space_from_a_long_status_line() {
+        let mut app = test_app();
+        app.product = "product-name-that-would-otherwise-fill-the-status-line".to_string();
+        app.max_scroll_from_bottom = 10;
+
+        let status = line_text(composer_status_line(&app, false, false, 80));
+
+        assert!(status.contains("PgUp/PgDn"));
+        assert!(text_display_width(&status) <= 80);
     }
 
     #[test]
@@ -3024,6 +3342,295 @@ mod tests {
         };
 
         assert!(event.human().contains("polkadotapp://pair?handshake=0123"));
+    }
+
+    #[test]
+    fn pairing_deeplink_renders_a_high_contrast_qr_without_copying_it() {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(13)
+        );
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let lines = app
+            .entries
+            .iter()
+            .flat_map(|item| feed_item_lines(item, 120, usize::MAX))
+            .collect::<Vec<_>>();
+        let qr_style = Style::default().fg(Color::Black).bg(Color::White);
+        let qr_rows = lines
+            .iter()
+            .filter_map(|line| line.spans.iter().find(|span| span.style == qr_style))
+            .collect::<Vec<_>>();
+        let rendered_side = app
+            .entries
+            .iter()
+            .find_map(|item| match item {
+                FeedItem::PairingQr(qr) => Some(qr.side + QR_QUIET_ZONE * 2),
+                _ => None,
+            })
+            .expect("pairing QR is retained");
+        assert_eq!(qr_rows.len(), rendered_side.div_ceil(2));
+        assert!(
+            qr_rows
+                .iter()
+                .all(|row| text_display_width(&row.content) == rendered_side)
+        );
+        assert!(qr_rows.iter().any(|row| {
+            row.content
+                .chars()
+                .any(|character| matches!(character, '▀' | '▄' | '█'))
+        }));
+        assert!(!qr_rows.iter().any(|row| {
+            row.content
+                .chars()
+                .any(|character| ('\u{2800}'..='\u{28ff}').contains(&character))
+        }));
+        assert!(qr_rows.windows(2).all(
+            |rows| text_display_width(&rows[0].content) == text_display_width(&rows[1].content)
+        ));
+        assert_eq!(
+            app.transcript_text(),
+            "◌ Pairing link ready\n  Open the dedicated link shown by the pairing host.\n• Pairing link\n  <pairing link>"
+        );
+    }
+
+    #[test]
+    fn pairing_event_encodes_the_exact_deeplink() {
+        let mut app = test_app();
+        let url = "polkadotapp://pair?handshake=exact-payload".to_string();
+        let expected_code = QrCode::new(url.as_bytes()).expect("encode expected QR code");
+        let expected = PairingQr {
+            side: expected_code.width(),
+            modules: expected_code
+                .to_colors()
+                .into_iter()
+                .map(|color| color == QrColor::Dark)
+                .collect(),
+        };
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let actual = app.entries.iter().find_map(|item| match item {
+            FeedItem::PairingQr(qr) => Some(qr),
+            _ => None,
+        });
+        assert_eq!(actual, Some(&expected));
+    }
+
+    #[test]
+    fn solid_qr_cells_preserve_every_module() {
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(13)
+        );
+        let qr = PairingQr::encode(&url).expect("encode pairing QR");
+        let lines = pairing_qr_lines(&qr, 120, 120);
+
+        for (terminal_row, line) in lines.iter().enumerate() {
+            let row = line.spans.last().expect("QR row span").content.as_ref();
+            for (column, character) in row.chars().enumerate() {
+                let modules = match character {
+                    '█' => [true, true],
+                    '▀' => [true, false],
+                    '▄' => [false, true],
+                    ' ' => [false, false],
+                    other => panic!("non-solid QR character {other:?}"),
+                };
+                assert_eq!(
+                    modules,
+                    [
+                        qr.module(terminal_row * 2, column),
+                        terminal_row * 2 + 1 < qr.rendered_side()
+                            && qr.module(terminal_row * 2 + 1, column),
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_terminal_keeps_the_link_without_rendering_a_wrapped_qr() {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(13)
+        );
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let lines = app
+            .entries
+            .iter()
+            .flat_map(|item| feed_item_lines(item, 36, usize::MAX))
+            .collect::<Vec<_>>();
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("QR code needs"));
+        assert!(
+            !lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| { span.style == Style::default().fg(Color::Black).bg(Color::White) })
+        );
+        assert!(app.transcript_text().contains("<pairing link>"));
+    }
+
+    #[test]
+    fn solid_pairing_qr_fits_an_eighty_column_forty_row_viewport() {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(13)
+        );
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let lines = app
+            .entries
+            .iter()
+            .flat_map(|item| feed_item_lines(item, 80, 40))
+            .collect::<Vec<_>>();
+
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| { span.style == Style::default().fg(Color::Black).bg(Color::White) })
+        );
+        assert!(
+            !lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains("QR code needs"))
+        );
+    }
+
+    #[test]
+    fn larger_pairing_qr_reports_the_solid_renderer_dimensions() {
+        let oversized = PairingQr {
+            side: 65,
+            modules: vec![false; 65 * 65],
+        };
+
+        let lines = pairing_qr_lines(&oversized, 70, 36);
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("QR code needs 75 columns × 37 rows"));
+        assert!(
+            !lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| { span.style == Style::default().fg(Color::Black).bg(Color::White) })
+        );
+    }
+
+    #[test]
+    fn short_terminal_keeps_the_link_without_clipping_the_qr() -> Result<()> {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(13)
+        );
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let (screen, _) = render_app(&mut app, 120, 12)?;
+
+        assert!(screen.contains("QR code needs"));
+        assert!(
+            !screen
+                .chars()
+                .any(|character| matches!(character, '▀' | '▄' | '█'))
+        );
+        assert!(app.transcript_text().contains("<pairing link>"));
+        Ok(())
+    }
+
+    #[test]
+    fn pairing_qr_is_focused_completely_and_stays_anchored() -> Result<()> {
+        let mut app = test_app();
+        let url = format!(
+            "polkadotapp://pair?handshake={}",
+            "0123456789abcdef".repeat(13)
+        );
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+        let expected_qr_rows = app
+            .entries
+            .iter()
+            .find_map(|item| match item {
+                FeedItem::PairingQr(qr) => Some(qr.rendered_height()),
+                _ => None,
+            })
+            .expect("pairing QR is retained");
+        for index in 0..20 {
+            app.stream(StreamKind::Stdout, format!("later log line {index}"));
+        }
+
+        let backend = TestBackend::new(120, 43);
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| render(frame, &mut app))?;
+        let visible_qr_rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .filter(|row| row.iter().any(|cell| cell.style().bg == Some(Color::White)))
+            .count();
+        assert_eq!(visible_qr_rows, expected_qr_rows);
+        let transcript_top = app.max_scroll_from_bottom - app.scroll_from_bottom;
+
+        app.stream(
+            StreamKind::Stdout,
+            "new output while reading the QR".to_string(),
+        );
+        terminal.draw(|frame| render(frame, &mut app))?;
+        assert_eq!(
+            app.max_scroll_from_bottom - app.scroll_from_bottom,
+            transcript_top
+        );
+        let visible_qr_rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .filter(|row| row.iter().any(|cell| cell.style().bg == Some(Color::White)))
+            .count();
+        assert_eq!(visible_qr_rows, expected_qr_rows);
+        Ok(())
+    }
+
+    #[test]
+    fn pairing_progress_returns_to_the_latest_output() {
+        let mut app = test_app();
+        app.handle_system_event(SystemEvent::PairingDeeplink {
+            url: "polkadotapp://pair?handshake=0123".to_string(),
+        });
+        app.scroll_from_bottom = 10;
+
+        app.handle_system_event(SystemEvent::PairingAuthenticating);
+
+        assert!(!app.focus_pairing_qr);
+        assert_eq!(app.scroll_from_bottom, 0);
+    }
+
+    #[test]
+    fn unencodable_pairing_deeplink_keeps_the_link_and_reports_the_qr_failure() {
+        let mut app = test_app();
+        let url = format!("polkadotapp://pair?handshake={}", "01".repeat(3_000));
+
+        app.handle_system_event(SystemEvent::PairingDeeplink { url });
+
+        let transcript = app.transcript_text();
+        assert!(transcript.contains("<pairing link>"));
+        assert!(transcript.contains("Could not render pairing QR code"));
     }
 
     #[test]

@@ -1,11 +1,11 @@
 import { expect, test } from "@playwright/test";
-import { openPlaygroundInDotli, selectMethod, waitForOnline } from "./helpers";
+import { openPlayground, selectMethod, waitForOnline } from "./helpers";
 
 test.describe("subscription", () => {
   test("connection_status delivers an event and completes", async ({
     page,
   }) => {
-    const frame = await openPlaygroundInDotli(page);
+    const frame = await openPlayground(page);
     await waitForOnline(frame);
 
     await selectMethod(frame, "Account", "connection_status_subscribe");
