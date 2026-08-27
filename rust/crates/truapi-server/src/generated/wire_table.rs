@@ -490,6 +490,18 @@ pub const ACCOUNT_RING_VRF_SIGN: RequestFrameIds = RequestFrameIds {
     response_id: 173,
 };
 
+/// Wire discriminants for `system_get_product_context`.
+pub const SYSTEM_GET_PRODUCT_CONTEXT: RequestFrameIds = RequestFrameIds {
+    request_id: 190,
+    response_id: 191,
+};
+
+/// Wire discriminants for `system_host_info`.
+pub const SYSTEM_HOST_INFO: RequestFrameIds = RequestFrameIds {
+    request_id: 192,
+    response_id: 193,
+};
+
 /// The full wire table. Ordering is part of the wire protocol;
 /// only ever append. Removed methods leave their slot empty.
 pub const WIRE_TABLE: &[WireEntry] = &[
@@ -768,5 +780,13 @@ pub const WIRE_TABLE: &[WireEntry] = &[
     WireEntry {
         method: "account_ring_vrf_sign",
         kind: WireKind::Request(ACCOUNT_RING_VRF_SIGN),
+    },
+    WireEntry {
+        method: "system_get_product_context",
+        kind: WireKind::Request(SYSTEM_GET_PRODUCT_CONTEXT),
+    },
+    WireEntry {
+        method: "system_host_info",
+        kind: WireKind::Request(SYSTEM_HOST_INFO),
     },
 ];

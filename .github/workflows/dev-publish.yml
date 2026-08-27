@@ -11,11 +11,16 @@ on:
         type: string
         required: false
         default: ""
-  # Push a `truapi-provider-dev` or `truapi-provider-dev-<suffix>` tag to publish
-  # a dev snapshot; the part after `truapi-provider-dev-` becomes the dist-tag suffix.
+  # Triggers: a `truapi-provider-dev[-<suffix>]` tag (suffix becomes the
+  # dist-tag suffix), or a chain-spec change landing on main. The paths filter
+  # only applies to branch pushes, never tags.
   push:
     tags:
       - "truapi-provider-dev*"
+    branches:
+      - main
+    paths:
+      - "rust/crates/truapi-provider/networks/**"
 
 permissions:
   contents: read

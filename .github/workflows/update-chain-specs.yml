@@ -66,7 +66,9 @@ jobs:
             derives to on the left and the stale catalog constant on the right. Copy the left one
             into `networks.rs`, and update any consumer that pins the old hash.
 
-            Publish a new `@parity/truapi-provider` for consumers to pick up the refresh.
+            Merging this publishes a dev snapshot of `@parity/truapi-provider` automatically
+            (dev-publish.yml triggers on chain-spec changes landing on main). Consumers still
+            need to bump to the new snapshot to pick up the refresh.
           branch: auto/chain-spec-update
           commit-message: "chore(truapi-provider): refresh bundled chain specs"
           delete-branch: true

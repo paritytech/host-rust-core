@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::chain_runtime::{ChainRuntime, RuntimeChainProvider, RuntimeFailure};
 use crate::runtime::bulletin_rpc::BulletinRpc;
@@ -14,7 +14,7 @@ use crate::runtime::statement_store_rpc::StatementStoreRpc;
 use crate::subscription::Spawner;
 use async_trait::async_trait;
 use truapi::latest;
-use truapi_platform::{JsonRpcConnection, Platform};
+use truapi_platform::{HostInfo, JsonRpcConnection, PermissionStatusHost, Platform};
 
 /// Upper bound on the in-core preimage cache. The cache is a bridge until
 /// content propagates to the lookup backend, not a store, so it stays small.
@@ -28,9 +28,15 @@ const STATEMENT_CACHE_MAX_ENTRIES: usize = 64;
 pub(crate) struct RuntimeServices {
     /// Host platform backing all syscalls.
     pub(crate) platform: Arc<dyn Platform>,
+    /// Host identity reported to products via `System::host_info`.
+    pub(crate) host_info: HostInfo,
     /// Host chat adapter, when the host serves the Chat capability. `None`
     /// makes every product chat call resolve as `Unsupported`.
     pub(crate) chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// Host adapter reporting live OS permission state, installed once at
+    /// startup by a host that can read it. Unset leaves device grants
+    /// resolving from stored state alone.
+    permission_status: OnceLock<Arc<dyn PermissionStatusHost>>,
     /// Shared chainHead-v1 runtime behind the Chain surface.
     pub(crate) chain: ChainRuntime,
     /// People-chain statement store RPC client.
@@ -57,11 +63,13 @@ pub(crate) struct RuntimeServices {
 }
 
 impl RuntimeServices {
-    /// Build role-neutral runtime services from the platform, the People-chain
-    /// genesis hash used by statement-store backed protocols, and the
-    /// Bulletin-chain genesis hash used for in-core preimage submission.
+    /// Build role-neutral runtime services from the platform, the host
+    /// identity reported to products, the People-chain genesis hash used by
+    /// statement-store backed protocols, and the Bulletin-chain genesis hash
+    /// used for in-core preimage submission.
     pub(crate) fn new(
         platform: Arc<dyn Platform>,
+        host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
@@ -75,7 +83,9 @@ impl RuntimeServices {
         let bulletin = BulletinRpc::new(chain.clone(), bulletin_chain_genesis_hash);
         Arc::new(Self {
             platform,
+            host_info,
             chat_platform: None,
+            permission_status: OnceLock::new(),
             chain,
             statement_store,
             bulletin,
@@ -92,6 +102,7 @@ impl RuntimeServices {
     /// Same as [`Self::new`], with the host's chat adapter installed.
     pub(crate) fn with_chat_platform(
         platform: Arc<dyn Platform>,
+        host_info: HostInfo,
         people_chain_genesis_hash: [u8; 32],
         bulletin_chain_genesis_hash: [u8; 32],
         spawner: Spawner,
@@ -99,6 +110,7 @@ impl RuntimeServices {
     ) -> Arc<Self> {
         let services = Self::new(
             platform,
+            host_info,
             people_chain_genesis_hash,
             bulletin_chain_genesis_hash,
             spawner,
@@ -110,6 +122,22 @@ impl RuntimeServices {
             .unwrap_or_else(|_| unreachable!("services are not shared before this point"));
         services.chat_platform = Some(chat_platform);
         Arc::new(services)
+    }
+
+    /// Install the host's live OS permission-status adapter.
+    ///
+    /// Set-once, so a capability cannot be swapped out from under a running
+    /// product. Returns whether this call installed it.
+    pub(crate) fn install_permission_status_host(
+        &self,
+        host: Arc<dyn PermissionStatusHost>,
+    ) -> bool {
+        self.permission_status.set(host).is_ok()
+    }
+
+    /// The host's live OS permission-status adapter, when one is installed.
+    pub(crate) fn permission_status_host(&self) -> Option<Arc<dyn PermissionStatusHost>> {
+        self.permission_status.get().cloned()
     }
 
     /// This device's persisted X25519 encryption secret, created on first use.
