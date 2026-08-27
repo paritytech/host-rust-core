@@ -63,7 +63,9 @@ pub(crate) fn chat_custom_message_render(
     subscriptions: &HostInitiatedSubscriptionManager,
     transport: Arc<dyn Transport>,
     request: versioned::chat::ProductChatCustomMessageRenderRequest,
-) -> truapi::Subscription<versioned::chat::ProductChatCustomMessageRenderItem> {
+) -> truapi::Subscription<
+    Result<versioned::chat::ProductChatCustomMessageRenderItem, truapi::latest::GenericError>,
+> {
     subscriptions.start(
         wire_table::CHAT_CUSTOM_MESSAGE_RENDER,
         parity_scale_codec::Encode::encode(&request),
@@ -759,7 +761,7 @@ where
     P: Chat + Send + Sync + 'static,
 {
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(wire_table::CHAT_CREATE_ROOM, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -793,7 +795,7 @@ where
         });
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(wire_table::CHAT_REGISTER_BOT, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -827,7 +829,7 @@ where
         });
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_subscription(wire_table::CHAT_LIST_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -841,7 +843,7 @@ where
         });
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host.clone();
         dispatcher.on_request(wire_table::CHAT_POST_MESSAGE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -875,7 +877,7 @@ where
         });
     }
     {
-        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Chat);
+        let execution_allowed = dispatcher.allows_execution(ProductExecutionKind::Worker);
         let host = host;
         dispatcher.on_subscription(wire_table::CHAT_ACTION_SUBSCRIBE, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
@@ -1965,7 +1967,7 @@ where
         });
     }
     {
-        let host = host;
+        let host = host.clone();
         dispatcher.on_request(wire_table::SYSTEM_NAVIGATE_TO, move |request_id: String, bytes: Vec<u8>| {
             let host = host.clone();
             Box::pin(async move {
@@ -1983,6 +1985,62 @@ where
                 let target_version = request.version();
                 let cx = CallContext::with_request_id(request_id.clone());
                 let response: versioned::system::HostNavigateToResponse = match host.navigate_to(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
+    {
+        let host = host.clone();
+        dispatcher.on_request(wire_table::SYSTEM_HOST_INFO, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::system::HostInfoRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::system::HostInfoError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::system::HostInfoError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::system::HostInfoResponse = match host.host_info(&cx, request).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return Ok(encode_versioned_err_payload(err, target_version));
+                    }
+                };
+                Ok(encode_versioned_ok_payload(response))
+            })
+        });
+    }
+    {
+        let host = host;
+        dispatcher.on_request(wire_table::SYSTEM_GET_PRODUCT_CONTEXT, move |request_id: String, bytes: Vec<u8>| {
+            let host = host.clone();
+            Box::pin(async move {
+                let request: versioned::system::HostGetProductContextRequest = match Decode::decode(&mut &bytes[..]) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        let error: truapi::CallError<versioned::system::HostGetProductContextError> =
+                            truapi::CallError::MalformedFrame { reason: err.to_string() };
+                        return Ok(encode_versioned_err_payload(
+                            error,
+                            <versioned::system::HostGetProductContextError as Versioned>::LATEST,
+                        ));
+                    }
+                };
+                let target_version = request.version();
+                let cx = CallContext::with_request_id(request_id.clone());
+                let response: versioned::system::HostGetProductContextResponse = match host.get_product_context(&cx, request).await {
                     Ok(value) => value,
                     Err(err) => {
                         return Ok(encode_versioned_err_payload(err, target_version));

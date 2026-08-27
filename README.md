@@ -69,7 +69,9 @@ js/packages/
                           (embedded smoldot light client + remote WebSocket RPC)
 js/container/              TS lockdown container for the iOS host web view; bundles into
                            ios/truapi-host/Sources/TrUAPIHost/Resources/truapi-container.js
-android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core
+android/truapi-host/       Kotlin host adapter package over the truapi-server UniFFI core;
+                           published to GitHub Packages as io.parity:truapi-host-android
+                           (AAR with per-ABI cdylibs; see android/truapi-host/README.md)
 android/truapi-provider/   truapi-provider-android: chain transport AAR (bindings + cdylib)
 ios/truapi-host/           Swift host adapter package over the truapi-server UniFFI core
 ios/truapi-provider/       TrUAPIProvider Swift package: chain transport over UniFFI
@@ -168,6 +170,7 @@ scripts/battery.sh --signing-host   # direct phase only
 scripts/battery.sh --pairing-host   # paired phase only
 make e2e-signing-cli                # same direct signing-host phase
 make e2e-pairing-cli                # same paired pairing-host phase
+make e2e-chat-cli                   # chat content screening against a chat signing-host
 ```
 
 To run the playground locally:
@@ -272,7 +275,8 @@ Pushes to `main` build and deploy:
 ## Release
 
 See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
-`@parity/truapi`, `@parity/truapi-host`, or both packages to npm.
+`@parity/truapi` and `@parity/truapi-host` to npm, and the iOS host and
+Android host artifacts alongside them.
 
 ## Contributing
 

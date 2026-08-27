@@ -44,6 +44,8 @@ fn exec_help_is_plain_and_exits_successfully() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("/copy"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/product"));
     assert!(String::from_utf8_lossy(&output.stdout).contains("/session"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/devices"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("/session --clear-all"));
     #[cfg(unix)]
     assert!(String::from_utf8_lossy(&output.stdout).contains("ws+unix:"));
     assert!(!output.stdout.contains(&0x1b));
@@ -135,6 +137,135 @@ fn startup_session_is_reported_and_restored() {
 }
 
 #[test]
+fn exec_clear_removes_the_named_session_without_extra_confirmation() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let session_path = temporary.path().join("paseo-next-v2/alice_signing_host");
+    std::fs::create_dir_all(&session_path).expect("seed session");
+    std::fs::write(session_path.join("state"), "local state").expect("seed session state");
+
+    let output = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["--session", "alice", "exec", "/session --clear alice"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("clear active signing-host session");
+
+    assert!(output.status.success());
+    assert!(!session_path.exists());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Session alice cleared"));
+    assert!(stdout.contains("Signing host stopped"));
+    assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn exec_clear_all_removes_every_session_for_the_network() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let network_path = temporary.path().join("paseo-next-v2");
+    let role_path = network_path.join("signing-host");
+    let alice = network_path.join("alice_signing_host");
+    let bob = network_path.join("bob_signing_host");
+    for path in [&role_path, &alice, &bob] {
+        std::fs::create_dir_all(path).expect("seed session");
+        std::fs::write(path.join("state"), "local state").expect("seed session state");
+    }
+    let unrelated = network_path.join("pairing-host");
+    std::fs::create_dir_all(&unrelated).expect("seed unrelated host state");
+
+    let output = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["--session", "bob", "exec", "/session --clear-all"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("clear all signing-host sessions");
+
+    assert!(output.status.success());
+    assert!(!role_path.exists());
+    assert!(!alice.exists());
+    assert!(!bob.exists());
+    assert!(unrelated.exists());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("All sessions cleared for paseo-next-v2"));
+    assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn exec_devices_lists_and_removes_exactly_one_paired_device() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let profile = temporary.path().join("paseo-next-v2/alice_signing_host");
+    std::fs::create_dir_all(&profile).expect("create signing-host profile");
+    std::fs::write(
+        profile.join("paired-hosts.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "paired_hosts": [
+                {
+                    "version": 1,
+                    "statement_account_id": vec![1_u8; 32],
+                    "encryption_public_key": vec![11_u8; 32],
+                    "host_name": "First"
+                },
+                {
+                    "version": 1,
+                    "statement_account_id": vec![2_u8; 32],
+                    "encryption_public_key": vec![22_u8; 32],
+                    "host_name": "Second"
+                }
+            ]
+        }))
+        .expect("encode paired hosts"),
+    )
+    .expect("seed paired hosts");
+
+    let listed = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["--session", "alice", "exec", "/devices"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("list paired devices");
+    assert!(listed.status.success());
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    assert!(stdout.contains("Paired devices for session alice"));
+    assert!(stdout.contains(&format!("0x{}  First", hex::encode([1; 32]))));
+    assert!(stdout.contains(&format!("0x{}  Second", hex::encode([2; 32]))));
+
+    let remove_command = format!("/devices --remove 0x{}", hex::encode([1; 32]));
+    let removed = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["--session", "alice", "exec", &remove_command])
+        .stdin(Stdio::null())
+        .output()
+        .expect("remove paired device");
+    assert!(removed.status.success());
+    assert!(String::from_utf8_lossy(&removed.stdout).contains(&format!(
+        "Removed paired device 0x{} from session alice",
+        hex::encode([1; 32])
+    )));
+
+    let stored: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(profile.join("paired-hosts.json")).expect("read paired hosts"),
+    )
+    .expect("decode paired hosts");
+    assert_eq!(
+        stored["paired_hosts"],
+        serde_json::json!([{
+            "version": 1,
+            "statement_account_id": vec![2_u8; 32],
+            "encryption_public_key": vec![22_u8; 32],
+            "host_name": "Second"
+        }])
+    );
+}
+
+#[test]
 fn default_session_is_not_user_selectable() {
     let temporary = tempfile::tempdir().expect("create temporary session root");
     let output = command()
@@ -193,4 +324,115 @@ fn existing_local_signer_is_activated_and_cached_at_startup() {
     )
     .expect("read persisted session identity");
     assert!(metadata.contains("cachedalice.01"));
+}
+
+#[test]
+fn imported_session_restores_the_exact_bound_account() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let network_path = temporary.path().join("paseo-next-v2");
+    let profile = network_path.join("importedalice.01_signing_host");
+    let role_path = network_path.join("signing-host");
+    std::fs::create_dir_all(&profile).expect("create imported profile");
+    std::fs::create_dir_all(&role_path).expect("create signing-host state");
+    std::fs::write(
+        profile.join("accounts.json"),
+        r#"{
+  "version": 1,
+  "accounts": [{
+    "name": "imported",
+    "network": "paseo-next-v2",
+    "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "lite_username": "importedalice.01",
+    "public_key_hex": "0x00",
+    "address": "5GrwvaEF5zXb26Fz9rcQpDWSKfwVwqNxyvE9uZunJMtBEw2s",
+    "created_at_unix": 1,
+    "attested": true,
+    "origin": "imported"
+  }]
+}"#,
+    )
+    .expect("seed imported account store");
+    std::fs::write(
+        profile.join("session.json"),
+        r#"{
+  "version": 1,
+  "user_id": "importedalice.01",
+  "account_name": "imported"
+}"#,
+    )
+    .expect("seed signer binding");
+    std::fs::write(role_path.join("current-session"), "importedalice.01\n")
+        .expect("seed current session");
+
+    let output = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["exec", "/session"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("restore imported signing-host session");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Signing host ready"));
+    assert!(stdout.contains("Session importedalice.01"));
+    assert!(stdout.contains("User importedalice.01"));
+}
+
+#[test]
+fn imported_session_without_dotns_username_restores_by_account_binding() {
+    let temporary = tempfile::tempdir().expect("create temporary session root");
+    let network_path = temporary.path().join("paseo-next-v2");
+    let session_name = "imported-0123456789abcdef";
+    let profile = network_path.join(format!("{session_name}_signing_host"));
+    let role_path = network_path.join("signing-host");
+    std::fs::create_dir_all(&profile).expect("create imported profile");
+    std::fs::create_dir_all(&role_path).expect("create signing-host state");
+    std::fs::write(
+        profile.join("accounts.json"),
+        r#"{
+  "version": 1,
+  "accounts": [{
+    "name": "imported",
+    "network": "paseo-next-v2",
+    "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "lite_username": "",
+    "public_key_hex": "0x00",
+    "address": "5GrwvaEF5zXb26Fz9rcQpDWSKfwVwqNxyvE9uZunJMtBEw2s",
+    "created_at_unix": 1,
+    "attested": true,
+    "origin": "imported"
+  }]
+}"#,
+    )
+    .expect("seed username-less imported account store");
+    std::fs::write(
+        profile.join("session.json"),
+        r#"{
+  "version": 1,
+  "account_name": "imported"
+}"#,
+    )
+    .expect("seed account binding");
+    std::fs::write(
+        role_path.join("current-session"),
+        format!("{session_name}\n"),
+    )
+    .expect("seed current session");
+
+    let output = command()
+        .args(["signing-host", "--frame-listen", "127.0.0.1:0"])
+        .arg("--base-path")
+        .arg(temporary.path())
+        .args(["exec", "/session"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("restore username-less imported session");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Signing host ready"));
+    assert!(stdout.contains(&format!("Session {session_name}")));
+    assert!(stdout.contains("User <no assigned username>"));
 }

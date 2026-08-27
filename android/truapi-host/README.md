@@ -2,13 +2,11 @@
 
 *Kotlin wrapper around the TrUAPI Rust core (UniFFI). Wire decoding, request routing, and subscription lifecycle stay in the Rust core; products connect through the localhost WebSocket bridge.*
 
-> **Status:** the JitPack distribution described below is the intended packaging but is **not yet wired up** — there is no `jitpack.yml` at the repo root, so the "add the JitPack repo and depend on the tag" flow does not work today. Until it is added, integrate locally with `make android-publish-local` + `mavenLocal()`, or build the module directly. The rest of this doc describes the target design.
-
-Intended distribution: a Maven artifact built on demand from git tags by [JitPack](https://jitpack.io/), no Maven Central account required on either side.
+Distribution: a Maven AAR published to GitHub Packages by the `release-android` workflow. Each release bundles, built from the same source tree: `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64 (built with the `ws-bridge` feature), the UniFFI Kotlin bindings (`uniffi.truapi_server.*`), and the Kotlin host adapter (`io.parity.truapi.*`). Consumers need no Rust toolchain or NDK.
 
 ## Consume
 
-Add the JitPack Maven repository and the artifact to your app's Gradle build:
+Add the GitHub Packages repository and the artifact to your app's Gradle build (GitHub Packages requires authentication even for public repos — any GitHub account token with `read:packages` works):
 
 ```kotlin
 // settings.gradle.kts
@@ -16,7 +14,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
+        maven {
+            url = uri("https://maven.pkg.github.com/paritytech/host-rust-core")
+            credentials {
+                username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
+                password = providers.gradleProperty("gpr.key").orNull ?: System.getenv("GITHUB_TOKEN")
+            }
+        }
     }
 }
 ```
@@ -24,13 +28,11 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.paritytech.truapi:truapi-host:0.1.0")
+    implementation("io.parity:truapi-host-android:0.1.0")
 }
 ```
 
-JitPack fetches the tag `0.1.0` from `paritytech/host-rust-core`, runs `make android-publish-local` against it (driven by `jitpack.yml` at the repo root, including UniFFI binding generation), and serves the resulting AAR + POM + sources jar. First fetch takes ~1 minute while JitPack builds; subsequent consumers hit the cache.
-
-The artifact bundles the Kotlin host adapter (`io.parity.truapi.*`) and the generated UniFFI bindings (`uniffi.truapi_server.*`). It does **not** bundle the native `libtruapi_server.so` cdylib, integrators build that per Android ABI and drop it into their app's `src/main/jniLibs/<abi>/` (see "Linking the cdylib" below).
+The package is public, so any authenticated GitHub identity can read it. In GitHub Actions that means the built-in `GITHUB_TOKEN` with a `permissions: packages: read` block, no secret to create or rotate. Locally it means a personal access token with `read:packages`, set once as `gpr.user` / `gpr.key` in `~/.gradle/gradle.properties`. A token without that scope fails with 401 even though the package is public, which is how GitHub Packages treats Maven.
 
 The consuming app must declare `android.permission.INTERNET` — the localhost WebSocket bridge binds a `127.0.0.1` TCP socket, which requires it even for loopback.
 
@@ -39,7 +41,8 @@ The consuming app must declare `android.permission.INTERNET` — the localhost W
 - **minSdk**: 29 (Android 10). Aligns with the polkadot-app-android-v2 floor.
 - **AGP**: built with 8.5.2; AGP 8.5+ consumers are fine. AAR is forward-compatible with newer AGPs.
 - **Kotlin**: built with 1.9.24. Newer Kotlin compilers (2.x) read 1.9 metadata fine.
-- **Transitive dependency**: the AAR pulls `net.java.dev.jna:jna:5.14.0` (UniFFI's runtime). Consumers that don't already use JNA will see ~1.5MB added to their app.
+- **Transitive dependencies**: `net.java.dev.jna:jna:5.14.0` (UniFFI's runtime, ~1.5MB for consumers that don't already use it), `org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0` and `org.jetbrains.kotlin:kotlin-stdlib:1.9.24`.
+- **Size**: the AAR is ~20MB, one `libtruapi_server.so` per ABI. An app bundle ships only the ABI the device needs, so the installed cost is ~9MB on arm64.
 
 ## Public surface
 
@@ -48,8 +51,81 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostBridge` - callback bundle the embedding app implements. Splits device permissions, remote permissions, navigation, push, feature support, a single `confirmUserAction`, and both storage backends.
 - `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence.
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
-- `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, local-session activation, permission-authorization status, and native change notifications for session storage, theme, and preimage updates.
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
+- `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
+- `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
+
+## Chat
+
+A host serving the Chat modality implements `ChatHostBridge` (`createRoom`, `registerBot`, `postMessage`, `listRooms`) and opens the execution with `ProductExecutionKind.CHAT`:
+
+```kotlin
+import io.parity.truapi.*
+import uniffi.truapi.ChatBotRegistrationStatus
+import uniffi.truapi.ChatMessageContent
+import uniffi.truapi.ChatRoom
+import uniffi.truapi.ChatRoomParticipation
+import uniffi.truapi.ChatRoomRegistrationStatus
+import uniffi.truapi_server.HostRejection
+
+// Called from a shared dispatch pool, so the backing store must be
+// thread-safe, and a slow call here stalls other product executions.
+class MyChatBridge(private val store: ChatStore) : ChatHostBridge {
+    override fun createRoom(roomId: String, name: String, icon: String) =
+        if (store.putRoom(roomId, name, icon)) ChatRoomRegistrationStatus.NEW
+        else ChatRoomRegistrationStatus.EXISTS
+
+    override fun registerBot(botId: String, name: String, icon: String) =
+        if (store.putBot(botId, name, icon)) ChatBotRegistrationStatus.NEW
+        else ChatBotRegistrationStatus.EXISTS
+
+    override fun postMessage(roomId: String, content: ChatMessageContent): String {
+        if (content is ChatMessageContent.File) {
+            // Declining a variant is how a host opts out of rendering one.
+            throw HostRejection.Rejected("this host cannot render file cards")
+        }
+        return store.append(roomId, content)
+    }
+
+    override fun listRooms(): List<ChatRoom> = store.rooms()
+}
+
+val runtime = TrUAPIHostRuntime(
+    bridge = bridge,
+    runtimeConfig = HostRuntimeConfig(
+        hostName = "My Chat Host",
+        peopleChainGenesisHash = peopleChainGenesisHash,   // exactly 32 bytes
+        bulletinChainGenesisHash = bulletinChainGenesisHash,
+    ),
+)
+// Chat needs an active session; without one every Chat call answers `Denied`.
+runtime.activateLocalSession(secret)
+
+val execution = runtime.openProductExecution(
+    bridge = bridge,
+    configuration = ProductExecutionConfig("chat.dot", ProductExecutionKind.CHAT),
+    chat = MyChatBridge(store),
+)
+val endpoint = execution.startWsBridge()
+webView.evaluateJavascript(
+    LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token),
+    null,
+)
+```
+
+Chat requires an active session: `openProductExecution` succeeds without one,
+but every Chat call then answers `Denied` until `activateLocalSession` or SSO
+pairing completes.
+
+The core bounds and screens the product-supplied fields it forwards — ids,
+names, icons, message bodies, URLs, and the action and media counts. Ids and
+names are also normalized; a message body is bounded and screened but passed
+through byte-for-byte, and `ChatFile.size_bytes` is product-asserted and
+unverified. Contextual output escaping is the host's job.
+
+`postMessage` receives any `ChatMessageContent` variant; throw from it for one this host cannot render. The id it returns is the correlation key `ActionTrigger.messageId` carries back, so it must name that message for as long as the host stores it.
+
+On the execution: `publishChatAction` delivers a user's action back to the product (buffered until it subscribes), `notifyChatRoomsChanged` republishes the room list, `renderCustomMessage` returns a `Flow` of typed UI for a stored custom message, and `sessionChatIdentityKey` reads the session's X25519 chat identity key.
 
 ## Architecture
 
@@ -58,7 +134,7 @@ product app in WebView
   Uint8Array frames via @parity/truapi createWebSocketProvider
            |
            v   ws://127.0.0.1:<port>/?t=<token>
-TrUAPIHostCore.startWsBridge()
+TrUAPIProductExecution.startWsBridge()
   → libtruapi_server.so (tokio WS server)
   → Rust dispatcher
 ```
@@ -72,7 +148,7 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 - `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
 - `remotePermission(request)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
-Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## Statement-store allowance renewal
 
@@ -81,7 +157,7 @@ Statement-store allowances are granted per period, so a host has to re-register 
 Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
 
 ```kotlin
-core.trackStatementRenewalTargets(
+runtime.trackStatementRenewalTargets(
     listOf(
         NativeStatementRenewalTarget.WalletSso,
         NativeStatementRenewalTarget.Account(deviceStatementKey, "device"),
@@ -94,7 +170,7 @@ The ledger persists across launches, and it is append-only: there is no untrack,
 Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread. It needs an active session too, which is the whole difficulty here: a worker on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
 ```kotlin
-val report = core.renewStatementAllowances()
+val report = runtime.renewStatementAllowances()
 report.outcomes.forEach { Log.i(TAG, "${it.label}: ${it.status}") }
 report.pruned.forEach {
     // Promised by a previous identity and discarded; re-track to keep it renewed.
@@ -106,6 +182,23 @@ if (report.slotsExhausted) {
 ```
 
 One scheduled pass per period is enough, with room to spare: an allowance stays usable for `Resources.StmtStoreGraceWindow` past its boundary, which is 48 hours on `paseo-next-v2`, so a missed run is recoverable rather than fatal. `nextStatementRenewalDelay()` reports the in-process loop's retry cadence, capped at an hour; a worker scheduling one run per period should read a value under an hour as the boundary approaching rather than waking hourly.
+
+### Answering the scheduler
+
+A pass reports per target and only throws when it could not run at all, so decide from the report rather than from the absence of an exception:
+
+- every status `Registered` or `AlreadyAllocated`: `Result.success()`.
+- any status `Failed`: `Result.retry()`. The grace window means the retry can wait for the worker's own backoff rather than a tight loop.
+- any status `SkippedExhausted`, or `report.slotsExhausted`: `Result.success()`. Retrying cannot free a slot, only time or a replacement can, so a retry here only burns the worker's budget. It does mean an allowance went unrenewed, so tell the person rather than only logging it.
+- an exception carrying `Disconnected` before a session is restored: not ready rather than failed. Restore a session and let the next run take it.
+
+Scheduling is one of three layers, and only the first needs the OS:
+
+1. a `WorkManager` run, which is the only one that covers an app nobody opens.
+2. a pass on session activation, which covers an app somebody does.
+3. on-demand allocation, which registers a product's own account for the current period when that product asks for a statement-store allowance and none is held. That covers the asking product, not the rest of the ledger, so it narrows the window rather than closing it.
+
+`lastStatementRenewalReport()` returns the most recent pass the in-process loop ran, or `null` if none has, which is "not yet" rather than healthy. The loop returns nothing to its caller, so this is where a host driving it reads what it achieved; checking on resume is enough to catch an exhausted period. A direct `renewStatementAllowances()` hands back its own report and does not write here.
 
 `startStatementAllowanceRenewal()` runs the same pass on an in-process loop instead, for a host that stays resident. A pass has no cancellation, so several targets can outlast a constrained worker budget; targets registered before the process is killed are not lost and read back as already allocated.
 
@@ -136,9 +229,10 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
-import io.parity.truapi.PairingDeeplinkScheme
-import io.parity.truapi.RuntimeConfig
-import io.parity.truapi.TrUAPIHostCore
+import io.parity.truapi.HostRuntimeConfig
+import io.parity.truapi.ProductExecutionConfig
+import io.parity.truapi.ProductExecutionKind
+import io.parity.truapi.TrUAPIHostRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uniffi.truapi_platform.AuthState
@@ -204,15 +298,13 @@ class MyBridge(private val webView: WebView) : HostBridge {
     // as a retryable error, unless its kind is
     // LoginFailureKind.NoFreeAllowanceSlots, which is unlikely to succeed
     // before the period rolls over, so retry should not be the primary action.
-    // When the user closes the pairing sheet, report it
-    // with `core.cancelLogin()`.
     override fun authStateChanged(state: AuthState) {
         main.post { /* render the state */ }
     }
 
     override fun chainConnect(genesisHash: ByteArray): UInt? {
         val id = 1u
-        main.post { /* open JSON-RPC connection, forward responses via core.notifyChainResponse */ }
+        main.post { /* open JSON-RPC connection, forward responses via runtime.notifyChainResponse */ }
         return id
     }
 
@@ -234,8 +326,8 @@ class MyBridge(private val webView: WebView) : HostBridge {
 }
 
 val webView: WebView = existingWebView
-val runtimeConfig = RuntimeConfig(
-    productId = "my-product.dot",
+val bridge = MyBridge(webView)
+val runtimeConfig = HostRuntimeConfig(
     hostName = "My Host",
     hostIcon = "https://host.example/icon.png",
     peopleChainGenesisHash = ByteArray(32),
@@ -243,17 +335,20 @@ val runtimeConfig = RuntimeConfig(
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.
     localSessionSecret = null,
-    pairingDeeplinkScheme = PairingDeeplinkScheme.POLKADOT_APP,
 )
-val core = TrUAPIHostCore(MyBridge(webView), runtimeConfig)
-val endpoint = core.startWsBridge()
+val runtime = TrUAPIHostRuntime(bridge, runtimeConfig)
+val execution = runtime.openProductExecution(
+    bridge = bridge,
+    configuration = ProductExecutionConfig("my-product.dot", ProductExecutionKind.APP),
+)
+val endpoint = execution.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates
 // after their immediate current item.
-core.notifyThemeChanged(HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK))
-core.notifyPreimageChanged(preimageKey, preimageBytesOrNull)
-core.notifyChainResponse(chainConnectionId, jsonRpcResponse)
-core.notifyChainClosed(chainConnectionId)
+execution.notifyThemeChanged(HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK))
+execution.notifyPreimageChanged(preimageKey, preimageBytesOrNull)
+runtime.notifyChainResponse(chainConnectionId, jsonRpcResponse)
+runtime.notifyChainClosed(chainConnectionId)
 
 // Publish the bridge endpoint to the product page. Install the bootstrap as a
 // DOCUMENT-START script so it runs in the destination document before the page
@@ -261,7 +356,20 @@ core.notifyChainClosed(chainConnectionId)
 // following `loadUrl` replaces, so the product would lose the endpoint. Scope
 // it to the product origin. The page reads `window.__truapi_localhost.url` and
 // passes it to `@parity/truapi`'s `createWebSocketProvider`.
-val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token)
+// A peek, never a prompt — see LocalhostBridgeBootstrap.script. Baked in as a
+// literal because the container enforces it inside the product's own realm,
+// where an async permission request would be forgeable. A fresh grant therefore
+// only takes effect once the web view reloads.
+//
+// Read this as a policy value, not a gate: Android injects no lockdown
+// container, so nothing consumes the decision and WebRTC is reachable on
+// Android whatever the status says. Pass what the core returns anyway — a
+// literal `true` compiles and would silently keep that open once the container
+// does land (#334 scopes the gate to iOS).
+val webRtcAllowed = execution.permissionAuthorizationStatus(
+    PermissionAuthorizationRequest.Remote(RemotePermissionRequest(RemotePermission.WebRtc))
+) == PermissionAuthorizationStatus.AUTHORIZED
+val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token, webRtcAllowed)
 main.post {
     val productUrl = "https://your-product.example/"
     if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -275,75 +383,37 @@ main.post {
 }
 
 // On logout:
-core.disconnect()
+runtime.disconnect()
 ```
 
-## Linking the cdylib
+## The cdylib
 
-The native runtime ships separately. JNA looks for `libtruapi_server.so` in the standard `jniLibs` paths; bundle the per-ABI builds under:
+The released AAR bundles `libtruapi_server.so` for all three ABIs under its `jni/` directory; JNA loads it from there without any consumer setup.
 
-```
-src/main/jniLibs/arm64-v8a/libtruapi_server.so
-src/main/jniLibs/armeabi-v7a/libtruapi_server.so
-src/main/jniLibs/x86_64/libtruapi_server.so
-```
-
-Cross-build the cdylib for each Android ABI from the truapi monorepo. Two options, pick whichever fits the host app's existing toolchain:
-
-**Option A: `mozilla-rust-android-gradle` plugin.** Recommended if the host app already uses it (polkadot-app-android-v2 does, for `bandersnatch-crypto`). Vendor `paritytech/host-rust-core` as a git submodule, add a small Gradle module that points the plugin at `rust/crates/truapi-server`:
-
-```kotlin
-// app/build.gradle.kts (or a dedicated :truapi-cdylib module)
-plugins {
-    alias(libs.plugins.mozilla.rust.android)
-}
-
-cargo {
-    module = "<path>/truapi/rust/crates/truapi-server"
-    libname = "truapi_server"
-    targets = listOf("arm64", "arm", "x86_64")
-    profile = "release"
-    features { defaultAnd(arrayOf("ws-bridge")) }
-}
-
-tasks.matching { it.name.matches("merge.*JniLibFolders".toRegex()) }.configureEach {
-    inputs.dir(layout.buildDirectory.dir("rustJniLibs/android"))
-    dependsOn("cargoBuild")
-}
-```
-
-**Option B: `cargo-ndk` from the command line.** Standalone, no Gradle plugin required:
+When iterating on the core from a source checkout instead of the published artifact, cross-compile into this module's `jniLibs` with:
 
 ```bash
-cargo install cargo-ndk
-cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
-  -o app/src/main/jniLibs \
-  build --release -p truapi-server --features ws-bridge
+make android-jni    # needs cargo-ndk, the NDK, and the three Android rust targets
 ```
 
-Both options require the Android NDK installed and the matching Rust targets (`rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`).
-
-Pre-built per-ABI `.so` files bundled inside the AAR are tracked as a follow-up so consumers eventually don't need a Rust toolchain at all.
+or point the `mozilla-rust-android-gradle` plugin at `rust/crates/truapi-server` from the host app's own build (polkadot-app-android-v2 does this while it still builds from a checkout).
 
 ## Maintainers: cutting a release
 
-JitPack builds on demand from any git tag in `paritytech/host-rust-core`, so a release is just:
+Include `@parity/android-host <version>` in the `release:` PR title, the same flow the npm packages and the iOS host use. On merge, `release.yml` calls `release-android.yml` for the release commit, which cross-compiles the cdylib for all three ABIs, regenerates the Kotlin bindings via the `codegen` cargo profile, and publishes `io.parity:truapi-host-android:<version>` to GitHub Packages.
 
-1. Bump `publicationVersion` in `android/truapi-host/build.gradle.kts`.
-2. Commit. Open a PR. Merge.
-3. Tag the merge commit with the version: `git tag truapi-host-android@0.1.0 && git push origin truapi-host-android@0.1.0`.
+A manual `release-android` run with a version input reaches the same workflow, as an escape hatch. There is deliberately no tag trigger: a tag push cannot use `release.yml`'s gate on green CI, so it would be an unverified path to the registry.
 
-That's the entire release flow, the iOS Swift Package follows the same pattern. The first consumer to pull the tag will trigger JitPack to build the artifact; subsequent fetches hit the cache.
+The version lives only in the release subject. Nothing in the tree records it, so there is no committed version to keep in sync.
 
-For local development, publish into the dev `~/.m2`:
+For local development, publish into `~/.m2`:
 
 ```bash
-gradle :truapi-host:publishReleasePublicationToMavenLocal
-# or
+make android-jni            # optional: bundle the cdylibs into the local AAR
 make android-publish-local
 ```
 
-The artifact lands under `~/.m2/repository/io/parity/truapi-host-android/<version>/`. Consumers pointing at `mavenLocal()` can resolve it via `io.parity:truapi-host-android:<version>`. These local coordinates differ from the JitPack consumer coordinate (`com.github.paritytech.truapi:truapi-host:<tag>`): JitPack derives the group and artifactId from the repo and Gradle subproject, overriding the `io.parity:truapi-host-android` coordinates set in `build.gradle.kts`.
+The artifact lands under `~/.m2/repository/io/parity/truapi-host-android/0.0.0-local/`; consumers pointing at `mavenLocal()` resolve it as `io.parity:truapi-host-android:0.0.0-local`.
 
 ## Regenerating the UniFFI bindings
 
@@ -358,3 +428,7 @@ the generator. The `codegen` profile is required because uniffi-bindgen scans
 the cdylib's exported metadata symbols, which the `release` profile strips — a
 plain `--release` build produces a stripped library and no bindings. (`make
 uniffi` regenerates the Swift bindings; use `make uniffi-kotlin` for Android.)
+
+No CI job compiles this package. After changing `TrUAPIHost.kt` or the UniFFI
+surface it wraps, run `make android-check` locally — it regenerates the Kotlin
+bindings and compiles the module against them.

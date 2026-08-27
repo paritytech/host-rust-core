@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli headless install matrix explorer xcframework
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli e2e-chat-cli headless install matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -205,8 +205,14 @@ android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs 
 	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
 		-o $(ANDROID_JNILIBS) \
 		build --release -p truapi-server --features ws-bridge
+	# cargo-ndk also copies dependency cdylib intermediates (hash-suffixed,
+	# statically linked into libtruapi_server.so already); keep only ours.
+	find $(ANDROID_JNILIBS) -name '*.so' ! -name 'libtruapi_server.so' -delete
 
-android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 (needs Gradle + JDK 17). The AAR does not bundle the cdylib; consumers build it per ABI (see android-jni).
+android-check: uniffi-kotlin ## Compile the Kotlin host adapter against freshly generated bindings (needs Gradle + Android SDK).
+	gradle :truapi-host:compileReleaseKotlin
+
+android-publish-local: uniffi-kotlin ## Generate Kotlin bindings, then publish the AAR to ~/.m2 as io.parity:truapi-host-android:0.0.0-local (needs Gradle + JDK 17). Run `make android-jni` first to bundle the per-ABI cdylibs into the AAR.
 	gradle :truapi-host:publishReleasePublicationToMavenLocal
 
 # truapi-provider ships as its own per-platform artifacts (iOS xcframework,
@@ -230,6 +236,8 @@ provider-swift-check: provider-swift ## Fail if the committed TrUAPIProvider bin
 		$(PROVIDER_SWIFT_TMP)/truapi_provider.swift \
 		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/truapi_providerFFI.h \
 		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.h \
+		&& diff -u ios/truapi-provider/Sources/truapi_providerFFI/include/module.modulemap \
+		$(PROVIDER_SWIFT_TMP)/truapi_providerFFI.modulemap \
 		&& echo "Committed TrUAPIProvider bindings are current." \
 		|| { echo "Committed TrUAPIProvider bindings are stale: run 'make provider-ios'."; exit 1; }
 
@@ -250,6 +258,11 @@ provider-android-jni: ## Cross-compile libtruapi_provider.so for Android ABIs in
 	$(CARGO) ndk $(foreach abi,$(ANDROID_ABIS),-t $(abi)) \
 		-o $(PROVIDER_JNILIBS) \
 		build --release -p truapi-provider --no-default-features --features uniffi
+
+provider-android-check: provider-kotlin ## Compile the provider Kotlin bindings against freshly generated sources (needs Gradle + Android SDK).
+	@test -n "$$(find $(PROVIDER_KOTLIN_OUT) -name '*.kt' -print -quit)" \
+		|| { echo "no generated Kotlin under $(PROVIDER_KOTLIN_OUT): the module would compile an empty source set and pass"; exit 1; }
+	gradle :truapi-provider:compileReleaseKotlin
 
 provider-android-publish-local: provider-kotlin provider-android-jni ## Publish the self-contained provider AAR (bindings + cdylib) to ~/.m2.
 	gradle :truapi-provider:publishReleasePublicationToMavenLocal
@@ -343,6 +356,9 @@ e2e-signing-cli: ## Run the generated battery against the direct signing-host CL
 
 e2e-pairing-cli: ## Run the generated battery against the paired pairing-host CLI.
 	scripts/battery.sh --pairing-host
+
+e2e-chat-cli: ## Run the Chat content-screening battery against a chat signing-host CLI.
+	scripts/battery.sh --chat-host
 
 matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-reports.
 	cd $(EXPLORER) && npm run generate-matrix

@@ -23,6 +23,7 @@ export const CALLBACK_NAMES = [
   "navigateTo",
   "pushNotification",
   "cancelNotification",
+  "devicePermissionStatus",
   "devicePermission",
   "remotePermission",
   "read",
@@ -185,6 +186,17 @@ function chatRawCallbacks(
   };
 }
 
+function permissionStatusRawCallbacks(
+  bridge: WorkerCallbackBridge,
+): Required<Pick<RawCallbacks, "devicePermissionStatus">> {
+  return {
+    devicePermissionStatus: (request) =>
+      bridge.callbackRequest("devicePermissionStatus", [request]) as ReturnType<
+        Required<RawCallbacks>["devicePermissionStatus"]
+      >,
+  };
+}
+
 /**
  * Optional capabilities the main-thread host actually serves. A
  * capability left out here is not proxied into the worker, so the
@@ -193,6 +205,8 @@ function chatRawCallbacks(
 export interface OptionalCapabilities {
   /** Whether the host serves this capability. */
   chat?: boolean;
+  /** Whether the host serves this capability. */
+  permissionStatus?: boolean;
 }
 
 export function createWorkerRawCallbacks(
@@ -205,6 +219,8 @@ export function createWorkerRawCallbacks(
     chainConnect: bridge.chainConnect,
   };
   if (capabilities.chat) Object.assign(callbacks, chatRawCallbacks(bridge));
+  if (capabilities.permissionStatus)
+    Object.assign(callbacks, permissionStatusRawCallbacks(bridge));
   return callbacks;
 }
 

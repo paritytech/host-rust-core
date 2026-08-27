@@ -5,6 +5,64 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [Unreleased]
+
+### Added
+
+- expose the current canonical product identifier through `system.getProductContext`
+
+## [0.10.0] - 2026-08-24
+
+### Added
+
+- match manifest execution kinds and serve custom chat rendering from a JS host (#459)
+- gate WebRTC on a decision resolved before the product realm (#444)
+- let a host read what the last renewal pass achieved (#447)
+- tell a listener which way its connection closed (#461)
+- forward every message variant and add the Android host surface (#453)
+- serve product frames headlessly with --serve (#439)
+- export createWebSocketProvider for browser clients (#438)
+- add the previewnet network preset (#440)
+- serve Chat from a JS host as an optional capability (#400)
+- implement Chat::register_bot in the shared Rust core (#430)
+- native and wasm ChainProvider with WebSocket and embedded smoldot backends (#276)
+- retain and expose session identity material (#403)
+- gate external navigation on a per-host remote grant
+- give AuthState::LoginFailed a typed kind (#401)
+- pool allowance slots across personhood collections (#431)
+- report renewal targets dropped by an identity change (#423)
+- drive statement-store allowance renewal from native hosts (#417)
+- yield the named theme from subscribe_theme (#396)
+- serve Asset Hub as a chain role (#404)
+- support PGAS allowances (#391)
+- make ProductContext SCALE-encodable (#392)
+
+### Changed
+
+- Own-account subtree consent gate, deadline bound, and worker dispose fix (#469)
+- Person's usernames: read from Asset Hub dotNS instead of the People Chain (rebase of #349) (#426)
+- publish 0.7.0 (#450)
+- SSO message handling bindings for Mobile hosts (#433)
+- Allow webrtc connection for products (#399)
+- update Package.swift (#421)
+- Add product manifest RFC and host implementation guide
+
+### Fixed
+
+- accept the test dotNS TLD in product identifiers (#465)
+- follow previewnet through its wipe (#455)
+- stop a product or host from aborting the process (#452)
+- track tunnel liveness by flag, not by dialling (#445)
+- satisfy collapsible_match without changing Enter handling (#437)
+- narrow the navigation grant to authorizable hosts
+- satisfy collapsible_match without changing Enter handling
+- advertise the People genesis the chain reports (#416)
+- emit the opening auth state and forward session activation (#393)
+- resolve product chains against the network preset (#402)
+- import the wasm glue by a literal specifier (#394)
+- skip v5 signing for supplied VerifyMultiSignature (#374)
+- encode the transaction-extension version the runtime declares (#382)
+
 ## [0.9.0] - 2026-08-13
 
 ### RFCs
@@ -19,6 +77,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.9.0, @parity/truapi-host 0.6.0 (#381)
 - share one extension-info resolver in allowance metadata (#377)
 - stop re-reading metadata and rings on every allowance call (#366)
 - update ios library to 0.5.0 (#367)

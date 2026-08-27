@@ -22,9 +22,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
 use truapi_platform::{
-    AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, JsonRpcConnection, Navigation,
-    Notifications, Permissions, PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
+    JsonRpcConnection, Navigation, Notifications, PermissionStatusHost, Permissions, PreimageHost,
+    ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -646,6 +647,19 @@ fn emit_notification_event(ui: Option<&UiHandle>, event: SystemEvent) {
 }
 
 #[async_trait]
+impl PermissionStatusHost for CliPlatform {
+    async fn device_permission_status(
+        &self,
+        _request: api::HostDevicePermissionRequest,
+    ) -> Result<DevicePermissionStatus, api::GenericError> {
+        // A terminal has no OS permission gate, so every capability is
+        // `NotApplicable` rather than `Granted`: claiming a grant would assert
+        // state this host cannot see, and the stored product decision governs.
+        Ok(DevicePermissionStatus::NotApplicable)
+    }
+}
+
+#[async_trait]
 impl Permissions for CliPlatform {
     async fn device_permission(
         &self,
@@ -840,6 +854,13 @@ fn approval_summary(review: &UserConfirmationReview) -> (&'static str, String) {
             format!(
                 "Product {} requested access to the {} account.",
                 review.requesting_product_id, review.target_product_id
+            ),
+        ),
+        UserConfirmationReview::ProductSubtree(review) => (
+            "resolve account subtree",
+            format!(
+                "Product {} requested its account from your device.",
+                review.product_id
             ),
         ),
     }
@@ -1198,7 +1219,7 @@ fn load_hex_key_map(path: &Path) -> HashMap<Vec<u8>, Vec<u8>> {
 
 /// Directory-safe name for one paired identity's storage namespace.
 ///
-/// The connected id is whatever the People-chain identity yields: a lite username
+/// The connected id is whatever the dotNS identity yields: a lite username
 /// when there is one, otherwise the free-form `full_username`. Only the former is
 /// guaranteed to satisfy [`crate::sessions::validate_name`], so a display name
 /// like `"Tarik Gul"` is rejected on both the space and the capitals.

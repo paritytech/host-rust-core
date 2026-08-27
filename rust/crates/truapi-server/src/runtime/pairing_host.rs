@@ -26,6 +26,7 @@ use super::authority::{
 };
 use super::connected_session_ui_info;
 use super::identity::resolve_session_identity_with_chain;
+use super::product_subtree;
 use super::services::RuntimeServices;
 use super::sso_pairing::{SsoPairingFlow, SsoPairingOutcome};
 use super::sso_remote::{
@@ -454,7 +455,7 @@ impl PairingHost {
         let activation_epoch = self.advance_session_lifecycle();
         let resolved = resolve_session_identity_with_chain(
             &self.chain,
-            self.host_config.people_chain_genesis_hash,
+            self.host_config.asset_hub_chain_genesis_hash,
             session,
         )
         .await;
@@ -523,7 +524,7 @@ impl PairingHost {
         };
         let resolved = resolve_session_identity_with_chain(
             &self.chain,
-            self.host_config.people_chain_genesis_hash,
+            self.host_config.asset_hub_chain_genesis_hash,
             session,
         )
         .await;
@@ -878,6 +879,7 @@ impl PairingHost {
             {
                 warn!(%reason, "allowance capability clear failed during disconnect");
             }
+            self.clear_stored_product_subtrees(session).await;
         }
         self.clear_product_subtrees(previous.as_ref());
         if let Err(reason) = self.clear_auto_signing_keys_under_storage_guard().await {
@@ -1077,6 +1079,119 @@ impl PairingHost {
         true
     }
 
+    /// Whether resolving `product_id`'s subtree would reach the Account Holder,
+    /// i.e. neither the memory cache nor the persisted slot already holds it.
+    ///
+    /// A stale or missing session resolves as `false` so a broken state falls
+    /// through to the resolution's own error rather than a spurious prompt.
+    pub(super) async fn subtree_reaches_account_holder(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+    ) -> bool {
+        let Ok(session) = self.current_private_session(session) else {
+            return false;
+        };
+        let Some(sso) = session.sso.as_ref() else {
+            return false;
+        };
+        let cache_key = (SsoSessionKey::from_session(sso), product_id.to_string());
+        self.known_product_subtree(&session, cache_key)
+            .await
+            .is_none()
+    }
+
+    /// Read a product subtree public key from the memory cache, falling back to
+    /// the slot an earlier launch persisted. `None` when neither holds it.
+    ///
+    /// This is the consent-free half of the resolution order. Splitting it out
+    /// lets a host read what the core already knows without the wire request
+    /// that follows a miss, which has no timeout of its own.
+    pub(super) async fn known_product_subtree(
+        &self,
+        session: &SessionInfo,
+        cache_key: (SsoSessionKey, String),
+    ) -> Option<[u8; 32]> {
+        let lifecycle_epoch = self.current_session_lifecycle_epoch();
+        if let Some(public_key) = self
+            .product_subtrees
+            .lock()
+            .expect("product subtree cache mutex poisoned")
+            .get(&cache_key)
+            .copied()
+        {
+            return Some(public_key);
+        }
+        self.stored_product_subtree(session, lifecycle_epoch, cache_key)
+            .await
+    }
+
+    /// Read a product subtree public key persisted by an earlier launch, and
+    /// re-populate the memory cache from it. `None` when nothing is stored.
+    pub(super) async fn stored_product_subtree(
+        &self,
+        session: &SessionInfo,
+        lifecycle_epoch: u64,
+        cache_key: (SsoSessionKey, String),
+    ) -> Option<[u8; 32]> {
+        let public_key =
+            match product_subtree::read_product_subtree(&*self.platform, session, &cache_key.1)
+                .await
+            {
+                Ok(public_key) => public_key?,
+                Err(error) => {
+                    warn!(reason = %error, "stored product subtree read failed");
+                    return None;
+                }
+            };
+        // A stored key still has to belong to the live pairing before it is
+        // served, exactly as a freshly fetched one does.
+        self.cache_product_subtree_if_current(session, lifecycle_epoch, cache_key, public_key)
+            .then_some(public_key)
+    }
+
+    /// Persist and memory-cache a freshly fetched product subtree public key.
+    ///
+    /// Persistence is an optimisation: a storage failure still serves the key
+    /// and leaves the next launch to re-ask the wallet, which is what happens
+    /// today. Losing the pairing mid-write is not, so the storage entry is
+    /// rolled back rather than left addressing a session that has gone.
+    pub(super) async fn persist_product_subtree_if_current(
+        &self,
+        session: &SessionInfo,
+        lifecycle_epoch: u64,
+        cache_key: (SsoSessionKey, String),
+        public_key: [u8; 32],
+    ) -> bool {
+        let product_id = cache_key.1.clone();
+        let _storage_guard = self.session_secret_storage.lock().await;
+        if !self.session_secret_allocation_is_current(session, lifecycle_epoch) {
+            return false;
+        }
+        let persisted = match product_subtree::write_product_subtree(
+            &*self.platform,
+            session,
+            &product_id,
+            public_key,
+        )
+        .await
+        {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(reason = %error, "product subtree persist failed");
+                false
+            }
+        };
+        if self.cache_product_subtree_if_current(session, lifecycle_epoch, cache_key, public_key) {
+            return true;
+        }
+        if persisted {
+            let _ = product_subtree::remove_product_subtree(&*self.platform, session, &product_id)
+                .await;
+        }
+        false
+    }
+
     pub(super) fn cache_product_subtree_if_current(
         &self,
         session: &SessionInfo,
@@ -1113,13 +1228,13 @@ impl PairingHost {
 
     async fn refresh_current_session_identity(&self) -> Option<AuthoritySession> {
         let current = self.session_state.current()?;
-        if current.has_username() || self.host_config.people_chain_genesis_hash == [0; 32] {
+        if current.has_username() || self.host_config.asset_hub_chain_genesis_hash == [0; 32] {
             return Some(authority_session(&current));
         }
 
         let resolved = resolve_session_identity_with_chain(
             &self.chain,
-            self.host_config.people_chain_genesis_hash,
+            self.host_config.asset_hub_chain_genesis_hash,
             current.clone(),
         )
         .await;
@@ -1775,6 +1890,33 @@ impl PairingHost {
         Ok(Some(key))
     }
 
+    /// Drop the persisted subtree slots this run knows about for `session`.
+    ///
+    /// Scoped to the in-memory set, so a product never opened since launch
+    /// keeps its slot. Those address session ids that cannot recur, and
+    /// clearing them belongs to the host, as `CoreStorage` states.
+    async fn clear_stored_product_subtrees(&self, session: &SessionInfo) {
+        let Some(sso) = session.sso.as_ref() else {
+            return;
+        };
+        let session_key = SsoSessionKey::from_session(sso);
+        let product_ids: Vec<String> = self
+            .product_subtrees
+            .lock()
+            .expect("product subtree cache mutex poisoned")
+            .keys()
+            .filter(|(key, _)| *key == session_key)
+            .map(|(_, product_id)| product_id.clone())
+            .collect();
+        for product_id in product_ids {
+            if let Err(reason) =
+                product_subtree::remove_product_subtree(&*self.platform, session, &product_id).await
+            {
+                warn!(%reason, %product_id, "product subtree clear failed during disconnect");
+            }
+        }
+    }
+
     fn clear_product_subtrees(&self, session: Option<&SessionInfo>) {
         let mut subtrees = self
             .product_subtrees
@@ -2300,6 +2442,14 @@ impl ProductAuthority for PairingHost {
         product_id: String,
     ) -> Result<[u8; 32], AuthorityError> {
         PairingHost::product_subtree_public_key(self, cx, session, product_id).await
+    }
+
+    async fn subtree_resolution_reaches_account_holder(
+        &self,
+        session: &AuthoritySession,
+        product_id: &str,
+    ) -> bool {
+        PairingHost::subtree_reaches_account_holder(self, session, product_id).await
     }
 
     async fn sign_vrf(

@@ -51,16 +51,17 @@ pub mod latest {
     use crate::versioned::{self, Versioned};
 
     pub use crate::v01::{
-        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier,
-        ChatBotRegistrationStatus, ChatRoomRegistrationStatus, ContextualAlias, DerivationIndex,
-        GenericError, HostSignPayloadData, NotificationId, OperationStartedResult,
-        ProductAccountId, ProductProofContext, RawPayload, RegisteredRingVrfKey, RemotePermission,
-        RemoteStatementStoreCreateProofError, RemoteStatementStoreCreateProofRequest,
-        RemoteStatementStoreCreateProofResponse, RemoteStatementStoreSubscribeItem,
-        RemoteStatementStoreSubscribeRequest, RingLocation, RingVrfKeyDisclosure, RingVrfPublicKey,
-        RuntimeApi, RuntimeSpec, RuntimeType, SignedStatement, Statement, StatementProof,
-        StorageQueryItem, StorageQueryType, StorageResultItem, ThemeName, ThemeVariant,
-        TxPayloadExtension,
+        AccountId, AllocatableResource, AllocationOutcome, ChainIdentifier, ChatAction,
+        ChatActionLayout, ChatActions, ChatBotRegistrationStatus, ChatCustomMessage, ChatFile,
+        ChatMedia, ChatMessageContent, ChatReaction, ChatRichText, ChatRoomRegistrationStatus,
+        ContextualAlias, DerivationIndex, GenericError, HostPlatform, HostSignPayloadData,
+        NotificationId, OperationStartedResult, ProductAccountId, ProductProofContext, RawPayload,
+        RegisteredRingVrfKey, RemotePermission, RemoteStatementStoreCreateProofError,
+        RemoteStatementStoreCreateProofRequest, RemoteStatementStoreCreateProofResponse,
+        RemoteStatementStoreSubscribeItem, RemoteStatementStoreSubscribeRequest, RingLocation,
+        RingVrfKeyDisclosure, RingVrfPublicKey, RuntimeApi, RuntimeSpec, RuntimeType,
+        SignedStatement, Statement, StatementProof, StorageQueryItem, StorageQueryType,
+        StorageResultItem, ThemeName, ThemeVariant, TxPayloadExtension,
     };
 
     /// Latest payload type of a versioned envelope.
@@ -126,6 +127,9 @@ pub mod latest {
     /// Feature-support query result.
     pub type HostFeatureSupportedResponse =
         LatestOf<versioned::system::HostFeatureSupportedResponse>;
+    /// Product context bound to the current host runtime.
+    pub type HostGetProductContextResponse =
+        LatestOf<versioned::system::HostGetProductContextResponse>;
     /// Local storage operation error.
     pub type HostLocalStorageReadError =
         LatestOf<versioned::local_storage::HostLocalStorageReadError>;
@@ -168,6 +172,8 @@ pub mod latest {
     pub type PreimageSubmitError = LatestOf<versioned::preimage::RemotePreimageSubmitError>;
     /// Transaction creation payload for a product account.
     pub type ProductAccountTxPayload = LatestOf<versioned::signing::HostCreateTransactionRequest>;
+    /// Chain-head runtime-API call request.
+    pub type RemoteChainHeadCallRequest = LatestOf<versioned::chain::RemoteChainHeadCallRequest>;
     /// Chain-head subscription item.
     pub type RemoteChainHeadFollowItem = LatestOf<versioned::chain::RemoteChainHeadFollowItem>;
     /// Chain-identifier resolution error.

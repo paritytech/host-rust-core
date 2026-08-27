@@ -640,6 +640,7 @@ mod tests {
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://example.invalid/dotli.png".to_string()),
                 version: Some("1.2.3".to_string()),
+                platform: truapi::latest::HostPlatform::Web,
             },
             PlatformInfo {
                 kind: Some("Firefox".to_string()),
@@ -647,6 +648,7 @@ mod tests {
             },
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test runtime config is valid")

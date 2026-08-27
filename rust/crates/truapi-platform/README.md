@@ -18,6 +18,25 @@ wasm callback boundary, where every parameter is encoded with
 `parity-scale-codec`; `ProductContext` decodes through its validating
 constructor, so a context off the wire carries a normalized product id.
 
+## Product Identity
+
+`normalize_product_identifier` is the single chokepoint that turns a host- or
+wire-supplied product id into the canonical form derivation, product storage and
+permission scopes are keyed by; `is_product_identifier` is its boolean form.
+
+`DOTNS_TLDS` (`dot`, `paseo`, `test`) backs it: the TLDs dotNS deployments
+register product names under, one entry per network a host can be pointed at. A
+name ending in one of them is also what navigation resolves back into the host's
+own product surface, so it bypasses the outbound domain grant.
+
+`REMOTE_PERMISSION_TRUSTED_LABELS` lists bare product labels — no TLD, so one
+entry covers every network in `DOTNS_TLDS` — whose products hold every
+`RemotePermission` without a user prompt, tested with
+`has_trusted_remote_permissions`. It covers remote permissions only: device
+permissions, identity disclosure and cross-product account access always prompt.
+A stored decision outranks the list, so a `Denied` written through `CoreAdmin`
+revokes the grant.
+
 ## Host Callback Traits
 
 - `ProductStorage`: product-scoped key-value storage.
@@ -35,12 +54,21 @@ constructor, so a context off the wire carries a normalized product id.
 - `PreimageHost`: submit and look up preimages through the host-selected backend.
 - `ChatPlatform`: create product-scoped native chat rooms, register product
   chat bots, post messages into rooms, and stream the product's room list.
+- `PermissionStatusHost`: report the OS status of a device capability without
+  prompting, so a stored grant can be revalidated before it is acted on.
 
 `Platform` is a blanket-implemented supertrait that combines the capability
-traits above except `ChatPlatform`, which `OptionalPlatform` lists instead: a
-host supplies it only when it serves the Chat modality, and the core answers
-Chat calls `Unsupported` otherwise. Codegen reads `OptionalPlatform` to emit
-each listed capability as an optional group on the host-callback surface.
+traits above except `ChatPlatform` and `PermissionStatusHost`, which
+`OptionalPlatform` lists instead: a host supplies each only when it can serve
+it. Codegen reads `OptionalPlatform` to emit each listed capability as an
+optional group on the host-callback surface.
+
+Omitting `ChatPlatform` makes the core answer Chat calls `Unsupported`.
+Omitting `PermissionStatusHost` leaves device grants resolving from stored
+state alone, which is what a host with no OS permission model does anyway.
+Serving it gates both halves of the surface: a device permission request and a
+status read through `CoreAdmin` resolve the same two gates, so a settings
+screen never reports a capability as usable when the OS refuses it.
 
 ## Core-Owned Admin API
 

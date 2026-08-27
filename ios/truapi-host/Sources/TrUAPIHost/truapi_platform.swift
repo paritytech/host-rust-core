@@ -1038,6 +1038,66 @@ public func FfiConverterTypePreimageSubmitReview_lower(_ value: PreimageSubmitRe
 
 
 /**
+ * Review shown before a product resolves its own account subtree over SSO,
+ * when the value is not cached and the core must ask the Account Holder.
+ */
+public struct ProductSubtreeReview: Equatable, Hashable {
+    /**
+     * Product resolving its own account.
+     */
+    public var productId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Product resolving its own account.
+         */productId: String) {
+        self.productId = productId
+    }
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ProductSubtreeReview: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProductSubtreeReview: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProductSubtreeReview {
+        return
+            try ProductSubtreeReview(
+                productId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProductSubtreeReview, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.productId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductSubtreeReview_lift(_ buf: RustBuffer) throws -> ProductSubtreeReview {
+    return try FfiConverterTypeProductSubtreeReview.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProductSubtreeReview_lower(_ value: ProductSubtreeReview) -> RustBuffer {
+    return FfiConverterTypeProductSubtreeReview.lower(value)
+}
+
+
+/**
  * Review shown before allocating resources for a product. Names the
  * beneficiary product so the user knows which product receives the
  * (signing-capable) allowance key they are approving.
@@ -1118,7 +1178,7 @@ public struct SessionUiInfo: Equatable, Hashable {
      */
     public var publicKey: Bytes32
     /**
-     * Wallet identity account id used for People-chain username lookup.
+     * Wallet identity account id used for the dotNS username lookup on Asset Hub.
      */
     public var identityAccountId: Bytes32?
     /**
@@ -1139,11 +1199,11 @@ public struct SessionUiInfo: Equatable, Hashable {
      */
     public var peerStatementAccountId: Bytes32?
     /**
-     * Short username from the People-chain identity record.
+     * Short username from the dotNS identity record on Asset Hub.
      */
     public var liteUsername: String?
     /**
-     * Fully qualified username from the People-chain identity record.
+     * Fully qualified username from the dotNS identity record on Asset Hub.
      */
     public var fullUsername: String?
 
@@ -1154,7 +1214,7 @@ public struct SessionUiInfo: Equatable, Hashable {
          * 32-byte sr25519 root public key of the active session.
          */publicKey: Bytes32,
         /**
-         * Wallet identity account id used for People-chain username lookup.
+         * Wallet identity account id used for the dotNS username lookup on Asset Hub.
          */identityAccountId: Bytes32?,
         /**
          * X25519 public key addressing this identity in chat. Public counterpart
@@ -1171,10 +1231,10 @@ public struct SessionUiInfo: Equatable, Hashable {
          * device discriminator; use [`Self::device_enc_public_key`] for that.
          */peerStatementAccountId: Bytes32?,
         /**
-         * Short username from the People-chain identity record.
+         * Short username from the dotNS identity record on Asset Hub.
          */liteUsername: String?,
         /**
-         * Fully qualified username from the People-chain identity record.
+         * Fully qualified username from the dotNS identity record on Asset Hub.
          */fullUsername: String?) {
         self.publicKey = publicKey
         self.identityAccountId = identityAccountId
@@ -1592,6 +1652,111 @@ public func FfiConverterTypeCreateTransactionReview_lower(_ value: CreateTransac
 
 
 /**
+ * What the operating system currently says about a device capability.
+ *
+ * Distinct from [`PermissionAuthorizationStatus`], which is the product-scoped
+ * decision the user made through TrUAPI. The two answer different questions
+ * and are combined rather than substituted: a capability is usable only when
+ * the product holds a grant *and* the OS still allows it.
+ */
+
+public enum DevicePermissionStatus: Equatable, Hashable {
+
+    /**
+     * The OS grants this capability to the host application.
+     */
+    case granted
+    /**
+     * The OS refuses it. Prompting again will not help; the user has to
+     * change it in system settings.
+     */
+    case denied
+    /**
+     * The OS has not been asked yet, either because it never was or because
+     * it reset the grant. The core does not treat this as a refusal: the OS
+     * puts its own dialog up when the capability is used, and the core has no
+     * way to reach that dialog without also re-asking the product's question.
+     */
+    case notDetermined
+    /**
+     * This platform has no OS-level gate for the capability, so the
+     * product-scoped decision alone governs it.
+     */
+    case notApplicable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DevicePermissionStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDevicePermissionStatus: FfiConverterRustBuffer {
+    typealias SwiftType = DevicePermissionStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DevicePermissionStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .granted
+
+        case 2: return .denied
+
+        case 3: return .notDetermined
+
+        case 4: return .notApplicable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: DevicePermissionStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .granted:
+            writeInt(&buf, Int32(1))
+
+
+        case .denied:
+            writeInt(&buf, Int32(2))
+
+
+        case .notDetermined:
+            writeInt(&buf, Int32(3))
+
+
+        case .notApplicable:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDevicePermissionStatus_lift(_ buf: RustBuffer) throws -> DevicePermissionStatus {
+    return try FfiConverterTypeDevicePermissionStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDevicePermissionStatus_lower(_ value: DevicePermissionStatus) -> RustBuffer {
+    return FfiConverterTypeDevicePermissionStatus.lower(value)
+}
+
+
+
+/**
  * Why a login attempt failed, for hosts that need to act on the cause rather
  * than only display it.
  */
@@ -1871,18 +2036,28 @@ public func FfiConverterTypePermissionAuthorizationStatus_lower(_ value: Permiss
 
 /**
  * Trusted kind of product executable attached to a TrUAPI connection.
+ *
+ * Mirrors the executable kinds a product manifest declares. The variants are
+ * capability classes: a connection reaches an execution-gated service only
+ * when its kind matches exactly, so `App` and `Widget` carry the same
+ * capability and differ only in how the host presents them, and `Worker` is
+ * the only kind that may serve the Chat modality.
  */
 
 public enum ProductExecutionKind: Equatable, Hashable {
 
     /**
-     * Visible single-page application entrypoint such as `app/index.html`.
+     * Visible full-page entrypoint such as `app/index.html`.
      */
-    case spa
+    case app
     /**
-     * Headless worker executable that provides the Chat modality.
+     * Visible embedded surface such as a dashboard card.
      */
-    case chat
+    case widget
+    /**
+     * Headless executable that serves the Chat modality.
+     */
+    case worker
 
 
 
@@ -1904,9 +2079,11 @@ public struct FfiConverterTypeProductExecutionKind: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
 
-        case 1: return .spa
+        case 1: return .app
 
-        case 2: return .chat
+        case 2: return .widget
+
+        case 3: return .worker
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -1916,12 +2093,16 @@ public struct FfiConverterTypeProductExecutionKind: FfiConverterRustBuffer {
         switch value {
 
 
-        case .spa:
+        case .app:
             writeInt(&buf, Int32(1))
 
 
-        case .chat:
+        case .widget:
             writeInt(&buf, Int32(2))
+
+
+        case .worker:
+            writeInt(&buf, Int32(3))
 
         }
     }
@@ -2167,6 +2348,11 @@ public enum UserConfirmationReview: Equatable, Hashable {
      */
     case signVrf(SignVrfReview
     )
+    /**
+     * Resolve a product's own account subtree over SSO.
+     */
+    case productSubtree(ProductSubtreeReview
+    )
 
 
 
@@ -2219,6 +2405,9 @@ public struct FfiConverterTypeUserConfirmationReview: FfiConverterRustBuffer {
         )
 
         case 11: return .signVrf(try FfiConverterTypeSignVrfReview.read(from: &buf)
+        )
+
+        case 12: return .productSubtree(try FfiConverterTypeProductSubtreeReview.read(from: &buf)
         )
 
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -2282,6 +2471,11 @@ public struct FfiConverterTypeUserConfirmationReview: FfiConverterRustBuffer {
         case let .signVrf(v1):
             writeInt(&buf, Int32(11))
             FfiConverterTypeSignVrfReview.write(v1, into: &buf)
+
+
+        case let .productSubtree(v1):
+            writeInt(&buf, Int32(12))
+            FfiConverterTypeProductSubtreeReview.write(v1, into: &buf)
 
         }
     }

@@ -25,8 +25,12 @@ js/container/              TS lockdown container for the iOS host web view; `npm
 ios/truapi-provider/       TrUAPIProvider Swift package (chain transport over UniFFI);
                            second product of the root Package.swift, released on its
                            own tag (@parity/ios-provider@<v>) via its scripts/
-android/truapi-provider/   truapi-provider-android AAR; unlike truapi-host it bundles
-                           the cdylib, so consumers need no Rust toolchain
+android/truapi-host/       truapi-host-android AAR (bindings + Kotlin shell + per-ABI
+                           cdylib), published to GitHub Packages by release-android;
+                           include `@parity/android-host <version>` in the `release:`
+                           PR title
+android/truapi-provider/   truapi-provider-android AAR; bundles the cdylib the same way,
+                           so consumers need no Rust toolchain
 ios/truapi-host/           TrUAPIHost Swift package over the truapi-server UniFFI core;
                            SPM manifest at the repo root (Package.swift), rebuild via
                            ios/truapi-host/scripts/rebuild.sh
@@ -71,13 +75,19 @@ scripts/battery.sh         run the generated battery against both headless CLI h
   bindings, and the `ios-swift` job compiles the package and its test target on
   pull requests touching `ios/`, `Package.swift`, the `Makefile` or `native*`,
   which is what catches a hand-written conformer that missed a new protocol
-  requirement. `TrUAPIHost.kt` and the embedding apps are compiled by neither.
+  requirement. On the Kotlin side the `ci-android` job compiles
+  `TrUAPIHost.kt` against freshly generated bindings on pull requests touching
+  `android/` or the native crates, which catches the same class of drift;
+  `make android-check` does it locally. The embedding apps are compiled by
+  neither.
   Hosts implement `HostBridge`, whose protocol extension defaults the optional
-  callbacks; `TrUAPIHostRuntime` and `TrUAPIHostCore` both accept one.
+  callbacks; `TrUAPIHostRuntime` and each product execution retain one.
   To publish the binary, include `@parity/ios-host <version>`
   in the `release:` PR title. The release workflow rebuilds and simulator-tests
   the XCFramework, uploads it, and makes the `Package.swift` follow-up commit
-  only after the asset is live. `publish.sh <version>` is the manual fallback.
+  only after the asset is live. When the title also names an npm package, the
+  iOS job waits on that publish being confirmed on npm.
+  `publish.sh <version>` is the manual fallback.
   Keep `useLocalBinary = false` in committed manifests; `true` is for local
   testing against the rebuilt XCFramework only.
 

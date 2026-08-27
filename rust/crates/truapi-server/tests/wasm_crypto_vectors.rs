@@ -46,6 +46,7 @@ fn runtime_config() -> PairingHostConfig {
             name: "Polkadot Web".to_string(),
             icon: Some("https://example.invalid/dotli.png".to_string()),
             version: Some("1.2.3".to_string()),
+            platform: truapi::latest::HostPlatform::Web,
         },
         PlatformInfo {
             kind: Some("Firefox".to_string()),
@@ -53,6 +54,7 @@ fn runtime_config() -> PairingHostConfig {
         },
         [0xa2; 32],
         [0xbb; 32],
+        [0xcc; 32],
         "polkadotapp".to_string(),
     )
     .expect("test runtime config is valid")

@@ -90,6 +90,16 @@ export function makeHostCallbacks(
           },
         }
       : {}),
+    // Same for the OS permission-status capability: a host that omits it
+    // leaves device grants resolving from stored state alone.
+    ...(overrides.permissionStatus
+      ? {
+          permissionStatus: {
+            devicePermissionStatus: async () => "NotApplicable" as const,
+            ...overrides.permissionStatus,
+          },
+        }
+      : {}),
   };
 }
 

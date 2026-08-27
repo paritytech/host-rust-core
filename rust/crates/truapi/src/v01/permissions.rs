@@ -6,6 +6,13 @@ use parity_scale_codec::{Decode, Encode};
 /// The user's decision is persisted indefinitely after the first prompt and
 /// survives app restarts, whether the decision was grant or deny; the host
 /// does not re-prompt on subsequent requests for the same capability.
+///
+/// That decision is about this product. The OS grant behind it belongs to the
+/// host application and can move independently, so a host that can read OS
+/// state has the capability resolve only while both allow it: a stored grant
+/// whose OS grant was revoked answers `granted: false` without a prompt. An OS
+/// grant that is merely undetermined does not change the answer, because the OS
+/// resolves its own gate when the capability is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Display)]
 #[allow(clippy::upper_case_acronyms)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -61,10 +68,18 @@ pub enum RemotePermission {
         /// single-level wildcard (`*.example.com`), or `*` for any host.
         domains: Vec<String>,
     },
-    /// WebRTC access. Advertised and persistable, but host enforcement is not
-    /// yet implemented: the lockdown container leaves `RTCPeerConnection`
-    /// available to products, and camera/microphone capture is gated by the OS
-    /// permission prompts rather than by this permission.
+    /// WebRTC access.
+    ///
+    /// Enforced inside the product's own realm rather than at a network layer:
+    /// ICE reaches an arbitrary host over UDP, so no content rule list, request
+    /// interceptor, or CSP directive observes it. A host peeks this decision
+    /// before the product realm exists and the lockdown container removes
+    /// `RTCPeerConnection` — and its vendor-prefixed aliases — unless the answer
+    /// was an explicit grant. Resolving it up front is what makes the gate
+    /// unforgeable, and it means a fresh grant applies from the next load.
+    ///
+    /// Camera and microphone capture is gated by the OS permission prompts and
+    /// [`HostDevicePermissionRequest`], not by this permission.
     #[display("WebRTC connections")]
     WebRtc,
     /// Submitting transactions on behalf of the user via `remote_chain_transaction_broadcast`.

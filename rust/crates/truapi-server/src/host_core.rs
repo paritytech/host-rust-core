@@ -12,25 +12,29 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
+use futures::{FutureExt, StreamExt, pin_mut};
 use parity_scale_codec::{Decode, Encode};
 use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
-use truapi_platform::ChatPlatform;
+use truapi::{CallContext, CancellationReason};
+use truapi_platform::{ChatPlatform, PermissionStatusHost};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
+    normalize_product_identifier,
 };
 
 use crate::core::TrUApiCore;
 use crate::frame::ProtocolMessage;
 use crate::host_logic::sso::messages::{RemoteMessage, RemoteMessageData, SsoRequestOutcome, v1};
 use crate::runtime::{
-    ChatConnection, LocalActivation, PairingHostRole, ProductAuthority, ProductRuntimeHost,
-    ResponderExit, RuntimeServices, SigningHostRole, answer_remote_message, respond_to_pairing,
+    ChatConnection, DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT, LocalActivation, PairedSsoPeer,
+    PairingHostRole, ProductAuthority, ProductRuntimeHost, ResponderExit, RuntimeServices,
+    SigningHostRole, answer_remote_message, establish_pairing, respond_to_pairing, resume_pairing,
 };
 use crate::subscription::{HostInitiatedSubscriptionManager, Spawner};
 use crate::transport::Transport;
@@ -114,6 +118,7 @@ impl PairingHostRuntime {
         let platform: Arc<dyn Platform> = platform;
         let services = RuntimeServices::with_chat_platform(
             platform,
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -125,6 +130,17 @@ impl PairingHostRuntime {
             services,
             pairing_host,
         }
+    }
+
+    /// Install the host's [`PermissionStatusHost`], which carries the reasoning
+    /// for what it changes.
+    ///
+    /// Set-once, so the capability cannot be swapped under a running product.
+    /// Returns whether this call installed it. Call it before serving any
+    /// product runtime.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_permission_status_host"))]
+    pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
+        self.services.install_permission_status_host(host)
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -236,6 +252,17 @@ impl PairingHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Resolve `product_id`'s hard-subtree public key from the cache, the
+    /// persisted slot, or the Account Holder. `timeout_ms` bounds that wait.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.product_subtree_public_key"))]
+    pub async fn product_subtree_public_key(
+        &self,
+        product_id: &str,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<[u8; 32]>, v01::GenericError> {
+        product_subtree_public_key(self.pairing_host.as_ref(), product_id, timeout_ms).await
+    }
+
     /// Clear the canonical paired session and all capability caches/storage
     /// without sending a peer-disconnect notice.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.reset_session_state"))]
@@ -299,6 +326,10 @@ impl PairingHostRuntime {
     }
 
     /// Read a stored permission authorization status for a product without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.permission_authorization_status", product_id = %product_id))]
     pub async fn permission_authorization_status(
         &self,
@@ -311,6 +342,10 @@ impl PairingHostRuntime {
     }
 
     /// Read stored permission authorization statuses for a product without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.permission_authorization_statuses", product_id = %product_id))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -375,23 +410,55 @@ pub struct SigningHostRuntime {
 
 impl SigningHostRuntime {
     /// Build a long-lived signing-host runtime around a platform implementation.
+    /// Chat is answered `Unsupported`; [`Self::with_chat_platform`] serves it.
     #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.new"))]
     pub fn new<P>(platform: Arc<P>, config: SigningHostConfig, spawner: Spawner) -> Self
     where
         P: Platform + 'static,
     {
+        Self::with_chat_platform(platform, config, spawner, None)
+    }
+
+    /// Build a signing-host runtime that serves Chat through `chat_platform`.
+    ///
+    /// The pairing host has had this since chat reached the core; a signing
+    /// host needs it for the same reason a native host does, and without it no
+    /// runnable host in this repo can serve a chat product at all.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.with_chat_platform"))]
+    pub fn with_chat_platform<P>(
+        platform: Arc<P>,
+        config: SigningHostConfig,
+        spawner: Spawner,
+        chat_platform: Option<Arc<dyn ChatPlatform>>,
+    ) -> Self
+    where
+        P: Platform + 'static,
+    {
         let platform: Arc<dyn Platform> = platform;
-        let services = RuntimeServices::new(
+        let services = RuntimeServices::with_chat_platform(
             platform,
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
+            chat_platform,
         );
         let signing_host = SigningHostRole::new(services.clone());
         Self {
             services,
             signing_host,
         }
+    }
+
+    /// Install the host's [`PermissionStatusHost`], which carries the reasoning
+    /// for what it changes.
+    ///
+    /// Set-once, so the capability cannot be swapped under a running product.
+    /// Returns whether this call installed it. Call it before serving any
+    /// product runtime.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_permission_status_host"))]
+    pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
+        self.services.install_permission_status_host(host)
     }
 
     /// Build a product-facing runtime from this signing host.
@@ -412,7 +479,7 @@ impl SigningHostRuntime {
 
     /// Build one product connection with adapters scoped to one native
     /// executable while sharing this runtime's authentication and services.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "ws-bridge"))]
     pub(crate) fn product_runtime_with(
         &self,
         product: ProductContext,
@@ -551,6 +618,28 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Answer a pairing host's handshake without entering its long-lived serve loop.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.establish_pairing"))]
+    pub async fn establish_pairing(&self, deeplink: &str) -> Result<(), v01::GenericError> {
+        establish_pairing(self.services.clone(), self.signing_host.clone(), deeplink)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
+    /// Resume a previously paired host from its persisted public peer keys.
+    ///
+    /// Only [`ResponderExit::PeerDisconnected`] authorizes removing the durable
+    /// pairing. Retain it after [`ResponderExit::SubscriptionEnded`] or an error.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.resume_pairing"))]
+    pub async fn resume_pairing(
+        &self,
+        peer: PairedSsoPeer,
+    ) -> Result<ResponderExit, v01::GenericError> {
+        resume_pairing(self.services.clone(), self.signing_host.clone(), peer)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Answer one decrypted SSO remote message with this signing host.
     ///
     /// Session control stays with the caller: `Disconnected` is reported as an
@@ -593,6 +682,18 @@ impl SigningHostRuntime {
             .map_err(|reason| v01::GenericError { reason })
     }
 
+    /// Stop renewing one fixed statement account.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.untrack_statement_renewal_account"))]
+    pub async fn untrack_statement_renewal_account(
+        &self,
+        account_id: &[u8; 32],
+    ) -> Result<bool, v01::GenericError> {
+        self.signing_host
+            .untrack_statement_renewal_account(account_id)
+            .await
+            .map_err(|reason| v01::GenericError { reason })
+    }
+
     /// Run one statement-store renewal pass now and return per-target
     /// outcomes. This is the primary entry point; hosts whose process cannot
     /// stay alive (mobile) call it from an OS scheduler instead of
@@ -624,14 +725,30 @@ impl SigningHostRuntime {
             .map(|now| crate::statement_allowance::renewal::next_tick_delay(now.as_secs()))
             .unwrap_or(std::time::Duration::from_secs(3_600))
     }
+    /// The most recent pass the in-process renewal loop ran.
+    ///
+    /// `None` until a pass has run, which is "not yet" rather than healthy. A host
+    /// driving the loop has no return value to inspect, so this is where it learns
+    /// that a period was exhausted and an allowance went unrenewed.
+    pub fn last_statement_renewal_report(
+        &self,
+    ) -> Option<crate::statement_allowance::renewal::StatementRenewalReport> {
+        self.signing_host.last_statement_renewal_report()
+    }
 }
 
 /// Adapters scoped to one product connection: the platform serving its
 /// syscalls, the optional native Chat adapter, and the connection's Chat
 /// stream state. Non-native connections use [`Self::from_services`].
+#[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
     pub(crate) chat_platform: Option<Arc<dyn ChatPlatform>>,
+    /// Live OS permission state for this connection. It travels here rather
+    /// than on the host runtime because a native host builds one platform per
+    /// product execution, so the object that reports OS state has to be the
+    /// same one that presents the prompt.
+    pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
     pub(crate) chat: Arc<ChatConnection>,
 }
 
@@ -641,6 +758,7 @@ impl ConnectionAdapters {
         Self {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
+            permission_status: services.permission_status_host(),
             chat: Arc::new(ChatConnection::new()),
         }
     }
@@ -695,6 +813,10 @@ impl HostAdmin {
     }
 
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "host_admin.permission_authorization_status"))]
     pub async fn permission_authorization_status(
         &self,
@@ -706,6 +828,10 @@ impl HostAdmin {
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "host_admin.permission_authorization_statuses"))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -773,6 +899,65 @@ impl CoreAdmin for HostAdmin {
             .await
             .map_err(|reason| v01::GenericError { reason })
     }
+
+    async fn get_product_subtree_public_key(
+        &self,
+        product_id: String,
+        timeout_ms: Option<u32>,
+    ) -> Result<Option<[u8; 32]>, v01::GenericError> {
+        product_subtree_public_key(self.authority.as_ref(), &product_id, timeout_ms).await
+    }
+}
+
+/// Shared body of the two entry points that resolve a product subtree: the
+/// `CoreAdmin` method native hosts call and the pairing-host runtime method the
+/// wasm bridge wraps.
+///
+/// The identifier is normalized because the product path normalizes before it
+/// populates the cache, so an unnormalized lookup would miss a key the core is
+/// already holding.
+///
+/// The deadline is enforced by dropping the call rather than awaiting it after
+/// cancelling. Only the SSO response wait observes the cancellation token; the
+/// statement-store setup before it does not, so a call parked there ignores a
+/// cancel and would outlive any deadline that waited for it to finish.
+async fn product_subtree_public_key(
+    authority: &(impl ProductAuthority + ?Sized),
+    product_id: &str,
+    timeout_ms: Option<u32>,
+) -> Result<Option<[u8; 32]>, v01::GenericError> {
+    let product_id =
+        normalize_product_identifier(product_id).map_err(|reason| v01::GenericError {
+            reason: reason.to_string(),
+        })?;
+    let Some(session) = authority.current_session() else {
+        return Ok(None);
+    };
+    let timeout = timeout_ms
+        .map(|timeout_ms| Duration::from_millis(u64::from(timeout_ms)))
+        .unwrap_or(DEFAULT_REMOTE_AUTHORITY_RESPONSE_TIMEOUT);
+    let mut cx = CallContext::default();
+    cx.set_timeout(timeout);
+
+    let call = authority
+        .product_subtree_public_key(&cx, &session, product_id)
+        .fuse();
+    let deadline = futures_timer::Delay::new(timeout).fuse();
+    pin_mut!(call, deadline);
+    futures::select! {
+        result = call => result.map(Some).map_err(|error| v01::GenericError {
+            reason: error.to_string(),
+        }),
+        () = deadline => {
+            let reason = CancellationReason::TimedOut { timeout };
+            // Best effort for anything already watching the token. The call is
+            // dropped on return either way, which is what actually ends it.
+            cx.cancel().cancel_with_reason(reason.clone());
+            Err(v01::GenericError {
+                reason: format!("Product subtree request {reason}"),
+            })
+        }
+    }
 }
 
 /// Target-neutral host runtime wrapper.
@@ -808,13 +993,27 @@ impl ProductRuntimeControl {
         Ok(&self.runtime)
     }
 
+    /// Publish one host-authored Chat action into this connection's action
+    /// stream, buffering it until the product subscribes.
+    pub fn publish_chat_action(
+        &self,
+        action: v01::HostChatActionSubscribeItem,
+    ) -> Result<(), ProductRuntimeError> {
+        self.runtime()?.publish_chat_action(
+            truapi::versioned::chat::HostChatActionSubscribeItem::V1(action),
+        )
+    }
+
     /// Request custom-message UI from this connection's product renderer.
     pub fn render_custom_message(
         &self,
         message_id: String,
         message_type: String,
         payload: Vec<u8>,
-    ) -> Result<truapi::Subscription<v01::CustomRendererNode>, ProductRuntimeError> {
+    ) -> Result<
+        truapi::Subscription<Result<v01::CustomRendererNode, v01::GenericError>>,
+        ProductRuntimeError,
+    > {
         self.runtime()?.native_chat_platform()?;
         let request = truapi::versioned::chat::ProductChatCustomMessageRenderRequest::V1(
             v01::ProductChatCustomMessageRenderRequest {
@@ -829,8 +1028,10 @@ impl ProductRuntimeControl {
             transport,
             request,
         )
-        .map(|item| match item {
-            truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
+        .map(|item| {
+            item.map(|item| match item {
+                truapi::versioned::chat::ProductChatCustomMessageRenderItem::V1(node) => node,
+            })
         });
         Ok(truapi::Subscription::new(Box::pin(stream)))
     }
@@ -960,6 +1161,10 @@ impl ProductRuntime {
     }
 
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.permission_authorization_status"))]
     pub async fn permission_authorization_status(
         &self,
@@ -969,6 +1174,10 @@ impl ProductRuntime {
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.permission_authorization_statuses"))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -1061,6 +1270,64 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
+    fn a_cached_subtree_answers_without_reaching_the_wallet() {
+        let platform = Arc::new(StubPlatform::default());
+        let (host_config, _) = runtime_config("myapp.dot");
+        let runtime = PairingHostRuntime::new(platform.clone(), host_config, test_spawner());
+        let session = crate::test_support::sso_session_info();
+        runtime
+            .pairing_host
+            .session_state()
+            .set_session(session.clone());
+        runtime
+            .pairing_host
+            .cache_product_subtree_for_test(&session, "myapp.dot", [9; 32]);
+
+        let key =
+            futures::executor::block_on(runtime.product_subtree_public_key("myapp.dot", Some(1)))
+                .expect("a cached subtree resolves");
+        assert_eq!(key, Some([9; 32]));
+
+        // The cache comes before the wallet. A one-millisecond deadline means
+        // anything that reached for the wallet here would time out instead of
+        // answering, and no statement-store traffic says it did not try.
+        assert!(
+            platform
+                .sent_rpc
+                .lock()
+                .expect("rpc list mutex poisoned")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_timeout_bounds_the_wait_for_the_account_holder() {
+        let (host_config, _) = runtime_config("myapp.dot");
+        let runtime = PairingHostRuntime::new(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            test_spawner(),
+        );
+        runtime
+            .pairing_host
+            .session_state()
+            .set_session(crate::test_support::sso_session_info());
+
+        // Nothing answers the wallet request, and wait_for_sso_remote_response exits
+        // only on a peer answer, a disconnect, or the caller's token. Without
+        // the timeout cancelling that token the call never returns, so this
+        // test would hang rather than fail.
+        let error =
+            futures::executor::block_on(runtime.product_subtree_public_key("myapp.dot", Some(1)))
+                .expect_err("an unanswered wallet request ends at its deadline");
+        assert!(
+            error.reason.contains("timed out"),
+            "expected a timeout, got {}",
+            error.reason
+        );
+    }
+
+    #[test]
     fn product_runtime_and_dispatch_future_are_send() {
         assert_send_sync::<ProductRuntime>();
         let (host_config, product) = runtime_config("myapp.dot");
@@ -1076,7 +1343,7 @@ mod tests {
     }
 
     #[test]
-    fn spa_connection_rejects_native_custom_rendering() {
+    fn app_connection_rejects_custom_rendering() {
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
             Arc::new(StubPlatform::default()),
@@ -1095,7 +1362,34 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_request_on_spa_connection() {
+    fn app_connection_rejects_publishing_a_chat_action() {
+        let (host_config, product) = runtime_config("myapp.dot");
+        let runtime = ProductRuntime::from_platform_with_config(
+            Arc::new(StubPlatform::default()),
+            host_config,
+            product,
+            test_spawner(),
+            Arc::new(RecordingSink::default()),
+        );
+
+        assert!(matches!(
+            runtime
+                .control()
+                .publish_chat_action(v01::HostChatActionSubscribeItem {
+                    room_id: "support".into(),
+                    peer: "myapp.dot".into(),
+                    payload: v01::ChatActionPayload::ActionTriggered(v01::ActionTrigger {
+                        message_id: "message".into(),
+                        action_id: "vote".into(),
+                        payload: None,
+                    }),
+                }),
+            Err(ProductRuntimeError::Denied)
+        ));
+    }
+
+    #[test]
+    fn generated_filter_denies_chat_request_on_app_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -1135,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_register_bot_on_spa_connection() {
+    fn generated_filter_denies_chat_register_bot_on_app_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -1175,7 +1469,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_filter_denies_chat_subscription_on_spa_connection() {
+    fn generated_filter_denies_chat_subscription_on_app_connection() {
         let sink = Arc::new(RecordingSink::default());
         let (host_config, product) = runtime_config("myapp.dot");
         let runtime = ProductRuntime::from_platform_with_config(
@@ -1258,6 +1552,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],
@@ -1303,6 +1598,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],

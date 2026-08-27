@@ -54,10 +54,12 @@ pub fn test_runtime_config() -> (PairingHostConfig, ProductContext) {
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://dot.li/dotli.png".to_string()),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             PlatformInfo::default(),
             [0xa2; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),

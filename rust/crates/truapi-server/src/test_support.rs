@@ -29,9 +29,9 @@ use truapi_platform::{
     CoreStorage as PlatformCoreStorage, CoreStorageKey, Features as PlatformFeatures, HostInfo,
     JsonRpcConnection, Navigation as PlatformNavigation, Notifications as PlatformNotifications,
     PairingHostConfig, Permissions as PlatformPermissions, PlatformInfo, PreimageHost,
-    ProductContext, ProductStorage as PlatformProductStorage, ResourceAllocationReview,
-    SignVrfReview, StatementStoreProductSignReview, ThemeHost, UserConfirmation,
-    UserConfirmationReview,
+    ProductContext, ProductStorage as PlatformProductStorage, ProductSubtreeReview,
+    ResourceAllocationReview, SignVrfReview, StatementStoreProductSignReview, ThemeHost,
+    UserConfirmation, UserConfirmationReview,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519SecretKey};
 
@@ -77,6 +77,10 @@ pub(crate) struct StubPlatform {
     pub(crate) account_access_confirmed: bool,
     pub(crate) account_access_error: Option<&'static str>,
     pub(crate) account_access_reviews: Arc<Mutex<Vec<AccountAccessReview>>>,
+    /// Inverted so the derived default (`false`) approves, matching the
+    /// pre-consent behavior where a cold own-account resolve was not gated.
+    pub(crate) product_subtree_denied: bool,
+    pub(crate) product_subtree_reviews: Arc<Mutex<Vec<ProductSubtreeReview>>>,
     pub(crate) identity_disclosure_confirmed: bool,
     pub(crate) identity_disclosure_error: Option<&'static str>,
     pub(crate) identity_disclosure_calls: Arc<AtomicUsize>,
@@ -204,10 +208,12 @@ pub(crate) fn runtime_config(product_id: &str) -> (PairingHostConfig, ProductCon
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://example.invalid/dotli.png".to_string()),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             PlatformInfo::default(),
             [0; 32],
             [0xbb; 32],
+            [0xcc; 32],
             "polkadotapp".to_string(),
         )
         .expect("test host runtime config is valid"),
@@ -1471,6 +1477,13 @@ impl UserConfirmation for StubPlatform {
                 )
             }
             UserConfirmationReview::PreimageSubmit(_) => (None, true),
+            UserConfirmationReview::ProductSubtree(review) => {
+                self.product_subtree_reviews
+                    .lock()
+                    .expect("product subtree review list mutex poisoned")
+                    .push(review);
+                (None, !self.product_subtree_denied)
+            }
         };
         if let Some(reason) = error {
             return Err(v01::GenericError {
