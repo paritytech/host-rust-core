@@ -154,6 +154,28 @@ cargo build -p truapi-host-cli
 
 ### 3.2 Installation
 
+The published route is the installer script, which needs no Rust toolchain:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
+```
+
+It resolves the current stable version from the `truapi-host-cli-stable`
+release pointer, downloads the archive for the detected target
+(`aarch64-apple-darwin`, `x86_64-unknown-linux-musl` or
+`aarch64-unknown-linux-musl`), verifies its SHA-256, and lays out:
+
+```
+$XDG_DATA_HOME/truapi-host/versions/<version>/truapi-host
+$XDG_DATA_HOME/truapi-host/current -> versions/<version>
+~/.local/bin/truapi-host -> $XDG_DATA_HOME/truapi-host/current/truapi-host
+```
+
+`TRUAPI_HOST_VERSION`, `TRUAPI_HOST_INSTALL_DIR` and `TRUAPI_HOST_BIN_DIR`
+override the version, the version store and the `PATH` directory.
+
+The source route:
+
 ```sh
 make headless install
 ```
@@ -171,20 +193,66 @@ cargo install \
 ### 3.3 Runtime dependencies
 
 Host-only commands need the installed Rust binary. Product scripts additionally
-need:
+need `bun` on `PATH`, plus a runner (see below). A source build also needs the
+repository's generated `@parity/truapi` TypeScript sources.
 
-- `bun` on `PATH`;
-- `js/runner.ts`; and
-- the repository's generated `@parity/truapi` TypeScript sources and their
-  dependencies.
+The runner is resolved in this order: `TRUAPI_HOST_RUNNER`, then `runner.js`
+next to the running binary, then `js/runner.ts` in the source checkout
+(compiled from `CARGO_MANIFEST_DIR`).
 
-By default, the runner path is compiled from `CARGO_MANIFEST_DIR` and therefore
-points into the source checkout. `TRUAPI_HOST_RUNNER` can select another
-`runner.ts`. The v0.1 install is not a self-contained relocatable script
-runtime: deleting or moving the checkout without supplying a replacement
-runner breaks `/script` and `--script`.
+A release archive ships `runner.js` beside the binary, with `@parity/truapi`
+bundled in, so an installed copy runs product scripts with no source tree. A
+source build has no bundle and falls back to the checkout copy, whose relative
+`@parity/truapi` import means it only works from a built tree.
 
-The binary has `--help` but no `--version` option.
+`bun` is required either way, since the runner and user scripts are executed by
+it.
+
+The binary has `--help` and `--version`.
+
+### 3.4 Self-update
+
+An install laid out by §3.2 keeps itself current. Every command except
+`update` spawns a background check that:
+
+1. does nothing unless the running executable resolves inside
+   `<root>/versions/`, so a `cargo install` copy or a source build is never
+   modified;
+2. does nothing when `TRUAPI_HOST_NO_UPDATE` is set;
+3. takes a non-blocking `<root>/update.lock`, and gives up if another process
+   holds it;
+4. does nothing if `<root>/update-check.json` records a check within the last
+   four hours, and records the attempt *before* the network request so an
+   unreachable release host is not retried on every invocation;
+5. reads the published version from the `truapi-host-cli-stable` pointer and
+   stops when `current` already selects it;
+6. downloads the archive and its `.sha256`, refuses a digest mismatch, unpacks
+   into `versions/<version>`, and renames a new symlink over `current`.
+
+The running process is never replaced. A new version takes effect on the next
+run, and the CLI logs one line when one is waiting. Versions other than the
+running one and the active one are pruned.
+
+The check runs alongside the command rather than delaying it, and the process
+waits for it before exiting, so even a one-shot command completes the download
+it started. A download in progress is announced, because an otherwise quick
+command would seem to hang. That wait is bounded at 150 seconds, so a stalled
+network cannot hold the CLI open; a download cut short leaves only a
+`versions/.<version>.incoming` directory that the next attempt removes.
+
+`truapi-host update` performs the same work synchronously, ignores the
+four-hour throttle, and reports the outcome on stdout.
+
+A binary outside that layout logs one line at startup naming itself a local
+build and giving the installer command, because it never updates and is
+otherwise indistinguishable from a managed install that is up to date.
+
+The two routes shadow each other depending on `PATH` order, so each clears the
+other: the installer removes a `cargo install` copy (via `cargo uninstall
+truapi-host-cli`, falling back to deleting `$CARGO_HOME/bin/truapi-host`), and
+`make headless install` runs the installer's `--uninstall` first. `--uninstall`
+removes the version store and the `PATH` symlink, and only removes that symlink
+when it points inside the version store.
 
 ## 4. Top-level command line
 
@@ -1852,6 +1920,11 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_LOG` | Default `--log-level`. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
+| `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |
+| `TRUAPI_HOST_INSTALL_DIR` | Version store for a managed install. Read by the installer; the binary derives it from its own path. |
+| `TRUAPI_HOST_BIN_DIR` | Directory the installer puts the `PATH` symlink in. |
+| `TRUAPI_HOST_VERSION` | Version the installer installs, instead of the current stable one. |
+| `TRUAPI_HOST_RELEASE_BASE_URL` | Release host for the installer and the updater, for mirrors and tests. |
 | `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |

@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli headless install matrix explorer xcframework
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-cli dev-bootstrap dev-link-check e2e-dotli e2e-cli-diagnosis e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-cli-update headless install cli-runner cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -64,7 +64,50 @@ headless: ## Build the truapi-host CLI and generated TypeScript client.
 	cd $(TRUAPI_PKG) && npm run build
 
 install: headless ## Install the truapi-host CLI into Cargo's bin dir; use as `make headless install`.
+	# A prebuilt install and a cargo one shadow each other depending on PATH
+	# order, so clear the prebuilt one before taking over.
+	bash scripts/truapi-host-installer.sh --uninstall
 	cargo install --path rust/crates/truapi-host-cli --bin truapi-host --locked --force
+	@echo
+	@echo "Installed a local build of truapi-host. It does not auto-update."
+	@echo "To go back to the prebuilt release:"
+	@echo "  curl -fsSL $(CLI_INSTALLER_URL) | bash"
+
+# Release packaging for the truapi-host binary. CLI_TARGET picks the triple;
+# CLI_VERSION defaults to the crate version, which tracks the protocol version.
+# The layout here is what scripts/truapi-host-installer.sh expects to download.
+CLI_INSTALLER_URL := https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh
+CLI_DIST_DIR := target/dist
+# Default to the triple that is actually published, not the rustc host: the
+# Linux releases are musl so one artifact per architecture runs anywhere.
+CLI_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p' | sed 's/-linux-gnu$$/-linux-musl/')
+CLI_VERSION ?= $(shell sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' rust/crates/truapi-host-cli/Cargo.toml)
+CLI_ARCHIVE := truapi-host-$(CLI_VERSION)-$(CLI_TARGET).tar.gz
+CLI_RUNNER := $(CLI_DIST_DIR)/runner.js
+CLI_STAGE := $(CLI_DIST_DIR)/$(CLI_TARGET)
+# macOS ships shasum, most Linux images ship only sha256sum.
+SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo "sha256sum" || echo "shasum -a 256")
+
+# The checkout's runner imports @parity/truapi by relative path, so it only
+# works from a built source tree. Bundling inlines the client, which is what
+# lets a downloaded binary run product scripts. Needs generated sources, so run
+# `make codegen` first on a fresh checkout. Architecture-independent, so a file
+# target: CI builds it once and every per-target archive reuses it.
+$(CLI_RUNNER):
+	mkdir -p $(CLI_DIST_DIR)
+	bun build rust/crates/truapi-host-cli/js/runner.ts --target=bun --outfile $@
+
+cli-runner: $(CLI_RUNNER) ## Bundle the self-contained product-script runner into target/dist.
+
+cli-dist: $(CLI_RUNNER) ## Package truapi-host for CLI_TARGET into target/dist in the release artifact layout.
+	rustup target add $(CLI_TARGET)
+	$(CARGO) build -p truapi-host-cli --release --target $(CLI_TARGET)
+	rm -rf $(CLI_STAGE)
+	mkdir -p $(CLI_STAGE)
+	cp target/$(CLI_TARGET)/release/truapi-host $(CLI_RUNNER) $(CLI_STAGE)/
+	tar -czf $(CLI_DIST_DIR)/$(CLI_ARCHIVE) -C $(CLI_STAGE) truapi-host runner.js
+	cd $(CLI_DIST_DIR) && $(SHA256) $(CLI_ARCHIVE) > $(CLI_ARCHIVE).sha256
+	@echo "packaged $(CLI_DIST_DIR)/$(CLI_ARCHIVE)"
 
 codegen: ## Regenerate generated TS/Rust artifacts from the Rust crates.
 	./scripts/codegen.sh
@@ -367,6 +410,9 @@ e2e-pairing-cli: ## Run the generated battery against the paired pairing-host CL
 
 e2e-chat-cli: ## Run the Chat content-screening battery against a chat signing-host CLI.
 	scripts/battery.sh --chat-host
+
+e2e-cli-update: cli-dist ## Install the packaged truapi-host from a fake release and self-update it, with no network.
+	node scripts/e2e-cli-update.mjs
 
 matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-reports.
 	cd $(EXPLORER) && npm run generate-matrix

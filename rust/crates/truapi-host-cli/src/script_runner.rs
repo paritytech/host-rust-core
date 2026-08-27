@@ -7,6 +7,7 @@
 //! `truapi-host pairing-host --script foo.ts` *is* the test — there is no
 //! separate bun orchestrator.
 
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -48,12 +49,34 @@ if (!result.isOk()) {
 console.log('user id', result.value);
 "#;
 
-/// Locate `js/runner.ts`, shipped alongside the crate.
-///
-/// Overridable with `TRUAPI_HOST_RUNNER` for packaged/relocated builds.
+/// Runner bundle shipped next to the binary in a release archive. It has
+/// `@parity/truapi` compiled in, so a downloaded install runs product scripts
+/// without a source checkout.
+const PACKAGED_RUNNER: &str = "runner.js";
+
+/// Locate the host-script runner.
 fn runner_path() -> PathBuf {
-    if let Ok(path) = std::env::var("TRUAPI_HOST_RUNNER") {
+    resolve_runner(
+        std::env::var_os("TRUAPI_HOST_RUNNER"),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+/// Explicit override first, then the bundle beside the running binary, then the
+/// checkout's `js/runner.ts`.
+///
+/// The checkout copy imports `@parity/truapi` by relative path, so it only
+/// works from a built source tree; the packaged bundle is what makes an
+/// installed binary self-sufficient.
+fn resolve_runner(explicit: Option<OsString>, executable: Option<&Path>) -> PathBuf {
+    if let Some(path) = explicit {
         return PathBuf::from(path);
+    }
+    let packaged = executable
+        .and_then(Path::parent)
+        .map(|directory| directory.join(PACKAGED_RUNNER));
+    if let Some(packaged) = packaged.filter(|path| path.is_file()) {
+        return packaged;
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("js/runner.ts")
 }
@@ -223,6 +246,45 @@ fn command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The override exists so a packaged install can be pointed at a working
+    /// copy; it has to win over the bundle sitting next to the binary.
+    #[test]
+    fn an_explicit_runner_overrides_the_packaged_bundle() {
+        let install = tempfile::tempdir().unwrap();
+        let executable = install.path().join("truapi-host");
+        fs::write(install.path().join(PACKAGED_RUNNER), "packaged").unwrap();
+
+        assert_eq!(
+            resolve_runner(
+                Some(OsString::from("/somewhere/custom.ts")),
+                Some(&executable)
+            ),
+            Path::new("/somewhere/custom.ts")
+        );
+    }
+
+    /// What makes a downloaded binary able to run product scripts at all.
+    #[test]
+    fn a_bundle_beside_the_binary_is_preferred_over_the_checkout() {
+        let install = tempfile::tempdir().unwrap();
+        let executable = install.path().join("truapi-host");
+        let bundle = install.path().join(PACKAGED_RUNNER);
+        fs::write(&bundle, "packaged").unwrap();
+
+        assert_eq!(resolve_runner(None, Some(&executable)), bundle);
+    }
+
+    #[test]
+    fn a_source_build_falls_back_to_the_checkout_runner() {
+        let install = tempfile::tempdir().unwrap();
+        let executable = install.path().join("truapi-host");
+
+        assert_eq!(
+            resolve_runner(None, Some(&executable)),
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("js/runner.ts")
+        );
+    }
 
     #[test]
     fn scratch_script_starts_as_a_bun_script_with_dependency_free_example() -> Result<()> {
