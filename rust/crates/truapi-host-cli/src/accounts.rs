@@ -605,7 +605,7 @@ async fn create_auto_account(
     .await
     .with_context(|| format!("check lite username {lite_username:?} availability"))?
     {
-        bail!("lite username prefix {username_prefix:?} has no available numerical aliases");
+        bail!("lite username {lite_username:?} is taken; pass a different --lite-username-prefix");
     }
 
     let mut record = AccountRecord {
