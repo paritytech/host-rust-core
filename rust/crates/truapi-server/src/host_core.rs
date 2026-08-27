@@ -21,7 +21,7 @@ use thiserror::Error;
 use tracing::instrument;
 use truapi::v01;
 use truapi::{CallContext, CancellationReason};
-use truapi_platform::ChatPlatform;
+use truapi_platform::{ChatPlatform, PermissionStatusHost};
 use truapi_platform::{
     CoreAdmin, PairingHostAdmin, PairingHostConfig, PermissionAuthorizationRequest,
     PermissionAuthorizationStatus, Platform, ProductContext, SigningHostConfig,
@@ -118,6 +118,7 @@ impl PairingHostRuntime {
         let platform: Arc<dyn Platform> = platform;
         let services = RuntimeServices::with_chat_platform(
             platform,
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -129,6 +130,17 @@ impl PairingHostRuntime {
             services,
             pairing_host,
         }
+    }
+
+    /// Install the host's [`PermissionStatusHost`], which carries the reasoning
+    /// for what it changes.
+    ///
+    /// Set-once, so the capability cannot be swapped under a running product.
+    /// Returns whether this call installed it. Call it before serving any
+    /// product runtime.
+    #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.set_permission_status_host"))]
+    pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
+        self.services.install_permission_status_host(host)
     }
 
     /// Build a product-facing runtime from this pairing host.
@@ -314,6 +326,10 @@ impl PairingHostRuntime {
     }
 
     /// Read a stored permission authorization status for a product without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.permission_authorization_status", product_id = %product_id))]
     pub async fn permission_authorization_status(
         &self,
@@ -326,6 +342,10 @@ impl PairingHostRuntime {
     }
 
     /// Read stored permission authorization statuses for a product without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "pairing_host_runtime.permission_authorization_statuses", product_id = %product_id))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -417,6 +437,7 @@ impl SigningHostRuntime {
         let platform: Arc<dyn Platform> = platform;
         let services = RuntimeServices::with_chat_platform(
             platform,
+            config.host.host_info.clone(),
             config.people_chain_genesis_hash,
             config.bulletin_chain_genesis_hash,
             spawner,
@@ -427,6 +448,17 @@ impl SigningHostRuntime {
             services,
             signing_host,
         }
+    }
+
+    /// Install the host's [`PermissionStatusHost`], which carries the reasoning
+    /// for what it changes.
+    ///
+    /// Set-once, so the capability cannot be swapped under a running product.
+    /// Returns whether this call installed it. Call it before serving any
+    /// product runtime.
+    #[instrument(skip_all, fields(runtime.method = "signing_host_runtime.set_permission_status_host"))]
+    pub fn set_permission_status_host(&self, host: Arc<dyn PermissionStatusHost>) -> bool {
+        self.services.install_permission_status_host(host)
     }
 
     /// Build a product-facing runtime from this signing host.
@@ -708,9 +740,15 @@ impl SigningHostRuntime {
 /// Adapters scoped to one product connection: the platform serving its
 /// syscalls, the optional native Chat adapter, and the connection's Chat
 /// stream state. Non-native connections use [`Self::from_services`].
+#[derive(Clone)]
 pub(crate) struct ConnectionAdapters {
     pub(crate) platform: Arc<dyn Platform>,
     pub(crate) chat_platform: Option<Arc<dyn ChatPlatform>>,
+    /// Live OS permission state for this connection. It travels here rather
+    /// than on the host runtime because a native host builds one platform per
+    /// product execution, so the object that reports OS state has to be the
+    /// same one that presents the prompt.
+    pub(crate) permission_status: Option<Arc<dyn PermissionStatusHost>>,
     pub(crate) chat: Arc<ChatConnection>,
 }
 
@@ -720,6 +758,7 @@ impl ConnectionAdapters {
         Self {
             platform: services.platform.clone(),
             chat_platform: services.chat_platform.clone(),
+            permission_status: services.permission_status_host(),
             chat: Arc::new(ChatConnection::new()),
         }
     }
@@ -774,6 +813,10 @@ impl HostAdmin {
     }
 
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "host_admin.permission_authorization_status"))]
     pub async fn permission_authorization_status(
         &self,
@@ -785,6 +828,10 @@ impl HostAdmin {
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "host_admin.permission_authorization_statuses"))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -1114,6 +1161,10 @@ impl ProductRuntime {
     }
 
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.permission_authorization_status"))]
     pub async fn permission_authorization_status(
         &self,
@@ -1123,6 +1174,10 @@ impl ProductRuntime {
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "product_runtime.permission_authorization_statuses"))]
     pub async fn permission_authorization_statuses(
         &self,
@@ -1497,6 +1552,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],
@@ -1542,6 +1598,7 @@ mod tests {
                 name: "Polkadot Mobile".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],

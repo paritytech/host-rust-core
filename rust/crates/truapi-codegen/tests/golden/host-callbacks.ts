@@ -233,6 +233,20 @@ export type CreateTransactionReview =
   | { tag: "LegacyAccount"; value: LegacyAccountTxPayload };
 
 /**
+ * What the operating system currently says about a device capability.
+ *
+ * Distinct from `PermissionAuthorizationStatus`, which is the product-scoped
+ * decision the user made through TrUAPI. The two answer different questions
+ * and are combined rather than substituted: a capability is usable only when
+ * the product holds a grant *and* the OS still allows it.
+ */
+export type DevicePermissionStatus =
+  | "Granted"
+  | "Denied"
+  | "NotDetermined"
+  | "NotApplicable";
+
+/**
  * One chain a host serves: a protocol chain role mapped to the concrete
  * chain of the host's configured environment.
  */
@@ -656,6 +670,19 @@ export const CreateTransactionReview: S.Codec<CreateTransactionReview> = S.lazy(
 );
 
 /**
+ * What the operating system currently says about a device capability.
+ *
+ * Distinct from `PermissionAuthorizationStatus`, which is the product-scoped
+ * decision the user made through TrUAPI. The two answer different questions
+ * and are combined rather than substituted: a capability is usable only when
+ * the product holds a grant *and* the OS still allows it.
+ */
+export const DevicePermissionStatus: S.Codec<DevicePermissionStatus> = S.lazy(
+  (): S.Codec<DevicePermissionStatus> =>
+    S.Status("Granted", "Denied", "NotDetermined", "NotApplicable"),
+);
+
+/**
  * One chain a host serves: a protocol chain role mapped to the concrete
  * chain of the host's configured environment.
  */
@@ -977,6 +1004,10 @@ export interface CoreAdmin {
 
   /**
    * Read a stored permission authorization status without prompting.
+   *
+   * A device capability also resolves the host application's OS gate, so an
+   * OS refusal reads as `Denied` whatever is stored. Remote,
+   * identity-disclosure and account-access decisions have no OS gate.
    */
   getPermissionAuthorizationStatus(
     request: PermissionAuthorizationRequest,
@@ -984,6 +1015,10 @@ export interface CoreAdmin {
 
   /**
    * Read stored permission authorization statuses without prompting.
+   *
+   * A device capability also resolves the host application's OS gate, so an
+   * OS refusal reads as `Denied` whatever is stored. Remote,
+   * identity-disclosure and account-access decisions have no OS gate.
    *
    * Results are returned in the same order as `requests`.
    */
@@ -1173,6 +1208,29 @@ export interface PairingHostAdmin {
 }
 
 /**
+ * Live OS permission state, read without prompting.
+ *
+ * A product-scoped grant is persisted once and never expires, but the OS
+ * grant behind it can be revoked in system settings, suspended by device
+ * policy, or reset by the platform — Android auto-resets runtime permissions
+ * for apps that go unused. Without this capability the core keeps answering
+ * from the stored grant alone and tells a product `granted` for a capability
+ * the OS has since taken away.
+ *
+ * This is deliberately separate from `Permissions::device_permission`: that
+ * call may show UI, so it cannot be used to re-check a decision the user has
+ * already made without prompting them again on every request.
+ */
+export interface PermissionStatusHost {
+  /**
+   * Current OS status of a device capability. Must not prompt.
+   */
+  devicePermissionStatus(
+    request: HostDevicePermissionRequest,
+  ): Promise<DevicePermissionStatus>;
+}
+
+/**
  * Permission prompts. Device permissions (camera, mic, NFC, ...) are separate
  * from remote permissions (domain access, chain submit, ...), so the platform
  * surface mirrors that split.
@@ -1270,6 +1328,7 @@ export interface HostCallbacks {
   theme: ThemeHost;
   preimage: PreimageHost;
   chat?: ChatPlatform;
+  permissionStatus?: PermissionStatusHost;
 }
 
 export interface RequiredHostCallbacks {
@@ -1285,4 +1344,5 @@ export interface RequiredHostCallbacks {
   theme: Required<ThemeHost>;
   preimage: Required<PreimageHost>;
   chat?: Required<ChatPlatform>;
+  permissionStatus?: Required<PermissionStatusHost>;
 }

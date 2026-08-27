@@ -22,9 +22,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
 use truapi_platform::{
-    AuthState, ChainProvider, CoreStorage, CoreStorageKey, Features, JsonRpcConnection, Navigation,
-    Notifications, Permissions, PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo,
-    ThemeHost, UserConfirmation, UserConfirmationReview,
+    AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
+    JsonRpcConnection, Navigation, Notifications, PermissionStatusHost, Permissions, PreimageHost,
+    ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
+    UserConfirmationReview,
 };
 
 use crate::chain::WsChainProvider;
@@ -642,6 +643,19 @@ fn emit_notification_event(ui: Option<&UiHandle>, event: SystemEvent) {
         ui.event(event);
     } else {
         crate::terminal_ui::output_event(event);
+    }
+}
+
+#[async_trait]
+impl PermissionStatusHost for CliPlatform {
+    async fn device_permission_status(
+        &self,
+        _request: api::HostDevicePermissionRequest,
+    ) -> Result<DevicePermissionStatus, api::GenericError> {
+        // A terminal has no OS permission gate, so every capability is
+        // `NotApplicable` rather than `Granted`: claiming a grant would assert
+        // state this host cannot see, and the stored product decision governs.
+        Ok(DevicePermissionStatus::NotApplicable)
     }
 }
 

@@ -19,7 +19,7 @@ use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use futures::task::SpawnExt;
 use parity_scale_codec::Encode;
-use truapi::{Bytes32, v01};
+use truapi::{Bytes32, latest::HostPlatform, v01};
 use truapi_platform::{
     AuthPresenter, AuthState, ChainProvider, CoreAdmin, CoreStorage, CoreStorageKey, Features,
     HostInfo, JsonRpcConnection, Navigation, Notifications, PermissionAuthorizationRequest,
@@ -176,6 +176,9 @@ pub struct NativeHostRuntimeConfig {
     pub host_icon: Option<String>,
     /// Optional host version shown by the wallet during SSO pairing.
     pub host_version: Option<String>,
+    /// Platform category this host runs on, reported to products via
+    /// `System::host_info`.
+    pub host_platform: HostPlatform,
     /// Optional platform/browser name shown by the wallet during SSO pairing.
     pub platform_type: Option<String>,
     /// Optional platform/browser version shown by the wallet during SSO pairing.
@@ -280,6 +283,7 @@ impl TryFrom<NativeHostRuntimeConfig> for NativeResolvedHostRuntimeConfig {
                 name: config.host_name,
                 icon: config.host_icon,
                 version: config.host_version,
+                platform: config.host_platform,
             },
             PlatformInfo {
                 kind: config.platform_type,
@@ -345,6 +349,35 @@ pub fn parse_navigate(input: String) -> NavigateDecision {
     dotns::parse_navigate(&input)
 }
 
+/// OS status of a device capability, as a native host reports it.
+///
+/// Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
+/// directly: an async callback method returning a type from another UniFFI
+/// namespace lowers into that namespace's `RustBuffer`, and the generated
+/// Kotlin then fails to compile. The conversion is total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum NativeDevicePermissionStatus {
+    /// The OS grants this capability to the host application.
+    Granted,
+    /// The OS refuses it; only system settings can change that.
+    Denied,
+    /// The OS has not been asked, or reset its own answer.
+    NotDetermined,
+    /// This platform has no OS gate for the capability.
+    NotApplicable,
+}
+
+impl From<NativeDevicePermissionStatus> for truapi_platform::DevicePermissionStatus {
+    fn from(status: NativeDevicePermissionStatus) -> Self {
+        match status {
+            NativeDevicePermissionStatus::Granted => Self::Granted,
+            NativeDevicePermissionStatus::Denied => Self::Denied,
+            NativeDevicePermissionStatus::NotDetermined => Self::NotDetermined,
+            NativeDevicePermissionStatus::NotApplicable => Self::NotApplicable,
+        }
+    }
+}
+
 /// Callback surface that iOS and Android implement.
 ///
 /// Threading contract: every callback executes on the shared bridge
@@ -385,6 +418,21 @@ pub trait HostCallbacks: Send + Sync {
         &self,
         request: v01::HostDevicePermissionRequest,
     ) -> Result<bool, HostRejection>;
+
+    /// Report the OS status of a device capability without prompting.
+    ///
+    /// Answer from the platform's own authorization APIs. This must not show
+    /// UI: the core calls it before every device-permission request and status
+    /// read, and prompting here would re-ask a question the user has already
+    /// answered. A host with no OS gate for the capability answers
+    /// `NotApplicable`, which leaves the stored product decision governing.
+    ///
+    /// It is async because reading notification authorization on iOS is
+    /// `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<NativeDevicePermissionStatus, HostRejection>;
 
     /// Prompt the user for a remote (product-scoped) permission.
     async fn remote_permission(
@@ -554,10 +602,13 @@ impl NativeTrUApiHostRuntime {
         product: ProductContext,
     ) -> Arc<NativeProductExecution> {
         let events = Arc::new(NativeEventBus::default());
-        let platform: Arc<dyn truapi_platform::Platform> = Arc::new(CallbackPlatform {
+        let callback_platform = Arc::new(CallbackPlatform {
             callbacks: callbacks.clone(),
             events: events.clone(),
         });
+        let permission_status: Arc<dyn truapi_platform::PermissionStatusHost> =
+            callback_platform.clone();
+        let platform: Arc<dyn truapi_platform::Platform> = callback_platform;
         let chat: Option<Arc<dyn truapi_platform::ChatPlatform>> =
             chat_callbacks.map(|chat| -> Arc<dyn truapi_platform::ChatPlatform> {
                 Arc::new(ChatCallbackPlatform {
@@ -570,6 +621,7 @@ impl NativeTrUApiHostRuntime {
             product: product.clone(),
             platform,
             chat,
+            permission_status,
             events,
             shared_events: self.events.clone(),
             #[cfg(feature = "ws-bridge")]
@@ -846,6 +898,9 @@ pub struct NativeProductExecution {
     product: ProductContext,
     platform: Arc<dyn truapi_platform::Platform>,
     chat: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// The same `CallbackPlatform` as `platform`, kept separately because
+    /// `Arc<dyn Platform>` cannot be downcast to the optional capability.
+    permission_status: Arc<dyn truapi_platform::PermissionStatusHost>,
     events: Arc<NativeEventBus>,
     /// Host-runtime events back the process-wide services shared by every
     /// product execution (chain, Statement Store, and Bulletin). Native
@@ -870,6 +925,7 @@ impl NativeProductExecution {
         crate::host_core::ConnectionAdapters {
             platform: self.platform.clone(),
             chat_platform: self.chat.clone(),
+            permission_status: Some(self.permission_status.clone()),
             chat: self.chat_connection.clone(),
         }
     }
@@ -911,13 +967,19 @@ impl NativeProductExecution {
 #[uniffi::export]
 impl NativeProductExecution {
     /// Read a product-scoped permission authorization without prompting.
-    pub fn permission_authorization_status(
+    ///
+    /// A device capability resolves the host application's OS gate as well as
+    /// storage, which means calling `device_permission_status` on the host. It
+    /// is async for that reason: blocking a thread on a host callback
+    /// deadlocks any implementation that hops to the same thread to answer.
+    pub async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, HostRejection> {
-        Ok(futures::executor::block_on(
-            self.admin().permission_authorization_status(request),
-        )?)
+        Ok(self
+            .admin()
+            .permission_authorization_status(request)
+            .await?)
     }
 
     /// Update a product-scoped permission authorization.
@@ -1075,15 +1137,8 @@ impl NativeProductExecution {
         let adapters = self.adapters();
         let product_control = self.product_control.clone();
         let runtime_factory = Arc::new(move |sink| {
-            let product_runtime = runtime.product_runtime_with(
-                product.clone(),
-                crate::host_core::ConnectionAdapters {
-                    platform: adapters.platform.clone(),
-                    chat_platform: adapters.chat_platform.clone(),
-                    chat: adapters.chat.clone(),
-                },
-                sink,
-            );
+            let product_runtime =
+                runtime.product_runtime_with(product.clone(), adapters.clone(), sink);
             *product_control
                 .lock()
                 .expect("native product control mutex poisoned") = Some(product_runtime.control());
@@ -1292,6 +1347,25 @@ impl Notifications for CallbackPlatform {
         );
         self.callbacks
             .cancel_notification(id)
+            .map_err(v01::GenericError::from)
+    }
+}
+
+#[async_trait]
+impl truapi_platform::PermissionStatusHost for CallbackPlatform {
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::DevicePermissionStatus, v01::GenericError> {
+        self.callbacks.on_core_log(
+            "truapi.native.callback.device_permission_status".to_string(),
+            format!("{request}"),
+        );
+
+        self.callbacks
+            .device_permission_status(request)
+            .await
+            .map(Into::into)
             .map_err(v01::GenericError::from)
     }
 }
@@ -1782,9 +1856,19 @@ mod tests {
         chain_connects: Mutex<Vec<Vec<u8>>>,
         chain_sends: Mutex<Vec<(u32, String)>>,
         chain_closes: Mutex<Vec<u32>>,
+        /// Capability this host reports as refused by the OS, if any.
+        os_refused: Option<v01::HostDevicePermissionRequest>,
     }
 
     impl EventCallbacks {
+        /// Same as [`Self::new`], reporting `capability` as refused by the OS.
+        fn refusing(capability: v01::HostDevicePermissionRequest) -> Self {
+            Self {
+                os_refused: Some(capability),
+                ..Self::new()
+            }
+        }
+
         fn new() -> Self {
             Self {
                 chat_room_status: Mutex::new(v01::ChatRoomRegistrationStatus::New),
@@ -1804,6 +1888,7 @@ mod tests {
                 chain_connects: Mutex::new(Vec::new()),
                 chain_sends: Mutex::new(Vec::new()),
                 chain_closes: Mutex::new(Vec::new()),
+                os_refused: None,
             }
         }
     }
@@ -1828,6 +1913,16 @@ mod tests {
             _request: v01::HostDevicePermissionRequest,
         ) -> Result<bool, HostRejection> {
             Ok(false)
+        }
+        async fn device_permission_status(
+            &self,
+            request: v01::HostDevicePermissionRequest,
+        ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+            Ok(if self.os_refused == Some(request) {
+                NativeDevicePermissionStatus::Denied
+            } else {
+                NativeDevicePermissionStatus::NotApplicable
+            })
         }
         async fn remote_permission(
             &self,
@@ -2015,6 +2110,7 @@ mod tests {
             host_name: "Polkadot Web".to_string(),
             host_icon: Some("https://example.invalid/dotli.png".to_string()),
             host_version: None,
+            host_platform: HostPlatform::Unknown,
             platform_type: None,
             platform_version: None,
             people_chain_genesis_hash: vec![0xa2; 32],
@@ -2034,6 +2130,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "ws-bridge")]
     fn native_product_execution(
         callbacks: Arc<dyn HostCallbacks>,
         product_id: &str,
@@ -2793,6 +2890,17 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_reports_the_declared_host_platform() {
+        let resolved = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
+            host_platform: HostPlatform::Ios,
+            ..native_host_runtime_config()
+        })
+        .expect("config is valid");
+
+        assert_eq!(resolved.signing.host.host_info.platform, HostPlatform::Ios);
+    }
+
+    #[test]
     fn runtime_config_rejects_wrong_size_genesis_hash() {
         let err = NativeResolvedHostRuntimeConfig::try_from(NativeHostRuntimeConfig {
             people_chain_genesis_hash: vec![0; 31],
@@ -2876,6 +2984,12 @@ mod tests {
                 _request: v01::HostDevicePermissionRequest,
             ) -> Result<bool, HostRejection> {
                 Ok(false)
+            }
+            async fn device_permission_status(
+                &self,
+                _request: v01::HostDevicePermissionRequest,
+            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+                Ok(NativeDevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,
@@ -3019,6 +3133,12 @@ mod tests {
                     .await
                     .expect("release signal");
                 Ok(true)
+            }
+            async fn device_permission_status(
+                &self,
+                _request: v01::HostDevicePermissionRequest,
+            ) -> Result<NativeDevicePermissionStatus, HostRejection> {
+                Ok(NativeDevicePermissionStatus::NotApplicable)
             }
             async fn remote_permission(
                 &self,
@@ -3346,5 +3466,47 @@ mod tests {
         )
         .expect("review must lift back");
         assert_eq!(lifted, review);
+    }
+
+    /// Drives the whole native chain for a status read: foreign callback,
+    /// `CallbackPlatform`, the per-execution connection adapters, and the
+    /// permission service. Nothing else covers that path, and the adapter is
+    /// per execution rather than per host runtime, so a host-level installer
+    /// would silently answer from the wrong object.
+    #[test]
+    fn a_native_status_read_follows_the_os_gate() {
+        let host = NativeTrUApiHostRuntime::with_runtime_config(
+            Arc::new(EventCallbacks::new()),
+            native_host_runtime_config(),
+        )
+        .expect("host runtime config should be valid");
+        let execution = host
+            .open_product_execution(
+                Arc::new(EventCallbacks::refusing(
+                    v01::HostDevicePermissionRequest::Camera,
+                )),
+                None,
+                native_execution_config("gated.dot", ProductExecutionKind::App),
+            )
+            .expect("execution should open");
+
+        let camera = futures::executor::block_on(execution.permission_authorization_status(
+            PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Camera),
+        ))
+        .expect("status read");
+        let microphone = futures::executor::block_on(execution.permission_authorization_status(
+            PermissionAuthorizationRequest::Device(v01::HostDevicePermissionRequest::Microphone),
+        ))
+        .expect("status read");
+
+        // Camera is refused by the OS; the microphone has no OS gate and no
+        // stored decision, so its question is still open.
+        assert_eq!(
+            (camera, microphone),
+            (
+                PermissionAuthorizationStatus::Denied,
+                PermissionAuthorizationStatus::NotDetermined,
+            )
+        );
     }
 }

@@ -214,6 +214,39 @@ describe("generated client transport", () => {
         expect(result.isOk()).toBe(true);
     });
 
+    it("returns the current product context without request arguments", async () => {
+        const fixture = providerFixture();
+        const client = createClient(createTransport(fixture.provider));
+
+        const response = client.system.getProductContext();
+        const frame = unwrap(
+            encodeWireMessage({
+                requestId: "p:1",
+                payload: {
+                    id: W.SYSTEM_GET_PRODUCT_CONTEXT.response,
+                    value: versionedV1(
+                        ScaleResult(
+                            T.HostGetProductContextResponse,
+                            CallError(T.VersionedHostGetProductContextError),
+                        ),
+                    ).enc({
+                        tag: "V1",
+                        value: {
+                            success: true,
+                            value: { productId: "truapi-playground.paseo" },
+                        },
+                    }),
+                },
+            }),
+            "encode getProductContext response",
+        );
+        fixture.receive(frame);
+
+        expect((await response)._unsafeUnwrap()).toEqual({
+            productId: "truapi-playground.paseo",
+        });
+    });
+
     it("decodes request domain errors from the versioned response envelope", async () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);

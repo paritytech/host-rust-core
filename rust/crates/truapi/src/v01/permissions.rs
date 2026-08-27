@@ -6,6 +6,13 @@ use parity_scale_codec::{Decode, Encode};
 /// The user's decision is persisted indefinitely after the first prompt and
 /// survives app restarts, whether the decision was grant or deny; the host
 /// does not re-prompt on subsequent requests for the same capability.
+///
+/// That decision is about this product. The OS grant behind it belongs to the
+/// host application and can move independently, so a host that can read OS
+/// state has the capability resolve only while both allow it: a stored grant
+/// whose OS grant was revoked answers `granted: false` without a prompt. An OS
+/// grant that is merely undetermined does not change the answer, because the OS
+/// resolves its own gate when the capability is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Display)]
 #[allow(clippy::upper_case_acronyms)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]

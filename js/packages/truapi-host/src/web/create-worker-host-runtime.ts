@@ -830,7 +830,10 @@ export function createWebWorkerPairingHostRuntime(
           kind: "init",
           logLevel: devLogLevelOverride ?? options.logLevel ?? "off",
           hostConfig: options.hostConfig,
-          capabilities: { chat: host.chat !== undefined },
+          capabilities: {
+            chat: host.chat !== undefined,
+            permissionStatus: host.permissionStatus !== undefined,
+          },
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
         cleanupInit();

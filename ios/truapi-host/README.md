@@ -387,7 +387,7 @@ runtime.notifyChainClosed(connectionId: chainConnectionId)
 // also resolves the WebRTC decision by peeking the execution rather than prompting.
 // Do not register these scripts by hand.
 let contentController = WKUserContentController()
-try TrUAPIHost.installProductScripts(
+try await TrUAPIHost.installProductScripts(
     into: contentController,
     execution: execution,
     endpoint: endpoint
