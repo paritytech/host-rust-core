@@ -67,7 +67,8 @@ export function versionReportingArchive(version) {
 export async function startReleaseServer() {
   const assets = new Map();
   const server = createServer((request, response) => {
-    const asset = assets.get(decodeURIComponent(request.url));
+    // Strip the query: the pointer is fetched with a cache buster.
+    const asset = assets.get(decodeURIComponent(request.url.split("?")[0]));
     if (asset === undefined) {
       response.writeHead(404);
       response.end("not found");

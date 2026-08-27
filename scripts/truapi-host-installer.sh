@@ -45,9 +45,12 @@ release_asset_url() {
     printf '%s/releases/download/%%40parity%%2Ftruapi%%40%s/%s' "$base" "$version" "$name"
 }
 
+# The trailing query is a cache buster: GitHub's asset CDN keeps serving a
+# replaced asset for some minutes, and a no-cache request header does not
+# defeat it, so a fresh release would otherwise go unnoticed.
 stable_version_url() {
-    printf '%s/releases/download/%s/version' \
-        "${TRUAPI_HOST_RELEASE_BASE_URL:-$DEFAULT_BASE_URL}" "$STABLE_TAG"
+    printf '%s/releases/download/%s/version?t=%s' \
+        "${TRUAPI_HOST_RELEASE_BASE_URL:-$DEFAULT_BASE_URL}" "$STABLE_TAG" "$(date +%s)"
 }
 
 detect_target() {
@@ -65,11 +68,27 @@ detect_target() {
 }
 
 download() {
-    local url="$1" destination="$2"
+    local url="$1" destination="$2" pinned=""
+    # Redirects are followed, so without pinning the transport a redirect to
+    # plain http would be taken. Applied to https URLs only, because
+    # TRUAPI_HOST_RELEASE_BASE_URL exists for local mirrors and tests that are
+    # deliberately http.
+    case "$url" in
+        https://*) pinned="yes" ;;
+    esac
+
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url" -o "$destination" || die "could not download $url"
+        if [ -n "$pinned" ]; then
+            curl -fsSL --proto '=https' --proto-redir '=https' -o "$destination" "$url"
+        else
+            curl -fsSL -o "$destination" "$url"
+        fi || die "could not download $url"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$destination" "$url" || die "could not download $url"
+        if [ -n "$pinned" ]; then
+            wget -q --https-only -O "$destination" "$url"
+        else
+            wget -q -O "$destination" "$url"
+        fi || die "could not download $url"
     else
         die "neither curl nor wget is available"
     fi

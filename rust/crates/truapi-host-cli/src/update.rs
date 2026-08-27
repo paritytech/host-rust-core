@@ -173,8 +173,12 @@ fn asset_url(base: &str, version: &str, name: &str) -> String {
 }
 
 /// URL of the asset naming the current stable version.
-fn stable_url(base: &str) -> String {
-    format!("{base}/releases/download/{STABLE_TAG}/version")
+///
+/// Carries a changing query parameter because GitHub's asset CDN keeps serving
+/// a replaced asset for some minutes, and a `Cache-Control` request header does
+/// not defeat it. Without this a release goes unnoticed until the edge expires.
+fn stable_url(base: &str, cache_buster: u64) -> String {
+    format!("{base}/releases/download/{STABLE_TAG}/version?t={cache_buster}")
 }
 
 /// Whether a check is due, given the last attempt and the current time, both in
@@ -345,7 +349,7 @@ async fn check_and_install(force: bool) -> Result<Outcome> {
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()?;
-    let published = fetch_text(&client, &stable_url(&base)).await?;
+    let published = fetch_text(&client, &stable_url(&base, now)).await?;
     let published = published.trim();
     if published.is_empty() {
         bail!("the stable release pointer is empty");
@@ -500,11 +504,14 @@ mod tests {
         );
     }
 
+    /// The query parameter is what makes a pointer move visible promptly; the
+    /// CDN otherwise serves the previous release for minutes.
     #[test]
-    fn the_stable_pointer_lives_on_its_own_rolling_tag() {
+    fn the_stable_pointer_is_read_past_the_cdn_cache() {
         assert_eq!(
-            stable_url("https://example.test"),
-            "https://example.test/releases/download/truapi-host-cli-stable/version"
+            stable_url("https://example.test", 1_700_000_000),
+            "https://example.test/releases/download/truapi-host-cli-stable/version\
+             ?t=1700000000"
         );
     }
 
