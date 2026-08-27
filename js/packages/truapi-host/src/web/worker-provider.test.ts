@@ -221,6 +221,7 @@ describe("createWebWorkerPairingHostRuntime", () => {
       logLevel: "debug",
       hostConfig: hostConfigFromRuntimeConfig(config),
       capabilities: { chat: false, permissionStatus: false },
+      debuggerUrl: null,
     });
 
     worker.emit({ kind: "ready" });

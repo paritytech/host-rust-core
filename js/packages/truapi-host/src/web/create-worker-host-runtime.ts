@@ -37,6 +37,16 @@ export type WebWorkerHostConfig = Omit<
 >;
 
 export interface WorkerPairingHostRuntime {
+  /**
+   * The encoding core's wire-schema hash, when the core reports one.
+   *
+   * An in-host debugger tap runs on this side of the worker boundary and has no
+   * other way to reach it, so without this it can only stamp frames with the
+   * page bundle's own constant — a different artifact from the core that
+   * actually encoded them. The debugger then refuses to decode, exactly as it
+   * should. Undefined for a core built before the export existed.
+   */
+  readonly coreWireSchemaHash: string | undefined;
   createProvider(product: {
     productId: string;
     executionKind?: ProductExecutionKind;
@@ -174,6 +184,7 @@ interface RuntimeState {
   logLevel: LogLevel;
   disposed: boolean;
   nextCoreId: number;
+  coreWireSchemaHash: string | undefined;
 }
 
 function debugLoggingEnabled(state: RuntimeState): boolean {
@@ -199,6 +210,80 @@ const DEV_LOG_LEVEL_KEY = "truapi:logLevel";
 
 function readPersistedLogLevel(): LogLevel | null {
   return globalThis.localStorage?.getItem(DEV_LOG_LEVEL_KEY) ?? null;
+}
+
+// Dev-only, host-agnostic enablement for the wire debugger: in a DEV build, set
+// `localStorage["truapi:debugger"] = "ws://<host>:9231"` in the browser and the
+// host worker dials that debugger and streams frames to it. Read here (host page)
+// and forwarded to the worker in `init`; no cooperation from the embedding shell.
+const DEV_DEBUGGER_URL_KEY = "truapi:debugger";
+
+/**
+ * Why the wire debugger is (not) enabled, so a no-dial is never silent.
+ *
+ * `no-key` is the one that bites. The key is read on whichever origin creates the
+ * runtime - the shell in an embedded host like dot.li, but an iframe realm in
+ * another embedding - and `localStorage` is per-origin, so a key set anywhere else
+ * is invisible here. Naming the origin is the whole point: the tap then stays dark
+ * with nothing on screen to say why.
+ */
+type DebuggerEnablement = {
+  readonly url: string | null;
+  readonly reason: "enabled" | "production-build" | "no-key" | "no-storage";
+};
+
+function readPersistedDebuggerUrl(): DebuggerEnablement {
+  // Hard dev-only gate, not a convention: bundlers (Vite) replace
+  // `import.meta.env.DEV` with a boolean literal, so in a PRODUCTION build this
+  // returns null unconditionally and the tap is inert - a stray localStorage key
+  // cannot turn the debugger on in prod. The wire debugger streams raw
+  // (now fully-decoded) frames and is strictly a development tool.
+  //
+  // The expression below must stay the *literal* `import.meta.env.DEV`, with no
+  // alias and no optional chaining. A bundler replaces that exact token; reading
+  // it through `const meta = import.meta` or as `import.meta.env?.DEV` does not
+  // match, so the expression survives into the bundle and is evaluated at runtime
+  // against an `import.meta.env` that a plain module does not have. That reads as
+  // `undefined`, and the gate then refuses in *every* bundled host rather than
+  // only production ones - which silently disables the standalone tap everywhere.
+  // The try/catch keeps it safe where `import.meta.env` genuinely does not exist
+  // (tsc output run under Node, unit tests), where the access throws.
+  let dev = false;
+  try {
+    dev = (import.meta as unknown as { env: { DEV?: boolean } }).env.DEV === true;
+  } catch {
+    dev = false;
+  }
+  if (!dev) return { url: null, reason: "production-build" };
+  const storage = globalThis.localStorage;
+  if (storage === undefined) return { url: null, reason: "no-storage" };
+  const url = storage.getItem(DEV_DEBUGGER_URL_KEY);
+  if (url === null || url === "") return { url: null, reason: "no-key" };
+  return { url, reason: "enabled" };
+}
+
+/**
+ * Say once, in a dev build, whether the debugger will dial - and from which
+ * origin. Silence here used to be indistinguishable from a working tap: the
+ * debugger's own socket count still moves (its UI holds one), so "connected but
+ * no frames" reads as a debugger bug rather than a host that never dialled.
+ * Never logs in a production build, where the gate is closed by construction and
+ * the message would be noise.
+ */
+function reportDebuggerEnablement(e: DebuggerEnablement): void {
+  if (e.reason === "production-build") return;
+  const origin = globalThis.location?.origin ?? "(unknown origin)";
+  if (e.reason === "enabled") {
+    console.info(`[truapi] wire debugger: dialling ${e.url} (origin ${origin})`);
+    return;
+  }
+  const why =
+    e.reason === "no-storage"
+      ? "no localStorage in this realm"
+      : `no "${DEV_DEBUGGER_URL_KEY}" key on origin ${origin} - localStorage is ` +
+        "per-origin, so set it on THIS origin (the realm that creates the host " +
+        "runtime), then reload. A key on another origin is invisible here";
+  console.info(`[truapi] wire debugger: off (${why})`);
 }
 
 function persistLogLevel(level: LogLevel): void {
@@ -665,6 +750,7 @@ export function createWebWorkerPairingHostRuntime(
       logLevel: devLogLevelOverride ?? options.logLevel ?? "off",
       disposed: false,
       nextCoreId: 0,
+      coreWireSchemaHash: undefined,
     };
 
     let runtime: WorkerPairingHostRuntime | null = null;
@@ -823,6 +909,9 @@ export function createWebWorkerPairingHostRuntime(
       notifyFault(new Error("worker message could not be deserialized"));
     };
 
+    const debuggerEnablement = readPersistedDebuggerUrl();
+    reportDebuggerEnablement(debuggerEnablement);
+
     const onInitMessage = (ev: MessageEvent<WorkerToMain>): void => {
       const msg = ev.data;
       if (msg.kind === "loaded") {
@@ -834,8 +923,10 @@ export function createWebWorkerPairingHostRuntime(
             chat: host.chat !== undefined,
             permissionStatus: host.permissionStatus !== undefined,
           },
+          debuggerUrl: debuggerEnablement.url,
         } satisfies MainToWorker);
       } else if (msg.kind === "ready") {
+        state.coreWireSchemaHash = msg.schema;
         cleanupInit();
         worker.addEventListener("message", onMessage);
         worker.addEventListener("error", onRuntimeError);
@@ -923,6 +1014,7 @@ function handleFrameError(
 
 function buildRuntime(state: RuntimeState): WorkerPairingHostRuntime {
   const runtime: WorkerPairingHostRuntime = {
+    coreWireSchemaHash: state.coreWireSchemaHash,
     createProvider(product): Promise<TrUApiProductProvider> {
       if (state.disposed) {
         return Promise.reject(
