@@ -48,14 +48,14 @@ const INSTALLER_URL: &str = "https://raw.githubusercontent.com/paritytech/host-r
 
 /// An install laid out by the installer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagedInstall {
+struct ManagedInstall {
     root: PathBuf,
 }
 
 impl ManagedInstall {
     /// Resolve from the running executable, or `None` when this binary was not
     /// put in place by the installer.
-    pub fn detect() -> Option<Self> {
+    fn detect() -> Option<Self> {
         Self::from_executable(&std::env::current_exe().ok()?)
     }
 
@@ -74,7 +74,7 @@ impl ManagedInstall {
     }
 
     /// Version `current` selects, which is the version the next run will use.
-    pub fn active_version(&self) -> Option<String> {
+    fn active_version(&self) -> Option<String> {
         let target = fs::read_link(self.current_link()).ok()?;
         Some(target.file_name()?.to_str()?.to_owned())
     }
@@ -124,7 +124,7 @@ struct CheckState {
 /// What a check did. The background task and the `update` command report the
 /// same outcomes differently.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Outcome {
+enum Outcome {
     /// Not installed by the installer, so there is nothing to manage.
     Unmanaged,
     /// Turned off through `TRUAPI_HOST_NO_UPDATE`.
@@ -143,7 +143,7 @@ pub enum Outcome {
 /// published. Derived from OS and architecture alone, exactly as the shell
 /// installer derives it from `uname`, so a locally built binary sitting in a
 /// managed install still updates to the published artifact.
-pub fn target_triple() -> Option<&'static str> {
+fn target_triple() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("aarch64-apple-darwin"),
         ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
@@ -187,7 +187,7 @@ fn now_seconds() -> u64 {
 }
 
 /// Unpack a verified archive into `versions/<version>` and point `current` at it.
-pub fn install_archive(
+fn install_archive(
     install: &ManagedInstall,
     version: &str,
     archive: &[u8],
@@ -319,7 +319,7 @@ async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String> {
 
 /// Check the published version and install it when the next run would not
 /// already use it. `force` skips the throttle.
-pub async fn check_and_install(force: bool) -> Result<Outcome> {
+async fn check_and_install(force: bool) -> Result<Outcome> {
     if std::env::var_os("TRUAPI_HOST_NO_UPDATE").is_some() {
         return Ok(Outcome::Disabled);
     }
@@ -370,9 +370,19 @@ pub async fn check_and_install(force: bool) -> Result<Outcome> {
     let expected = checksum
         .split_whitespace()
         .next()
-        .context("the published checksum is empty")?;
+        .context("the published checksum is empty")?
+        .to_owned();
 
-    install_archive(&install, published, &archive, expected)?;
+    // Verifying and unpacking the archive is enough filesystem work to stall a
+    // runtime worker, and the terminal UI is driven by the same runtime.
+    let version = published.to_owned();
+    let target_install = install.clone();
+    tokio::task::spawn_blocking(move || {
+        install_archive(&target_install, &version, &archive, &expected)
+    })
+    .await
+    .context("install the downloaded release")??;
+
     Ok(Outcome::Installed(published.to_owned()))
 }
 

@@ -225,11 +225,6 @@ enum Command {
         #[arg(long)]
         submit: bool,
     },
-    /// Install the current stable release over this one.
-    ///
-    /// Only works for a binary the installer put in place; a `cargo install`
-    /// copy or a source build is reported and left alone.
-    Update,
     /// Diagnose (or `--submit`) an Asset Hub PGAS allowance claim: ring
     /// membership on People, revision propagation to Asset Hub, the day's free
     /// slot, and the `Pgas.claim_pgas` extrinsic.
@@ -250,6 +245,11 @@ enum Command {
         #[arg(long)]
         submit: bool,
     },
+    /// Install the current stable release over this one.
+    ///
+    /// Only works for a binary the installer put in place; a `cargo install`
+    /// copy or a source build is reported and left alone.
+    Update,
 }
 
 /// Execution kind the CLI serves a product as.

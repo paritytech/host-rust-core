@@ -51,6 +51,11 @@ moves that one link.
 | `TRUAPI_HOST_INSTALL_DIR` | Version store, default `$XDG_DATA_HOME/truapi-host`. |
 | `TRUAPI_HOST_BIN_DIR` | Directory the `PATH` symlink goes in, default `~/.local/bin`. |
 
+Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
+default, so starting either host does not reserve a TCP port. Pass
+`--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
+this is required for browser clients, which cannot open filesystem sockets.
+
 ### Staying current
 
 A managed install checks for a new release at most once every four hours, in
@@ -78,11 +83,6 @@ prebuilt binary installed. To build and install the CLI yourself:
 make headless install  # build dependencies and install truapi-host once
 truapi-host signing-host
 ```
-
-Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
-default, so starting either host does not reserve a TCP port. Pass
-`--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
-this is required for browser clients, which cannot open filesystem sockets.
 
 ### Browser products
 

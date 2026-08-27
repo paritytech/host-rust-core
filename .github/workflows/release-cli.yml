@@ -130,11 +130,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
+          # release.yml normally creates this release first; --target matters
+          # only when it did not, so the tag still lands on the release commit
+          # rather than wherever the default branch has moved to.
+          RELEASE_REF: ${{ inputs.ref || github.sha }}
         run: |
           set -euo pipefail
           tag="@parity/truapi@${VERSION}"
           if ! gh release view "${tag}" >/dev/null 2>&1; then
-            gh release create "${tag}" --title "@parity/truapi ${VERSION}" --generate-notes
+            gh release create "${tag}" \
+              --title "@parity/truapi ${VERSION}" \
+              --target "${RELEASE_REF}" \
+              --generate-notes
           fi
           gh release upload "${tag}" dist/* --clobber
 
