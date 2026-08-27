@@ -13,7 +13,7 @@ use crate::host_logic::sso::messages::RingVrfError;
 use async_trait::async_trait;
 use subxt::dynamic;
 use subxt::ext::scale_decode::DecodeAsType;
-use truapi::v01::{DerivationIndex, ProductProofContext, RingLocation, RingLocationJunction};
+use truapi::v01::{ProductProofContext, RingLocation, RingLocationJunction};
 use verifiable::GenerateVerifiable;
 use verifiable::ring::RingDomainSize;
 use verifiable::ring::bandersnatch::BandersnatchVrfVerifiable;
@@ -212,27 +212,30 @@ impl RingResolver for ChainRingResolver {
     }
 }
 
-const RAW_CONTEXT_ENV: &str = "TRUAPI_RAW_PROOF_CONTEXT";
-const RAW_CONTEXT_PRODUCT_ID: &str = "raw:";
+// TODO(development_createAccountProof): dev-only escape hatch, yet to be
+// removed before a production release. Delete this module and point its
+// callers in `signing_host.rs` and `pairing_host.rs` back at `context_bytes`.
+mod development {
+    use truapi::v01::{DerivationIndex, ProductProofContext};
 
-fn raw_context_enabled() -> bool {
-    std::env::var(RAW_CONTEXT_ENV).as_deref() == Ok("1")
-}
+    const RAW_CONTEXT_ENV: &str = "TRUAPI_RAW_PROOF_CONTEXT";
+    const RAW_CONTEXT_PRODUCT_ID: &str = "raw:";
 
-fn raw_context_override(context: &ProductProofContext, enabled: bool) -> Option<[u8; 32]> {
-    if !enabled || context.product_id != RAW_CONTEXT_PRODUCT_ID {
-        return None;
-    }
-    match context.suffix {
-        DerivationIndex::Raw(bytes) => Some(bytes),
-        DerivationIndex::Index(_) => None,
+    /// [`super::context_bytes`], except that with `TRUAPI_RAW_PROOF_CONTEXT=1`
+    /// a `raw:` product id makes the `Raw` suffix the context, verbatim.
+    pub(in crate::runtime) fn development_context_bytes(context: &ProductProofContext) -> [u8; 32] {
+        if context.product_id == RAW_CONTEXT_PRODUCT_ID
+            && std::env::var(RAW_CONTEXT_ENV).as_deref() == Ok("1")
+            && let DerivationIndex::Raw(bytes) = context.suffix
+        {
+            return bytes;
+        }
+        super::context_bytes(context)
     }
 }
+pub(in crate::runtime) use development::development_context_bytes;
 
 pub(in crate::runtime) fn context_bytes(context: &ProductProofContext) -> [u8; 32] {
-    if let Some(raw) = raw_context_override(context, raw_context_enabled()) {
-        return raw;
-    }
     let suffix = derivation_index_bytes(&context.suffix);
     let mut input = Vec::with_capacity(9 + context.product_id.len() + suffix.len());
     input.extend_from_slice(b"product/");
@@ -397,33 +400,6 @@ mod tests {
 
     use super::*;
     use crate::host_logic::product_account::index_bytes;
-
-    fn raw_context(product_id: &str, suffix: DerivationIndex) -> ProductProofContext {
-        ProductProofContext {
-            product_id: product_id.to_string(),
-            suffix,
-        }
-    }
-
-    #[test]
-    fn raw_context_override_requires_marker_flag_and_raw_suffix() {
-        let bytes = [7u8; 32];
-        let raw = raw_context(RAW_CONTEXT_PRODUCT_ID, DerivationIndex::Raw(bytes));
-        assert_eq!(raw_context_override(&raw, true), Some(bytes));
-        assert_eq!(raw_context_override(&raw, false), None);
-        assert_eq!(
-            raw_context_override(&raw_context("dim2.dot", DerivationIndex::Raw(bytes)), true),
-            None
-        );
-        assert_eq!(
-            raw_context_override(
-                &raw_context(RAW_CONTEXT_PRODUCT_ID, DerivationIndex::Index(7)),
-                true
-            ),
-            None
-        );
-        assert_ne!(context_bytes(&raw), bytes);
-    }
 
     fn decode_as<A, B>(source: A) -> B
     where
