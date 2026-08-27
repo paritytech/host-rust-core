@@ -190,6 +190,12 @@ PermissionsService
 CoreStorageKey::PermissionAuthorization { product_id, request }
 ```
 
+A device permission also carries the host application's OS gate. Both the
+request path and the `CoreAdmin` status read resolve it through the host's
+`PermissionStatusHost`, so an OS refusal reads as `Denied` whatever is stored,
+and the stored product decision is never overwritten by it. Remote,
+identity-disclosure and account-access decisions have no OS gate.
+
 The embedder builds a role handle, `PairingHostRuntime::new(...)` or
 `SigningHostRuntime::new(...)`, then calls `product_runtime(product, sink)` for
 each product connection. Role-specific operations live only on the matching handle:

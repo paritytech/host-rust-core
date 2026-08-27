@@ -3,6 +3,13 @@ use parity_scale_codec::{Decode, Encode};
 
 use super::common::GenericError;
 
+/// Response containing the product context bound to the current host runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostGetProductContextResponse {
+    /// Full canonical identifier used for authorization and account derivation.
+    pub product_id: String,
+}
+
 /// Request to query whether a feature is supported by the host.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
@@ -64,4 +71,41 @@ pub struct HostFeatureSupportedResponse {
 pub struct HostNavigateToRequest {
     /// URL to open.
     pub url: String,
+}
+
+/// Platform category a host runs on.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub enum HostPlatform {
+    /// Browser-embedded product (an iframe inside a web host).
+    Web,
+    /// Android application.
+    Android,
+    /// iOS application.
+    Ios,
+    /// Desktop application.
+    Desktop,
+    /// Command-line host running in a terminal or headless environment.
+    Cli,
+    /// Host could not classify its platform.
+    Unknown,
+}
+
+/// Identity and version of the host currently running the product.
+///
+/// Reported by [`crate::api::System::host_info`] so a product knows which host
+/// (and which build of it) is running it — for adapting to the host,
+/// telemetry, and attributing behaviour to a concrete build in diagnostics and
+/// bug reports.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct HostInfo {
+    /// Platform category the host runs on.
+    pub platform: HostPlatform,
+    /// Human-readable name of the host implementation, e.g. `"Polkadot
+    /// Desktop"`, `"Polkadot Mobile"`, or `"dotli"`. Hosts should report a
+    /// stable, non-empty name.
+    pub name: String,
+    /// Host-native version string, e.g. a semver such as `"1.2.3"`. Hosts
+    /// should report a non-empty value; the format is the host's own.
+    pub version: String,
 }

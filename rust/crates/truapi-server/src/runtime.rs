@@ -185,7 +185,9 @@ use truapi::versioned::signing::{
 };
 use truapi::versioned::system::{
     HostFeatureSupportedError, HostFeatureSupportedRequest, HostFeatureSupportedResponse,
-    HostNavigateToError, HostNavigateToRequest, HostNavigateToResponse,
+    HostGetProductContextError, HostGetProductContextRequest, HostGetProductContextResponse,
+    HostInfoError, HostInfoRequest, HostInfoResponse, HostNavigateToError, HostNavigateToRequest,
+    HostNavigateToResponse,
 };
 use truapi::versioned::theme::HostThemeSubscribeItem;
 use truapi::{CallContext, CallError, CancellationReason, Subscription};
@@ -343,6 +345,8 @@ pub struct ProductRuntimeHost {
     services: Arc<RuntimeServices>,
     platform: Arc<dyn Platform>,
     chat_platform: Option<Arc<dyn truapi_platform::ChatPlatform>>,
+    /// Live OS permission state for this connection, when the host serves it.
+    permission_status: Option<Arc<dyn truapi_platform::PermissionStatusHost>>,
     authority: Arc<dyn ProductAuthority>,
     product: ProductContext,
     /// Stable per-product-runtime id used to scope long-lived chain follow
@@ -365,6 +369,7 @@ impl ProductRuntimeHost {
             services,
             platform: adapters.platform,
             chat_platform: adapters.chat_platform,
+            permission_status: adapters.permission_status,
             authority,
             product,
             core_instance,
@@ -375,6 +380,20 @@ impl ProductRuntimeHost {
     /// Role-neutral services shared with the owning host runtime.
     pub(crate) fn services(&self) -> &Arc<RuntimeServices> {
         &self.services
+    }
+
+    /// Permission service for this product.
+    ///
+    /// Every device-reaching path is built here so a request and a status read
+    /// resolve the same two gates. Remote, identity-disclosure and
+    /// account-access decisions have no OS gate and are unaffected by the
+    /// status adapter.
+    fn permissions_service<'a>(
+        &'a self,
+        product_id: &'a str,
+    ) -> PermissionsService<'a, dyn Platform, dyn Platform> {
+        PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), product_id)
+            .with_status_host(self.permission_status.as_deref())
     }
 
     /// Trusted executable kind attached to this product connection.
@@ -411,6 +430,7 @@ impl ProductRuntimeHost {
                 name: "Polkadot Web".to_string(),
                 icon: Some("https://example.invalid/dotli.png".to_string()),
                 version: None,
+                platform: truapi::latest::HostPlatform::Web,
             },
             truapi_platform::PlatformInfo::default(),
             [0; 32],
@@ -458,6 +478,7 @@ impl ProductRuntimeHost {
     ) -> (Self, Arc<PairingHost>) {
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -469,6 +490,7 @@ impl ProductRuntimeHost {
             services,
             platform,
             chat_platform: None,
+            permission_status: None,
             authority: pairing_host.clone(),
             product,
             core_instance,
@@ -584,26 +606,32 @@ impl ProductRuntimeHost {
 
 impl ProductRuntimeHost {
     /// Read a stored permission authorization status without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_status"))]
     pub(crate) async fn permission_authorization_status(
         &self,
         request: PermissionAuthorizationRequest,
     ) -> Result<PermissionAuthorizationStatus, v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.authorization_status(&request).await
     }
 
     /// Read stored permission authorization statuses without prompting.
+    ///
+    /// A device capability also resolves the host application's OS gate, so an
+    /// OS refusal reads as `Denied` whatever is stored. Remote,
+    /// identity-disclosure and account-access decisions have no OS gate.
     #[instrument(skip_all, fields(runtime.method = "permissions.authorization_statuses"))]
     pub(crate) async fn permission_authorization_statuses(
         &self,
         requests: Vec<PermissionAuthorizationRequest>,
     ) -> Result<Vec<PermissionAuthorizationStatus>, v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.authorization_statuses(&requests).await
     }
 
@@ -616,8 +644,7 @@ impl ProductRuntimeHost {
         status: PermissionAuthorizationStatus,
     ) -> Result<(), v01::GenericError> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service.set_authorization_status(&request, status).await
     }
 
@@ -627,8 +654,7 @@ impl ProductRuntimeHost {
         permission: v01::RemotePermission,
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         service
             .check_or_prompt_remote(v01::RemotePermissionRequest { permission })
             .await
@@ -663,8 +689,7 @@ impl ProductRuntimeHost {
     ) -> Result<PermissionAuthorizationStatus, String> {
         let product_id = self.product_id();
         let request = PermissionAuthorizationRequest::IdentityDisclosure;
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         let cached = service
             .authorization_status(&request)
             .await
@@ -817,6 +842,21 @@ impl System for ProductRuntimeHost {
             .map_err(|err| CallError::Domain(HostFeatureSupportedError::V1(err)))
     }
 
+    #[instrument(skip_all, fields(runtime.method = "system.host_info"))]
+    async fn host_info(
+        &self,
+        _cx: &CallContext,
+        request: HostInfoRequest,
+    ) -> Result<HostInfoResponse, CallError<HostInfoError>> {
+        let HostInfoRequest::V1 = request;
+        let info = &self.services.host_info;
+        Ok(HostInfoResponse::V1(v01::HostInfo {
+            platform: info.platform.clone(),
+            name: info.name.clone(),
+            version: info.version.clone().unwrap_or_default(),
+        }))
+    }
+
     #[instrument(skip_all, fields(runtime.method = "system.navigate_to"))]
     async fn navigate_to(
         &self,
@@ -859,6 +899,19 @@ impl System for ProductRuntimeHost {
             .map(|()| HostNavigateToResponse::V1)
             .map_err(|err| CallError::Domain(HostNavigateToError::V1(err)))
     }
+
+    #[instrument(skip_all, fields(runtime.method = "system.get_product_context"))]
+    async fn get_product_context(
+        &self,
+        _cx: &CallContext,
+        _request: HostGetProductContextRequest,
+    ) -> Result<HostGetProductContextResponse, CallError<HostGetProductContextError>> {
+        Ok(HostGetProductContextResponse::V1(
+            v01::HostGetProductContextResponse {
+                product_id: self.product.product_id.clone(),
+            },
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -875,8 +928,7 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<HostDevicePermissionResponse, CallError<HostDevicePermissionError>> {
         let HostDevicePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         match service.check_or_prompt_device(inner).await {
             Ok(decision) => Ok(HostDevicePermissionResponse::V1(
                 v01::HostDevicePermissionResponse {
@@ -897,8 +949,7 @@ impl Permissions for ProductRuntimeHost {
     ) -> Result<RemotePermissionResponse, CallError<RemotePermissionError>> {
         let RemotePermissionRequest::V1(inner) = request;
         let product_id = self.product_id();
-        let service =
-            PermissionsService::new(self.platform.as_ref(), self.platform.as_ref(), &product_id);
+        let service = self.permissions_service(&product_id);
         match service.check_or_prompt_remote(inner).await {
             Ok(decision) => Ok(RemotePermissionResponse::V1(
                 v01::RemotePermissionResponse {
@@ -2977,6 +3028,36 @@ mod tests {
     }
 
     #[test]
+    fn get_product_context_returns_the_runtime_canonical_product_id() {
+        for (configured, expected) in [
+            (" TrUAPI-Playground.DOT ", "truapi-playground.dot"),
+            ("truapi-playground.paseo", "truapi-playground.paseo"),
+            ("truapi-playground.test", "truapi-playground.test"),
+            ("localhost", "localhost"),
+            ("LOCALHOST:3000", "localhost:3000"),
+        ] {
+            let host = ProductRuntimeHost::new(
+                stub_platform(),
+                runtime_config(configured),
+                test_spawner(),
+            );
+            let response = futures::executor::block_on(
+                host.get_product_context(&CallContext::default(), HostGetProductContextRequest::V1),
+            )
+            .unwrap();
+            let HostGetProductContextResponse::V1(context) = response;
+
+            assert_eq!(
+                context,
+                v01::HostGetProductContextResponse {
+                    product_id: expected.to_string(),
+                },
+                "configured product id {configured:?}",
+            );
+        }
+    }
+
+    #[test]
     fn get_chain_info_round_trips_through_runtime() {
         let host = ProductRuntimeHost::new_compat(stub_platform(), test_spawner());
         let cx = CallContext::default();
@@ -3095,6 +3176,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3237,6 +3319,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3320,6 +3403,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3404,6 +3488,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),
@@ -3450,6 +3535,7 @@ mod tests {
         let platform: Arc<dyn Platform> = stub_platform();
         let services = RuntimeServices::new(
             platform.clone(),
+            host_config.host.host_info.clone(),
             host_config.people_chain_genesis_hash,
             host_config.bulletin_chain_genesis_hash,
             spawner.clone(),

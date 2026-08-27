@@ -92,8 +92,14 @@ const callbacks: HostCallbacks = {
   notifications,
   // ...required groups...
   chat, // optional: leave it out and chat products get `Unsupported`
+  permissionStatus, // optional: reports live OS permission state
 };
 ```
+
+`permissionStatus.devicePermissionStatus` must answer from the OS without
+prompting. Supply it and the core revalidates a stored device grant against it
+before answering the product, so a capability the OS has since revoked or reset
+stops reading as usable. Omit it and a stored grant answers on its own.
 
 Under `createWebWorkerPairingHostRuntime` the presence of each optional group is
 reported to the worker in its `init` message, so the core sees the same

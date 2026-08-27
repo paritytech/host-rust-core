@@ -40,6 +40,7 @@ pub(super) struct JsBridge {
     pub(super) navigate_to: Function,
     pub(super) push_notification: Function,
     pub(super) cancel_notification: Function,
+    pub(super) device_permission_status: Function,
     pub(super) device_permission: Function,
     pub(super) remote_permission: Function,
     pub(super) lookup_preimage: Function,
@@ -49,6 +50,7 @@ pub(super) struct JsBridge {
     pub(super) subscribe_theme: Function,
     pub(super) confirm_user_action: Function,
     pub(super) chat_present: bool,
+    pub(super) permission_status_present: bool,
 }
 
 impl JsBridge {
@@ -72,6 +74,8 @@ impl JsBridge {
             navigate_to: get_function(callbacks, "navigateTo")?,
             push_notification: get_function(callbacks, "pushNotification")?,
             cancel_notification: get_function(callbacks, "cancelNotification")?,
+            device_permission_status: get_optional_function(callbacks, "devicePermissionStatus")?
+                .unwrap_or_else(|| missing_callback("devicePermissionStatus")),
             device_permission: get_function(callbacks, "devicePermission")?,
             remote_permission: get_function(callbacks, "remotePermission")?,
             lookup_preimage: get_function(callbacks, "lookupPreimage")?,
@@ -84,12 +88,19 @@ impl JsBridge {
                 && get_optional_function(callbacks, "registerChatBot")?.is_some()
                 && get_optional_function(callbacks, "postChatMessage")?.is_some()
                 && get_optional_function(callbacks, "subscribeChatRooms")?.is_some(),
+            permission_status_present: get_optional_function(callbacks, "devicePermissionStatus")?
+                .is_some(),
         })
     }
 
     /// Whether the host supplied every `chat` callback.
     pub(super) fn has_chat(&self) -> bool {
         self.chat_present
+    }
+
+    /// Whether the host supplied every `permission_status` callback.
+    pub(super) fn has_permission_status(&self) -> bool {
+        self.permission_status_present
     }
 }
 
@@ -290,6 +301,26 @@ impl truapi_platform::Notifications for WasmPlatform {
             vec![JsValue::from_f64(f64::from(id))],
         )
         .await
+        .map_err(generic)
+    }
+}
+
+#[truapi_platform::async_trait]
+impl truapi_platform::PermissionStatusHost for WasmPlatform {
+    async fn device_permission_status(
+        &self,
+        request: v01::HostDevicePermissionRequest,
+    ) -> Result<truapi_platform::DevicePermissionStatus, v01::GenericError> {
+        let bytes = invoke_bytes_return(
+            &self.bridge.device_permission_status,
+            vec![Uint8Array::from(request.encode().as_slice()).into()],
+        )
+        .await
+        .map_err(generic)?;
+        decode_bytes::<truapi_platform::DevicePermissionStatus>(
+            bytes,
+            "devicePermissionStatus response did not decode",
+        )
         .map_err(generic)
     }
 }

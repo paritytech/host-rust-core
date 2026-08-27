@@ -92,7 +92,7 @@ if (client) {
 
 // Or drive UI off connection status:
 const unsubscribe = subscribeConnectionStatus((status) => {
-  // "disconnected" | "connected"
+  // "disconnected" | "connecting" | "connected"
 });
 ```
 
