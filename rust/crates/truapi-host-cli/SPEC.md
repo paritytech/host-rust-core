@@ -619,8 +619,9 @@ Operator `/login` copies the first generated pairing link automatically. A
 clipboard failure is reported as a warning and does not cancel pairing.
 Product-driven `requestLogin()` does not automatically copy its link.
 
-Every pairing link received by the interactive UI is followed by a compact QR
-code that encodes the exact deeplink. QR rows use an explicit white background,
+Every pairing link received by the interactive UI is followed by a solid
+half-block QR code that encodes the exact deeplink. Each terminal cell carries
+one module column and two module rows. QR rows use an explicit white background,
 black modules, and a four-module quiet zone. If the terminal cannot fit the QR
 without wrapping or clipping, the UI keeps the raw link and reports the
 required columns and rows. Encoding failure is reported without cancelling
