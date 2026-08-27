@@ -1,5 +1,11 @@
 # @parity/truapi
 
+## 0.11.0
+
+### Minor Changes
+
+- fa7d8db: Expose the current canonical product identifier through `system.getProductContext()`.
+
 ## 0.10.0
 
 ### Minor Changes
