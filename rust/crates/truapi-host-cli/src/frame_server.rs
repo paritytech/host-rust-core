@@ -682,6 +682,7 @@ mod tests {
                 name: "Frame server test".into(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Cli,
             },
             truapi_platform::PlatformInfo {
                 kind: Some("test".into()),
