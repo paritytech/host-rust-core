@@ -73,6 +73,10 @@ TRUAPI_HOST_NO_UPDATE=1 ...   # never check
 Binaries that the installer did not put in place — a `cargo install` copy, a
 source build, a distro package — are detected and never modified.
 
+`make e2e-cli-update` exercises the whole chain locally: it packages the binary,
+serves a fake release over loopback, installs it with the real installer, and
+updates it. Nothing contacts GitHub.
+
 ### Building from source
 
 Product scripts (`--script` and `/script`) need `bun`, `js/runner.ts` and the

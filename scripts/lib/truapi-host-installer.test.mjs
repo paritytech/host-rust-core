@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -12,15 +10,23 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  detectTarget,
+  installEnvironment,
+  run,
+  startReleaseServer,
+  versionReportingArchive,
+} from "./truapi-host-release.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const installerPath = join(repoRoot, "scripts/truapi-host-installer.sh");
-const installerSource = readFileSync(installerPath);
+const installerSource = readFileSync(
+  join(repoRoot, "scripts/truapi-host-installer.sh"),
+);
 
 /**
  * The triple the installer must derive on this machine. A wrong derivation
@@ -28,98 +34,7 @@ const installerSource = readFileSync(installerPath);
  * pin the uname mapping as well as the install layout.
  */
 const target = detectTarget();
-
-function detectTarget() {
-  if (process.platform === "darwin" && process.arch === "arm64") {
-    return "aarch64-apple-darwin";
-  }
-  if (process.platform === "linux" && process.arch === "x64") {
-    return "x86_64-unknown-linux-musl";
-  }
-  if (process.platform === "linux" && process.arch === "arm64") {
-    return "aarch64-unknown-linux-musl";
-  }
-  return undefined;
-}
-
-/** A tar.gz holding one executable `truapi-host` that echoes its version. */
-function buildArchive(version) {
-  const staging = mkdtempSync(join(tmpdir(), "truapi-host-archive-"));
-  try {
-    const binary = join(staging, "truapi-host");
-    writeFileSync(binary, `#!/bin/sh\necho "truapi-host ${version}"\n`);
-    chmodSync(binary, 0o755);
-    const archive = join(staging, "archive.tar.gz");
-    execFileSync("tar", ["-czf", archive, "-C", staging, "truapi-host"]);
-    return readFileSync(archive);
-  } finally {
-    rmSync(staging, { recursive: true, force: true });
-  }
-}
-
-function sha256(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-/**
- * Serve a release tree shaped like the real one, including the percent-encoded
- * `@parity/truapi@<version>` tag path. Assets are keyed by decoded path so a
- * missing encoding shows up as a 404 rather than passing silently.
- */
-async function startReleaseServer() {
-  const assets = new Map();
-  const server = createServer((request, response) => {
-    const asset = assets.get(decodeURIComponent(request.url));
-    if (asset === undefined) {
-      response.writeHead(404);
-      response.end("not found");
-      return;
-    }
-    response.writeHead(200, { "content-length": asset.length });
-    response.end(asset);
-  });
-  await new Promise((done) => server.listen(0, "127.0.0.1", done));
-
-  return {
-    baseUrl: `http://127.0.0.1:${server.address().port}`,
-    /** Publish `version` for `target`, optionally with a corrupted digest. */
-    publish(version, { corruptChecksum = false } = {}) {
-      const archive = buildArchive(version);
-      const name = `truapi-host-${version}-${target}.tar.gz`;
-      const tag = `/releases/download/@parity/truapi@${version}`;
-      const digest = corruptChecksum ? "0".repeat(64) : sha256(archive);
-      assets.set(`${tag}/${name}`, archive);
-      assets.set(`${tag}/${name}.sha256`, Buffer.from(`${digest}  ${name}\n`));
-      assets.set(
-        "/releases/download/truapi-host-cli-stable/version",
-        Buffer.from(`${version}\n`),
-      );
-    },
-    close: () => new Promise((done) => server.close(done)),
-  };
-}
-
-/**
- * Run a command and collect its result. Everything here has to be async: a
- * synchronous spawn would block the event loop the fake release server runs
- * on, and the installer's own download would then never be answered.
- */
-function run(command, arguments_, options = {}) {
-  return new Promise((done, fail) => {
-    const child = spawn(command, arguments_, {
-      ...options,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", fail);
-    child.on("close", (status) => done({ status, stdout, stderr }));
-    if (options.input !== undefined) child.stdin.write(options.input);
-    child.stdin.end();
-  });
-}
+const skip = target === undefined && "no prebuilt target for this platform";
 
 /** Run the installer the way the documented one-liner does: piped into bash. */
 function runInstaller(environment) {
@@ -127,16 +42,6 @@ function runInstaller(environment) {
     input: installerSource,
     env: { ...process.env, ...environment },
   });
-}
-
-function installEnvironment(home, baseUrl) {
-  return {
-    HOME: home,
-    TRUAPI_HOST_RELEASE_BASE_URL: baseUrl,
-    TRUAPI_HOST_INSTALL_DIR: join(home, "share"),
-    TRUAPI_HOST_BIN_DIR: join(home, "bin"),
-    PATH: `${join(home, "bin")}:${process.env.PATH}`,
-  };
 }
 
 async function withHome(body) {
@@ -148,15 +53,22 @@ async function withHome(body) {
   }
 }
 
+/** Serve one published version, run `body`, and always shut the server down. */
+async function withRelease(version, options, body) {
+  const release = await startReleaseServer();
+  release.publish(version, target, versionReportingArchive(version), options);
+  try {
+    await body(release);
+  } finally {
+    await release.close();
+  }
+}
+
 test(
   "installs the advertised version and wires the symlink chain",
-  {
-    skip: target === undefined && "no prebuilt target for this platform",
-  },
+  { skip },
   async () => {
-    const release = await startReleaseServer();
-    release.publish("0.10.0");
-    try {
+    await withRelease("0.10.0", {}, async (release) => {
       await withHome(async (home) => {
         const result = await runInstaller(
           installEnvironment(home, release.baseUrl),
@@ -182,54 +94,38 @@ test(
         const executed = await run(join(home, "bin/truapi-host"), []);
         assert.equal(executed.stdout.trim(), "truapi-host 0.10.0");
       });
-    } finally {
-      await release.close();
-    }
+    });
   },
 );
 
-test(
-  "refuses an archive whose digest does not match",
-  {
-    skip: target === undefined && "no prebuilt target for this platform",
-  },
-  async () => {
-    const release = await startReleaseServer();
-    release.publish("0.10.0", { corruptChecksum: true });
-    try {
-      await withHome(async (home) => {
-        const result = await runInstaller(
-          installEnvironment(home, release.baseUrl),
-        );
-        assert.notEqual(result.status, 0, "installer must fail closed");
-        assert.match(result.stderr, /checksum/i);
-        assert.ok(
-          !existsSync(join(home, "bin/truapi-host")),
-          "nothing is installed when verification fails",
-        );
-      });
-    } finally {
-      await release.close();
-    }
-  },
-);
+test("refuses an archive whose digest does not match", { skip }, async () => {
+  await withRelease("0.10.0", { corruptChecksum: true }, async (release) => {
+    await withHome(async (home) => {
+      const result = await runInstaller(
+        installEnvironment(home, release.baseUrl),
+      );
+      assert.notEqual(result.status, 0, "installer must fail closed");
+      assert.match(result.stderr, /checksum/i);
+      assert.ok(
+        !existsSync(join(home, "bin/truapi-host")),
+        "nothing is installed when verification fails",
+      );
+    });
+  });
+});
 
 test(
   "an upgrade repoints current and leaves the PATH symlink alone",
-  {
-    skip: target === undefined && "no prebuilt target for this platform",
-  },
+  { skip },
   async () => {
-    const release = await startReleaseServer();
-    release.publish("0.10.0");
-    try {
+    await withRelease("0.10.0", {}, async (release) => {
       await withHome(async (home) => {
         const environment = installEnvironment(home, release.baseUrl);
         assert.equal((await runInstaller(environment)).status, 0);
         const link = join(home, "bin/truapi-host");
         const linkTarget = readlinkSync(link);
 
-        release.publish("0.10.1");
+        release.publish("0.10.1", target, versionReportingArchive("0.10.1"));
         const upgrade = await runInstaller(environment);
         assert.equal(upgrade.status, 0, upgrade.stderr);
 
@@ -238,24 +134,18 @@ test(
         assert.equal(readlinkSync(link), linkTarget, "PATH symlink is stable");
         assert.equal((await run(link, [])).stdout.trim(), "truapi-host 0.10.1");
       });
-    } finally {
-      await release.close();
-    }
+    });
   },
 );
 
 test(
   "TRUAPI_HOST_VERSION pins the install and skips the stable pointer",
-  {
-    skip: target === undefined && "no prebuilt target for this platform",
-  },
+  { skip },
   async () => {
-    const release = await startReleaseServer();
-    release.publish("0.10.1");
-    release.publish("0.10.0");
-    // Leave the pointer on 0.10.0 while asking for 0.10.1: a pinned install must
-    // not consult it at all.
-    try {
+    await withRelease("0.10.1", {}, async (release) => {
+      // The pointer now names 0.10.0 while we ask for 0.10.1: a pinned install
+      // must not consult it at all.
+      release.publish("0.10.0", target, versionReportingArchive("0.10.0"));
       await withHome(async (home) => {
         const result = await runInstaller({
           ...installEnvironment(home, release.baseUrl),
@@ -267,9 +157,7 @@ test(
           "versions/0.10.1",
         );
       });
-    } finally {
-      await release.close();
-    }
+    });
   },
 );
 

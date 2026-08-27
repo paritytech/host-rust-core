@@ -3,7 +3,7 @@
 # Run `make help` for the list of targets.
 
 .DEFAULT_GOAL := help
-.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli e2e-chat-cli headless install cli-dist matrix explorer xcframework
+.PHONY: help setup build codegen test check clean playground wasm wasm-crypto-test uniffi uniffi-kotlin android-check provider-android-check ios-build ios-run ios-chat-run ios-chat-host-playground-run ios-chat-all android-jni android-publish-local dotli-link dev dev-bootstrap dev-link-check e2e-dotli e2e-signing-cli e2e-pairing-cli e2e-chat-cli e2e-cli-update headless install cli-dist matrix explorer xcframework
 
 CARGO ?= cargo
 TRUAPI_PKG := js/packages/truapi
@@ -377,6 +377,9 @@ e2e-pairing-cli: ## Run the generated battery against the paired pairing-host CL
 
 e2e-chat-cli: ## Run the Chat content-screening battery against a chat signing-host CLI.
 	scripts/battery.sh --chat-host
+
+e2e-cli-update: cli-dist ## Install the packaged truapi-host from a fake release and self-update it, with no network.
+	node scripts/e2e-cli-update.mjs
 
 matrix: ## Regenerate the host compatibility matrix from explorer/diagnosis-reports.
 	cd $(EXPLORER) && npm run generate-matrix

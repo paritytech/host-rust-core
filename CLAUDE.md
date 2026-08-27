@@ -72,7 +72,8 @@ scripts/truapi-host-installer.sh
   pointer that `scripts/truapi-host-installer.sh` and the CLI's own updater
   read. Release asset URLs must percent-encode the tag
   (`%40parity%2Ftruapi%40<version>`). `make cli-dist CLI_TARGET=<triple>`
-  reproduces one archive locally.
+  reproduces one archive locally, and `make e2e-cli-update` installs and
+  self-updates it against a loopback release server.
 - `truapi-server` WASM artifacts live under
   `js/packages/truapi-host/dist/wasm/web/` and are gitignored.
   Build them locally with `make wasm` (rerun whenever
