@@ -77,6 +77,9 @@ pub trait StatementStore: Send + Sync {
     /// when their signing channel cannot sign statement proof payloads exactly.
     ///
     /// ```ts
+    /// const productContext = await truapi.system.getProductContext();
+    /// assert(productContext.isOk(), "getProductContext failed:", productContext);
+    ///
     /// // Expiry packs a Unix-seconds timestamp in the high 32 bits; a day out
     /// // keeps the statement unexpired when it is submitted.
     /// const expiry = BigInt(Math.floor(Date.now() / 1000) + 86400) << 32n;
@@ -85,7 +88,7 @@ pub trait StatementStore: Send + Sync {
     /// const statement = { expiry, topics: [topic] };
     /// const result = await truapi.statementStore.createProof({
     ///   productAccountId: {
-    ///     dotNsIdentifier: "truapi-playground.dot",
+    ///     dotNsIdentifier: productContext.value.productId,
     ///     derivationIndex: { tag: "Index", value: 0 },
     ///   },
     ///   statement,

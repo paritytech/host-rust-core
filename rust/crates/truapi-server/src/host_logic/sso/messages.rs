@@ -1055,6 +1055,8 @@ pub fn create_transaction_legacy_message(
 pub struct IncomingSsoRequest {
     /// Statement-level request id used by the transport acknowledgement.
     pub request_id: String,
+    /// Statement expiry as unix seconds, when supplied by the peer.
+    pub expires_at_unix_secs: Option<u64>,
     /// Application messages batched into the request.
     pub messages: Vec<RemoteMessage>,
 }
@@ -1120,6 +1122,7 @@ pub fn decode_incoming_sso_request(
                 })?;
             Ok(Some(IncomingSsoRequest {
                 request_id,
+                expires_at_unix_secs: verified.expiry.map(|expiry| expiry >> 32),
                 messages,
             }))
         }
@@ -1972,6 +1975,7 @@ mod tests {
                 name: "Test Host".to_string(),
                 icon: None,
                 version: None,
+                platform: truapi::latest::HostPlatform::Unknown,
             },
             PlatformInfo::default(),
             [0; 32],
@@ -2022,11 +2026,12 @@ mod tests {
                 },
             },
         );
+        let expiry = fresh_expiry();
         let host_statement = build_outgoing_request_statement(
             &host_session,
             "statement-1".to_string(),
             vec![request.clone()],
-            fresh_expiry(),
+            expiry,
         )
         .unwrap();
 
@@ -2037,6 +2042,7 @@ mod tests {
             incoming,
             IncomingSsoRequest {
                 request_id: "statement-1".to_string(),
+                expires_at_unix_secs: Some(expiry >> 32),
                 messages: vec![request],
             }
         );

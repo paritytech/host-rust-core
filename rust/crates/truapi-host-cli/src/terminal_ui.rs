@@ -127,13 +127,6 @@ pub enum SystemEvent {
         reason: String,
     },
     SigningHostResponderStarted,
-    RingInfo {
-        ring_index: u32,
-        members: usize,
-    },
-    AllowanceChecking {
-        target: String,
-    },
     AllowanceReady {
         target: String,
         sequence: u32,
@@ -1353,19 +1346,6 @@ impl App {
                 "Waiting for the pairing host".to_string(),
                 None,
                 ActivityState::Running,
-            ),
-            SystemEvent::RingInfo {
-                ring_index,
-                members,
-            } => self.notice(
-                NoticeTone::Success,
-                "LitePeople ring ready".to_string(),
-                Some(format!("Ring {ring_index} · {members} members")),
-            ),
-            SystemEvent::AllowanceChecking { target } => self.start_activity(
-                format!("allowance:{target}"),
-                format!("Preparing {} access", allowance_name(&target)),
-                None,
             ),
             SystemEvent::AllowanceReady {
                 target,
@@ -2884,17 +2864,20 @@ mod tests {
             .lines()
             .find(|line| line.contains("edit the last"))
             .context("render script completion")?;
-        let clear = screen
+        let renew = screen
             .lines()
-            .find(|line| line.contains("clear the visible"))
-            .context("render clear completion")?;
+            .find(|line| line.contains("renew statement-store"))
+            .context("render renew completion")?;
 
         let column = |line: &str, description: &str| {
             line.find(description)
                 .map(|index| text_display_width(&line[..index]))
         };
         assert_eq!(column(deeplink, "answer"), column(script, "edit"));
-        assert_eq!(column(script, "edit"), column(clear, "clear the visible"));
+        assert_eq!(
+            column(script, "edit"),
+            column(renew, "renew statement-store")
+        );
         Ok(())
     }
 

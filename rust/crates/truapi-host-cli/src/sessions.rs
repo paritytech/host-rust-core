@@ -1,9 +1,11 @@
 //! Network-scoped signing-host session directories and current selection.
 
 use std::fs;
+use std::fs::OpenOptions;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::accounts;
@@ -11,6 +13,115 @@ use crate::accounts;
 pub const DEFAULT_SESSION_NAME: &str = "default";
 const CURRENT_SESSION_FILE: &str = "current-session";
 const SESSION_INFO_FILE: &str = "session.json";
+const PAIRED_HOSTS_FILE: &str = "paired-hosts.json";
+const PAIRED_HOSTS_LOCK_FILE: &str = "paired-hosts.json.lock";
+const PAIRED_HOST_VERSION: u32 = 1;
+const PAIRED_HOST_STORE_VERSION: u32 = 1;
+
+/// Safe display metadata retained from a paired host's proposal.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedHostMetadata {
+    /// Human-readable host name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
+    /// Host software version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_version: Option<String>,
+    /// Host icon URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_icon: Option<String>,
+    /// Platform kind, such as a browser or operating system name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_type: Option<String>,
+    /// Platform version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_version: Option<String>,
+}
+
+/// Versioned public data for a host paired with one managed session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedHost {
+    version: u32,
+    statement_account_id: [u8; 32],
+    encryption_public_key: [u8; 32],
+    #[serde(flatten)]
+    metadata: PairedHostMetadata,
+}
+
+impl PairedHost {
+    /// Create the current persisted representation of a paired host.
+    pub fn new(
+        statement_account_id: [u8; 32],
+        encryption_public_key: [u8; 32],
+        metadata: PairedHostMetadata,
+    ) -> Self {
+        Self {
+            version: PAIRED_HOST_VERSION,
+            statement_account_id,
+            encryption_public_key,
+            metadata,
+        }
+    }
+
+    /// Return the statement account ID that uniquely identifies this host.
+    pub fn statement_account_id(&self) -> [u8; 32] {
+        self.statement_account_id
+    }
+
+    /// Return the host's public encryption key.
+    pub fn encryption_public_key(&self) -> [u8; 32] {
+        self.encryption_public_key
+    }
+
+    /// Return safe display metadata retained from the pairing proposal.
+    pub fn metadata(&self) -> &PairedHostMetadata {
+        &self.metadata
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PairedHostStore {
+    version: u32,
+    #[serde(default)]
+    paired_hosts: Vec<PairedHost>,
+}
+
+impl Default for PairedHostStore {
+    fn default() -> Self {
+        Self {
+            version: PAIRED_HOST_STORE_VERSION,
+            paired_hosts: Vec::new(),
+        }
+    }
+}
+
+struct PairedHostStoreLock {
+    file: fs::File,
+}
+
+impl PairedHostStoreLock {
+    fn acquire(session_path: &Path) -> Result<Self> {
+        fs::create_dir_all(session_path)
+            .with_context(|| format!("create session {}", session_path.display()))?;
+        let path = session_path.join(PAIRED_HOSTS_LOCK_FILE);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("open paired host lock {}", path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("lock paired hosts {}", path.display()))?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for PairedHostStoreLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
 
 /// Persistent signing-host session data selected for permanent removal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +492,58 @@ impl SessionCatalog {
         write_session_info(&profile.path, &info)
     }
 
+    /// Return all paired hosts in stable statement-account order.
+    pub fn paired_hosts(&self, profile: &SessionProfile) -> Result<Vec<PairedHost>> {
+        let mut paired_hosts = read_paired_host_store(&profile.path)?.paired_hosts;
+        paired_hosts.sort_by_key(PairedHost::statement_account_id);
+        Ok(paired_hosts)
+    }
+
+    /// Insert or replace a paired host using its statement account ID.
+    pub fn store_paired_host(
+        &self,
+        profile: &SessionProfile,
+        paired_host: PairedHost,
+    ) -> Result<()> {
+        let _lock = PairedHostStoreLock::acquire(&profile.path)?;
+        let mut store = read_paired_host_store(&profile.path)?;
+        if let Some(existing) = store
+            .paired_hosts
+            .iter_mut()
+            .find(|existing| existing.statement_account_id() == paired_host.statement_account_id())
+        {
+            if existing == &paired_host {
+                return Ok(());
+            }
+            *existing = paired_host;
+        } else {
+            store.paired_hosts.push(paired_host);
+        }
+        store
+            .paired_hosts
+            .sort_by_key(PairedHost::statement_account_id);
+        write_paired_host_store(&profile.path, &store)
+    }
+
+    /// Remove exactly one paired host selected by statement account ID.
+    pub fn remove_paired_host(
+        &self,
+        profile: &SessionProfile,
+        statement_account_id: &[u8; 32],
+    ) -> Result<bool> {
+        let _lock = PairedHostStoreLock::acquire(&profile.path)?;
+        let mut store = read_paired_host_store(&profile.path)?;
+        let original_len = store.paired_hosts.len();
+        store
+            .paired_hosts
+            .retain(|paired_host| paired_host.statement_account_id() != *statement_account_id);
+        if store.paired_hosts.len() == original_len {
+            return Ok(false);
+        }
+        write_paired_host_store(&profile.path, &store)?;
+        Ok(true)
+    }
+
     /// Return the last script used in this session, if it still exists.
     pub fn last_script(&self, profile: &SessionProfile) -> Result<Option<PathBuf>> {
         session_last_script(&profile.path)
@@ -419,6 +582,7 @@ fn migrate_default_profile(profile: &SessionProfile, target_path: &Path) -> Resu
         "core-storage.json",
         "product-storage.json",
         SESSION_INFO_FILE,
+        PAIRED_HOSTS_FILE,
     ] {
         let source = profile.path.join(name);
         if source.is_file() {
@@ -515,6 +679,62 @@ fn write_session_info(session_path: &Path, info: &SessionInfo) -> Result<()> {
     Ok(())
 }
 
+fn read_paired_host_store(session_path: &Path) -> Result<PairedHostStore> {
+    let path = session_path.join(PAIRED_HOSTS_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PairedHostStore::default());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("read paired hosts {}", path.display()));
+        }
+    };
+    let store: PairedHostStore = serde_json::from_str(&text)
+        .with_context(|| format!("decode paired hosts {}", path.display()))?;
+    anyhow::ensure!(
+        store.version == PAIRED_HOST_STORE_VERSION,
+        "unsupported paired host store version {} in {}",
+        store.version,
+        path.display()
+    );
+    for paired_host in &store.paired_hosts {
+        anyhow::ensure!(
+            paired_host.version == PAIRED_HOST_VERSION,
+            "unsupported paired host version {} in {}",
+            paired_host.version,
+            path.display()
+        );
+    }
+    let mut statement_account_ids = store
+        .paired_hosts
+        .iter()
+        .map(PairedHost::statement_account_id)
+        .collect::<Vec<_>>();
+    statement_account_ids.sort();
+    let original_len = statement_account_ids.len();
+    statement_account_ids.dedup();
+    anyhow::ensure!(
+        statement_account_ids.len() == original_len,
+        "duplicate paired host statement account ID in {}",
+        path.display()
+    );
+    Ok(store)
+}
+
+fn write_paired_host_store(session_path: &Path, store: &PairedHostStore) -> Result<()> {
+    fs::create_dir_all(session_path)
+        .with_context(|| format!("create session {}", session_path.display()))?;
+    let path = session_path.join(PAIRED_HOSTS_FILE);
+    let temporary = session_path.join(format!(".{PAIRED_HOSTS_FILE}.{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(store)?;
+    fs::write(&temporary, format!("{text}\n"))
+        .with_context(|| format!("write paired hosts {}", temporary.display()))?;
+    fs::rename(&temporary, &path)
+        .with_context(|| format!("persist paired hosts {}", path.display()))?;
+    Ok(())
+}
+
 /// Validate a portable session name before using it as a path component.
 pub fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 {
@@ -594,6 +814,8 @@ fn absolute_path(path: PathBuf) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -684,6 +906,213 @@ mod tests {
             Some("imported")
         );
         Ok(())
+    }
+
+    #[test]
+    fn paired_hosts_are_persisted_in_statement_order_and_preserve_metadata() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        catalog.store_signer_binding(&profile, "alice.dot", "imported")?;
+        let session_metadata = fs::read(profile.path.join(SESSION_INFO_FILE))?;
+        let first = paired_host(1, 11, "first");
+        let second = paired_host(2, 22, "second");
+
+        catalog.store_paired_host(&profile, second.clone())?;
+        catalog.store_paired_host(&profile, first.clone())?;
+
+        assert_eq!(catalog.paired_hosts(&profile)?, vec![first, second]);
+        assert_eq!(
+            (
+                catalog.cached_user_id(&profile)?,
+                catalog.cached_account_name(&profile)?,
+            ),
+            (Some("alice.dot".to_string()), Some("imported".to_string()))
+        );
+        assert_eq!(
+            fs::read(profile.path.join(SESSION_INFO_FILE))?,
+            session_metadata
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(profile.path.join(PAIRED_HOSTS_FILE))?)?;
+        assert_eq!(metadata["version"], 1);
+        assert_eq!(
+            metadata["paired_hosts"][0],
+            serde_json::json!({
+                "version": 1,
+                "statement_account_id": vec![1_u8; 32],
+                "encryption_public_key": vec![11_u8; 32],
+                "host_name": "first",
+                "host_version": "1.0.0",
+                "host_icon": "https://example.invalid/first.png",
+                "platform_type": "web",
+                "platform_version": "test",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repairing_a_host_updates_its_public_key_without_creating_a_duplicate() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        let original = paired_host(1, 11, "original");
+        let replacement = paired_host(1, 33, "replacement");
+        let other = paired_host(2, 22, "other");
+
+        catalog.store_paired_host(&profile, original)?;
+        catalog.store_paired_host(&profile, other.clone())?;
+        catalog.store_paired_host(&profile, replacement.clone())?;
+
+        assert_eq!(catalog.paired_hosts(&profile)?, vec![replacement, other]);
+        Ok(())
+    }
+
+    #[test]
+    fn removing_a_paired_host_is_exact_and_preserves_session_metadata() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        catalog.store_signer_binding(&profile, "alice.dot", "imported")?;
+        let session_metadata = fs::read(profile.path.join(SESSION_INFO_FILE))?;
+        let first = paired_host(1, 11, "first");
+        let second = paired_host(2, 22, "second");
+        catalog.store_paired_host(&profile, first)?;
+        catalog.store_paired_host(&profile, second.clone())?;
+
+        assert!(catalog.remove_paired_host(&profile, &[1; 32])?);
+        assert!(!catalog.remove_paired_host(&profile, &[1; 32])?);
+
+        assert_eq!(catalog.paired_hosts(&profile)?, vec![second]);
+        assert_eq!(
+            (
+                catalog.cached_user_id(&profile)?,
+                catalog.cached_account_name(&profile)?,
+            ),
+            (Some("alice.dot".to_string()), Some("imported".to_string()))
+        );
+        assert_eq!(
+            fs::read(profile.path.join(SESSION_INFO_FILE))?,
+            session_metadata
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_upsert_and_removal_preserve_unrelated_hosts() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        let removed = paired_host(1, 11, "removed");
+        let preserved = paired_host(2, 22, "preserved");
+        let inserted = paired_host(3, 33, "inserted");
+        catalog.store_paired_host(&profile, removed)?;
+        catalog.store_paired_host(&profile, preserved.clone())?;
+        let held_lock = PairedHostStoreLock::acquire(&profile.path)?;
+        let ready = Arc::new(Barrier::new(3));
+        let (done_tx, done_rx) = mpsc::channel();
+        let inserted_for_thread = inserted.clone();
+
+        std::thread::scope(|scope| -> Result<()> {
+            let insert_catalog = catalog.clone();
+            let insert_profile = profile.clone();
+            let insert_ready = Arc::clone(&ready);
+            let insert_done = done_tx.clone();
+            scope.spawn(move || {
+                insert_ready.wait();
+                let result = insert_catalog.store_paired_host(&insert_profile, inserted_for_thread);
+                insert_done.send(result).unwrap();
+            });
+
+            let remove_catalog = catalog.clone();
+            let remove_profile = profile.clone();
+            let remove_ready = Arc::clone(&ready);
+            let remove_done = done_tx.clone();
+            scope.spawn(move || {
+                remove_ready.wait();
+                let result = remove_catalog
+                    .remove_paired_host(&remove_profile, &[1; 32])
+                    .map(|removed| assert!(removed));
+                remove_done.send(result).unwrap();
+            });
+
+            drop(done_tx);
+            ready.wait();
+            assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+            drop(held_lock);
+            done_rx.recv()??;
+            done_rx.recv()??;
+            Ok(())
+        })?;
+
+        assert_eq!(catalog.paired_hosts(&profile)?, vec![preserved, inserted]);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_version_one_metadata_starts_with_no_paired_hosts() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        let legacy_metadata = br#"{"version":1,"user_id":"alice.dot","account_name":"imported"}"#;
+        fs::write(profile.path.join(SESSION_INFO_FILE), legacy_metadata)?;
+
+        assert_eq!(catalog.paired_hosts(&profile)?, Vec::<PairedHost>::new());
+        catalog.store_paired_host(&profile, paired_host(1, 11, "first"))?;
+
+        assert_eq!(
+            (
+                catalog.cached_user_id(&profile)?,
+                catalog.cached_account_name(&profile)?,
+            ),
+            (Some("alice.dot".to_string()), Some("imported".to_string()))
+        );
+        assert_eq!(
+            fs::read(profile.path.join(SESSION_INFO_FILE))?,
+            legacy_metadata
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_paired_host_records_are_not_overwritten() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let profile = catalog.ensure_profile("alice")?;
+        let path = profile.path.join(PAIRED_HOSTS_FILE);
+        let unsupported = serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 1,
+            "paired_hosts": [{
+                "version": 2,
+                "statement_account_id": vec![1_u8; 32],
+                "encryption_public_key": vec![11_u8; 32]
+            }]
+        }))?;
+        fs::write(&path, &unsupported)?;
+
+        assert!(catalog.paired_hosts(&profile).is_err());
+        assert!(
+            catalog
+                .store_paired_host(&profile, paired_host(2, 22, "second"))
+                .is_err()
+        );
+        assert_eq!(fs::read(path)?, unsupported);
+        Ok(())
+    }
+
+    fn paired_host(statement_byte: u8, encryption_byte: u8, name: &str) -> PairedHost {
+        PairedHost::new(
+            [statement_byte; 32],
+            [encryption_byte; 32],
+            PairedHostMetadata {
+                host_name: Some(name.to_string()),
+                host_version: Some("1.0.0".to_string()),
+                host_icon: Some(format!("https://example.invalid/{name}.png")),
+                platform_type: Some("web".to_string()),
+                platform_version: Some("test".to_string()),
+            },
+        )
     }
 
     #[test]
@@ -787,6 +1216,21 @@ mod tests {
                 .product_storage_dir
                 .ends_with("testnet/signing-host/storage/default")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn promoting_the_default_profile_preserves_paired_hosts() -> Result<()> {
+        let temporary = tempdir()?;
+        let catalog = SessionCatalog::new(temporary.path().to_path_buf(), "testnet")?;
+        let default_profile = catalog.ensure_profile(DEFAULT_SESSION_NAME)?;
+        let host = paired_host(1, 11, "first");
+        catalog.store_paired_host(&default_profile, host.clone())?;
+
+        let promoted = catalog.promote_to_user(&default_profile, "alice.dot")?;
+
+        assert_eq!(catalog.paired_hosts(&promoted)?, vec![host]);
+        assert!(!default_profile.path.join(PAIRED_HOSTS_FILE).exists());
         Ok(())
     }
 

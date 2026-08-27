@@ -682,6 +682,20 @@ public protocol HostCallbacks: AnyObject, Sendable {
     func devicePermission(request: HostDevicePermissionRequest) async throws  -> Bool
 
     /**
+     * Report the OS status of a device capability without prompting.
+     *
+     * Answer from the platform's own authorization APIs. This must not show
+     * UI: the core calls it before every device-permission request and status
+     * read, and prompting here would re-ask a question the user has already
+     * answered. A host with no OS gate for the capability answers
+     * `NotApplicable`, which leaves the stored product decision governing.
+     *
+     * It is async because reading notification authorization on iOS is
+     * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+     */
+    func devicePermissionStatus(request: HostDevicePermissionRequest) async throws  -> NativeDevicePermissionStatus
+
+    /**
      * Prompt the user for a remote (product-scoped) permission.
      */
     func remotePermission(request: RemotePermission) async throws  -> Bool
@@ -931,6 +945,34 @@ open func devicePermission(request: HostDevicePermissionRequest)async throws  ->
             completeFunc: ffi_truapi_server_rust_future_complete_i8,
             freeFunc: ffi_truapi_server_rust_future_free_i8,
             liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
+}
+
+    /**
+     * Report the OS status of a device capability without prompting.
+     *
+     * Answer from the platform's own authorization APIs. This must not show
+     * UI: the core calls it before every device-permission request and status
+     * read, and prompting here would re-ask a question the user has already
+     * answered. A host with no OS gate for the capability answers
+     * `NotApplicable`, which leaves the stored product decision governing.
+     *
+     * It is async because reading notification authorization on iOS is
+     * `UNUserNotificationCenter.getNotificationSettings(completionHandler:)`.
+     */
+open func devicePermissionStatus(request: HostDevicePermissionRequest)async throws  -> NativeDevicePermissionStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_hostcallbacks_device_permission_status(
+                        self.uniffiCloneHandle(),FfiConverterTypeHostDevicePermissionRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeNativeDevicePermissionStatus_lift,
             errorHandler: FfiConverterTypeHostRejection_lift
         )
 }
@@ -1374,6 +1416,49 @@ fileprivate struct UniffiCallbackInterfaceHostCallbacks {
                     uniffiCallbackData,
                     UniffiForeignFutureResultI8(
                         returnValue: 0,
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsyncWithError(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                lowerError: FfiConverterTypeHostRejection_lower,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        },
+        devicePermissionStatus: { (
+            uniffiHandle: UInt64,
+            request: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> NativeDevicePermissionStatus in
+                guard let uniffiObj = try? FfiConverterTypeHostCallbacks.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return try await uniffiObj.devicePermissionStatus(
+                     request: try FfiConverterTypeHostDevicePermissionRequest_lift(request)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: NativeDevicePermissionStatus) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: FfiConverterTypeNativeDevicePermissionStatus_lower(returnValue),
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: RustBuffer.empty(),
                         callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
                     )
                 )
@@ -2477,8 +2562,13 @@ public protocol NativeProductExecutionProtocol: AnyObject, Sendable {
 
     /**
      * Read a product-scoped permission authorization without prompting.
+     *
+     * A device capability resolves the host application's OS gate as well as
+     * storage, which means calling `device_permission_status` on the host. It
+     * is async for that reason: blocking a thread on a host callback
+     * deadlocks any implementation that hops to the same thread to answer.
      */
-    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) async throws  -> PermissionAuthorizationStatus
 
     /**
      * Resolve a product's hard-subtree public key for hosts naming the account
@@ -2663,15 +2753,26 @@ open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
 
     /**
      * Read a product-scoped permission authorization without prompting.
+     *
+     * A device capability resolves the host application's OS gate as well as
+     * storage, which means calling `device_permission_status` on the host. It
+     * is async for that reason: blocking a thread on a host callback
+     * deadlocks any implementation that hops to the same thread to answer.
      */
-open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
-    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
-    )
-})
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)async throws  -> PermissionAuthorizationStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_nativeproductexecution_permission_authorization_status(
+                        self.uniffiCloneHandle(),FfiConverterTypePermissionAuthorizationRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePermissionAuthorizationStatus_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
 }
 
     /**
@@ -2925,12 +3026,13 @@ public protocol NativeTrUApiCoreProtocol: AnyObject, Sendable {
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
 
     /**
-     * Read a stored permission authorization status without prompting.
+     * Read a permission authorization status without prompting.
      *
-     * Blocks the calling thread on the storage read, so call it off the host's
-     * main/UI thread.
+     * A device capability resolves the host application's OS gate as well as
+     * storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+     * identity-disclosure and account-access decisions have no OS gate.
      */
-    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) throws  -> PermissionAuthorizationStatus
+    func permissionAuthorizationStatus(request: PermissionAuthorizationRequest) async throws  -> PermissionAuthorizationStatus
 
     /**
      * Run one renewal pass now and report what each tracked target got.
@@ -3240,19 +3342,26 @@ open func notifyThemeChanged(theme: HostThemeSubscribeItem)  {try! rustCall() {
 }
 
     /**
-     * Read a stored permission authorization status without prompting.
+     * Read a permission authorization status without prompting.
      *
-     * Blocks the calling thread on the storage read, so call it off the host's
-     * main/UI thread.
+     * A device capability resolves the host application's OS gate as well as
+     * storage, so an OS refusal reads as `Denied` whatever is stored. Remote,
+     * identity-disclosure and account-access decisions have no OS gate.
      */
-open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)throws  -> PermissionAuthorizationStatus  {
-    return try  FfiConverterTypePermissionAuthorizationStatus_lift(try rustCallWithError(FfiConverterTypeHostRejection_lift) {
-        uniffiCallStatus in
-    uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePermissionAuthorizationRequest_lower(request),uniffiCallStatus
-    )
-})
+open func permissionAuthorizationStatus(request: PermissionAuthorizationRequest)async throws  -> PermissionAuthorizationStatus  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_truapi_server_fn_method_nativetruapicore_permission_authorization_status(
+                        self.uniffiCloneHandle(),FfiConverterTypePermissionAuthorizationRequest_lower(request)
+                )
+            },
+            pollFunc: ffi_truapi_server_rust_future_poll_rust_buffer,
+            completeFunc: ffi_truapi_server_rust_future_complete_rust_buffer,
+            freeFunc: ffi_truapi_server_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePermissionAuthorizationStatus_lift,
+            errorHandler: FfiConverterTypeHostRejection_lift
+        )
 }
 
     /**
@@ -3895,6 +4004,11 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
      */
     public var hostVersion: String?
     /**
+     * Platform category this host runs on, reported to products via
+     * `System::host_info`.
+     */
+    public var hostPlatform: HostPlatform
+    /**
      * Optional platform/browser name shown by the wallet during SSO pairing.
      */
     public var platformType: String?
@@ -3932,6 +4046,10 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
          * Optional host version shown by the wallet during SSO pairing.
          */hostVersion: String?,
         /**
+         * Platform category this host runs on, reported to products via
+         * `System::host_info`.
+         */hostPlatform: HostPlatform,
+        /**
          * Optional platform/browser name shown by the wallet during SSO pairing.
          */platformType: String?,
         /**
@@ -3952,6 +4070,7 @@ public struct NativeHostRuntimeConfig: Equatable, Hashable {
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
+        self.hostPlatform = hostPlatform
         self.platformType = platformType
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
@@ -3979,6 +4098,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
                 hostVersion: FfiConverterOptionString.read(from: &buf),
+                hostPlatform: FfiConverterTypeHostPlatform.read(from: &buf),
                 platformType: FfiConverterOptionString.read(from: &buf),
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
@@ -3992,6 +4112,7 @@ public struct FfiConverterTypeNativeHostRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
         FfiConverterOptionString.write(value.hostVersion, into: &buf)
+        FfiConverterTypeHostPlatform.write(value.hostPlatform, into: &buf)
         FfiConverterOptionString.write(value.platformType, into: &buf)
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
@@ -4111,6 +4232,11 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
      */
     public var hostVersion: String?
     /**
+     * Platform category this host runs on, reported to products via
+     * `System::host_info`.
+     */
+    public var hostPlatform: HostPlatform
+    /**
      * Optional platform/browser name shown by the wallet during SSO pairing.
      */
     public var platformType: String?
@@ -4158,6 +4284,10 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
          * Optional host version shown by the wallet during SSO pairing.
          */hostVersion: String?,
         /**
+         * Platform category this host runs on, reported to products via
+         * `System::host_info`.
+         */hostPlatform: HostPlatform,
+        /**
          * Optional platform/browser name shown by the wallet during SSO pairing.
          */platformType: String?,
         /**
@@ -4183,6 +4313,7 @@ public struct NativeRuntimeConfig: Equatable, Hashable {
         self.hostName = hostName
         self.hostIcon = hostIcon
         self.hostVersion = hostVersion
+        self.hostPlatform = hostPlatform
         self.platformType = platformType
         self.platformVersion = platformVersion
         self.peopleChainGenesisHash = peopleChainGenesisHash
@@ -4213,6 +4344,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
                 hostName: FfiConverterString.read(from: &buf),
                 hostIcon: FfiConverterOptionString.read(from: &buf),
                 hostVersion: FfiConverterOptionString.read(from: &buf),
+                hostPlatform: FfiConverterTypeHostPlatform.read(from: &buf),
                 platformType: FfiConverterOptionString.read(from: &buf),
                 platformVersion: FfiConverterOptionString.read(from: &buf),
                 peopleChainGenesisHash: FfiConverterData.read(from: &buf),
@@ -4229,6 +4361,7 @@ public struct FfiConverterTypeNativeRuntimeConfig: FfiConverterRustBuffer {
         FfiConverterString.write(value.hostName, into: &buf)
         FfiConverterOptionString.write(value.hostIcon, into: &buf)
         FfiConverterOptionString.write(value.hostVersion, into: &buf)
+        FfiConverterTypeHostPlatform.write(value.hostPlatform, into: &buf)
         FfiConverterOptionString.write(value.platformType, into: &buf)
         FfiConverterOptionString.write(value.platformVersion, into: &buf)
         FfiConverterData.write(value.peopleChainGenesisHash, into: &buf)
@@ -4769,6 +4902,106 @@ public func FfiConverterTypeHostStorageError_lift(_ buf: RustBuffer) throws -> H
 public func FfiConverterTypeHostStorageError_lower(_ value: HostStorageError) -> RustBuffer {
     return FfiConverterTypeHostStorageError.lower(value)
 }
+
+
+/**
+ * OS status of a device capability, as a native host reports it.
+ *
+ * Mirrors [`truapi_platform::DevicePermissionStatus`], which cannot be used
+ * directly: an async callback method returning a type from another UniFFI
+ * namespace lowers into that namespace's `RustBuffer`, and the generated
+ * Kotlin then fails to compile. The conversion is total.
+ */
+
+public enum NativeDevicePermissionStatus: Equatable, Hashable {
+
+    /**
+     * The OS grants this capability to the host application.
+     */
+    case granted
+    /**
+     * The OS refuses it; only system settings can change that.
+     */
+    case denied
+    /**
+     * The OS has not been asked, or reset its own answer.
+     */
+    case notDetermined
+    /**
+     * This platform has no OS gate for the capability.
+     */
+    case notApplicable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NativeDevicePermissionStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNativeDevicePermissionStatus: FfiConverterRustBuffer {
+    typealias SwiftType = NativeDevicePermissionStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NativeDevicePermissionStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        case 1: return .granted
+
+        case 2: return .denied
+
+        case 3: return .notDetermined
+
+        case 4: return .notApplicable
+
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NativeDevicePermissionStatus, into buf: inout [UInt8]) {
+        switch value {
+
+
+        case .granted:
+            writeInt(&buf, Int32(1))
+
+
+        case .denied:
+            writeInt(&buf, Int32(2))
+
+
+        case .notDetermined:
+            writeInt(&buf, Int32(3))
+
+
+        case .notApplicable:
+            writeInt(&buf, Int32(4))
+
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeDevicePermissionStatus_lift(_ buf: RustBuffer) throws -> NativeDevicePermissionStatus {
+    return try FfiConverterTypeNativeDevicePermissionStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNativeDevicePermissionStatus_lower(_ value: NativeDevicePermissionStatus) -> RustBuffer {
+    return FfiConverterTypeNativeDevicePermissionStatus.lower(value)
+}
+
 
 
 /**
@@ -6533,52 +6766,55 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission() != 19880) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 25245) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_device_permission_status() != 21303) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 41678) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_remote_permission() != 12868) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 59238) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_auth_state_changed() != 5497) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 35684) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_read() != 61703) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 61002) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_write() != 4428) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 36320) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_core_storage_clear() != 43717) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 10194) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_connect() != 30923) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 54867) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_send() != 6042) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 23589) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_chain_close() != 51970) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 33694) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_confirm_user_action() != 20260) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 64982) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_lookup_preimage() != 59647) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 46490) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_current_theme() != 24427) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 54534) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_feature_supported() != 28665) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 32804) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_supported_chains() != 45374) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 62222) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_read() != 18981) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 61208) {
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_write() != 7579) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_truapi_server_checksum_method_hostcallbacks_local_storage_clear() != 22643) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativechatcallbacks_create_room() != 15676) {
@@ -6611,7 +6847,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_notify_theme_changed() != 3284) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 18097) {
+    if (uniffi_truapi_server_checksum_method_nativeproductexecution_permission_authorization_status() != 27339) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativeproductexecution_product_subtree_public_key() != 63238) {
@@ -6668,7 +6904,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_truapi_server_checksum_method_nativetruapicore_notify_theme_changed() != 49601) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 21962) {
+    if (uniffi_truapi_server_checksum_method_nativetruapicore_permission_authorization_status() != 42776) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_truapi_server_checksum_method_nativetruapicore_renew_statement_allowances() != 57273) {

@@ -62,14 +62,12 @@ dependencies {
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 
-// Coordinates for the local Maven publication (`publishToMavenLocal`).
-// Distribution is via JitPack: a git tag drives `jitpack.yml`, and JitPack
-// derives the consumer coordinates from the repo + subproject as
-// `com.github.paritytech.truapi:truapi-host:<tag>`, overriding the group and
-// artifactId below. These fields only matter for local testing.
+// Coordinates for the Maven publication. Releases are published to GitHub
+// Packages by .github/workflows/release-android.yml, which passes the real
+// version via -PtruapiHostVersion; local publishes default to 0.0.0-local.
 val publicationGroup = "io.parity"
 val publicationArtifact = "truapi-host-android"
-val publicationVersion = "0.1.0"
+val publicationVersion = (findProperty("truapiHostVersion") as String?) ?: "0.0.0-local"
 
 group = publicationGroup
 version = publicationVersion
@@ -118,11 +116,17 @@ publishing {
     }
 
     repositories {
-        // Maven Local for `gradle publishToMavenLocal` during development
-        // and for JitPack's build environment (see `jitpack.yml`).
-        // Consumers fetch the published artifact via JitPack at
-        // `com.github.paritytech.truapi:truapi-host:<tag>` after the
-        // repo is tagged.
+        // Maven Local for `gradle publishToMavenLocal` during development.
         mavenLocal()
+        // Release target: the release-android workflow publishes here with
+        // the workflow's GITHUB_TOKEN.
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/paritytech/host-rust-core")
+            credentials {
+                username = System.getenv("GITHUB_ACTOR")
+                password = System.getenv("GITHUB_TOKEN")
+            }
+        }
     }
 }
