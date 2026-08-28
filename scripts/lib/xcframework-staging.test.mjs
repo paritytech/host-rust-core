@@ -13,18 +13,9 @@ const stageScript = join(
   "ios/truapi-provider/scripts/stage-xcframework.sh",
 );
 
-/**
- * The slices rebuild.sh produces for a full build. The staging script matches
- * on the layout rather than on these names, so a third slice needs no change
- * here, but two is enough to prove the strip reaches every slice.
- */
 const slices = ["ios-arm64", "ios-arm64-simulator"];
 
-/**
- * Write a directory shaped like the xcframework rebuild.sh hands to staging:
- * one Headers folder per slice, each carrying the generated header and the
- * modulemap that collides with a consumer's own UniFFI framework.
- */
+/** The shape rebuild.sh hands to staging, modulemap per slice included. */
 function writeXcframework(root) {
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, "Info.plist"), "<plist></plist>\n");
@@ -40,11 +31,6 @@ function writeXcframework(root) {
   }
 }
 
-/**
- * Stage a fresh fixture in a temp workspace and hand the result to `body`.
- * PACKAGE_ROOT and SOURCE are the two overrides the script reads, so nothing
- * here touches the checkout.
- */
 async function withStaging(body, { writeSource = true } = {}) {
   const workspace = mkdtempSync(join(tmpdir(), "truapi-provider-staging-"));
   try {
