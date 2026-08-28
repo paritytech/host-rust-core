@@ -20,7 +20,9 @@ import { parsePackageLines } from "./lib/npm-registry.mjs";
  *   node scripts/notify-consumers.mjs --repo me/scratch \
  *     --packages '@parity/truapi||0.10.0|@parity/truapi@0.10.0'
  *
- * Needs CONSUMER_NOTIFY_TOKEN with issues:write on the target repositories.
+ * Needs CONSUMER_NOTIFY_TOKEN to hold a token with issues:write on the target
+ * repositories. The workflow mints a GitHub App installation token for it; a
+ * personal token with the same reach works for running this by hand.
  * A repository that cannot be reached is a warning, not a failed release; the
  * script exits non-zero at the end so the failure is still visible.
  */

@@ -289,7 +289,8 @@ jobs:
       published: ${{ needs.release.outputs.published }}
       ref: ${{ github.event.workflow_run.head_sha }}
     secrets:
-      CONSUMER_NOTIFY_TOKEN: ${{ secrets.CONSUMER_NOTIFY_TOKEN }}
+      CONSUMER_NOTIFY_APP_CLIENT_ID: ${{ secrets.CONSUMER_NOTIFY_APP_CLIENT_ID }}
+      CONSUMER_NOTIFY_APP_PRIVATE_KEY: ${{ secrets.CONSUMER_NOTIFY_APP_PRIVATE_KEY }}
 
   publish-android:
     name: Publish Android host

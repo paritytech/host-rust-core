@@ -158,16 +158,25 @@ The routing and the issue text live in
 [`scripts/lib/consumer-notifications.mjs`](../scripts/lib/consumer-notifications.mjs),
 unit-tested under `npm run test:scripts`;
 [`scripts/notify-consumers.mjs`](../scripts/notify-consumers.mjs) makes the API
-calls. The job needs the `CONSUMER_NOTIFY_TOKEN` secret, a fine-grained token
-owned by `paritytech` with `issues: write` on each consumer repository. Because
-such a token names its repositories explicitly, adding a consumer means editing
-the token as well as the config. Issues appear under the identity that owns the
-token.
+calls. Authentication is a GitHub App installed on the consumer repositories,
+which is why the issues are opened by an app rather than by a person and why
+there is no token to rotate. The job holds only the app's client id and private
+key, as `CONSUMER_NOTIFY_APP_CLIENT_ID` and `CONSUMER_NOTIFY_APP_PRIVATE_KEY`,
+and mints an installation token per run.
+
+That token is scoped to the repositories the run will write to, resolved from the
+config, and to `issues: write` alone, so it carries no reach over the rest of the
+installation. The two lists therefore have to agree: a repository named in the
+config that the app is not installed on fails the whole job rather than that one
+repository, which is deliberate, since a consumer nobody can reach is a
+configuration error and not a silent omission. Adding a consumer means an entry in
+the config and an app installation on that repository.
 
 To rehearse a change to any of that, run the `notify-consumers` workflow by hand
-with a `target_repo` of a scratch repository you own and a `published` value of
-`@parity/truapi||0.10.0|@parity/truapi@0.10.0`. It opens the real issue there
-instead of on a consumer.
+with a `published` value of `@parity/truapi||0.10.0|@parity/truapi@0.10.0` and a
+`target_repo` of a scratch repository the app is installed on. It opens the real
+issue there instead of on a consumer. The app is the reason the scratch repository
+has to be one of ours rather than a personal one.
 
 ## Safety properties
 
@@ -196,10 +205,10 @@ instead of on a consumer.
 - A `release:` PR with mismatched `js/packages/truapi/package.json` and
   `rust/crates/truapi/Cargo.toml` versions is blocked at PR time by the
   `Release version check` workflow.
-- Publishing uses the default `GITHUB_TOKEN`. The only other secrets are the
+- Publishing uses the default `GITHUB_TOKEN`. The only other credentials are the
   org-level `NPM_PUBLISH_AUTOMATION_TOKEN` that the automation itself relies on,
-  and `CONSUMER_NOTIFY_TOKEN`, which is read by the notification job alone and
-  can reach nothing in this repository.
+  and the notification app's client id and private key, which are read by the
+  notification job alone and can reach nothing in this repository.
 - The consumer notifications are the last step and announce only the versions the
   registry confirmed. A repository that cannot be reached is a warning and does
   not stop the others, though the run still ends red so the failure is visible.
