@@ -19,25 +19,82 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # ── A new RFC must land with the interfaces it specifies ──
-      # Edits to an already-accepted RFC (addenda recording what the host
-      # actually does) are not gated: they describe behavior that often lives
-      # entirely in the runtime crates.
-      - name: Require truapi interface changes for new RFCs
+      - name: Validate RFC documents
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          BASE=${{ github.event.pull_request.base.sha }}
-          NEW_RFCS=$(git diff --name-only --diff-filter=A "$BASE"...HEAD -- docs/rfcs/ ':!docs/rfcs/_index.md')
-          if [ -z "$NEW_RFCS" ]; then
-            echo "No new RFC documents; nothing to gate."
+          set -euo pipefail
+
+          MERGE_BASE=$(git merge-base "$BASE_SHA" HEAD)
+          EXCLUDE=(':!docs/rfcs/_index.md' ':!docs/rfcs/0001-template.md')
+          CHANGED=$(git diff --name-only --diff-filter=d "$MERGE_BASE" HEAD -- 'docs/rfcs/*.md' "${EXCLUDE[@]}")
+          ADDED=$(git diff --name-only --diff-filter=A "$MERGE_BASE" HEAD -- 'docs/rfcs/*.md' "${EXCLUDE[@]}")
+
+          if [ -z "$CHANGED" ]; then
+            echo "No RFC documents in this change."
             exit 0
           fi
-          echo "New RFCs:"
-          echo "$NEW_RFCS"
 
-          API_CHANGED=$(git diff --name-only "$BASE"...HEAD -- rust/crates/truapi/)
-          if [ -z "$API_CHANGED" ]; then
-            echo "::error::PRs adding an RFC must include corresponding changes to the truapi interfaces in rust/crates/truapi/."
+          failed=0
+          fail() {
+            echo "::error file=$1::$2"
+            failed=1
+          }
+
+          frontmatter_value() {
+            awk -v key="$2" '
+              NR == 1 && $0 != "---" { exit }
+              NR > 1 && $0 == "---" { exit }
+              $0 ~ "^" key ": *[^ ]" { sub("^" key ": *", ""); gsub(/^"|"$/, ""); print; exit }
+            ' "$1"
+          }
+
+          # A new RFC is held to the full shape of docs/rfcs/0001-template.md.
+          # An edit to an existing one is not: several predate the template and
+          # would fail on defects their author never introduced.
+          for file in $ADDED; do
+            for key in title owner; do
+              if [ -z "$(frontmatter_value "$file" "$key")" ]; then
+                fail "$file" "frontmatter is missing a non-empty '$key'"
+              fi
+            done
+            for section in Summary Motivation; do
+              if ! grep -qx "## $section" "$file"; then
+                fail "$file" "missing required section: ## $section"
+              fi
+            done
+
+            # Three names for the same section are in circulation: docs/rfcs/
+            # holds "Detailed Design" and the Fellowship's "Explanation", and
+            # the rfc skill's template emits "Approach". Any of them counts;
+            # settling on one is a template cleanup, not this gate's business.
+            if ! grep -qxE '## (Detailed Design|Explanation|Approach)' "$file"; then
+              fail "$file" "missing a design section: ## Detailed Design, ## Explanation or ## Approach"
+            fi
+          done
+
+          for file in $CHANGED; do
+            while IFS= read -r placeholder; do
+              if grep -qF "$placeholder" "$file"; then
+                fail "$file" "unedited text from docs/rfcs/0001-template.md: '$placeholder'"
+              fi
+            done <<'PLACEHOLDERS'
+          RFC Title
+          @ownerhandle
+          One-paragraph explanation of the proposal.
+          Why are we doing this?
+          What parts of the design are still open?
+          PLACEHOLDERS
+
+            if grep -qE '\b(TODO|TBD|FIXME)\b' "$file"; then
+              fail "$file" "unresolved TODO, TBD or FIXME"
+            fi
+          done
+
+          if [ "$failed" -eq 1 ]; then
+            echo "::error::RFC validation failed. docs/rfcs/0001-template.md defines the expected shape."
             exit 1
           fi
-          echo "API changes detected:"
-          echo "$API_CHANGED"
+
+          echo "RFC documents validated:"
+          echo "$CHANGED"
