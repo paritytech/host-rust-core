@@ -38,8 +38,7 @@ let binaryTarget: Target = useLocalBinary
 let useLocalProviderBinary =
     ProcessInfo.processInfo.environment["TRUAPI_PROVIDER_USE_LOCAL_BINARY"] == "1"
 
-// Set by ios/truapi-provider/scripts/publish.sh. No release exists yet, so remote
-// resolution fails on the checksum until the first publish.
+// Set by ios/truapi-provider/scripts/publish.sh.
 
 let providerBinaryURL = "https://github.com/paritytech/host-rust-core/releases/download/%40parity%2Fios-provider%400.7.0/truapi_provider.xcframework.zip"
 let providerBinaryChecksum = "04fd47522fad5b12048396efae5d34c40f049623678066215654a3c9166d2bb3"
