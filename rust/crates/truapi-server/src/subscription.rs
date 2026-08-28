@@ -19,7 +19,10 @@ use futures::{Stream, StreamExt};
 use parity_scale_codec::{Decode, DecodeLimit, Encode};
 use truapi::v01;
 
-use crate::frame::{IdFactory, Payload, ProtocolMessage};
+use crate::frame::{
+    IdFactory, PROTOCOL_ERROR_ID, Payload, ProtocolErrorV1, ProtocolMessage,
+    VersionedProtocolError, decode_protocol_error_payload,
+};
 use crate::generated::wire_table::SubscriptionFrameIds;
 use crate::transport::Transport;
 
@@ -317,6 +320,7 @@ impl SubscriptionManager {
 enum HostInitiatedFrame {
     Item(Vec<u8>),
     Interrupt,
+    Unsupported,
 }
 
 struct HostInitiatedSlot {
@@ -425,6 +429,19 @@ impl HostInitiatedSubscriptionManager {
             let sender = slot.sender.clone();
             let _ = sender.unbounded_send(HostInitiatedFrame::Interrupt);
             state.active.remove(&message.request_id);
+        } else if message.payload.id == PROTOCOL_ERROR_ID {
+            let Ok(VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                discriminant,
+            })) = decode_protocol_error_payload(&message.payload.value)
+            else {
+                return None;
+            };
+            if discriminant != slot.ids.start_id {
+                return None;
+            }
+            let sender = slot.sender.clone();
+            let _ = sender.unbounded_send(HostInitiatedFrame::Unsupported);
+            state.active.remove(&message.request_id);
         }
         None
     }
@@ -517,6 +534,12 @@ where
                     reason: "product interrupted the host-initiated subscription".to_string(),
                 })))
             }
+            Poll::Ready(Some(HostInitiatedFrame::Unsupported)) => {
+                self.terminated = true;
+                Poll::Ready(Some(Err(v01::GenericError {
+                    reason: "product does not support host-initiated subscription".to_string(),
+                })))
+            }
             // The sender is gone: the host closed the manager or disposed the
             // core. That is cancellation, not a product failure.
             Poll::Ready(None) => {
@@ -537,6 +560,7 @@ impl<Item> Drop for HostInitiatedSubscription<Item> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use futures::FutureExt;
     use futures::stream;
     use parity_scale_codec::Encode;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -784,6 +808,68 @@ mod tests {
         ));
         assert_eq!(futures::executor::block_on(declined.next()), None);
         assert_eq!(transport_typed.sent().len(), 1);
+    }
+
+    #[test]
+    fn protocol_error_ends_one_host_render_without_echoing_stop() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut unsupported = manager.start::<u32>(host_ids(), vec![], transport);
+
+        manager.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: PROTOCOL_ERROR_ID,
+                value: VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                    discriminant: host_ids().start_id,
+                })
+                .encode(),
+            },
+        });
+
+        assert_eq!(
+            unsupported.next().now_or_never(),
+            Some(Some(Err(v01::GenericError {
+                reason: "product does not support host-initiated subscription".to_string(),
+            })))
+        );
+        assert_eq!(unsupported.next().now_or_never(), Some(None));
+        assert_eq!(transport_typed.sent().len(), 1);
+    }
+
+    #[test]
+    fn unrelated_protocol_errors_do_not_end_a_host_render() {
+        let transport_typed = Arc::new(RecordingTransport::new());
+        let transport: Arc<dyn Transport> = transport_typed.clone();
+        let manager = HostInitiatedSubscriptionManager::new();
+        let mut render = manager.start::<u32>(host_ids(), vec![], transport);
+
+        for value in [
+            VersionedProtocolError::V1(ProtocolErrorV1::UnsupportedMessage {
+                discriminant: host_ids().stop_id,
+            })
+            .encode(),
+            vec![0, 0],
+        ] {
+            manager.handle_message(ProtocolMessage {
+                request_id: "h:1".into(),
+                payload: Payload {
+                    id: PROTOCOL_ERROR_ID,
+                    value,
+                },
+            });
+        }
+        assert_eq!(render.next().now_or_never(), None);
+
+        manager.handle_message(ProtocolMessage {
+            request_id: "h:1".into(),
+            payload: Payload {
+                id: host_ids().receive_id,
+                value: 7_u32.encode(),
+            },
+        });
+        assert_eq!(futures::executor::block_on(render.next()), Some(Ok(7)));
     }
 
     #[test]

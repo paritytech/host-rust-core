@@ -143,7 +143,7 @@ dependency on the crate:
 3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
-Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions.
+Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions. Discriminant 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
 
 ## Develop
 
