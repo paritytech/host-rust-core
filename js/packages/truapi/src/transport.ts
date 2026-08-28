@@ -12,6 +12,14 @@ export const PROTOCOL_ERROR_TRAIT_ID = 255 as const;
 /** Wire method discriminant reserved for method-independent protocol errors. **/
 export const PROTOCOL_ERROR_METHOD_ID = 255 as const;
 
+/**
+ * Lowest trait id the codec permits, mirroring `truapi::MIN_TRAIT_ID`. A frame
+ * whose trait byte falls below it is not naming a trait at all: that is where a
+ * codec 1 peer's single flat method byte lands. Kept in step with the Rust
+ * constant by `wire_table_ts_parity`.
+ **/
+export const MIN_TRAIT_ID = 193 as const;
+
 /** The peer rejected an outbound frame because it does not support its API. **/
 export class UnsupportedMessageError extends Error {
   /** Trait discriminant of the unsupported outbound frame. **/

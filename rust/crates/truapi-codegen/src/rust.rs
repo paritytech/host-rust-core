@@ -556,7 +556,7 @@ mod tests {
         assert!(
             msg.contains("wire trait id 255 reused")
                 && msg.contains("reserved for protocol errors"),
-                "unexpected error message: {msg}",
+            "unexpected error message: {msg}",
         );
     }
 
@@ -605,8 +605,7 @@ mod tests {
             types: vec![],
         };
 
-        generate_wire_table(&api)
-            .expect("(MIN_TRAIT_ID, 255) is an ordinary address");
+        generate_wire_table(&api).expect("(MIN_TRAIT_ID, 255) is an ordinary address");
     }
 
     /// Pin `wire_const_name`'s `convert_case::Case::UpperSnake` behavior:

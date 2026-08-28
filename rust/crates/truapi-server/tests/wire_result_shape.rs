@@ -28,8 +28,7 @@ use truapi::{CallError, v01};
 use truapi_server::core::TrUApiCore;
 use truapi_server::frame::{
     PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1, ProtocolMessage,
-    VersionedProtocolError,
-    request_ids, subscription_ids,
+    VersionedProtocolError, request_ids, subscription_ids,
 };
 
 mod common;

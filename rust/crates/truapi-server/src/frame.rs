@@ -360,11 +360,11 @@ mod tests {
         // `[0, 0, 250, 0]` - the old trailing-byte case - decodes cleanly as the
         // pair (250, 0) and would silently stop testing anything.
         for payload in [
-            vec![0, 0],           // no address at all
-            vec![0, 0, 250],      // trait present, method truncated
+            vec![0, 0],              // no address at all
+            vec![0, 0, 250],         // trait present, method truncated
             vec![0, 0, 250, 251, 0], // one trailing byte past a full pair
-            vec![1, 0, 250, 251], // unknown VersionedProtocolError index
-            vec![0, 1, 250, 251], // unknown ProtocolErrorV1 variant index
+            vec![1, 0, 250, 251],    // unknown VersionedProtocolError index
+            vec![0, 1, 250, 251],    // unknown ProtocolErrorV1 variant index
         ] {
             let message = ProtocolMessage {
                 request_id: "p:1".into(),

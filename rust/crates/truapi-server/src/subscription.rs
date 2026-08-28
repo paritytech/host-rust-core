@@ -20,8 +20,7 @@ use parity_scale_codec::{Decode, DecodeLimit, Encode};
 use truapi::v01;
 
 use crate::frame::{
-    IdFactory, PROTOCOL_ERROR_KEY, PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload,
-    ProtocolErrorV1, ProtocolMessage,
+    IdFactory, PROTOCOL_ERROR_KEY, Payload, ProtocolErrorV1, ProtocolMessage,
     VersionedProtocolError, decode_protocol_error_payload,
 };
 use crate::generated::wire_table::SubscriptionFrameIds;
@@ -581,6 +580,7 @@ impl<Item> Drop for HostInitiatedSubscription<Item> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::frame::{PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID};
     use futures::FutureExt;
     use futures::stream;
     use parity_scale_codec::Encode;
@@ -874,7 +874,8 @@ mod tests {
         manager.handle_message(ProtocolMessage {
             request_id: "h:1".into(),
             payload: Payload {
-                id: host_ids().receive_id,
+                trait_id: host_ids().trait_id,
+                method_id: host_ids().receive_id,
                 value: 7_u32.encode(),
             },
         });

@@ -343,13 +343,13 @@ describe("generated client transport", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
         const response = transport.request<undefined, CallErrorValue<never>>({
-            ids: { request: 194, response: 195 },
+            ids: { trait: 200, request: 194, response: 195 },
             payload: new Uint8Array(),
             decodeResponse: () => {
                 throw new Error("protocol errors must bypass the method response decoder");
             },
         });
-        fixture.receive(unsupportedMessage("p:1", 194));
+        fixture.receive(unsupportedMessage("p:1", 200, 194));
 
         expect((await response)._unsafeUnwrapErr()).toEqual({ tag: "Unsupported" });
 
@@ -362,7 +362,11 @@ describe("generated client transport", () => {
             unwrap(
                 encodeWireMessage({
                     requestId: "p:2",
-                    payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+                    payload: {
+                        traitId: W.LOCAL_STORAGE_READ.trait,
+                        methodId: W.LOCAL_STORAGE_READ.response,
+                        value: new Uint8Array(),
+                    },
                 }),
                 "encode follow-up response",
             ),
@@ -376,21 +380,26 @@ describe("generated client transport", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
         const response = transport.request<string, CallErrorValue<never>>({
-            ids: { request: 194, response: 195 },
+            ids: { trait: 200, request: 194, response: 195 },
             payload: new Uint8Array(),
             decodeResponse: () => ({ success: true, value: "supported" }),
         });
-        for (const [requestId, discriminant] of [
-            ["p:99", 194],
-            ["p:1", 196],
+        for (const [requestId, traitId, methodId] of [
+            // right pair, wrong request id
+            ["p:99", 200, 194],
+            // right request id, wrong method
+            ["p:1", 200, 196],
+            // right request id and method but the WRONG TRAIT - under a
+            // one-byte discriminant this was indistinguishable from a match
+            ["p:1", 201, 194],
         ] as const) {
-            fixture.receive(unsupportedMessage(requestId, discriminant));
+            fixture.receive(unsupportedMessage(requestId, traitId, methodId));
         }
         fixture.receive(
             unwrap(
                 encodeWireMessage({
                     requestId: "p:1",
-                    payload: { id: 195, value: new Uint8Array() },
+                    payload: { traitId: 200, methodId: 195, value: new Uint8Array() },
                 }),
                 "encode supported response",
             ),
@@ -467,18 +476,24 @@ describe("generated client transport", () => {
     });
 
     it("closes the transport for every malformed protocol error shape", async () => {
+        // Re-derived for the two-byte address: a valid payload is now 4 bytes,
+        // so the old trailing-byte fixture `[0, 0, 194, 0]` decodes cleanly as
+        // the pair (194, 0) and would have silently stopped testing anything.
         const malformedPayloads = [
-            [new Uint8Array([0, 0]), "expected 3 bytes, received 2"],
-            [new Uint8Array([0, 0, 194, 0]), "expected 3 bytes, received 4"],
-            [new Uint8Array([1, 0, 194]), "unsupported version 1"],
-            [new Uint8Array([0, 1, 194]), "unknown error discriminant 1"],
+            [new Uint8Array([0, 0]), "expected 4 bytes, received 2"],
+            // trait present, method truncated
+            [new Uint8Array([0, 0, 194]), "expected 4 bytes, received 3"],
+            // one trailing byte past a full pair
+            [new Uint8Array([0, 0, 194, 193, 0]), "expected 4 bytes, received 5"],
+            [new Uint8Array([1, 0, 194, 193]), "unsupported version 1"],
+            [new Uint8Array([0, 1, 194, 193]), "unknown error discriminant 1"],
         ] as const;
 
         for (const [payload, message] of malformedPayloads) {
             const fixture = providerFixture();
             const transport = createTransport(fixture.provider);
             const response = transport.request<undefined, CallErrorValue<never>>({
-                ids: { request: 194, response: 195 },
+                ids: { trait: 200, request: 194, response: 195 },
                 payload: new Uint8Array(),
                 decodeResponse: () => ({ success: true, value: undefined }),
             });
@@ -496,16 +511,16 @@ describe("generated client transport", () => {
         const incoming = unwrap(
             encodeWireMessage({
                 requestId: "h:future",
-                payload: { id: 194, value: new Uint8Array() },
+                payload: { traitId: 200, methodId: 194, value: new Uint8Array() },
             }),
             "encode unknown host request",
         );
 
         fixture.receive(incoming);
 
-        expect(fixture.sent.map(toHex)).toEqual([toHex(unsupportedMessage("h:future", 194))]);
+        expect(fixture.sent.map(toHex)).toEqual([toHex(unsupportedMessage("h:future", 200, 194))]);
 
-        fixture.receive(unsupportedMessage("h:future", 194));
+        fixture.receive(unsupportedMessage("h:future", 200, 194));
         expect(fixture.sent).toHaveLength(1);
     });
 
@@ -517,8 +532,8 @@ describe("generated client transport", () => {
                 encodeWireMessage({
                     requestId: "h:known",
                     payload: {
-                        id: W.CHAT_CUSTOM_MESSAGE_RENDER.start,
-                        value: new Uint8Array(),
+                        traitId: W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
+                        methodId: W.CHAT_CUSTOM_MESSAGE_RENDER.start,                        value: new Uint8Array(),
                     },
                 }),
                 "encode known unhandled host start",
@@ -526,7 +541,13 @@ describe("generated client transport", () => {
         );
 
         expect(fixture.sent.map(toHex)).toEqual([
-            toHex(unsupportedMessage("h:known", W.CHAT_CUSTOM_MESSAGE_RENDER.start)),
+            toHex(
+                unsupportedMessage(
+                    "h:known",
+                    W.CHAT_CUSTOM_MESSAGE_RENDER.trait,
+                    W.CHAT_CUSTOM_MESSAGE_RENDER.start,
+                ),
+            ),
         ]);
     });
 
@@ -542,7 +563,7 @@ describe("generated client transport", () => {
             unwrap(
                 encodeWireMessage({
                     requestId: "p:1",
-                    payload: { id: 194, value: new Uint8Array() },
+                    payload: { traitId: 200, methodId: 194, value: new Uint8Array() },
                 }),
                 "encode unknown correlated message",
             ),
@@ -550,14 +571,18 @@ describe("generated client transport", () => {
 
         expect(fixture.sent.map(toHex)).toEqual([
             toHex(fixture.sent[0]),
-            toHex(unsupportedMessage("p:1", 194)),
+            toHex(unsupportedMessage("p:1", 200, 194)),
         ]);
 
         fixture.receive(
             unwrap(
                 encodeWireMessage({
                     requestId: "p:1",
-                    payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+                    payload: {
+                        traitId: W.LOCAL_STORAGE_READ.trait,
+                        methodId: W.LOCAL_STORAGE_READ.response,
+                        value: new Uint8Array(),
+                    },
                 }),
                 "encode request response",
             ),
@@ -576,7 +601,11 @@ describe("generated client transport", () => {
         const responseFrame = unwrap(
             encodeWireMessage({
                 requestId: "p:1",
-                payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+                payload: {
+                    traitId: W.LOCAL_STORAGE_READ.trait,
+                    methodId: W.LOCAL_STORAGE_READ.response,
+                    value: new Uint8Array(),
+                },
             }),
             "encode response",
         );
@@ -594,7 +623,7 @@ describe("generated client transport", () => {
             onReceive: (payload) => received.push(payload),
         });
         subscription.unsubscribe();
-        for (const id of [
+        for (const methodId of [
             W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
             W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt,
         ]) {
@@ -602,7 +631,11 @@ describe("generated client transport", () => {
                 unwrap(
                     encodeWireMessage({
                         requestId: subscription.subscriptionId,
-                        payload: { id, value: new Uint8Array() },
+                        payload: {
+                            traitId: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.trait,
+                            methodId,
+                            value: new Uint8Array(),
+                        },
                     }),
                     "encode stale subscription frame",
                 ),

@@ -3,6 +3,7 @@ import { errAsync, okAsync, ResultAsync } from "neverthrow";
 import {
   decodeWireMessage,
   encodeWireMessage,
+  MIN_TRAIT_ID,
   PROTOCOL_ERROR_METHOD_ID,
   PROTOCOL_ERROR_TRAIT_ID,
   type HostInitiatedSubscriptionHandler,
@@ -342,7 +343,10 @@ export function createTransport(
       ) {
         subscriptions.delete(requestId);
         subscription.onClose?.(
-          new UnsupportedMessageError(unsupported.traitId, unsupported.methodId),
+          new UnsupportedMessageError(
+            unsupported.traitId,
+            unsupported.methodId,
+          ),
         );
       }
       return;
@@ -397,7 +401,9 @@ export function createTransport(
       return;
     }
 
-    const hostRoute = hostRoutes.get(pairKey(payload.traitId, payload.methodId));
+    const hostRoute = hostRoutes.get(
+      pairKey(payload.traitId, payload.methodId),
+    );
     if (hostRoute) {
       startHostSubscription(hostRoute, requestId, payload.value);
       return;
@@ -430,18 +436,24 @@ export function createTransport(
         // not own. Dropping it unreported leaves the caller waiting forever
         // with no clue why, and a whole-trait skew is what a codec mismatch
         // looks like from here.
+        //
+        // Report it, then fall through rather than returning: the request stays
+        // pending (this frame is not its answer), and the frame itself is one
+        // this build cannot route, so it earns the same protocol-error reply as
+        // any other unroutable pair. A known client-bound pair is still filtered
+        // out by `UNANSWERED_WIRE_IDS` below.
         reportProtocolViolation(
           `ignoring frame for request ${requestId}: got discriminant (${payload.traitId}, ${payload.methodId}), expected (${p.ids.trait}, ${p.ids.response})`,
         );
+      } else {
+        pending.delete(requestId);
+        try {
+          p.resolve(payload.value);
+        } catch (error) {
+          p.reject(toError(error));
+        }
         return;
       }
-      pending.delete(requestId);
-      try {
-        p.resolve(payload.value);
-      } catch (error) {
-        p.reject(toError(error));
-      }
-      return;
     }
 
     const subscription = subscriptions.get(requestId);
@@ -479,11 +491,19 @@ export function createTransport(
     }
 
     // Not pending, no subscription, and not a client-bound frame we ignore by
-    // design: this build does not implement the pair. Report it locally AND
-    // answer the peer - a log alone leaves the sender waiting forever.
+    // design: this build does not implement the pair.
     reportProtocolViolation(
       `unsupported frame with discriminant (${payload.traitId}, ${payload.methodId}): request ${requestId} is not pending and has no subscription`,
     );
+    // Answer only a peer that could read the answer. A trait byte below the
+    // floor is not a trait at all - it is a codec 1 peer's flat method id - and
+    // such a peer would read our `(255, 255)` reply as codec 1 discriminant 255
+    // with a payload it cannot decode, and tear its own transport down over a
+    // malformed-protocol-error that says nothing about the real problem. The
+    // log above is the diagnostic for that case.
+    if (payload.traitId < MIN_TRAIT_ID) {
+      return;
+    }
     try {
       send({
         requestId,

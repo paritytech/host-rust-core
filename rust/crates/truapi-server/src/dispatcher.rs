@@ -15,8 +15,8 @@ use tracing::instrument;
 use truapi::{MIN_TRAIT_ID, WIRE_CODEC_VERSION};
 
 use crate::frame::{
-    PROTOCOL_ERROR_KEY, PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload, ProtocolErrorV1,
-    ProtocolMessage, VersionedProtocolError,
+    PROTOCOL_ERROR_KEY, PROTOCOL_ERROR_METHOD_ID, PROTOCOL_ERROR_TRAIT_ID, Payload,
+    ProtocolErrorV1, ProtocolMessage, VersionedProtocolError,
 };
 use crate::generated::wire_table::{RequestFrameIds, SubscriptionFrameIds};
 use crate::subscription::{Spawner, SubscriptionManager, SubscriptionStream};
@@ -208,20 +208,24 @@ impl Dispatcher {
             if trait_id < MIN_TRAIT_ID {
                 // No trait is addressed below this floor, so the first byte
                 // cannot be a trait id. A codec 1 peer, whose frames carry a
-                // single flat method byte here, lands in exactly this range -
-                // worth saying out loud, because it explains total
-                // incompatibility in one line.
+                // single flat method byte here, lands in exactly this range.
+                //
+                // Do not answer it. Such a peer would read our `(255, 255)`
+                // reply as codec 1 discriminant 255 - its own protocol-error id
+                // - carrying a payload it cannot decode, and close its
+                // transport over a malformed-payload error that says nothing
+                // about the real fault. The log is the diagnostic instead.
                 tracing::error!(
                     request_id = %message.request_id,
                     trait_id,
                     method_id,
                     "trait id {trait_id} is below the codec {WIRE_CODEC_VERSION} minimum \
-                     {MIN_TRAIT_ID}; the peer appears to be speaking codec 1"
+                     {MIN_TRAIT_ID}; the peer appears to be speaking codec 1. Dropping frame"
                 );
+                return;
             }
-            // Answer either way. A codec 1 peer cannot decode this reply, but a
-            // codec 2 peer that simply asked for something unimplemented can,
-            // and dropping the frame would leave it waiting forever.
+            // A codec 2 peer that asked for something unimplemented can read
+            // the answer, and dropping it would leave the peer waiting forever.
             transport.send(ProtocolMessage {
                 request_id: message.request_id,
                 payload: Payload {

@@ -240,3 +240,36 @@ fn rust_and_ts_wire_tables_agree() {
          `scripts/codegen.sh` so the codegen pipeline produces them in lockstep.",
     );
 }
+
+/// `transport.ts` hand-mirrors two Rust constants that the generated table does
+/// not carry: the codec's trait-id floor and the reserved protocol-error
+/// address. They are hand-written on the TS side, so nothing but this test stops
+/// them drifting - and a drift means one language answers frames the other
+/// refuses.
+#[test]
+fn transport_ts_mirrors_the_rust_wire_constants() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../js/packages/truapi/src/transport.ts");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+
+    for (name, expected) in [
+        ("MIN_TRAIT_ID", truapi::MIN_TRAIT_ID),
+        ("PROTOCOL_ERROR_TRAIT_ID", 255),
+        ("PROTOCOL_ERROR_METHOD_ID", 255),
+    ] {
+        let needle = format!("export const {name} = ");
+        let start = src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("transport.ts must export {name}"));
+        let rest = &src[start + needle.len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        let actual: u8 = digits
+            .parse()
+            .unwrap_or_else(|err| panic!("{name} is not a u8 literal: {err}"));
+        assert_eq!(
+            actual, expected,
+            "transport.ts {name} = {actual} but Rust says {expected}",
+        );
+    }
+}

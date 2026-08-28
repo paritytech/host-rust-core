@@ -638,6 +638,7 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
         // Wire-protocol (trait, method) discriminant pairs. Trait and method
         // ordering are part of the protocol; only ever append within a trait
         // or explicitly reserve gaps.
+
         "#
     )
     .unwrap();
@@ -2898,8 +2899,7 @@ mod tests {
         let mut api = api(vec![request_method("submit", Some(0))]);
         api.traits[0].wire_trait_id = Some(RESERVED_PROTOCOL_ERROR_TRAIT_ID);
 
-        let error =
-            generate_wire_table(&api, 2).expect_err("trait id 255 must be refused");
+        let error = generate_wire_table(&api, 2).expect_err("trait id 255 must be refused");
         let message = error.to_string();
         assert!(
             message.contains("wire trait id 255 reused")
@@ -2916,8 +2916,7 @@ mod tests {
         let mut method = request_method("explicit_request", Some(255));
         method.wire.response_id = Some(1);
 
-        generate_wire_table(&api(vec![method]), 2)
-            .expect("(200, 255) is an ordinary address");
+        generate_wire_table(&api(vec![method]), 2).expect("(200, 255) is an ordinary address");
     }
 
     /// Version filtering must not become an escape hatch: a trait that declares
