@@ -444,7 +444,8 @@ xcframework: uniffi ## Build truapi_server.xcframework for iOS device + simulato
 	rm -rf $(XCFRAMEWORK_OUT) $(XCFRAMEWORK_HEADERS)
 	mkdir -p $(XCFRAMEWORK_HEADERS)
 	cp $(UNIFFI_SWIFT_TMP)/truapiFFI.h $(UNIFFI_SWIFT_TMP)/truapi_platformFFI.h \
-		$(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(XCFRAMEWORK_HEADERS)/
+		$(UNIFFI_SWIFT_TMP)/truapi_serverFFI.h $(UNIFFI_SWIFT_TMP)/pvm_runtimeFFI.h \
+		$(XCFRAMEWORK_HEADERS)/
 	cp $(UNIFFI_SWIFT_TMP)/truapi_serverFFI.modulemap $(XCFRAMEWORK_HEADERS)/module.modulemap
 	slices=""; \
 	for target in $(XCFRAMEWORK_TARGETS); do \

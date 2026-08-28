@@ -68,6 +68,7 @@ verifiable = { git = "https://github.com/paritytech/verifiable.git", rev = "19b0
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 truapi = { path = "../truapi", features = ["uniffi"] }
+pvm-runtime = { path = "../pvm-runtime", features = ["ffi"] }
 truapi-platform = { path = "../truapi-platform", features = ["uniffi"] }
 futures = { version = "0.3", features = ["thread-pool"] }
 rand = { version = "0.8", optional = true }
