@@ -3022,14 +3022,14 @@ mod tests {
                 TraitDef {
                     name: "Alpha".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(192),
+                    wire_trait_id: Some(193),
                     methods: vec![request_method("first", Some(0))],
                     docs: None,
                 },
                 TraitDef {
                     name: "Beta".to_string(),
                     module_path: Vec::new(),
-                    wire_trait_id: Some(193),
+                    wire_trait_id: Some(194),
                     methods: vec![request_method("second", Some(0))],
                     docs: None,
                 },
@@ -3042,8 +3042,8 @@ mod tests {
 
         assert!(source.contains("export const ALPHA_FIRST = {"));
         assert!(source.contains("export const BETA_SECOND = {"));
-        assert!(source.contains("  trait: 192,"));
         assert!(source.contains("  trait: 193,"));
+        assert!(source.contains("  trait: 194,"));
     }
 
     /// Two traits must not share a wire trait id.

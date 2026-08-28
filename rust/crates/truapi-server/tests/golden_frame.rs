@@ -21,7 +21,7 @@
 //!
 //! On the wire (16 bytes):
 //!   [0c 70 3a 31]                      requestId = compact-len(3) + "p:1"
-//!   [c1]                               trait discriminant 193 = account
+//!   [c2]                               trait discriminant 194 = account
 //!   [04]                               method discriminant 4 = get_account request
 //!   [00]                               versioned wrapper variant V1
 //!   [0c 66 6f 6f]                      compact-len(3) + "foo"

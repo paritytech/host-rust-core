@@ -297,9 +297,9 @@ mod tests {
     fn handshake_request_encodes_with_the_system_trait_pair() {
         // SCALE-encoded HostHandshakeRequest::V1(2u8) = [0u8 variant][2u8 codec_version]
         let inner: Vec<u8> = vec![0x00, 0x02];
-        // system trait = 192, handshake request = 0.
-        let msg = build(192, 0, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(192, 0, &inner));
+        // system trait = 193, handshake request = 0.
+        let msg = build(193, 0, inner.clone());
+        assert_eq!(msg.encode(), expected_wire(193, 0, &inner));
     }
 
     /// Pins where the pair lands for a multi-byte payload. The payload here is
@@ -312,15 +312,15 @@ mod tests {
         let mut inner = vec![0x00]; // V1 variant
         "foo".to_string().encode_to(&mut inner);
         0u32.encode_to(&mut inner);
-        // account trait = 193, get_account request = 4.
-        let msg = build(193, 4, inner.clone());
-        assert_eq!(msg.encode(), expected_wire(193, 4, &inner));
+        // account trait = 194, get_account request = 4.
+        let msg = build(194, 4, inner.clone());
+        assert_eq!(msg.encode(), expected_wire(194, 4, &inner));
     }
 
     #[test]
     fn round_trip_preserves_ids_and_value() {
         let inner: Vec<u8> = vec![0x00, 0x42, 0xab, 0xcd];
-        let msg = build(198, 0, inner.clone());
+        let msg = build(199, 0, inner.clone());
         let decoded = ProtocolMessage::decode(&mut &msg.encode()[..]).expect("decode");
         assert_eq!(decoded, msg);
     }
@@ -382,7 +382,7 @@ mod tests {
     /// regression where `Decode` mishandles a frame whose payload is empty for
     /// `_stop` / `_interrupt` (no inner data) but non-empty for `_start` /
     /// `_receive`. The ids are the `account_connection_status_subscribe`
-    /// quartet (trait 193, methods 0..=3).
+    /// quartet (trait 194, methods 0..=3).
     #[test]
     fn subscription_phases_round_trip_through_codec() {
         let cases: &[(u8, Vec<u8>)] = &[
@@ -392,11 +392,11 @@ mod tests {
             (3, vec![0x01, 0x02, 0x03, 0x04]), // receive
         ];
         for (method_id, value) in cases {
-            let msg = build(193, *method_id, value.clone());
+            let msg = build(194, *method_id, value.clone());
             let bytes = msg.encode();
             assert_eq!(
                 bytes,
-                expected_wire(193, *method_id, value),
+                expected_wire(194, *method_id, value),
                 "encode mismatch for method id {method_id}"
             );
             let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
@@ -412,17 +412,17 @@ mod tests {
     #[test]
     fn id_helpers_resolve_known_methods() {
         let handshake = request_ids("system_handshake").expect("known request method");
-        assert_eq!(handshake.trait_id, 192);
+        assert_eq!(handshake.trait_id, 193);
         assert_eq!(handshake.request_id, 0);
         assert_eq!(handshake.response_id, 1);
 
         let get_account = request_ids("account_get_account").expect("known request method");
-        assert_eq!(get_account.trait_id, 193);
+        assert_eq!(get_account.trait_id, 194);
         assert_eq!(get_account.request_id, 4);
 
         let sub =
             subscription_ids("account_connection_status_subscribe").expect("known subscription");
-        assert_eq!(sub.trait_id, 193);
+        assert_eq!(sub.trait_id, 194);
         assert_eq!(sub.start_id, 0);
         assert_eq!(sub.stop_id, 1);
         assert_eq!(sub.interrupt_id, 2);
@@ -438,10 +438,10 @@ mod tests {
     /// handle `remaining_len == 0` without erroring or reading past EOF.
     #[test]
     fn empty_payload_round_trips() {
-        // local_storage_clear_response = (198, 5).
-        let msg = build(198, 5, Vec::new());
+        // local_storage_clear_response = (199, 5).
+        let msg = build(199, 5, Vec::new());
         let bytes = msg.encode();
-        // [SCALE compact-len 0x0c][p][:][1][u8 198][u8 5] = 4 + 2 = 6 bytes total
+        // [SCALE compact-len 0x0c][p][:][1][u8 199][u8 5] = 4 + 2 = 6 bytes total
         assert_eq!(bytes.len(), 6);
         let decoded = ProtocolMessage::decode(&mut &bytes[..]).expect("decode");
         assert_eq!(decoded, msg);
@@ -455,7 +455,7 @@ mod tests {
         let msg = ProtocolMessage {
             request_id: long_id,
             payload: Payload {
-                trait_id: 193,
+                trait_id: 194,
                 method_id: 4,
                 value: vec![0x00, 0xab, 0xcd],
             },
@@ -501,7 +501,7 @@ mod tests {
         let msg = ProtocolMessage {
             request_id: String::new(),
             payload: Payload {
-                trait_id: 193,
+                trait_id: 194,
                 method_id: 4,
                 value: vec![0x00, 0x01, 0x02],
             },
@@ -519,7 +519,7 @@ mod tests {
         let msg = ProtocolMessage {
             request_id: "héllo-世界-🦀".to_string(),
             payload: Payload {
-                trait_id: 193,
+                trait_id: 194,
                 method_id: 4,
                 value: vec![0x00, 0x01],
             },
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn large_payload_round_trips() {
         let big = vec![0xa5u8; 100 * 1024];
-        let msg = build(193, 4, big);
+        let msg = build(194, 4, big);
         let decoded = ProtocolMessage::decode(&mut &msg.encode()[..]).expect("decode");
         assert_eq!(decoded, msg);
     }

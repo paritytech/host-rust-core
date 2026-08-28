@@ -270,7 +270,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(192),
+                wire_trait_id: Some(193),
                 methods: vec![make_subscription_method("connection_status_subscribe", 18)],
                 docs: None,
             }],
@@ -674,7 +674,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(192),
+                wire_trait_id: Some(193),
                 methods: vec![method],
                 docs: None,
             }],
@@ -723,7 +723,7 @@ mod tests {
             traits: vec![TraitDef {
                 name: "Account".to_string(),
                 module_path: Vec::new(),
-                wire_trait_id: Some(192),
+                wire_trait_id: Some(193),
                 methods: vec![method],
                 docs: None,
             }],

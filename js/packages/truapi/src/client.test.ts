@@ -220,7 +220,7 @@ describe("generated client transport", () => {
         const expectedPayload = T.VersionedHostAccountGetRequest.enc({ tag: "V1", value: request });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 193; // account trait
+        expectedFrame[str.enc("p:1").length] = 194; // account trait
         expectedFrame[str.enc("p:1").length + 1] = 4; // get_account request
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
@@ -240,7 +240,7 @@ describe("generated client transport", () => {
         });
         const expectedFrame = new Uint8Array(str.enc("p:1").length + 2 + expectedPayload.length);
         expectedFrame.set(str.enc("p:1"), 0);
-        expectedFrame[str.enc("p:1").length] = 192; // system trait
+        expectedFrame[str.enc("p:1").length] = 193; // system trait
         expectedFrame[str.enc("p:1").length + 1] = 0; // handshake request
         expectedFrame.set(expectedPayload, str.enc("p:1").length + 2);
 
