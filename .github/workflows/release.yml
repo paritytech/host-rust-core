@@ -35,6 +35,7 @@ jobs:
       ios_version: ${{ steps.version.outputs.ios_version }}
       android_version: ${{ steps.version.outputs.android_version }}
       cli_version: ${{ steps.version.outputs.cli_version }}
+      published: ${{ steps.confirm.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -281,6 +282,23 @@ jobs:
       - name: Fail if any package did not reach npm
         if: steps.confirm.outcome == 'failure'
         run: exit 1
+
+  # Downstream hosts learn about a release from an issue on their own
+  # repository. Announcing only the confirmed subset keeps a consumer from
+  # being pointed at a version npm never accepted.
+  notify-consumers:
+    name: Notify consumer repositories
+    needs: release
+    if: needs.release.outputs.published != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/notify-consumers.yml
+    with:
+      published: ${{ needs.release.outputs.published }}
+      ref: ${{ github.event.workflow_run.head_sha }}
+    secrets:
+      CONSUMER_APP_ID: ${{ secrets.CONSUMER_APP_ID }}
+      CONSUMER_APP_KEY: ${{ secrets.CONSUMER_APP_KEY }}
 
   publish-android:
     name: Publish Android host

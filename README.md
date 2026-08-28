@@ -317,7 +317,9 @@ Pushes to `main` build and deploy:
 
 See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
 `@parity/truapi` and `@parity/truapi-host` to npm, and the iOS host and
-Android host artifacts alongside them.
+Android host artifacts alongside them. A release also opens a bump issue on each
+repository listed in [`.github/consumers.json`](.github/consumers.json) that pins
+one of the published packages.
 
 ## Contributing
 
