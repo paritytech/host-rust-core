@@ -19,9 +19,10 @@ details are the implementer's call and need no prior approval here.
   exact form to inject the number.
 - Set `status: draft` in the frontmatter. Omitting it makes CI index the RFC as
   `accepted`.
-- `check-rfc.yml` fails any PR touching `docs/rfcs/**` that does not also change
-  `rust/crates/truapi/`. A host-side proposal cannot satisfy that and belongs in
-  `docs/features/` instead.
+- `check-rfc.yml` reads the document: a new RFC needs `title` and `owner` in its
+  frontmatter, a `## Summary`, a `## Motivation`, and a section covering the
+  approach, and no draft may keep unedited template text or a `TODO`. Rust
+  changes are not required in the same PR.
 
 ## Writing it
 

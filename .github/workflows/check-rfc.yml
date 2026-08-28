@@ -79,11 +79,11 @@ jobs:
                 fail "$file" "unedited text from docs/rfcs/0001-template.md: '$placeholder'"
               fi
             done <<'PLACEHOLDERS'
-          RFC Title
-          @ownerhandle
-          One-paragraph explanation of the proposal.
-          Why are we doing this?
-          What parts of the design are still open?
+          title: "Title"
+          owner: "@handle"
+          Two or three sentences: what changes, and for whom.
+          How it works, at the level a reviewer needs in order to agree or object.
+          What this costs, and what was considered and dropped.
           PLACEHOLDERS
 
             if grep -qE '\b(TODO|TBD|FIXME)\b' "$file"; then
