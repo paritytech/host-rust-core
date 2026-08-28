@@ -22,5 +22,6 @@
 - [ ] `@parity/truapi-host` depends on `^<current @parity/truapi version>`
 - [ ] `js/packages/truapi/CHANGELOG.md` has the new entry
 - [ ] `js/packages/truapi-host/CHANGELOG.md` has the new entry when releasing the host
-- [ ] `rust/crates/truapi/Cargo.toml` version matches `js/packages/truapi/package.json`
+- [ ] `rust/crates/truapi/Cargo.toml` and `rust/crates/truapi-host-cli/Cargo.toml` versions match `js/packages/truapi/package.json` (`npm run check-release-versions`), and `Cargo.lock` records them
+- [ ] Releasing `@parity/truapi` also publishes the prebuilt `truapi-host` binaries; no extra title entry is needed
 - [ ] No leftover files under `.changeset/` (other than `config.json`)

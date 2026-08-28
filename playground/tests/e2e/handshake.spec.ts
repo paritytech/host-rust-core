@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { openPlaygroundInDotli, waitForOnline } from "./helpers";
+import { openPlayground, waitForOnline } from "./helpers";
 
 test.describe("handshake", () => {
   test("connection chip flips to Host Linked", async ({ page }) => {
-    const frame = await openPlaygroundInDotli(page);
+    const frame = await openPlayground(page);
 
     // The chip should not stay on `connecting` indefinitely: the
     // host_handshake_request → host_handshake_response round trip must

@@ -1,6 +1,46 @@
 import { expect, type FrameLocator, type Page } from "@playwright/test";
 
 /**
+ * Where the playground's own DOM lives. Under a host that iframes it that is a
+ * frame; driven directly against a local `truapi-host dev` bridge it is the
+ * page itself. Specs only ever reach for playground selectors, so they read the
+ * same either way.
+ */
+export type PlaygroundSurface = Pick<Page, "locator" | "getByRole" | "getByText">;
+
+/** Host the suite runs against. `cli` needs `truapi-host dev` on :9955. */
+export const HOST_MODE = process.env.TRUAPI_E2E_HOST === "cli" ? "cli" : "dotli";
+
+/**
+ * Open the playground against whichever host the run targets.
+ */
+export async function openPlayground(page: Page): Promise<PlaygroundSurface> {
+  return HOST_MODE === "cli"
+    ? openPlaygroundOnCliHost(page)
+    : openPlaygroundInDotli(page);
+}
+
+/**
+ * Open the playground in a plain tab, hosted by a local `truapi-host dev`.
+ *
+ * The product's development-only `<script>` tag installs the bridge, so there
+ * is no iframe and no host shell: the page is the playground.
+ */
+export async function openPlaygroundOnCliHost(
+  page: Page,
+): Promise<PlaygroundSurface> {
+  await page.addInitScript(() => {
+    localStorage.setItem("truapi:playground:e2e", "1");
+    (
+      window as typeof window & { __TRUAPI_PLAYGROUND_E2E__?: boolean }
+    ).__TRUAPI_PLAYGROUND_E2E__ = true;
+  });
+  await page.goto("/");
+  await expect(page.locator(".status")).toBeVisible({ timeout: 30_000 });
+  return page;
+}
+
+/**
  * Open the playground inside dotli's iframe shell and wait for it to mount.
  *
  * The dotli host parses `/localhost:<port>` as a proxy directive and iframes
@@ -42,7 +82,7 @@ export async function openPlaygroundInDotli(page: Page): Promise<FrameLocator> {
  * masthead which only mounts once status !== connecting. We wait on the
  * class rather than the label so the assertion is locale-agnostic.
  */
-export async function waitForOnline(frame: FrameLocator): Promise<void> {
+export async function waitForOnline(frame: PlaygroundSurface): Promise<void> {
   await expect(frame.locator(".status.status--connected")).toBeVisible({
     timeout: 15_000,
   });
@@ -55,7 +95,7 @@ export async function waitForOnline(frame: FrameLocator): Promise<void> {
  * on each ServiceTable button.
  */
 export async function selectMethod(
-  frame: FrameLocator,
+  frame: PlaygroundSurface,
   service: string,
   method: string,
 ): Promise<void> {
