@@ -12,7 +12,8 @@ details are the implementer's call and need no prior approval here.
 
 ## Mechanics
 
-- File `docs/rfcs/<kebab-title>.md` from [template.md](template.md). **Do not number it**
+- File `docs/rfcs/<kebab-title>.md` from
+  [docs/rfcs/0001-template.md](../../../docs/rfcs/0001-template.md). **Do not number it**
   and **do not touch `_index.md`** — `number-rfc.yml` assigns the number on merge to
   `main` and rebuilds the index from the files on disk.
 - Keep the H1 as `# RFC — Title`, em dash included; the numbering step rewrites that
