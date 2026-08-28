@@ -165,8 +165,10 @@ key, as `CONSUMER_NOTIFY_APP_CLIENT_ID` and `CONSUMER_NOTIFY_APP_PRIVATE_KEY`,
 and mints an installation token per run.
 
 That token is scoped to the repositories the run will write to, resolved from the
-config, and to `issues: write` alone, so it carries no reach over the rest of the
-installation. The two lists therefore have to agree: a repository named in the
+config, and to the app's `Issues` permission alone, at the read and write level
+GitHub's API spells `issues: write`. Reading is part of that one level, which the
+script needs in order to find the issues it supersedes. The token carries no
+reach over the rest of the installation. The two lists therefore have to agree: a repository named in the
 config that the app is not installed on fails the whole job rather than that one
 repository, which is deliberate, since a consumer nobody can reach is a
 configuration error and not a silent omission. Adding a consumer means an entry in
@@ -213,5 +215,12 @@ has to be one of ours rather than a personal one.
   registry confirmed. A repository that cannot be reached is a warning and does
   not stop the others, though the run still ends red so the failure is visible.
   Nothing about the publish depends on it: tags and GitHub Releases already
-  exist by then, and re-running is safe because an issue that already announces
-  the release is left alone.
+  exist by then, and nothing declares `needs: notify-consumers`, so the iOS and
+  Android publishes are unaffected as well.
+- Recover a failed notification with "Re-run failed jobs" rather than "Re-run all
+  jobs". A full re-run restarts the release job, which finds the versions already
+  on npm and so leaves `published` empty, at which point the notification job is
+  skipped by its own `if:` and the notification is never sent, under a green run.
+  Re-running only the failed job reuses the original outputs and retries the
+  notification. Retrying is safe either way, because an issue that already
+  announces the release is left alone.
