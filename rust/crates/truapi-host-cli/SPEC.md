@@ -841,13 +841,6 @@ declaration beside the scratch file preserves its types across session
 promotion and removal of older installed binary versions. The script does not
 emit terminal styling.
 
-When bare `/script` reopens a remembered regular file directly inside the
-managed `scripts/` directory whose name matches `script-*.ts`, it refreshes the
-adjacent declaration and idempotently adds a missing relative reference or
-`export {}` module marker. This migrates scratch files created by older host
-versions without replacing their user-edited source. Symlinks and scripts
-selected explicitly outside the managed directory are not modified.
-
 Mnemonic-backed ephemeral signing sessions remember a path only for the
 current process and create scratch files under the system temporary
 `truapi-host/scripts` directory.

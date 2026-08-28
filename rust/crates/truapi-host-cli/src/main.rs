@@ -3417,18 +3417,6 @@ fn select_script_to_edit(
     last_script: &mut Option<PathBuf>,
 ) -> Result<PathBuf> {
     if let Some(script) = last_script.as_ref().filter(|script| script.is_file()) {
-        let is_managed_scratch = script.parent() == Some(scratch_script_directory)
-            && script
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.starts_with("script-") && name.ends_with(".ts") && !name.ends_with(".d.ts")
-                })
-            && std::fs::symlink_metadata(script)
-                .is_ok_and(|metadata| !metadata.file_type().is_symlink());
-        if is_managed_scratch {
-            script_runner::ensure_scratch_script_types(script)?;
-        }
         return Ok(script.clone());
     }
     let script = script_runner::create_scratch_script(scratch_script_directory)?;
@@ -3953,62 +3941,6 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
     }
 
     #[test]
-    fn bare_script_selection_migrates_a_legacy_managed_scratch_script() -> Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let scripts = temporary.path().join("scripts");
-        std::fs::create_dir_all(&scripts)?;
-        let legacy = scripts.join("script-legacy.ts");
-        std::fs::write(
-            &legacy,
-            "#!/usr/bin/env bun\n\nconst value = await truapi.system.getProductContext();\n",
-        )?;
-        let mut last_script = Some(legacy.clone());
-
-        let selected = select_script_to_edit(&scripts, &mut last_script)?;
-
-        assert_eq!(
-            (
-                selected,
-                std::fs::read_to_string(&legacy)?,
-                legacy.with_extension("d.ts").is_file(),
-            ),
-            (
-                legacy,
-                "#!/usr/bin/env bun\n\n/// <reference path=\"./script-legacy.d.ts\" />\nexport {};\n\nconst value = await truapi.system.getProductContext();\n".to_string(),
-                true,
-            )
-        );
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn bare_script_selection_does_not_migrate_a_managed_symlink() -> Result<()> {
-        use std::os::unix::fs::symlink;
-
-        let temporary = tempfile::tempdir()?;
-        let scripts = temporary.path().join("scripts");
-        std::fs::create_dir_all(&scripts)?;
-        let external = temporary.path().join("external.ts");
-        std::fs::write(&external, "console.log('external');\n")?;
-        let linked = scripts.join("script-linked.ts");
-        symlink(&external, &linked)?;
-        let mut last_script = Some(linked.clone());
-
-        let selected = select_script_to_edit(&scripts, &mut last_script)?;
-
-        assert_eq!(
-            (
-                selected,
-                std::fs::read_to_string(&external)?,
-                linked.with_extension("d.ts").exists(),
-            ),
-            (linked, "console.log('external');\n".to_string(), false,)
-        );
-        Ok(())
-    }
-
-    #[test]
     fn explicit_script_becomes_the_next_bare_script_selection() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let scripts = temporary.path().join("scripts");
@@ -4021,21 +3953,11 @@ test -s "$TRUAPI_DEV_COMMAND_TEST_READY_PATH"
             remember_script(Some(temporary.path()), &mut last_script, explicit.clone())?;
         let selected = select_script_to_edit(&scripts, &mut last_script)?;
 
+        assert_eq!(remembered, explicit);
+        assert_eq!(selected, explicit);
         assert_eq!(
-            (
-                remembered,
-                selected,
-                sessions::session_last_script(temporary.path())?,
-                std::fs::read_to_string(&explicit)?,
-                explicit.with_extension("d.ts").exists(),
-            ),
-            (
-                explicit.clone(),
-                explicit.clone(),
-                Some(explicit),
-                "console.log('product');".to_string(),
-                false,
-            )
+            sessions::session_last_script(temporary.path())?.as_deref(),
+            Some(explicit.as_path())
         );
         Ok(())
     }

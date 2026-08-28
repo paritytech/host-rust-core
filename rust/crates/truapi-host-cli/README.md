@@ -273,10 +273,7 @@ starter calls `truapi.account.getUserId()` and prints the returned user id.
 The generated file references an adjacent declaration bundle, so the editor
 provides completion and type checking for `truapi`, `host`, and `assert`
 without requiring `@parity/truapi` in a parent npm project. Scripts opened
-from an npm project can still import packages installed by that project. Bare
-`/script` also adds the declaration and module marker when it reopens a managed
-scratch file created by an older host version; explicitly selected scripts are
-not rewritten when they live outside the managed scratch directory.
+from an npm project can still import packages installed by that project.
 The TUI temporarily yields the terminal to `$VISUAL`, then `$EDITOR`, or
 `vi` when neither is set. After the editor exits successfully, the TUI is
 restored and the saved script runs through the public frame endpoint. Editor
