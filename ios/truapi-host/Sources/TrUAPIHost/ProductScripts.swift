@@ -10,7 +10,7 @@ import WebKit
 public extension TrUAPIHost {
     /// Registers the bootstrap and lockdown container on `controller` with the
     /// frame scopes the lockdown depends on, resolving the container's policy
-    /// from `core`.
+    /// from `execution`.
     ///
     /// Prefer this over registering the scripts by hand. Two properties are
     /// easy to get wrong and silently fatal:
@@ -30,10 +30,10 @@ public extension TrUAPIHost {
     /// Call before the web view loads the product page.
     static func installProductScripts(
         into controller: WKUserContentController,
-        core: any TrUAPIHostCoreProtocol,
+        execution: any TrUAPIProductExecutionProtocol,
         endpoint: WsBridgeEndpoint
     ) async throws {
-        let webRtcAllowed = try await core.permissionAuthorizationStatus(
+        let webRtcAllowed = try await execution.permissionAuthorizationStatus(
             request: .remote(RemotePermissionRequest(permission: .webRtc))
         ) == .authorized
 

@@ -1,5 +1,16 @@
 # @parity/truapi-host
 
+## 0.8.0
+
+### Minor Changes
+
+- fa7d8db: Expose the current canonical product identifier through `system.getProductContext()`.
+
+### Patch Changes
+
+- Updated dependencies [fa7d8db]
+  - @parity/truapi@0.11.0
+
 ## 0.7.0
 
 ### Minor Changes
