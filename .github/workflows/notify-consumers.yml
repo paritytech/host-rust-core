@@ -18,9 +18,9 @@ on:
         required: true
         type: string
     secrets:
-      CONSUMER_NOTIFY_APP_CLIENT_ID:
+      CONSUMER_APP_ID:
         required: true
-      CONSUMER_NOTIFY_APP_PRIVATE_KEY:
+      CONSUMER_APP_KEY:
         required: true
   # Rehearsal. Point target_repo at a scratch repository to see the real
   # issue, label and supersede behaviour without touching a consumer. The app
@@ -77,13 +77,15 @@ jobs:
 
       # `owner` must be set alongside `repositories`, or the minted token
       # reaches nothing but truapi itself. `permission-issues` holds it to what
-      # the script does, whatever else the app is granted.
+      # the script does, whatever else the app is granted. `app-id` takes the
+      # app's numeric id; the action prefers `client-id` and warns about this
+      # one, which needs the app's client id to switch to.
       - name: Mint an installation token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ secrets.CONSUMER_NOTIFY_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CONSUMER_NOTIFY_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.CONSUMER_APP_ID }}
+          private-key: ${{ secrets.CONSUMER_APP_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ steps.targets.outputs.repositories }}
           permission-issues: write

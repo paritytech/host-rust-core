@@ -168,11 +168,12 @@ The routing and the issue text live in
 [`scripts/lib/consumer-notifications.mjs`](../scripts/lib/consumer-notifications.mjs),
 unit-tested under `npm run test:scripts`;
 [`scripts/notify-consumers.mjs`](../scripts/notify-consumers.mjs) makes the API
-calls. Authentication is a GitHub App installed on the consumer repositories,
-which is why the issues are opened by an app rather than by a person and why
-there is no token to rotate. The job holds only the app's client id and private
-key, as `CONSUMER_NOTIFY_APP_CLIENT_ID` and `CONSUMER_NOTIFY_APP_PRIVATE_KEY`,
-and mints an installation token per run.
+calls. Authentication is the `truapi-release-notifications` GitHub App, owned by
+`paritytech` and installed on the consumer repositories, which is why the issues
+are opened by an app rather than by a person and why there is no token to rotate.
+It is deliberately not installed on `paritytech/truapi`, which holds only the
+app's id and private key, as `CONSUMER_APP_ID` and `CONSUMER_APP_KEY`, and mints
+an installation token per run.
 
 That token is scoped to the repositories the run will write to, resolved from the
 config, and to the app's `Issues` permission alone, at the read and write level
