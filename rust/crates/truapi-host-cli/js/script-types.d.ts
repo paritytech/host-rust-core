@@ -4663,6 +4663,18 @@ export const VrfTranscriptItem: Codec<VrfTranscriptItem>;
 }
 
 
+/** Wire discriminant reserved for method-independent protocol errors. **/
+export declare const PROTOCOL_ERROR_ID: 255;
+/** The peer rejected an outbound frame because it does not support its API. **/
+export declare class UnsupportedMessageError extends Error {
+    /** Wire discriminant of the unsupported outbound frame. **/
+    readonly discriminant: number;
+    constructor(discriminant: number);
+}
+/** Call result returned when the peer does not recognize a request frame. **/
+export type UnsupportedCallError = Extract<CallErrorValue<never>, {
+    tag: "Unsupported";
+}>;
 /**
  * Handle returned by TrUAPI subscription APIs.
  **/
@@ -4806,7 +4818,8 @@ export interface RequestParams<Ok, Err> {
     payload: Uint8Array;
     /**
      * Decode SCALE response payload bytes into the wire `ResultPayload`
-     * envelope. The transport unwraps the envelope into `ResultAsync<Ok, Err>`.
+     * envelope. The transport unwraps the envelope into
+     * `ResultAsync<Ok, Err | UnsupportedCallError>`.
      **/
     decodeResponse: (payload: Uint8Array) => ResultPayload<Ok, Err>;
 }
@@ -4831,7 +4844,8 @@ export interface SubscribeRawParams {
      **/
     onInterrupt?: (payload: Uint8Array) => void;
     /**
-     * Called when the underlying provider closes while the subscription is active.
+     * Called when a transport-level error or unsupported start frame terminates
+     * the subscription.
      **/
     onClose?: (error: Error) => void;
 }
@@ -4874,7 +4888,7 @@ export interface TrUApiTransport {
     /**
      * Send a one-shot request and resolve with the typed Ok/Err outcome.
      **/
-    request<Ok, Err>(params: RequestParams<Ok, Err>): ResultAsync<Ok, Err>;
+    request<Ok, Err>(params: RequestParams<Ok, Err>): ResultAsync<Ok, Err | UnsupportedCallError>;
     /**
      * Start a subscription and return a handle that can stop it.
      **/
