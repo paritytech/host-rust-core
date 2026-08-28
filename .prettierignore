@@ -8,4 +8,5 @@ playground/next-env.d.ts
 playground/tsconfig.tsbuildinfo
 js/packages/truapi/dist/
 js/packages/truapi/node_modules/
+rust/crates/truapi-host-cli/js/script-types.d.ts
 REVIEW_TODO*.md

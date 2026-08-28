@@ -52,8 +52,9 @@ moves that one link.
 | `TRUAPI_HOST_BIN_DIR` | Directory the `PATH` symlink goes in, default `~/.local/bin`. |
 
 Product scripts (`--script`, `/script`) work from an installed binary: the
-archive ships a `runner.js` with the `@parity/truapi` client bundled in. You
-still need `bun` on `PATH`, since it executes the runner and your script.
+archive ships a `runner.js` with the `@parity/truapi` client bundled in and a
+self-contained `script-types.d.ts` for the globals it injects. You still need
+`bun` on `PATH`, since it executes the runner and your script.
 
 Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
 default, so starting either host does not reserve a TCP port. Pass
@@ -269,8 +270,10 @@ including a path previously selected with `/script <path>`. If that file is
 missing or the session has no script yet, it creates a durable Bun TypeScript
 file under the active host state's `scripts/` directory. The dependency-free
 starter calls `truapi.account.getUserId()` and prints the returned user id.
-Scripts opened from an npm project can import packages installed by that
-project.
+The generated file references an adjacent declaration bundle, so the editor
+provides completion and type checking for `truapi`, `host`, and `assert`
+without requiring `@parity/truapi` in a parent npm project. Scripts opened
+from an npm project can still import packages installed by that project.
 The TUI temporarily yields the terminal to `$VISUAL`, then `$EDITOR`, or
 `vi` when neither is set. After the editor exits successfully, the TUI is
 restored and the saved script runs through the public frame endpoint. Editor

@@ -109,6 +109,11 @@ async function main() {
       existsSync(join(root, `versions/${version}/runner.js`)),
       true,
     );
+    check(
+      "the product-script types ship beside the runner",
+      existsSync(join(root, `versions/${version}/script-types.d.ts`)),
+      true,
+    );
     // The checkout's runner imports @parity/truapi by relative path. Running the
     // packaged one from an unrelated directory proves the client is bundled in,
     // so a downloaded install needs no source tree: it reaches its own env check

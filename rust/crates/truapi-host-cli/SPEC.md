@@ -167,6 +167,8 @@ release pointer, downloads the archive for the detected target
 
 ```
 $XDG_DATA_HOME/truapi-host/versions/<version>/truapi-host
+$XDG_DATA_HOME/truapi-host/versions/<version>/runner.js
+$XDG_DATA_HOME/truapi-host/versions/<version>/script-types.d.ts
 $XDG_DATA_HOME/truapi-host/current -> versions/<version>
 ~/.local/bin/truapi-host -> $XDG_DATA_HOME/truapi-host/current/truapi-host
 ```
@@ -200,10 +202,17 @@ The runner is resolved in this order: `TRUAPI_HOST_RUNNER`, then `runner.js`
 next to the running binary, then `js/runner.ts` in the source checkout
 (compiled from `CARGO_MANIFEST_DIR`).
 
-A release archive ships `runner.js` beside the binary, with `@parity/truapi`
-bundled in, so an installed copy runs product scripts with no source tree. A
-source build has no bundle and falls back to the checkout copy, whose relative
-`@parity/truapi` import means it only works from a built tree.
+A release archive ships `runner.js` and `script-types.d.ts` beside the binary.
+The runner has `@parity/truapi` bundled in, and the declaration file contains
+the matching generated client and injected-global types, so an installed copy
+runs and edits product scripts with no source tree or npm package. A source
+build has no runner bundle and falls back to the checkout copies, whose
+relative `@parity/truapi` import means the runner only works from a built
+tree.
+
+A `TRUAPI_HOST_RUNNER` override must provide a compatible
+`script-types.d.ts` beside the selected runner when bare `/script` needs to
+create an editor scratch file.
 
 `bun` is required either way, since the runner and user scripts are executed by
 it.
@@ -777,8 +786,8 @@ These variables are runner internals, not CLI configuration inputs.
 - A thrown error or rejected promise is printed as `[script error] ...` and
   exits `1`.
 - Failure to open the product socket within 15 seconds exits `2`.
-- Failure to locate the runner, canonicalize the script, or spawn Bun is a CLI
-  error.
+- Failure to locate the runner or its declaration bundle, canonicalize the
+  script, or spawn Bun is a CLI error.
 
 The CLI emits `Script running` before Bun starts and `Script finished` or
 `Script failed` afterward.
@@ -824,7 +833,13 @@ by a new scratch file.
 
 The default scratch file is a dependency-free Bun script that calls
 `truapi.account.getUserId()` and prints `user id` followed by the returned
-value. It does not emit terminal styling.
+value. A same-named `.d.ts` file is copied beside it from the selected runner's
+`script-types.d.ts`, and the script carries a relative triple-slash reference
+to that copy. Editors therefore resolve the matching generated types for
+`truapi`, `host`, and `assert` without a checkout or npm package. Keeping the
+declaration beside the scratch file preserves its types across session
+promotion and removal of older installed binary versions. The script does not
+emit terminal styling.
 
 Mnemonic-backed ephemeral signing sessions remember a path only for the
 current process and create scratch files under the system temporary

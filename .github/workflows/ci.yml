@@ -124,11 +124,15 @@ jobs:
       - name: Run codegen
         run: ./scripts/codegen.sh
 
-      - name: Check generated Rust output is committed
+      - name: Check generated output is committed
         run: |
           git diff --exit-code -- \
             rust/crates/truapi-server/src/generated \
-            rust/crates/truapi-server/src/wasm/generated_bridge.rs
+            rust/crates/truapi-server/src/wasm/generated_bridge.rs \
+            rust/crates/truapi-host-cli/js/script-types.d.ts
+
+      - name: Type-check headless host scripts
+        run: node_modules/.bin/tsc -p rust/crates/truapi-host-cli/js/tsconfig.json
 
       - name: Check Rust/TS wire table parity
         run: TRUAPI_REQUIRE_GENERATED_TS=1 cargo test -p truapi-server --test wire_table_ts_parity
@@ -146,6 +150,7 @@ jobs:
             js/packages/truapi/src/explorer/versions.ts
             js/packages/truapi-host/src/generated
             playground/test/generated
+            rust/crates/truapi-host-cli/js/script-types.d.ts
 
   ios-bindings:
     name: iOS bindings (uniffi)
