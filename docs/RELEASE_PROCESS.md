@@ -1,6 +1,7 @@
 # Release process
 
-The `@parity/truapi` and `@parity/truapi-host` npm packages are published by
+The `@parity/truapi`, `@parity/truapi-host`, and
+`@parity/pvm-browser-runtime` npm packages are published by
 [`paritytech/npm_publish_automation`](https://github.com/paritytech/npm_publish_automation).
 We never run `npm publish` locally or from a personal account; the
 `Release` workflow in `.github/workflows/release.yml` packs the packages
@@ -55,6 +56,7 @@ The PR title must start with `release:`. Convention:
 release: @parity/truapi 0.1.1
 release: @parity/truapi-host 0.1.1
 release: @parity/truapi 0.5.0, @parity/truapi-host 0.2.0
+release: @parity/pvm-browser-runtime 0.1.0
 release: @parity/android-host 0.1.0
 release: @parity/truapi 0.5.0, @parity/ios-host 0.5.0, @parity/android-host 0.1.0
 ```
@@ -82,8 +84,8 @@ On merge, CI runs as usual. When CI passes, the `Release` workflow:
    and validates it against the corresponding package manifest.
 3. Asks npm whether each `<package>@<version>` already exists. Versions the
    registry already serves are skipped, so re-runs are idempotent.
-4. Builds generated sources and the host WASM bundle, packs the tarballs, and
-   dispatches to `npm_publish_automation`.
+4. Builds generated sources and every requested package bundle, packs the
+   tarballs, and dispatches to `npm_publish_automation`.
 5. Polls the registry until every version being released is installable, for up
    to ten minutes.
 6. Creates and pushes tags and publishes GitHub Releases, for the confirmed

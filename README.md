@@ -54,7 +54,10 @@ const transport = createTransport(createMessagePortProvider(port));
 const truapi = createClient(transport);
 
 const result = await truapi.accountManagement.accountGet({
-  productAccountId: { dotNsIdentifier: "my-product.dot", derivationIndex: { tag: "Index", value: 0 } },
+  productAccountId: {
+    dotNsIdentifier: "my-product.dot",
+    derivationIndex: { tag: "Index", value: 0 },
+  },
 });
 ```
 
@@ -193,9 +196,11 @@ signer, then runs the wrapped command with the host already live. The product
 reaches it through a development-only `<script>` tag:
 
 ```jsx
-{process.env.NODE_ENV === "development" && (
-  <script src="http://127.0.0.1:9955/bootstrap.js" />
-)}
+{
+  process.env.NODE_ENV === "development" && (
+    <script src="http://127.0.0.1:9955/bootstrap.js" />
+  );
+}
 ```
 
 The host serves that script itself, so the page needs no package, no imports,
@@ -316,8 +321,8 @@ Pushes to `main` build and deploy:
 ## Release
 
 See [`docs/RELEASE_PROCESS.md`](docs/RELEASE_PROCESS.md) for how to ship
-`@parity/truapi` and `@parity/truapi-host` to npm, and the iOS host and
-Android host artifacts alongside them.
+`@parity/truapi`, `@parity/truapi-host`, and `@parity/pvm-browser-runtime`
+to npm, with the iOS and Android host artifacts alongside them.
 
 ## Contributing
 
