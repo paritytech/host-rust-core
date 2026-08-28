@@ -238,9 +238,9 @@ uniffi-kotlin: ## Regenerate Kotlin UniFFI bindings from the truapi-server cdyli
 		--language kotlin \
 		--out-dir $(UNIFFI_KOTLIN_OUT)
 
-# Android ABIs to cross-compile the cdylib for. arm64 + armv7 cover physical
-# devices; x86_64 covers the emulator on Intel/Apple-silicon hosts.
-ANDROID_ABIS ?= arm64-v8a armeabi-v7a x86_64
+# Android ABIs supported by both TrUAPI and PolkaVM. arm64 covers physical
+# devices; x86_64 covers emulators. PolkaVM does not support 32-bit armv7.
+ANDROID_ABIS ?= arm64-v8a x86_64
 ANDROID_JNILIBS := android/truapi-host/src/main/jniLibs
 
 android-jni: ## Cross-compile libtruapi_server.so for Android ABIs into jniLibs (needs cargo-ndk + NDK).
