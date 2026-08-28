@@ -280,7 +280,8 @@ describe("generated client transport", () => {
             encodeWireMessage({
                 requestId: "p:1",
                 payload: {
-                    id: W.SYSTEM_GET_PRODUCT_CONTEXT.response,
+                    traitId: W.SYSTEM_GET_PRODUCT_CONTEXT.trait,
+                    methodId: W.SYSTEM_GET_PRODUCT_CONTEXT.response,
                     value: versionedV1(
                         ScaleResult(
                             T.HostGetProductContextResponse,

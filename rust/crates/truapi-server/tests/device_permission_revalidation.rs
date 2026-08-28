@@ -72,7 +72,8 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
     let frame = ProtocolMessage {
         request_id: "p:1".into(),
         payload: Payload {
-            id: ids.request_id,
+            trait_id: ids.trait_id,
+            method_id: ids.request_id,
             value: HostDevicePermissionRequest::V1(v01::HostDevicePermissionRequest::Camera)
                 .encode(),
         },
@@ -84,7 +85,9 @@ fn request_camera(status: Option<Arc<dyn PermissionStatusHost>>) -> bool {
     let response = frames
         .iter()
         .map(|bytes| ProtocolMessage::decode(&mut &bytes[..]).expect("decode emitted frame"))
-        .find(|message| message.payload.id == ids.response_id)
+        .find(|message| {
+            message.payload.trait_id == ids.trait_id && message.payload.method_id == ids.response_id
+        })
         .expect("dispatcher emitted a device-permission response");
 
     // Wire payload is [version disc][Ok disc][body]. Assert the whole thing

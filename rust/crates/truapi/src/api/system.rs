@@ -96,7 +96,7 @@ pub trait System: Send + Sync {
     /// const info = result.value;
     /// console.log(`${info.name} ${info.version} on ${info.platform}`);
     /// ```
-    #[wire(request_id = 192)]
+    #[wire(request_id = 6)]
     async fn host_info(
         &self,
         cx: &CallContext,
@@ -110,7 +110,7 @@ pub trait System: Send + Sync {
     /// assert(context.isOk(), "getProductContext failed:", context);
     /// console.log("product id:", context.value.productId);
     /// ```
-    #[wire(request_id = 190)]
+    #[wire(request_id = 8)]
     async fn get_product_context(
         &self,
         _cx: &CallContext,
