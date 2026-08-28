@@ -40,6 +40,7 @@ impl ScriptHostRole {
 const SCRATCH_TEMPLATE: &str = r#"#!/usr/bin/env bun
 
 /// <reference path="./__TRUAPI_TYPES__" />
+export {};
 
 // Scripts can use packages installed next to the script or in a parent project.
 
@@ -407,6 +408,7 @@ mod tests {
                 r#"#!/usr/bin/env bun
 
 /// <reference path="./{script_types_name}" />
+export {{}};
 
 // Scripts can use packages installed next to the script or in a parent project.
 
