@@ -104,6 +104,16 @@ The npm packages are not the only release targets. `@parity/ios-host` and
 `@parity/android-host` name artifacts that live outside npm, and each is
 published by its own job once the release job succeeds.
 
+`@parity/truapi <version>` also publishes the prebuilt `truapi-host` CLI
+binaries, because `rust/crates/truapi-host-cli/Cargo.toml` tracks the protocol
+version (`scripts/sync-release-versions.mjs` keeps it there, and
+`npm run check-release-versions` fails the release if it drifts). The
+`release-cli` workflow builds `aarch64-apple-darwin`,
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` natively, uploads
+each archive and its `.sha256` to the `@parity/truapi@<version>` release, and
+only then moves the `truapi-host-cli-stable` pointer that the installer and the
+in-binary updater read. There is no separate release subject entry for it.
+
 `@parity/android-host <version>` publishes the Android host AAR as
 `io.parity:truapi-host-android:<version>` to GitHub Packages. The job
 cross-compiles `libtruapi_server.so` for arm64-v8a, armeabi-v7a and x86_64,

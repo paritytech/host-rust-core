@@ -2,7 +2,7 @@
 
 _Browse, edit, and call App-compatible TrUAPI methods live against a connected Polkadot host._
 
-The playground is an interactive reference for the App-compatible TrUAPI surface: methods are grouped by domain, with live request payload editing, one-click calls, and live subscriptions. It must be opened from inside a TrUAPI host so it can talk to the host over the wire.
+The playground is an interactive reference for the App-compatible TrUAPI surface: methods are grouped by domain, with live request payload editing, one-click calls, and live subscriptions. Production builds run inside a TrUAPI host. Local development can also use the CLI browser bridge in a plain browser tab.
 
 **Live app:** [https://truapi-playground.paseo.li/](https://truapi-playground.paseo.li/)
 
@@ -25,16 +25,44 @@ The playground is an interactive reference for the App-compatible TrUAPI surface
 
 ```bash
 yarn install --frozen-lockfile
-yarn dev
+truapi-host dev -- yarn dev
 ```
 
-Then open the dev server inside the Polkadot Desktop Host:
+Open [http://localhost:3000](http://localhost:3000). `truapi-host dev` starts a
+signing host on `127.0.0.1:9955`, waits until its signer is ready, then starts
+the playground. The development-only tag in `src/app/layout.tsx` loads
+`http://127.0.0.1:9955/bootstrap.js`, which installs the same
+`window.__HOST_API_PORT__` used by native webview hosts. The production build
+checks that this bridge URL is absent from `out/`.
+
+The source tag and the CLI use fixed port `9955`. If you pass a different
+`truapi-host dev --port`, update the tag to match. The CLI accepts frame
+connections only from local TCP peers. Browser WebSocket origins must also be
+`localhost` or a loopback IP. Local non-browser clients may omit `Origin`.
+
+To exercise a real host instead, run `yarn dev` and open the dev server inside
+the Polkadot Desktop Host:
 
 ```
 https://dot.li/localhost:3000
 ```
 
-The app needs a host to connect to. Opening it directly in a regular browser will not work.
+Opening the page directly without either host does not work.
+
+The plain-browser Playwright suite starts the installed CLI and owns the whole
+stack:
+
+```bash
+yarn e2e:cli
+TRUAPI_HOST_BIN=../target/debug/truapi-host yarn e2e:cli
+```
+
+`TRUAPI_HOST_BIN` selects a checkout build when needed. Existing listeners are
+rejected so the suite cannot silently test a partial or unrelated stack.
+`yarn e2e:cli-diagnosis` runs the longer compatibility diagnosis. It records
+failed and skipped methods as findings and exits nonzero only when the run
+itself breaks or the page raises an error. The CLI Playwright suite is the
+regression gate.
 
 `yarn build` produces both the static app under `out/` and its `Worker` executable
 at `out/worker/index.js`. Both resolve `@parity/truapi` from the linked

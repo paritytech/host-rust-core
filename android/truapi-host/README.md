@@ -51,7 +51,6 @@ The public surface lives in [`src/main/kotlin/io/parity/truapi/TrUAPIHost.kt`](s
 - `HostBridge` - callback bundle the embedding app implements. Splits device permissions, remote permissions, navigation, push, feature support, a single `confirmUserAction`, and both storage backends.
 - `HostStorage` - product-scoped read/write/clear interface the host backs with its own persistence.
 - `HostCoreStorage` - core-owned read/write/clear interface for auth session, pairing identity, and persisted permission decisions (`key` is a SCALE-encoded `CoreStorageKey`).
-- `TrUAPIHostCore` - owning wrapper around the UniFFI-generated `NativeTrUApiCore`. Holds the bridge alive for the lifetime of the core and exposes the localhost WebSocket bridge, core-owned disconnect, local-session activation, permission-authorization status, and native change notifications for session storage, theme, and preimage updates.
 - `LocalhostBridgeBootstrap` - JS snippet that publishes the WS bridge endpoint (`window.__truapi_localhost`) to the product page so it can dial back in.
 - `TrUAPIHostRuntime` - process-owned runtime whose product executions share one authentication session. Open a connection per executable with `openProductExecution`, which returns a `TrUAPIProductExecution` carrying that connection's own WS bridge, permission authorization, theme/preimage/chain notifications, and the Chat controls below.
 - `ChatHostBridge` - native Chat storage and UI, implemented by hosts that serve the Chat modality and passed to `openProductExecution`. Hosts without it pass nothing and Chat calls answer unsupported.
@@ -135,7 +134,7 @@ product app in WebView
   Uint8Array frames via @parity/truapi createWebSocketProvider
            |
            v   ws://127.0.0.1:<port>/?t=<token>
-TrUAPIHostCore.startWsBridge()
+TrUAPIProductExecution.startWsBridge()
   → libtruapi_server.so (tokio WS server)
   → Rust dispatcher
 ```
@@ -149,7 +148,7 @@ The core's `Permissions` platform trait has two methods, and so does the bridge:
 - `devicePermission(request)` - OS-scoped grants (camera, mic, location, push). `request` is a typed `HostDevicePermissionRequest`.
 - `remotePermission(request)` - per-product capabilities. `request` is a typed `RemotePermission`.
 
-Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIHostCore` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
+Both return a `Boolean` granted flag; the host renders the typed request in its own prompt UI. The same typed values drive the `TrUAPIProductExecution` permission admin API (`permissionAuthorizationStatus`, `setPermissionAuthorizationStatus`), which reads and updates the persisted decisions without prompting.
 
 ## Statement-store allowance renewal
 
@@ -158,7 +157,7 @@ Statement-store allowances are granted per period, so a host has to re-register 
 Record the accounts to keep allowed. This needs an active session, so call it after `activateLocalSession` or after pairing, not at construction:
 
 ```kotlin
-core.trackStatementRenewalTargets(
+runtime.trackStatementRenewalTargets(
     listOf(
         NativeStatementRenewalTarget.WalletSso,
         NativeStatementRenewalTarget.Account(deviceStatementKey, "device"),
@@ -171,7 +170,7 @@ The ledger persists across launches, and it is append-only: there is no untrack,
 Then run a pass from a `WorkManager` worker. It submits extrinsics and blocks until they are included, so keep it off the main thread. It needs an active session too, which is the whole difficulty here: a worker on a cold start has none until you restore one, and the pass then fails with the bare reason `Disconnected`. Restore the session first, and read that reason as "not ready" rather than as a renewal failure. `startStatementAllowanceRenewal()` does not need this care, since its loop skips a tick with no session and retries.
 
 ```kotlin
-val report = core.renewStatementAllowances()
+val report = runtime.renewStatementAllowances()
 report.outcomes.forEach { Log.i(TAG, "${it.label}: ${it.status}") }
 report.pruned.forEach {
     // Promised by a previous identity and discarded; re-track to keep it renewed.
@@ -230,9 +229,10 @@ import io.parity.truapi.HostBridge
 import io.parity.truapi.HostCoreStorage
 import io.parity.truapi.HostStorage
 import io.parity.truapi.LocalhostBridgeBootstrap
-import io.parity.truapi.PairingDeeplinkScheme
-import io.parity.truapi.RuntimeConfig
-import io.parity.truapi.TrUAPIHostCore
+import io.parity.truapi.HostRuntimeConfig
+import io.parity.truapi.ProductExecutionConfig
+import io.parity.truapi.ProductExecutionKind
+import io.parity.truapi.TrUAPIHostRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import uniffi.truapi_platform.AuthState
@@ -298,15 +298,13 @@ class MyBridge(private val webView: WebView) : HostBridge {
     // as a retryable error, unless its kind is
     // LoginFailureKind.NoFreeAllowanceSlots, which is unlikely to succeed
     // before the period rolls over, so retry should not be the primary action.
-    // When the user closes the pairing sheet, report it
-    // with `core.cancelLogin()`.
     override fun authStateChanged(state: AuthState) {
         main.post { /* render the state */ }
     }
 
     override fun chainConnect(genesisHash: ByteArray): UInt? {
         val id = 1u
-        main.post { /* open JSON-RPC connection, forward responses via core.notifyChainResponse */ }
+        main.post { /* open JSON-RPC connection, forward responses via runtime.notifyChainResponse */ }
         return id
     }
 
@@ -328,8 +326,8 @@ class MyBridge(private val webView: WebView) : HostBridge {
 }
 
 val webView: WebView = existingWebView
-val runtimeConfig = RuntimeConfig(
-    productId = "my-product.dot",
+val bridge = MyBridge(webView)
+val runtimeConfig = HostRuntimeConfig(
     hostName = "My Host",
     hostIcon = "https://host.example/icon.png",
     peopleChainGenesisHash = ByteArray(32),
@@ -337,17 +335,20 @@ val runtimeConfig = RuntimeConfig(
     // Optional: activate a local signing session from host-held BIP-39 entropy
     // (no SSO pairing). Omit for the QR pairing flow.
     localSessionSecret = null,
-    pairingDeeplinkScheme = PairingDeeplinkScheme.POLKADOT_APP,
 )
-val core = TrUAPIHostCore(MyBridge(webView), runtimeConfig)
-val endpoint = core.startWsBridge()
+val runtime = TrUAPIHostRuntime(bridge, runtimeConfig)
+val execution = runtime.openProductExecution(
+    bridge = bridge,
+    configuration = ProductExecutionConfig("my-product.dot", ProductExecutionKind.APP),
+)
+val endpoint = execution.startWsBridge()
 
 // Call these from host/platform observers so native subscriptions see updates
 // after their immediate current item.
-core.notifyThemeChanged(HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK))
-core.notifyPreimageChanged(preimageKey, preimageBytesOrNull)
-core.notifyChainResponse(chainConnectionId, jsonRpcResponse)
-core.notifyChainClosed(chainConnectionId)
+execution.notifyThemeChanged(HostThemeSubscribeItem(ThemeName.Default, ThemeVariant.DARK))
+execution.notifyPreimageChanged(preimageKey, preimageBytesOrNull)
+runtime.notifyChainResponse(chainConnectionId, jsonRpcResponse)
+runtime.notifyChainClosed(chainConnectionId)
 
 // Publish the bridge endpoint to the product page. Install the bootstrap as a
 // DOCUMENT-START script so it runs in the destination document before the page
@@ -365,7 +366,7 @@ core.notifyChainClosed(chainConnectionId)
 // Android whatever the status says. Pass what the core returns anyway — a
 // literal `true` compiles and would silently keep that open once the container
 // does land (#334 scopes the gate to iOS).
-val webRtcAllowed = core.permissionAuthorizationStatus(
+val webRtcAllowed = execution.permissionAuthorizationStatus(
     PermissionAuthorizationRequest.Remote(RemotePermissionRequest(RemotePermission.WebRtc))
 ) == PermissionAuthorizationStatus.AUTHORIZED
 val bootstrap = LocalhostBridgeBootstrap.script(endpoint.port, endpoint.token, webRtcAllowed)
@@ -382,7 +383,7 @@ main.post {
 }
 
 // On logout:
-core.disconnect()
+runtime.disconnect()
 ```
 
 ## The cdylib
