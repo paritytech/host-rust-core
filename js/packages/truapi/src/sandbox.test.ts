@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 
-import { encodeWireMessage } from "./transport.js";
+import { encodeWireMessage, PROTOCOL_ERROR_ID } from "./transport.js";
 
 let importCounter = 0;
 
@@ -266,9 +266,19 @@ describe("sandbox iframe MessagePort handshake", () => {
         });
 
         void client?.system.handshake();
-        expect(currentWindow.parentPostMessage.mock.calls).toHaveLength(2);
-        expect(currentWindow.parentPostMessage.mock.calls[1][0]).toBeInstanceOf(Uint8Array);
-        expect(currentWindow.parentPostMessage.mock.calls[1][1]).toBe(
+        const unsupported = encodeWireMessage({
+            requestId: "legacy-probe",
+            payload: {
+                id: PROTOCOL_ERROR_ID,
+                value: new Uint8Array([0, 0, 254]),
+            },
+        });
+        expect(unsupported.isOk()).toBe(true);
+        if (unsupported.isErr()) throw unsupported.error;
+        expect(currentWindow.parentPostMessage.mock.calls).toHaveLength(3);
+        expect(currentWindow.parentPostMessage.mock.calls[1][0]).toEqual(unsupported.value);
+        expect(currentWindow.parentPostMessage.mock.calls[2][0]).toBeInstanceOf(Uint8Array);
+        expect(currentWindow.parentPostMessage.mock.calls[2][1]).toBe(
             "https://legacy-host.example",
         );
     });

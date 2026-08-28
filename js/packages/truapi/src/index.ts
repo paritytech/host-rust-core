@@ -10,6 +10,7 @@ export type {
   Subscription,
   SubscribeRawParams,
   TrUApiTransport,
+  UnsupportedCallError,
   WebSocketWireProvider,
   WireProvider,
 } from "./transport.js";

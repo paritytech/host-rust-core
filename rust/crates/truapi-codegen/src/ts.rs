@@ -592,14 +592,14 @@ fn generate_wire_table(api: &ApiDefinition, target_version: u32) -> Result<Strin
 
     for trait_def in &api.traits {
         for method in &trait_def.methods {
-            if !method_is_included(trait_def, method, &wrappers, target_version)? {
-                continue;
-            }
             let wire_ids = wire_ids_for_method(trait_def, method)?;
             for (id, tag) in wire_ids.entries(&method.name) {
                 if let Some(existing) = seen.insert(id, tag.clone()) {
                     bail!("wire id {id} reused: `{existing}` and `{tag}` collide");
                 }
+            }
+            if !method_is_included(trait_def, method, &wrappers, target_version)? {
+                continue;
             }
             constants.push((wire_const_name(&trait_def.name, &method.name), wire_ids));
         }
@@ -2891,6 +2891,39 @@ mod tests {
                 "unexpected error for {method_name}: {message}",
             );
         }
+    }
+
+    #[test]
+    fn generate_wire_table_reserves_protocol_error_id_for_filtered_method() {
+        let mut future = request_method_with_wrappers(
+            "future",
+            Some(RESERVED_PROTOCOL_ERROR_ID),
+            "FutureRequest",
+            "FutureResponse",
+            "FutureError",
+        );
+        future.wire.response_id = Some(1);
+        let api = ApiDefinition {
+            traits: vec![TraitDef {
+                name: "Example".to_string(),
+                module_path: Vec::new(),
+                methods: vec![future],
+                docs: None,
+            }],
+            public_trait_order: Vec::new(),
+            types: vec![
+                versioned_tuple_wrapper_variants("FutureRequest", &[(2, "FutureRequestV2")]),
+                versioned_tuple_wrapper_variants("FutureResponse", &[(2, "FutureResponseV2")]),
+                versioned_tuple_wrapper_variants("FutureError", &[(2, "FutureErrorV2")]),
+            ],
+        };
+
+        let error = generate_wire_table(&api, 1)
+            .expect_err("filtered methods must not allocate wire id 255");
+        assert!(
+            error.to_string().contains("wire id 255 reused")
+                && error.to_string().contains("reserved for protocol errors")
+        );
     }
 
     #[test]

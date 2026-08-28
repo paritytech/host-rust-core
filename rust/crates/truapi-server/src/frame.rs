@@ -52,6 +52,17 @@ pub enum ProtocolErrorV1 {
     },
 }
 
+pub(crate) fn decode_protocol_error_payload(
+    payload: &[u8],
+) -> Result<VersionedProtocolError, CodecError> {
+    let mut input = payload;
+    let error = VersionedProtocolError::decode(&mut input)?;
+    if !input.is_empty() {
+        return Err("protocol error payload has trailing bytes".into());
+    }
+    Ok(error)
+}
+
 /// Encode `Versioned<Result<Ok, _>>` from a versioned success wrapper.
 ///
 /// TODO(shared-core-wire): once all hosts use the shared Rust core/generated
@@ -141,6 +152,9 @@ impl Decode for ProtocolMessage {
             .ok_or_else(|| CodecError::from("frame input must report remaining length"))?;
         let mut value = vec![0u8; remaining];
         input.read(&mut value)?;
+        if id == PROTOCOL_ERROR_ID {
+            decode_protocol_error_payload(&value)?;
+        }
         Ok(ProtocolMessage {
             request_id,
             payload: Payload { id, value },
@@ -294,6 +308,25 @@ mod tests {
         let encoded = error.encode();
         let decoded = VersionedProtocolError::decode(&mut &encoded[..]).expect("decode");
         assert_eq!((encoded, decoded), (vec![0, 0, 250], error));
+    }
+
+    #[test]
+    fn malformed_protocol_error_payloads_fail_frame_decoding() {
+        for payload in [
+            vec![0, 0],
+            vec![0, 0, 250, 0],
+            vec![1, 0, 250],
+            vec![0, 1, 250],
+        ] {
+            let message = ProtocolMessage {
+                request_id: "p:1".into(),
+                payload: Payload {
+                    id: PROTOCOL_ERROR_ID,
+                    value: payload,
+                },
+            };
+            assert!(ProtocolMessage::decode(&mut message.encode().as_slice()).is_err());
+        }
     }
 
     /// All four subscription phases round-trip through the codec. Catches a

@@ -14,6 +14,7 @@ import {
   type SubscribeRawParams,
   type Subscription,
   type TrUApiTransport,
+  type UnsupportedCallError,
   UnsupportedMessageError,
   type WireProvider,
 } from "./transport.js";
@@ -31,6 +32,12 @@ import * as T from "./generated/types.js";
 import * as W from "./generated/wire-table.js";
 
 export type { Subscription, TrUApiTransport };
+
+const UNANSWERED_WIRE_IDS = new Set<number>(
+  Object.values(W).flatMap((ids) =>
+    "response" in ids ? [ids.response] : [ids.stop, ids.interrupt, ids.receive],
+  ),
+);
 
 /**
  * Version overrides used when constructing a transport.
@@ -192,7 +199,6 @@ export function createTransport(
       ids: SubscriptionFrameIds;
       onReceive: (payload: Uint8Array) => void;
       onInterrupt?: (payload: Uint8Array) => void;
-      onUnsupported?: (error: UnsupportedMessageError) => void;
       onClose?: (error: Error) => void;
     }
   >();
@@ -280,9 +286,7 @@ export function createTransport(
       const subscription = subscriptions.get(requestId);
       if (subscription?.ids.start === discriminant) {
         subscriptions.delete(requestId);
-        const error = new UnsupportedMessageError(discriminant);
-        if (subscription.onUnsupported) subscription.onUnsupported(error);
-        else subscription.onClose?.(error);
+        subscription.onClose?.(new UnsupportedMessageError(discriminant));
       }
       return;
     }
@@ -347,10 +351,7 @@ export function createTransport(
     }
 
     const p = pending.get(requestId);
-    if (p) {
-      if (payload.id !== p.ids.response) {
-        return;
-      }
+    if (p && payload.id === p.ids.response) {
       pending.delete(requestId);
       try {
         p.resolve(payload.value);
@@ -373,10 +374,28 @@ export function createTransport(
           subscriptions.delete(requestId);
           subscription.onClose?.(toError(error));
         }
+        return;
       } else if (payload.id === subscription.ids.interrupt) {
         subscriptions.delete(requestId);
         subscription.onInterrupt?.(payload.value);
+        return;
       }
+    }
+
+    if (UNANSWERED_WIRE_IDS.has(payload.id)) {
+      return;
+    }
+
+    try {
+      send({
+        requestId,
+        payload: {
+          id: PROTOCOL_ERROR_ID,
+          value: new Uint8Array([0, 0, payload.id]),
+        },
+      });
+    } catch {
+      // provider already closed
     }
   });
 
@@ -496,8 +515,10 @@ export function createTransport(
       ids,
       payload,
       decodeResponse,
-    }: RequestParams<Ok, Err>): ResultAsync<Ok, Err> {
-      const promise = new Promise<ResultPayload<Ok, Err>>((resolve, reject) => {
+    }: RequestParams<Ok, Err>): ResultAsync<Ok, Err | UnsupportedCallError> {
+      const promise = new Promise<
+        ResultPayload<Ok, Err | UnsupportedCallError>
+      >((resolve, reject) => {
         if (closedError) {
           reject(closedError);
           return;
@@ -510,7 +531,7 @@ export function createTransport(
           resolveUnsupported: () =>
             resolve({
               success: false,
-              value: { tag: "Unsupported" } as Err,
+              value: { tag: "Unsupported" },
             }),
           reject,
         });
@@ -528,7 +549,7 @@ export function createTransport(
         }
       });
       return ResultAsync.fromSafePromise(promise).andThen(
-        (result): ResultAsync<Ok, Err> =>
+        (result): ResultAsync<Ok, Err | UnsupportedCallError> =>
           result.success ? okAsync(result.value) : errAsync(result.value),
       );
     },
@@ -541,7 +562,6 @@ export function createTransport(
       payload,
       onReceive,
       onInterrupt,
-      onUnsupported,
       onClose,
     }: SubscribeRawParams) {
       if (closedError) {
@@ -554,7 +574,6 @@ export function createTransport(
         ids,
         onReceive,
         onInterrupt,
-        onUnsupported,
         onClose,
       });
       try {

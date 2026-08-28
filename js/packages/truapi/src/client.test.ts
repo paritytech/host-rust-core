@@ -364,26 +364,29 @@ describe("generated client transport", () => {
     it("reports an unsupported raw subscription only for its matching start", () => {
         const fixture = providerFixture();
         const transport = createTransport(fixture.provider);
-        const errors: UnsupportedMessageError[] = [];
+        const errors: Error[] = [];
         const subscription = transport.subscribeRaw({
             ids: { start: 194, stop: 195, interrupt: 196, receive: 197 },
             payload: new Uint8Array(),
             onReceive: () => {},
-            onUnsupported: (error) => errors.push(error),
+            onClose: (error) => errors.push(error),
         });
         fixture.receive(unsupportedMessage(subscription.subscriptionId, 195));
         fixture.receive(unsupportedMessage(subscription.subscriptionId, 194));
         subscription.unsubscribe();
 
-        expect(
-            errors.map(({ name, message, discriminant }) => ({ name, message, discriminant })),
-        ).toEqual([
-            {
-                name: "UnsupportedMessageError",
-                message: "Peer does not support wire message 194",
-                discriminant: 194,
-            },
-        ]);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toBeInstanceOf(UnsupportedMessageError);
+        const unsupported = errors[0] as UnsupportedMessageError;
+        expect({
+            name: unsupported.name,
+            message: unsupported.message,
+            discriminant: unsupported.discriminant,
+        }).toEqual({
+            name: "UnsupportedMessageError",
+            message: "Peer does not support wire message 194",
+            discriminant: 194,
+        });
         expect(fixture.sent).toHaveLength(1);
     });
 
@@ -434,6 +437,128 @@ describe("generated client transport", () => {
             await expect(outcome).rejects.toThrow(`Malformed protocol error payload: ${message}`);
             expect(fixture.sent).toHaveLength(1);
         }
+    });
+
+    it("rejects an unknown host-initiated message without starting an error loop", () => {
+        const fixture = providerFixture();
+        createTransport(fixture.provider);
+        const incoming = unwrap(
+            encodeWireMessage({
+                requestId: "h:future",
+                payload: { id: 194, value: new Uint8Array() },
+            }),
+            "encode unknown host request",
+        );
+
+        fixture.receive(incoming);
+
+        expect(fixture.sent.map(toHex)).toEqual([toHex(unsupportedMessage("h:future", 194))]);
+
+        fixture.receive(unsupportedMessage("h:future", 194));
+        expect(fixture.sent).toHaveLength(1);
+    });
+
+    it("rejects a known host-initiated start when no handler is registered", () => {
+        const fixture = providerFixture();
+        createTransport(fixture.provider);
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "h:known",
+                    payload: {
+                        id: W.CHAT_CUSTOM_MESSAGE_RENDER.start,
+                        value: new Uint8Array(),
+                    },
+                }),
+                "encode known unhandled host start",
+            ),
+        );
+
+        expect(fixture.sent.map(toHex)).toEqual([
+            toHex(unsupportedMessage("h:known", W.CHAT_CUSTOM_MESSAGE_RENDER.start)),
+        ]);
+    });
+
+    it("rejects an unknown message without disturbing its correlated request", async () => {
+        const fixture = providerFixture();
+        const transport = createTransport(fixture.provider);
+        const response = transport.request<string, CallErrorValue<never>>({
+            ids: W.LOCAL_STORAGE_READ,
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: true, value: "supported" }),
+        });
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "p:1",
+                    payload: { id: 194, value: new Uint8Array() },
+                }),
+                "encode unknown correlated message",
+            ),
+        );
+
+        expect(fixture.sent.map(toHex)).toEqual([
+            toHex(fixture.sent[0]),
+            toHex(unsupportedMessage("p:1", 194)),
+        ]);
+
+        fixture.receive(
+            unwrap(
+                encodeWireMessage({
+                    requestId: "p:1",
+                    payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+                }),
+                "encode request response",
+            ),
+        );
+        expect((await response)._unsafeUnwrap()).toBe("supported");
+    });
+
+    it("ignores stale frames whose discriminants are known locally", async () => {
+        const requestFixture = providerFixture();
+        const requestTransport = createTransport(requestFixture.provider);
+        const response = requestTransport.request<string, CallErrorValue<never>>({
+            ids: W.LOCAL_STORAGE_READ,
+            payload: new Uint8Array(),
+            decodeResponse: () => ({ success: true, value: "done" }),
+        });
+        const responseFrame = unwrap(
+            encodeWireMessage({
+                requestId: "p:1",
+                payload: { id: W.LOCAL_STORAGE_READ.response, value: new Uint8Array() },
+            }),
+            "encode response",
+        );
+        requestFixture.receive(responseFrame);
+        expect((await response)._unsafeUnwrap()).toBe("done");
+        requestFixture.receive(responseFrame);
+        expect(requestFixture.sent).toHaveLength(1);
+
+        const subscriptionFixture = providerFixture();
+        const subscriptionTransport = createTransport(subscriptionFixture.provider);
+        const received: Uint8Array[] = [];
+        const subscription = subscriptionTransport.subscribeRaw({
+            ids: W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE,
+            payload: new Uint8Array(),
+            onReceive: (payload) => received.push(payload),
+        });
+        subscription.unsubscribe();
+        for (const id of [
+            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.receive,
+            W.ACCOUNT_CONNECTION_STATUS_SUBSCRIBE.interrupt,
+        ]) {
+            subscriptionFixture.receive(
+                unwrap(
+                    encodeWireMessage({
+                        requestId: subscription.subscriptionId,
+                        payload: { id, value: new Uint8Array() },
+                    }),
+                    "encode stale subscription frame",
+                ),
+            );
+        }
+        expect(received).toEqual([]);
+        expect(subscriptionFixture.sent).toHaveLength(2);
     });
 
     it("auto-responds to an inbound handshake with the versioned-result shape", () => {

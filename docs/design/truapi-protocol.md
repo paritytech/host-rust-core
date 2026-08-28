@@ -123,11 +123,11 @@ A single byte channel carries every call in both directions at once, so the two 
 
 Every request expects exactly one response. Each Host or Product MUST send a response message for every request it receives, and the request and its response MUST share the same `requestId` — so the caller can match a reply to the call it made even with many calls in flight.
 
-If a Host has no handler for an incoming Product discriminant, it MUST send a protocol-error frame with discriminant 255 and the same `requestId`. The codec-version-1 payload is `V1(UnsupportedMessage { discriminant })`, encoded as the three bytes `[0, 0, unsupported_discriminant]`. The Product maps this method-independent response to its own pending request or subscription and reports a generic unsupported error.
+If a receiver has no handler for an incoming discriminant, it MUST send a protocol-error frame with discriminant 255 and the same `requestId`. The codec-version-1 payload is `V1(UnsupportedMessage { discriminant })`, encoded as the three bytes `[0, 0, unsupported_discriminant]`. The sender maps this method-independent response to its own pending request or subscription and reports a generic unsupported error.
 
-A protocol-error frame MUST NOT receive another protocol-error response. An unmatched error is ignored, while a malformed protocol-error payload closes the transport as a wire violation. These rules prevent error loops without hiding malformed control messages.
+A protocol-error frame MUST NOT receive another protocol-error response. An unmatched error is ignored, while a malformed protocol-error payload is rejected as a wire violation. These rules prevent error loops without hiding malformed control messages.
 
-Hosts released before this control frame was introduced still silently drop unknown discriminants. They must be upgraded once before they can safely reject APIs introduced by later packages. Existing API frames and codec version 1 remain unchanged.
+Hosts and Products released before this control frame was introduced still silently drop unknown discriminants. They must be upgraded once before they can safely reject APIs introduced by later peers. Existing API frames and codec version 1 remain unchanged.
 
 #### Subscription
 
@@ -139,6 +139,10 @@ Each message has a defined role:
 - `stop` — the consumer unsubscribes; it MUST send a `stop` message.
 - `interrupt` — if the provider can no longer supply data, it CAN send an `interrupt` message; the consumer MAY react by notifying the application layer.
 - `receive` — the provider MUST deliver each update with a `receive` message.
+
+When a protocol error rejects a subscription's `start` frame, the consumer
+MUST terminate that subscription with a generic unsupported error and MUST NOT
+send a `stop` frame in response.
 
 The returned `Subscriber` interface depends on the implementation, but a generic one may look like this:
 
