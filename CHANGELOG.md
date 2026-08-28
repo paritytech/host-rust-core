@@ -5,11 +5,29 @@ All notable changes to the TrUAPI protocol are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
-## [Unreleased]
+## [0.11.0] - 2026-08-27
 
 ### Added
 
-- expose the current canonical product identifier through `system.getProductContext`
+- prebuilt truapi-host binaries, one-liner installer, and self-update (#516)
+- local dev flow — run a product in a browser tab against the CLI host (#510)
+- revalidate device permissions against OS state before use (#471)
+- expose current product context (#504)
+- publish io.parity:truapi-host-android as an AAR (#337)
+- auto-grant remote permissions to trusted product labels (#446)
+- improve signing-host session lifecycle (#495)
+
+### Changed
+
+- remove legacy single-execution core (#508)
+- RFC: Host Identity and Version via `System.host_info` (#177)
+
+### Fixed
+
+- clear the sandbox client when the pipe closes (#509)
+- persist and restore paired SSO hosts (#501)
+- gate tags on a confirmed npm publish (#505)
+- derive Pages base path from configure-pages (#500)
 
 ## [0.10.0] - 2026-08-24
 
@@ -39,6 +57,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Changed
 
+- @parity/truapi 0.10.0, @parity/truapi-host 0.7.0 (#494)
 - Own-account subtree consent gate, deadline bound, and worker dispose fix (#469)
 - Person's usernames: read from Asset Hub dotNS instead of the People Chain (rebase of #349) (#426)
 - publish 0.7.0 (#450)
@@ -49,6 +68,7 @@ generated from [Conventional Commits](https://www.conventionalcommits.org/).
 
 ### Fixed
 
+- raise the crate recursion limit for the trait solver (#475)
 - accept the test dotNS TLD in product identifiers (#465)
 - follow previewnet through its wipe (#455)
 - stop a product or host from aborting the process (#452)

@@ -31,17 +31,79 @@ dotli/playground Diagnosis suite with a non-interactive signing-host responder.
 It verifies the initial pairing, remote signing, host sign-out, and
 same-account reconnect without the external signer-bot service.
 
-## Quick start
+## Install
 
 ```bash
-make headless install  # build dependencies and install truapi-host once
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
 truapi-host signing-host
 ```
+
+Prebuilt binaries exist for `aarch64-apple-darwin`,
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. The Linux
+binaries are statically linked, so they run on any distribution. The installer
+puts each version in `$XDG_DATA_HOME/truapi-host/versions/<version>/` and
+symlinks `~/.local/bin/truapi-host` through a `current` link, so an update only
+moves that one link.
+
+| Variable | Effect |
+| --- | --- |
+| `TRUAPI_HOST_VERSION` | Install this version instead of the current stable one. |
+| `TRUAPI_HOST_INSTALL_DIR` | Version store, default `$XDG_DATA_HOME/truapi-host`. |
+| `TRUAPI_HOST_BIN_DIR` | Directory the `PATH` symlink goes in, default `~/.local/bin`. |
+
+Product scripts (`--script`, `/script`) work from an installed binary: the
+archive ships a `runner.js` with the `@parity/truapi` client bundled in. You
+still need `bun` on `PATH`, since it executes the runner and your script.
 
 Product frames use a private, per-process WebSocket-over-Unix-domain-socket by
 default, so starting either host does not reserve a TCP port. Pass
 `--frame-listen 127.0.0.1:0` to expose an ordinary loopback WebSocket instead;
 this is required for browser clients, which cannot open filesystem sockets.
+
+### Staying current
+
+A managed install checks for a new release at most once every four hours,
+alongside whatever command you ran rather than delaying it, and installs it into
+the version store. A command that finishes first waits for the download, so even
+a one-shot run lands the update; it prints a line while downloading. The running
+process is never replaced underneath itself: the new version takes effect the
+next time you start `truapi-host`, and the CLI says so when one is waiting.
+Every archive is checked against its published SHA-256 before it is unpacked.
+
+```bash
+truapi-host update            # check and install now
+truapi-host --version         # what is running
+TRUAPI_HOST_NO_UPDATE=1 ...   # never check
+```
+
+Binaries that the installer did not put in place — a `cargo install` copy, a
+source build, a distro package — are detected and never modified. A local build
+says so on every run and prints the install command, since it otherwise looks
+identical to a managed install that is quietly up to date.
+
+The two install routes shadow each other depending on `PATH` order, so each one
+clears the other: installing removes a `cargo install` copy, and
+`make headless install` removes a prebuilt install first. To remove a prebuilt
+install without replacing it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash -s -- --uninstall
+```
+
+`make e2e-cli-update` exercises the whole chain locally: it packages the binary,
+serves a fake release over loopback, installs it with the real installer, and
+updates it. Nothing contacts GitHub.
+
+### Building from source
+
+A source build resolves the product-script runner from the checkout, so it also
+needs the generated `@parity/truapi` sources. (An installed release ships its
+own bundled runner and does not.) To build and install the CLI yourself:
+
+```bash
+make headless install  # build dependencies and install truapi-host once
+truapi-host signing-host
+```
 
 ### Browser products
 

@@ -26,6 +26,7 @@ mod script_runner;
 mod sessions;
 mod signing_shell;
 mod terminal_ui;
+mod update;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -79,7 +80,11 @@ const DEFAULT_PRODUCT_ID: &str = "headless-playground.dot";
 const DEEPLINK_SCHEME: &str = "polkadotapp";
 
 #[derive(Parser)]
-#[command(name = "truapi-host", about = "Headless TrUAPI hosts for e2e testing")]
+#[command(
+    name = "truapi-host",
+    about = "Headless TrUAPI hosts for e2e testing",
+    version = update::CURRENT_VERSION
+)]
 struct Cli {
     /// Log verbosity. `RUST_LOG` takes precedence when set.
     #[arg(
@@ -249,6 +254,11 @@ enum Command {
         #[arg(long)]
         submit: bool,
     },
+    /// Install the current stable release over this one.
+    ///
+    /// Only works for a binary the installer put in place; a `cargo install`
+    /// copy or a source build is reported and left alone.
+    Update,
 }
 
 /// Execution kind the CLI serves a product as.
@@ -441,12 +451,37 @@ async fn main() -> Result<()> {
         .with(log_layer)
         .init();
 
-    match cli.command {
-        Command::PairingHost(args) => run_pairing_host(args, cli.log_level, log_controller).await,
-        Command::Dev(args) => run_dev(args, cli.log_level, log_controller).await,
-        Command::SigningHost(args) => {
-            run_signing_host(args, cli.log_level, log_controller, None).await
-        }
+    // A background check runs alongside the command rather than delaying it, and
+    // reports through `tracing`, which the terminal UI renders in its transcript
+    // so it cannot corrupt the full-screen display. The command then waits for
+    // it at exit, so even a short one completes the download it started.
+    let check = (!matches!(cli.command, Command::Update)).then(|| {
+        update::report_install();
+        tokio::spawn(update::run_background_check())
+    });
+
+    let outcome = dispatch(cli.command, cli.log_level, log_controller).await;
+
+    if let Some(check) = check {
+        update::finish_background_check(check).await;
+    }
+    outcome
+}
+
+/// Run the requested command.
+///
+/// Separate from `main` so that the `?` several arms use returns here, leaving
+/// `main` free to always wait for the update check it started.
+async fn dispatch(
+    command: Command,
+    log_level: LogLevel,
+    log_controller: LogController,
+) -> Result<()> {
+    match command {
+        Command::Update => update::run_update_command().await,
+        Command::PairingHost(args) => run_pairing_host(args, log_level, log_controller).await,
+        Command::Dev(args) => run_dev(args, log_level, log_controller).await,
+        Command::SigningHost(args) => run_signing_host(args, log_level, log_controller, None).await,
         Command::IdentityCheck { mnemonic, network } => {
             let entropy = bip39::Mnemonic::parse(mnemonic.trim())
                 .context("invalid BIP-39 mnemonic")?

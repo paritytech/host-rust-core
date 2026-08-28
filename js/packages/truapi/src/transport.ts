@@ -1,7 +1,28 @@
 import { concatBytes } from "@noble/hashes/utils.js";
 import { err, ok, type Result, type ResultAsync } from "neverthrow";
 
-import { str, u8, type ResultPayload } from "./scale.js";
+import { str, u8, type CallErrorValue, type ResultPayload } from "./scale.js";
+
+/** Wire discriminant reserved for method-independent protocol errors. **/
+export const PROTOCOL_ERROR_ID = 255 as const;
+
+/** The peer rejected an outbound frame because it does not support its API. **/
+export class UnsupportedMessageError extends Error {
+  /** Wire discriminant of the unsupported outbound frame. **/
+  readonly discriminant: number;
+
+  constructor(discriminant: number) {
+    super(`Peer does not support wire message ${discriminant}`);
+    this.name = "UnsupportedMessageError";
+    this.discriminant = discriminant;
+  }
+}
+
+/** Call result returned when the peer does not recognize a request frame. **/
+export type UnsupportedCallError = Extract<
+  CallErrorValue<never>,
+  { tag: "Unsupported" }
+>;
 
 /**
  * Coerce an unknown thrown value into an `Error` instance.
@@ -173,7 +194,8 @@ export interface RequestParams<Ok, Err> {
 
   /**
    * Decode SCALE response payload bytes into the wire `ResultPayload`
-   * envelope. The transport unwraps the envelope into `ResultAsync<Ok, Err>`.
+   * envelope. The transport unwraps the envelope into
+   * `ResultAsync<Ok, Err | UnsupportedCallError>`.
    **/
   decodeResponse: (payload: Uint8Array) => ResultPayload<Ok, Err>;
 }
@@ -203,7 +225,8 @@ export interface SubscribeRawParams {
   onInterrupt?: (payload: Uint8Array) => void;
 
   /**
-   * Called when the underlying provider closes while the subscription is active.
+   * Called when a transport-level error or unsupported start frame terminates
+   * the subscription.
    **/
   onClose?: (error: Error) => void;
 }
@@ -253,7 +276,9 @@ export interface TrUApiTransport {
   /**
    * Send a one-shot request and resolve with the typed Ok/Err outcome.
    **/
-  request<Ok, Err>(params: RequestParams<Ok, Err>): ResultAsync<Ok, Err>;
+  request<Ok, Err>(
+    params: RequestParams<Ok, Err>,
+  ): ResultAsync<Ok, Err | UnsupportedCallError>;
 
   /**
    * Start a subscription and return a handle that can stop it.

@@ -25,6 +25,16 @@ The interactive playground lets you browse every method, edit request payloads, 
 
 **Live:** [truapi-playground.paseo.li](https://truapi-playground.paseo.li/) (open from inside the Polkadot Desktop Browser)
 
+## Install the CLI
+
+`truapi-host` runs a TrUAPI host on your machine, so you can develop and test a product without a phone or a desktop host build:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
+```
+
+Prebuilt for macOS on Apple silicon and Linux on x86_64 and arm64. No Rust toolchain or checkout needed, and it keeps itself up to date. See the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for the commands, the terminal UI, and product scripts.
+
 ## Usage
 
 `@parity/truapi` is the low-level generated protocol client. Product apps should normally use a higher-level product SDK, such as [`paritytech/product-sdk`](https://github.com/paritytech/product-sdk), while SDK and host-integration layers can depend on this package directly.
@@ -133,7 +143,7 @@ dependency on the crate:
 3. Higher-level SDKs wrap the typed client; the transport encodes SCALE frames and ships them over `MessagePort` (or `postMessage` in iframe mode) to the host.
 4. The host decodes the frame, dispatches to the matching trait method, encodes the response, and ships it back.
 
-Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions.
+Wire ids are append-only: existing ids never change, so deployed products stay compatible across protocol revisions. Discriminant 255 is permanently reserved for a correlated protocol error, allowing either peer to reject API messages introduced after it was released instead of leaving the caller pending.
 
 ## Develop
 
@@ -150,13 +160,10 @@ make wasm     # rebuild truapi-server WASM artifacts under js/packages/truapi-ho
 CI regenerates the shared bindings before building and testing both npm
 packages, so generated client and host callback changes are checked together.
 
-The native `truapi-host` utility can run pairing and signing hosts against the
-real SSO transport for local end-to-end work. Both roles provide a
-transcript-based terminal UI with commands such as `/product` and `/script`;
-the signing host also provides `/pair` and a non-interactive `exec` form for
-automation. See the
-[`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md) for setup,
-controls, and examples.
+The native `truapi-host` utility runs pairing and signing hosts against the real
+SSO transport for local end-to-end work. See [Install the CLI](#install-the-cli)
+to get it, and the [`truapi-host-cli` guide](rust/crates/truapi-host-cli/README.md)
+for its commands and controls.
 
 `scripts/battery.sh` drives that CLI from source over every code-generated
 example and writes both committed compatibility reports:
