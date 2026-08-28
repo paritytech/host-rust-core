@@ -172,14 +172,18 @@ Pushes to `main` deploy automatically via the [Deploy Playground workflow](../.g
 ```bash
 yarn install --frozen-lockfile
 yarn build
-bulletin-deploy ./out truapi-playground --js-merkle
+bulletin-deploy ./out truapi-playground.paseo --js-merkle
 ```
 
 The build output goes to `./out`. The deploy can fail on transient network errors; CI retries up to 3 times, and you can simply rerun the command locally.
 
+The name carries its TLD because [`bulletin-deploy.config.ts`](bulletin-deploy.config.ts) is present: the deploy then also publishes the product manifest, and the publisher requires the name passed here to match the config's `domain` exactly. `.paseo` is the TLD of the default environment (`paseo-next-v2`); for another environment, pass the matching name and set `PLAYGROUND_DOTNS_NAME` to the same value so the config follows, as [the workflow](../.github/workflows/deploy-playground.yml) does.
+
+Publishing the manifest registers the `app.` and `worker.` subnames, so the signer has to own the base name and cover the registration deposits. Pass `--content-only` to update the site alone and leave the manifest untouched.
+
 ### Quick iteration
 
-`deploy:test` skips `--js-merkle` and cleans up the generated `out.car`:
+`deploy:test` skips `--js-merkle`, stays content-only, and cleans up the generated `out.car`:
 
 ```bash
 yarn deploy:test
