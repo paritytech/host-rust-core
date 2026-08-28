@@ -154,6 +154,28 @@ cargo build -p truapi-host-cli
 
 ### 3.2 Installation
 
+The published route is the installer script, which needs no Rust toolchain:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/paritytech/host-rust-core/main/scripts/truapi-host-installer.sh | bash
+```
+
+It resolves the current stable version from the `truapi-host-cli-stable`
+release pointer, downloads the archive for the detected target
+(`aarch64-apple-darwin`, `x86_64-unknown-linux-musl` or
+`aarch64-unknown-linux-musl`), verifies its SHA-256, and lays out:
+
+```
+$XDG_DATA_HOME/truapi-host/versions/<version>/truapi-host
+$XDG_DATA_HOME/truapi-host/current -> versions/<version>
+~/.local/bin/truapi-host -> $XDG_DATA_HOME/truapi-host/current/truapi-host
+```
+
+`TRUAPI_HOST_VERSION`, `TRUAPI_HOST_INSTALL_DIR` and `TRUAPI_HOST_BIN_DIR`
+override the version, the version store and the `PATH` directory.
+
+The source route:
+
 ```sh
 make headless install
 ```
@@ -171,20 +193,66 @@ cargo install \
 ### 3.3 Runtime dependencies
 
 Host-only commands need the installed Rust binary. Product scripts additionally
-need:
+need `bun` on `PATH`, plus a runner (see below). A source build also needs the
+repository's generated `@parity/truapi` TypeScript sources.
 
-- `bun` on `PATH`;
-- `js/runner.ts`; and
-- the repository's generated `@parity/truapi` TypeScript sources and their
-  dependencies.
+The runner is resolved in this order: `TRUAPI_HOST_RUNNER`, then `runner.js`
+next to the running binary, then `js/runner.ts` in the source checkout
+(compiled from `CARGO_MANIFEST_DIR`).
 
-By default, the runner path is compiled from `CARGO_MANIFEST_DIR` and therefore
-points into the source checkout. `TRUAPI_HOST_RUNNER` can select another
-`runner.ts`. The v0.1 install is not a self-contained relocatable script
-runtime: deleting or moving the checkout without supplying a replacement
-runner breaks `/script` and `--script`.
+A release archive ships `runner.js` beside the binary, with `@parity/truapi`
+bundled in, so an installed copy runs product scripts with no source tree. A
+source build has no bundle and falls back to the checkout copy, whose relative
+`@parity/truapi` import means it only works from a built tree.
 
-The binary has `--help` but no `--version` option.
+`bun` is required either way, since the runner and user scripts are executed by
+it.
+
+The binary has `--help` and `--version`.
+
+### 3.4 Self-update
+
+An install laid out by §3.2 keeps itself current. Every command except
+`update` spawns a background check that:
+
+1. does nothing unless the running executable resolves inside
+   `<root>/versions/`, so a `cargo install` copy or a source build is never
+   modified;
+2. does nothing when `TRUAPI_HOST_NO_UPDATE` is set;
+3. takes a non-blocking `<root>/update.lock`, and gives up if another process
+   holds it;
+4. does nothing if `<root>/update-check.json` records a check within the last
+   four hours, and records the attempt *before* the network request so an
+   unreachable release host is not retried on every invocation;
+5. reads the published version from the `truapi-host-cli-stable` pointer and
+   stops when `current` already selects it;
+6. downloads the archive and its `.sha256`, refuses a digest mismatch, unpacks
+   into `versions/<version>`, and renames a new symlink over `current`.
+
+The running process is never replaced. A new version takes effect on the next
+run, and the CLI logs one line when one is waiting. Versions other than the
+running one and the active one are pruned.
+
+The check runs alongside the command rather than delaying it, and the process
+waits for it before exiting, so even a one-shot command completes the download
+it started. A download in progress is announced, because an otherwise quick
+command would seem to hang. That wait is bounded at 150 seconds, so a stalled
+network cannot hold the CLI open; a download cut short leaves only a
+`versions/.<version>.incoming` directory that the next attempt removes.
+
+`truapi-host update` performs the same work synchronously, ignores the
+four-hour throttle, and reports the outcome on stdout.
+
+A binary outside that layout logs one line at startup naming itself a local
+build and giving the installer command, because it never updates and is
+otherwise indistinguishable from a managed install that is up to date.
+
+The two routes shadow each other depending on `PATH` order, so each clears the
+other: the installer removes a `cargo install` copy (via `cargo uninstall
+truapi-host-cli`, falling back to deleting `$CARGO_HOME/bin/truapi-host`), and
+`make headless install` runs the installer's `--uninstall` first. `--uninstall`
+removes the version store and the `PATH` symlink, and only removes that symlink
+when it points inside the version store.
 
 ## 4. Top-level command line
 
@@ -197,6 +265,7 @@ Commands:
 | Command | Purpose |
 | --- | --- |
 | `pairing-host` | Run the seedless product-facing host. |
+| `dev` | Run a development command against a loopback signing host and browser bridge. |
 | `signing-host` | Run the wallet-local signing host. |
 | `identity-check` | Probe dotNS identity records on Asset Hub for a mnemonic. |
 | `register-name` | Register a full-person username via `DotnsGateway.register_name`. |
@@ -351,8 +420,8 @@ truapi-host signing-host --session alice.01 exec '/devices --remove 0x0123456789
 ```
 
 `exec '/script'` needs a TTY because it opens an editor. In non-TTY execution,
-use `exec '/script <path>'` instead. `/copy` is unavailable. `/clear` and
-`/quit` are successful no-ops in one-shot mode.
+use `exec '/script <path>'` instead. `/copy` and `/approval` are unavailable.
+`/clear` and `/quit` are successful no-ops in one-shot mode.
 
 `exec '/devices'` and `exec '/devices --list'` inspect the selected session's
 saved pairings without starting their responders. `exec '/devices --remove
@@ -366,6 +435,45 @@ paired host saved for the selected managed session, optionally adds the host
 from `--deeplink`, and serves product frames until Ctrl-C or external process
 termination. `--auto-accept` is needed for confirmations because this mode has
 no terminal prompt.
+
+### 6.6 Top-level `dev`
+
+```sh
+truapi-host dev [options] [-- <development-command>...]
+```
+
+`dev` is the plain-browser development topology built on the signing host. It
+needs no TTY, ensures and activates a signer, auto-accepts confirmations, binds
+the loopback frame server and browser bridge, then starts the wrapped command.
+When no command follows `--`, it serves the host until stopped.
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--app-port <port>` | `3000` | Port of the development server. The default product id becomes `localhost:<port>`. |
+| `--port <port>` | `9955` | Loopback port for product frames and `/bootstrap.js`. A product tag using another port must change with it. |
+| `--product-id <id>` | `localhost:<app-port>` | Override the product scope. |
+| `--network <preset>` | `paseo-next-v2` | Select the complete network preset. |
+| `--session <name>` | remembered session | Restore or create a persistent signing-host session. |
+| `--mnemonic <phrase>` | none | Use a disposable testnet signer instead of the managed session. `HOST_CLI_SIGNER_MNEMONIC` supplies the same value. |
+| `--base-path <path>` | section 12.1 | Root for account, session, core, and product state. |
+
+The product includes a development-only blocking tag before product code:
+
+```html
+<script src="http://127.0.0.1:9955/bootstrap.js"></script>
+```
+
+The JavaScript creates a `MessageChannel`, connects its private side to the
+same-port WebSocket, assigns the public side to `window.__HOST_API_PORT__`, sets
+the native-webview marker, and dispatches `truapi-native-ready`. Frames posted
+before the WebSocket opens are queued. Production builds must omit the tag.
+
+On Unix the wrapped command is the leader of a process group retained by the
+CLI. A natural direct-launcher exit preserves its status and still cleans up
+descendants. On CLI SIGINT or SIGTERM, cleanup reports status 130. Both paths
+send SIGTERM to the group, wait up to five seconds while reaping the direct
+child, then send SIGKILL and wait again if any group member remains. On
+non-Unix platforms the CLI stops and reaps the direct child.
 
 ## 7. Product identifiers and switching
 
@@ -416,12 +524,15 @@ Commands start with `/`. There are no `q`, `quit`, `exit`, or non-slash aliases.
 | --- | :---: | :---: | --- |
 | `/script` | yes | yes | Edit and run the remembered script, creating a scratch script when needed. |
 | `/script <path>` | yes | yes | Remember and run an existing JS/TS script. |
-| `/login` | yes | no | Start or join pairing for the current product and copy the new link. |
+| `/login` | yes | no | Start or join pairing for the current product, show its QR code, and copy the new link. |
 | `/logout` | yes | no | Disconnect and clear the old pairing identity/history. |
 | `/pair <url>` | no | yes | Validate and answer a `polkadotapp://pair?...` link. |
 | `/devices` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --list` | no | yes | List paired devices saved for the active managed session. |
 | `/devices --remove <statement-account-id>` | no | yes | Remove one paired device by its 32-byte statement account ID. |
+| `/approval` | no | yes | Print the current manual or automatic approval mode. TUI only. |
+| `/approval manual` | no | yes | Prompt for every future confirmation. TUI only. |
+| `/approval automatic` | no | yes | Approve every future confirmation automatically. TUI only. |
 | `/product` | yes | yes | Print the current product id. |
 | `/product <id>` | yes | yes | Switch product and reset product connections. |
 | `/session` | no | yes | Show current session, user, and path. |
@@ -520,6 +631,8 @@ from link generation through authentication to its final state.
 - `/script` followed by a space completes filesystem entries.
 - `/devices` followed by a space completes `--list` and `--remove` for the
   signing host.
+- `/approval` followed by a space completes `manual` and `automatic` for the
+  signing host.
 - `/session` followed by a space completes known signing sessions, `--list`,
   `--mnemonic`, `--clear`, and `--clear-all`; `/session --clear ` completes
   known names.
@@ -573,6 +686,14 @@ without the full-screen UI. Complete pairing links are replaced by
 Operator `/login` copies the first generated pairing link automatically. A
 clipboard failure is reported as a warning and does not cancel pairing.
 Product-driven `requestLogin()` does not automatically copy its link.
+
+Every pairing link received by the interactive UI is followed by a solid
+half-block QR code that encodes the exact deeplink. Each terminal cell carries
+one module column and two module rows. QR rows use an explicit white background,
+black modules, and a four-module quiet zone. If the terminal cannot fit the QR
+without wrapping or clipping, the UI keeps the raw link and reports the
+required columns and rows. Encoding failure is reported without cancelling
+pairing. Streaming output and copied transcripts remain text-only.
 
 ### 9.7 Output safety and bounds
 
@@ -700,6 +821,10 @@ Scratch scripts store only their filename in `session.json`, so they remain
 valid if a session directory is promoted. Explicit scripts outside the session
 store their absolute path. A missing remembered file is ignored and replaced
 by a new scratch file.
+
+The default scratch file is a dependency-free Bun script that calls
+`truapi.account.getUserId()` and prints `user id` followed by the returned
+value. It does not emit terminal styling.
 
 Mnemonic-backed ephemeral signing sessions remember a path only for the
 current process and create scratch files under the system temporary
@@ -889,7 +1014,8 @@ A new auto account:
 2. generates a 12-word mnemonic;
 3. derives the RFC-0022 `uid.dot` index-0 sr25519 identity account;
 4. chooses `auto-<n>` as its local name;
-5. tries up to eight available Lite username bases;
+5. checks that the requested Lite username base has an available numerical
+   alias;
 6. saves a pending account record;
 7. builds and submits identity-backend registration proofs, including the dotNS
    gateway reservation signature timestamped with Asset Hub chain time. A
@@ -920,11 +1046,9 @@ dotSpark v1 envelope whose per-name value carries a `status` field.
 
 The default Lite username prefix is `headless`. For a non-default session, the
 prefix is its lowercase letters with digits and separators removed; a name
-with no letters becomes `session`. `--lite-username-prefix` overrides this and
-must contain lowercase ASCII letters only.
-
-The generated base is at least 12 characters and, for prefixes of six or more
-characters, appends six pseudo-random lowercase letters.
+with fewer than six letters becomes `session`. `--lite-username-prefix`
+overrides this and must contain at least six lowercase ASCII letters. The
+requested base is used unchanged because dotNS assigns its numerical alias.
 
 ### 12.4 Cached startup
 
@@ -1340,9 +1464,19 @@ connections.
 
 ### 14.2 Product-frame WebSocket
 
-The listener uses plain `ws://`. Defaults are loopback, but any
-`SocketAddr` accepted by the OS can be supplied. v0.1 has no authentication,
-TLS, origin check, or non-loopback warning.
+The listener uses plain `ws://`. Any `SocketAddr` accepted by the OS can be
+bound, but a TCP frame connection is accepted only when its actual peer IP is
+loopback. A browser WebSocket handshake must also carry an `Origin` whose host
+is `localhost`, a loopback IPv4 address, or a loopback IPv6 address. Malformed
+and non-loopback origins are rejected. Unix-socket connections and loopback TCP
+clients without `Origin` are treated as local non-browser clients.
+
+For a TCP listener, `GET /bootstrap.js` on the same port returns the development
+bridge as a plain HTTP JavaScript response with `no-store` and connection-close
+headers. Other HTTP paths return 404. The bridge embeds the endpoint that was
+actually bound, so `--port` and its generated WebSocket URL remain consistent.
+The HTTP response does not grant cross-origin access; browser frame access is
+enforced during the later WebSocket handshake.
 
 Each accepted WebSocket:
 
@@ -1505,6 +1639,13 @@ and do not add a CLI-only prompt.
 ### 17.1 Prompt policy
 
 Without `--auto-accept`, platform approval is deny-by-default.
+
+The interactive signing host accepts `/approval`, `/approval manual`, and
+`/approval automatic`. The bare command reports the current mode. A setter
+changes every future platform confirmation and remains active when a session
+or identity switch rebuilds the runtime. The setting is process-local and is
+not written to session state. A new process derives its initial policy from
+`--auto-accept` again.
 
 In the TUI it uses the approval card described in section 9. In plain mode:
 
@@ -1754,6 +1895,8 @@ them; on-demand allocation for a product reports exhaustion instead.
 | `1` | General runtime/state/network error, invalid product at runtime construction, or failed `exec` script. |
 | `2` | Clap/explicit invocation error, non-TTY interactive use, malformed slash command passed to `exec`, or runner connection timeout in top-level script mode. |
 | child status | Top-level pairing/signing `--script` preserves a normal Bun exit status. |
+| wrapped status | `dev` preserves a normally exiting direct launcher's status after descendant cleanup. |
+| `130` | `dev` received SIGINT or SIGTERM and completed wrapped-command cleanup. |
 
 Interactive command errors do not terminate the host. They finalize running
 activities, display the error, and return to the command bar.
@@ -1762,9 +1905,10 @@ Dropping a `SigningHostSession` stops all of its background responders. Leaving
 the TUI restores the cursor, bracketed-paste mode, alternate screen, and raw mode.
 The frame accept task is aborted when its owning command body completes.
 
-The CLI has no explicit SIGTERM/SIGINT signal orchestration. Interactive
-Ctrl-C is handled as a terminal key; external process termination follows
-normal operating-system behavior.
+`dev` owns explicit SIGINT/SIGTERM orchestration and the wrapped-command
+lifecycle described in section 6.6. Other commands have no global signal
+controller. Interactive Ctrl-C is handled as a terminal key; external process
+termination follows normal operating-system behavior.
 
 Top-level `--script` uses `std::process::exit` after the frame-server scope has
 ended. This preserves the child status but bypasses later Rust destructors.
@@ -1776,7 +1920,12 @@ ended. This preserves the child status but bypasses later Rust destructors.
 | `TRUAPI_HOST_LOG` | Default `--log-level`. |
 | `RUST_LOG` | Full startup tracing filter. |
 | `TRUAPI_HOST_BASE_PATH` | Default `--base-path`. |
-| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
+| `TRUAPI_HOST_NO_UPDATE` | Any value disables the self-update check. |
+| `TRUAPI_HOST_INSTALL_DIR` | Version store for a managed install. Read by the installer; the binary derives it from its own path. |
+| `TRUAPI_HOST_BIN_DIR` | Directory the installer puts the `PATH` symlink in. |
+| `TRUAPI_HOST_VERSION` | Version the installer installs, instead of the current stable one. |
+| `TRUAPI_HOST_RELEASE_BASE_URL` | Release host for the installer and the updater, for mirrors and tests. |
+| `HOST_CLI_SIGNER_MNEMONIC` | Mnemonic for `dev`, `signing-host`, `identity-check`, `register-name`, `alloc-check` and `pgas-check` when `--mnemonic` is omitted. |
 | `HOST_CLI_IDENTITY_BACKEND_BASE` | Identity backend base URL override, including `/api/v1`, for instance a local backend. Chain endpoints stay on the preset. |
 | `HOST_CLI_IDENTITY_BACKEND_TOKEN` | Bearer token for the identity backend's username routes. For registration its subject must be the candidate `uid.dot` account. Unset, the CLI mints one itself through the backend's `auth/challenges` → `auth/token` sr25519 handshake with that identity key. |
 | `HOST_CLI_DOTNS_POP_CONTROLLER` | `DotnsPopController` H160 override, skipping on-chain discovery (`DotnsGateway.DispatcherAddress` → dispatcher `TARGET()`). Only needed where discovery fails. The controller is `0xCC932348606cc1f3318cADeC5A5Cd2CA447f8a4b` on paseo-next-v2 and previewnet; `DEPLOYMENTS.md` in paritytech/dotns is the authority per network. |
@@ -1802,11 +1951,11 @@ These are part of the as-built specification:
 - there is no structured/JSON output mode;
 - there is no `--version`;
 - there is no script timeout option;
-- there is no global signal-aware graceful-shutdown controller;
+- commands other than `dev` have no global signal-aware graceful-shutdown controller;
 - onboarding can wait for the fixed identity/ring polling windows;
 - session/core/product state has no inter-process mutation lock;
 - corrupt core storage is treated as empty after a warning;
-- non-loopback product listeners have no authentication or warning;
+- non-loopback product listeners can bind but reject every TCP frame peer;
 - product text WebSocket frames are accepted as protocol bytes;
 - product-frame and chain outbound queues are unbounded;
 - unknown chain genesis hashes fall back to People;

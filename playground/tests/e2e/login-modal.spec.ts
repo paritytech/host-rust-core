@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { openPlaygroundInDotli, waitForOnline } from "./helpers";
+import { HOST_MODE, openPlaygroundInDotli, waitForOnline } from "./helpers";
 
 /**
  * The login pairing UI is driven by the Rust core's ordered auth-state
@@ -8,6 +8,13 @@ import { openPlaygroundInDotli, waitForOnline } from "./helpers";
  * and a dismissed modal leaving the login flow polling forever.
  */
 test.describe("login pairing modal", () => {
+  // Every selector below is dotli's own host chrome. A CLI host signs in when
+  // it starts and presents no login flow, so there is nothing here to assert.
+  test.skip(
+    HOST_MODE === "cli",
+    "dotli host UI; the CLI host has no login modal",
+  );
+
   test("stays open while pairing, cancels on close, reopens on retry", async ({
     page,
   }) => {

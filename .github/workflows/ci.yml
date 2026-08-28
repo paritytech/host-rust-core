@@ -252,7 +252,7 @@ jobs:
         run: |
           xcodebuild build-for-testing \
             -scheme TrUAPIHost \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/TrUAPIHostDerivedData" \
             CODE_SIGNING_ALLOWED=NO
 
