@@ -23,8 +23,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use truapi::latest as api;
 use truapi_platform::{
     AuthState, ChainProvider, CoreStorage, CoreStorageKey, DevicePermissionStatus, Features,
-    JsonRpcConnection, Navigation, Notifications, PermissionStatusHost, Permissions, PreimageHost,
-    ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
+    JsonRpcConnection, LocaleHost, Navigation, Notifications, PermissionStatusHost, Permissions,
+    PreimageHost, ProductStorage, ProductStorageKey, SessionUiInfo, ThemeHost, UserConfirmation,
     UserConfirmationReview,
 };
 
@@ -890,6 +890,18 @@ impl ThemeHost for CliPlatform {
             Ok(api::HostThemeSubscribeItem {
                 name: api::ThemeName::Default,
                 variant: api::ThemeVariant::Dark,
+            })
+        }))
+    }
+}
+
+impl LocaleHost for CliPlatform {
+    fn subscribe_locale(
+        &self,
+    ) -> BoxStream<'static, Result<api::HostLocaleSubscribeItem, api::GenericError>> {
+        Box::pin(stream::once(async {
+            Ok(api::HostLocaleSubscribeItem {
+                language_tag: "en".to_string(),
             })
         }))
     }

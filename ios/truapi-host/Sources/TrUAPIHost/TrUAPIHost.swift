@@ -321,6 +321,10 @@ public protocol HostBridge: AnyObject, Sendable {
     /// `ThemeName.default`.
     func currentTheme() throws -> HostThemeSubscribeItem
 
+    /// Return the language this host presents its interface in, as a BCP 47
+    /// tag. Hosts with no in-app language picker report the system language.
+    func currentLocale() throws -> HostLocaleSubscribeItem
+
     /// Answer a feature-support query. Invoked on the dispatcher thread; must
     /// return promptly.
     func featureSupported(request: HostFeatureSupportedRequest) async throws -> Bool
@@ -391,6 +395,11 @@ public extension HostBridge {
     func lookupPreimage(key: Data) async throws -> Data? { nil }
     func currentTheme() throws -> HostThemeSubscribeItem {
         HostThemeSubscribeItem(name: .default, variant: .dark)
+    }
+    func currentLocale() throws -> HostLocaleSubscribeItem {
+        HostLocaleSubscribeItem(
+            languageTag: Locale.current.language.languageCode?.identifier ?? "en"
+        )
     }
     func supportedChains() throws -> HostChainSet { HostChainSet(network: "", chains: []) }
     func devicePermissionStatus(request: HostDevicePermissionRequest) async throws
@@ -554,6 +563,12 @@ private final class HostCallbackAdapter: HostCallbacks, @unchecked Sendable {
     func currentTheme() throws -> HostThemeSubscribeItem {
         try withHostRejection {
             try bridge.currentTheme()
+        }
+    }
+
+    func currentLocale() throws -> HostLocaleSubscribeItem {
+        try withHostRejection {
+            try bridge.currentLocale()
         }
     }
 
@@ -803,6 +818,7 @@ public protocol TrUAPIProductExecutionProtocol: AnyObject, Sendable {
         status: PermissionAuthorizationStatus
     ) throws
     func notifyThemeChanged(theme: HostThemeSubscribeItem)
+    func notifyLocaleChanged(locale: HostLocaleSubscribeItem)
     func notifyPreimageChanged(key: Data, value: Data?)
     func notifyChainResponse(connectionId: UInt32, json: String)
     func notifyChainClosed(connectionId: UInt32)
@@ -876,6 +892,10 @@ public final class TrUAPIProductExecution: TrUAPIProductExecutionProtocol, @unch
 
     public func notifyThemeChanged(theme: HostThemeSubscribeItem) {
         inner.notifyThemeChanged(theme: theme)
+    }
+
+    public func notifyLocaleChanged(locale: HostLocaleSubscribeItem) {
+        inner.notifyLocaleChanged(locale: locale)
     }
 
     public func notifyPreimageChanged(key: Data, value: Data?) {
